@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Audit row <code>{{ entry.id }}</code></h1>
+  <p class="small"><a href="/ui/audit">← All audit rows</a></p>
+
+  {% include "audit/_card.html" %}
+{% endblock %}

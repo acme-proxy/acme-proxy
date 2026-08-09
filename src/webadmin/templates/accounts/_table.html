@@ -1,0 +1,51 @@
+{#- The swap target of the accounts list: the table and its pager, so a filter
+    change or a page step replaces exactly this and nothing else. -#}
+<div id="accounts-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Account</th>
+          <th>Profile</th>
+          <th>Status</th>
+          <th>Contact</th>
+          <th>Last seen from</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in page.items %}
+          <tr>
+            <td><a href="/ui/accounts/{{ account.id }}"><code>{{ account.id }}</code></a></td>
+            <td><code>{{ account.profile }}</code></td>
+            <td><span class="badge {{ account.status }}">{{ account.status }}</span></td>
+            <td class="wrap-anywhere">
+              {%- if account.contact -%}
+                {{ account.contact | join(", ") }}
+              {%- else -%}
+                <span class="muted">—</span>
+              {%- endif -%}
+            </td>
+            {#- Address and reverse name in one cell, the audit listing's idiom:
+                they are empty together, so two columns would be two blanks
+                rather than one honest dash. The public-key fingerprint this
+                replaced is still on the detail card, which is where a key is
+                actually identified. -#}
+            <td class="small wrap-anywhere">
+              {%- if account.lastSeenIp -%}
+                <code>{{ account.lastSeenIp }}</code>
+                {%- if account.lastSeenPtr %}<br>{{ account.lastSeenPtr }}{% endif -%}
+              {%- else -%}
+                <span class="muted">—</span>
+              {%- endif -%}
+            </td>
+            <td class="small">{{ account.createdAt }}</td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="6">No account matches.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

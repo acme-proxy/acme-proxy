@@ -1,0 +1,17 @@
+{#-
+  The operator's own page: who you are signed in as, and your second factor.
+
+  Deliberately not a seventh entry in the main nav — that nav lists resources of
+  the *server*, and "my second factor" is not one. `layout.html` links here from
+  the username in the corner instead.
+-#}
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Your account</h1>
+  <p class="muted small">
+    Operators are managed from a shell on the host —
+    <code>acme-proxy admin user …</code>. What you can change here is your own
+    second factor.
+  </p>
+  {% include "account/_mfa.html" %}
+{% endblock %}

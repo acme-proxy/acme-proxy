@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Credential <code>{{ eab.kid }}</code></h1>
+  <p class="small"><a href="/ui/eab">← All credentials</a></p>
+
+  {% include "eab/_card.html" %}
+{% endblock %}

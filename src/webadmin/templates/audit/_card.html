@@ -1,0 +1,39 @@
+{#- One audit row in full. Every optional field is rendered only when present:
+    an absent `clientIp` means there was no client, and a blank row under a
+    label would read as "unknown" instead. -#}
+<div id="audit-card" class="panel">
+  <dl class="fields">
+    <dt>Row</dt><dd><code>{{ entry.id }}</code></dd>
+    <dt>When</dt><dd>{{ entry.createdAt }}</dd>
+    <dt>Event</dt><dd><span class="badge {{ entry.outcome }}">{{ entry.event }}</span></dd>
+    <dt>Profile</dt><dd><code>{{ entry.profile }}</code></dd>
+    <dt>Actor</dt>
+    <dd>{{ entry.actorKind }}{% if entry.actorId %} <code>{{ entry.actorId }}</code>{% endif %}</dd>
+    {% if entry.accountId %}
+      <dt>Account</dt>
+      <dd><a href="/ui/accounts/{{ entry.accountId }}"><code>{{ entry.accountId }}</code></a></dd>
+    {% endif %}
+    {% if entry.orderId %}
+      {#- The order may have been deleted since: this table deliberately holds
+          no foreign key, so the link can dangle. That is the intended
+          behaviour, not a bug — the row outlives its subject. -#}
+      <dt>Order</dt>
+      <dd><a href="/ui/orders/{{ entry.orderId }}"><code>{{ entry.orderId }}</code></a></dd>
+    {% endif %}
+    {% if entry.certSerial %}<dt>Serial</dt><dd><code>{{ entry.certSerial }}</code></dd>{% endif %}
+    {% if entry.identifiers %}
+      <dt>Identifiers</dt>
+      <dd class="wrap-anywhere">
+        {%- for identifier in entry.identifiers -%}
+          {% if not loop.first %}, {% endif %}{{ identifier }}
+        {%- endfor -%}
+      </dd>
+    {% endif %}
+    {% if entry.clientIp %}<dt>Client address</dt><dd><code>{{ entry.clientIp }}</code></dd>{% endif %}
+    {% if entry.clientPtr %}<dt>Reverse name</dt><dd>{{ entry.clientPtr }}</dd>{% endif %}
+    {% if entry.userAgent %}<dt>User-Agent</dt><dd class="wrap-anywhere">{{ entry.userAgent }}</dd>{% endif %}
+    {% if entry.requestId %}<dt>Request id</dt><dd><code>{{ entry.requestId }}</code></dd>{% endif %}
+    {% if entry.reason %}<dt>Reason</dt><dd><code>{{ entry.reason }}</code></dd>{% endif %}
+    {% if entry.detail %}<dt>Detail</dt><dd class="wrap-anywhere">{{ entry.detail }}</dd>{% endif %}
+  </dl>
+</div>

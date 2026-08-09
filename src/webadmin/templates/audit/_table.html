@@ -1,0 +1,51 @@
+{#- The swap target of the audit list. Read-only: there is no control in this
+    table, because nothing in the panel may alter the trail. -#}
+<div id="audit-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Row</th>
+          <th>When</th>
+          <th>Event</th>
+          <th>Profile</th>
+          <th>Actor</th>
+          <th>Client</th>
+          <th>Identifiers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in page.items %}
+          <tr>
+            <td><a href="/ui/audit/{{ entry.id }}"><code>{{ entry.id }}</code></a></td>
+            <td class="small">{{ entry.createdAt }}</td>
+            <td><span class="badge {{ entry.outcome }}">{{ entry.event }}</span></td>
+            <td><code>{{ entry.profile }}</code></td>
+            <td class="small">
+              {{ entry.actorKind }}{% if entry.actorId %}:<code>{{ entry.actorId }}</code>{% endif %}
+            </td>
+            {#- Address and reverse name in one cell: they are empty together
+                (a CLI or relay row has neither), so two columns would be two
+                blanks rather than one honest dash. -#}
+            <td class="small wrap-anywhere">
+              {%- if entry.clientIp -%}
+                <code>{{ entry.clientIp }}</code>
+                {%- if entry.clientPtr %}<br>{{ entry.clientPtr }}{% endif -%}
+              {%- else -%}
+                —
+              {%- endif -%}
+            </td>
+            <td class="wrap-anywhere">
+              {%- for identifier in entry.identifiers -%}
+                {% if not loop.first %}, {% endif %}{{ identifier }}
+              {%- endfor -%}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="7">No audit row matches.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

@@ -1,0 +1,125 @@
+[package]
+name = "acme-proxy"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+# Edition 2024 requires 1.85. Stated so `cargo` reports a clear version error on
+# an older toolchain rather than a wall of syntax errors. Not verified by CI,
+# which builds on stable — raise it if a newer feature is adopted.
+rust-version = "1.97"
+
+[features]
+default = []
+# PKCS#11 support for the `local_ca` signer's issuing key
+# (`signer.local_ca.key_source = "pkcs11"`), so the CA private key can live in
+# a YubiKey or an enterprise HSM instead of a file. Off by default: it pulls in
+# `cryptoki` and its `cryptoki-sys` bindings, which no deployment signing with
+# an on-disk key needs. The PKCS#11 module itself is `dlopen`ed at runtime, so
+# turning this on adds no build-time C toolchain requirement — `cryptoki` ships
+# pregenerated bindings and only its opt-in `generate-bindings` feature would
+# want `bindgen`/`clang`.
+hsm = ["dep:cryptoki"]
+
+[dependencies]
+axum = "0.8"
+# Multi-threaded runtime for the concurrent axum server, plus what's actually
+# used: net/time/process/signal/sync (mpsc) and io-util (AsyncRead/WriteExt,
+# for src/tls.rs and src/filter/custom.rs's piped child stdin). No `fs` — CLI
+# stdin reading goes through `std::io::stdin`, not `tokio::io`.
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "net", "time", "process", "signal", "sync", "io-util"] } # Runtime async
+serde = { version = "1.0", features = ["derive"] } # Serialization JSON
+serde_json = "1.0"    # Parsing JSON
+tower = { version = "0.5", features = ["limit"] } # Middleware
+tower-http = { version = "0.7", features = ["set-header"] } # Middleware HTTP
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "time"] }
+config = { version = "0.15", default-features = false, features = ["toml"] } # Configuration (TOML + env)
+uuid = { version = "1.23.4", features = ["v4"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+base64 = "0.23.0"
+ring = "0.17.14"
+simple_asn1 = "0.6.4"
+hex = "0.4"
+# Certificate issuance: CSR parsing + leaf signing by the local CA. `ring`
+# backend avoids pulling aws-lc-rs / a C toolchain; `x509-parser` powers both
+# CSR parsing and loading an existing CA cert PEM.
+rcgen = { version = "0.14.8", default-features = false, features = ["ring", "pem", "x509-parser"] }
+# `CertificateSigningRequestDer` wrapper that `rcgen`'s CSR parser takes (rcgen
+# re-exports the parser but not this pki-types type). Unifies with rcgen's copy.
+rustls-pki-types = "1"
+time = { version = "0.3", features = ["formatting", "parsing"] } # RFC3339 <-> epoch for order objects
+anyhow = "1"
+# Required by the `Filter` (`src/filter`) and `SignerBackend` (`src/signer`)
+# traits: `Arc<dyn Trait>` with `async fn` methods is not dyn-safe without it.
+async-trait = "0.1"
+ipnet = "2.12"  # CIDR parsing + containment for the IP allowlist / trusted proxies
+regex = "1.13"  # identifier and reverse-DNS hostname allow/deny lists
+# PTR + forward-confirmation lookups for the reverse-DNS filter, and the TXT
+# lookups of the `dns-01` challenge. Default features off: no DNSSEC/TLS
+# transports needed, just the system resolver.
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+# RFC 2136 dynamic DNS update + TSIG, for the `acme_proxy` backend's dns-01
+# strategy — the one place this server *writes* DNS rather than reading it.
+# `hickory-proto` rather than `hickory-client`: the update-message builders and
+# the TSIG signer both live here, it is already in the tree via the resolver
+# above (so this adds a direct edge, not a crate), and the 0.26 line of
+# `hickory-client` is still a pre-release.
+# `dnssec-ring` is what gates `Message::finalize`, i.e. TSIG signing itself;
+# it uses `ring`, already this project's crypto backend everywhere else.
+hickory-proto = { version = "0.26", default-features = false, features = ["std", "dnssec-ring"] }
+# The `http-01` challenge's HTTP client. `hyper` rather than `reqwest` because
+# the validator caps the response body, applies its own redirect policy, and
+# talks to a host whose certificate is deliberately not verified — and because
+# all three crates are already in the tree via `axum`, so this adds no new
+# dependency, only a direct edge to one.
+hyper = { version = "1.11", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }  # the TokioIo adapter
+http-body-util = "0.1"  # Empty request body, Limited response body
+bytes = "1"
+url = "2"  # absolute/relative Location resolution + scheme and port checks
+# The `tls-alpn-01` handshake, and the https hop of an `http-01` redirect.
+# `ring` provider rather than aws-lc-rs: no C toolchain, matching rcgen's
+# backend. For the challenge validators there is deliberately no root store:
+# RFC 8555 §8.3 and RFC 8737 §3 both say the responder's certificate is *not*
+# validated — what it carries is the proof.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+# ...but the `acme_proxy` signer backend is the opposite case: it is a *client*
+# of a real remote CA, where the certificate is the only thing establishing who
+# it is talking to, so that one path does need roots.
+webpki-roots = "1"
+# Constant-time digest comparison for the tls-alpn-01 proof. `ring` deprecated
+# its own `constant_time` module with no replacement, and a hand-rolled loop is
+# exactly what an optimizer is free to turn back into an early return. Already in
+# the tree via rustls.
+subtle = { version = "2", default-features = false }
+# Reads the peer leaf's SAN and its critical id-pe-acmeIdentifier extension, and
+# powers the CSR/CA parsing in `signer`. Already in the tree via rcgen's
+# `x509-parser` feature, so promoting it from a dev-dependency adds no crate.
+x509-parser = "0.18"
+# CLI arg parsing for the `serve`/`account`/`order`/`nonce` subcommands
+# (src/main.rs).
+clap = { version = "4", features = ["derive"] }
+# SMTP delivery for the `notify` subsystem's `email` backend. `tokio1-rustls-tls`
+# keeps it on the same TLS stack as the rest of the project (no native-tls/OpenSSL).
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+# Message templating for the `notify` subsystem (email/Mattermost bodies).
+# A real template engine rather than hand-rolled substitution: operator-editable
+# templates plausibly need loops (multiple SANs) and conditionals (optional IP).
+minijinja = "2"
+# PKCS#11 for the `hsm` feature — see [features] above. `cryptoki` rather than
+# the older `pkcs11` crate: it is the parallaxsecond/Parsec binding, actively
+# tracked against the OASIS spec, and wraps sessions and object handles in safe
+# types instead of exposing raw `CK_*` FFI. Apache-2.0, already allowed by
+# `deny.toml`.
+cryptoki = { version = "0.12", optional = true }
+
+[dev-dependencies]
+# `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
+tower = { version = "0.5", features = ["util"] }
+testcontainers = "0.27.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,12 @@
+A certificate was issued on profile "{{ profile }}".
+
+Order ID: {{ order_id }}
+Account ID: {{ account_id }}
+Serial: {{ cert_serial }}
+Identifiers:
+{%- for id in identifiers %}
+  - {{ id }}
+{%- endfor %}
+{%- if client_ip %}
+Client IP: {{ client_ip }}
+{%- endif %}

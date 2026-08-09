@@ -1,0 +1,48 @@
+{#-
+  Standalone: this is the one page with no session, so it extends nothing and
+  shows no navigation.
+
+  A plain form rather than htmx. There is no CSRF token to send yet -- the
+  origin gate is what protects this route (`check_origin`, the same one
+  `POST /api/session` runs) -- and a sign-in should work before a single byte
+  of JavaScript has loaded.
+-#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in — acme-proxy admin</title>
+    <link rel="stylesheet" href="/ui/static/admin.css">
+  </head>
+  <body class="signin">
+    <main>
+      <div class="brand">acme-proxy</div>
+      <div class="panel">
+        {% include "partials/_flash.html" %}
+        <form method="post" action="/ui/login">
+          <div class="field">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" autocomplete="username"
+                   autofocus required value="{{ username | default('') }}">
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password"
+                   autocomplete="current-password" required>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary">Sign in</button>
+          </div>
+        </form>
+      </div>
+      {#-
+        There is no sign-up page and never will be: the first operator is
+        created from a shell on the host.
+      -#}
+      <p class="muted small">
+        Operators are created with <code>acme-proxy admin user create &lt;username&gt;</code>.
+      </p>
+    </main>
+  </body>
+</html>

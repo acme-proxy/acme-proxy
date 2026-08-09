@@ -1,0 +1,26 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Overview</h1>
+
+  <div class="grid">
+    <a class="stat" href="/ui/accounts">
+      <div class="value">{{ stats.accounts }}</div>
+      <div class="label">Accounts</div>
+    </a>
+    <a class="stat" href="/ui/orders">
+      <div class="value">{{ stats.orders }}</div>
+      <div class="label">Orders</div>
+    </a>
+    <a class="stat" href="/ui/eab">
+      <div class="value">{{ stats.eab }}</div>
+      <div class="label">EAB credentials</div>
+    </a>
+    <a class="stat" href="/ui/nonces">
+      <div class="value">{{ stats.nonces }}</div>
+      <div class="label">Live nonces</div>
+    </a>
+  </div>
+
+  <h2>Endpoints</h2>
+  {% include "profiles/_table.html" %}
+{% endblock %}

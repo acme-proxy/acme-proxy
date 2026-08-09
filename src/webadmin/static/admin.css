@@ -1,0 +1,510 @@
+/* acme-proxy web admin.
+ *
+ * Hand-written, no framework, no build step -- the same posture as the rest of
+ * this tree. Served from `/ui/static/admin.css` out of the binary.
+ *
+ * Light and dark both come from `prefers-color-scheme`: an operator reading a
+ * CA panel at 3am should not be handed a white screen. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #d8dce3;
+  --text: #1b1f26;
+  --muted: #626b7a;
+  --accent: #2a5db0;
+  --accent-text: #ffffff;
+  --danger: #a32020;
+  --danger-bg: #fdecec;
+  --ok: #1c6b3c;
+  --ok-bg: #e9f6ee;
+  --warn: #8a5a00;
+  --warn-bg: #fdf3e0;
+  --code: #eef0f4;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --panel: #1e2128;
+    --border: #333944;
+    --text: #e6e9ee;
+    --muted: #9aa4b4;
+    --accent: #6d9bee;
+    --accent-text: #10131a;
+    --danger: #f08a8a;
+    --danger-bg: #2e1c1c;
+    --ok: #7fd6a2;
+    --ok-bg: #16281e;
+    --warn: #e8c07a;
+    --warn-bg: #2b2417;
+    --code: #262a32;
+  }
+}
+
+/* Layout
+   ------------------------------------------------------------------------ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+header.top .brand {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-right: 0.5rem;
+}
+
+header.top nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+header.top nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+
+header.top nav a:hover {
+  color: var(--text);
+}
+
+header.top nav a.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+header.top .whoami {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+main {
+  max-width: 78rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+h1 {
+  font-size: 1.4rem;
+  margin: 0 0 1rem;
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 1.5rem 0 0.75rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel > :first-child {
+  margin-top: 0;
+}
+
+.panel > :last-child {
+  margin-bottom: 0;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1rem;
+}
+
+.stat {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+}
+
+.stat .value {
+  font-size: 1.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat .label {
+  color: var(--muted);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Tables
+   ------------------------------------------------------------------------ */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94em;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.82em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+td.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 2rem;
+}
+
+.wrap-anywhere {
+  overflow-wrap: anywhere;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* Definition lists, used by every detail card. */
+
+dl.fields {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+}
+
+dl.fields dt {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+dl.fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+}
+
+code {
+  background: var(--code);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+pre.secret {
+  background: var(--code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin: 0.5rem 0 0;
+  overflow-x: auto;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* Badges
+   ------------------------------------------------------------------------ */
+
+.badge {
+  display: inline-block;
+  padding: 0.1em 0.5em;
+  border-radius: 999px;
+  font-size: 0.8em;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--code);
+  color: var(--muted);
+}
+
+.badge.valid,
+.badge.active,
+.badge.ready,
+/* The audit trail's own outcome, which is not an order status: a row is a
+   success or a failure, and reusing the status palette is what keeps a
+   refused issuance reading the same red as an invalid order. */
+.badge.success {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.badge.pending,
+.badge.processing {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.badge.invalid,
+.badge.revoked,
+.badge.deactivated,
+.badge.disabled,
+.badge.failure {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* Forms and buttons
+   ------------------------------------------------------------------------ */
+
+label {
+  display: block;
+  font-size: 0.9em;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select,
+textarea {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field {
+  margin-bottom: 0.85rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+
+.row > .field {
+  margin-bottom: 0;
+  flex: 1 1 10rem;
+}
+
+button,
+.button {
+  display: inline-block;
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+button:hover,
+.button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+button.danger:hover {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* Flashes and errors
+   ------------------------------------------------------------------------ */
+
+.flash {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  padding: 0.65rem 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.flash.ok {
+  background: var(--ok-bg);
+  border-left-color: var(--ok);
+  color: var(--ok);
+}
+
+.flash.error {
+  background: var(--danger-bg);
+  border-left-color: var(--danger);
+  color: var(--danger);
+}
+
+.flash.warn {
+  background: var(--warn-bg);
+  border-left-color: var(--warn);
+  color: var(--warn);
+}
+
+.flash .code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.88em;
+}
+
+/* Inline `style` attributes are blocked by `style-src 'self'` the same way an
+ * inline <style> element is, so anything a template would have written there
+ * needs a class here instead. */
+.tight {
+  margin-bottom: 0;
+}
+
+/* Pager
+   ------------------------------------------------------------------------ */
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.pager .spacer {
+  flex: 1;
+}
+
+/* Sign-in
+   ------------------------------------------------------------------------ */
+
+body.signin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+body.signin main {
+  width: 100%;
+  max-width: 22rem;
+}
+
+body.signin .brand {
+  text-align: center;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+/* htmx
+   ------------------------------------------------------------------------
+   htmx injects exactly these rules as an inline <style> element at load. This
+   listener's Content-Security-Policy is `style-src 'self'`, which blocks that,
+   so `includeIndicatorStyles: false` is set in the layout's htmx-config meta
+   tag and the rules live here instead. Dropping either half leaves the
+   indicators permanently visible or permanently hidden. */
+
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+.htmx-request button,
+.htmx-request.button {
+  pointer-events: none;
+  opacity: 0.6;
+}

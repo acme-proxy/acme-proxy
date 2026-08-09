@@ -1,0 +1,42 @@
+{#- The one and only time the HMAC secret is ever rendered.
+
+    `render_eab_created_json` is the only renderer that carries `hmacKey`; the
+    list and the detail read the same row and never show it again, so a lost
+    secret is replaced, not recovered. The list is re-rendered underneath so the
+    new credential appears without a reload. -#}
+<div id="eab-created">
+  <div class="flash warn">
+    <strong>Copy the HMAC key now.</strong> It is shown this once and never
+    again — the server stores it, but no page or command will print it a second
+    time.
+  </div>
+  <div class="panel">
+    <dl class="fields">
+      <dt>Key ID</dt><dd><code>{{ eab.kid }}</code></dd>
+      <dt>Label</dt>
+      <dd>
+        {%- if eab.label -%}{{ eab.label }}{%- else -%}<span class="muted">—</span>{%- endif -%}
+      </dd>
+      <dt>Profile</dt>
+      <dd>
+        {%- if eab.profile -%}
+          <code>{{ eab.profile }}</code>
+        {%- else -%}
+          <span class="muted">every profile</span>
+        {%- endif -%}
+      </dd>
+    </dl>
+    {#- A class, not a `style` attribute: `style-src 'self'` blocks inline
+        styles as well as inline <style> elements. -#}
+    <p class="muted small tight">HMAC key (base64url, unpadded):</p>
+    <pre class="secret">{{ eab.hmacKey }}</pre>
+    <p class="muted small">
+      A client uses the pair as, for example,
+      <code>certbot --eab-kid {{ eab.kid }} --eab-hmac-key &lt;key&gt;</code>.
+    </p>
+  </div>
+</div>
+{#- Out-of-band: the same response also refreshes the list below the form,
+    which is a different element from this one. The `oob` flag is set by the
+    handler and read by `_table.html`'s own root element. -#}
+{% include "eab/_table.html" %}

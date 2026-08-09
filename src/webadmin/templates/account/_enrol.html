@@ -1,0 +1,41 @@
+{#-
+  The enrolment step on the account page: the secret, and the confirm form.
+
+  Swapped into `#account-mfa`, so it keeps that id — the confirm below swaps the
+  same target again, this time back to the status card.
+
+  htmx rather than a plain form, unlike the sign-in flow's copy of `_setup.html`:
+  this page has a session and was handed a CSRF token, so `PageEnrolWrite` can
+  run the full check.
+-#}
+<div id="account-mfa">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <h2>Set up an authenticator</h2>
+    {% include "mfa/_setup.html" %}
+
+    {#- `hx-headers` lives on <body> and is inherited by the whole document, but
+        a fragment is rendered standalone — so the handler inserts `csrf_token`
+        and this carries it explicitly. Without it every control in a swapped
+        fragment would 403. -#}
+    <form hx-post="/ui/account/mfa/totp/confirm"
+          hx-target="#account-mfa"
+          hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+      <div class="field">
+        <label for="code">Code from your authenticator</label>
+        <input type="text" id="code" name="code" inputmode="numeric"
+               autocomplete="one-time-code" autocapitalize="off"
+               spellcheck="false" required>
+      </div>
+      <div class="actions">
+        <button type="submit" class="primary">Confirm</button>
+      </div>
+    </form>
+
+    <p class="muted small">
+      <a href="/ui/account">Cancel</a> — nothing is enabled until you confirm a
+      code.
+    </p>
+  </div>
+</div>

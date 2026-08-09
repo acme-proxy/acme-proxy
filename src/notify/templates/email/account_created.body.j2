@@ -1,0 +1,12 @@
+A new ACME account was created on profile "{{ profile }}".
+
+Account ID: {{ account_id }}
+{%- if client_ip %}
+Client IP: {{ client_ip }}
+{%- endif %}
+{%- if contact %}
+Contact:
+{%- for c in contact %}
+  - {{ c }}
+{%- endfor %}
+{%- endif %}

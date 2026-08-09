@@ -1,0 +1,28 @@
+{#-
+  Shown once, immediately after enrolling from the sign-in flow, and the reason
+  that flow does not simply redirect: the recovery codes exist for exactly one
+  moment and a `303` would spend it.
+
+  Standalone like the challenge page it follows, although by this point the
+  session behind the browser is `active` -- the cookie was rotated with this
+  very response. The "Continue" link is an ordinary navigation, so the new
+  cookie is what carries it.
+-#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recovery codes — acme-proxy admin</title>
+    <link rel="stylesheet" href="/ui/static/admin.css">
+  </head>
+  <body class="signin">
+    <main>
+      <div class="brand">acme-proxy</div>
+      {% include "mfa/_codes.html" %}
+      <div class="actions">
+        <a class="button primary" href="/ui/">Continue to the panel</a>
+      </div>
+    </main>
+  </body>
+</html>

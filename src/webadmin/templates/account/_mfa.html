@@ -1,0 +1,9 @@
+{#-
+  The swap target of every mutation on the account page — which is why the `id`
+  on this element is load-bearing, and why the card itself lives in
+  `_card.html` where a second wrapper can reuse it.
+-#}
+<div id="account-mfa">
+  {% include "partials/_flash.html" %}
+  {% include "account/_card.html" %}
+</div>

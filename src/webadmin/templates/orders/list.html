@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Orders</h1>
+
+  <div class="panel">
+    <form class="row" hx-get="/ui/orders" hx-target="#orders-table"
+          hx-push-url="true" hx-trigger="change, submit">
+      <div class="field">
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile">
+          <option value="">every profile</option>
+          {% for profile in profiles %}
+            <option value="{{ profile.name }}"
+                    {% if filters.profile == profile.name %}selected{% endif %}>
+              {{ profile.name }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="status">Status</label>
+        <select id="status" name="status">
+          <option value="">any status</option>
+          {% for status in ["pending", "ready", "processing", "valid", "invalid"] %}
+            <option value="{{ status }}"
+                    {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="accountId">Account</label>
+        <input type="text" id="accountId" name="accountId"
+               placeholder="account id" value="{{ filters.accountId | default('') }}">
+      </div>
+    </form>
+  </div>
+
+  {% include "orders/_table.html" %}
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>External Account Binding</h1>
+  <p class="muted small">
+    A credential minted here out of band lets a client register at an endpoint
+    whose <code>eab.enabled</code> is on. Revoking one takes effect immediately,
+    with no restart — but it does not touch an account that already registered
+    with it.
+  </p>
+
+  <div class="panel">
+    <h2>Mint a credential</h2>
+    <form class="row" hx-post="/ui/eab" hx-target="#eab-created">
+      <div class="field">
+        <label for="label">Label (optional)</label>
+        <input type="text" id="label" name="label" placeholder="team-a">
+      </div>
+      <div class="field">
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile">
+          <option value="">every profile</option>
+          {% for profile in profiles %}
+            <option value="{{ profile.name }}">{{ profile.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <button type="submit" class="primary">Create</button>
+      </div>
+    </form>
+  </div>
+
+  {#- Empty until a credential is minted; the response fills it and refreshes
+      the table below out of band. -#}
+  <div id="eab-created"></div>
+
+  {% include "eab/_table.html" %}
+{% endblock %}

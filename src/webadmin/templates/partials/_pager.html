@@ -1,0 +1,29 @@
+{#-
+  Offset pagination over a list fragment.
+
+  `pager` is built in Rust (`pages::pager`), not here: the previous/next URLs
+  have to carry whatever filters the page was already showing, and assembling a
+  query string is not something a template should be doing. Its shape is
+  `{total, limit, offset, from, to, prev, next, target}`, where `prev`/`next`
+  are absent at the ends.
+
+  Both controls are `hx-get`, so paging swaps the fragment rather than
+  reloading the page -- and `hx-push-url` keeps the address bar honest, so a
+  reload or a bookmark lands on the same page of results.
+-#}
+{% if pager.total > 0 %}
+  <div class="pager">
+    <span>{{ pager.from }}–{{ pager.to }} of {{ pager.total }}</span>
+    <span class="spacer"></span>
+    {% if pager.prev %}
+      <button hx-get="{{ pager.prev }}" hx-target="{{ pager.target }}" hx-push-url="true">Previous</button>
+    {% else %}
+      <button disabled>Previous</button>
+    {% endif %}
+    {% if pager.next %}
+      <button hx-get="{{ pager.next }}" hx-target="{{ pager.target }}" hx-push-url="true">Next</button>
+    {% else %}
+      <button disabled>Next</button>
+    {% endif %}
+  </div>
+{% endif %}

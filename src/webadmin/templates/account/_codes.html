@@ -1,0 +1,10 @@
+{#-
+  A fresh recovery set on the account page: the codes, then the status card
+  underneath so the "unused" count is right at the moment the codes are gone.
+
+  Keeps the `#account-mfa` id, since it replaces that card wholesale.
+-#}
+<div id="account-mfa">
+  {% include "mfa/_codes.html" %}
+  {% include "account/_card.html" %}
+</div>

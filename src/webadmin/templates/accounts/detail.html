@@ -1,0 +1,13 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Account <code>{{ account.id }}</code></h1>
+  <p class="small"><a href="/ui/accounts">← All accounts</a></p>
+
+  {% include "accounts/_card.html" %}
+
+  <h2>Orders</h2>
+  {#- Loaded in the same response rather than lazily: an account with no orders
+      is exactly what an operator is usually checking for, and a spinner is a
+      worse answer than an empty table. -#}
+  {% include "orders/_table.html" %}
+{% endblock %}

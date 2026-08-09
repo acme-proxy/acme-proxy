@@ -1,0 +1,33 @@
+{#-
+  The secret an authenticator needs, and the form that proves it.
+
+  Included from two places that could hardly be more different -- the sign-in
+  challenge (a plain form, no session yet in any usable sense) and the account
+  page (htmx, a live session) -- so it deliberately renders **no** form element
+  of its own. Each caller wraps it in the submit mechanism it can actually use.
+
+  The `eab/_created.html` treatment: the secret is shown exactly once, and no
+  page or command prints it again. Unlike an EAB key, though, losing this one
+  costs nothing -- start the enrolment over.
+
+  There is no QR code, and the CSP is not why: `img-src 'self' data:` would
+  permit a server-rendered SVG data URI. A QR renderer is a dependency for a
+  convenience rather than a capability, and every authenticator app has "enter a
+  setup key manually". The hook is here if that trade is ever revisited: set
+  `qr` in the handler's context and this renders it.
+-#}
+{% if qr %}
+  <img class="qr" src="{{ qr }}" alt="Scan this with your authenticator app">
+{% endif %}
+
+<p class="muted small tight">Setup key (base32):</p>
+<pre class="secret">{{ enrolment.secret }}</pre>
+
+<p class="muted small tight">Or open this on the device holding your authenticator:</p>
+<pre class="secret wrap-anywhere">{{ enrolment.uri }}</pre>
+
+<p class="muted small">
+  {{ enrolment.digits }} digits, every {{ enrolment.period }} seconds,
+  {{ enrolment.algorithm }}. Add it to your app, then type the code it shows to
+  confirm — nothing changes until you do.
+</p>

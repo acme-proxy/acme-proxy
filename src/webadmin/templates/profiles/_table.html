@@ -1,0 +1,38 @@
+{#- The mounted endpoints. Read from the live profiles, so a profile parked
+    with `enabled = false` is simply absent -- the honest answer. -#}
+<div class="panel table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Directory</th>
+        <th>Challenges</th>
+        <th>EAB</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for profile in profiles %}
+        <tr>
+          <td><code>{{ profile.name }}</code></td>
+          <td class="wrap-anywhere"><code>{{ profile.directory }}</code></td>
+          <td>
+            {% if profile.challengeBypass %}
+              <span class="badge invalid">bypassed</span>
+            {% else %}
+              <span class="badge valid">validated</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if profile.eabEnabled %}
+              <span class="badge valid">required</span>
+            {% else %}
+              <span class="badge">off</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td class="empty" colspan="4">No endpoint is mounted.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

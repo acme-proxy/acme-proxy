@@ -1,0 +1,11 @@
+A challenge validation failed on profile "{{ profile }}".
+
+Order ID: {{ order_id }}
+Account ID: {{ account_id }}
+Authorization ID: {{ authz_id }}
+Challenge ID: {{ challenge_id }} ({{ challenge_type }})
+Identifier: {{ identifier }}
+Error: {{ error }}
+{%- if client_ip %}
+Client IP: {{ client_ip }}
+{%- endif %}

@@ -1,0 +1,27 @@
+{#-
+  A fresh recovery set, rendered the one time it exists in the clear.
+
+  Stored one-way through `admin::password`, so no page and no command prints
+  them again -- a lost set is *replaced* (`acme-proxy admin user totp
+  recovery-codes`, or the button on the account page), never recovered. That is
+  the `eab/_created.html` rule, and the opposite of the TOTP secret two files
+  over, which the server must keep readable in order to verify anything.
+
+  Included from `mfa/enrolled.html` (the sign-in flow) and from
+  `account/_codes.html` (the account page's htmx swap), so it carries no root
+  `id` of its own: the account fragment supplies one.
+-#}
+<div class="flash warn">
+  <strong>Store these recovery codes now.</strong> They are shown this once and
+  never again. Each works exactly once, and any one of them signs you in if you
+  lose your authenticator.
+</div>
+<div class="panel">
+  <pre class="secret">{% for code in recovery_codes %}{{ code }}
+{% endfor %}</pre>
+  <p class="muted small">
+    Out of codes and out of authenticator? An administrator can clear the factor
+    with <code>acme-proxy admin user totp reset &lt;username&gt;</code> from a
+    shell on the host.
+  </p>
+</div>

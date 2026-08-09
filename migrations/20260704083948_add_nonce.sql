@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS nonces
+(
+    value      VARCHAR(36) PRIMARY KEY NOT NULL,
+    created_at INTEGER NOT NULL
+);

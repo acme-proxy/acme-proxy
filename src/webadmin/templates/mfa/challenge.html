@@ -1,0 +1,83 @@
+{#-
+  The second half of signing in. Standalone for the same reasons `login.html`
+  is: the session behind it is `pending_mfa`, which every page below the sign-in
+  line refuses, so there is no navigation and nothing that reads `user`.
+
+  A plain form, and no htmx. There is no CSRF token to send -- `check_csrf`
+  reads a header a form cannot set -- so what covers this route is the origin
+  gate, run by the `PendingMfaSubmit` extractor exactly as `POST /ui/login` has
+  it run one step earlier. Signing in must also keep working with JavaScript
+  off, which the sibling assertion in tests/admin_pages.rs pins.
+
+  Two shapes behind one URL, chosen off `step`:
+    verify — an operator with a factor proves a code
+    enrol  — admin.require_mfa is on and this operator has none yet, so setting
+             one up *is* their second step
+-#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Second factor — acme-proxy admin</title>
+    <link rel="stylesheet" href="/ui/static/admin.css">
+  </head>
+  <body class="signin">
+    <main>
+      <div class="brand">acme-proxy</div>
+      <div class="panel">
+        {% include "partials/_flash.html" %}
+
+        {% if step == "enrol" %}
+          <h2>Set up a second factor</h2>
+          <p class="muted small">
+            This server requires one of every operator. Your password was
+            accepted; finish here and you are signed in.
+          </p>
+          {% include "mfa/_setup.html" %}
+          <form method="post" action="/ui/login/mfa">
+            <div class="field">
+              <label for="code">Code from your authenticator</label>
+              <input type="text" id="code" name="code" inputmode="numeric"
+                     autocomplete="one-time-code" autocapitalize="off"
+                     spellcheck="false" autofocus required>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary">Confirm and sign in</button>
+            </div>
+          </form>
+        {% else %}
+          <h2>Second factor</h2>
+          <p class="muted small">
+            Enter the six-digit code from your authenticator, or one of your
+            recovery codes.
+          </p>
+          <form method="post" action="/ui/login/mfa">
+            <div class="field">
+              <label for="code">Code</label>
+              {#-
+                One field for both: a recovery code is longer than six digits
+                and made of letters, so the server tells them apart by shape and
+                the operator never has to choose a mode. `one-time-code` is what
+                lets a phone offer its autofill.
+              -#}
+              <input type="text" id="code" name="code" inputmode="numeric"
+                     autocomplete="one-time-code" autocapitalize="off"
+                     spellcheck="false" autofocus required>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary">Continue</button>
+            </div>
+          </form>
+        {% endif %}
+      </div>
+      {% if step != "enrol" %}
+        <p class="muted small">
+          Lost your authenticator? Use a recovery code, or ask an administrator
+          to run <code>acme-proxy admin user totp reset &lt;username&gt;</code>.
+        </p>
+      {% endif %}
+      <p class="muted small"><a href="/ui/login">Start over</a></p>
+    </main>
+  </body>
+</html>

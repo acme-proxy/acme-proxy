@@ -1,0 +1,49 @@
+{#- The swap target of the EAB list.
+
+    `Eab::list_all` is unpaginated (an operator mints these by hand, a few at a
+    time), so there is no pager here -- unlike accounts and orders.
+
+    `oob` is set only by `_created.html`, which returns this table alongside the
+    new credential so the list refreshes without a reload. The attribute has to
+    sit on this element rather than on a wrapper, because htmx matches an
+    out-of-band swap by the id of the element carrying it. -#}
+<div id="eab-table" {% if oob %}hx-swap-oob="true"{% endif %}>
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Key ID</th>
+          <th>Label</th>
+          <th>Profile</th>
+          <th>Status</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for eab in items %}
+          <tr>
+            <td><a href="/ui/eab/{{ eab.kid }}"><code>{{ eab.kid }}</code></a></td>
+            <td>
+              {%- if eab.label -%}
+                {{ eab.label }}
+              {%- else -%}
+                <span class="muted">—</span>
+              {%- endif -%}
+            </td>
+            <td>
+              {%- if eab.profile -%}
+                <code>{{ eab.profile }}</code>
+              {%- else -%}
+                <span class="muted">every profile</span>
+              {%- endif -%}
+            </td>
+            <td><span class="badge {{ eab.status }}">{{ eab.status }}</span></td>
+            <td class="small">{{ eab.createdAt }}</td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="5">No EAB credential has been minted.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>

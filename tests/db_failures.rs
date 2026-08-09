@@ -1,0 +1,252 @@
+//! Exercises the request-path DB-failure branches by closing the pool out from
+//! under a running app.
+//!
+//! Two properties: a failed DB call becomes a 500 `serverInternal` rather than a
+//! panic or a wrong answer, and the nonce middleware drops the `Replay-Nonce`
+//! header rather than advertising a nonce it could not persist.
+//!
+//! The 500 cases are all the same shape — register if needed, grab a nonce, close
+//! the pool, send one request — so they share a driver; only the request differs.
+
+use std::sync::Arc;
+
+use acme_proxy::sqlite::db::Database;
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::response::Response;
+use serde_json::json;
+use tower::ServiceExt;
+
+mod common;
+use common::{EcSigner, PREFIX, TestSigner, body_json, fetch_nonce, p, test_app_with_db};
+
+const BASE: &str = common::BASE;
+const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
+
+async fn post(app: &Router, path: &str, body: String) -> Response {
+    app.clone()
+        .oneshot(
+            Request::post(path)
+                .header("content-type", "application/jose+json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// Registers an account while the DB is still up, returning its URL.
+async fn register(app: &Router, signer: &EcSigner) -> String {
+    let nonce = fetch_nonce(app).await;
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true }),
+    );
+    let res = post(app, &p("/newAccount"), body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    res.headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string()
+}
+
+/// Drives one case: `prepare` does whatever setup the request needs while the DB
+/// is up and returns the request to send, then the pool is closed and the request
+/// must come back a 500 `serverInternal`.
+async fn assert_500_after_pool_close<F, Fut>(name: &str, prepare: F)
+where
+    F: FnOnce(Router, EcSigner, Arc<Database>) -> Fut,
+    Fut: Future<Output = (Router, Arc<Database>, String, String)>,
+{
+    let (app, db) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let (app, db, path, body) = prepare(app, signer, db).await;
+
+    db.pool.close().await;
+
+    let res = post(&app, &path, body).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{name} should be a 500"
+    );
+    let problem = body_json(res).await;
+    assert_eq!(
+        problem["type"], "urn:ietf:params:acme:error:serverInternal",
+        "{name}"
+    );
+}
+
+/// The extractor's own nonce verification, on the `jwk` path (`newAccount`).
+#[tokio::test]
+async fn nonce_verification_db_error_returns_500() {
+    assert_500_after_pool_close(
+        "newAccount nonce verification",
+        |app, signer, db| async move {
+            let nonce = fetch_nonce(&app).await;
+            let body = signer.sign(
+                NEW_ACCOUNT_URL,
+                &nonce,
+                &json!({ "termsOfServiceAgreed": true }),
+            );
+            (app, db, p("/newAccount"), body)
+        },
+    )
+    .await;
+}
+
+/// The extractor's `kid` account lookup, which happens before the nonce check.
+#[tokio::test]
+async fn account_update_kid_lookup_db_error_returns_500() {
+    assert_500_after_pool_close("kid account lookup", |app, signer, db| async move {
+        let account_url = register(&app, &signer).await;
+        let path = account_url.strip_prefix(common::HOST).unwrap().to_string();
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid(
+            &account_url,
+            &account_url,
+            &nonce,
+            &json!({ "contact": [] }),
+        );
+        (app, db, path, body)
+    })
+    .await;
+}
+
+/// A `jwk`-form request to the update endpoint needs no DB in the extractor's
+/// signature path, so the first failing call is the nonce verification.
+#[tokio::test]
+async fn account_update_nonce_db_error_returns_500() {
+    assert_500_after_pool_close("account update nonce", |app, signer, db| async move {
+        let id = "00000000-0000-0000-0000-000000000000";
+        let account_url = format!("{BASE}/acct/{id}");
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign(&account_url, &nonce, &json!({ "contact": [] }));
+        (app, db, format!("{PREFIX}/acct/{id}"), body)
+    })
+    .await;
+}
+
+/// newOrder reaches the DB to persist the order in a transaction; a closed pool
+/// there must also be a 500, not a partially written order.
+#[tokio::test]
+async fn order_persistence_db_error_returns_500() {
+    assert_500_after_pool_close("newOrder persistence", |app, signer, db| async move {
+        let account_url = register(&app, &signer).await;
+        let nonce = fetch_nonce(&app).await;
+        let payload = json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] });
+        let body = signer.sign_kid(&account_url, &format!("{BASE}/newOrder"), &nonce, &payload);
+        (app, db, p("/newOrder"), body)
+    })
+    .await;
+}
+
+/// A nonce that could not be persisted must not be advertised: the client would
+/// sign its next request with something that can never verify.
+///
+/// Driven through `/newNonce`. This used to probe `/health`, which is a
+/// server-level route *outside* the profile router and therefore outside the
+/// nonce middleware entirely — so it asserted nothing about the middleware and
+/// had been passing for free.
+#[tokio::test]
+async fn middleware_drops_replay_nonce_when_db_unavailable() {
+    let (app, db) = test_app_with_db().await;
+    db.pool.close().await;
+
+    let res = app
+        .clone()
+        .oneshot(Request::get(p("/newNonce")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    // The handler still succeeds — §7.2's 204 for the GET form — but the nonce
+    // could not be persisted, so the middleware leaves the header off rather
+    // than handing out one that can never verify.
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    assert!(!res.headers().contains_key("replay-nonce"));
+}
+
+/// Creates a one-name order while the DB is up, returning `(authz_url, challenge_url)`.
+async fn order_with_challenge(
+    app: &Router,
+    signer: &EcSigner,
+    account_url: &str,
+) -> (String, String) {
+    let nonce = fetch_nonce(app).await;
+    let payload = json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] });
+    let res = post(
+        app,
+        &p("/newOrder"),
+        signer.sign_kid(account_url, &format!("{BASE}/newOrder"), &nonce, &payload),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let authz_url = body_json(res).await["authorizations"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let nonce = fetch_nonce(app).await;
+    let path = authz_url.strip_prefix(common::HOST).unwrap();
+    let res = post(
+        app,
+        path,
+        signer.sign_kid_empty(account_url, &authz_url, &nonce),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let challenge_url = body_json(res).await["challenges"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    (authz_url, challenge_url)
+}
+
+/// Triggering a challenge with no database is a 500, not a panic.
+///
+/// `post_challenge` writes its outcome — challenge, authorization and order —
+/// in **one** transaction, precisely so a partial write cannot park an order
+/// `pending` with every authorization `valid`, a state nothing re-derives. A
+/// closed pool fails at the handler's first read rather than mid-transaction,
+/// so what this pins is the reachable half: the handler degrades into a problem
+/// document instead of panicking, and no `Replay-Nonce` is advertised for a
+/// nonce that could not be persisted.
+#[tokio::test]
+async fn challenge_trigger_db_error_returns_500() {
+    assert_500_after_pool_close("challenge trigger", |app, signer, db| async move {
+        let account_url = register(&app, &signer).await;
+        let (_authz_url, challenge_url) = order_with_challenge(&app, &signer, &account_url).await;
+        let nonce = fetch_nonce(&app).await;
+        let path = challenge_url
+            .strip_prefix(common::HOST)
+            .unwrap()
+            .to_string();
+        let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
+        (app, db, path, body)
+    })
+    .await;
+}
+
+/// §7.5.2's deactivate-and-demote pair is one transaction for the same reason
+/// `post_challenge`'s outcome is; same coverage caveat as above.
+#[tokio::test]
+async fn authorization_deactivation_db_error_returns_500() {
+    assert_500_after_pool_close("authz deactivation", |app, signer, db| async move {
+        let account_url = register(&app, &signer).await;
+        let (authz_url, _challenge_url) = order_with_challenge(&app, &signer, &account_url).await;
+        let nonce = fetch_nonce(&app).await;
+        let path = authz_url.strip_prefix(common::HOST).unwrap().to_string();
+        let body = signer.sign_kid(
+            &account_url,
+            &authz_url,
+            &nonce,
+            &json!({ "status": "deactivated" }),
+        );
+        (app, db, path, body)
+    })
+    .await;
+}

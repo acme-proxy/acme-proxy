@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Nonces</h1>
+  <p class="muted small">
+    The count should sit near the request rate times the freshness window. A
+    number far above that says the reaper is not running.
+  </p>
+
+  {% include "nonces/_panel.html" %}
+{% endblock %}

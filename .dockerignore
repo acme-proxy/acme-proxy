@@ -1,0 +1,9 @@
+target/
+sqlite.db*
+*.key
+ca.pem
+ca.crl
+server.pem
+config.toml
+tests/e2e/
+.git/

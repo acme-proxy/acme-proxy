@@ -1,0 +1,9 @@
+A certificate was revoked on profile "{{ profile }}".
+
+Order ID: {{ order_id }}
+Account ID: {{ account_id }}
+Serial: {{ cert_serial }}
+Reason: {% if reason is not none %}{{ reason }}{% else %}unspecified{% endif %}
+{%- if client_ip %}
+Client IP: {{ client_ip }}
+{%- endif %}

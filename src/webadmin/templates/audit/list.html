@@ -1,0 +1,54 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Audit</h1>
+  <p class="small">
+    Every certificate this CA signed or withdrew, and every attempt it refused.
+    Rows are never edited or deleted from here — pruning is
+    <code>acme-proxy audit cleanup</code> or <code>audit.retention_days</code>.
+  </p>
+
+  <div class="panel">
+    <form class="row" hx-get="/ui/audit" hx-target="#audit-table"
+          hx-push-url="true" hx-trigger="change, submit">
+      <div class="field">
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile">
+          <option value="">every profile</option>
+          {% for profile in profiles %}
+            <option value="{{ profile.name }}"
+                    {% if filters.profile == profile.name %}selected{% endif %}>
+              {{ profile.name }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="event">Event</label>
+        <select id="event" name="event">
+          <option value="">any event</option>
+          {% for event in events %}
+            <option value="{{ event }}"
+                    {% if filters.event == event %}selected{% endif %}>{{ event }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="outcome">Outcome</label>
+        <select id="outcome" name="outcome">
+          <option value="">any outcome</option>
+          {% for outcome in ["success", "failure"] %}
+            <option value="{{ outcome }}"
+                    {% if filters.outcome == outcome %}selected{% endif %}>{{ outcome }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="accountId">Account</label>
+        <input type="text" id="accountId" name="accountId"
+               placeholder="account id" value="{{ filters.accountId | default('') }}">
+      </div>
+    </form>
+  </div>
+
+  {% include "audit/_table.html" %}
+{% endblock %}

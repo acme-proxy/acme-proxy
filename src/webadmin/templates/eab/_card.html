@@ -1,0 +1,44 @@
+{#- One credential. The swap target of a revoke.
+
+    No secret here, ever: this reads the same row `_created.html` rendered once,
+    and `Eab::to_json` does not carry `hmacKey`. -#}
+<div id="eab-card">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <dl class="fields">
+      <dt>Key ID</dt><dd><code>{{ eab.kid }}</code></dd>
+      <dt>Label</dt>
+      <dd>
+        {%- if eab.label -%}{{ eab.label }}{%- else -%}<span class="muted">—</span>{%- endif -%}
+      </dd>
+      <dt>Profile</dt>
+      <dd>
+        {%- if eab.profile -%}
+          <code>{{ eab.profile }}</code>
+        {%- else -%}
+          <span class="muted">every profile</span>
+        {%- endif -%}
+      </dd>
+      <dt>Status</dt><dd><span class="badge {{ eab.status }}">{{ eab.status }}</span></dd>
+      <dt>Created</dt><dd>{{ eab.createdAt }}</dd>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <h2>Danger zone</h2>
+    <div class="actions">
+      <button class="danger"
+              hx-post="/ui/eab/{{ eab.kid }}/revoke"
+              hx-target="#eab-card"
+              {% if eab.status == "revoked" %}disabled{% endif %}
+              hx-confirm="Revoke this credential? Registrations using it will start failing immediately.">
+        Revoke
+      </button>
+    </div>
+    <p class="muted small">
+      The row is kept, moved to <code>revoked</code> — an audit trail is more
+      use than a missing row, and the HMAC secret was never readable anyway.
+    </p>
+  </div>
+</div>

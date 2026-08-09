@@ -1,0 +1,37 @@
+{#- The nonce table's size, and the sweep. The swap target of a cleanup.
+
+    A count and nothing else: a nonce is a bearer credential until it is
+    consumed, so listing values would put live ones on a screen. -#}
+<div id="nonces-panel">
+  {% include "partials/_flash.html" %}
+
+  <div class="grid">
+    <div class="stat">
+      <div class="value">{{ count }}</div>
+      <div class="label">Rows in the table</div>
+    </div>
+    <div class="stat">
+      <div class="value">{{ ttl_seconds }}s</div>
+      <div class="label">Freshness window</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Sweep now</h2>
+    <p class="muted small">
+      The reaper already runs for the life of the process — every response
+      mints a nonce, so a startup-only sweep would leak. This is for when you
+      want the table trimmed without waiting for the next interval.
+    </p>
+    <form class="row" hx-post="/ui/nonces/cleanup" hx-target="#nonces-panel">
+      <div class="field">
+        <label for="ttlSeconds">Age past which a nonce is swept</label>
+        <input type="number" id="ttlSeconds" name="ttlSeconds" min="0"
+               placeholder="{{ ttl_seconds }}">
+      </div>
+      <div>
+        <button type="submit">Sweep</button>
+      </div>
+    </form>
+  </div>
+</div>

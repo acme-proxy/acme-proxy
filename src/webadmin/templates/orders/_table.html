@@ -1,0 +1,43 @@
+{#- The swap target of the orders list, and also what the account detail page
+    shows for one account's orders. -#}
+<div id="orders-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Profile</th>
+          <th>Status</th>
+          <th>Identifiers</th>
+          <th>Created</th>
+          <th>Expires</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in page.items %}
+          <tr>
+            <td><a href="/ui/orders/{{ order.id }}"><code>{{ order.id }}</code></a></td>
+            <td><code>{{ order.profile }}</code></td>
+            <td>
+              <span class="badge {{ order.status }}">{{ order.status }}</span>
+              {#- Revocation is orthogonal to the order state machine: RFC 8555
+                  defines no "revoked" status, so a revoked order stays `valid`
+                  and this second badge is the only thing that says otherwise. -#}
+              {% if order.revokedAt %}<span class="badge revoked">revoked</span>{% endif %}
+            </td>
+            <td class="wrap-anywhere">
+              {%- for identifier in order.identifiers -%}
+                {% if not loop.first %}, {% endif %}{{ identifier.value }}
+              {%- endfor -%}
+            </td>
+            <td class="small">{{ order.createdAt }}</td>
+            <td class="small">{{ order.expires }}</td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="6">No order matches.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

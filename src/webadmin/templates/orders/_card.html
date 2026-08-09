@@ -1,0 +1,133 @@
+{#- One order, its authorizations and their challenges, plus revoke and delete.
+
+    The swap target of both order mutations. `detail` is
+    `admin::render_order_detail_json` verbatim: `{order, authorizations}`. -#}
+<div id="order-card">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <dl class="fields">
+      <dt>Order</dt><dd><code>{{ detail.order.id }}</code></dd>
+      <dt>Profile</dt><dd><code>{{ detail.order.profile }}</code></dd>
+      <dt>Account</dt>
+      <dd><a href="/ui/accounts/{{ detail.order.accountId }}"><code>{{ detail.order.accountId }}</code></a></dd>
+      <dt>Status</dt>
+      <dd>
+        <span class="badge {{ detail.order.status }}">{{ detail.order.status }}</span>
+        {% if detail.order.revokedAt %}<span class="badge revoked">revoked</span>{% endif %}
+      </dd>
+      <dt>Identifiers</dt>
+      <dd class="wrap-anywhere">
+        {%- for identifier in detail.order.identifiers -%}
+          {% if not loop.first %}, {% endif %}<code>{{ identifier.value }}</code>
+        {%- endfor -%}
+      </dd>
+      <dt>Created</dt><dd>{{ detail.order.createdAt }}</dd>
+      <dt>Expires</dt><dd>{{ detail.order.expires }}</dd>
+      {% if detail.order.notBefore %}<dt>Not before</dt><dd>{{ detail.order.notBefore }}</dd>{% endif %}
+      {% if detail.order.notAfter %}<dt>Not after</dt><dd>{{ detail.order.notAfter }}</dd>{% endif %}
+      {% if detail.order.replaces %}
+        <dt>Replaces</dt><dd class="wrap-anywhere"><code>{{ detail.order.replaces }}</code></dd>
+      {% endif %}
+      {% if detail.order.certificate %}
+        <dt>Certificate</dt>
+        <dd class="wrap-anywhere"><code>{{ detail.order.certificate }}</code></dd>
+      {% endif %}
+      {% if detail.order.revokedAt %}
+        <dt>Revoked</dt>
+        <dd>
+          {{ detail.order.revokedAt }}
+          {% if detail.order.revocationReason is defined %}
+            <span class="muted">(reason {{ detail.order.revocationReason }})</span>
+          {% endif %}
+        </dd>
+      {% endif %}
+      {% if detail.order.error %}
+        <dt>Error</dt>
+        <dd class="wrap-anywhere"><code>{{ detail.order.error.detail | default(detail.order.error.type) }}</code></dd>
+      {% endif %}
+    </dl>
+  </div>
+
+  <div class="panel">
+    <h2>Authorizations</h2>
+    {% for authz in detail.authorizations %}
+      <div class="panel">
+        <dl class="fields">
+          <dt>Identifier</dt>
+          <dd>
+            <code>{% if authz.wildcard %}*.{% endif %}{{ authz.identifier.value }}</code>
+          </dd>
+          <dt>Status</dt><dd><span class="badge {{ authz.status }}">{{ authz.status }}</span></dd>
+          <dt>Expires</dt><dd>{{ authz.expires }}</dd>
+        </dl>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Challenge</th><th>Status</th><th>Token</th><th>Validated</th></tr>
+            </thead>
+            <tbody>
+              {% for challenge in authz.challenges %}
+                <tr>
+                  <td><code>{{ challenge.type }}</code></td>
+                  <td><span class="badge {{ challenge.status }}">{{ challenge.status }}</span></td>
+                  <td class="wrap-anywhere"><code>{{ challenge.token }}</code></td>
+                  <td class="small">
+                    {%- if challenge.validated -%}
+                      {{ challenge.validated }}
+                    {%- else -%}
+                      <span class="muted">—</span>
+                    {%- endif -%}
+                  </td>
+                </tr>
+              {% else %}
+                <tr><td class="empty" colspan="4">No challenge.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <p class="muted">This order has no authorization.</p>
+    {% endfor %}
+  </div>
+
+  <div class="panel">
+    <h2>Danger zone</h2>
+    {#- Revocation is not confirm-gated in the CLI because it only ever
+        tightens trust; here it still asks, because a browser click is easier
+        to make by accident than a typed command. -#}
+    <form class="row" hx-post="/ui/orders/{{ detail.order.id }}/revoke"
+          hx-target="#order-card"
+          hx-confirm="Revoke this certificate? The CA's CRL is regenerated immediately.">
+      <div class="field">
+        <label for="reason">Revocation reason (RFC 5280 §5.3.1)</label>
+        <select id="reason" name="reason">
+          <option value="">0 — unspecified</option>
+          <option value="1">1 — key compromise</option>
+          <option value="2">2 — CA compromise</option>
+          <option value="3">3 — affiliation changed</option>
+          <option value="4">4 — superseded</option>
+          <option value="5">5 — cessation of operation</option>
+          <option value="6">6 — certificate hold</option>
+          <option value="9">9 — privilege withdrawn</option>
+        </select>
+      </div>
+      <div>
+        <button type="submit" class="danger"
+                {% if detail.order.revokedAt or detail.order.status != "valid" %}disabled{% endif %}>
+          Revoke
+        </button>
+      </div>
+    </form>
+    <div class="actions">
+      {#- No target: the handler answers with a redirect, since the page this
+          button lives on is the thing being deleted. -#}
+      <button class="danger"
+              hx-delete="/ui/orders/{{ detail.order.id }}"
+              hx-confirm="Delete this order and its authorizations? Any certificate already issued stays valid — revoke it first if that is what you meant.">
+        Delete
+      </button>
+    </div>
+  </div>
+</div>

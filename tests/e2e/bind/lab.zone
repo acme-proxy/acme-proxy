@@ -1,0 +1,11 @@
+$TTL 60
+@ IN SOA ns.lab. admin.lab. (
+    2026073001 ; serial
+    3600       ; refresh
+    1800       ; retry
+    604800     ; expire
+    60         ; minimum
+)
+@ IN NS ns.lab.
+ns IN A 10.60.0.2
+trusted-client IN A 10.60.0.4

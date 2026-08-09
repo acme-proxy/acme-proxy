@@ -1,0 +1,83 @@
+{#- The account itself, plus everything that acts on it.
+
+    This is the swap target of every account mutation: a contact edit, a
+    deactivation and a delete all return this same fragment, so the card an
+    operator is looking at is always the state the database is in. -#}
+<div id="account-card">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <dl class="fields">
+      <dt>Account</dt><dd><code>{{ account.id }}</code></dd>
+      <dt>Profile</dt><dd><code>{{ account.profile }}</code></dd>
+      <dt>Status</dt><dd><span class="badge {{ account.status }}">{{ account.status }}</span></dd>
+      <dt>Public key</dt><dd><code>{{ account.pubkeyFingerprint }}</code></dd>
+      <dt>Created</dt><dd>{{ account.createdAt }}</dd>
+      {#- Traceability, recorded at `newAccount` and advanced on every
+          authenticated request. Every one is rendered only when present: a blank
+          `<dd>` under a label would read as "unknown" rather than "never
+          recorded". The address and its reverse name share one `<dd>` because a
+          name without an address is not a state that exists -- but an address
+          without a name is, so the inner test is its own. -#}
+      {% if account.createdIp %}
+        <dt>Created from</dt>
+        <dd><code>{{ account.createdIp }}</code>{% if account.createdPtr %}<br>{{ account.createdPtr }}{% endif %}</dd>
+      {% endif %}
+      {% if account.lastSeenAt %}<dt>Last seen</dt><dd>{{ account.lastSeenAt }}</dd>{% endif %}
+      {% if account.lastSeenIp %}
+        <dt>Last seen from</dt>
+        <dd><code>{{ account.lastSeenIp }}</code>{% if account.lastSeenPtr %}<br>{{ account.lastSeenPtr }}{% endif %}</dd>
+      {% endif %}
+      <dt>Orders URL</dt><dd class="wrap-anywhere"><code>{{ account.orders }}</code></dd>
+      {% if account.termsOfServiceAgreed is defined %}
+        <dt>Terms agreed</dt><dd>{{ account.termsOfServiceAgreed }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+
+  <div class="panel">
+    <h2>Contact</h2>
+    {#- One `mailto:` URI per line. Validated by the same
+        `handlers::helpers::contact_shape_error` the ACME `newAccount` path and
+        the JSON API both call -- the three must not diverge on what a valid
+        contact is. -#}
+    <form hx-post="/ui/accounts/{{ account.id }}/contact" hx-target="#account-card">
+      <div class="field">
+        <label for="contact">One URI per line, e.g. <code>mailto:ops@example.com</code></label>
+        <textarea id="contact" name="contact">{{ account.contact | default([]) | join("\n") }}</textarea>
+      </div>
+      <div class="actions">
+        <button type="submit" class="primary">Save contact</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Danger zone</h2>
+    <div class="actions">
+      {% if account.status != "deactivated" %}
+        <button class="danger"
+                hx-post="/ui/accounts/{{ account.id }}/deactivate"
+                hx-target="#account-card"
+                hx-confirm="Deactivate this account? It will no longer be able to request issuance.">
+          Deactivate
+        </button>
+      {% endif %}
+      {#- The delete cascades; the CLI names the count in its confirmation
+          prompt, so this one does too. -#}
+      {#- No target: the handler answers with a redirect, since the page this
+          button lives on is the thing being deleted. -#}
+      <button class="danger"
+              hx-delete="/ui/accounts/{{ account.id }}"
+              hx-confirm="Delete this account and everything that cascades from it? This cannot be undone.">
+        Delete
+      </button>
+    </div>
+    <p class="muted small">
+      Deactivating is the ACME state change and is reversible only by the
+      client. Deleting removes the row and cascades to its orders,
+      authorizations and challenges — it does <strong>not</strong> revoke any
+      certificate already issued.
+    </p>
+  </div>
+</div>

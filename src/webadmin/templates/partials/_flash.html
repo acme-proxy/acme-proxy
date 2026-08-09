@@ -1,0 +1,15 @@
+{#-
+  An inline banner. `flash` is `{kind, message, code}` -- `kind` is one of
+  `ok`/`error`/`warn`, and `code` is the `AdminError` code when there was one,
+  so an operator reporting a problem can quote the same string the JSON API and
+  the logs use.
+
+  Rendered by every partial that can be the target of a mutation, since that is
+  where the outcome has to become visible.
+-#}
+{% if flash %}
+  <div class="flash {{ flash.kind }}">
+    {{ flash.message }}
+    {% if flash.code %}<span class="code">({{ flash.code }})</span>{% endif %}
+  </div>
+{% endif %}

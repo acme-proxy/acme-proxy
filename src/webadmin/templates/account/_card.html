@@ -1,0 +1,87 @@
+{#-
+  The second-factor card itself, with no root `id` of its own.
+
+  Split from `_mfa.html` so `_codes.html` can render a fresh recovery set *and*
+  the up-to-date card inside one swap target, without nesting two elements
+  carrying the same id — which is what a browser resolves arbitrarily and htmx
+  then swaps the wrong one of.
+-#}
+
+<div class="panel">
+  <h2>Two-factor authentication</h2>
+  <dl class="fields">
+    <dt>Operator</dt><dd><code>{{ user.username }}</code></dd>
+    <dt>Status</dt>
+    <dd>
+      {%- if mfa.totpEnabled -%}
+        <span class="badge">on</span>
+      {%- elif mfa.enrolmentPending -%}
+        <span class="badge">enrolment unconfirmed</span>
+      {%- else -%}
+        <span class="muted">off</span>
+      {%- endif -%}
+    </dd>
+    {% if mfa.totpEnabled %}
+      <dt>Recovery codes</dt>
+      <dd>
+        {{ mfa.recoveryCodesRemaining }} unused
+        {%- if mfa.recoveryCodesRemaining < 3 %}
+          — <span class="badge">running low</span>
+        {%- endif %}
+      </dd>
+    {% endif %}
+  </dl>
+
+  {% if mfa.totpEnabled %}
+    {#- Every control below either replaces the factor or destroys the way back
+        in, and each one also ends every *other* session of this operator. A
+        live cookie is not sufficient authority for that: somebody holding a
+        stolen one could enrol their own authenticator over this one, sign the
+        rightful operator out everywhere and void their recovery codes, leaving
+        `acme-proxy admin user totp reset` on the host as the only way back.
+        So the password is asked for again here, and `hx-include` carries it
+        with whichever button was pressed. -#}
+    <div class="field">
+      <label for="step-up-password">Confirm your password to change any of this</label>
+      <input id="step-up-password" type="password" name="password"
+             autocomplete="current-password" required>
+    </div>
+    <div class="actions">
+      <button hx-post="/ui/account/mfa/recovery-codes"
+              hx-target="#account-mfa"
+              hx-include="#step-up-password"
+              hx-confirm="Mint a new set of recovery codes? Your current set stops working immediately.">
+        New recovery codes
+      </button>
+      {#- Not offered at all when the server requires a factor: the operator
+          would simply be made to enrol again on their next sign-in, so the
+          only thing removing it achieves is a locked panel in between. The
+          endpoint refuses it too — this just does not dangle the button. -#}
+      {% if not require_mfa %}
+        <button hx-post="/ui/account/mfa/totp/disable"
+                hx-target="#account-mfa"
+                hx-include="#step-up-password"
+                hx-confirm="Turn off two-factor authentication? Your recovery codes are destroyed and every other session of yours is signed out.">
+          Turn off
+        </button>
+      {% endif %}
+      <button hx-post="/ui/account/mfa/totp"
+              hx-target="#account-mfa"
+              hx-include="#step-up-password"
+              hx-confirm="Set up a new authenticator? Your current one keeps working until you confirm a code from the new one.">
+        Move to a new authenticator
+      </button>
+    </div>
+  {% else %}
+    <p class="muted small">
+      An authenticator app produces a six-digit code that changes every
+      {{ period }} seconds. With one enrolled, your password alone is no
+      longer enough to reach this panel.
+    </p>
+    <div class="actions">
+      <button class="primary" hx-post="/ui/account/mfa/totp" hx-target="#account-mfa">
+        {% if mfa.enrolmentPending %}Resume setting one up{% else %}Set one up{% endif %}
+      </button>
+    </div>
+  {% endif %}
+</div>

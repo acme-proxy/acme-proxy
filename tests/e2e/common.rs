@@ -1,0 +1,488 @@
+use std::process::Command;
+use std::sync::Once;
+use testcontainers::{
+    ContainerAsync, CopyTargetOptions, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner,
+};
+use tokio::process::Command as TokioCommand;
+
+fn container_runtime() -> &'static str {
+    if let Ok(rt) = std::env::var("CONTAINER_RUNTIME") {
+        if rt == "docker" {
+            return "docker";
+        }
+        if rt == "podman" {
+            return "podman";
+        }
+    }
+    if std::process::Command::new("docker")
+        .arg("--version")
+        .status()
+        .is_ok()
+    {
+        return "docker";
+    }
+    "podman"
+}
+
+static BUILD_IMAGES: Once = Once::new();
+
+pub fn ensure_images_built() {
+    if std::env::var("DOCKER_HOST").is_err() && container_runtime() == "podman" {
+        let active = Command::new("systemctl")
+            .args(["--user", "is-active", "--quiet", "podman.socket"])
+            .status()
+            .expect("failed to run systemctl")
+            .success();
+        assert!(
+            active,
+            "podman.socket is not running — start it with `systemctl --user start podman.socket` \
+             before running the e2e suite (or set DOCKER_HOST yourself)"
+        );
+        let output = Command::new("id")
+            .arg("-u")
+            .output()
+            .expect("failed to run id -u");
+        let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        unsafe {
+            std::env::set_var(
+                "DOCKER_HOST",
+                format!("unix:///run/user/{}/podman/podman.sock", uid),
+            );
+        }
+    }
+
+    BUILD_IMAGES.call_once(|| {
+        // Guarded by `flock` regardless of how this binary is invoked: nextest
+        // runs each test as its own OS process (defeating this in-process
+        // `Once` by itself, which is why the lock exists at all), but a plain
+        // `cargo test` with multiple test threads — or two overlapping
+        // invocations from different shells — races the same `podman build`
+        // just as easily. When `NEXTEST_RUN_ID` is unset the flag file falls
+        // back to a fixed name rather than skipping the lock, at the cost of
+        // that flag persisting across separate non-nextest runs until the
+        // temp dir is cleared — the same trade-off the run-id-keyed flag
+        // already makes, just scoped wider.
+        let run_id = std::env::var("NEXTEST_RUN_ID").unwrap_or_else(|_| "cargo-test".to_string());
+        let flag_file = std::env::temp_dir().join(format!("acme-proxy-e2e-built-{}", run_id));
+        let lock_file = std::env::temp_dir().join("acme-proxy-e2e-build.lock");
+
+        let build_script = format!(
+            r#"
+            if [ -f "{flag_file}" ]; then
+                exit 0
+            fi
+            {runtime} build -t bind-e2e -f tests/e2e/bind.Containerfile tests/e2e &&
+            {runtime} build -t acme-proxy-e2e -f Containerfile . &&
+            {runtime} build -t netbox-mock-e2e -f tests/e2e/netbox_mock.Containerfile tests/e2e &&
+            {runtime} build -t certbot-e2e -f tests/e2e/certbot.Containerfile tests/e2e &&
+            {runtime} build -t acmesh-e2e -f tests/e2e/acmesh.Containerfile tests/e2e &&
+            {runtime} build -t lego-e2e -f tests/e2e/lego.Containerfile tests/e2e &&
+            touch "{flag_file}"
+            "#,
+            flag_file = flag_file.display(),
+            runtime = container_runtime()
+        );
+
+        let status = Command::new("flock")
+            .args([lock_file.to_str().unwrap(), "-c", &build_script])
+            .status()
+            .expect("Failed to run flock");
+        assert!(status.success(), "Image build failed");
+    });
+}
+
+pub struct Lab {
+    pub network: String,
+    pub dns: ContainerAsync<GenericImage>,
+    pub proxy: ContainerAsync<GenericImage>,
+    pub certbot: ContainerAsync<GenericImage>,
+    pub acme_sh: ContainerAsync<GenericImage>,
+    pub lego: ContainerAsync<GenericImage>,
+    pub netbox_mock: Option<ContainerAsync<GenericImage>>,
+    pub proxy_upstream: Option<ContainerAsync<GenericImage>>,
+    pub proxy_url: String,
+    pub proxy_upstream_url: Option<String>,
+}
+
+impl Lab {
+    pub async fn new(env: Vec<(&str, &str)>) -> Self {
+        Self::new_internal(env, None, vec![]).await
+    }
+
+    pub async fn new_with_upstream(
+        env: Vec<(&str, &str)>,
+        env_upstream: Vec<(&str, &str)>,
+    ) -> Self {
+        Self::new_internal(env, Some(env_upstream), vec![]).await
+    }
+
+    /// Like [`Lab::new`], but additionally copies each `(target_path, bytes)`
+    /// pair into the `acme-proxy` container *before* it starts — for
+    /// scenarios (e.g. `signer.backend = "custom"`) that need a file present
+    /// on disk at startup, not injected afterward via `exec_in` into an
+    /// already-running (and possibly already-failed-to-start) container.
+    pub async fn new_with_files(env: Vec<(&str, &str)>, files: Vec<(&str, Vec<u8>)>) -> Self {
+        Self::new_internal(env, None, files).await
+    }
+
+    async fn new_internal(
+        env: Vec<(&str, &str)>,
+        env_upstream: Option<Vec<(&str, &str)>>,
+        files: Vec<(&str, Vec<u8>)>,
+    ) -> Self {
+        // A cold-cache image build can take minutes; run it on a blocking
+        // thread rather than tying up this test's async worker thread for
+        // the whole duration.
+        tokio::task::spawn_blocking(ensure_images_built)
+            .await
+            .expect("image build task panicked");
+
+        let uuid = uuid::Uuid::new_v4();
+        let network = format!("e2e-lab-{}", uuid);
+        let status = TokioCommand::new(container_runtime())
+            .args(["network", "create", &network])
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "Failed to create network");
+
+        let dns_host = format!("dns-{}", uuid);
+        let proxy_host = format!("proxy-{}", uuid);
+        let certbot_host = format!("certbot-{}", uuid);
+        let acmesh_host = format!("acmesh-{}", uuid);
+        let lego_host = format!("lego-{}", uuid);
+
+        let dns_image = GenericImage::new("bind-e2e", "latest")
+            .with_wait_for(WaitFor::message_on_stderr("running"))
+            .with_network(&network)
+            .with_container_name(&dns_host);
+
+        let certbot_image = GenericImage::new("certbot-e2e", "latest")
+            .with_entrypoint("sh")
+            .with_cmd(vec!["-c", "trap 'exit 0' TERM; sleep infinity & wait"])
+            .with_network(&network)
+            .with_container_name(&certbot_host);
+
+        let acme_sh_image = GenericImage::new("acmesh-e2e", "latest")
+            .with_entrypoint("sh")
+            .with_cmd(vec!["-c", "trap 'exit 0' TERM; sleep infinity & wait"])
+            .with_network(&network)
+            .with_container_name(&acmesh_host);
+
+        let lego_image = GenericImage::new("lego-e2e", "latest")
+            .with_entrypoint("sh")
+            .with_cmd(vec!["-c", "trap 'exit 0' TERM; sleep infinity & wait"])
+            .with_network(&network)
+            .with_container_name(&lego_host);
+
+        // None of these four depends on another, so start them concurrently
+        // instead of paying for four sequential container-start round trips.
+        let (dns, certbot, acme_sh, lego) = tokio::join!(
+            dns_image.start(),
+            certbot_image.start(),
+            acme_sh_image.start(),
+            lego_image.start(),
+        );
+        let dns = dns.expect("Failed to start DNS");
+        let certbot = certbot.expect("Failed to start certbot");
+        let acme_sh = acme_sh.expect("Failed to start acme-sh");
+        let lego = lego.expect("Failed to start lego");
+
+        let (dns_ip, certbot_ip, acmesh_ip, lego_ip) = tokio::join!(
+            Self::get_ip(dns.id(), &network),
+            Self::get_ip(certbot.id(), &network),
+            Self::get_ip(acme_sh.id(), &network),
+            Self::get_ip(lego.id(), &network),
+        );
+
+        let tls_enabled = env
+            .iter()
+            .any(|(k, v)| *k == "ACME_PROXY_SERVER__TLS__ENABLED" && *v == "true");
+        let scheme = if tls_enabled { "https" } else { "http" };
+        let proxy_url = format!("{}://{}:3000", scheme, proxy_host);
+
+        let mut proxy_image = GenericImage::new("acme-proxy-e2e", "latest")
+            .with_wait_for(WaitFor::message_on_stdout("server_startup"))
+            .with_network(&network)
+            .with_container_name(&proxy_host)
+            .with_env_var("ACME_PROXY_SERVER__BIND_ADDRESS", "[::]:3000")
+            .with_env_var("ACME_PROXY_SERVER__BASE_URL", &proxy_url)
+            .with_env_var("ACME_PROXY_PROFILES__DEFAULT__ENABLED", "true")
+            .with_env_var("RUST_LOG", "acme_proxy=debug");
+
+        // Most scenarios here are about something other than domain-control
+        // proof — EAB, filters, profiles, the admin CLI — and have no responder
+        // for a real challenge, so they want the bypass. It used to come from
+        // `challenge.bypass`'s own default; now that the default validates, the
+        // lab has to ask. Set only when the scenario has not chosen for itself,
+        // so `http_01`/`dns_01`/`tls_alpn_01` keep validating for real.
+        if !env
+            .iter()
+            .any(|(k, _)| *k == "ACME_PROXY_CHALLENGE__BYPASS")
+        {
+            proxy_image = proxy_image.with_env_var("ACME_PROXY_CHALLENGE__BYPASS", "true");
+        }
+
+        let netbox_mock_host = format!("netbox-mock-{}", uuid);
+        let netbox_mock = GenericImage::new("netbox-mock-e2e", "latest")
+            .with_network(&network)
+            .with_container_name(&netbox_mock_host)
+            .with_env_var("CERTBOT_IP", &certbot_ip)
+            .with_env_var("ACMESH_IP", &acmesh_ip)
+            .start()
+            .await
+            .expect("Failed to start netbox-mock");
+
+        let netbox_ip = Self::get_ip(netbox_mock.id(), &network).await;
+
+        let mut proxy_upstream: Option<ContainerAsync<GenericImage>> = None;
+        let mut proxy_upstream_url: Option<String> = None;
+
+        if let Some(upstream_env) = env_upstream {
+            let upstream_host = format!("proxy-upstream-{}", uuid);
+            let upstream_base_url = format!("http://{}:3000", upstream_host);
+            let mut upstream_image = GenericImage::new("acme-proxy-e2e", "latest")
+                .with_wait_for(WaitFor::message_on_stdout("server_startup"))
+                .with_network(&network)
+                .with_container_name(&upstream_host)
+                .with_env_var("ACME_PROXY_SERVER__BIND_ADDRESS", "[::]:3000")
+                .with_env_var("ACME_PROXY_SERVER__BASE_URL", &upstream_base_url)
+                .with_env_var("ACME_PROXY_PROFILES__DEFAULT__ENABLED", "true")
+                .with_env_var("ACME_PROXY_CHALLENGE__BYPASS", "true")
+                .with_env_var(
+                    "ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH",
+                    "/tmp/upstream-ca.pem",
+                )
+                .with_env_var(
+                    "ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH",
+                    "/tmp/upstream-ca.key",
+                )
+                .with_env_var(
+                    "ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH",
+                    "/tmp/upstream-ca.crl",
+                )
+                .with_env_var("RUST_LOG", "acme_proxy=debug");
+
+            for (k, v) in upstream_env {
+                if k == "ACME_PROXY_DNS__RESOLVER" && v == "dns:53" {
+                    upstream_image = upstream_image.with_env_var(k, format!("{}:53", dns_ip));
+                } else if v.contains("DNS_SERVER_HOST") {
+                    upstream_image =
+                        upstream_image.with_env_var(k, v.replace("DNS_SERVER_HOST", &dns_ip));
+                } else {
+                    upstream_image = upstream_image.with_env_var(k, v);
+                }
+            }
+            let upstream_container = upstream_image
+                .start()
+                .await
+                .expect("Failed to start proxy upstream");
+
+            let upstream_ip = Self::get_ip(upstream_container.id(), &network).await;
+            let upstream_base_url = format!("http://{}:3000", upstream_ip);
+            let upstream_url = format!("{}/profile/default/directory", upstream_base_url);
+
+            proxy_upstream = Some(upstream_container);
+            proxy_upstream_url = Some(upstream_url);
+        }
+
+        for (k, v) in env {
+            if k == "ACME_PROXY_DNS__RESOLVER" && v == "dns:53" {
+                proxy_image = proxy_image.with_env_var(k, format!("{}:53", dns_ip));
+            } else if v.contains("DNS_SERVER_HOST") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("DNS_SERVER_HOST", &dns_ip));
+            } else if v.contains("CERTBOT_IP") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("CERTBOT_IP", &certbot_ip));
+            } else if v.contains("ACMESH_IP") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("ACMESH_IP", &acmesh_ip));
+            } else if v.contains("LEGO_IP") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("LEGO_IP", &lego_ip));
+            } else if v.contains("NETBOX_IP") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("NETBOX_IP", &netbox_ip));
+            } else if v.contains("UPSTREAM_URL") {
+                if let Some(ref url) = proxy_upstream_url {
+                    proxy_image = proxy_image.with_env_var(k, v.replace("UPSTREAM_URL", url));
+                } else {
+                    proxy_image = proxy_image.with_env_var(k, v);
+                }
+            } else {
+                proxy_image = proxy_image.with_env_var(k, v);
+            }
+        }
+
+        for (target, data) in files {
+            proxy_image =
+                proxy_image.with_copy_to(CopyTargetOptions::new(target).with_mode(0o755), data);
+        }
+
+        let proxy = proxy_image.start().await.expect("Failed to start proxy");
+
+        let proxy_url_with_path = format!("{}/profile/default/directory", proxy_url);
+
+        Self {
+            network,
+            dns,
+            proxy,
+            certbot,
+            acme_sh,
+            lego,
+            netbox_mock: Some(netbox_mock),
+            proxy_upstream,
+            proxy_url: proxy_url_with_path,
+            proxy_upstream_url,
+        }
+    }
+
+    pub async fn get_ip(id: &str, network: &str) -> String {
+        for _ in 0..10 {
+            let output = TokioCommand::new(container_runtime())
+                .args([
+                    "inspect",
+                    "-f",
+                    &format!(
+                        "{{{{ (index .NetworkSettings.Networks \"{}\").IPAddress }}}}",
+                        network
+                    ),
+                    id,
+                ])
+                .output()
+                .await
+                .expect("Failed to get ip");
+
+            let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !ip.is_empty() {
+                return ip;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        panic!(
+            "Failed to get IP for container {} in network {}",
+            id, network
+        );
+    }
+
+    pub async fn dns_add_a(&self, host: &str, ip: &str) {
+        // printf, not `echo -e` — dash's echo builtin (this container's /bin/sh)
+        // doesn't interpret -e the way bash/BusyBox ash do, so nsupdate would
+        // read a literal "-e ..." as its first command instead of the intended
+        // "server ...". printf's format string always interprets \n, portably.
+        let tsig = "-y hmac-sha256:tsig-key.:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let script = format!(
+            "printf 'server 127.0.0.1\\nupdate add {} 60 A {}\\nsend\\n' | nsupdate {}",
+            host, ip, tsig
+        );
+        self.exec_in(&self.dns, &script).await;
+    }
+
+    pub async fn dns_add_ptr(&self, ip: &str, host: &str) {
+        let parts: Vec<&str> = ip.split('.').collect();
+        assert_eq!(
+            parts.len(),
+            4,
+            "dns_add_ptr only supports IPv4 addresses, got: {ip}"
+        );
+        let rev_zone = format!("{}.{}.{}.in-addr.arpa", parts[2], parts[1], parts[0]);
+        let ptr_record = format!(
+            "{}.{}.{}.{}.in-addr.arpa",
+            parts[3], parts[2], parts[1], parts[0]
+        );
+
+        let setup_script = format!(
+            r#"
+            if ! grep -q 'zone "{0}"' /var/bind/lab/named.conf; then
+                echo 'zone "{0}" {{ type master; file "/var/bind/lab/{0}.zone"; allow-update {{ key "tsig-key."; }}; }};' >> /var/bind/lab/named.conf
+                printf '$TTL 60\n@ IN SOA ns.lab. admin.lab. ( 1 3600 1800 604800 60 )\n@ IN NS ns.lab.\n' > /var/bind/lab/{0}.zone
+                chown bind:bind /var/bind/lab/named.conf /var/bind/lab/{0}.zone
+                kill -HUP 1
+                sleep 1
+            fi
+        "#,
+            rev_zone
+        );
+        self.exec_in(&self.dns, &setup_script).await;
+
+        let tsig = "-y hmac-sha256:tsig-key.:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let update_script = format!(
+            "printf 'server 127.0.0.1\\nupdate add {} 60 PTR {}\\nsend\\n' | nsupdate {}",
+            ptr_record, host, tsig
+        );
+        self.exec_in(&self.dns, &update_script).await;
+    }
+
+    pub async fn exec_in(&self, container: &ContainerAsync<GenericImage>, script: &str) {
+        let id = container.id();
+        let status = TokioCommand::new(container_runtime())
+            .args(["exec", id, "sh", "-c", script])
+            .status()
+            .await
+            .expect("Failed to execute command in container");
+        assert!(status.success(), "Command in container failed");
+    }
+
+    pub async fn exec_in_with_output(
+        &self,
+        container: &ContainerAsync<GenericImage>,
+        script: &str,
+    ) -> (bool, String, String) {
+        let id = container.id();
+        let output = TokioCommand::new(container_runtime())
+            .args(["exec", id, "sh", "-c", script])
+            .output()
+            .await
+            .expect("Failed to execute command in container");
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+
+    pub async fn get_proxy_logs(&self) -> String {
+        let id = self.proxy.id();
+        let output = TokioCommand::new(container_runtime())
+            .args(["logs", id])
+            .output()
+            .await
+            .expect("Failed to get proxy logs");
+        String::from_utf8_lossy(&output.stderr).to_string()
+            + &String::from_utf8_lossy(&output.stdout)
+    }
+
+    pub async fn get_proxy_upstream_logs(&self) -> String {
+        if let Some(ref upstream) = self.proxy_upstream {
+            let id = upstream.id();
+            let output = TokioCommand::new(container_runtime())
+                .args(["logs", id])
+                .output()
+                .await
+                .expect("Failed to get upstream logs");
+            String::from_utf8_lossy(&output.stderr).to_string()
+                + &String::from_utf8_lossy(&output.stdout)
+        } else {
+            "".to_string()
+        }
+    }
+
+    pub async fn get_netbox_mock_logs(&self) -> String {
+        if let Some(ref netbox_mock) = self.netbox_mock {
+            let id = netbox_mock.id();
+            let output = TokioCommand::new(container_runtime())
+                .args(["logs", id])
+                .output()
+                .await
+                .expect("Failed to get netbox-mock logs");
+            String::from_utf8_lossy(&output.stderr).to_string()
+                + &String::from_utf8_lossy(&output.stdout)
+        } else {
+            "".to_string()
+        }
+    }
+}
+
+impl Drop for Lab {
+    fn drop(&mut self) {
+        let _ = Command::new(container_runtime())
+            .args(["network", "rm", "-f", &self.network])
+            .status();
+    }
+}

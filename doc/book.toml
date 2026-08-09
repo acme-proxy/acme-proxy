@@ -1,0 +1,27 @@
+[book]
+authors = ["MathGL"]
+language = "en"
+src = "src"
+title = "ACME Proxy Documentation"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/acme-proxy/acme-proxy"
+edit-url-template = "https://github.com/acme-proxy/acme-proxy/edit/main/doc/src/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.fold]
+enable = true
+level = 0
+
+[output.html.search]
+enable = true
+limit-results = 15
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

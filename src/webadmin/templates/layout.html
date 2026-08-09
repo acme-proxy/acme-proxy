@@ -1,0 +1,60 @@
+{#-
+  The page chrome every full page extends.
+
+  Only ever rendered for a *full* page. An htmx request gets the bare partial
+  instead, chosen by the handler off the `HX-Request` header -- which is why no
+  partial in this tree extends anything.
+-#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }} — acme-proxy admin</title>
+    {#-
+      Both settings are load-bearing, and both are documented at length in
+      `static/README.md`:
+
+      - `includeIndicatorStyles` false, because htmx would otherwise inject an
+        inline <style> element that this listener's `style-src 'self'` blocks.
+        The rules it would have injected are in admin.css instead.
+      - `responseHandling`, because htmx does not swap a non-2xx response by
+        default -- without it a 409 `already_revoked` would fail silently
+        rather than showing the operator the error banner it returned.
+    -#}
+    <meta name="htmx-config"
+          content='{"includeIndicatorStyles":false,"responseHandling":[{"code":"[45]..","swap":true},{"code":"[23]..","swap":true}]}'>
+    <link rel="stylesheet" href="/ui/static/admin.css">
+    <script src="/ui/static/htmx.min.js" defer></script>
+  </head>
+  {#-
+    The CSRF token every mutating request needs, attached once here rather than
+    on each control. `AuthenticatedWrite` reads it from this header and nowhere
+    else, so a page that loses this attribute loses every write at once -- which
+    is the intended failure mode.
+  -#}
+  <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+    <header class="top">
+      <span class="brand">acme-proxy</span>
+      <nav>
+        <a href="/ui/" {% if nav == "index" %}class="active"{% endif %}>Overview</a>
+        <a href="/ui/accounts" {% if nav == "accounts" %}class="active"{% endif %}>Accounts</a>
+        <a href="/ui/orders" {% if nav == "orders" %}class="active"{% endif %}>Orders</a>
+        <a href="/ui/audit" {% if nav == "audit" %}class="active"{% endif %}>Audit</a>
+        <a href="/ui/eab" {% if nav == "eab" %}class="active"{% endif %}>EAB</a>
+        <a href="/ui/nonces" {% if nav == "nonces" %}class="active"{% endif %}>Nonces</a>
+        <a href="/ui/profiles" {% if nav == "profiles" %}class="active"{% endif %}>Profiles</a>
+      </nav>
+      <span class="whoami">
+        {#- Not a seventh entry in the nav above: that lists resources of the
+            server, and "my second factor" is not one. -#}
+        <a href="/ui/account" {% if nav == "account" %}class="active"{% endif %}>{{ user.username }}</a>
+        <button hx-post="/ui/logout" hx-swap="none">Sign out</button>
+      </span>
+    </header>
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

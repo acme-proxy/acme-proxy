@@ -1,0 +1,284 @@
+name: CI
+
+on:
+  # Branch-filtered so a pull request from a branch in this repository does not
+  # trigger two identical runs.
+  push:
+    branches: [main]
+  pull_request:
+  # A RustSec advisory is published against code that is already merged, so a
+  # push/PR-only trigger only ever finds it the next time somebody happens to
+  # open a pull request. The `supply-chain` job below runs on this schedule too;
+  # `test` skips it, having nothing to say without a change to test.
+  schedule:
+    - cron: "17 6 * * *"
+
+# Least privilege: nothing in this workflow writes to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Every action below is pinned to a commit SHA rather than a tag. A tag is
+# mutable: whoever controls the action's repository can repoint it at new code,
+# which then runs with this workflow's token and inside the build that produces
+# a certificate authority. `taiki-e/install-action` is the sharpest case — it
+# downloads and executes prebuilt binaries — but the rule is uniform so no
+# reader has to decide which ones matter. The trailing comment is the tag the
+# SHA stood for when it was pinned; update both together.
+jobs:
+  test:
+    name: Test, lint & coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Nothing here depends on the clock; on the nightly advisory run only
+    # `supply-chain` has anything new to say.
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned by SHA, so the action can no longer read the toolchain out of its
+      # own ref name (`@stable`) and `toolchain:` has to say it explicitly.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-llvm-cov and cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # `--locked` on every cargo invocation that builds: `Cargo.lock` is
+      # committed and `Containerfile` already builds against it, so without this
+      # CI was the one place a semver-compatible upstream release could enter a
+      # build — including one `cargo deny` (which reads the lockfile) never saw.
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Runs the unit + integration tests under instrumentation and prints the
+      # per-file coverage summary. `main.rs` is only socket/exit wiring, so it is
+      # excluded to keep the metric about testable code. `--fail-under-lines` is a
+      # regression ratchet, set just below the current ~96%.
+      #
+      # `nextest` here is not interchangeable with plain `cargo test`: the
+      # `custom` script tests in `signer`/`filter`/`notify` exec a file they
+      # just wrote, which intermittently fails `ETXTBSY` when tests share one
+      # process (see the note on `write_script` in `src/signer/custom.rs`).
+      - name: Test with coverage
+        run: >
+          cargo llvm-cov nextest --locked --summary-only
+          --ignore-filename-regex 'src/main\.rs'
+          --fail-under-lines 96
+
+      # `cargo llvm-cov` does not run doc-tests, so the `rust,no_run` startup
+      # example in `src/lib.rs` is otherwise never compiled — and it calls
+      # `build_router`, whose signature changes.
+      - name: Doc tests
+        run: cargo test --locked --doc
+
+      # `cargo test --doc` compiles the *examples*; it says nothing about the
+      # intra-doc links, of which this crate has a great many — the doc comments
+      # are where the reasoning lives, and a link pointing at something renamed
+      # away rots silently otherwise. It caught three on the run that added it.
+      #
+      # `private_intra_doc_links` is allowed, and that is a judgement about what
+      # this crate is: the library exists so the tests and `main.rs` can reach
+      # it, not as a published API, and the doc comments are written for someone
+      # reading the source. A public item explaining itself by naming the
+      # private thing it delegates to is the good outcome; the alternative is
+      # either widening visibility for rustdoc's benefit or unlinking the name,
+      # and both are worse than a link a `--document-private-items` build
+      # resolves.
+      - name: Documentation
+        run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
+
+  # `Cargo.toml` declares `rust-version`, and until this job existed its own
+  # comment admitted CI did not check it: `test` builds on stable, so the floor
+  # was a claim rather than a fact. `cargo check` is enough — the point is
+  # whether the language and dependency features used still compile there, not
+  # whether the tests pass twice.
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Read out of the manifest rather than written here as well: a floor
+      # stated in two places is a floor that drifts, and the failure mode is
+      # silent — CI would go on proving a version nobody claims.
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          test -n "$version" || { echo "Cargo.toml declares no rust-version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Check
+        run: cargo check --locked --all-targets --all-features
+
+  # The `hsm` feature is off by default, so the job above neither builds nor
+  # lints `src/signer/local_ca/pkcs11.rs` — `--all-targets` does not enable
+  # features. Without this job the whole PKCS#11 path could rot warning-dirty
+  # or stop compiling and nobody would find out.
+  #
+  # Deliberately separate rather than folded into `test`: that job enforces
+  # `--fail-under-lines 96`, and a feature-gated file is not compiled at all
+  # with the feature off, so it stays outside the metric entirely. Folding it in
+  # would drag the token error-recovery paths — the ones SoftHSM2 cannot easily
+  # provoke — inside the ratchet and make the floor fight the feature.
+  hsm:
+    name: PKCS#11 (SoftHSM2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-nextest
+
+      # Only the module `.so` is needed: the tests create the token and
+      # generate the CA key through `cryptoki` itself rather than shelling out
+      # to `pkcs11-tool`, so `opensc` is not a prerequisite. Without softhsm2
+      # installed the PKCS#11 tests skip rather than fail, which is what keeps
+      # them runnable on a developer machine — this job is where they actually
+      # execute.
+      - name: Install SoftHSM2
+        run: sudo apt-get update && sudo apt-get install -y softhsm2
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --features hsm -- -D warnings
+
+      - name: Test
+        run: cargo nextest run --locked --features hsm
+
+  # `fuzz/` is a separate crate outside the workspace, so nothing in the job
+  # above compiles it — its targets can drift out of sync with the signatures
+  # they exercise and nobody finds out until someone runs a fuzz campaign. This
+  # only *builds* them, which is enough to keep them alive; it costs a nightly
+  # toolchain, which is why it is its own job rather than a step above.
+  fuzz:
+    name: Fuzz targets build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build --dev
+
+      # A short campaign per target on the nightly run only — building a target
+      # proves it still compiles, which is not the same as ever having run it.
+      # Five minutes each finds the shallow crashes; anything deeper wants a
+      # dedicated machine and a corpus that grows across runs, which this is
+      # not. Seeded from `fuzz/corpus/`, committed so a run does not start from
+      # nothing every time.
+      - name: Fuzz campaign
+        if: github.event_name == 'schedule'
+        run: |
+          for target in jws_envelope spki certificate identifier; do
+            cargo +nightly fuzz run "$target" -- -max_total_time=300
+          done
+
+  supply-chain:
+    name: Advisories, licenses & sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # `deny.toml` is a hand-tuned policy — curated licence allowlist, ban and
+      # source rules — that nothing was enforcing. For a CA, an unnoticed
+      # advisory in the crypto or TLS tree is the most expensive kind of miss.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@c3bbe7e4e3f7baeee1a3dd9aec0a3b2aded580fb # v2.1.1
+        with:
+          command: check
+
+  # `tests/e2e/` drives real ACME clients — certbot, acme.sh, lego — against a
+  # real `acme-proxy` in containers, and until this job existed CI ran none of
+  # it: every test is `#[ignore]`d and nothing passed `--run-ignored`. That is
+  # the largest gap in the suite by surface area, and the lab has already caught
+  # at least one class of bug the unit tests structurally cannot (hickory
+  # reporting an empty NOERROR answer as `Err`, fixed in `src/dns.rs`).
+  #
+  # Nightly rather than per-push: it builds six container images and starts a
+  # DNS server plus three client containers per scenario, which is minutes, not
+  # seconds. A subset — the three challenge types, which is where a real client
+  # disagrees with this server if anything does.
+  e2e:
+    name: End-to-end (real ACME clients)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-nextest
+
+      # A filter expression, not a positional argument: nextest's positional
+      # filter matches test *names*, and none of these contain "e2e", so
+      # `cargo nextest run e2e` silently matches nothing and exits 0.
+      - name: Run the challenge scenarios
+        run: >
+          cargo nextest run --locked
+          -E 'binary(e2e) and (test(test_http_01_order) or test(test_dns_01_order) or test(test_tls_alpn_01_order))'
+          --run-ignored all

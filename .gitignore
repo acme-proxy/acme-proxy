@@ -1,0 +1,14 @@
+/target/
+/fuzz/target/
+/tests/e2e/netbox-mock/target
+/data/
+/doc/book/
+/config.toml
+/prompt.md
+/sqlite.db*
+/ca.pem
+/ca.key
+/ca.crl
+/server.pem
+/server.key
+*.key

@@ -1,0 +1,990 @@
+# Example configuration for acme-proxy.
+#
+# To use these settings, copy this file to `config.toml` (which is gitignored)
+# and edit it. Alternatively, since every value below matches the built-in default,
+# the server will run with these defaults if no config file is present.
+#
+# Environment Overrides:
+# Any value can be overridden by an environment variable prefixed with `ACME_PROXY_`,
+# using `__` (double underscore) as a separator between the table and the key.
+# Example: `ACME_PROXY_SERVER__BASE_URL=https://acme.example.com`
+# To specify a custom config file path, use `ACME_PROXY_CONFIG=/path/to/config`.
+#
+# List-valued keys (everything under [filter] that is an array, and the same
+# under [notify]) take a comma-separated value from the environment, e.g.
+# `ACME_PROXY_FILTER__ENABLED=allowed_ip,identifiers`. A regex containing a
+# literal comma — a quantifier such as `{2,3}` — can only be written in this file.
+#
+# Profiles:
+# The server serves ACME only through the [profiles.<name>] tables at the bottom
+# of this file — at least one is required, or startup fails. Each is mounted at
+# /profile/<name>, so a profile named `default` answers at
+# {base_url}/profile/default/directory. See that section for what a profile
+# inherits and what it can override.
+
+[database]
+# Database connection URL. This database persists ACME orders and nonces.
+url = "sqlite://sqlite.db"          # ACME_PROXY_DATABASE__URL
+
+[server]
+# Network address the server binds to. Controls which interfaces are accessible.
+bind_address = "[::]:3000"          # ACME_PROXY_SERVER__BIND_ADDRESS
+# Public base URL advertised in the ACME directory and used for JWS validation.
+base_url = "http://localhost:3000"  # ACME_PROXY_SERVER__BASE_URL
+#
+# Admission control for the ACME endpoints. GET /health is deliberately outside
+# all of it: a health probe is asked for exactly when the server is saturated.
+#
+# How many ACME requests may be in flight at once. Past this, a request waits
+# admission_wait_ms for a slot and is then refused with 503 + Retry-After rather
+# than queued — an unbounded queue only converts a slow server into a backlog of
+# clients that gave up long ago but still cost a slot when their turn comes.
+max_concurrent_requests = 100       # ACME_PROXY_SERVER__MAX_CONCURRENT_REQUESTS
+# How long to wait for a slot before refusing. Long enough to absorb a burst,
+# short enough that the queue can never be deeper than this in time.
+admission_wait_ms = 50              # ACME_PROXY_SERVER__ADMISSION_WAIT_MS
+# Whole-request deadline. This MUST exceed every hook that runs inside a request
+# — challenge.timeout_ms, and signer.custom.timeout_ms when that backend is in
+# use — or a validation that was going to succeed is cut off and reported to the
+# client as a server failure. Startup refuses a configuration where it does not.
+request_timeout_ms = 60000          # ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS
+# Largest request body accepted, in bytes. An ACME body is a JWS carrying at
+# most a CSR; the default here replaces axum's implicit 2 MiB.
+max_body_bytes = 131072             # ACME_PROXY_SERVER__MAX_BODY_BYTES
+
+[server.tls]
+# Serve HTTPS on server.bind_address instead of cleartext HTTP. There is one
+# listener, not two: enabling this replaces the cleartext one. RFC 8555 §6.1
+# expects HTTPS, so leaving this off means terminating TLS in front of the
+# server — or accepting that ACME traffic is in the clear.
+# Remember to change server.base_url to https:// as well: the JWS `url` check is
+# a string comparison, and a stale http:// base refuses every signed request.
+enabled = false                     # ACME_PROXY_SERVER__TLS__ENABLED
+# Certificate chain (leaf first) and its private key, both PEM. When either file
+# is missing, a self-signed certificate for the host of server.base_url is
+# generated and written on startup — as the local CA and sqlite.db do. The
+# generated key is created 0600; a supplied one only earns a warning.
+cert_path = "server.pem"            # ACME_PROXY_SERVER__TLS__CERT_PATH
+key_path  = "server.key"            # ACME_PROXY_SERVER__TLS__KEY_PATH
+# Budget for one TLS handshake. A client that stalls part-way through is dropped
+# once it elapses; handshakes run concurrently, so this never delays anyone else.
+handshake_timeout_ms = 10000        # ACME_PROXY_SERVER__TLS__HANDSHAKE_TIMEOUT_MS
+
+[admin]
+# The web admin interface: a SECOND listener, on its own socket, serving no
+# ACME. Off by default — a certificate authority does not grow a management
+# surface because somebody upgraded it. Bootstrap it with
+# `acme-proxy admin user create <username>`; there is no sign-up page.
+enabled = false                     # ACME_PROXY_ADMIN__ENABLED
+# Loopback on purpose. This listener has no admission control, no filter chain
+# and — until [admin.tls] is on — no transport security; putting it somewhere a
+# client can reach is a decision, not a default. Startup REFUSES a non-loopback
+# bind while admin.tls.enabled is false, because the session cookie is always
+# sent `Secure` and a browser silently declines to store it over plain HTTP on
+# anything but localhost: the symptom is "login works, then I am immediately
+# logged out", with nothing in any log to explain it.
+# To reach it from elsewhere, prefer an SSH tunnel:
+#   ssh -N -L 3001:127.0.0.1:3001 <host>
+bind_address = "127.0.0.1:3001"     # ACME_PROXY_ADMIN__BIND_ADDRESS
+# The origin the panel is reached at. Load-bearing three times over: the CSRF
+# origin check compares against it, a generated self-signed certificate takes
+# its host, and the pages build absolute URLs from it — exactly as
+# server.base_url does for the ACME listener. Through a tunnel, this stays
+# localhost.
+base_url = "http://localhost:3001"  # ACME_PROXY_ADMIN__BASE_URL
+# Absolute session lifetime (12h). Never extended by activity: past it, the
+# operator signs in again.
+session_ttl_seconds = 43200         # ACME_PROXY_ADMIN__SESSION_TTL_SECONDS
+# Idle session lifetime (1h), advanced on use — at most once a minute, so a
+# polling page is not a stream of database writes.
+session_idle_timeout_seconds = 3600 # ACME_PROXY_ADMIN__SESSION_IDLE_TIMEOUT_SECONDS
+# Failed logins allowed from one address per window, then 503-style refusal with
+# a Retry-After. The password hash is deliberately expensive (PBKDF2-HMAC-SHA256
+# at 600k iterations), so this is an availability control as much as a
+# credential one — over the limit, the hash is not computed at all.
+login_max_attempts = 5              # ACME_PROXY_ADMIN__LOGIN_MAX_ATTEMPTS
+login_window_seconds = 300          # ACME_PROXY_ADMIN__LOGIN_WINDOW_SECONDS
+# Require a second factor (TOTP) of every operator.
+#
+# An operator who already has one is challenged whether this is set or not; what
+# this changes is the operator who has NONE — with it on, their next sign-in
+# lands on the enrolment page and their session stays half-authenticated until
+# they finish. It deliberately does NOT refuse a password-only login outright:
+# enrolling needs a session and a session would then need a factor, so turning
+# this on with nobody enrolled would brick the panel, including the way in to
+# fix it.
+#
+# Turning it on does not retroactively end sessions that predate it. The lever
+# that does is `acme-proxy admin session revoke --all`.
+#
+# A lost phone is `acme-proxy admin user totp reset <username>` from a shell on
+# the host — the same place the first operator was created. There is no
+# self-service reset and no sign-up page, by the same reasoning.
+require_mfa = false                 # ACME_PROXY_ADMIN__REQUIRE_MFA
+# Largest admin request body. An admin body is a small JSON object or a form,
+# never a certificate.
+max_body_bytes = 65536              # ACME_PROXY_ADMIN__MAX_BODY_BYTES
+# Ceiling on ?limit= for the list endpoints; the default page size is 50.
+page_size_max = 200                 # ACME_PROXY_ADMIN__PAGE_SIZE_MAX
+# Override individual /ui page templates on disk, mirroring
+# notify.template_dir: each name is looked for here first and falls back to the
+# compiled-in default, so overriding just "layout.html" restyles every page and
+# leaves the rest alone. Every template is compiled at startup — a broken
+# override refuses to start rather than serving a 500 at three in the morning.
+# Empty means the compiled-in defaults.
+template_dir = ""                   # ACME_PROXY_ADMIN__TEMPLATE_DIR
+
+[admin.tls]
+# HTTPS on admin.bind_address instead of cleartext — the same one-listener-not-
+# two shape as [server.tls], and the same load-or-generate provisioning. Anything
+# but http://localhost needs this on, or the browser will not store the session
+# cookie at all (see admin.bind_address above).
+enabled = false                     # ACME_PROXY_ADMIN__TLS__ENABLED
+# Certificate chain (leaf first) and its private key, both PEM. When either is
+# missing, a self-signed certificate for the host of admin.base_url is generated
+# and written on startup. Separate paths from [server.tls] on purpose: the two
+# listeners answer to different names and should not share a certificate by
+# accident.
+cert_path = "admin.pem"             # ACME_PROXY_ADMIN__TLS__CERT_PATH
+key_path  = "admin.key"             # ACME_PROXY_ADMIN__TLS__KEY_PATH
+# Budget for one TLS handshake, as [server.tls].
+handshake_timeout_ms = 10000        # ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS
+
+[nonce]
+# Lifetime of nonces in seconds. Shorter TTLs improve security against replay
+# attacks, while longer TTLs provide more leeway for slow clients.
+ttl_seconds = 300                   # ACME_PROXY_NONCE__TTL_SECONDS
+
+[audit]
+# Traceability and the CA's audit trail.
+#
+# There is no `enabled` key: the accounts/orders address columns and the
+# audit_log table are always written. Recording who asked the CA to sign
+# something is what a CA does, not a feature to switch on.
+#
+# Resolve a PTR record for the client's address and freeze it into the row
+# alongside the address. Turn this off on an estate with no usable reverse
+# zone — every lookup would fail, every *_ptr column would end up NULL anyway,
+# and all that would be left is the round trip.
+reverse_dns = true                  # ACME_PROXY_AUDIT__REVERSE_DNS
+# Budget for one PTR lookup. Deliberately small: this runs inside a request
+# that has already done its real work, so a slow nameserver must cost a NULL in
+# one column, never latency on issuance.
+reverse_dns_timeout_ms = 2000       # ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS
+# Delete audit_log rows older than this many days. 0 keeps everything for ever,
+# which is the right default for a trail whose value is that it is complete;
+# set it where a retention policy says otherwise. `acme-proxy audit cleanup
+# --older-than <days>` is the same sweep run by hand.
+retention_days = 0                  # ACME_PROXY_AUDIT__RETENTION_DAYS
+
+[logging]
+# Log level filtering (EnvFilter format). Overridden by RUST_LOG environment variable.
+filter = "acme_proxy=info"  # ACME_PROXY_LOGGING__FILTER
+# Enable structured JSON logging for integration with centralized log aggregators.
+json_format = false                 # ACME_PROXY_LOGGING__JSON_FORMAT
+# Where records are written: "stdout" or "stderr". Anything else fails at startup.
+target = "stdout"                   # ACME_PROXY_LOGGING__TARGET
+# ANSI colour in the human-readable format. Ignored when json_format is on.
+ansi = true                         # ACME_PROXY_LOGGING__ANSI
+# Span lifecycle records: "none", "close" or "full". "close" emits one record per
+# span as it ends, carrying the time spent busy and idle inside it.
+span_events = "none"                # ACME_PROXY_LOGGING__SPAN_EVENTS
+# JSON only: lift a record's own fields to the top level instead of nesting them
+# under "fields". What most log pipelines want, at the risk of colliding with the
+# format's reserved keys.
+flatten_event = false               # ACME_PROXY_LOGGING__FLATTEN_EVENT
+
+[order]
+# Validity window for ACME order objects in seconds (RFC 8555 §7.1.3).
+# This defines the order's lifetime, not the resulting certificate's validity.
+validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
+
+[signer]
+# The issuance backend to use.
+#   "local_ca"   — this server IS the CA: it signs every certificate itself.
+#   "acme_proxy" — this server RELAYS to an upstream ACME server, becoming a
+#                  client of it. Clients still prove domain control to *this*
+#                  server exactly as before; only the signing moves.
+#   "custom"     — this server delegates issuance/revocation to an external
+#                  script (see [signer.custom] below) — an HSM tool, an
+#                  internal PKI CLI, a cloud KMS wrapper, anything.
+backend = "local_ca"                # ACME_PROXY_SIGNER__BACKEND
+
+[signer.local_ca]
+# Configuration for the persistent Local CA.
+# On first run, it automatically generates a self-signed CA if files are missing.
+cert_path = "ca.pem"                # ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH
+key_path  = "ca.key"                # ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH
+# Key algorithm for the CA (e.g., "ecdsa-p256").
+key_type  = "ecdsa-p256"            # ACME_PROXY_SIGNER__LOCAL_CA__KEY_TYPE
+# The validity period of issued LEAF certificates in days.
+# Distinct from the order's lifetime defined in [order].
+leaf_validity_days = 90             # ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY_DAYS
+# Where the CA's certificate revocation list (RFC 5280) is written; served at
+# GET /crl and regenerated on every revocation and on every startup.
+crl_path = "ca.crl"                 # ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH
+# Where the ISSUING PRIVATE KEY lives.
+#   "file"   — key_path above, loaded or generated. The default, and the only
+#              behaviour that existed before this key.
+#   "pkcs11" — a hardware token (YubiKey, HSM, SoftHSM2): the key is created
+#              inside it and can never be read out; this server sends bytes to
+#              be signed and gets a signature back. See
+#              [signer.local_ca.pkcs11] below. Requires a binary built with
+#              `--features hsm`; configuring it on one without is a startup
+#              error, never a silent fallback to the file key.
+# Anything else is a startup error.
+key_source = "file"                 # ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE
+
+[signer.local_ca.subject]
+# Overrides for the autogenerated CA's X.509 Subject (Distinguished Name).
+# Every key here is optional; an unset (or empty-string) value is omitted
+# from the Subject, except common_name, which falls back to
+# "acme-proxy local CA" so the CA always carries one.
+#
+# Unset by default: the CA's Subject is CommonName-only, exactly as before
+# this table existed.
+# common_name         = "acme-proxy local CA"   # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__COMMON_NAME
+# organization        = "Example Corp"          # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__ORGANIZATION
+# organizational_unit = "IT"                    # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__ORGANIZATIONAL_UNIT
+# country             = "US"                    # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__COUNTRY
+# state               = "California"            # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__STATE
+# locality            = "San Francisco"         # ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__LOCALITY
+
+[signer.local_ca.pkcs11]
+# Only read when key_source = "pkcs11" (above), and only available in a build
+# with `--features hsm`.
+#
+# TWO RULES DIFFER FROM THE FILE PATH, both fatal at startup:
+#
+#   1. The CA is NEVER generated. The private key is created inside the token by
+#      its own tooling (pkcs11-tool --keypairgen, yubico-piv-tool -a generate),
+#      which this server cannot do for it, so cert_path must ALREADY hold a
+#      certificate for that key. key_path is neither read nor written.
+#   2. The token key and cert_path are cross-checked. A mismatch — nearly always
+#      a wrong key_label — stops the server, rather than issuing a fleet of
+#      certificates that verify nowhere. This is stricter than key_source =
+#      "file", where nothing checks that key_path matches cert_path.
+#
+# key_type above is ignored here: nothing is generated, so the algorithm is read
+# off the token (P-256 and P-384 are supported).
+#
+# The module is dlopen'd at runtime, so nothing below affects the build.
+#
+# module_path  = "/usr/lib/softhsm/libsofthsm2.so"  # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__MODULE_PATH
+#                "/usr/lib/libykcs11.so" for a YubiKey (Debian puts it under
+#                /usr/lib/x86_64-linux-gnu/). Required.
+# Which token, by label. PREFER THIS over slot_id: slot numbers are assigned
+# dynamically and change across reboots and re-plugs (SoftHSM2 will hand you
+# something like 276468771).
+# token_label  = "acme-ca"          # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__TOKEN_LABEL
+# Which slot, for a token with no usable label. Read only when token_label is
+# empty.
+# slot_id      = 0                  # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__SLOT_ID
+# The private key's CKA_LABEL. Required. On a YubiKey these are FIXED by the
+# driver — slot 9c is "Private key for Digital Signature" — so this is looked
+# up with `pkcs11-tool --module <module> --list-objects --login`, not chosen.
+# key_label    = "ca-key"           # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_LABEL
+# The key's CKA_ID as hex, to disambiguate a token holding several keys under
+# one label. Optional; two matching keys and no key_id is a startup error rather
+# than a coin flip over which one signs.
+# key_id       = "01"               # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_ID
+# A file holding the user PIN, trailing whitespace trimmed (so a PIN written
+# with `echo` works). Warns if world-readable, like ca.key does. This is the
+# preferred way to supply it.
+# pin_file     = "/etc/acme-proxy/hsm.pin"  # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN_FILE
+# SENSITIVE — the PIN directly. Prefer pin_file or the environment variable; a
+# PIN here is a long-lived secret in a file that gets copied around. pin_file
+# wins when both are set, and neither set is a startup error.
+#
+# NOTE: a token blocks after a few wrong attempts (three on a YubiKey PIV
+# applet, then you need the PUK). That is why a failed signature is retried at
+# most ONCE, and why a stray character in pin_file is worth checking for before
+# restarting repeatedly.
+# pin          = ""                 # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN
+
+[signer.acme_proxy]
+# Only read when backend = "acme_proxy" (above).
+#
+# The upstream ACME server's directory URL — another acme-proxy, a private
+# enterprise CA, or a public CA. Required for this backend; an empty value is a
+# startup error.
+directory_url = ""                  # ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL
+# This proxy's own ACME account key AT the upstream (ECDSA P-256, generated 0600
+# if the file is absent). The account URL the upstream assigns is stored beside
+# it, in the same path with the extension replaced by ".kid" — so only the FIRST
+# startup contacts the upstream to register; later ones read both files locally.
+account_key_path = "upstream_account.key"  # ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH
+# Optional contacts sent with the upstream newAccount registration.
+contact = []                        # ACME_PROXY_SIGNER__ACME_PROXY__CONTACT
+# How this proxy satisfies the UPSTREAM's own domain-control check. This is a
+# second, independent proof cycle: the upstream account belongs to this server,
+# so the original client cannot answer it.
+#   "bypass" — the upstream validates nothing (a private CA that already trusts
+#              this server, or another acme-proxy with challenge.bypass = true).
+#   "dns01"  — publish the TXT record the upstream asks for, which is what a
+#              public CA requires. This is the ONE place the server writes DNS
+#              rather than reading it: the key authorization the upstream
+#              expects is derived from THIS proxy's account there, so the
+#              original client cannot answer it even in principle.
+#   "http01" — serve the file the upstream asks for, from this server's own
+#              root router at /.well-known/acme-challenge/<token>. This server
+#              does NOT open a second listener: a reverse proxy must forward or
+#              redirect that path here from port 80 of every name being issued
+#              (RFC 8555 §8.3 permits a redirect, so the target need not share
+#              the name — one `return 301` is enough). There is nothing else to
+#              configure, hence no [signer.acme_proxy.http01] table. Cannot
+#              prove a wildcard, since nothing answers on the name
+#              "*.example.com" — use "dns01" for those.
+challenge_strategy = "bypass"       # ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY
+# How often to poll the upstream order while it resolves. The upstream's own
+# Retry-After takes precedence when it sends one.
+poll_interval_ms = 2000             # ACME_PROXY_SIGNER__ACME_PROXY__POLL_INTERVAL_MS
+# Total budget for one upstream issuance. On expiry the local order is marked
+# invalid with an explicit timeout reason, never left processing forever.
+poll_timeout_secs = 300             # ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOUT_SECS
+
+[signer.acme_proxy.eab]
+# This proxy's own upstream External Account Binding credential (RFC 8555
+# §7.3.4), as an alternative to the one-shot
+# `acme-proxy upstream register --eab-kid <kid>` command. Both are the SAME
+# credential: it authorizes exactly one newAccount call and is useless
+# afterwards, since registration itself only ever runs once (guarded by the
+# .kid sidecar next to account_key_path).
+#
+# Putting it here trades away the property that made the admin command the
+# only path — a bootstrap secret living in configuration for the life of the
+# server — for not needing a separate imperative step, which matters when
+# config.toml is already populated by a secrets manager or a templated
+# deployment. Once registration succeeds, `serve` logs a
+# signer_acme_proxy_eab_secret_in_config warning on EVERY startup for as long
+# as hmac_key stays non-empty — the same treatment challenge.bypass and
+# filter.netbox.insecure_skip_verify get — so clear it out once
+# `acme-proxy upstream show` confirms a kid is stored.
+#
+# Both empty (the default) is unchanged from before this table existed:
+# `serve` then requires `acme-proxy upstream register` if the upstream
+# demands EAB. Either field set without the other is a startup error.
+kid = ""                            # ACME_PROXY_SIGNER__ACME_PROXY__EAB__KID
+# SENSITIVE — prefer the environment variable to a file on disk, like every
+# other secret in this file. Base64: url-safe, unpadded url-safe, or standard
+# (the same three forms the admin command accepts) — a value that decodes as
+# none of them is a startup error.
+hmac_key = ""                       # ACME_PROXY_SIGNER__ACME_PROXY__EAB__HMAC_KEY
+
+[signer.acme_proxy.dns01]
+# Only read when challenge_strategy = "dns01". The only provider is "rfc2136",
+# which works with any authoritative server implementing RFC 2136 dynamic
+# update (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than
+# tying the server to one cloud vendor's API.
+provider = "rfc2136"                # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__PROVIDER
+
+[signer.acme_proxy.dns01.rfc2136]
+# host:port of the authoritative server that accepts the update.
+server = ""                         # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__SERVER
+# The zone being updated, e.g. "example.org." (trailing dot).
+zone = ""                           # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__ZONE
+tsig_key_name = ""                  # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_NAME
+# SENSITIVE — but unlike the EAB credential this one is long-lived, since every
+# update needs it, so it legitimately lives in configuration. Prefer the
+# environment variable to a file on disk. Standard base64, as `dnssec-keygen`
+# and BIND emit it — note this is NOT base64url, unlike the EAB secret.
+tsig_key_secret = ""                # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET
+# hmac-sha256 (default), hmac-sha384 or hmac-sha512. HMAC-MD5 is deliberately
+# not offered.
+tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_ALGORITHM
+
+[signer.custom]
+# Only read when backend = "custom" (above). Delegates issuance and
+# revocation to an external script — an HSM tool, an internal PKI CLI, a
+# cloud KMS wrapper, anything that can read a CSR and hand back a chain.
+#
+# An empty script_path is a startup error, the same as [filter.custom].
+script_path = ""                    # ACME_PROXY_SIGNER__CUSTOM__SCRIPT_PATH
+timeout_ms = 5000                   # ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS
+args = []                           # ACME_PROXY_SIGNER__CUSTOM__ARGS
+#
+# Whether the script also answers the "crl" hook (GET /crl) and the
+# "renewal_info" hook (RFC 9773 ARI). Both default to false: an unset script
+# has nothing useful to say here, and the trait's own defaults already cover
+# it sensibly — no CRL published at this endpoint, and "no opinion, compute
+# renewal locally" respectively. Turn either on only once the script actually
+# implements that hook.
+supports_crl = false                 # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_CRL
+supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEWAL_INFO
+#
+# What the server has already checked before the "issue" hook runs, so the
+# script does not have to and must not undo it: the CSR parses, its
+# self-signature verifies, every SAN is a DNS name, that set of DNS names is
+# exactly ACME_SIGNER_IDENTIFIERS, and the subject common name — if it looks
+# like a host name at all — is one of them. That is RFC 8555 §7.4's "the exact
+# same set of requested identifiers", and it is the invariant that makes an
+# authorization mean anything: the account proved control of those names and no
+# others. The script must therefore sign the names in the CSR as they stand and
+# must not add names of its own; a certificate for anything else is one this
+# server's clients never proved they were entitled to.
+#
+# The script is invoked once per hook per request — never for a hook whose
+# `supports_*` flag is off. It receives context via environment variables:
+#   ACME_SIGNER_HOOK        - "issue", "revoke", "crl" or "renewal_info"
+#   ACME_SIGNER_ORDER_ID    - the local order id (issue hook only)
+#   ACME_SIGNER_IDENTIFIERS - comma-separated identifier values (issue hook only)
+#   ACME_SIGNER_REASON      - the RFC 5280 revocation reason code, or empty (revoke hook only)
+#
+# A JSON payload with the full context — including the binary CSR/certificate,
+# standard base64 encoded (NOT base64url, unlike ACME's own fields) — is
+# always piped to stdin, one object per hook:
+#   issue:         {"hook":"issue","order_id":..,"identifiers":[{"type":"dns","value":".."}],"csr_der_base64":".."}
+#   revoke:        {"hook":"revoke","cert_der_base64":"..","reason":<int|null>}
+#   crl:           {"hook":"crl"}
+#   renewal_info:  {"hook":"renewal_info","cert_der_base64":".."}
+#
+# Exit codes and stdout, per hook:
+#   issue        - exit 0: stdout is the PEM certificate chain (leaf then
+#                  issuer), used exactly as [signer.local_ca] would produce
+#                  it. Exit 3 is reserved to mean "bad CSR" (maps to a 400
+#                  the client can act on) — deliberately not exit 1, which is
+#                  what a script under `set -e` produces for an unrelated
+#                  bug, and mapping that to a 400 would hide a real failure
+#                  behind a client-facing error instead of a 500. Any other
+#                  non-zero exit is an internal failure (500); the order is
+#                  marked invalid, matching every other backend's BadCsr-vs-
+#                  Internal split. This backend always answers synchronously
+#                  — there is no "processing" state, since a shelled-out
+#                  script has no way to call back into this server later.
+#   revoke       - exit 0 succeeds; the script is responsible for idempotency
+#                  (revoking an already-revoked certificate must not fail),
+#                  the same contract every signer backend has to meet. Any
+#                  non-zero exit is an internal failure (500).
+#   crl          - exit 0: stdout is the DER-encoded CRL, raw bytes, no
+#                  encoding. Empty stdout on exit 0, or any non-zero exit,
+#                  means "no CRL right now" (GET /crl answers 404); a script
+#                  failure here is logged but never fails the request that
+#                  triggered it, since GET /crl is otherwise unauthenticated
+#                  and doesn't gate issuance.
+#   renewal_info - exit 0 with blank stdout means "no opinion" (falls back to
+#                  this server's local estimate); exit 0 with stdout
+#                  "<start_epoch> <end_epoch>" (whitespace-separated
+#                  integers) gives an explicit renewal window. An optional
+#                  third token is RFC 9773 §4.2's `explanationURL`, served
+#                  verbatim to the client — a page saying why the window has
+#                  that value, e.g. during a mass-revocation event. Anything
+#                  else, or a non-zero exit, is an internal failure.
+#
+# The script does NOT inherit the server's environment: it is started from an
+# empty one holding only the ACME_SIGNER_* variables above plus a minimal PATH
+# (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). This matters
+# even more here than for [filter.custom.*] — the RFC 2136 TSIG secret used by
+# signer.acme_proxy.dns01 lives inside this very [signer] section tree, and a
+# custom signer script has no business reading it.
+#
+# One process is spawned per invocation. A script still running when
+# timeout_ms expires is killed, not left behind.
+#
+# Example (commented out, so this file still describes the all-defaults
+# configuration, i.e. backend = "local_ca" and script_path = ""):
+#
+# [signer.custom]
+# script_path = "/etc/acme-proxy/signer/issue.sh"
+# timeout_ms = 5000
+# args = []
+# supports_crl = true
+# supports_renewal_info = false
+
+[challenge]
+# Which challenge types each new authorization offers, in the order they appear
+# in the authorization object. The client picks one of them to satisfy.
+# Known names: "http-01", "dns-01", "tls-alpn-01".
+#
+# A WILDCARD identifier ("*.example.com") can only be proved with "dns-01"
+# (RFC 8555 §8.4), so a wildcard authorization offers dns-01 alone — and newOrder
+# refuses a wildcard outright when dns-01 is not listed here.
+#
+# An empty list is a startup error: authorizations would carry no challenges, so
+# no client could ever prove control of a name.
+#
+# Note the spelling: the list uses the RFC names ("http-01"), while the per-type
+# tables below use them as TOML keys ("http_01").
+enabled = ["http-01"]               # ACME_PROXY_CHALLENGE__ENABLED
+# Skip validation entirely: triggering a challenge marks it, and its
+# authorization, valid with NO network check.
+#
+# With it on, anyone who can reach this server can obtain a certificate for any
+# name, and the [filter] section below is the only access control. The server
+# logs a `challenge_validation_bypassed` warning at startup saying so.
+#
+# This used to default to true — it was the behaviour predating real validation,
+# and the default was kept so an existing deployment survived that upgrade. It
+# now defaults to FALSE: combined with an empty filter.enabled and a default bind
+# on every interface, the old default meant a server started with no
+# configuration at all was an open certificate authority. Turning validation off
+# is a legitimate thing to want (a private CA behind a filter that already knows
+# who may ask for what), but it is worth having to ask for.
+#
+# UPGRADING: a deployment that relied on the old default must now set this
+# explicitly, or every challenge will be really validated and issuance will
+# start failing for names this server cannot reach.
+bypass = false                      # ACME_PROXY_CHALLENGE__BYPASS
+# Budget for one validation attempt. Validation runs INSIDE the POST /chall/{id}
+# request — there is no `processing` state and no background task — so this is
+# also the worst case that request can take.
+timeout_ms = 5000                   # ACME_PROXY_CHALLENGE__TIMEOUT_MS
+
+[challenge.http_01]
+# GET http://<identifier>:<port>/.well-known/acme-challenge/<token>, whose body
+# must be the key authorization (RFC 8555 §8.3). Leading and trailing whitespace
+# is ignored; anything else must match exactly.
+port = 80                           # ACME_PROXY_CHALLENGE__HTTP_01__PORT
+# Port a redirect may point at when it switches to https. The responder's
+# certificate is NOT validated — RFC 8555 §8.3 says so explicitly, because the
+# proof is the body, not the transport.
+https_port = 443                    # ACME_PROXY_CHALLENGE__HTTP_01__HTTPS_PORT
+# Follow 3xx responses. Redirecting :80 to https is the most common web server
+# configuration, so this is on by default.
+#
+# It does mean the server issues requests wherever a client points a Location
+# header. Three things keep that contained: only http/https and only the two
+# ports above are followed, the whole chain shares timeout_ms, and a mismatching
+# response body is NEVER echoed back to the client — so a redirect cannot be used
+# to read internal pages. On a network where even the request is unwelcome, set
+# this to false.
+follow_redirects = true             # ACME_PROXY_CHALLENGE__HTTP_01__FOLLOW_REDIRECTS
+max_redirects = 5                   # ACME_PROXY_CHALLENGE__HTTP_01__MAX_REDIRECTS
+# Bodies larger than this are refused WITHOUT being compared: the key
+# authorization is under a hundred bytes and nothing else belongs at that URL.
+max_response_bytes = 4096           # ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONSE_BYTES
+
+# "dns-01" has no settings of its own. It looks up TXT records at
+# _acme-challenge.<identifier> through the system resolver, with caching disabled
+# so a record the client has just published is not masked by a cached negative
+# answer. The value must be base64url(SHA256(key authorization)) — the digest,
+# not the key authorization itself, which is what http-01 serves.
+
+[challenge.tls_alpn_01]
+# TLS handshake with SNI = <identifier> and ALPN "acme-tls/1"; the certificate
+# presented must carry exactly one dNSName (the identifier) and the critical
+# id-pe-acmeIdentifier extension holding SHA-256 of the key authorization
+# (RFC 8737). No separate listener is needed — the responder is the TLS server
+# that is already there.
+port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
+
+[filter]
+# Request filtering: which clients may reach the server, and which names they may
+# have certified. Independent of [challenge] above, and the only access control
+# left when challenge.bypass is on — with it set, anyone who can reach this
+# server can obtain a certificate for any name.
+#
+# Filters run in the order listed and ALL of them must pass; the first denial
+# wins. An empty list (the default) disables filtering entirely, and the server
+# logs a `filters_disabled` warning at startup saying so.
+# Known names: "allowed_ip", "reverse_dns", "identifiers", "custom", "netbox".
+enabled = []                        # ACME_PROXY_FILTER__ENABLED
+# Paths that skip connection-level filtering, relative to the profile's own
+# mount point (so "/directory", not "/profile/<name>/directory").
+#
+# Empty by default: `/health` and the other server-level routes are served by
+# the root router, which no profile's filters ever see, so nothing needs
+# exempting for a health probe to keep working from a blocked address.
+exempt_paths = []                   # ACME_PROXY_FILTER__EXEMPT_PATHS
+# CIDRs of reverse proxies whose forwarded-for header is believed. Leave empty
+# when clients connect directly: the header is then ignored, and a client cannot
+# claim an allowlisted address by setting it itself.
+trusted_proxies = []                # ACME_PROXY_FILTER__TRUSTED_PROXIES
+# Header carrying the original client address, read only from a trusted proxy.
+forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
+# Which of the named [filter.custom.<name>] entries below to run, and in what
+# order, when "custom" is listed in `enabled` above. See [filter.custom].
+custom_enabled = []                 # ACME_PROXY_FILTER__CUSTOM_ENABLED
+
+[filter.allowed_ip]
+# Which networks may reach the server. CIDR notation or a bare address (which
+# becomes a host route), IPv4 or IPv6. For example:
+#   allow = ["192.168.1.0/24", "10.0.0.0/8", "fd00::/8", "203.0.113.7"]
+#   deny  = ["192.168.1.66"]
+#
+# `deny` is checked first and wins, and an empty `allow` imposes no constraint,
+# which gives three usable shapes:
+#   - allow only: a strict allowlist.
+#   - deny only:  a blocklist, everything else served.
+#   - both:       an allowlist with holes punched in it (as above).
+# Deny-wins is plain membership, not longest-prefix-match: a /32 in `allow` does
+# not beat a /8 in `deny`.
+#
+# Enabling "allowed_ip" with BOTH lists empty is a startup error, since it would
+# accept every request — an enabled filter that does nothing.
+allow = []                          # ACME_PROXY_FILTER__ALLOWED_IP__ALLOW
+deny  = []                          # ACME_PROXY_FILTER__ALLOWED_IP__DENY
+
+[filter.reverse_dns]
+# Require the client's address to have a usable PTR record.
+# Forward confirmation re-resolves that PTR name and requires the client's own
+# address back. Keep it on: a PTR alone proves nothing, because it is published
+# by whoever controls the reverse zone — often the client itself.
+require_forward_confirm = true      # ACME_PROXY_FILTER__REVERSE_DNS__REQUIRE_FORWARD_CONFIRM
+# Optional regexes on the resolved hostname. Empty `allow` accepts any confirmed
+# hostname; `deny` is checked first. Both are anchored (see [filter.identifiers]).
+allow = []                          # ACME_PROXY_FILTER__REVERSE_DNS__ALLOW
+deny  = []                          # ACME_PROXY_FILTER__REVERSE_DNS__DENY
+# Budget for the whole PTR + confirmation exchange. A timeout is reported as a
+# server error rather than a denial, since the server failed to decide.
+timeout_ms = 2000                   # ACME_PROXY_FILTER__REVERSE_DNS__TIMEOUT_MS
+
+[filter.identifiers]
+# Which names a client may have certified. Checked at newOrder against the
+# requested identifiers, and again at finalize against the CSR itself — the
+# second is the one that matters, because the CSR is what gets signed.
+#
+# A CSR can request more than DNS names: its subject alternative names may be IP
+# addresses, email addresses or URIs, and its subject may carry a common name
+# ("cn") that no SAN repeats. All of them are checked, so a rule cannot be
+# sidestepped by moving a name from a DNS SAN into the common name.
+# Any type not listed here is refused outright.
+allowed_types = ["dns", "cn"]       # ACME_PROXY_FILTER__IDENTIFIERS__ALLOWED_TYPES
+# Regexes matched against each value, case-insensitively. They are ANCHORED
+# automatically as `^(?:...)$` — without that, an allow entry of `example\.com`
+# would also match `example.com.evil.net`. Write `.*\.example\.com` for a suffix.
+#
+# Values are normalized before matching: DNS names are lowercased with any
+# trailing dot removed, and IP addresses are canonicalized, so a pattern does not
+# have to anticipate `EXAMPLE.com.` or `::ffff:10.0.0.1`.
+#
+# `deny` wins over `allow` and reaches every value, common name included.
+# `allow` constrains only the names the certificate is issued FOR (those from
+# subject alternative names), not the common name, which is legacy subject
+# metadata and is often a human label rather than a hostname.
+# An empty `allow` permits any value whose type is allowed. For example:
+#   allow = ['.*\.example\.com']
+#   deny  = ['.*\.internal\.example\.com']
+allow = []                          # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW
+deny  = []                          # ACME_PROXY_FILTER__IDENTIFIERS__DENY
+# Permit wildcard identifiers ("*.example.com"). OFF by default, because the
+# patterns above are anchored: a deny rule for `secret\.example\.com` does NOT
+# match the string `*.example.com`, yet the resulting certificate covers that
+# name anyway. Leaving this false means enabling the dns-01 challenge — which is
+# what makes wildcards orderable at all — cannot silently widen a list you
+# already rely on. Turn it on once the patterns account for the `*.` form.
+allow_wildcards = false             # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILDCARDS
+
+# filter.custom holds NAMED external scripts, e.g. [filter.custom.check-network]
+# below. Which of them actually run, and in what order, is `custom_enabled`
+# (see [filter] above) — not every name defined here, so a script can be kept
+# around and switched on or off (e.g. per environment, via that one env var)
+# without redefining it. "custom" listed once in filter.enabled runs every
+# name custom_enabled lists, spliced into the same all-must-pass chain as
+# every other filter — not a nested chain of its own. custom_enabled naming
+# an entry not defined here, or "custom" enabled with custom_enabled empty, is
+# a startup error, the same as any other enabled filter that resolves to
+# nothing configured.
+#
+# Each name must match ^[a-z0-9-]+$ — lowercase letters, digits and `-`, the
+# same restriction profile names have. Reason: a name is also an environment
+# variable segment (ACME_PROXY_FILTER__CUSTOM__<NAME>__...), and the config
+# crate lowercases those, so e.g. "CheckNetwork" in this file and
+# "ACME_PROXY_FILTER__CUSTOM__CHECKNETWORK__..." would silently become TWO
+# different entries instead of one overriding the other.
+#
+# Each script receives context via environment variables:
+#   ACME_FILTER_HOOK        - "connection" or "identifiers"
+#   ACME_FILTER_CLIENT_IP   - Client IP address (or empty if unresolvable)
+#   ACME_FILTER_METHOD      - HTTP method (for connection hook)
+#   ACME_FILTER_PATH        - HTTP path (for connection hook)
+#   ACME_FILTER_ACCOUNT_ID  - Account ID (for identifiers hook)
+#   ACME_FILTER_STAGE       - "newOrder" or "CSR" (for identifiers hook)
+#   ACME_FILTER_IDENTIFIERS - Comma-separated list of values (for identifiers hook)
+#
+# If pass_stdin is true, a JSON payload with the full context is also piped to stdin.
+# An exit code of 0 permits the request. Exit code 1 (or any non-zero code) denies it,
+# using the first non-empty line of stdout (or stderr) as the detail message.
+#
+# The script does NOT inherit the server's environment: it is started from an
+# empty one holding only the ACME_FILTER_* variables above plus a minimal PATH
+# (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). This server
+# legitimately carries secrets in its own environment — configuration layers in
+# from ACME_PROXY_* variables, which is where the RFC 2136 TSIG key may live —
+# and a filter hook has no business reading them. A script needing a value of
+# its own should read it from a file, or be given it through `args`.
+#
+# One process is spawned per enabled script per hook invocation, i.e. per
+# script named in custom_enabled per non-exempt request for the connection
+# hook: keep each script cheap, and keep timeout_ms tight. A script still
+# running when timeout_ms expires is killed, not left behind.
+#
+# Two-script example (commented out, so this file still describes the
+# all-defaults configuration, i.e. custom_enabled = [] and no scripts
+# configured). Turning it on needs both this and
+# custom_enabled = ["check-network", "check-inventory"] above:
+#
+# [filter.custom.check-network]
+# script_path = "/etc/acme-proxy/filters/check-network.sh"
+# timeout_ms = 5000
+# pass_stdin = true
+# args = []
+#
+# [filter.custom.check-inventory]
+# script_path = "/etc/acme-proxy/filters/check-inventory.sh"
+# timeout_ms = 5000
+# pass_stdin = true
+# args = []
+#
+# Equivalent via environment variables:
+#   ACME_PROXY_FILTER__CUSTOM_ENABLED=check-network,check-inventory
+#   ACME_PROXY_FILTER__CUSTOM__CHECK-NETWORK__SCRIPT_PATH=/etc/acme-proxy/filters/check-network.sh
+#   ACME_PROXY_FILTER__CUSTOM__CHECK-INVENTORY__SCRIPT_PATH=/etc/acme-proxy/filters/check-inventory.sh
+
+[filter.netbox]
+# Ask NetBox whether the client's address owns the names it is asking for.
+#
+# Where [filter.identifiers] answers "may anyone here have this name?", this one
+# answers "may THIS address have THIS name?" — and reads the answer from the
+# inventory instead of a list maintained here. One lookup per check:
+#   GET <url>/api/ipam/ip-addresses/?address=<client ip>
+# and what comes back permits names two ways: the address object's own dns_name
+# (see use_dns_name), and the custom field named below.
+#
+# Matching is EXACT, case-insensitively and ignoring a trailing dot. There is no
+# suffix rule and no wildcard expansion: an entry `example.com` does not permit
+# `a.example.com`, and a request for `*.example.com` needs that exact string in
+# NetBox. Same reasoning as the anchored patterns in [filter.identifiers].
+#
+# An `ip` identifier is permitted when it is the connecting address itself, or
+# when it is listed like any other name. A common name ("cn") is skipped, as in
+# [filter.identifiers]. Any other type is refused: NetBox has nothing to say
+# about an email address or a URI, and this filter refuses what it cannot
+# confirm.
+#
+# NetBox being unreachable, answering 5xx, refusing the token or timing out is
+# NOT a denial: it is reported as a server error (500) the client can retry, so
+# an outage stops issuance rather than permitting everything.
+#
+# Base URL of the instance. Any path is kept, so a NetBox served under a subpath
+# (https://example.com/netbox) works. Required when "netbox" is in filter.enabled.
+url = ""                            # ACME_PROXY_FILTER__NETBOX__URL
+# API token, sent as `Authorization: Token <token>`. A read-only token is
+# enough. Prefer the environment variable over writing it here: this is a
+# secret, like [signer.acme_proxy.dns01.rfc2136]'s TSIG key.
+token = ""                          # ACME_PROXY_FILTER__NETBOX__TOKEN
+# Custom field holding the extra names an address may have certified. Configure
+# it in NetBox as a multi-select or text field on ipam.ipaddress (and, for the
+# fallback below, on dcim.device / virtualization.virtualmachine). A single
+# string is accepted as well as a list.
+custom_field = "acme_allowed_names"  # ACME_PROXY_FILTER__NETBOX__CUSTOM_FIELD
+# Whether the address object's own dns_name counts as a permitted name.
+use_dns_name = true                 # ACME_PROXY_FILTER__NETBOX__USE_DNS_NAME
+# When the address object carries no value for custom_field, read it from the
+# device or virtual machine the address is assigned to — so the names can be
+# declared once per machine rather than once per address. It is a fallback and
+# not a union on purpose: a value set on the address is the more specific
+# statement, and narrowing one address of a machine must not be widened again by
+# the machine-wide list.
+device_fallback = true              # ACME_PROXY_FILTER__NETBOX__DEVICE_FALLBACK
+# Extra CA certificates (PEM) to trust on top of the public roots, for a NetBox
+# behind an internal PKI. Ignored when insecure_skip_verify is on.
+ca_cert_path = ""                   # ACME_PROXY_FILTER__NETBOX__CA_CERT_PATH
+# Skip verification of NetBox's TLS certificate entirely.
+#
+# Meant as a temporary way out of an expired NetBox certificate, so that issuing
+# certificates does not stop while that one is renewed. With it on, the answers
+# this filter trusts could come from anyone able to intercept the connection —
+# unlike the challenge validators, where the certificate is deliberately not
+# checked because the proof is elsewhere, here it is the only thing identifying
+# the service deciding who may have a name certified. Startup logs a
+# `filter_netbox_tls_verification_disabled` warning for as long as it is set,
+# the counterpart of `tls_disabled` and `challenge_validation_bypassed`.
+insecure_skip_verify = false        # ACME_PROXY_FILTER__NETBOX__INSECURE_SKIP_VERIFY
+# Budget for the whole exchange — the address lookup plus the optional device
+# one. Reported as a server error rather than a denial, since the server failed
+# to decide. This runs inside newOrder and finalize, so it is also part of those
+# requests' worst case.
+timeout_ms = 5000                   # ACME_PROXY_FILTER__NETBOX__TIMEOUT_MS
+
+[eab]
+# Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that
+# would create an account. A request missing it gets 400
+# externalAccountRequired; one that is malformed, unknown, revoked, or fails to
+# verify gets 400/401 accordingly. onlyReturnExisting lookups are exempt, since
+# they never create an account.
+#
+# OFF by default, like essentially every public ACME CA (Let's Encrypt itself
+# does not require it): this is a policy choice, not a "less secure than it
+# looks" default, so — unlike filter.enabled/challenge.bypass — it earns no
+# startup warning when left off.
+#
+# Keys are managed with the `eab` admin subcommand (create/list/show/revoke),
+# never through this file: a credential must be revocable without a restart.
+enabled = false                     # ACME_PROXY_EAB__ENABLED
+
+[meta]
+# The optional `meta` members of the directory object (RFC 8555 §7.1.1). All
+# empty by default; an empty one is omitted from the directory rather than
+# advertised blank. Like every other profile section, these can be overridden
+# per profile ([profiles.<name>.meta]) — two endpoints on one process can have
+# different terms.
+
+# A URL identifying this endpoint's current terms of service (§7.1.1).
+#
+# Not merely cosmetic: setting it turns on §7.3.3's agreement requirement, so
+# newAccount then refuses any request that does not carry
+# `termsOfServiceAgreed: true`, answering 403 userActionRequired with a
+# `Link: <url>;rel="terms-of-service"` header. Left empty (the default) no
+# agreement is asked for, and the account object reflects no
+# `termsOfServiceAgreed` member at all — an account created here never agreed
+# to anything, and saying `false` would misrepresent that.
+terms_of_service = ""               # ACME_PROXY_META__TERMS_OF_SERVICE
+
+# An HTTP(S) URL with more information about this ACME server, for a human who
+# found the endpoint and wants to know whose it is.
+website = ""                        # ACME_PROXY_META__WEBSITE
+
+# The hostnames this CA recognizes in CAA records (§7.1.1). Advertised only —
+# this server performs no CAA checking of its own, since it is built to serve
+# private networks where public CAA policy is not the trust anchor.
+caa_identities = []                 # ACME_PROXY_META__CAA_IDENTITIES
+
+[notify]
+# Operator notifications on lifecycle events: a profile mounting at startup,
+# account creation/deactivation, certificate issuance/revocation, and a
+# challenge validation failure. Dispatch is fire-and-forget — a notify
+# backend can never fail or delay the ACME response that triggered it; any
+# delivery failure is only logged.
+#
+# Which backends are active: "email", "mattermost", "custom". Empty (default)
+# means no notifications are sent at all.
+enabled = []                        # ACME_PROXY_NOTIFY__ENABLED
+# Which of [notify.custom]'s entries to run, when "custom" is listed above —
+# same shape as [filter.custom]/[filter]/custom_enabled: "custom" enabled with
+# this empty, or an entry named here that isn't defined below, is a startup
+# error.
+custom_enabled = []                 # ACME_PROXY_NOTIFY__CUSTOM_ENABLED
+# Filesystem directory to look for template overrides in, checked per
+# template file before falling back to the compiled-in default — so an
+# operator can override just one message (e.g.
+# "email/certificate_issued.body.j2") and leave every other one at its
+# default. Empty (default) means compiled-in defaults only.
+template_dir = ""                   # ACME_PROXY_NOTIFY__TEMPLATE_DIR
+
+[notify.email]
+# SMTP delivery. Required once "email" is in notify.enabled: smtp_host, from
+# and to.
+smtp_host = ""                      # ACME_PROXY_NOTIFY__EMAIL__SMTP_HOST
+smtp_port = 587                     # ACME_PROXY_NOTIFY__EMAIL__SMTP_PORT
+smtp_username = ""                  # ACME_PROXY_NOTIFY__EMAIL__SMTP_USERNAME
+# SENSITIVE — prefer the environment variable to a file on disk, like every
+# other secret in this file (the RFC 2136 TSIG key, the NetBox token).
+smtp_password = ""                  # ACME_PROXY_NOTIFY__EMAIL__SMTP_PASSWORD
+# "starttls" (default), "tls" (implicit TLS) or "none".
+smtp_security = "starttls"          # ACME_PROXY_NOTIFY__EMAIL__SMTP_SECURITY
+from = ""                           # ACME_PROXY_NOTIFY__EMAIL__FROM
+to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
+# Which of the six lifecycle events this backend reacts to. Defaults to all
+# six, listed explicitly rather than relying on "empty means all" — every
+# other list field in this file treats empty as OFF, so reusing that
+# convention here would silently mean "no events" the moment this is set to [].
+events = ["profile_mounted", "account_created", "account_deactivated",
+          "certificate_issued", "certificate_revoked", "challenge_failed"]
+                                     # ACME_PROXY_NOTIFY__EMAIL__EVENTS
+timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
+
+[notify.mattermost]
+# An incoming webhook. Required once "mattermost" is in notify.enabled:
+# webhook_url.
+webhook_url = ""                    # ACME_PROXY_NOTIFY__MATTERMOST__WEBHOOK_URL
+# Empty means the webhook's own configured default channel/username.
+channel = ""                        # ACME_PROXY_NOTIFY__MATTERMOST__CHANNEL
+username = ""                       # ACME_PROXY_NOTIFY__MATTERMOST__USERNAME
+events = ["profile_mounted", "account_created", "account_deactivated",
+          "certificate_issued", "certificate_revoked", "challenge_failed"]
+                                     # ACME_PROXY_NOTIFY__MATTERMOST__EVENTS
+timeout_ms = 5000                   # ACME_PROXY_NOTIFY__MATTERMOST__TIMEOUT_MS
+
+# notify.custom holds NAMED external scripts/webhook wrappers, the
+# notify-side counterpart of filter.custom/signer.custom — the same shape,
+# same "shell out to a script" contract, same restriction on names
+# (^[a-z0-9-]+$, for the same ACME_PROXY_NOTIFY__CUSTOM__<NAME>__... reason).
+# This is what lets an operator wire up a channel this server has no
+# built-in support for (Slack, PagerDuty, an internal paging system) without
+# a code change.
+#
+# Context via environment variables:
+#   ACME_NOTIFY_HOOK          - event kind, e.g. "certificate_issued"
+#   ACME_NOTIFY_PROFILE       - the profile name
+#   ACME_NOTIFY_CLIENT_IP     - client IP (or empty — always empty for the
+#                               asynchronous acme_proxy completion path,
+#                               which has no request in scope at all)
+#   ACME_NOTIFY_ACCOUNT_ID    - account id (or empty, not every event has one)
+#   ACME_NOTIFY_ORDER_ID      - order id (or empty)
+#   ACME_NOTIFY_CERT_SERIAL   - certificate serial (or empty)
+#   ACME_NOTIFY_IDENTIFIERS   - comma-separated identifier values (or empty)
+#
+# A JSON payload with the full event data, tagged "hook", is always piped to
+# stdin. Unlike signer.custom's "issue" hook, there is no reserved exit code
+# for a distinct failure kind: this is fire-and-forget, not request-blocking,
+# so any non-zero exit is uniformly "delivery failed" (the first non-empty
+# line of stdout, or stderr, becomes the logged detail).
+#
+# The script does NOT inherit the server's environment, for the same reason
+# [filter.custom]/[signer.custom] don't: this process's own environment may
+# hold secrets (e.g. notify.email.smtp_password), and a notify script has no
+# business reading them.
+#
+# One process is spawned per enabled script per event. A script still
+# running when timeout_ms expires is killed, not left behind.
+#
+# Example (commented out, so this file still describes the all-defaults
+# configuration, i.e. custom_enabled = [] and no scripts configured):
+#
+# [notify.custom.slack]
+# script_path = "/etc/acme-proxy/notify/slack.sh"
+# timeout_ms = 5000
+# args = []
+# events = ["certificate_issued", "certificate_revoked"]
+
+[dns]
+# The resolver every DNS lookup this server makes goes through: the dns-01 TXT
+# query, the connect target http-01/tls-alpn-01 resolve before reaching out,
+# and the PTR/forward lookups filter.reverse_dns makes. One knob rather than
+# one per consumer, because they all answer the same question — which
+# nameserver this process trusts.
+#
+# Unset by default: every lookup uses the system configuration
+# (/etc/resolv.conf), exactly as before this setting existed. Set it to point
+# every lookup at a specific nameserver instead — a split-horizon test network
+# being the main reason to.
+# resolver = "10.60.0.2:53"           # ACME_PROXY_DNS__RESOLVER
+
+# ---------------------------------------------------------------------------
+# Profiles: the ACME endpoints this server actually serves.
+# ---------------------------------------------------------------------------
+#
+# Everything above is the *base*. A profile is one ACME endpoint built from it:
+# it inherits every [signer] / [filter] / [challenge] / [eab] / [order] /
+# [notify] value above, key by key, and overrides only what it states. So the
+# empty table below is a complete endpoint, identical to the configuration
+# above.
+#
+# At least one enabled profile is required — without one the server has nothing
+# to serve, and it says so at startup rather than answering 404 to everything.
+#
+# Each profile is mounted at /profile/<name>, derived from the name and never
+# configured: that namespace is reserved, so an endpoint can never collide with
+# a server route (/health) present or future. The name is therefore public API
+# — renaming it invalidates every account and order URL its clients hold. Use
+# lowercase letters, digits and `-`.
+#
+# From the environment: ACME_PROXY_PROFILES__<NAME>__<SECTION>__<KEY>, e.g.
+# `ACME_PROXY_PROFILES__LE__SIGNER__BACKEND=acme_proxy`. A profile that
+# overrides nothing still needs one variable to exist at all — set
+# `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true`.
+
+[profiles.default]
+# Mount this profile. Default true; set it to false to park an endpoint without
+# deleting its configuration.
+enabled = true                      # ACME_PROXY_PROFILES__DEFAULT__ENABLED
+
+# A second endpoint, relaying to a real upstream CA while keeping the filters
+# and challenge settings from the base above. Commented out because the example
+# must match the defaults it documents; uncomment and adapt.
+#
+# [profiles.le]
+# signer.backend = "acme_proxy"
+# signer.acme_proxy.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+# signer.acme_proxy.account_key_path = "le_upstream.key"
+# challenge.bypass = false
