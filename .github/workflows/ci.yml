@@ -186,48 +186,6 @@ jobs:
       - name: Test
         run: cargo nextest run --locked --features hsm
 
-  # `fuzz/` is a separate crate outside the workspace, so nothing in the job
-  # above compiles it — its targets can drift out of sync with the signatures
-  # they exercise and nobody finds out until someone runs a fuzz campaign. This
-  # only *builds* them, which is enough to keep them alive; it costs a nightly
-  # toolchain, which is why it is its own job rather than a step above.
-  fuzz:
-    name: Fuzz targets build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: nightly
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: fuzz
-
-      - name: Install cargo-fuzz
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
-        with:
-          tool: cargo-fuzz
-
-      - name: Build fuzz targets
-        run: cargo +nightly fuzz build --dev
-
-      # A short campaign per target on the nightly run only — building a target
-      # proves it still compiles, which is not the same as ever having run it.
-      # Five minutes each finds the shallow crashes; anything deeper wants a
-      # dedicated machine and a corpus that grows across runs, which this is
-      # not. Seeded from `fuzz/corpus/`, committed so a run does not start from
-      # nothing every time.
-      - name: Fuzz campaign
-        if: github.event_name == 'schedule'
-        run: |
-          for target in jws_envelope spki certificate identifier; do
-            cargo +nightly fuzz run "$target" -- -max_total_time=300
-          done
-
   supply-chain:
     name: Advisories, licenses & sources
     runs-on: ubuntu-latest

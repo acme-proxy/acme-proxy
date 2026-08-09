@@ -1,5 +1,4 @@
 /target/
-/fuzz/target/
 /tests/e2e/netbox-mock/target
 /data/
 /doc/book/
