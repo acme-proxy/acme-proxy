@@ -4,6 +4,7 @@
 [![Documentation](https://img.shields.io/badge/docs-mdBook-blue)](https://acme-proxy.github.io/acme-proxy/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![MSRV 1.97](https://img.shields.io/badge/MSRV-1.97-orange)
+![Coverage ≥96%](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
 
 An ACME (RFC 8555) server in Rust, built on [axum](https://docs.rs/axum). It sits
 between your internal clients — certbot, acme.sh, lego, Traefik, Caddy — and the
@@ -159,6 +160,30 @@ cargo clippy --all-targets -- -D warnings
 `cargo nextest` is required rather than preferred: several tests execute script
 files they have just written, which fails intermittently with `ETXTBSY` under
 `cargo test`'s thread-per-test model.
+
+### Coverage
+
+CI enforces a hard floor of **96% of lines**, so a change that adds a branch
+generally has to add the test that covers it. `main.rs` is excluded — it is
+socket and exit wiring, and counting it would move the number without anyone
+being able to act on it. The same command locally:
+
+```bash
+cargo install cargo-llvm-cov          # plus: rustup component add llvm-tools-preview
+cargo llvm-cov nextest --summary-only --ignore-filename-regex 'src/main\.rs'
+cargo llvm-cov nextest --html         # target/llvm-cov/html/index.html
+```
+
+Every CI run publishes the per-file table on its own summary page and attaches
+the full report — `lcov.info` plus the browsable HTML tree — as the
+`coverage-report` artifact, including the runs that miss the floor, since those
+are the ones worth reading.
+
+> A handler carrying `#[instrument]` reports far lower coverage than it
+> actually has: the attribute moves the body into a generated `async` block, so
+> the body lines carry no region at all. Check the file in
+> `cargo llvm-cov report --text` before writing tests against a percentage. See
+> [Testing & Coverage](https://acme-proxy.github.io/acme-proxy/dev/testing.html).
 
 The end-to-end suite runs real ACME clients against a real server in containers
 and is `#[ignore]`d by default:

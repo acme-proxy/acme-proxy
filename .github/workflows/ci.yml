@@ -68,20 +68,68 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      # Runs the unit + integration tests under instrumentation and prints the
-      # per-file coverage summary. `main.rs` is only socket/exit wiring, so it is
-      # excluded to keep the metric about testable code. `--fail-under-lines` is a
-      # regression ratchet, set just below the current ~96%.
+      # Runs the unit + integration tests under instrumentation. `--no-report`
+      # keeps the raw profiles on disk instead of rendering one report and
+      # discarding them, so the three `cargo llvm-cov report` invocations below
+      # are three views of a single test run rather than three test runs.
       #
       # `nextest` here is not interchangeable with plain `cargo test`: the
       # `custom` script tests in `signer`/`filter`/`notify` exec a file they
       # just wrote, which intermittently fails `ETXTBSY` when tests share one
       # process (see the note on `write_script` in `src/signer/custom.rs`).
       - name: Test with coverage
+        run: cargo llvm-cov nextest --locked --no-report
+
+      # The reports themselves, none of which gates: the gate is the next step,
+      # kept separate so a run that lands below the floor still publishes the
+      # report saying which file lost the lines. `main.rs` is excluded from
+      # every view — it is socket/exit wiring, so counting it would move the
+      # metric without anyone being able to act on it — and the regex has to be
+      # repeated per invocation, since the filtering happens at report time.
+      #
+      # `lcov.info` is the machine-readable form (any coverage viewer, and the
+      # input a service would take if one is ever added); the HTML tree is what
+      # a human actually opens from the artifact; the summary goes to the job
+      # summary so the per-file table is on the run page itself, without
+      # downloading anything or unfolding a log group.
+      - name: Coverage reports
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info \
+            --ignore-filename-regex 'src/main\.rs'
+          cargo llvm-cov report --html \
+            --ignore-filename-regex 'src/main\.rs'
+          {
+            echo '## Coverage'
+            echo
+            echo '```text'
+            cargo llvm-cov report --summary-only \
+              --ignore-filename-regex 'src/main\.rs'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The ratchet, set just below the current ~96%. A separate step from the
+      # rendering above so the failure names itself on the run page: "Coverage
+      # floor" red is a sentence, a `report` step red is a question.
+      - name: Coverage floor
         run: >
-          cargo llvm-cov nextest --locked --summary-only
+          cargo llvm-cov report --summary-only
           --ignore-filename-regex 'src/main\.rs'
           --fail-under-lines 96
+
+      # `always()`, because the run where the floor was missed is exactly the
+      # run whose report somebody wants to read. Retained for a fortnight
+      # rather than the 90-day default: this is a debugging aid tied to one
+      # commit, not a record.
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            target/llvm-cov/html
+          retention-days: 14
+          if-no-files-found: ignore
 
       # `cargo llvm-cov` does not run doc-tests, so the `rust,no_run` startup
       # example in `src/lib.rs` is otherwise never compiled — and it calls
