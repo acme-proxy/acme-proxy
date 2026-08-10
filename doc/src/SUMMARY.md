@@ -25,8 +25,10 @@
   - [Allowed IP](filters/allowed_ip.md)
   - [Reverse DNS](filters/reverse_dns.md)
   - [Identifiers](filters/identifiers.md)
-  - [NetBox](filters/netbox.md)
   - [Custom Script](filters/custom.md)
+- [IPAM](ipam/index.md)
+  - [NetBox](ipam/netbox.md)
+  - [phpIPAM](ipam/phpipam.md)
 
 # Configuration
 - [Configuration Reference](configuration/reference.md)

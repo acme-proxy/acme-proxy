@@ -59,7 +59,7 @@ pub mod client_ip;
 pub mod custom;
 pub mod identifiers;
 pub mod ip_allow;
-pub mod netbox;
+pub mod ipam;
 pub mod reverse_dns;
 
 pub use client_ip::{ClientIp, ProxyPolicy};
@@ -71,7 +71,7 @@ pub use client_ip::{ClientIp, ProxyPolicy};
 /// it, and CSR generators routinely put a human label there (`rcgen`'s own
 /// default is the string `rcgen self signed cert`). Filters that decide what a
 /// certificate may be issued *for* therefore leave these alone: `identifiers`
-/// exempts them from its `allow` list, and `netbox` never asks NetBox to
+/// exempts them from its `allow` list, and `ipam` never asks an inventory to
 /// confirm one. Refusals still reach them — see
 /// [`identifiers`](self::identifiers) for why the two directions differ.
 pub(crate) const SUBJECT_ONLY_TYPES: &[&str] = &["cn"];
@@ -319,18 +319,25 @@ fn log_rejection(filter: &'static str, hook: &str, client_ip: Option<IpAddr>, er
 /// since both answer the same question — which nameserver this process trusts.
 /// Builds the configured filter chain.
 ///
-/// Takes both a `DnsConfig` and an already-built `resolver`, which looks
-/// redundant and is not. `reverse_dns` builds its own **cached** resolver from
-/// the config: a PTR lookup for an address that keeps connecting is exactly
-/// what a cache is for. `netbox` uses the shared **uncached** one, because that
-/// is the resolver every outbound HTTP hop in this server goes through, and it
-/// is uncached so a `dns-01` record published moments before a trigger is not
-/// defeated by a cached negative. Handing `reverse_dns` the uncached one would
-/// quietly turn every filtered request into a fresh PTR query.
+/// Takes a `DnsConfig` rather than the process's shared resolver, because the
+/// one filter that resolves anything builds its own **cached** one from it: a
+/// PTR lookup for an address that keeps connecting is exactly what a cache is
+/// for, while the shared resolver is deliberately uncached so a `dns-01` record
+/// published moments before a trigger is not defeated by a cached negative.
+/// Handing `reverse_dns` the uncached one would quietly turn every filtered
+/// request into a fresh PTR query. (It used to take both, for `netbox`'s HTTP
+/// client; that lives in [`ipam`](crate::ipam) now and is handed the shared
+/// resolver there.)
+///
+/// `ipam` is the profile's already-built inventory — `None` when
+/// `ipam.backend` is unset, which is a startup error if the `ipam` filter is
+/// enabled. It is built by [`Profile::build_all`](crate::Profile::build_all)
+/// rather than here because it is its own configuration section with its own
+/// selector, and this chain is one of its consumers rather than its owner.
 pub fn from_config(
     cfg: &FilterConfig,
     dns: &crate::config::DnsConfig,
-    resolver: Arc<dyn crate::dns::Resolver>,
+    ipam: Option<Arc<crate::ipam::IpamRegistry>>,
 ) -> anyhow::Result<Arc<FilterChain>> {
     let proxy = ProxyPolicy::new(&cfg.trusted_proxies, &cfg.forwarded_header)?;
 
@@ -355,10 +362,28 @@ pub fn from_config(
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?
             }
-            "netbox" => vec![Arc::new(netbox::NetboxFilter::from_config(
-                &cfg.netbox,
-                resolver.clone(),
-            )?)],
+            "ipam" => {
+                let registry = ipam.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "the `ipam` filter is enabled but ipam.backend is empty; set \
+                         ipam.backend (`netbox` or `phpipam`) and configure the matching \
+                         [ipam.<backend>] section, or remove `ipam` from filter.enabled"
+                    )
+                })?;
+                vec![Arc::new(ipam::IpamFilter::new(registry))]
+            }
+            // Renamed in the release that lifted NetBox out of this chain into
+            // its own subsystem. Refused by name rather than aliased, the way
+            // `signer.backend = "acme_proxy"` is: the section moved too, so a
+            // silent alias would leave `[filter.netbox]` being read by nothing
+            // while the server came up looking configured.
+            "netbox" => anyhow::bail!(
+                "the `netbox` filter is now `ipam`: set filter.enabled = [\"ipam\"] and \
+                 ipam.backend = \"netbox\", and move the [filter.netbox] section to \
+                 [ipam.netbox] — its keys are unchanged except timeout_ms, which is now \
+                 ipam.timeout_ms, and use_dns_name/device_fallback, which are now entries \
+                 in ipam.netbox.sources"
+            ),
             other => anyhow::bail!("unknown filter: {other}"),
         };
         filters.extend(built);
@@ -485,11 +510,22 @@ pub(crate) fn compile_anchored(patterns: &[String], setting: &str) -> anyhow::Re
 mod tests {
     use super::*;
 
+    use crate::config::{AllowedIpConfig, DnsConfig, IpamConfig};
+
     /// The shared resolver `Profile::build_all` supplies at startup.
     fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
         Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
     }
-    use crate::config::{AllowedIpConfig, DnsConfig};
+
+    /// A profile with no inventory configured, which is the default.
+    fn no_ipam() -> Option<Arc<crate::ipam::IpamRegistry>> {
+        None
+    }
+
+    /// The inventory `Profile::build_all` would have built for this config.
+    fn ipam_from(cfg: &IpamConfig) -> Option<Arc<crate::ipam::IpamRegistry>> {
+        crate::ipam::from_config(cfg, test_resolver()).unwrap()
+    }
 
     fn cfg(enabled: &[&str]) -> FilterConfig {
         FilterConfig {
@@ -507,12 +543,8 @@ mod tests {
 
     #[test]
     fn default_config_builds_an_inactive_chain() {
-        let chain = from_config(
-            &FilterConfig::default(),
-            &DnsConfig::default(),
-            test_resolver(),
-        )
-        .unwrap();
+        let chain =
+            from_config(&FilterConfig::default(), &DnsConfig::default(), no_ipam()).unwrap();
         assert!(!chain.is_active());
         // Nothing is exempt by default: a profile's router only ever sees ACME
         // resources, and `/health` is served at the root, outside every chain.
@@ -526,7 +558,7 @@ mod tests {
         let chain = from_config(
             &cfg(&["identifiers", "allowed_ip"]),
             &DnsConfig::default(),
-            test_resolver(),
+            no_ipam(),
         )
         .unwrap();
         assert!(chain.is_active());
@@ -539,41 +571,61 @@ mod tests {
     /// recognised, never that the host can resolve.
     #[test]
     fn reverse_dns_is_a_known_filter() {
-        if let Err(error) = from_config(
-            &cfg(&["reverse_dns"]),
-            &DnsConfig::default(),
-            test_resolver(),
-        ) {
+        if let Err(error) = from_config(&cfg(&["reverse_dns"]), &DnsConfig::default(), no_ipam()) {
             let error = error.to_string();
             assert!(error.contains("reverse_dns"), "{error}");
             assert!(!error.contains("unknown filter"), "{error}");
         }
     }
 
-    /// `netbox` builds a real HTTP client but contacts nothing, so this can
-    /// assert the whole arm rather than just the name.
+    /// The inventory is built before the chain and handed in, so this asserts
+    /// the whole arm rather than just the name.
     #[test]
-    fn netbox_is_a_known_filter() {
-        let mut config = cfg(&["netbox"]);
-        config.netbox = crate::config::NetboxConfig {
-            url: "https://netbox.example.com".to_string(),
-            token: "t0ken".to_string(),
-            ..crate::config::NetboxConfig::default()
+    fn ipam_is_a_known_filter() {
+        let ipam = IpamConfig {
+            backend: "netbox".to_string(),
+            netbox: crate::config::NetboxConfig {
+                url: "https://netbox.example.com".to_string(),
+                token: "t0ken".to_string(),
+                ..crate::config::NetboxConfig::default()
+            },
+            ..IpamConfig::default()
         };
 
-        let chain = from_config(&config, &DnsConfig::default(), test_resolver()).unwrap();
+        let chain = from_config(&cfg(&["ipam"]), &DnsConfig::default(), ipam_from(&ipam)).unwrap();
         let names: Vec<_> = chain.filters.iter().map(|f| f.name()).collect();
-        assert_eq!(names, vec!["netbox"]);
+        assert_eq!(names, vec!["ipam"]);
     }
 
-    /// An enabled `netbox` with nowhere to ask stops the server, rather than
-    /// failing every order at runtime.
+    /// An enabled `ipam` filter with no inventory behind it stops the server,
+    /// rather than failing every order at runtime.
     #[test]
-    fn netbox_without_a_url_is_a_startup_error() {
-        let error = from_config(&cfg(&["netbox"]), &DnsConfig::default(), test_resolver())
+    fn the_ipam_filter_without_a_backend_is_a_startup_error() {
+        let error = from_config(&cfg(&["ipam"]), &DnsConfig::default(), no_ipam())
             .unwrap_err()
             .to_string();
-        assert!(error.contains("filter.netbox.url"), "{error}");
+        assert!(error.contains("ipam.backend"), "{error}");
+        assert!(error.contains("netbox"), "{error}");
+        assert!(error.contains("phpipam"), "{error}");
+    }
+
+    /// The old spelling is refused **by name**, not aliased and not merely
+    /// "unknown": the section moved as well, so a silent alias would leave
+    /// `[filter.netbox]` read by nothing while the server came up looking
+    /// configured. Same treatment as `signer.backend = "acme_proxy"`.
+    #[test]
+    fn the_netbox_filter_is_refused_by_name() {
+        let error = from_config(&cfg(&["netbox"]), &DnsConfig::default(), no_ipam())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("the `netbox` filter is now `ipam`"),
+            "{error}"
+        );
+        assert!(error.contains("[ipam.netbox]"), "{error}");
+        assert!(error.contains("ipam.timeout_ms"), "{error}");
+        assert!(error.contains("ipam.netbox.sources"), "{error}");
+        assert!(!error.contains("unknown filter"), "{error}");
     }
 
     /// `custom` in `filter.enabled` expands to one filter per configured
@@ -600,7 +652,7 @@ mod tests {
             ),
         ]);
 
-        let chain = from_config(&config, &DnsConfig::default(), test_resolver()).unwrap();
+        let chain = from_config(&config, &DnsConfig::default(), no_ipam()).unwrap();
         let names: Vec<_> = chain.filters.iter().map(|f| f.name()).collect();
         assert_eq!(names, vec!["identifiers", "custom", "custom"]);
     }
@@ -628,7 +680,7 @@ mod tests {
             ),
         ]);
 
-        let chain = from_config(&config, &DnsConfig::default(), test_resolver()).unwrap();
+        let chain = from_config(&config, &DnsConfig::default(), no_ipam()).unwrap();
         assert_eq!(chain.filters.len(), 1);
     }
 
@@ -636,7 +688,7 @@ mod tests {
     /// rather than silently doing nothing.
     #[test]
     fn custom_without_any_enabled_scripts_is_a_startup_error() {
-        let error = from_config(&cfg(&["custom"]), &DnsConfig::default(), test_resolver())
+        let error = from_config(&cfg(&["custom"]), &DnsConfig::default(), no_ipam())
             .unwrap_err()
             .to_string();
         assert!(error.contains("filter.custom_enabled"), "{error}");
@@ -649,7 +701,7 @@ mod tests {
         let mut config = cfg(&["custom"]);
         config.custom_enabled = vec!["missing".to_string()];
 
-        let error = from_config(&config, &DnsConfig::default(), test_resolver())
+        let error = from_config(&config, &DnsConfig::default(), no_ipam())
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing"), "{error}");
@@ -672,7 +724,7 @@ mod tests {
             },
         )]);
 
-        let error = from_config(&config, &DnsConfig::default(), test_resolver())
+        let error = from_config(&config, &DnsConfig::default(), no_ipam())
             .unwrap_err()
             .to_string();
         assert!(error.contains("filter.custom.Bad_Name"), "{error}");
@@ -680,7 +732,7 @@ mod tests {
 
     #[test]
     fn from_config_rejects_an_unknown_filter() {
-        let error = from_config(&cfg(&["nope"]), &DnsConfig::default(), test_resolver())
+        let error = from_config(&cfg(&["nope"]), &DnsConfig::default(), no_ipam())
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown filter: nope"), "{error}");
@@ -692,7 +744,7 @@ mod tests {
             trusted_proxies: vec!["not-a-network".to_string()],
             ..FilterConfig::default()
         };
-        assert!(from_config(&config, &DnsConfig::default(), test_resolver()).is_err());
+        assert!(from_config(&config, &DnsConfig::default(), no_ipam()).is_err());
     }
 
     #[test]
@@ -833,7 +885,7 @@ mod tests {
     fn the_chain_debug_names_its_filters_and_policy() {
         let mut config = cfg(&["allowed_ip"]);
         config.exempt_paths = vec!["/health".to_string()];
-        let chain = from_config(&config, &DnsConfig::default(), test_resolver()).unwrap();
+        let chain = from_config(&config, &DnsConfig::default(), no_ipam()).unwrap();
 
         let rendered = format!("{chain:?}");
         assert!(rendered.contains("FilterChain"), "{rendered}");

@@ -113,16 +113,18 @@ keeps its corpses stops being read.
 
 ## IPAM
 
-- [ ] **Lift NetBox from a filter to an IPAM backend.** `src/filter/netbox/`
-      answers exactly one question — "does this client's address own these
-      names?" — behind a `NetboxApi` seam shaped around NetBox's own REST API.
-      A second IPAM means hoisting that question into an `Ipam` trait with its
-      own `[ipam]` section, leaving `filter.netbox` as one consumer of it.
-- [ ] **VRRP addresses in the NetBox lookup**: a service address belongs to the
-      pair, so a client connecting from its own member address is refused
-      today.
-- [ ] **phpIPAM** as the second backend, once the trait above exists — and as
-      the thing that proves the trait is not just NetBox with extra steps.
+- [ ] **phpIPAM's user/password session-token auth.** `src/ipam/phpipam/`
+      implements the static app-code scheme only ("SSL with App code"), which
+      is the direct analogue of NetBox's token and rotates in the environment.
+      The other scheme exchanges user credentials for a six-hour token, so it
+      needs a refresh loop and somewhere to keep the token — worth having only
+      if an estate's phpIPAM cannot be given an app code at all.
+- [ ] **A third backend to test the `Ipam` trait properly.** NetBox and
+      phpIPAM between them already forced `sources` to be per-backend, the
+      transport to be shared, and a status to survive on the error type (a
+      phpIPAM `404` is an answer). A third — NIPAP, Infoblox, or a plain
+      HTTP/script hook mirroring `filter.custom` — is what would show whether
+      the seam generalises or merely spans those two.
 
 ## Notifications
 

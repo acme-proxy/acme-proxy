@@ -29,7 +29,7 @@ graph TD
     ROOT -->|"/profile/staging/*"| PSTG["Profile: staging"]
 
     PDEV --> SDEV["signer: local_ca<br/>filters: none"]
-    PPROD --> SPROD["signer: relay<br/>filters: netbox"]
+    PPROD --> SPROD["signer: relay<br/>filters: ipam"]
     PSTG --> SSTG["signer: local_ca<br/>filters: none"]
 
     SDEV --> B1["Arc&lt;dyn SignerBackend&gt; #1"]

@@ -29,7 +29,7 @@ context.
 
 ## Every section, and where it is documented
 
-Five sections are large enough to have a chapter of their own, and their keys
+Six sections are large enough to have a chapter of their own, and their keys
 are documented there rather than restated here. This page stays the complete
 **map**: every table `acme-proxy` reads appears below, whether or not its text
 lives here.
@@ -54,11 +54,12 @@ endpoints it mounts.
 | `[profiles.<name>]` | An ACME endpoint | — | [below](#profilesname) |
 | `[signer]` | How a certificate is obtained | **yes** | [Signers](../signers/index.md) |
 | `[filter]` | Who may ask, and for what | **yes** | [Filters](../filters/index.md) |
+| `[ipam]` | The inventory `filter.ipam` consults | **yes** | [IPAM](../ipam/index.md) |
 | `[challenge]` | How control of a name is proven | **yes** | [Challenge Validation](../challenges/index.md#reference) |
 | `[notify]` | Outbound notifications | **yes** | [Notifications](../notifications/index.md) |
 | `[eab]` | External Account Binding | **yes** | [EAB](../features/eab.md) |
 
-The criterion for the last five is **having a chapter**, not being overridable —
+The criterion for the last six is **having a chapter**, not being overridable —
 `[order]` and `[meta]` are overridable and documented here, because neither is
 large enough to be worth a page. That is the whole rule; there is nothing
 subtler going on.
@@ -526,7 +527,7 @@ above](#every-section-and-where-it-is-documented) for the rest.
 - **`[filter]`** — [Filters](../filters/index.md):
   [allowed_ip](../filters/allowed_ip.md),
   [reverse_dns](../filters/reverse_dns.md),
-[identifiers](../filters/identifiers.md), [netbox](../filters/netbox.md),
+[identifiers](../filters/identifiers.md), [ipam](../ipam/index.md),
   [custom](../filters/custom.md)
 - **`[challenge]`** — [Challenge Validation](../challenges/index.md#reference):
   [http-01](../challenges/http_01.md#reference),

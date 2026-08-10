@@ -9,9 +9,9 @@ pub use types::*;
 
 /// Runtime configuration for the ACME proxy server.
 ///
-/// The seven sections a profile can carry (`signer`, `filter`, `challenge`,
-/// `eab`, `order`, `notify`, `meta`) are kept here as the **base every profile
-/// inherits**; nothing serves them directly. The rest (`database`, `server`,
+/// The eight sections a profile can carry (`signer`, `filter`, `ipam`,
+/// `challenge`, `eab`, `order`, `notify`, `meta`) are kept here as the **base
+/// every profile inherits**; nothing serves them directly. The rest (`database`, `server`,
 /// `admin`, `nonce`, `audit`, `logging`, `dns`) is process-wide and has no per-profile
 /// form — an operator of the web admin manages every endpoint this process
 /// serves, so `admin` in particular has no per-profile meaning, and `audit`
@@ -33,6 +33,10 @@ pub struct Config {
     pub signer: SignerConfig,
     pub challenge: ChallengeConfig,
     pub filter: FilterConfig,
+    /// The inventory the `ipam` filter consults. Per-profile, so two endpoints
+    /// may consult different ones — and read by nothing unless that filter is
+    /// enabled.
+    pub ipam: IpamConfig,
     pub eab: EabConfig,
     pub notify: NotifyConfig,
     pub meta: MetaConfig,
@@ -51,6 +55,7 @@ pub struct Config {
 const PROFILE_SECTIONS: &[&str] = &[
     "signer",
     "filter",
+    "ipam",
     "challenge",
     "eab",
     "order",
@@ -145,6 +150,9 @@ const LIST_KEYS: &[&str] = &[
     "filter.identifiers.allow",
     "filter.identifiers.deny",
     "filter.custom_enabled",
+    "ipam.netbox.sources",
+    "ipam.netbox.vip_roles",
+    "ipam.phpipam.sources",
     "signer.relay.contact",
     "signer.custom.args",
     "notify.enabled",
@@ -171,6 +179,9 @@ impl Config {
             "filter.identifiers.allow" => &self.filter.identifiers.allow,
             "filter.identifiers.deny" => &self.filter.identifiers.deny,
             "filter.custom_enabled" => &self.filter.custom_enabled,
+            "ipam.netbox.sources" => &self.ipam.netbox.sources,
+            "ipam.netbox.vip_roles" => &self.ipam.netbox.vip_roles,
+            "ipam.phpipam.sources" => &self.ipam.phpipam.sources,
             "signer.relay.contact" => &self.signer.relay.contact,
             "signer.custom.args" => &self.signer.custom.args,
             "notify.enabled" => &self.notify.enabled,
@@ -512,6 +523,76 @@ mod tests {
             "the rest of the section is inherited, not reset to the default"
         );
         assert_eq!(challenge.timeout_ms, 1234);
+    }
+
+    /// `ipam` is per-profile, which is the whole reason it is a section rather
+    /// than a process-wide one: two endpoints of the same server may consult
+    /// different inventories, and each keeps the rest of the global section.
+    #[test]
+    fn two_profiles_may_name_different_inventories() {
+        let config = load_toml(
+            r#"
+            [ipam]
+            backend = "netbox"
+            timeout_ms = 1234
+
+            [ipam.netbox]
+            url = "https://netbox.example.com"
+            token = "t0ken"
+
+            [ipam.phpipam]
+            url = "https://ipam.example.com"
+            token = "appcode"
+
+            [profiles.dmz]
+
+            [profiles.internal]
+            ipam.backend = "phpipam"
+            "#,
+        );
+
+        let profiles = config.resolve_profiles().unwrap();
+        let by_name = |name: &str| {
+            profiles
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| &p.sections.ipam)
+                .unwrap()
+        };
+
+        assert_eq!(by_name("dmz").backend, "netbox");
+        assert_eq!(by_name("internal").backend, "phpipam");
+        // …and overriding the one key keeps the rest of the global section,
+        // both the sibling tables and the budget.
+        assert_eq!(by_name("internal").timeout_ms, 1234);
+        assert_eq!(by_name("internal").phpipam.url, "https://ipam.example.com");
+        assert_eq!(by_name("internal").netbox.url, "https://netbox.example.com");
+    }
+
+    /// A profile may narrow what its inventory is trusted for without
+    /// restating the connection details — the per-key inheritance rule applied
+    /// to the one list that decides how much an address may claim.
+    #[test]
+    fn a_profile_may_narrow_the_ipam_sources_alone() {
+        let config = load_toml(
+            r#"
+            [ipam]
+            backend = "netbox"
+
+            [ipam.netbox]
+            url = "https://netbox.example.com"
+            token = "t0ken"
+            sources = ["dns_name", "custom_field", "device", "fhrp"]
+
+            [profiles.strict]
+            ipam.netbox.sources = ["dns_name"]
+            "#,
+        );
+
+        let netbox = &config.resolve_profiles().unwrap()[0].sections.ipam.netbox;
+        assert_eq!(netbox.sources, vec!["dns_name"]);
+        assert_eq!(netbox.url, "https://netbox.example.com");
+        assert_eq!(netbox.token, "t0ken");
     }
 
     /// `notify` joins `PROFILE_SECTIONS` like every other subsystem: a profile
@@ -1100,31 +1181,42 @@ mod tests {
             example.filter.identifiers.allow_wildcards,
             defaults.filter.identifiers.allow_wildcards
         );
-        assert_eq!(example.filter.netbox.url, defaults.filter.netbox.url);
-        assert_eq!(example.filter.netbox.token, defaults.filter.netbox.token);
+        assert_eq!(example.ipam.backend, defaults.ipam.backend);
+        assert_eq!(example.ipam.timeout_ms, defaults.ipam.timeout_ms);
+        assert_eq!(example.ipam.netbox.url, defaults.ipam.netbox.url);
+        assert_eq!(example.ipam.netbox.token, defaults.ipam.netbox.token);
         assert_eq!(
-            example.filter.netbox.custom_field,
-            defaults.filter.netbox.custom_field
+            example.ipam.netbox.custom_field,
+            defaults.ipam.netbox.custom_field
+        );
+        assert_eq!(example.ipam.netbox.sources, defaults.ipam.netbox.sources);
+        assert_eq!(
+            example.ipam.netbox.vip_roles,
+            defaults.ipam.netbox.vip_roles
         );
         assert_eq!(
-            example.filter.netbox.use_dns_name,
-            defaults.filter.netbox.use_dns_name
+            example.ipam.netbox.ca_cert_path,
+            defaults.ipam.netbox.ca_cert_path
         );
         assert_eq!(
-            example.filter.netbox.device_fallback,
-            defaults.filter.netbox.device_fallback
+            example.ipam.netbox.insecure_skip_verify,
+            defaults.ipam.netbox.insecure_skip_verify
+        );
+        assert_eq!(example.ipam.phpipam.url, defaults.ipam.phpipam.url);
+        assert_eq!(example.ipam.phpipam.app_id, defaults.ipam.phpipam.app_id);
+        assert_eq!(example.ipam.phpipam.token, defaults.ipam.phpipam.token);
+        assert_eq!(
+            example.ipam.phpipam.custom_field,
+            defaults.ipam.phpipam.custom_field
+        );
+        assert_eq!(example.ipam.phpipam.sources, defaults.ipam.phpipam.sources);
+        assert_eq!(
+            example.ipam.phpipam.ca_cert_path,
+            defaults.ipam.phpipam.ca_cert_path
         );
         assert_eq!(
-            example.filter.netbox.ca_cert_path,
-            defaults.filter.netbox.ca_cert_path
-        );
-        assert_eq!(
-            example.filter.netbox.insecure_skip_verify,
-            defaults.filter.netbox.insecure_skip_verify
-        );
-        assert_eq!(
-            example.filter.netbox.timeout_ms,
-            defaults.filter.netbox.timeout_ms
+            example.ipam.phpipam.insecure_skip_verify,
+            defaults.ipam.phpipam.insecure_skip_verify
         );
         assert_eq!(example.eab.enabled, defaults.eab.enabled);
         assert_eq!(example.notify.enabled, defaults.notify.enabled);
@@ -1270,7 +1362,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            20,
+            23,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );

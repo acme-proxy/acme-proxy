@@ -42,7 +42,6 @@ pub struct FilterConfig {
     /// `[filter.custom.CheckNetwork]` would silently become two different
     /// entries instead of one overriding the other.
     pub custom: BTreeMap<String, CustomFilterConfig>,
-    pub netbox: NetboxConfig,
 }
 
 impl Default for FilterConfig {
@@ -61,7 +60,6 @@ impl Default for FilterConfig {
             identifiers: IdentifierListConfig::default(),
             custom_enabled: Vec::new(),
             custom: BTreeMap::new(),
-            netbox: NetboxConfig::default(),
         }
     }
 }
@@ -116,56 +114,6 @@ impl Default for IdentifierListConfig {
             allow: Vec::new(),
             deny: Vec::new(),
             allow_wildcards: false,
-        }
-    }
-}
-/// Configuration for the `netbox` filter.
-///
-/// `token` is a secret, so it belongs in `ACME_PROXY_FILTER__NETBOX__TOKEN`
-/// rather than in a file on disk — the same advice
-/// [`super::signer::Rfc2136Config::tsig_key_secret`] carries.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct NetboxConfig {
-    /// Base URL of the NetBox instance, e.g. `https://netbox.example.com`. Any
-    /// path is kept, so an instance served under a subpath works.
-    pub url: String,
-    /// NetBox API token, sent as `Authorization: Token <token>`.
-    pub token: String,
-    /// Custom field, on the IP address or on its device/VM, holding the extra
-    /// names that address may have certified.
-    pub custom_field: String,
-    /// Whether the IP address object's own `dns_name` counts as permitted.
-    pub use_dns_name: bool,
-    /// Whether to read `custom_field` from the assigned device or virtual
-    /// machine when the IP address object itself carries no value for it.
-    pub device_fallback: bool,
-    /// Extra CA certificates (PEM) to trust on top of the public roots, for a
-    /// NetBox behind an internal PKI. Ignored when `insecure_skip_verify` is on.
-    pub ca_cert_path: String,
-    /// Skip verification of NetBox's TLS certificate entirely.
-    ///
-    /// Off by default and meant as a temporary way out of an expired NetBox
-    /// certificate: with it on, the answers this filter trusts could come from
-    /// anyone able to intercept the connection. Startup logs a warning for as
-    /// long as it is set.
-    pub insecure_skip_verify: bool,
-    /// Budget for the whole exchange — the address lookup plus the optional
-    /// device/VM one. Reported as a server error, not a denial.
-    pub timeout_ms: u64,
-}
-
-impl Default for NetboxConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            token: String::new(),
-            custom_field: "acme_allowed_names".to_string(),
-            use_dns_name: true,
-            device_fallback: true,
-            ca_cert_path: String::new(),
-            insecure_skip_verify: false,
-            timeout_ms: 5000,
         }
     }
 }

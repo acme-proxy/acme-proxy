@@ -111,8 +111,8 @@ Traefik equivalents.
 
 This scenario uses a commercial CA backend. It enforces External Account Binding
 (EAB) on the internal proxy so only authorized users can register. It
-additionally uses NetBox as an IPAM filter to verify if a client's IP is
-actually permitted to request a certificate for a specific DNS name.
+additionally uses NetBox, through the `ipam` filter, to verify if a client's
+IP is actually permitted to request a certificate for a specific DNS name.
 
 ```toml
 [server]
@@ -134,16 +134,19 @@ challenge_strategy = "bypass"
 enabled = true
 
 [filter]
-# Enable netbox filtering for all internal requests
-enabled = ["netbox"]
+# Ask the inventory about every internal request
+enabled = ["ipam"]
 
-[filter.netbox]
+[ipam]
+backend = "netbox"
+timeout_ms = 5000
+
+[ipam.netbox]
 url = "https://netbox.internal.company.com"
-# Store this in ACME_PROXY_FILTER__NETBOX__TOKEN ideally
+# Store this in ACME_PROXY_IPAM__NETBOX__TOKEN ideally
 token = "your_netbox_read_only_token"
 custom_field = "acme_allowed_names"
-use_dns_name = true
-timeout_ms = 5000
+sources = ["dns_name", "custom_field", "device"]
 
 [profiles.default]
 enabled = true

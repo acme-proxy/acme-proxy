@@ -74,6 +74,7 @@ pub fn ensure_images_built() {
             {runtime} build -t bind-e2e -f tests/e2e/bind.Containerfile tests/e2e &&
             {runtime} build -t acme-proxy-e2e -f Containerfile . &&
             {runtime} build -t netbox-mock-e2e -f tests/e2e/netbox_mock.Containerfile tests/e2e &&
+            {runtime} build -t phpipam-mock-e2e -f tests/e2e/phpipam_mock.Containerfile tests/e2e &&
             {runtime} build -t certbot-e2e -f tests/e2e/certbot.Containerfile tests/e2e &&
             {runtime} build -t acmesh-e2e -f tests/e2e/acmesh.Containerfile tests/e2e &&
             {runtime} build -t lego-e2e -f tests/e2e/lego.Containerfile tests/e2e &&
@@ -99,6 +100,7 @@ pub struct Lab {
     pub acme_sh: ContainerAsync<GenericImage>,
     pub lego: ContainerAsync<GenericImage>,
     pub netbox_mock: Option<ContainerAsync<GenericImage>>,
+    pub phpipam_mock: Option<ContainerAsync<GenericImage>>,
     pub proxy_upstream: Option<ContainerAsync<GenericImage>>,
     pub proxy_url: String,
     pub proxy_upstream_url: Option<String>,
@@ -235,6 +237,22 @@ impl Lab {
 
         let netbox_ip = Self::get_ip(netbox_mock.id(), &network).await;
 
+        // Started for every lab, exactly as `netbox-mock` is. A second mock per
+        // scenario is a container's worth of startup; if that ever becomes the
+        // problem, both move behind one builder flag together rather than
+        // diverging into two different shapes.
+        let phpipam_mock_host = format!("phpipam-mock-{}", uuid);
+        let phpipam_mock = GenericImage::new("phpipam-mock-e2e", "latest")
+            .with_network(&network)
+            .with_container_name(&phpipam_mock_host)
+            .with_env_var("CERTBOT_IP", &certbot_ip)
+            .with_env_var("ACMESH_IP", &acmesh_ip)
+            .start()
+            .await
+            .expect("Failed to start phpipam-mock");
+
+        let phpipam_ip = Self::get_ip(phpipam_mock.id(), &network).await;
+
         let mut proxy_upstream: Option<ContainerAsync<GenericImage>> = None;
         let mut proxy_upstream_url: Option<String> = None;
 
@@ -299,6 +317,8 @@ impl Lab {
                 proxy_image = proxy_image.with_env_var(k, v.replace("LEGO_IP", &lego_ip));
             } else if v.contains("NETBOX_IP") {
                 proxy_image = proxy_image.with_env_var(k, v.replace("NETBOX_IP", &netbox_ip));
+            } else if v.contains("PHPIPAM_IP") {
+                proxy_image = proxy_image.with_env_var(k, v.replace("PHPIPAM_IP", &phpipam_ip));
             } else if v.contains("UPSTREAM_URL") {
                 if let Some(ref url) = proxy_upstream_url {
                     proxy_image = proxy_image.with_env_var(k, v.replace("UPSTREAM_URL", url));
@@ -327,6 +347,7 @@ impl Lab {
             acme_sh,
             lego,
             netbox_mock: Some(netbox_mock),
+            phpipam_mock: Some(phpipam_mock),
             proxy_upstream,
             proxy_url: proxy_url_with_path,
             proxy_upstream_url,
@@ -464,18 +485,27 @@ impl Lab {
     }
 
     pub async fn get_netbox_mock_logs(&self) -> String {
-        if let Some(ref netbox_mock) = self.netbox_mock {
-            let id = netbox_mock.id();
-            let output = TokioCommand::new(container_runtime())
-                .args(["logs", id])
-                .output()
-                .await
-                .expect("Failed to get netbox-mock logs");
-            String::from_utf8_lossy(&output.stderr).to_string()
-                + &String::from_utf8_lossy(&output.stdout)
-        } else {
-            "".to_string()
-        }
+        Self::container_logs(self.netbox_mock.as_ref(), "netbox-mock").await
+    }
+
+    pub async fn get_phpipam_mock_logs(&self) -> String {
+        Self::container_logs(self.phpipam_mock.as_ref(), "phpipam-mock").await
+    }
+
+    async fn container_logs(
+        container: Option<&ContainerAsync<GenericImage>>,
+        what: &str,
+    ) -> String {
+        let Some(container) = container else {
+            return String::new();
+        };
+        let output = TokioCommand::new(container_runtime())
+            .args(["logs", container.id()])
+            .output()
+            .await
+            .unwrap_or_else(|error| panic!("Failed to get {what} logs: {error}"));
+        String::from_utf8_lossy(&output.stderr).to_string()
+            + &String::from_utf8_lossy(&output.stdout)
     }
 }
 

@@ -7,11 +7,12 @@ use serde::Deserialize;
 
 use super::challenge::ChallengeConfig;
 use super::filter::FilterConfig;
+use super::ipam::IpamConfig;
 use super::notify::NotifyConfig;
 use super::server::{MetaConfig, OrderConfig};
 use super::signer::SignerConfig;
 
-/// One ACME endpoint's configuration: the five sections a profile may carry,
+/// One ACME endpoint's configuration: the eight sections a profile may carry,
 /// plus the marker that declares it.
 ///
 /// Every field is optional in the file — what a profile does not say, it
@@ -29,6 +30,7 @@ pub struct ProfileSections {
     pub enabled: bool,
     pub signer: SignerConfig,
     pub filter: FilterConfig,
+    pub ipam: IpamConfig,
     pub challenge: ChallengeConfig,
     pub eab: EabConfig,
     pub order: OrderConfig,
@@ -42,6 +44,7 @@ impl Default for ProfileSections {
             enabled: true,
             signer: SignerConfig::default(),
             filter: FilterConfig::default(),
+            ipam: IpamConfig::default(),
             challenge: ChallengeConfig::default(),
             eab: EabConfig::default(),
             meta: MetaConfig::default(),

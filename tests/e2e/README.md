@@ -52,8 +52,9 @@ run them. Not run by CI (`.github/workflows/ci.yml` runs neither flag) — this
 is a manual check, driven by a real container runtime the CI environment
 doesn't provide.
 
-The first run of any test builds six images (`bind-e2e`, `acme-proxy-e2e`,
-`netbox-mock-e2e`, `certbot-e2e`, `acmesh-e2e`, `lego-e2e`), guarded by a
+The first run of any test builds seven images (`bind-e2e`, `acme-proxy-e2e`,
+`netbox-mock-e2e`, `phpipam-mock-e2e`, `certbot-e2e`, `acmesh-e2e`,
+`lego-e2e`), guarded by a
 cross-process `flock` so nextest's one-process-per-test model doesn't race
 the same `podman build`/`docker build` from multiple tests at once; every
 later test in the same run reuses those images. Each test then gets its own
@@ -61,11 +62,12 @@ dedicated network and set of containers (`Lab::new` in `common.rs`), torn
 down when the test's `Lab` is dropped.
 
 Because `ensure_images_built`'s skip guard is keyed on `NEXTEST_RUN_ID` (a
-fresh id every run — see its comment), the six `build` commands are reissued
+fresh id every run — see its comment), the seven `build` commands are reissued
 on *every* invocation, not just the first ever; whether anything actually
 recompiles is entirely down to the container engine's own layer cache. The
-two images that compile Rust (`acme-proxy-e2e` from the root `Containerfile`,
-`netbox-mock-e2e` from `netbox_mock.Containerfile`) use a
+three images that compile Rust (`acme-proxy-e2e` from the root
+`Containerfile`, `netbox-mock-e2e` and `phpipam-mock-e2e` from their own) use
+a
 [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) three-stage split
 (`chef` → `planner` → `builder`) so the dependency-compilation layer is keyed
 on `Cargo.toml`/`Cargo.lock` content alone, not the whole source tree — a
@@ -75,7 +77,7 @@ scratch on every run. Every stage in every Containerfile under this
 directory (and the root one) is `FROM debian:trixie-slim` on purpose, with no
 upstream language images and no third-party images — keep it that way rather
 than reaching for `rust:*`/`golang:*`/`alpine:*`/`lukemathwalker/cargo-chef:*`
-in a future edit. Three of the six install their tool from source/tarball
+in a future edit. Three of the seven install their tool from source/tarball
 instead of `apt` because trixie's packaged version isn't new enough:
 `rustc`/`cargo` (1.85 main / 1.94 backports, below this crate's
 `rust-version = "1.97"` MSRV) come from `rustup`; Go (trixie's `golang-go` is
@@ -92,10 +94,12 @@ already uses for `lego` itself (see "key_change.rs" below).
   (`docker` if present, else `podman`; overridable via `CONTAINER_RUNTIME`),
   points `DOCKER_HOST` at the rootless-Podman socket if it isn't already
   set — failing with a clear message if `podman.socket` isn't already
-  active rather than starting it itself — and builds all six images once
+  active rather than starting it itself — and builds all seven images once
   per run behind the flock described above.
 - **`Lab::new(env)`** starts a dedicated bridge network plus `dns`,
-  `acme-proxy`, `certbot`, `acme-sh`, `lego`, and `netbox-mock` containers.
+  `acme-proxy`, `certbot`, `acme-sh`, `lego`, `netbox-mock` and
+  `phpipam-mock` containers. Both mocks start for every lab, so a scenario
+  picks its inventory purely through `ipam.backend`.
   `env` is a list of `ACME_PROXY_*` environment variables passed straight to
   the `acme-proxy` container — every scenario knob (`challenge.enabled`,
   `challenge.bypass`, `eab.enabled`, `dns.resolver`, `server.tls.enabled`,
@@ -117,7 +121,8 @@ already uses for `lego` itself (see "key_change.rs" below).
   quoting to worry about, so multi-line scripts and even raw file contents
   with embedded newlines can be passed directly; no `echo`/backslash-escape
   tricks needed).
-- **`get_proxy_logs`/`get_proxy_upstream_logs`/`get_netbox_mock_logs`** grep a
+- **`get_proxy_logs`/`get_proxy_upstream_logs`/`get_netbox_mock_logs`/
+  `get_phpipam_mock_logs`** grep a
   container's log for a marker proving something real happened — the same
   pattern the unit suite uses (e.g. `challenge_dns_01_matched`,
   `cert_revoked`, `account_key_changed`).
@@ -147,7 +152,7 @@ already uses for `lego` itself (see "key_change.rs" below).
   fields → `externalAccountRequired`) and the positive case for both
   certbot and acme.sh. See "Why `eab.rs` isn't a hardcoded credential" below.
 - **`filters.rs`** — one allowed and one denied case per filter
-  (`allowed_ip`, `identifiers`, `reverse_dns`, `custom`, `netbox`).
+  (`allowed_ip`, `identifiers`, `reverse_dns`, `custom`, `ipam`).
   `allowed_ip`/`reverse_dns` are connection-level filters — they block even
   the unauthenticated `GET /directory` — so their denied case is checked
   with a direct `curl` from inside the denied client's own container rather
@@ -160,17 +165,36 @@ already uses for `lego` itself (see "key_change.rs" below).
   the problem document ("denied by policy") rather than the raw ACME error
   type, since that's what certbot actually prints. `custom` writes a real
   shell script into the `acme-proxy` container (`ACME_FILTER_*` env
-  contract) and denies one identifier by name. `netbox` brings up the
-  `netbox-mock` service (a small Rust `axum` server answering the two
-  endpoints the filter calls — a real NetBox is postgres + redis + the
-  application, out of all proportion for testing one filter) and proves
-  both the direct IP-object match (certbot owns `allowed.example.com`) and
-  the device-fallback path (acme.sh owns `machine.example.com` only through
-  the *device* its address is assigned to) are wired to real HTTP requests,
-  not just a stub — the denied case asks for `machine.example.com` from
-  certbot, a name that exists in NetBox and another client legitimately
-  owns, proving the filter binds names to the asking address rather than
-  pooling everything NetBox knows.
+  contract) and denies one identifier by name. The `ipam` filter gets three
+  scenarios, against the `netbox-mock` and `phpipam-mock` services (small
+  Rust `axum` servers answering the endpoints each backend calls — a real
+  NetBox is postgres + redis + the application, out of all proportion for
+  testing one filter):
+  - `test_netbox` proves both the direct IP-object match (certbot owns
+    `allowed.example.com`) and the device-fallback path (acme.sh owns
+    `machine.example.com` only through the *device* its address is assigned
+    to) are wired to real HTTP requests, not just a stub — the denied case
+    asks for `machine.example.com` from certbot, a name that exists in
+    NetBox and another client legitimately owns, proving the filter binds
+    names to the asking address rather than pooling everything NetBox knows.
+  - `test_netbox_fhrp_group_membership` turns on the `vip` and `fhrp`
+    sources. acme.sh's interface is recorded in FHRP group 41, which holds
+    `service.example.com`, and certbot's is in no group: both ask for that
+    name and only acme.sh gets it. This is the membership property the source
+    exists for — a group is reachable only through an assignment naming the
+    client's own interface, never by the name being requested. acme.sh's
+    device also carries a role-tagged VIP, so `vip` is exercised in the same
+    run.
+  - `test_phpipam` is `test_netbox`'s mirror against the other product.
+  - `test_phpipam_unknown_address` covers the one behaviour that genuinely
+    differs: an address phpIPAM has never heard of answers `404`, which must
+    **deny** the order rather than 500 it. It is a separate, TLS-enabled lab
+    because lego is the only container the phpIPAM mock holds no row for, and
+    lego refuses a plain-HTTP ACME server outright — the same reason
+    `key_change.rs` and `tls_alpn_01.rs` enable TLS for their lego runs. Any
+    new lego scenario needs `ACME_PROXY_SERVER__TLS__ENABLED=true` plus
+    `--tls-skip-verify`, and `lego run` takes its flags *after* the
+    subcommand, not before it.
 - **`profiles.rs`** — two ACME endpoints (`default`/`second`) in one
   process: cross-profile isolation, per-profile CAs and filters, distinct
   CRLs.

@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use acme_proxy::config::{
-    AllowedIpConfig, Config, DnsConfig, FilterConfig, IdentifierListConfig, NetboxConfig,
+    AllowedIpConfig, Config, DnsConfig, FilterConfig, IdentifierListConfig, IpamConfig,
+    NetboxConfig, PhpIpamConfig,
 };
 use acme_proxy::filter::{
     self, Filter, FilterChain, FilterError, IdentifierContext, IdentifierStage, ProxyPolicy,
@@ -50,7 +51,15 @@ fn test_resolver() -> Arc<dyn acme_proxy::dns::Resolver> {
 /// Builds an app from a `[filter]` configuration, exactly as `from_config`
 /// would at startup.
 async fn app_with_config(filter: FilterConfig) -> Router {
-    let chain = filter::from_config(&filter, &DnsConfig::default(), test_resolver())
+    app_with_ipam(filter, &IpamConfig::default()).await
+}
+
+/// The same, with an `[ipam]` section — the two are built together at startup,
+/// `[ipam]` first, exactly as `Profile::build_all` does it.
+async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
+    let inventory =
+        acme_proxy::ipam::from_config(ipam, test_resolver()).expect("ipam config should build");
+    let chain = filter::from_config(&filter, &DnsConfig::default(), inventory)
         .expect("filter config should build");
     let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
     test_app_full(
@@ -300,7 +309,7 @@ async fn deny_punches_a_hole_in_the_allow_list() {
 /// it is caught at startup rather than running inert.
 #[test]
 fn enabling_the_ip_filter_with_no_lists_is_a_startup_error() {
-    let error = filter::from_config(&ip_config(&[], &[]), &DnsConfig::default(), test_resolver())
+    let error = filter::from_config(&ip_config(&[], &[]), &DnsConfig::default(), None)
         .unwrap_err()
         .to_string();
     assert!(error.contains("would accept every request"), "{error}");
@@ -925,14 +934,14 @@ async fn two_custom_script_filters_both_run() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------------ netbox filter
+// -------------------------------------------------------------- ipam filter
 
-/// A NetBox stub on a loopback socket, answering the `ipam/ip-addresses` query
-/// the filter makes.
+/// An inventory stub on a loopback socket, answering the address query the
+/// backend makes.
 ///
-/// A real socket rather than a `NetboxApi` stub on purpose: the unit tests
-/// already pin the policy against a stub, so what is left to prove here is that
-/// the filter built by `from_config` — real HTTP client included — refuses and
+/// A real socket rather than a trait stub on purpose: the unit tests already
+/// pin the policy against a stub, so what is left to prove here is that the
+/// filter built by `from_config` — real HTTP client included — refuses and
 /// admits the right orders through the real router.
 mod netbox_stub {
     use serde_json::{Value, json};
@@ -988,23 +997,36 @@ mod netbox_stub {
     }
 }
 
-/// A `[filter]` config pointing the netbox filter at a loopback stub.
-fn netbox_config(port: u16) -> FilterConfig {
+/// The `[filter]` half: only `ipam`, whichever backend is behind it.
+fn ipam_filter_config() -> FilterConfig {
     FilterConfig {
-        enabled: vec!["netbox".to_string()],
+        enabled: vec!["ipam".to_string()],
+        ..FilterConfig::default()
+    }
+}
+
+/// An `[ipam]` config pointing the NetBox backend at a loopback stub.
+fn netbox_config(port: u16) -> IpamConfig {
+    IpamConfig {
+        backend: "netbox".to_string(),
         netbox: NetboxConfig {
             url: format!("http://127.0.0.1:{port}"),
             token: "t0ken".to_string(),
             ..NetboxConfig::default()
         },
-        ..FilterConfig::default()
+        ..IpamConfig::default()
     }
+}
+
+/// The whole app for a NetBox stub on `port`.
+async fn netbox_app(port: u16) -> Router {
+    app_with_ipam(ipam_filter_config(), &netbox_config(port)).await
 }
 
 #[tokio::test]
 async fn a_name_netbox_associates_with_the_client_is_ordered() {
     let stub = netbox_stub::serve("200 OK", netbox_stub::owns(&["allowed.example.com"])).await;
-    let app = app_with_config(netbox_config(stub.port)).await;
+    let app = netbox_app(stub.port).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer, ALLOWED).await;
 
@@ -1015,7 +1037,7 @@ async fn a_name_netbox_associates_with_the_client_is_ordered() {
 #[tokio::test]
 async fn a_name_netbox_does_not_associate_with_the_client_is_rejected() {
     let stub = netbox_stub::serve("200 OK", netbox_stub::owns(&["allowed.example.com"])).await;
-    let app = app_with_config(netbox_config(stub.port)).await;
+    let app = netbox_app(stub.port).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer, ALLOWED).await;
 
@@ -1026,11 +1048,13 @@ async fn a_name_netbox_does_not_associate_with_the_client_is_rejected() {
         "urn:ietf:params:acme:error:rejectedIdentifier",
     )
     .await;
-    // The detail names both the refused name and the address it was refused
-    // for, which is what an operator needs to find the NetBox object to fix.
+    // The detail names the refused name, the address it was refused for, and
+    // the product that refused it — which is what an operator needs to find the
+    // NetBox object to fix.
     let detail = problem["detail"].as_str().unwrap();
     assert!(detail.contains("other.example.com"), "{problem}");
     assert!(detail.contains("192.168.1.5"), "{problem}");
+    assert!(detail.contains("NetBox"), "{problem}");
 }
 
 /// The CSR hook runs too, so a second name smuggled into the CSR after an order
@@ -1039,7 +1063,7 @@ async fn a_name_netbox_does_not_associate_with_the_client_is_rejected() {
 #[tokio::test]
 async fn a_csr_name_netbox_refuses_is_rejected_at_finalize() {
     let stub = netbox_stub::serve("200 OK", netbox_stub::owns(&["allowed.example.com"])).await;
-    let app = app_with_config(netbox_config(stub.port)).await;
+    let app = netbox_app(stub.port).await;
     let signer = EcSigner::new();
 
     // newOrder passes: the order is for a name NetBox does associate with the
@@ -1078,7 +1102,7 @@ async fn a_csr_name_netbox_refuses_is_rejected_at_finalize() {
 #[tokio::test]
 async fn a_common_name_is_not_held_to_the_netbox_list() {
     let stub = netbox_stub::serve("200 OK", netbox_stub::owns(&["allowed.example.com"])).await;
-    let app = app_with_config(netbox_config(stub.port)).await;
+    let app = netbox_app(stub.port).await;
     let signer = EcSigner::new();
 
     let (account_url, finalize_url) = ready_order(&app, &signer, "allowed.example.com").await;
@@ -1104,7 +1128,7 @@ async fn an_unreachable_netbox_is_a_server_error_not_a_denial() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
     };
-    let app = app_with_config(netbox_config(port)).await;
+    let app = netbox_app(port).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer, ALLOWED).await;
 
@@ -1125,7 +1149,129 @@ async fn a_refused_netbox_token_is_a_server_error_not_a_denial() {
         serde_json::json!({ "detail": "Invalid token header." }),
     )
     .await;
-    let app = app_with_config(netbox_config(stub.port)).await;
+    let app = netbox_app(stub.port).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    assert_problem(
+        res,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "urn:ietf:params:acme:error:serverInternal",
+    )
+    .await;
+}
+
+// ------------------------------------------------------- the same, phpIPAM
+
+// The point of the `[ipam]` subsystem, exercised rather than asserted: the same
+// filter, the same router, the same assertions — a different inventory speaking
+// a different protocol, and nothing in `src/filter/` knows.
+
+/// An `[ipam]` config pointing the phpIPAM backend at a loopback stub.
+fn phpipam_config(port: u16) -> IpamConfig {
+    IpamConfig {
+        backend: "phpipam".to_string(),
+        phpipam: PhpIpamConfig {
+            url: format!("http://127.0.0.1:{port}"),
+            token: "t0ken".to_string(),
+            ..PhpIpamConfig::default()
+        },
+        ..IpamConfig::default()
+    }
+}
+
+/// The whole app for a phpIPAM stub on `port`.
+async fn phpipam_app(port: u16) -> Router {
+    app_with_ipam(ipam_filter_config(), &phpipam_config(port)).await
+}
+
+/// phpIPAM's answer for an address owning `names` — a text column, so several
+/// names arrive comma-separated rather than as a JSON array.
+fn phpipam_owns(names: &str) -> Value {
+    json!({
+        "code": 200,
+        "success": true,
+        "data": [{
+            "id": "12",
+            "ip": "192.168.1.5",
+            "hostname": "",
+            "custom_acme_allowed_names": names,
+        }]
+    })
+}
+
+#[tokio::test]
+async fn a_name_phpipam_associates_with_the_client_is_ordered() {
+    let stub = netbox_stub::serve("200 OK", phpipam_owns("allowed.example.com")).await;
+    let app = phpipam_app(stub.port).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}
+
+/// The refusal is the same shape as NetBox's and names phpIPAM, which is the
+/// whole reason the message interpolates `backend_name()`.
+#[tokio::test]
+async fn a_name_phpipam_does_not_associate_with_the_client_is_rejected() {
+    let stub = netbox_stub::serve("200 OK", phpipam_owns("allowed.example.com")).await;
+    let app = phpipam_app(stub.port).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "other.example.com").await;
+    let problem = assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:rejectedIdentifier",
+    )
+    .await;
+    let detail = problem["detail"].as_str().unwrap();
+    assert!(detail.contains("other.example.com"), "{problem}");
+    assert!(detail.contains("192.168.1.5"), "{problem}");
+    assert!(detail.contains("phpIPAM"), "{problem}");
+    assert!(!detail.contains("NetBox"), "{problem}");
+}
+
+/// phpIPAM's one genuinely different wire behaviour, through the whole stack: an
+/// unknown address is a `404`, which must refuse the order rather than 500 it.
+#[tokio::test]
+async fn an_address_phpipam_has_never_heard_of_is_denied_not_a_server_error() {
+    let stub = netbox_stub::serve(
+        "404 Not Found",
+        json!({ "code": 404, "success": false, "message": "No addresses found" }),
+    )
+    .await;
+    let app = phpipam_app(stub.port).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    let problem = assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:rejectedIdentifier",
+    )
+    .await;
+    let detail = problem["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("holds no record of 192.168.1.5"),
+        "{problem}"
+    );
+}
+
+/// …while every other status is still an outage, so a broken phpIPAM stops
+/// issuance rather than reading as "this address owns no names".
+#[tokio::test]
+async fn a_refused_phpipam_token_is_a_server_error_not_a_denial() {
+    let stub = netbox_stub::serve(
+        "401 Unauthorized",
+        json!({ "code": 401, "message": "Invalid app code" }),
+    )
+    .await;
+    let app = phpipam_app(stub.port).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer, ALLOWED).await;
 

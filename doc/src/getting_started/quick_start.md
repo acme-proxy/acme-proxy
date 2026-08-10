@@ -131,7 +131,7 @@ exposing the server:
    actually validates domain control. With bypass on, `[filter]` is the *only*
    access control there is — which is exactly why bypass is not the default. See
    [Challenge Validation](../challenges/index.md).
-2. **Enable filters.** Configure `allowed_ip`, `identifiers` or `netbox` to
+2. **Enable filters.** Configure `allowed_ip`, `identifiers` or `ipam` to
    restrict which clients may request which names. See
    [Filters & Policies](../filters/index.md).
 3. **Choose where state lives.** The defaults write `sqlite.db` and the CA

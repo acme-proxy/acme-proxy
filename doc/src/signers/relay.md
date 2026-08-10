@@ -283,7 +283,7 @@ separate imperative step — useful when `config.toml` is already populated by a
 secrets manager or a templated deployment. Once registration succeeds, `serve`
 logs a `signer_relay_eab_secret_in_config` warning on **every** startup for
 as long as `hmac_key` stays non-empty, the same treatment `challenge.bypass` and
-`filter.netbox.insecure_skip_verify` get — clear it out once `acme-proxy
+`ipam.netbox.insecure_skip_verify` get — clear it out once `acme-proxy
 upstream show` confirms a `kid` is stored. Setting `kid` without `hmac_key`, or
 vice versa, is a startup error.
 

@@ -67,8 +67,8 @@
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
 //! use acme_proxy::{
-//!     Profile, ProfileParts, build_app, challenge, config::Config, filter, notify, signer,
-//!     sqlite::db::Database,
+//!     Profile, ProfileParts, build_app, challenge, config::Config, filter, ipam, notify,
+//!     signer, sqlite::db::Database,
 //! };
 //!
 //! #[tokio::main]
@@ -106,7 +106,11 @@
 //!                     notifiers.clone(),
 //!                     resolver.clone(),
 //!                 )?,
-//!                 filter: filter::from_config(&sections.filter, &config.dns, resolver.clone())?,
+//!                 filter: filter::from_config(
+//!                     &sections.filter,
+//!                     &config.dns,
+//!                     ipam::from_config(&sections.ipam, resolver.clone())?,
+//!                 )?,
 //!                 challenges: challenge::from_config(&sections.challenge, &config.dns)?,
 //!                 order: sections.order.clone(),
 //!                 eab: sections.eab.clone(),
@@ -159,6 +163,7 @@ pub mod extractors;
 pub mod filter;
 pub mod handlers;
 pub mod http_client;
+pub mod ipam;
 pub mod key_change;
 pub mod middlewares;
 pub mod notify;
@@ -353,9 +358,17 @@ impl Profile {
             let sections = &profile.sections;
             let span = tracing::info_span!("profile", profile = %profile.name);
             let (filter, challenges) = span.in_scope(|| {
-                let filter =
-                    filter::from_config(&sections.filter, &config.dns, resolver.clone())
-                        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                // Built per profile with no dedup pass, unlike
+                // `signer::build_backends`. Sharing a signer backend is a
+                // correctness requirement — two `LocalCa` over one CRL file
+                // would clobber each other's ledger — whereas an IPAM client
+                // owns no files and holds no mutable state, so two profiles
+                // naming the same inventory each building one costs nothing
+                // but a `rustls::ClientConfig`.
+                let ipam = ipam::from_config(&sections.ipam, resolver.clone())
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                let filter = filter::from_config(&sections.filter, &config.dns, ipam)
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 let challenges = challenge::from_config(&sections.challenge, &config.dns)
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 check_request_timeout(config, profile.name.as_str(), sections)?;

@@ -52,8 +52,10 @@
 #     [filter.allowed_ip]
 #     [filter.reverse_dns]
 #     [filter.identifiers]
-#     [filter.netbox]
 #     [filter.custom.<name>]            one table per named script hook
+#   [ipam]                     [per-profile]  the inventory `ipam` consults
+#     [ipam.netbox]
+#     [ipam.phpipam]
 #   [eab]                      [per-profile]  External Account Binding
 #   [meta]                     [per-profile]  directory `meta` members
 #   [notify]                   [per-profile]  outbound notifications
@@ -63,7 +65,7 @@
 #   [dns]                               the resolver every lookup goes through
 #   [profiles.<name>]                   an ACME endpoint — at least one required
 #
-# The seven [per-profile] sections are exactly those a profile may override,
+# The eight [per-profile] sections are exactly those a profile may override,
 # and inheritance is per *key*, not per section: a profile setting only
 # challenge.bypass keeps the global challenge.enabled. Arrays replace
 # wholesale, never append.
@@ -405,7 +407,7 @@ poll_timeout_secs = 300             # ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SEC
 # deployment. Once registration succeeds, `serve` logs a
 # signer_relay_eab_secret_in_config warning on EVERY startup for as long as
 # hmac_key stays non-empty — the same treatment challenge.bypass and
-# filter.netbox.insecure_skip_verify get — so clear it out once
+# ipam.netbox.insecure_skip_verify get — so clear it out once
 # `acme-proxy upstream show` confirms a kid is stored.
 #
 # Both empty (the default) is unchanged from before this table existed:
@@ -623,7 +625,9 @@ port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 # Filters run in the order listed and ALL of them must pass; the first denial
 # wins. An empty list (the default) disables filtering entirely, and the server
 # logs a `filters_disabled` warning at startup saying so.
-# Known names: "allowed_ip", "reverse_dns", "identifiers", "custom", "netbox".
+# Known names: "allowed_ip", "reverse_dns", "identifiers", "custom", "ipam".
+# ("netbox" was renamed to "ipam" and moved to its own [ipam] section; the old
+# spelling is refused by name at startup rather than silently ignored.)
 enabled = []                        # ACME_PROXY_FILTER__ENABLED
 # Paths that skip connection-level filtering, relative to the profile's own
 # mount point (so "/directory", not "/profile/<name>/directory").
@@ -777,71 +781,132 @@ allow_wildcards = false             # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILD
 #   ACME_PROXY_FILTER__CUSTOM__CHECK-NETWORK__SCRIPT_PATH=/etc/acme-proxy/filters/check-network.sh
 #   ACME_PROXY_FILTER__CUSTOM__CHECK-INVENTORY__SCRIPT_PATH=/etc/acme-proxy/filters/check-inventory.sh
 
-[filter.netbox]
-# Ask NetBox whether the client's address owns the names it is asking for.
+[ipam]   # [per-profile] — a [profiles.<name>] block may override these
+# The IP address management inventory the `ipam` filter consults.
 #
-# Where [filter.identifiers] answers "may anyone here have this name?", this one
-# answers "may THIS address have THIS name?" — and reads the answer from the
-# inventory instead of a list maintained here. One lookup per check:
-#   GET <url>/api/ipam/ip-addresses/?address=<client ip>
-# and what comes back permits names two ways: the address object's own dns_name
-# (see use_dns_name), and the custom field named below.
+# Where [filter.identifiers] answers "may anyone here have this name?", the
+# `ipam` filter answers "may THIS address have THIS name?" — and reads the
+# answer from the inventory an estate already keeps instead of a list
+# maintained here. Nothing below is read unless "ipam" is in filter.enabled.
 #
-# Matching is EXACT, case-insensitively and ignoring a trailing dot. There is no
-# suffix rule and no wildcard expansion: an entry `example.com` does not permit
-# `a.example.com`, and a request for `*.example.com` needs that exact string in
-# NetBox. Same reasoning as the anchored patterns in [filter.identifiers].
+# Matching is EXACT, case-insensitively and ignoring a trailing dot. There is
+# no suffix rule and no wildcard expansion: an entry `example.com` does not
+# permit `a.example.com`, and a request for `*.example.com` needs that exact
+# string in the inventory. Same reasoning as the anchored patterns in
+# [filter.identifiers].
 #
 # An `ip` identifier is permitted when it is the connecting address itself, or
 # when it is listed like any other name. A common name ("cn") is skipped, as in
-# [filter.identifiers]. Any other type is refused: NetBox has nothing to say
-# about an email address or a URI, and this filter refuses what it cannot
+# [filter.identifiers]. Any other type is refused: an inventory has nothing to
+# say about an email address or a URI, and this filter refuses what it cannot
 # confirm.
 #
-# NetBox being unreachable, answering 5xx, refusing the token or timing out is
-# NOT a denial: it is reported as a server error (500) the client can retry, so
-# an outage stops issuance rather than permitting everything.
+# The inventory being unreachable, answering 5xx, refusing the token or timing
+# out is NOT a denial: it is reported as a server error (500) the client can
+# retry, so an outage stops issuance rather than permitting everything.
 #
-# Base URL of the instance. Any path is kept, so a NetBox served under a subpath
-# (https://example.com/netbox) works. Required when "netbox" is in filter.enabled.
-url = ""                            # ACME_PROXY_FILTER__NETBOX__URL
+# Which product to ask: "netbox", "phpipam", or empty for none. Anything else
+# is a startup error rather than a silent fallback. Enabling the `ipam` filter
+# with this empty is also a startup error.
+backend = ""                        # ACME_PROXY_IPAM__BACKEND
+# Budget for one whole lookup, however many requests the backend makes to
+# answer it — the address query plus, depending on sources, up to four more.
+# Applied once around all of them, so a wedged inventory cannot pin a request
+# open. Reported as a server error rather than a denial, since the server
+# failed to decide. This runs inside newOrder and finalize, so it is also part
+# of those requests' worst case.
+timeout_ms = 5000                   # ACME_PROXY_IPAM__TIMEOUT_MS
+
+[ipam.netbox]
+# Where the names come from. Empty, or an unknown entry, is a startup error —
+# an inventory trusted for nothing can never permit a name. Order is
+# meaningless: the result is a union, unlike filter.enabled's evaluation order.
+#
+#   dns_name      the address object's own dns_name
+#   custom_field  the custom field named below, on the address object
+#   device        the same field on the device or virtual machine the address
+#                 is assigned to. A FALLBACK, not a union: read only when the
+#                 address object itself carried no value, because a value set
+#                 on the address is the more specific statement and narrowing
+#                 one address of a machine must not be widened again by the
+#                 machine-wide list.
+#   vip           role-tagged service addresses of the same device (see
+#                 vip_roles) — a VIP shared by a keepalived or CARP pair. A
+#                 UNION: a member's own names and the names on the service
+#                 address it answers for are both true at once. One extra
+#                 query: ?device_id=N&role=...
+#   fhrp          the addresses of an FHRP group the client's OWN INTERFACE is
+#                 recorded as a member of. Also a union. Two extra queries, and
+#                 the direction is the point: a group is only ever reached
+#                 through an assignment naming this interface, so there is no
+#                 way to reach a group the client is not in. An interface in no
+#                 group contributes nothing.
+#
+# The last two are off by default: both widen what a client may certify.
+sources = ["dns_name", "custom_field", "device"]  # ACME_PROXY_IPAM__NETBOX__SOURCES
+# Base URL of the instance. Any path is kept, so a NetBox served under a
+# subpath (https://example.com/netbox) works. Required when backend = "netbox".
+url = ""                            # ACME_PROXY_IPAM__NETBOX__URL
 # API token, sent as `Authorization: Token <token>`. A read-only token is
 # enough. Prefer the environment variable over writing it here: this is a
 # secret, like [signer.relay.dns01.rfc2136]'s TSIG key.
-token = ""                          # ACME_PROXY_FILTER__NETBOX__TOKEN
+token = ""                          # ACME_PROXY_IPAM__NETBOX__TOKEN
 # Custom field holding the extra names an address may have certified. Configure
 # it in NetBox as a multi-select or text field on ipam.ipaddress (and, for the
-# fallback below, on dcim.device / virtualization.virtualmachine). A single
+# `device` source, on dcim.device / virtualization.virtualmachine). A single
 # string is accepted as well as a list.
-custom_field = "acme_allowed_names"  # ACME_PROXY_FILTER__NETBOX__CUSTOM_FIELD
-# Whether the address object's own dns_name counts as a permitted name.
-use_dns_name = true                 # ACME_PROXY_FILTER__NETBOX__USE_DNS_NAME
-# When the address object carries no value for custom_field, read it from the
-# device or virtual machine the address is assigned to — so the names can be
-# declared once per machine rather than once per address. It is a fallback and
-# not a union on purpose: a value set on the address is the more specific
-# statement, and narrowing one address of a machine must not be widened again by
-# the machine-wide list.
-device_fallback = true              # ACME_PROXY_FILTER__NETBOX__DEVICE_FALLBACK
+custom_field = "acme_allowed_names"  # ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD
+# Which NetBox address roles mark a service address, for the `vip` source.
+# Read only when `vip` is in sources, so this is *which* roles rather than
+# whether to look at all. The role is re-checked on the answer as well as sent
+# as a filter: a filter parameter this server got wrong must never degrade into
+# "every address on the device".
+vip_roles = ["vip", "vrrp", "hsrp", "glbp", "carp", "anycast"]  # ACME_PROXY_IPAM__NETBOX__VIP_ROLES
 # Extra CA certificates (PEM) to trust on top of the public roots, for a NetBox
 # behind an internal PKI. Ignored when insecure_skip_verify is on.
-ca_cert_path = ""                   # ACME_PROXY_FILTER__NETBOX__CA_CERT_PATH
+ca_cert_path = ""                   # ACME_PROXY_IPAM__NETBOX__CA_CERT_PATH
 # Skip verification of NetBox's TLS certificate entirely.
 #
 # Meant as a temporary way out of an expired NetBox certificate, so that issuing
 # certificates does not stop while that one is renewed. With it on, the answers
-# this filter trusts could come from anyone able to intercept the connection —
+# this server trusts could come from anyone able to intercept the connection —
 # unlike the challenge validators, where the certificate is deliberately not
 # checked because the proof is elsewhere, here it is the only thing identifying
-# the service deciding who may have a name certified. Startup logs a
-# `filter_netbox_tls_verification_disabled` warning for as long as it is set,
+# the service deciding who may have a name certified. Startup logs an
+# `ipam_netbox_tls_verification_disabled` warning for as long as it is set,
 # the counterpart of `tls_disabled` and `challenge_validation_bypassed`.
-insecure_skip_verify = false        # ACME_PROXY_FILTER__NETBOX__INSECURE_SKIP_VERIFY
-# Budget for the whole exchange — the address lookup plus the optional device
-# one. Reported as a server error rather than a denial, since the server failed
-# to decide. This runs inside newOrder and finalize, so it is also part of those
-# requests' worst case.
-timeout_ms = 5000                   # ACME_PROXY_FILTER__NETBOX__TIMEOUT_MS
+insecure_skip_verify = false        # ACME_PROXY_IPAM__NETBOX__INSECURE_SKIP_VERIFY
+
+[ipam.phpipam]
+# The same three sources NetBox offers, read from phpIPAM's own shapes:
+# dns_name is the address's `hostname`, custom_field is the column named below,
+# and device follows `deviceId`. phpIPAM records no address roles and no
+# redundancy groups, so naming `vip` or `fhrp` here is a startup error rather
+# than a silently ignored setting.
+sources = ["dns_name", "custom_field", "device"]  # ACME_PROXY_IPAM__PHPIPAM__SOURCES
+# Base URL of the instance. Required when backend = "phpipam".
+url = ""                            # ACME_PROXY_IPAM__PHPIPAM__URL
+# The API application's identifier — the <app_id> in every phpIPAM API path,
+# created under Administration -> API. One path segment: letters, digits, `-`
+# and `_`.
+app_id = "acme"                     # ACME_PROXY_IPAM__PHPIPAM__APP_ID
+# The application's app code, sent as a bare `token` header (phpIPAM's own
+# scheme, not `Authorization`). Set the application's security to "SSL with App
+# code". The user/password session-token scheme is not implemented. A secret:
+# prefer the environment variable.
+token = ""                          # ACME_PROXY_IPAM__PHPIPAM__TOKEN
+# Column holding the extra names an address may have certified, on the address
+# and — for the `device` source — on the device. phpIPAM prefixes custom
+# columns with `custom_`, so the default carries that prefix. It is a text
+# column, so several names are written comma-separated.
+custom_field = "custom_acme_allowed_names"  # ACME_PROXY_IPAM__PHPIPAM__CUSTOM_FIELD
+# Extra CA certificates (PEM) to trust on top of the public roots.
+# Ignored when insecure_skip_verify is on.
+ca_cert_path = ""                   # ACME_PROXY_IPAM__PHPIPAM__CA_CERT_PATH
+# Skip verification of phpIPAM's TLS certificate entirely — the counterpart of
+# [ipam.netbox].insecure_skip_verify, and warned about at startup in the same
+# way for as long as it is set.
+insecure_skip_verify = false        # ACME_PROXY_IPAM__PHPIPAM__INSECURE_SKIP_VERIFY
 
 [eab]   # [per-profile] — a [profiles.<name>] block may override these
 # Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that

@@ -49,7 +49,7 @@ covers it at every endpoint.
 | [`allowed_ip`](allowed_ip.md) | connection | CIDR allow/deny on the client address |
 | [`reverse_dns`](reverse_dns.md) | connection | PTR lookup with optional forward confirmation |
 | [`identifiers`](identifiers.md) | identifiers | Regex allow/deny on requested names |
-| [`netbox`](netbox.md) | identifiers | Ask NetBox whether the client owns the names |
+| [`ipam`](../ipam/index.md) | identifiers | Ask an IPAM whether the client owns the names |
 | [`custom`](custom.md) | both | Shell out to an operator-supplied script |
 
 ## Configuration
@@ -76,7 +76,7 @@ forwarded_header = "x-forwarded-for"
 **`enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__ENABLED`*
 
 Filters to activate, in evaluation order. Known names: `allowed_ip`,
-`reverse_dns`, `identifiers`, `netbox`, `custom`. Empty means no filtering at
+`reverse_dns`, `identifiers`, `ipam`, `custom`. Empty means no filtering at
 all — anyone who can reach the server can obtain a certificate if they satisfy
 the challenges (or if `challenge.bypass` is on, with no proof at all).
 

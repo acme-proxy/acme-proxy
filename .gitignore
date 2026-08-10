@@ -1,5 +1,6 @@
 /target/
 /tests/e2e/netbox-mock/target
+/tests/e2e/phpipam-mock/target
 /data/
 /doc/book/
 /config.toml

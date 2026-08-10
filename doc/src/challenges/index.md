@@ -68,7 +68,7 @@ see those pages. `dns-01` has no table of its own — it is governed by
 
 Bypass exists for two legitimate cases: local testing (as in the [Quick
 Start](../getting_started/quick_start.md)), and a deployment where an
-IPAM-backed filter such as [`netbox`](../filters/netbox.md) is genuinely the
+IPAM-backed filter such as [`ipam`](../ipam/index.md) is genuinely the
 authority on which host may hold which name, making a network round-trip
 redundant.
 
