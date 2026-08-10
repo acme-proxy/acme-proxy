@@ -80,7 +80,7 @@
 //!     // One resolver for the whole process: `dns.resolver` governs every
 //!     // outbound connection this server makes, not just challenge lookups.
 //!     let resolver = challenge::build_resolver(acme_proxy::dns::resolver_addr(&config.dns)?)?;
-//!     // Built once, up front: an asynchronous signer backend (`acme_proxy`)
+//!     // Built once, up front: an asynchronous signer backend (`relay`)
 //!     // has no `Profile` to reach a notifier through from its background
 //!     // completion task, so it is handed this whole map instead.
 //!     let mut notifiers = std::collections::HashMap::new();
@@ -338,7 +338,7 @@ impl Profile {
         // client publishing a `dns-01` record moments before triggering must
         // not be defeated by a cached negative answer.
         let resolver = challenge::build_resolver(crate::dns::resolver_addr(&config.dns)?)?;
-        // Built before the signer backends: the `acme_proxy` backend's
+        // Built before the signer backends: the `relay` backend's
         // background completion task has no `Profile`/`AppState` to reach a
         // notifier through (it outlives any single request, the same reason
         // it is handed `database`), so it is instead handed this whole
@@ -474,7 +474,7 @@ pub fn build_app(
         .route("/health", get(handlers::get_health_check));
 
     // The `http-01` responder for the *upstream's* challenge, mounted only when
-    // a signer backend has tokens to serve — which today means `acme_proxy`
+    // a signer backend has tokens to serve — which today means `relay`
     // with `challenge_strategy = "http01"`. Here beside `/health` rather than
     // inside a profile: RFC 8555 §8.3 fixes this path at the root of the name
     // being certified, and the CA fetching it holds no account at this server,

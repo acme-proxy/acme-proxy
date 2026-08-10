@@ -107,7 +107,7 @@ pub enum ActorKind {
     Admin,
     /// `acme-proxy order revoke` on the host.
     Cli,
-    /// The `acme_proxy` signer's background relay, settling an issuance this
+    /// The `relay` signer's background task, settling an issuance this
     /// server already answered `processing`. The one actor with no request
     /// behind it, and therefore no address — see [`Actor::system`].
     System,
@@ -484,7 +484,7 @@ impl Auditor {
 
 /// Writes one row against a bare database handle.
 ///
-/// The free function exists for the `acme_proxy` relay: it settles an issuance
+/// The free function exists for the `relay` backend: it settles an issuance
 /// from a background task that holds an `Arc<Database>` and no [`Auditor`], and
 /// it needs no reverse lookup either — the address it records was resolved
 /// during the finalize request and stored on the `upstream_orders` row. Giving

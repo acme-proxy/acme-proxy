@@ -922,7 +922,7 @@ async fn a_csr_must_name_exactly_the_order_s_identifiers() {
 /// depend on the backend making it.
 ///
 /// `local_ca` has always checked, so with the real signer a passing test proves
-/// nothing about `custom` or `acme_proxy` — the two that hand the CSR to an
+/// nothing about `custom` or `relay` — the two that hand the CSR to an
 /// operator script or relay it to an upstream that never saw the local
 /// authorizations. `RecordingSigner` accepts everything and records being
 /// called, so `was_called() == false` is the assertion that matters.
@@ -1131,7 +1131,7 @@ async fn the_order_list_of_another_account_is_unauthorized() {
     .await;
 }
 
-/// A backend that delegates issuance (the `acme_proxy` shape) must leave the
+/// A backend that delegates issuance (the `relay` shape) must leave the
 /// order `processing` rather than `valid`, and the response must carry the
 /// `Retry-After` RFC 8555 §7.4 asks for so the client knows to poll instead of
 /// waiting on the request.

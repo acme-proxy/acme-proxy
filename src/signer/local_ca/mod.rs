@@ -306,7 +306,7 @@ impl LocalCa {
 ///
 /// Defence in depth. `post_finalize` makes the same check before any backend is
 /// reached, which is what makes the guarantee hold for the backends that cannot
-/// make it themselves (`custom`, `acme_proxy`). This one stays because
+/// make it themselves (`custom`, `relay`). This one stays because
 /// `admin::ops` and `cli::order` call `issue` directly, so a backend has to be
 /// safe on its own — and because it is the check that decides what this CA
 /// actually signs.

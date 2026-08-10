@@ -95,7 +95,7 @@ pub enum Command {
         command: EabCommand,
     },
     /// Manage this server's own account at the upstream ACME server
-    /// (`signer.backend = "acme_proxy"`).
+    /// (`signer.backend = "relay"`).
     Upstream {
         #[command(subcommand)]
         command: UpstreamCommand,
@@ -1099,7 +1099,7 @@ mod tests {
                 command: EabCommand::List { json: false },
             },
             // `Upstream` is deliberately absent: it acts on a *profile's*
-            // `[signer.acme_proxy]`, and this config has none, so it now
+            // `[signer.relay]`, and this config has none, so it now
             // reports that rather than silently reading the global base
             // section nothing serves from. Covered in `cli::upstream`'s own
             // tests, which supply a configuration with profiles.

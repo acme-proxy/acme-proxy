@@ -34,8 +34,8 @@ mod admin_cli;
 #[path = "e2e/custom_signer.rs"]
 mod custom_signer;
 
-#[path = "e2e/acme_proxy_signer.rs"]
-mod acme_proxy_signer;
+#[path = "e2e/relay_signer.rs"]
+mod relay_signer;
 
 #[path = "e2e/key_change.rs"]
 mod key_change;

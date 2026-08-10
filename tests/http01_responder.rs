@@ -1,17 +1,17 @@
 //! `GET /.well-known/acme-challenge/{token}`: the file an *upstream* CA fetches
-//! when the `acme_proxy` signer backend proves domain control to it over HTTP.
+//! when the `relay` signer backend proves domain control to it over HTTP.
 //!
 //! The inverse of every other route in this suite. Elsewhere a client asks this
 //! server for a certificate; here a CA asks this server to prove itself, so the
 //! fetcher holds no account, sends no JWS, and must not meet a filter chain, a
-//! nonce or an ACME problem document. `src/signer/acme_proxy/mod.rs`'s own tests
+//! nonce or an ACME problem document. `src/signer/relay/mod.rs`'s own tests
 //! cover the relay publishing into the store — what is pinned here is the
 //! **mounting**: that `build_app` exposes the route exactly when a backend has
 //! tokens to serve, outside the layers a profile carries.
 
 use std::sync::Arc;
 
-use acme_proxy::signer::acme_proxy::http01::TokenStore;
+use acme_proxy::signer::relay::http01::TokenStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;

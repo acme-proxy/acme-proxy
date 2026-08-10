@@ -1,12 +1,12 @@
 //! The `http-01` responder: serving the challenge file an *upstream* CA
-//! fetches, when the `acme_proxy` signer backend is proving domain control to
+//! fetches, when the `relay` signer backend is proving domain control to
 //! it over HTTP.
 //!
 //! This is the only route in the server that is not an ACME resource and not a
 //! health probe, and it is the inverse of everything else here: the rest of
 //! `handlers/` answers clients asking *this* server for certificates, while
 //! this one answers the CA *this* server is asking for one. See
-//! [`crate::signer::acme_proxy::http01`] for why the key authorization can only
+//! [`crate::signer::relay::http01`] for why the key authorization can only
 //! come from this server and not from the original client.
 
 use std::sync::Arc;

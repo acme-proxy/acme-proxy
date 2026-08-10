@@ -34,7 +34,7 @@ produced.
 | Backend | What it does |
 | --- | --- |
 | `local_ca` | Signs directly with an embedded CA (self-generated, or your own intermediate). Publishes a CRL. The issuing key can live in a **PKCS#11 token** (YubiKey, HSM) instead of a file — `--features hsm`. |
-| `acme_proxy` | Relays to a real upstream ACME CA, solving the upstream's DNS-01 challenges itself with a single centrally held RFC 2136 TSIG key. One upstream account multiplexed across all your clients. |
+| `relay` | Relays to a real upstream ACME CA, solving the upstream's DNS-01 challenges itself with a single centrally held RFC 2136 TSIG key. One upstream account multiplexed across all your clients. |
 | `custom` | Shells out to a script — for a legacy PKI, an HSM, or an internal API that does not speak ACME. |
 
 ## Features

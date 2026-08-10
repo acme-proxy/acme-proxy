@@ -1,4 +1,4 @@
-//! The mapping between a local order and the order the `acme_proxy` signer
+//! The mapping between a local order and the order the `relay` signer
 //! backend opened for it at the upstream CA.
 //!
 //! Kept in SQLite alongside the rest of the data model rather than in a

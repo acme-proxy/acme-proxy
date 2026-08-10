@@ -12,8 +12,8 @@ fn the_kid_sidecar_sits_next_to_the_key() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_empty_directory_url_is_a_startup_error() {
     let db = database().await;
-    let error = startup_error(AcmeProxySigner::from_config(
-        &AcmeProxyConfig::default(),
+    let error = startup_error(RelaySigner::from_config(
+        &RelayConfig::default(),
         vec!["default".to_string()],
         db,
         no_notifiers(),
@@ -36,7 +36,7 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
     let mut cfg = config(&upstream, &dir);
     cfg.challenge_strategy = "tlsalpn01".to_string();
 
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         db,
@@ -65,7 +65,7 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
     let mut cfg = config(&upstream, &dir);
     cfg.challenge_strategy = "dns01".to_string();
 
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         db,
@@ -85,7 +85,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
     let db = database().await;
     let cfg = config(&upstream, &dir);
 
-    let _first = AcmeProxySigner::from_config(
+    let _first = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         db.clone(),
@@ -100,7 +100,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
     let kid = std::fs::read_to_string(&kid_file).unwrap();
     let key = std::fs::read_to_string(&key_file).unwrap();
 
-    let _second = AcmeProxySigner::from_config(
+    let _second = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         db,
@@ -126,7 +126,7 @@ async fn the_generated_account_key_is_owner_only() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let cfg = config(&upstream, &dir);
-    let _signer = AcmeProxySigner::from_config(
+    let _signer = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -154,7 +154,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -208,7 +208,7 @@ async fn a_settle_for_an_order_that_vanished_is_survived() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -231,7 +231,7 @@ async fn an_unusable_upstream_chain_fails_the_order() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -298,7 +298,7 @@ async fn settle_notifies_only_the_owning_profile() {
         Arc::new(NotifyDispatcher::new(vec![recorder_b.clone()])),
     );
 
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["a".to_string(), "b".to_string()],
         db.clone(),
@@ -361,7 +361,7 @@ async fn issue_polls_until_the_upstream_settles() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -400,7 +400,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -448,7 +448,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let db = database().await;
     let mut cfg = config(&upstream, &dir);
     cfg.poll_timeout_secs = 1;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         db.clone(),
@@ -490,7 +490,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -544,7 +544,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -572,7 +572,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
 async fn revoke_reaches_the_upstream() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -598,7 +598,7 @@ async fn revoke_treats_already_revoked_as_success() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -642,7 +642,7 @@ async fn resume_finishes_a_relay_left_behind_by_a_restart() {
     .unwrap();
 
     // A fresh backend, as a restarted process would build.
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -683,7 +683,7 @@ async fn resume_ignores_rows_that_already_settled() {
         .await
         .unwrap();
 
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -706,7 +706,7 @@ async fn resume_ignores_rows_that_already_settled() {
 async fn resume_with_no_pending_rows_does_nothing() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,

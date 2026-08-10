@@ -1,7 +1,7 @@
 //! Scratch-directory and script helpers shared by the crate's unit tests.
 //!
 //! `TempDir` had grown seven independent copies (`tls`, `pemfile`,
-//! `signer::custom`, `signer::acme_proxy`, `filter::custom`, `notify::custom`,
+//! `signer::custom`, `signer::relay`, `filter::custom`, `notify::custom`,
 //! and one in the integration harness), and `write_script` four — including a
 //! verbatim ten-line comment about `ETXTBSY`, which is the sort of hard-won
 //! explanation that should exist in one place or it stops being maintained in

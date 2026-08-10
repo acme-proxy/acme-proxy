@@ -3,7 +3,7 @@
 //! Deliberately narrow: per-event field-shape assertions (what fields a
 //! `NotifyEvent` carries, template rendering, the `events` filter, the
 //! `custom` script contract) belong to the inline unit tests under
-//! `src/notify/*` and `src/signer/acme_proxy/mod.rs`. This file only covers
+//! `src/notify/*` and `src/signer/relay/mod.rs`. This file only covers
 //! what *requires* the real router — that each handler actually calls
 //! `dispatch(...)` at the right point with the right data, and that a
 //! failing/panicking notify backend never affects the HTTP response.

@@ -54,7 +54,7 @@ pub fn leaf_der_from_chain(chain_pem: &str) -> anyhow::Result<Vec<u8>> {
 /// base64url(serial)`, both unpadded.
 ///
 /// Used in both directions: to ask an upstream CA about a certificate
-/// ([`crate::signer::acme_proxy`]) and to check an inbound certID against the
+/// ([`crate::signer::relay`]) and to check an inbound certID against the
 /// certificate it claims to name ([`crate::handlers::get_renewal_info`]).
 ///
 /// Fails when the certificate carries no Authority Key Identifier extension,

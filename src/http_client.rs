@@ -2,7 +2,7 @@
 //!
 //! Deliberately **not** a shared client type. What
 //! [`challenge::http_01`](crate::challenge::http_01),
-//! [`signer::acme_proxy::client`](crate::signer::acme_proxy::client),
+//! [`signer::relay::client`](crate::signer::relay::client),
 //! [`filter::netbox::client`](crate::filter::netbox::client) and
 //! [`notify::mattermost`](crate::notify::mattermost) have in common is
 //! *plumbing*: pick a URL apart into host, scheme and port; connect through the

@@ -18,7 +18,7 @@
 //!
 //! An upstream validation cycle can take minutes. Holding the client's
 //! `finalize` request open for that long would tie up a connection and a SQLite
-//! handle, so [`AcmeProxySigner::issue`] returns
+//! handle, so [`RelaySigner::issue`] returns
 //! [`IssueOutcome::Processing`] and finishes in a background task. RFC 8555
 //! §7.4 has the `processing` order status for exactly this, and the client
 //! polls. The task owns the `Order` from then on: it calls `Order::finalize` on
@@ -34,7 +34,7 @@ use base64::prelude::*;
 use serde_json::json;
 use tracing::{debug, error, info, warn};
 
-use crate::config::AcmeProxyConfig;
+use crate::config::RelayConfig;
 use crate::notify::NotifyDispatcher;
 use crate::signer::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
@@ -45,8 +45,8 @@ pub mod account;
 pub mod client;
 pub mod dns01;
 pub mod eab;
+pub mod flow;
 pub mod http01;
-pub mod relay;
 #[cfg(test)]
 pub mod testsrv;
 pub mod wire;
@@ -56,7 +56,7 @@ use client::{AccountKey, AcmeClient, Signer};
 use account::provision;
 pub use account::{register_upstream_account, stored_kid};
 pub(crate) use eab::decode_secret;
-use relay::spawn_relay;
+use flow::spawn_relay;
 use wire::{RenewalInfoView, UpstreamOrderView, parse_rfc3339, upstream_to_signer_error};
 
 /// How this proxy satisfies the *upstream's* domain-control requirement.
@@ -98,7 +98,7 @@ struct Inner {
     strategy: ChallengeStrategy,
     poll: PollConfig,
     /// The profiles this backend answers for — several endpoints may share one
-    /// upstream configuration, and [`AcmeProxySigner::resume`] must pick up
+    /// upstream configuration, and [`RelaySigner::resume`] must pick up
     /// their in-flight orders and **only** theirs.
     profiles: Vec<String>,
     /// The whole `profile name -> dispatcher` map, not just the entries in
@@ -123,14 +123,14 @@ struct Inner {
 /// backlog steadily.
 const MAX_CONCURRENT_RELAYS: usize = 8;
 
-pub struct AcmeProxySigner(Arc<Inner>);
+pub struct RelaySigner(Arc<Inner>);
 
 /// The `Location` sidecar next to the account key: `foo.key` → `foo.kid`.
 ///
 /// Same convention as `local_ca`'s ledger sidecar next to its CRL. Holding the
 /// `kid` locally is what keeps startup from depending on the upstream after the
 /// first successful registration.
-impl AcmeProxySigner {
+impl RelaySigner {
     /// Builds the backend, provisioning the upstream account if needed.
     ///
     /// Unlike `local_ca`, whose construction is pure disk I/O, this may make a
@@ -138,7 +138,7 @@ impl AcmeProxySigner {
     /// yet. Every later startup just reads the two local files, so a temporarily
     /// unreachable upstream does not stop the server from booting.
     pub fn from_config(
-        cfg: &AcmeProxyConfig,
+        cfg: &RelayConfig,
         profiles: Vec<String>,
         database: Arc<Database>,
         notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
@@ -146,7 +146,7 @@ impl AcmeProxySigner {
     ) -> anyhow::Result<Self> {
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
-                "signer.acme_proxy.directory_url is empty: the acme_proxy backend has no upstream \
+                "signer.relay.directory_url is empty: the relay backend has no upstream \
                  to relay to"
             );
         }
@@ -183,7 +183,7 @@ impl AcmeProxySigner {
                                 dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?,
                             )),
                             other => anyhow::bail!(
-                                "unknown signer.acme_proxy.dns01.provider: {other} (supported: rfc2136)"
+                                "unknown signer.relay.dns01.provider: {other} (supported: rfc2136)"
                             ),
                         },
                         "http01" => {
@@ -194,7 +194,7 @@ impl AcmeProxySigner {
                             // out of this process's reach, so say so on every
                             // startup rather than at the first failed issuance.
                             info!(
-                                event = "signer_acme_proxy_http01_selected",
+                                event = "signer_relay_http01_selected",
                                 path = crate::challenge::http_01::WELL_KNOWN_PREFIX,
                                 "the upstream will fetch \
                                  http://<identifier>:80/.well-known/acme-challenge/<token>; a \
@@ -204,7 +204,7 @@ impl AcmeProxySigner {
                             ChallengeStrategy::Http01(Arc::new(http01::MemoryTokenStore::new()))
                         }
                         other => anyhow::bail!(
-                            "unknown signer.acme_proxy.challenge_strategy: {other} \
+                            "unknown signer.relay.challenge_strategy: {other} \
                              (supported: bypass, dns01, http01)"
                         ),
                     };
@@ -235,7 +235,7 @@ impl AcmeProxySigner {
 
 /// Loads (or creates) the account key, then loads (or registers) the `kid`.
 #[async_trait]
-impl SignerBackend for AcmeProxySigner {
+impl SignerBackend for RelaySigner {
     /// Opens the upstream order, then hands the rest to a background task.
     ///
     /// The `newOrder` itself is deliberately **synchronous**: it costs one
@@ -243,7 +243,7 @@ impl SignerBackend for AcmeProxySigner {
     /// issue for, a rate limit, a dead account) reaches the client as an
     /// accurate error on the finalize request itself, instead of the order
     /// quietly going `processing` and then `invalid` moments later.
-    #[tracing::instrument(name = "acme_proxy_issue", skip_all, fields(order_id = %order_id))]
+    #[tracing::instrument(name = "relay_issue", skip_all, fields(order_id = %order_id))]
     async fn issue(
         &self,
         order_id: &str,
@@ -350,7 +350,7 @@ impl SignerBackend for AcmeProxySigner {
         }
     }
 
-    #[tracing::instrument(name = "acme_proxy_revoke", skip_all)]
+    #[tracing::instrument(name = "relay_revoke", skip_all)]
     async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
         let inner = &self.0;
         let revoke_url = inner
@@ -397,7 +397,7 @@ impl SignerBackend for AcmeProxySigner {
     /// `Ok(None)` whenever the upstream has nothing to say — it advertises no
     /// `renewalInfo`, or the certificate has no derivable certID — leaving the
     /// handler on its local estimate rather than failing the client's request.
-    #[tracing::instrument(name = "acme_proxy_renewal_info", skip_all)]
+    #[tracing::instrument(name = "relay_renewal_info", skip_all)]
     async fn renewal_info(&self, cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
         let inner = &self.0;
         let Some(base) = inner.client.directory().renewal_info.clone() else {

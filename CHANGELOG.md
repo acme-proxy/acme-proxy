@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- **The `acme_proxy` signer backend is now `relay`.** It shared its name with
+  the program that hosts it — the binary, the crate, the `ACME_PROXY_*`
+  environment prefix and the default log filter are all `acme-proxy` — which
+  made `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET` spell
+  the application's name twice for two different things, and left the
+  documentation glossing the page title as "ACME Proxy (Relay)" to say which
+  one it meant. `relay` is what the code and the prose already called it. To
+  migrate:
+
+  - `signer.backend = "acme_proxy"` becomes `signer.backend = "relay"`.
+  - `[signer.acme_proxy]`, `[signer.acme_proxy.eab]`,
+    `[signer.acme_proxy.dns01]` and `[signer.acme_proxy.dns01.rfc2136]` become
+    `[signer.relay]`, `[signer.relay.eab]`, `[signer.relay.dns01]` and
+    `[signer.relay.dns01.rfc2136]`.
+  - `ACME_PROXY_SIGNER__ACME_PROXY__*` becomes `ACME_PROXY_SIGNER__RELAY__*`.
+
+  Neither half fails silently. The old `backend` value is refused at startup
+  with an error naming its replacement and both env-var prefixes; a
+  configuration that renames `backend` but leaves the table behind is refused
+  by the existing "directory_url is empty" check, because the stale table is no
+  longer read. `acme-proxy upstream show|register` is unchanged — it acts on
+  the upstream account, which keeps its own word.
+
+  The two startup log events `signer_acme_proxy_eab_secret_in_config` and
+  `signer_acme_proxy_http01_selected` are renamed to `signer_relay_*`, and the
+  three tracing spans `acme_proxy_{issue,revoke,renewal_info}` to `relay_*` —
+  relevant if you alert or grep on them. No database, ACME wire format or CLI
+  surface changes; `upstream_orders` and `upstream_account.key` keep their
+  names, which were already about the far side rather than the backend.
+
 ### Documentation
 
 - Four new chapters: **Protocol Support** (an RFC 8555 conformance summary and

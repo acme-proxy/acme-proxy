@@ -13,7 +13,7 @@ authorization `valid`, and an order becomes `ready` once every authorization is.
   handshake.
 
 This is validation `acme-proxy` performs against **its own clients**. It is
-separate from how the [`acme_proxy` signer backend](../signers/acme_proxy.md)
+separate from how the [`relay` signer backend](../signers/relay.md)
 satisfies an *upstream* CA's challenges on your behalf; the two are configured
 independently and need not match.
 

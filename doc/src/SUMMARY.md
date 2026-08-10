@@ -15,7 +15,7 @@
 - [Signers](signers/index.md)
   - [Local CA](signers/local_ca.md)
     - [Hardware Keys (PKCS#11)](signers/local_ca_hsm.md)
-  - [ACME Proxy (Relay)](signers/acme_proxy.md)
+  - [Relay](signers/relay.md)
   - [Custom Script](signers/custom.md)
 - [Challenge Validation](challenges/index.md)
   - [HTTP-01](challenges/http_01.md)

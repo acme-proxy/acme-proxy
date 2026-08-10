@@ -3,10 +3,10 @@
 This page outlines complete, practical examples of configuring `acme-proxy` for
 different real-world use cases. Each block is a whole `config.toml`.
 
-> All three scenarios below use the `acme_proxy` backend. **Starting the server
-> registers an account at `directory_url`** — see [ACME Proxy
-> Signer](../signers/acme_proxy.md#reference). Use a staging endpoint while you
-> are still working the configuration out.
+> All three scenarios below use the `relay` backend. **Starting the server
+> registers an account at `directory_url`** — see
+> [Relay](../signers/relay.md#reference). Use a staging endpoint while you are
+> still working the configuration out.
 
 ## Let's Encrypt relay with DNS validation
 
@@ -24,9 +24,9 @@ base_url = "https://acme.internal.company.com"
 bind_address = "[::]:3000"
 
 [signer]
-backend = "acme_proxy"
+backend = "relay"
 
-[signer.acme_proxy]
+[signer.relay]
 directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 account_key_path = "le_upstream.key"
 contact = ["mailto:admin@company.com"]
@@ -34,15 +34,15 @@ challenge_strategy = "dns01"
 poll_interval_ms = 2000
 poll_timeout_secs = 300
 
-[signer.acme_proxy.dns01]
+[signer.relay.dns01]
 provider = "rfc2136"
 
-[signer.acme_proxy.dns01.rfc2136]
+[signer.relay.dns01.rfc2136]
 server = "10.0.0.53:53"
 zone = "internal.company.com."
 tsig_key_name = "acme-update-key"
 # MUST be standard base64 (not base64url). Prefer the environment variable
-# ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET to a file.
+# ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET to a file.
 # A non-base64 value here is a startup error, not a runtime one.
 tsig_key_secret = "c2VjcmV0LXJlcGxhY2UtbWU="
 tsig_algorithm = "hmac-sha256"
@@ -69,13 +69,13 @@ base_url = "https://acme.internal.company.com"
 bind_address = "[::]:3000"
 
 [signer]
-backend = "acme_proxy"
+backend = "relay"
 
-[signer.acme_proxy]
+[signer.relay]
 directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 account_key_path = "le_upstream.key"
 contact = ["mailto:admin@company.com"]
-# No [signer.acme_proxy.http01] table exists — this line is the whole
+# No [signer.relay.http01] table exists — this line is the whole
 # configuration. The responder is a route on this server's own root router;
 # acme-proxy does NOT open a second listener or bind port 80.
 challenge_strategy = "http01"
@@ -104,8 +104,8 @@ location /.well-known/acme-challenge/ {
 
 Note this strategy **cannot issue wildcards** (nothing answers HTTP on the name
 `*.example.com`); those need scenario 1's `dns01`. See
-[ACME Proxy Signer](../signers/acme_proxy.md#deploying-the-http-01-responder)
-for Caddy and Traefik equivalents.
+[Relay](../signers/relay.md#deploying-the-http-01-responder) for Caddy and
+Traefik equivalents.
 
 ## Commercial ACME CA with EAB and NetBox filtering
 
@@ -119,9 +119,9 @@ actually permitted to request a certificate for a specific DNS name.
 base_url = "https://ca.internal.company.com"
 
 [signer]
-backend = "acme_proxy"
+backend = "relay"
 
-[signer.acme_proxy]
+[signer.relay]
 directory_url = "https://commercial-ca.example.com/acme/directory"
 account_key_path = "commercial_upstream.key"
 

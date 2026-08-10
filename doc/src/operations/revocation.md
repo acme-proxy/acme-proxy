@@ -112,7 +112,7 @@ regeneration would publish an empty CRL.
 - **`custom`** — the CRL comes from the script's `crl` hook, and only when
   `signer.custom.supports_crl = true`. Otherwise there is nothing to serve. See
   [Custom Script Signer](../signers/custom.md).
-- **`acme_proxy`** — the upstream CA publishes its own CRL or OCSP responder;
+- **`relay`** — the upstream CA publishes its own CRL or OCSP responder;
   this server does not republish it.
 
 ## Interaction with renewal information

@@ -38,7 +38,7 @@ body:
       description: "`signer.backend` for the profile involved."
       options:
         - local_ca
-        - acme_proxy (relay to an upstream CA)
+        - relay (to an upstream ACME CA)
         - custom (script)
         - not sure
     validations:

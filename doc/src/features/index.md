@@ -36,7 +36,7 @@ Two paths sit outside every profile, on the root router:
 | Path | Purpose |
 | --- | --- |
 | `/health` | Liveness. Outside the filter chain, the admission limiter and the nonce middleware — see [Monitoring](../operations/monitoring.md). |
-| `/.well-known/acme-challenge/{token}` | Mounted **only** when a signer backend has an http-01 token store to publish, i.e. `signer.acme_proxy.challenge_strategy = "http01"`. See [ACME Proxy (Relay)](../signers/acme_proxy.md). |
+| `/.well-known/acme-challenge/{token}` | Mounted **only** when a signer backend has an http-01 token store to publish, i.e. `signer.relay.challenge_strategy = "http01"`. See [Relay](../signers/relay.md). |
 
 ## Protocol behaviour worth knowing
 
@@ -87,8 +87,7 @@ Stated explicitly, because each is something a reader may reasonably expect:
 
 - **CAA checking.** `meta.caa_identities` is advertised to clients; this server
   does no CAA lookup of its own. Where the [relay
-  backend](../signers/acme_proxy.md) is in use, the upstream CA performs its
-  own.
+  backend](../signers/relay.md) is in use, the upstream CA performs its own.
 - **OCSP.** Revocation is published as a CRL at `GET /crl`. There is no OCSP
   responder and no `authorityInfoAccess` OCSP pointer in issued certificates.
 - **Identifier types other than `dns`.** `newOrder` accepts DNS names, including

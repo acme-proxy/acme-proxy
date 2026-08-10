@@ -96,7 +96,7 @@ impl Rfc2136Updater {
         use base64::prelude::*;
 
         if cfg.server.is_empty() {
-            anyhow::bail!("signer.acme_proxy.dns01.rfc2136.server is not set");
+            anyhow::bail!("signer.relay.dns01.rfc2136.server is not set");
         }
         let server: SocketAddr = std::net::ToSocketAddrs::to_socket_addrs(&cfg.server)
             .map_err(|error| {
@@ -112,7 +112,7 @@ impl Rfc2136Updater {
         })?;
 
         if cfg.tsig_key_name.is_empty() {
-            anyhow::bail!("signer.acme_proxy.dns01.rfc2136.tsig_key_name is not set");
+            anyhow::bail!("signer.relay.dns01.rfc2136.tsig_key_name is not set");
         }
         let key_name = Name::from_utf8(&cfg.tsig_key_name)
             .map_err(|error| anyhow::anyhow!("rfc2136.tsig_key_name is not a DNS name: {error}"))?;
@@ -124,7 +124,7 @@ impl Rfc2136Updater {
             .decode(cfg.tsig_key_secret.trim())
             .map_err(|error| anyhow::anyhow!("rfc2136.tsig_key_secret is not base64: {error}"))?;
         if secret.is_empty() {
-            anyhow::bail!("signer.acme_proxy.dns01.rfc2136.tsig_key_secret is empty");
+            anyhow::bail!("signer.relay.dns01.rfc2136.tsig_key_secret is empty");
         }
 
         let algorithm = tsig_algorithm(&cfg.tsig_algorithm)?;

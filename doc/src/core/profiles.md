@@ -29,7 +29,7 @@ graph TD
     ROOT -->|"/profile/staging/*"| PSTG["Profile: staging"]
 
     PDEV --> SDEV["signer: local_ca<br/>filters: none"]
-    PPROD --> SPROD["signer: acme_proxy<br/>filters: netbox"]
+    PPROD --> SPROD["signer: relay<br/>filters: netbox"]
     PSTG --> SSTG["signer: local_ca<br/>filters: none"]
 
     SDEV --> B1["Arc&lt;dyn SignerBackend&gt; #1"]
@@ -91,8 +91,8 @@ enabled = true
 # Profile 2: Relays to Let's Encrypt and enforces IP filters
 [profiles.le]
 enabled = true
-signer.backend = "acme_proxy"
-signer.acme_proxy.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+signer.backend = "relay"
+signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 filter.enabled = ["allowed_ip"]
 filter.allowed_ip.allow = ["10.0.0.0/8"]
 ```

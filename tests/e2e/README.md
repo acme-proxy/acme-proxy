@@ -106,7 +106,7 @@ already uses for `lego` itself (see "key_change.rs" below).
   they're known, so a test can reference "the certbot container's address"
   before that address exists.
 - **`Lab::new_with_upstream`** additionally starts a second `acme-proxy`
-  instance (for the `acme_proxy` relaying signer backend) and
+  instance (for the `relay` relaying signer backend) and
   **`Lab::new_with_files`** copies files into the primary `acme-proxy`
   container *before* it starts, via testcontainers' `with_copy_to` — for
   scenarios like the `custom` signer where `signer.custom.script_path` must
@@ -188,7 +188,7 @@ already uses for `lego` itself (see "key_change.rs" below).
   issued leaf's issuer is checked against the script's own CA, proving
   delegation actually happened rather than falling back to `local_ca`'s
   default one.
-- **`acme_proxy_signer.rs`** — the relaying `acme_proxy` signer backend
+- **`relay_signer.rs`** — the relaying `relay` signer backend
   against a second `acme-proxy` instance (`Lab::new_with_upstream`), both
   the `bypass` and `dns01` upstream challenge strategies.
 - **`ari.rs`** — `GET /renewalInfo/{certID}` (RFC 9773): a real certificate

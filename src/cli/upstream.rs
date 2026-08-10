@@ -1,7 +1,7 @@
 //! `acme-proxy upstream …` — managing this server's own ACME account at the
-//! upstream CA, when the `acme_proxy` signer backend is in use.
+//! upstream CA, when the `relay` signer backend is in use.
 //!
-//! ## Why this command exists alongside `signer.acme_proxy.eab`
+//! ## Why this command exists alongside `signer.relay.eab`
 //!
 //! An upstream that requires External Account Binding hands the operator a
 //! `kid` and an HMAC secret out of band. That credential authorizes exactly
@@ -9,8 +9,8 @@
 //! command takes the secret on **stdin** (or from a file), uses it once, and
 //! never writes it anywhere — no bootstrap secret is left readable on disk
 //! for the life of the server, unlike the alternative of setting
-//! `signer.acme_proxy.eab` in configuration (see
-//! [`crate::config::AcmeProxyEabConfig`]), which trades that property away
+//! `signer.relay.eab` in configuration (see
+//! [`crate::config::RelayEabConfig`]), which trades that property away
 //! for not needing this separate step. The secret is deliberately not
 //! accepted as a command-line flag either way: argv is visible to every
 //! process on the host via `ps` and is routinely written to shell history.
@@ -22,7 +22,7 @@ use clap::Subcommand;
 
 use crate::cli::CliError;
 use crate::config::Config;
-use crate::signer::acme_proxy;
+use crate::signer::relay;
 
 #[derive(Subcommand)]
 pub enum UpstreamCommand {
@@ -53,12 +53,12 @@ pub enum UpstreamCommand {
     },
 }
 
-/// Resolves which profile's `[signer.acme_proxy]` a command should act on.
+/// Resolves which profile's `[signer.relay]` a command should act on.
 ///
 /// `signer` is a **per-profile** section, but this command read
-/// `config.signer.acme_proxy` — the global base every profile overlays, which
+/// `config.signer.relay` — the global base every profile overlays, which
 /// nothing serves from. An operator who configured the upstream only under
-/// `[profiles.le].signer.acme_proxy` was told "directory_url is not set", which
+/// `[profiles.le].signer.relay` was told "directory_url is not set", which
 /// was simply false; and if a *different* upstream happened to be configured
 /// globally, `register` would write the account key and `.kid` sidecar for the
 /// wrong CA, at the wrong paths. This follows `order revoke`'s pattern instead.
@@ -98,10 +98,10 @@ pub async fn run_upstream_command(
             profile,
         } => {
             let resolved = resolve_profile(config, profile.as_deref())?;
-            let cfg = &resolved.sections.signer.acme_proxy;
+            let cfg = &resolved.sections.signer.relay;
             if cfg.directory_url.is_empty() {
                 return Err(CliError(
-                    "signer.acme_proxy.directory_url is not set: there is no upstream to register \
+                    "signer.relay.directory_url is not set: there is no upstream to register \
                      with"
                         .to_string(),
                 ));
@@ -121,7 +121,7 @@ pub async fn run_upstream_command(
             let resolver = crate::dns::resolver_addr(&config.dns)
                 .and_then(crate::challenge::build_resolver)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
-            match acme_proxy::register_upstream_account(cfg, resolver, eab).await {
+            match relay::register_upstream_account(cfg, resolver, eab).await {
                 Ok(kid) => println!("Registered. kid = {kid}"),
                 Err(error) => {
                     return Err(CliError(format!("upstream registration failed: {error}")));
@@ -131,8 +131,8 @@ pub async fn run_upstream_command(
 
         UpstreamCommand::Show { json, profile } => {
             let resolved = resolve_profile(config, profile.as_deref())?;
-            let cfg = &resolved.sections.signer.acme_proxy;
-            let kid = acme_proxy::stored_kid(cfg);
+            let cfg = &resolved.sections.signer.relay;
+            let kid = relay::stored_kid(cfg);
             let key_present = std::path::Path::new(&cfg.account_key_path).exists();
 
             if json {
@@ -191,7 +191,7 @@ fn read_secret(
         }
     };
 
-    acme_proxy::decode_secret(raw.trim())
+    relay::decode_secret(raw.trim())
         .ok_or_else(|| CliError("the EAB key is not valid base64".to_string()))
 }
 
@@ -218,7 +218,7 @@ mod tests {
         config
     }
 
-    /// The bug this resolution fixes: `[signer.acme_proxy]` written *inside* a
+    /// The bug this resolution fixes: `[signer.relay]` written *inside* a
     /// profile was invisible, because the command read the global base section
     /// that nothing ever serves from. An operator saw "directory_url is not
     /// set" for a configuration where it plainly was.
@@ -227,20 +227,20 @@ mod tests {
         let config = config_from(
             r#"
             [profiles.le]
-            signer.backend = "acme_proxy"
-            signer.acme_proxy.directory_url = "https://upstream.example/directory"
-            signer.acme_proxy.account_key_path = "/tmp/le-upstream.key"
+            signer.backend = "relay"
+            signer.relay.directory_url = "https://upstream.example/directory"
+            signer.relay.account_key_path = "/tmp/le-upstream.key"
             "#,
         );
 
         let resolved = resolve_profile(&config, None).unwrap();
         assert_eq!(resolved.name, "le");
         assert_eq!(
-            resolved.sections.signer.acme_proxy.directory_url,
+            resolved.sections.signer.relay.directory_url,
             "https://upstream.example/directory"
         );
         assert_eq!(
-            resolved.sections.signer.acme_proxy.account_key_path,
+            resolved.sections.signer.relay.account_key_path,
             "/tmp/le-upstream.key"
         );
     }
@@ -277,7 +277,7 @@ mod tests {
     use base64::prelude::*;
 
     // `decode_secret`'s own decoding tests (base64url, standard base64, a
-    // refused non-base64 value) live in `signer::acme_proxy::eab`, which now
+    // refused non-base64 value) live in `signer::relay::eab`, which now
     // owns the one implementation both this module and `provision()` call.
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         );
     }
 
-    /// Without `signer.acme_proxy.directory_url` there is no upstream at all,
+    /// Without `signer.relay.directory_url` there is no upstream at all,
     /// so registration stops before it can prompt for a credential.
     #[tokio::test]
     async fn registering_without_an_upstream_is_refused() {
@@ -380,9 +380,9 @@ mod tests {
         let config = config_from(&format!(
             r#"
             [profiles.default]
-            signer.backend = "acme_proxy"
-            signer.acme_proxy.directory_url = "http://127.0.0.1:1/directory"
-            signer.acme_proxy.account_key_path = "{}"
+            signer.backend = "relay"
+            signer.relay.directory_url = "http://127.0.0.1:1/directory"
+            signer.relay.account_key_path = "{}"
             "#,
             dir.join("upstream.key").display()
         ));

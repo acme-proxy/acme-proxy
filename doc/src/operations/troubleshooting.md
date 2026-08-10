@@ -16,7 +16,7 @@ silently degrading at runtime. The log line names the problem in each case.
 | Two profiles sharing `ca.key` but differing elsewhere | Two `local_ca` instances over the same files would each rewrite the CRL from their own in-memory ledger. | Make the `[signer]` sections identical (they then share one backend), or give each profile its own CA files. |
 | An entry name with an underscore | `[filter.custom.*]`, `[notify.custom.*]` and profile names must match `^[a-z0-9-]+$`. | Use hyphens: `threat-intel`, not `threat_intel`. |
 | A `custom` backend enabled with no entries | Listing `"custom"` in `filter.enabled`/`notify.enabled` while the matching `custom_enabled` is empty. | Populate `custom_enabled`, or drop `"custom"`. |
-| Upstream requires EAB, no `.kid` sidecar | The `acme_proxy` backend has never registered with the upstream. | Run `acme-proxy upstream register --profile <name> --eab-kid …`, or set `signer.acme_proxy.eab.kid`/`hmac_key` in configuration. |
+| Upstream requires EAB, no `.kid` sidecar | The `relay` backend has never registered with the upstream. | Run `acme-proxy upstream register --profile <name> --eab-kid …`, or set `signer.relay.eab.kid`/`hmac_key` in configuration. |
 | `key_source = "pkcs11"` … `built without` | `signer.local_ca.key_source = "pkcs11"` on a binary with no PKCS#11 support. Deliberately fatal rather than falling back to the file key, which would silently leave the CA key on disk. | Rebuild with `cargo build --release --features hsm`. |
 | A PKCS#11 key that is not the certified one | The token key's public key does not match `cert_path` — almost always a wrong `key_label`. | See [Hardware Keys](../signers/local_ca_hsm.md#troubleshooting). |
 
@@ -90,7 +90,7 @@ the way it is — is documented in [Database Schema](../dev/database.md).
 
 - **Symptoms** — Order finalization fails with HTTP 429 Too Many Requests from
   the upstream CA.
-- **Cause** — When using the `acme_proxy` signer backend, all internal clients
+- **Cause** — When using the `relay` signer backend, all internal clients
   share a single external ACME account. Let's Encrypt applies rate limits (e.g.,
   50 certificates per registered domain per week).
 - **Fix** — Request a rate limit increase for the root domain you are relaying,

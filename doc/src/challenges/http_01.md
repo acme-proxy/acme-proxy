@@ -4,8 +4,8 @@ The default challenge type. The client serves a token at a well-known path over
 plain HTTP, and `acme-proxy` fetches it.
 
 > **Not to be confused with the `http01` upstream strategy.** This page is about
-> `acme-proxy` *validating* its own clients. The [ACME Proxy
-> signer](../signers/acme_proxy.md#http01) has a `challenge_strategy = "http01"`
+> `acme-proxy` *validating* its own clients. The [relay
+> signer](../signers/relay.md#http01) has a `challenge_strategy = "http01"`
 > that runs the same challenge type in the opposite direction — `acme-proxy`
 > *serving* the file, to prove itself to an upstream CA. The two share the
 > well-known path and nothing else, and are configured independently.

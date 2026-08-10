@@ -123,7 +123,7 @@ asserts against. The ones worth building alerts on:
 | `key_change_rejected` | warn | `POST /keyChange` refused. `reason = bad_signature` means the inner JWS did not verify — somebody attempted a rollover they could not prove possession for. |
 | `leaf_issued`, `order_finalized` | info | A certificate was issued. |
 | `cert_revoked`, `revoke_cert_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
-| `upstream_relay_succeeded`, `upstream_relay_failed` | info / warn | Outcome of one relayed issuance under the `acme_proxy` signer backend. |
+| `upstream_relay_succeeded`, `upstream_relay_failed` | info / warn | Outcome of one relayed issuance under the `relay` signer backend. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
 | `notify_delivery_failed` | warn | A notification backend could not deliver. Never affects the ACME response. |
 | `tls_handshake_timeout`, `tls_handshake_failed` | debug | Only with `server.tls.enabled`. Deliberately below the default filter: on a public listener these are scanner background noise, and one `warn` per failed handshake is a flood, not a signal. |

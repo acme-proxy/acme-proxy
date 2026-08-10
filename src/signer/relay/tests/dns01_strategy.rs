@@ -32,9 +32,9 @@ impl dns01::DnsUpdater for StubUpdater {
 
 /// Swaps the strategy on an already-built signer, so these tests do not
 /// need a live RFC 2136 server to exercise the orchestration around it.
-fn with_updater(signer: AcmeProxySigner, updater: Arc<StubUpdater>) -> AcmeProxySigner {
+fn with_updater(signer: RelaySigner, updater: Arc<StubUpdater>) -> RelaySigner {
     let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
-    AcmeProxySigner(Arc::new(Inner {
+    RelaySigner(Arc::new(Inner {
         strategy: ChallengeStrategy::Dns01(updater),
         ..inner
     }))
@@ -58,7 +58,7 @@ async fn bypass_triggers_the_offered_challenge() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     // No `with_updater`: the default strategy is bypass.
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -100,7 +100,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -135,7 +135,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         db.clone(),
@@ -171,7 +171,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     let db = database().await;
     let updater = Arc::new(StubUpdater::default());
     let signer = with_updater(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -231,7 +231,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
     let db = database().await;
     let updater = Arc::new(StubUpdater::default());
     let signer = with_updater(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -274,7 +274,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_updater(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -320,7 +320,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_updater(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),

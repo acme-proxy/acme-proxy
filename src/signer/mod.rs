@@ -42,14 +42,14 @@ use crate::notify::NotifyDispatcher;
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
 
-pub mod acme_proxy;
 pub mod custom;
 pub mod local_ca;
+pub mod relay;
 
 /// Re-exported so [`SignerBackend::http01_tokens`]'s signature — and the route
 /// in [`crate::build_app`] it feeds — do not reach into one backend's module
 /// for a type the generic trait mentions.
-pub use acme_proxy::http01::TokenStore as Http01TokenStore;
+pub use relay::http01::TokenStore as Http01TokenStore;
 
 /// What [`SignerBackend::issue`] produced: a certificate, or a promise of one.
 ///
@@ -209,7 +209,7 @@ pub trait SignerBackend: Send + Sync {
     /// reason this is a getter on the trait rather than a parameter threaded
     /// through `build_app`.
     ///
-    /// Only [`acme_proxy`] with `challenge_strategy = "http01"` overrides it.
+    /// Only [`relay`] with `challenge_strategy = "http01"` overrides it.
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
         None
     }
@@ -248,7 +248,7 @@ impl std::error::Error for SignerError {}
 /// background task has no `Profile`/`AppState` to reach a notifier through, so
 /// it is handed the whole `profile name -> dispatcher` map and looks up the
 /// right one by `Order.profile` once it has something to report. Only
-/// `acme_proxy` uses it today.
+/// `relay` uses it today.
 pub fn from_config(
     cfg: &SignerConfig,
     profiles: Vec<String>,
@@ -260,16 +260,22 @@ pub fn from_config(
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
         )?)),
-        "acme_proxy" => Ok(Arc::new(acme_proxy::AcmeProxySigner::from_config(
-            &cfg.acme_proxy,
-            profiles,
-            database,
-            notifiers,
-            resolver,
+        "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
+            &cfg.relay, profiles, database, notifiers, resolver,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
         )?)),
+        // The one name worth explaining rather than merely refusing: it was
+        // this backend's own until it was renamed away from the host program's
+        // name, so an operator hitting it has a working deployment and a
+        // one-line fix, not a typo.
+        "acme_proxy" => anyhow::bail!(
+            "unknown signer backend: acme_proxy — renamed to `relay`. Set \
+             signer.backend = \"relay\" and rename the [signer.acme_proxy] table to \
+             [signer.relay] (environment: ACME_PROXY_SIGNER__ACME_PROXY__* becomes \
+             ACME_PROXY_SIGNER__RELAY__*)"
+        ),
         other => anyhow::bail!("unknown signer backend: {other}"),
     }
 }
@@ -281,7 +287,7 @@ pub fn from_config(
 /// Sharing is not an optimization, it is a correctness requirement. Two
 /// `LocalCa` instances over the same files each keep their own in-memory
 /// revocation ledger and rewrite the CRL from it, so the second one to revoke
-/// silently drops the first one's entries. Two `AcmeProxySigner`s over the same
+/// silently drops the first one's entries. Two `RelaySigner`s over the same
 /// account key would likewise both resume the same in-flight orders. Hence also
 /// the check below: identical configuration shares one instance, but *different*
 /// configuration touching the same file is refused outright rather than
@@ -375,7 +381,7 @@ fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
             }
             paths
         }
-        "acme_proxy" => vec![cfg.acme_proxy.account_key_path.clone()],
+        "relay" => vec![cfg.relay.account_key_path.clone()],
         _ => Vec::new(),
     }
 }
@@ -616,6 +622,34 @@ mod tests {
             error.contains("unknown signer backend") && error.contains("hashicorp-vault"),
             "{error}"
         );
+    }
+
+    /// The one unknown backend that is somebody's working 0.1.0 deployment
+    /// rather than a typo: `acme_proxy` was this backend's own name until it
+    /// was renamed away from the host program's. The refusal has to carry the
+    /// new name and the new environment prefix, since neither is guessable
+    /// from "unknown signer backend" alone.
+    #[tokio::test]
+    async fn the_old_acme_proxy_backend_name_is_refused_by_its_new_one() {
+        let (cfg, _dir) = config("acme_proxy");
+        let error = match from_config(
+            &cfg,
+            vec!["default".to_string()],
+            database().await,
+            no_notifiers(),
+            test_resolver(),
+        ) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("the old backend name must not build"),
+        };
+        for expected in [
+            "acme_proxy",
+            "`relay`",
+            "[signer.relay]",
+            "ACME_PROXY_SIGNER__RELAY__",
+        ] {
+            assert!(error.contains(expected), "{expected} missing from: {error}");
+        }
     }
 
     /// Both variants render. `SignerError` is what a handler logs when

@@ -18,7 +18,7 @@ use super::empty_string_is_no_values;
 pub struct SignerConfig {
     pub backend: String,
     pub local_ca: LocalCaConfig,
-    pub acme_proxy: AcmeProxyConfig,
+    pub relay: RelayConfig,
     pub custom: CustomSignerConfig,
 }
 
@@ -27,7 +27,7 @@ impl Default for SignerConfig {
         Self {
             backend: "local_ca".to_string(),
             local_ca: LocalCaConfig::default(),
-            acme_proxy: AcmeProxyConfig::default(),
+            relay: RelayConfig::default(),
             custom: CustomSignerConfig::default(),
         }
     }
@@ -64,16 +64,16 @@ impl Default for CustomSignerConfig {
         }
     }
 }
-/// Configuration for the `acme_proxy` signer backend: this server relaying
+/// Configuration for the `relay` signer backend: this server relaying
 /// issuance to a real upstream ACME server, of which it becomes a client.
 ///
 /// The upstream account itself is provisioned once — either via `eab` below,
 /// or out of band via `acme-proxy upstream register` — and only the account
 /// key and the `kid` registration yields persist afterwards; see
-/// [`AcmeProxyEabConfig`].
+/// [`RelayEabConfig`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct AcmeProxyConfig {
+pub struct RelayConfig {
     /// The upstream ACME server's directory URL.
     pub directory_url: String,
     /// This proxy's own account key at the upstream, generated (P-256) if the
@@ -94,10 +94,10 @@ pub struct AcmeProxyConfig {
     /// marked `invalid` rather than left processing forever.
     pub poll_timeout_secs: u64,
     pub dns01: Dns01Config,
-    pub eab: AcmeProxyEabConfig,
+    pub eab: RelayEabConfig,
 }
 
-impl Default for AcmeProxyConfig {
+impl Default for RelayConfig {
     fn default() -> Self {
         Self {
             directory_url: String::new(),
@@ -107,7 +107,7 @@ impl Default for AcmeProxyConfig {
             poll_interval_ms: 2000,
             poll_timeout_secs: 300,
             dns01: Dns01Config::default(),
-            eab: AcmeProxyEabConfig::default(),
+            eab: RelayEabConfig::default(),
         }
     }
 }
@@ -118,13 +118,13 @@ impl Default for AcmeProxyConfig {
 /// Both are the *same* one-shot credential: it authorizes exactly one
 /// `newAccount` call and is useless afterwards — registration itself only
 /// ever runs once, guarded by the `.kid` sidecar next to `account_key_path`
-/// (see [`AcmeProxyConfig`]). Putting it here trades away the property that
+/// (see [`RelayConfig`]). Putting it here trades away the property that
 /// made `acme-proxy upstream register` the only path (a bootstrap secret
 /// living in configuration for the life of the server) for the convenience
 /// of not needing a separate imperative step — useful when `config.toml` is
 /// already populated by a secrets manager or a templated deployment. Once
 /// registration succeeds, `serve` logs a
-/// `signer_acme_proxy_eab_secret_in_config` warning on **every** startup for
+/// `signer_relay_eab_secret_in_config` warning on **every** startup for
 /// as long as `hmac_key` stays non-empty, the same "stays visible for as long
 /// as it lasts" treatment `challenge.bypass` and
 /// `filter.netbox.insecure_skip_verify` get — the fix is to blank it out
@@ -135,7 +135,7 @@ impl Default for AcmeProxyConfig {
 /// upstream demands EAB.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct AcmeProxyEabConfig {
+pub struct RelayEabConfig {
     /// The EAB key id the upstream's operator issued. Empty means "no
     /// config-file credential".
     pub kid: String,
@@ -194,7 +194,7 @@ pub struct LocalCaConfig {
     /// only behaviour that existed before this key) or `"pkcs11"`.
     ///
     /// A selector string rather than a `pkcs11.enabled` flag, matching
-    /// `signer.backend` and `signer.acme_proxy.challenge_strategy`: it makes
+    /// `signer.backend` and `signer.relay.challenge_strategy`: it makes
     /// "both configured" unrepresentable instead of a precedence rule.
     pub key_source: String,
     /// The token to sign with when `key_source = "pkcs11"`. Ignored

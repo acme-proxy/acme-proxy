@@ -388,7 +388,7 @@ async fn route(
             if script.require_eab {
                 // Only the presence of the member is checked: this fake
                 // verifies no signatures (see the module docs). The *contents*
-                // are pinned by `acme_proxy::eab`'s round-trip test against
+                // are pinned by `relay::eab`'s round-trip test against
                 // this crate's own verifier, which is a stronger check than
                 // anything re-implemented here would be.
                 let carries_eab = decoded_payload(body)

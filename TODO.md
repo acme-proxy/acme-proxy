@@ -12,7 +12,7 @@ keeps its corpses stops being read.
       `Arc<Config>`, so a reload is a rebuild-and-swap, not a mutation. What
       cannot be swapped under a live listener is the bind addresses and TLS (a
       new socket is a restart) and whatever a signer backend provisioned at
-      startup (`acme_proxy`'s upstream account). Decide which keys are
+      startup (`relay`'s upstream account). Decide which keys are
       reloadable and **refuse the rest by name**, the way startup validation
       already refuses an unknown `logging.target` instead of falling back.
 - [ ] **PostgreSQL beside SQLite.** Every query goes through `src/sqlite/` as a
@@ -23,7 +23,7 @@ keeps its corpses stops being read.
       own migration set selected by the URL scheme, never edits to these twelve
       files.
 - [ ] **A durable job runner with retries.** The one long-running task today is
-      `signer::acme_proxy::relay`: a `tokio::spawn` whose state lives on the
+      `signer::relay::flow`: a `tokio::spawn` whose state lives on the
       `upstream_orders` row and which `SignerBackend::resume` picks back up at
       startup. That is the right shape, but it is hand-rolled for one backend
       and retries nothing between restarts. Everything else that wants a queue

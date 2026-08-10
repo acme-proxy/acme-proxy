@@ -27,8 +27,8 @@ never sees the difference.
 
 - **Local CA** — an embedded certificate authority signing directly. The issuing
   key is a file, or a PKCS#11 token.
-- **ACME Proxy** — a relay that opens its own order with an upstream ACME CA and
-  returns what that CA signs.
+- **Relay** — opens its own order with an upstream ACME CA and returns what
+  that CA signs.
 - **Custom script** — anything else: a legacy PKI, an internal API, a CA that
   does not speak ACME.
 
@@ -105,7 +105,7 @@ to demote it, or the order would be finalizable for a name no longer authorized.
 
 Two details are easy to trip on:
 
-- **`processing` only appears with a deferring backend.** The `acme_proxy` relay
+- **`processing` only appears with a deferring backend.** The `relay` relay
   answers `finalize` with `processing` and completes in the background;
   `local_ca` and `custom` answer inline, so an order under those backends goes
   straight from `ready` to `valid` and never passes through `processing`.

@@ -472,8 +472,8 @@ enabled = []
 
 # Overrides two keys; keeps the rest.
 [profiles.prod]
-signer.backend = "acme_proxy"
-signer.acme_proxy.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+signer.backend = "relay"
+signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
 filter.enabled = ["allowed_ip"]
 filter.allowed_ip.allow = ["10.0.0.0/8"]
 ```
@@ -522,7 +522,7 @@ above](#every-section-and-where-it-is-documented) for the rest.
 - **`[signer]`** — [Signers](../signers/index.md):
   [local_ca](../signers/local_ca.md) and its
   [PKCS#11 keys](../signers/local_ca_hsm.md),
-[acme_proxy](../signers/acme_proxy.md), [custom](../signers/custom.md)
+[relay](../signers/relay.md), [custom](../signers/custom.md)
 - **`[filter]`** — [Filters](../filters/index.md):
   [allowed_ip](../filters/allowed_ip.md),
   [reverse_dns](../filters/reverse_dns.md),

@@ -11,7 +11,7 @@
 //!
 //! No account key rollover, no `newAuthz` (pre-authorization), no order
 //! listing — this client only drives the flow
-//! [`super::AcmeProxySigner`] needs: discover, register, order, answer, poll,
+//! [`super::RelaySigner`] needs: discover, register, order, answer, poll,
 //! finalize, download, revoke, and ARI.
 //!
 //! ## TLS
@@ -552,7 +552,7 @@ mod tests {
     fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
         std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
     }
-    use crate::signer::acme_proxy::testsrv::{self, Script};
+    use crate::signer::relay::testsrv::{self, Script};
 
     /// A P-256 PKCS#8 document, via rcgen (already a normal dependency).
     fn pkcs8() -> Vec<u8> {

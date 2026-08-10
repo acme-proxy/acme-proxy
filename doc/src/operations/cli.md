@@ -111,7 +111,7 @@ defaults to the configured `nonce.ttl_seconds`.
 
 ## Upstream account management
 
-Only relevant with `signer.backend = "acme_proxy"`.
+Only relevant with `signer.backend = "relay"`.
 
 | Command | Flags |
 | --- | --- |

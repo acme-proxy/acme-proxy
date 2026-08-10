@@ -27,8 +27,8 @@ use super::{ChallengeStrategy, Inner, dns01, http01};
 /// Spawns the background task that carries one relay to its conclusion, under
 /// the configured time budget, and writes the result back onto the order.
 ///
-/// Shared by [`AcmeProxySigner::issue`] (a fresh relay) and
-/// [`AcmeProxySigner::resume`] (one interrupted by a restart) — they differ
+/// Shared by [`RelaySigner::issue`] (a fresh relay) and
+/// [`RelaySigner::resume`] (one interrupted by a restart) — they differ
 /// only in where the CSR and the order URL come from, so the task itself is
 /// written once.
 pub(super) fn spawn_relay(
@@ -262,7 +262,7 @@ async fn answer_http01(
         if authz.identifier.value.starts_with("*.") {
             return Err(format!(
                 "upstream authorization for {} is a wildcard, which http-01 cannot validate: use \
-                 signer.acme_proxy.challenge_strategy = \"dns01\" for wildcard names",
+                 signer.relay.challenge_strategy = \"dns01\" for wildcard names",
                 authz.identifier.value
             ));
         }

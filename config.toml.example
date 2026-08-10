@@ -40,10 +40,10 @@
 #     [signer.local_ca]                 the embedded CA
 #     [signer.local_ca.subject]         its self-generated certificate's subject
 #     [signer.local_ca.pkcs11]          its key in a token (--features hsm)
-#     [signer.acme_proxy]               relaying to an upstream ACME CA
-#     [signer.acme_proxy.eab]           upstream EAB bootstrap credential
-#     [signer.acme_proxy.dns01]         solving the upstream's DNS-01
-#     [signer.acme_proxy.dns01.rfc2136] the TSIG-authenticated DNS update
+#     [signer.relay]                    relaying to an upstream ACME CA
+#     [signer.relay.eab]                upstream EAB bootstrap credential
+#     [signer.relay.dns01]              solving the upstream's DNS-01
+#     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
 #     [signer.custom]                   shelling out to a script
 #   [challenge]                [per-profile]  how control of a name is proven
 #     [challenge.http_01]               (there is no [challenge.dns_01])
@@ -248,13 +248,13 @@ validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
 
 [signer]   # [per-profile] — a [profiles.<name>] block may override these
 # The issuance backend to use.
-#   "local_ca"   — this server IS the CA: it signs every certificate itself.
-#   "acme_proxy" — this server RELAYS to an upstream ACME server, becoming a
-#                  client of it. Clients still prove domain control to *this*
-#                  server exactly as before; only the signing moves.
-#   "custom"     — this server delegates issuance/revocation to an external
-#                  script (see [signer.custom] below) — an HSM tool, an
-#                  internal PKI CLI, a cloud KMS wrapper, anything.
+#   "local_ca" — this server IS the CA: it signs every certificate itself.
+#   "relay"    — this server RELAYS to an upstream ACME server, becoming a
+#                client of it. Clients still prove domain control to *this*
+#                server exactly as before; only the signing moves.
+#   "custom"   — this server delegates issuance/revocation to an external
+#                script (see [signer.custom] below) — an HSM tool, an
+#                internal PKI CLI, a cloud KMS wrapper, anything.
 backend = "local_ca"                # ACME_PROXY_SIGNER__BACKEND
 
 [signer.local_ca]
@@ -349,20 +349,20 @@ key_source = "file"                 # ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE
 # restarting repeatedly.
 # pin          = ""                 # ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN
 
-[signer.acme_proxy]
-# Only read when backend = "acme_proxy" (above).
+[signer.relay]
+# Only read when backend = "relay" (above).
 #
 # The upstream ACME server's directory URL — another acme-proxy, a private
 # enterprise CA, or a public CA. Required for this backend; an empty value is a
 # startup error.
-directory_url = ""                  # ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL
+directory_url = ""                  # ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL
 # This proxy's own ACME account key AT the upstream (ECDSA P-256, generated 0600
 # if the file is absent). The account URL the upstream assigns is stored beside
 # it, in the same path with the extension replaced by ".kid" — so only the FIRST
 # startup contacts the upstream to register; later ones read both files locally.
-account_key_path = "upstream_account.key"  # ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH
+account_key_path = "upstream_account.key"  # ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH
 # Optional contacts sent with the upstream newAccount registration.
-contact = []                        # ACME_PROXY_SIGNER__ACME_PROXY__CONTACT
+contact = []                        # ACME_PROXY_SIGNER__RELAY__CONTACT
 # How this proxy satisfies the UPSTREAM's own domain-control check. This is a
 # second, independent proof cycle: the upstream account belongs to this server,
 # so the original client cannot answer it.
@@ -379,18 +379,18 @@ contact = []                        # ACME_PROXY_SIGNER__ACME_PROXY__CONTACT
 #              redirect that path here from port 80 of every name being issued
 #              (RFC 8555 §8.3 permits a redirect, so the target need not share
 #              the name — one `return 301` is enough). There is nothing else to
-#              configure, hence no [signer.acme_proxy.http01] table. Cannot
-#              prove a wildcard, since nothing answers on the name
-#              "*.example.com" — use "dns01" for those.
-challenge_strategy = "bypass"       # ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY
+#              configure, hence no [signer.relay.http01] table. Cannot prove a
+#              wildcard, since nothing answers on the name "*.example.com" —
+#              use "dns01" for those.
+challenge_strategy = "bypass"       # ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY
 # How often to poll the upstream order while it resolves. The upstream's own
 # Retry-After takes precedence when it sends one.
-poll_interval_ms = 2000             # ACME_PROXY_SIGNER__ACME_PROXY__POLL_INTERVAL_MS
+poll_interval_ms = 2000             # ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS
 # Total budget for one upstream issuance. On expiry the local order is marked
 # invalid with an explicit timeout reason, never left processing forever.
-poll_timeout_secs = 300             # ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOUT_SECS
+poll_timeout_secs = 300             # ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS
 
-[signer.acme_proxy.eab]
+[signer.relay.eab]
 # This proxy's own upstream External Account Binding credential (RFC 8555
 # §7.3.4), as an alternative to the one-shot
 # `acme-proxy upstream register --eab-kid <kid>` command. Both are the SAME
@@ -403,42 +403,42 @@ poll_timeout_secs = 300             # ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOU
 # server — for not needing a separate imperative step, which matters when
 # config.toml is already populated by a secrets manager or a templated
 # deployment. Once registration succeeds, `serve` logs a
-# signer_acme_proxy_eab_secret_in_config warning on EVERY startup for as long
-# as hmac_key stays non-empty — the same treatment challenge.bypass and
+# signer_relay_eab_secret_in_config warning on EVERY startup for as long as
+# hmac_key stays non-empty — the same treatment challenge.bypass and
 # filter.netbox.insecure_skip_verify get — so clear it out once
 # `acme-proxy upstream show` confirms a kid is stored.
 #
 # Both empty (the default) is unchanged from before this table existed:
 # `serve` then requires `acme-proxy upstream register` if the upstream
 # demands EAB. Either field set without the other is a startup error.
-kid = ""                            # ACME_PROXY_SIGNER__ACME_PROXY__EAB__KID
+kid = ""                            # ACME_PROXY_SIGNER__RELAY__EAB__KID
 # SENSITIVE — prefer the environment variable to a file on disk, like every
 # other secret in this file. Base64: url-safe, unpadded url-safe, or standard
 # (the same three forms the admin command accepts) — a value that decodes as
 # none of them is a startup error.
-hmac_key = ""                       # ACME_PROXY_SIGNER__ACME_PROXY__EAB__HMAC_KEY
+hmac_key = ""                       # ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY
 
-[signer.acme_proxy.dns01]
+[signer.relay.dns01]
 # Only read when challenge_strategy = "dns01". The only provider is "rfc2136",
 # which works with any authoritative server implementing RFC 2136 dynamic
 # update (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than
 # tying the server to one cloud vendor's API.
-provider = "rfc2136"                # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__PROVIDER
+provider = "rfc2136"                # ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER
 
-[signer.acme_proxy.dns01.rfc2136]
+[signer.relay.dns01.rfc2136]
 # host:port of the authoritative server that accepts the update.
-server = ""                         # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__SERVER
+server = ""                         # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER
 # The zone being updated, e.g. "example.org." (trailing dot).
-zone = ""                           # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__ZONE
-tsig_key_name = ""                  # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_NAME
+zone = ""                           # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__ZONE
+tsig_key_name = ""                  # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_NAME
 # SENSITIVE — but unlike the EAB credential this one is long-lived, since every
 # update needs it, so it legitimately lives in configuration. Prefer the
 # environment variable to a file on disk. Standard base64, as `dnssec-keygen`
 # and BIND emit it — note this is NOT base64url, unlike the EAB secret.
-tsig_key_secret = ""                # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET
+tsig_key_secret = ""                # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET
 # hmac-sha256 (default), hmac-sha384 or hmac-sha512. HMAC-MD5 is deliberately
 # not offered.
-tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_ALGORITHM
+tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM
 
 [signer.custom]
 # Only read when backend = "custom" (above). Delegates issuance and
@@ -521,7 +521,7 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # empty one holding only the ACME_SIGNER_* variables above plus a minimal PATH
 # (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). This matters
 # even more here than for [filter.custom.*] — the RFC 2136 TSIG secret used by
-# signer.acme_proxy.dns01 lives inside this very [signer] section tree, and a
+# signer.relay.dns01 lives inside this very [signer] section tree, and a
 # custom signer script has no business reading it.
 #
 # One process is spawned per invocation. A script still running when
@@ -807,7 +807,7 @@ allow_wildcards = false             # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILD
 url = ""                            # ACME_PROXY_FILTER__NETBOX__URL
 # API token, sent as `Authorization: Token <token>`. A read-only token is
 # enough. Prefer the environment variable over writing it here: this is a
-# secret, like [signer.acme_proxy.dns01.rfc2136]'s TSIG key.
+# secret, like [signer.relay.dns01.rfc2136]'s TSIG key.
 token = ""                          # ACME_PROXY_FILTER__NETBOX__TOKEN
 # Custom field holding the extra names an address may have certified. Configure
 # it in NetBox as a multi-select or text field on ipam.ipaddress (and, for the
@@ -954,7 +954,7 @@ timeout_ms = 5000                   # ACME_PROXY_NOTIFY__MATTERMOST__TIMEOUT_MS
 #   ACME_NOTIFY_HOOK          - event kind, e.g. "certificate_issued"
 #   ACME_NOTIFY_PROFILE       - the profile name
 #   ACME_NOTIFY_CLIENT_IP     - client IP (or empty — always empty for the
-#                               asynchronous acme_proxy completion path,
+#                               asynchronous relay completion path,
 #                               which has no request in scope at all)
 #   ACME_NOTIFY_ACCOUNT_ID    - account id (or empty, not every event has one)
 #   ACME_NOTIFY_ORDER_ID      - order id (or empty)
@@ -1017,7 +1017,7 @@ timeout_ms = 5000                   # ACME_PROXY_NOTIFY__MATTERMOST__TIMEOUT_MS
 # lowercase letters, digits and `-`.
 #
 # From the environment: ACME_PROXY_PROFILES__<NAME>__<SECTION>__<KEY>, e.g.
-# `ACME_PROXY_PROFILES__LE__SIGNER__BACKEND=acme_proxy`. A profile that
+# `ACME_PROXY_PROFILES__LE__SIGNER__BACKEND=relay`. A profile that
 # overrides nothing still needs one variable to exist at all — set
 # `ACME_PROXY_PROFILES__DEFAULT__ENABLED=true`.
 
@@ -1031,7 +1031,7 @@ enabled = true                      # ACME_PROXY_PROFILES__DEFAULT__ENABLED
 # must match the defaults it documents; uncomment and adapt.
 #
 # [profiles.le]
-# signer.backend = "acme_proxy"
-# signer.acme_proxy.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
-# signer.acme_proxy.account_key_path = "le_upstream.key"
+# signer.backend = "relay"
+# signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+# signer.relay.account_key_path = "le_upstream.key"
 # challenge.bypass = false

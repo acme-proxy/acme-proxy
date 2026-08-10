@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::config::AcmeProxyConfig;
+use crate::config::RelayConfig;
 
 use super::client::{AccountKey, AcmeClient, Signer, UpstreamError};
 use super::eab;
@@ -22,7 +22,7 @@ pub(super) fn kid_path(account_key_path: &str) -> PathBuf {
 }
 
 pub(super) async fn provision(
-    cfg: &AcmeProxyConfig,
+    cfg: &RelayConfig,
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
     timeout: Duration,
 ) -> anyhow::Result<(AcmeClient, AccountKey, String)> {
@@ -36,7 +36,7 @@ pub(super) async fn provision(
     }
 
     // No `kid` on disk: self-register, with whatever credential
-    // `signer.acme_proxy.eab` supplies (possibly none).
+    // `signer.relay.eab` supplies (possibly none).
     let config_eab = configured_eab(cfg)?;
     let kid = match register(
         &client,
@@ -52,15 +52,15 @@ pub(super) async fn provision(
         Err(error) if error.is_external_account_required() => {
             if config_eab.is_some() {
                 anyhow::bail!(
-                    "the upstream rejected signer.acme_proxy.eab as External Account Binding \
+                    "the upstream rejected signer.relay.eab as External Account Binding \
                      (a wrong kid/hmac_key, or a credential that has already been consumed). Fix \
                      the configured credential, or clear it and run \
                      `acme-proxy upstream register --eab-kid <kid>` once instead."
                 );
             }
             anyhow::bail!(
-                "the upstream requires External Account Binding. Set signer.acme_proxy.eab.kid \
-                 and signer.acme_proxy.eab.hmac_key in configuration, or run \
+                "the upstream requires External Account Binding. Set signer.relay.eab.kid \
+                 and signer.relay.eab.hmac_key in configuration, or run \
                  `acme-proxy upstream register --eab-kid <kid>` once, then start the server again."
             );
         }
@@ -77,59 +77,58 @@ pub(super) async fn provision(
 /// `acme-proxy upstream register`'s `--eab-kid`/stdin secret.
 ///
 /// `Ok(None)` means no credential is configured (both fields empty) — the
-/// only state this crate supported before `signer.acme_proxy.eab` existed.
+/// only state this crate supported before `signer.relay.eab` existed.
 /// Either field set without the other, or a `hmac_key` that isn't valid
 /// base64, is a startup error: a half-supplied credential is a configuration
 /// mistake, not something worth silently ignoring or silently treating as
 /// "none".
-fn configured_eab(cfg: &AcmeProxyConfig) -> anyhow::Result<Option<(String, Vec<u8>)>> {
+fn configured_eab(cfg: &RelayConfig) -> anyhow::Result<Option<(String, Vec<u8>)>> {
     let kid = cfg.eab.kid.as_str();
     let hmac_key = cfg.eab.hmac_key.as_str();
     match (kid.is_empty(), hmac_key.is_empty()) {
         (true, true) => Ok(None),
-        (false, true) => anyhow::bail!(
-            "signer.acme_proxy.eab.kid is set but signer.acme_proxy.eab.hmac_key is not"
-        ),
-        (true, false) => anyhow::bail!(
-            "signer.acme_proxy.eab.hmac_key is set but signer.acme_proxy.eab.kid is not"
-        ),
+        (false, true) => {
+            anyhow::bail!("signer.relay.eab.kid is set but signer.relay.eab.hmac_key is not")
+        }
+        (true, false) => {
+            anyhow::bail!("signer.relay.eab.hmac_key is set but signer.relay.eab.kid is not")
+        }
         (false, false) => {
-            let secret = eab::decode_secret(hmac_key).ok_or_else(|| {
-                anyhow::anyhow!("signer.acme_proxy.eab.hmac_key is not valid base64")
-            })?;
+            let secret = eab::decode_secret(hmac_key)
+                .ok_or_else(|| anyhow::anyhow!("signer.relay.eab.hmac_key is not valid base64"))?;
             Ok(Some((kid.to_string(), secret)))
         }
     }
 }
 
-/// The credential in `signer.acme_proxy.eab.hmac_key` is only ever needed for
+/// The credential in `signer.relay.eab.hmac_key` is only ever needed for
 /// the *first* registration; once the `kid` sidecar exists it does nothing
 /// but sit on disk as a live secret. Logged unconditionally, every startup,
 /// for as long as it stays set — the same "stays visible for as long as it
 /// lasts" treatment as `challenge_validation_bypassed` and
 /// `filter_netbox_tls_verification_disabled`, since this is equally a
 /// temporary operational state the operator is expected to clean up.
-fn warn_if_eab_secret_still_configured(cfg: &AcmeProxyConfig, kid: &str) {
+fn warn_if_eab_secret_still_configured(cfg: &RelayConfig, kid: &str) {
     if !cfg.eab.hmac_key.is_empty() {
         warn!(
-            event = "signer_acme_proxy_eab_secret_in_config",
+            event = "signer_relay_eab_secret_in_config",
             kid = %kid,
-            "signer.acme_proxy.eab.hmac_key is set but this proxy is already registered \
+            "signer.relay.eab.hmac_key is set but this proxy is already registered \
              upstream; the credential is no longer needed and does nothing now except sit on \
-             disk as a live secret — clear signer.acme_proxy.eab.hmac_key from configuration"
+             disk as a live secret — clear signer.relay.eab.hmac_key from configuration"
         );
     }
 }
 
 /// The `kid` this server previously registered, if any.
-pub fn stored_kid(cfg: &AcmeProxyConfig) -> Option<String> {
+pub fn stored_kid(cfg: &RelayConfig) -> Option<String> {
     std::fs::read_to_string(kid_path(&cfg.account_key_path))
         .ok()
         .map(|kid| kid.trim().to_string())
         .filter(|kid| !kid.is_empty())
 }
 
-fn write_kid(cfg: &AcmeProxyConfig, kid: &str) -> anyhow::Result<()> {
+fn write_kid(cfg: &RelayConfig, kid: &str) -> anyhow::Result<()> {
     // `0600`, matching the account key it sits beside. The `kid` is an account
     // URL rather than a secret, but it identifies this server's account at a
     // public CA and there is no reason for it to be the one world-readable file
@@ -150,7 +149,7 @@ fn write_kid(cfg: &AcmeProxyConfig, kid: &str) -> anyhow::Result<()> {
 pub(super) async fn register(
     client: &AcmeClient,
     account: &AccountKey,
-    cfg: &AcmeProxyConfig,
+    cfg: &RelayConfig,
     eab: Option<(&str, &[u8])>,
 ) -> Result<String, UpstreamError> {
     let new_account_url = client.directory().new_account.clone();
@@ -186,7 +185,7 @@ pub(super) async fn register(
 /// a throwaway from the same configuration, since it is a one-shot command with
 /// no server around it to share.
 pub async fn register_upstream_account(
-    cfg: &AcmeProxyConfig,
+    cfg: &RelayConfig,
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
     eab: Option<(&str, &[u8])>,
 ) -> anyhow::Result<String> {

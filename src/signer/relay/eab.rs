@@ -68,7 +68,7 @@ pub(crate) fn build(
 /// A value that decodes as none of them is `None` rather than being silently
 /// used as raw bytes — that would build a binding the upstream rejects for no
 /// visible reason. Shared between `cli::upstream`'s `--eab-hmac-key-file`/
-/// stdin path and `signer.acme_proxy.eab.hmac_key` in configuration, so both
+/// stdin path and `signer.relay.eab.hmac_key` in configuration, so both
 /// entry points accept exactly the same secrets.
 pub(crate) fn decode_secret(value: &str) -> Option<Vec<u8>> {
     if value.is_empty() {

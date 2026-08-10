@@ -29,7 +29,7 @@ Useful things to include, roughly in order of how much they help:
 - The configuration it needs. Much of this server's behaviour is switchable, so
   "with `challenge.bypass = false` and `filter.enabled = []`" is the difference
   between a serious finding and an expected one.
-- The signer backend in use (`local_ca`, `acme_proxy`, `custom`), which changes
+- The signer backend in use (`local_ca`, `relay`, `custom`), which changes
   who ultimately signs.
 - A reproduction, and any relevant log lines — every line carries an
   `event = "..."` field and a request id.

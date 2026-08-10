@@ -41,8 +41,8 @@ use crate::dns::Resolver;
 
 /// The well-known path RFC 8555 §8.3 reserves for this challenge.
 ///
-/// Shared with the *other* direction: the `acme_proxy` signer's
-/// [`http01`](crate::signer::acme_proxy::http01) strategy answers an upstream
+/// Shared with the *other* direction: the `relay` signer's
+/// [`http01`](crate::signer::relay::http01) strategy answers an upstream
 /// CA's own challenge, and the route it is served from is built from this
 /// constant. Same rule the `dns-01` pair follows, where
 /// [`super::dns_01::record_name`] and [`super::dns_01::expected_value`] are

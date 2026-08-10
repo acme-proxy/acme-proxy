@@ -1,9 +1,9 @@
-//! The `acme_proxy` backend's tests.
+//! The `relay` backend's tests.
 //!
 //! A directory rather than an inline `mod tests`, which had reached 2027 lines
 //! — 82% of the file, and the reason `mod.rs` read as the largest module in the
 //! crate when its production half is 457 lines. Nothing moved *out* of the
-//! module: these are still `acme_proxy`'s own tests, entered through
+//! module: these are still `relay`'s own tests, entered through
 //! `SignerBackend::issue` and asserting a relay outcome, so they still follow
 //! the entry point rather than the assertion. They are just no longer one file.
 //!
@@ -28,8 +28,8 @@ fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
 
 use super::account::kid_path;
 use super::client::UpstreamError;
+use super::flow::settle;
 use super::http01::TokenStore;
-use super::relay::settle;
 use super::*;
 use crate::audit::ClientContext;
 use crate::notify::NotifyEvent;
@@ -48,15 +48,15 @@ fn key_path(dir: &TempDir) -> String {
     dir.join("upstream.key").to_string_lossy().into_owned()
 }
 
-fn config(upstream: &Upstream, dir: &TempDir) -> AcmeProxyConfig {
-    AcmeProxyConfig {
+fn config(upstream: &Upstream, dir: &TempDir) -> RelayConfig {
+    RelayConfig {
         directory_url: upstream.directory_url(),
         account_key_path: key_path(dir),
         // Fast polling: the fake upstream answers instantly, so the
         // interval only governs how long a test waits for nothing.
         poll_interval_ms: 5,
         poll_timeout_secs: 5,
-        ..AcmeProxyConfig::default()
+        ..RelayConfig::default()
     }
 }
 
@@ -202,11 +202,11 @@ fn csr_der() -> Vec<u8> {
     params.serialize_request(&key_pair).unwrap().der().to_vec()
 }
 
-/// The error text of a failed construction. `AcmeProxySigner` deliberately
+/// The error text of a failed construction. `RelaySigner` deliberately
 /// does not implement `Debug` — it holds an account private key — so
 /// `unwrap_err` is unavailable, the same reason `signer::from_config`'s own
 /// test matches instead.
-fn startup_error(result: anyhow::Result<AcmeProxySigner>) -> String {
+fn startup_error(result: anyhow::Result<RelaySigner>) -> String {
     match result {
         Err(error) => error.to_string(),
         Ok(_) => panic!("this configuration must not build"),

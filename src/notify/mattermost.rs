@@ -1,11 +1,11 @@
 //! The `mattermost` notify backend: POSTs to an incoming webhook.
 //!
 //! Written on `hyper` + `tokio-rustls`, already in the tree via
-//! [`crate::challenge::http_01`] and [`crate::signer::acme_proxy`] — the same
+//! [`crate::challenge::http_01`] and [`crate::signer::relay`] — the same
 //! reasoning `Cargo.toml`'s own comment gives for skipping `reqwest`
 //! everywhere else in this codebase: a direct edge, not a new dependency.
 //! Written as its own small helper rather than reusing
-//! `signer::acme_proxy::client`'s (private) request plumbing, matching this
+//! `signer::relay::client`'s (private) request plumbing, matching this
 //! codebase's preference for per-module locality over a shared HTTP-client
 //! abstraction.
 
@@ -211,7 +211,7 @@ mod tests {
     /// A real POST against a loopback listener, proving the transport itself
     /// (connect/handshake/send/read-status) works end to end — the same
     /// technique `challenge::http_01`'s `HyperFetcher` test and
-    /// `signer::acme_proxy::client`'s tests use.
+    /// `signer::relay::client`'s tests use.
     #[tokio::test]
     async fn posts_to_a_loopback_listener_and_reads_the_status() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

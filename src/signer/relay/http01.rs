@@ -32,7 +32,7 @@
 //! ## The file's content is not defined here
 //!
 //! [`crate::challenge::http_01`] owns the well-known path, and
-//! [`super::relay`] builds the key authorization from the account thumbprint.
+//! [`super::flow`] builds the key authorization from the account thumbprint.
 //! This module only stores bytes under a token — the same separation
 //! [`super::dns01`] keeps by calling into [`crate::challenge::dns_01`] rather
 //! than restating the record convention.
@@ -43,7 +43,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 /// Holds the key authorizations the responder route serves.
 ///
 /// A trait rather than a concrete type for the same two reasons
-/// [`super::dns01::DnsUpdater`] is one: the orchestration in [`super::relay`]
+/// [`super::dns01::DnsUpdater`] is one: the orchestration in [`super::flow`]
 /// can be driven against a stub, and a future provider slots in without
 /// touching the relay.
 pub trait TokenStore: Send + Sync {
@@ -118,7 +118,7 @@ impl TokenStore for MemoryTokenStore {
 
 /// A published token that retracts itself when dropped.
 ///
-/// [`super::relay`]'s `answer_dns01` retracts explicitly, in a `let triggered =
+/// [`super::flow`]'s `answer_dns01` retracts explicitly, in a `let triggered =
 /// …; delete; triggered?` dance, because its retraction is a network round
 /// trip and cannot run from `Drop`. This one can, and that closes a hole the
 /// dns-01 side structurally cannot: `spawn_relay` wraps the whole relay in a

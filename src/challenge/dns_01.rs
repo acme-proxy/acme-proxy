@@ -59,7 +59,7 @@ impl Dns01Validator {
 
 /// The name the record must be published at.
 ///
-/// A free function rather than a method because the `acme_proxy` signer
+/// A free function rather than a method because the `relay` signer
 /// backend *publishes* this record when satisfying an upstream's own dns-01
 /// challenge, while this module *reads* it. Two copies of the convention could
 /// drift into a record this server accepts but no real CA does.

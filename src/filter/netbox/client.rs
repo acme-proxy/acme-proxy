@@ -4,7 +4,7 @@
 //!
 //! This is the third small HTTP client in the tree, after
 //! [`HyperFetcher`](crate::challenge::http_01::HyperFetcher) and the upstream
-//! ACME client in [`signer::acme_proxy`](crate::signer::acme_proxy). Neither
+//! ACME client in [`signer::relay`](crate::signer::relay). Neither
 //! could be reused: one deliberately validates no certificate at all, the other
 //! is built around nonces, JWS bodies and ACME problem documents. `Cargo.toml`
 //! records why the answer is not `reqwest` — `hyper`, `rustls` and

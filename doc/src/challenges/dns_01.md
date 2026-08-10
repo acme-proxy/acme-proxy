@@ -80,7 +80,7 @@ script to write the record: certbot's `--manual` with an auth hook or a DNS
 plugin, `acme.sh --dns dns_<provider>`, lego's `--dns <provider>`.
 
 If you would rather your clients did *not* hold DNS credentials, that is exactly
-what the [`acme_proxy` signer backend](../signers/acme_proxy.md) exists for:
+what the [`relay` signer backend](../signers/relay.md) exists for:
 your clients prove control to `acme-proxy` however you like, and `acme-proxy`
 holds the single RFC 2136 TSIG key that answers the upstream CA.
 

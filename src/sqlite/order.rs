@@ -720,7 +720,7 @@ impl Order {
     /// sync (like [`Order::mark_ready`]).
     ///
     /// The `processing` status needed no migration — the `orders.status`
-    /// `CHECK` has always allowed it; until the `acme_proxy` backend existed
+    /// `CHECK` has always allowed it; until the `relay` backend existed
     /// there was simply no asynchronous issuance to use it.
     pub async fn mark_processing(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "order_mark_processing_started", order_id = ?self.id);

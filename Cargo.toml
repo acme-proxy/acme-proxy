@@ -71,7 +71,7 @@ regex = "1.13"  # identifier and reverse-DNS hostname allow/deny lists
 # lookups of the `dns-01` challenge. Default features off: no DNSSEC/TLS
 # transports needed, just the system resolver.
 hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
-# RFC 2136 dynamic DNS update + TSIG, for the `acme_proxy` backend's dns-01
+# RFC 2136 dynamic DNS update + TSIG, for the `relay` backend's dns-01
 # strategy — the one place this server *writes* DNS rather than reading it.
 # `hickory-proto` rather than `hickory-client`: the update-message builders and
 # the TSIG signer both live here, it is already in the tree via the resolver
@@ -97,7 +97,7 @@ url = "2"  # absolute/relative Location resolution + scheme and port checks
 # validated — what it carries is the proof.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-# ...but the `acme_proxy` signer backend is the opposite case: it is a *client*
+# ...but the `relay` signer backend is the opposite case: it is a *client*
 # of a real remote CA, where the certificate is the only thing establishing who
 # it is talking to, so that one path does need roots.
 webpki-roots = "1"

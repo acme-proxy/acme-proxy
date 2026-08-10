@@ -54,11 +54,11 @@ decision from you are marked **decide**.
 - [ ] **The proxy does not forward `/health`** if you do not want it public — it
       is mounted outside the filter chain on purpose.
       → [Monitoring](../operations/monitoring.md#health-checks)
-- [ ] **With `signer.acme_proxy.challenge_strategy = "http01"`**, port 80 of
+- [ ] **With `signer.relay.challenge_strategy = "http01"`**, port 80 of
   every
       name being issued forwards or redirects `/.well-known/acme-challenge/` here.
       Nothing in the process can do this for you.
-      → [ACME Proxy (Relay)](../signers/acme_proxy.md#deploying-the-http-01-responder)
+      → [Relay](../signers/relay.md#deploying-the-http-01-responder)
 
 ## The web admin
 
@@ -88,12 +88,12 @@ Skip this section entirely if `admin.enabled` is `false`, which is the default.
 
 - [ ] **Tokens and TSIG keys come from the environment, not the file** where the
       option exists — `filter.netbox.token`,
-      `signer.acme_proxy.dns01.rfc2136.tsig_key_secret`.
-- [ ] **`[signer.acme_proxy.eab]` is emptied after the first registration.** It
+      `signer.relay.dns01.rfc2136.tsig_key_secret`.
+- [ ] **`[signer.relay.eab]` is emptied after the first registration.** It
   is
       a bootstrap credential that authorizes exactly one `newAccount`; the server
       warns on every startup for as long as it stays set.
-      → [ACME Proxy (Relay)](../signers/acme_proxy.md#eab-considerations)
+      → [Relay](../signers/relay.md#eab-considerations)
 - [ ] **`insecure_skip_verify` is unset.** It warns on every startup by design,
   so
       it stays visible for exactly as long as it is needed.
@@ -120,5 +120,5 @@ Skip this section entirely if `admin.enabled` is `false`, which is the default.
 - [ ] **Startup warnings are read, not filtered out.** Three of them repeat on
       every start precisely so they cannot become background noise:
       `challenge_validation_bypassed`, `filter_netbox_tls_verification_disabled`,
-      `signer_acme_proxy_eab_secret_in_config`.
+      `signer_relay_eab_secret_in_config`.
       → [Monitoring](../operations/monitoring.md#structured-events)

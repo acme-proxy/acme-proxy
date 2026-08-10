@@ -84,8 +84,8 @@ someone notices. If you want one-client-one-credential, mint one per client and
 revoke it once that client has registered.
 
 (This differs from the upstream credential consumed by [`acme-proxy upstream
-register`](../signers/acme_proxy.md#eab-considerations) — or, alternatively,
-`signer.acme_proxy.eab` in configuration. Commercial CAs typically issue
+register`](../signers/relay.md#eab-considerations) — or, alternatively,
+`signer.relay.eab` in configuration. Commercial CAs typically issue
 single-use EAB credentials, which is precisely why that one is consumed once by
 registration and then no longer needed at all, unlike the credentials described
 on this page.)

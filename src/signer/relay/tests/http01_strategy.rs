@@ -31,9 +31,9 @@ impl http01::TokenStore for StubTokens {
 }
 
 /// The twin of [`with_updater`], for the `http01` strategy.
-fn with_tokens(signer: AcmeProxySigner, tokens: Arc<StubTokens>) -> AcmeProxySigner {
+fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
     let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
-    AcmeProxySigner(Arc::new(Inner {
+    RelaySigner(Arc::new(Inner {
         strategy: ChallengeStrategy::Http01(tokens),
         ..inner
     }))
@@ -77,7 +77,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_tokens(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -144,7 +144,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_tokens(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -191,7 +191,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_tokens(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -240,7 +240,7 @@ async fn http01_refuses_a_wildcard_authorization() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let signer = with_tokens(
-        AcmeProxySigner::from_config(
+        RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
             db.clone(),
@@ -285,7 +285,7 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
     cfg.challenge_strategy = "dns01".to_string();
     cfg.dns01.provider = "route53".to_string();
 
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,

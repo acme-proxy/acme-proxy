@@ -2,22 +2,16 @@ use crate::common::Lab;
 
 #[tokio::test]
 #[ignore]
-async fn test_acme_proxy_signer_bypass_order() {
+async fn test_relay_signer_bypass_order() {
     let lab = Lab::new_with_upstream(
         vec![
-            ("ACME_PROXY_SIGNER__BACKEND", "acme_proxy"),
+            ("ACME_PROXY_SIGNER__BACKEND", "relay"),
+            ("ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL", "UPSTREAM_URL"),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL",
-                "UPSTREAM_URL",
-            ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH",
+                "ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH",
                 "/tmp/upstream_account.key",
             ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY",
-                "bypass",
-            ),
+            ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "bypass"),
         ],
         vec![("ACME_PROXY_PROFILES__DEFAULT__CA_TYPE", "local")],
     )
@@ -82,41 +76,35 @@ async fn test_acme_proxy_signer_bypass_order() {
 
 #[tokio::test]
 #[ignore]
-async fn test_acme_proxy_signer_dns_01() {
+async fn test_relay_signer_dns_01() {
     let lab = Lab::new_with_upstream(
         vec![
-            ("ACME_PROXY_SIGNER__BACKEND", "acme_proxy"),
+            ("ACME_PROXY_SIGNER__BACKEND", "relay"),
+            ("ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL", "UPSTREAM_URL"),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL",
-                "UPSTREAM_URL",
-            ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH",
+                "ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH",
                 "/tmp/upstream_account.key",
             ),
-            ("ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY", "dns01"),
+            ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "dns01"),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__SERVER",
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER",
                 "DNS_SERVER_HOST:53",
             ),
+            ("ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__ZONE", "lab."),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__ZONE",
-                "lab.",
-            ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_NAME",
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_NAME",
                 "tsig-key.",
             ),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET",
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             ),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_ALGORITHM",
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM",
                 "hmac-sha256",
             ),
-            ("ACME_PROXY_SIGNER__ACME_PROXY__POLL_INTERVAL_MS", "500"),
-            ("ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOUT_SECS", "60"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
         ],
         vec![
             ("ACME_PROXY_CHALLENGE__ENABLED", "dns-01"),
@@ -189,24 +177,18 @@ async fn test_acme_proxy_signer_dns_01() {
 /// which is a property of nginx rather than of this crate.
 #[tokio::test]
 #[ignore]
-async fn test_acme_proxy_signer_http_01() {
+async fn test_relay_signer_http_01() {
     let lab = Lab::new_with_upstream(
         vec![
-            ("ACME_PROXY_SIGNER__BACKEND", "acme_proxy"),
+            ("ACME_PROXY_SIGNER__BACKEND", "relay"),
+            ("ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL", "UPSTREAM_URL"),
             (
-                "ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL",
-                "UPSTREAM_URL",
-            ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH",
+                "ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH",
                 "/tmp/upstream_account.key",
             ),
-            (
-                "ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY",
-                "http01",
-            ),
-            ("ACME_PROXY_SIGNER__ACME_PROXY__POLL_INTERVAL_MS", "500"),
-            ("ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOUT_SECS", "60"),
+            ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "http01"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
         ],
         vec![
             ("ACME_PROXY_CHALLENGE__ENABLED", "http-01"),

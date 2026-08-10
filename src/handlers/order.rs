@@ -564,7 +564,7 @@ pub async fn post_finalize(
         // so all this handler does is publish the `processing` status the
         // client polls on (RFC 8555 §7.4). No `CertificateIssued` dispatch
         // here: the certificate isn't issued yet. That notification fires
-        // later from `signer::acme_proxy::settle`, once the backend's
+        // later from `signer::relay::settle`, once the backend's
         // background relay actually completes — not a gap, deliberate.
         Ok(IssueOutcome::Processing) => {
             order.mark_processing(&database).await.map_err(|error| {
@@ -576,7 +576,7 @@ pub async fn post_finalize(
                 Problem::server_internal("Order finalize failed")
             })?;
             // No audit row here — nothing has been signed yet. The one row for
-            // this issuance is written by `signer::acme_proxy::relay::settle`
+            // this issuance is written by `signer::relay::flow::settle`
             // when the upstream actually answers, and this is what lets it
             // carry the address of the client that asked: the relay runs from a
             // background task with no request in scope. See

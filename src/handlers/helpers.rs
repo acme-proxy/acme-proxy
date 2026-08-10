@@ -75,7 +75,7 @@ pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParam
 /// This check lives **here**, in the handler, and not in a backend.
 /// `LocalCa::issue` has always done it, but it is the only backend doing so:
 /// `custom` passes the CSR to an operator script which is not told to verify it,
-/// and `acme_proxy` relays it to an upstream CA which only sees *this* server's
+/// and `relay` relays it to an upstream CA which only sees *this* server's
 /// account and doesn't know which names the local client has proven.
 /// With either of them, an account authorized for one name could get a certificate
 /// for any other name. The backend check remains as defense in depth — `admin::ops`
@@ -144,7 +144,7 @@ pub(crate) fn check_csr_matches_order(
     //
     // `LocalCa::issue` goes further and empties the whole distinguished name; this check
     // is what covers backends which transmit the CSR as-is
-    // (`custom`, `acme_proxy`).
+    // (`custom`, `relay`).
     if let Some(common_name) = csr.params.distinguished_name.get(&DnType::CommonName)
         && let Some(text) = dn_text(common_name)
     {

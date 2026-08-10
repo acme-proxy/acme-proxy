@@ -18,7 +18,7 @@ The window is resolved in this order:
    past**, prompting a compliant client to renew immediately. This is checked
    **before** the signer backend is consulted, so a locally revoked certificate
    is never talked out of renewing by an upstream CA that has not noticed yet.
-2. **The backend's own opinion**, if it has one. The `acme_proxy` backend relays
+2. **The backend's own opinion**, if it has one. The `relay` backend relays
    the upstream CA's answer verbatim, including RFC 9773 §4.2's optional
    `explanationURL` — so if Let's Encrypt signals early renewal, that reaches
    your internal clients unchanged. The `custom` backend can do the same through

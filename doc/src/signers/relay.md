@@ -1,10 +1,9 @@
-# ACME Proxy Signer
+# Relay
 
-The `acme_proxy` backend keeps this server answering ACME to its own clients
-while a real upstream CA does the signing. It configures the server to act as a
-transparent proxy and relay, capturing internal ACME requests and fulfilling
-them via an upstream external CA (like Let's Encrypt, ZeroSSL, or a commercial
-CA).
+The `relay` backend keeps this server answering ACME to its own clients while a
+real upstream CA does the signing. It captures internal ACME requests and
+fulfils them through an upstream external CA (Let's Encrypt, ZeroSSL, or a
+commercial CA).
 
 ## How it works
 
@@ -95,7 +94,7 @@ Two constraints are worth knowing before choosing it:
   `*.example.com`. An upstream authorization for a wildcard is refused with an
   error naming `dns01`, which is the strategy that can.
 
-There is no `[signer.acme_proxy.http01]` table: setting `challenge_strategy =
+There is no `[signer.relay.http01]` table: setting `challenge_strategy =
 "http01"` is the whole configuration.
 
 ### `bypass`
@@ -157,9 +156,9 @@ with any other backend the path is not routed at all. A
 
 ```toml
 [signer]
-backend = "acme_proxy"
+backend = "relay"
 
-[signer.acme_proxy]
+[signer.relay]
 directory_url = "https://acme-staging-v02.api.letsencrypt.org/directory"
 account_key_path = "upstream_account.key"
 contact = ["mailto:admin@example.com"]
@@ -170,7 +169,7 @@ poll_timeout_secs = 300
 
 ### Reference
 
-**`directory_url`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__DIRECTORY_URL`*
+**`directory_url`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL`*
 
 The upstream ACME server's directory URL.
 
@@ -185,17 +184,17 @@ The upstream ACME server's directory URL.
 > working out a configuration, and switch to production only once it is settled.
 > Subsequent starts reuse the `.kid` sidecar and do not contact the upstream.
 
-**`account_key_path`** (`String`) — *Default: `"upstream_account.key"` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__ACCOUNT_KEY_PATH`*
+**`account_key_path`** (`String`) — *Default: `"upstream_account.key"` | Env: `ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH`*
 
 Path to this proxy's own account key at the upstream CA. If the file is absent,
 an ECDSA P-256 key is generated on startup. The assigned `kid` is stored beside
 it with a `.kid` extension.
 
-**`contact`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__CONTACT`*
+**`contact`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__RELAY__CONTACT`*
 
 Optional contacts sent with `newAccount` to the upstream CA.
 
-**`challenge_strategy`** (`String`) — *Default: `"bypass"` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__CHALLENGE_STRATEGY`*
+**`challenge_strategy`** (`String`) — *Default: `"bypass"` | Env: `ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY`*
 
 How the proxy satisfies the upstream's domain-control checks: `bypass` (the
 upstream validates nothing), `dns01` (publish the TXT record the upstream asks
@@ -203,48 +202,48 @@ for) or `http01` (serve the challenge file from this server's own root router,
 which requires a reverse proxy in front of it and cannot prove a wildcard). Any
 other value is a startup error.
 
-**`poll_interval_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__POLL_INTERVAL_MS`*
+**`poll_interval_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS`*
 
 How often to poll an upstream order/authorization while it resolves.
 
-**`poll_timeout_secs`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__POLL_TIMEOUT_SECS`*
+**`poll_timeout_secs`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS`*
 
 Total budget (in seconds) for one upstream issuance before the local order is
 marked invalid.
 
-### `[signer.acme_proxy.dns01]`
+### `[signer.relay.dns01]`
 
 Only consulted when `challenge_strategy = "dns01"`.
 
-**`provider`** (`String`) — *Default: `"rfc2136"` | Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__PROVIDER`*
+**`provider`** (`String`) — *Default: `"rfc2136"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER`*
 
 DNS provider used to publish the upstream TXT record. `rfc2136` is currently the
 only implementation.
 
-### `[signer.acme_proxy.dns01.rfc2136]`
+### `[signer.relay.dns01.rfc2136]`
 
 All default to `""` and are required once the `dns01` strategy is selected.
 
-**`server`** — *Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__SERVER`*
+**`server`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER`*
 `host:port` of the nameserver accepting the dynamic update, e.g. `10.0.0.53:53`.
 This is the update target, distinct from `dns.resolver`, which governs
 *lookups*.
 
-**`zone`** — *Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__ZONE`*
+**`zone`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__ZONE`*
 The zone the update is sent for, fully qualified with a trailing dot, e.g.
 `internal.company.com.`.
 
-**`tsig_key_name`** — *Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_NAME`*
+**`tsig_key_name`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_NAME`*
 Name of the TSIG key the update is signed with.
 
-**`tsig_key_secret`** — *Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_KEY_SECRET`*
+**`tsig_key_secret`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET`*
 The TSIG shared secret, in **standard** base64 — note this differs from EAB
 secrets, which are base64url. A value that is not valid base64 is a **startup
 error**, not a runtime one. This key is legitimately long-lived, so unlike a
 one-shot EAB credential it belongs in configuration; still prefer the
 environment variable over a file on disk.
 
-**`tsig_algorithm`** — *Env: `ACME_PROXY_SIGNER__ACME_PROXY__DNS01__RFC2136__TSIG_ALGORITHM`*
+**`tsig_algorithm`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM`*
 The TSIG algorithm, e.g. `hmac-sha256`. Must match the key as your nameserver
 defines it.
 
@@ -271,10 +270,10 @@ persists.
 profile: `[signer]` is a per-profile section, so registering "the upstream"
 without saying which one would be registering nothing.
 
-**`[signer.acme_proxy.eab]` in configuration**, read by `acme-proxy serve`
+**`[signer.relay.eab]` in configuration**, read by `acme-proxy serve`
 itself on the first startup with no `.kid` sidecar yet:
 ```toml
-[signer.acme_proxy.eab]
+[signer.relay.eab]
 kid = "..."
 hmac_key = "..."   # base64: url-safe, unpadded url-safe, or standard
 ```
@@ -282,7 +281,7 @@ This is the trade-off the CLI path exists to avoid: a bootstrap secret sitting
 in configuration for the life of the server, in exchange for not needing a
 separate imperative step — useful when `config.toml` is already populated by a
 secrets manager or a templated deployment. Once registration succeeds, `serve`
-logs a `signer_acme_proxy_eab_secret_in_config` warning on **every** startup for
+logs a `signer_relay_eab_secret_in_config` warning on **every** startup for
 as long as `hmac_key` stays non-empty, the same treatment `challenge.bypass` and
 `filter.netbox.insecure_skip_verify` get — clear it out once `acme-proxy
 upstream show` confirms a `kid` is stored. Setting `kid` without `hmac_key`, or

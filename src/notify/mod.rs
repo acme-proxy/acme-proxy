@@ -33,10 +33,10 @@
 //! (not deduplicated by configuration identity like signer backends are —
 //! dispatchers are stateless side-channels, so two profiles with identical
 //! `[notify]` sections simply get two independent instances). The
-//! asynchronous `acme_proxy` signer backend, whose completion happens outside
+//! asynchronous `relay` signer backend, whose completion happens outside
 //! any HTTP handler, is handed the whole `profile name -> dispatcher` map so
 //! it can notify the right profile once an order settles — see
-//! `signer::acme_proxy::mod::settle`.
+//! `signer::relay::flow::settle`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
@@ -83,7 +83,7 @@ impl std::error::Error for NotifyError {}
 /// address, when a request was in scope.
 ///
 /// `client_ip` is `None` on the one firing site with no request in scope at
-/// all — the `acme_proxy` signer backend's asynchronous completion, which
+/// all — the `relay` signer backend's asynchronous completion, which
 /// runs in a background task long after any handler returned. Templates must
 /// treat it as optional.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -238,7 +238,7 @@ impl NotifyEvent {
     }
 
     /// This event's client address, when a request was in scope — `None` on
-    /// the `acme_proxy` async-completion path. Used by the `custom` backend
+    /// the `relay` async-completion path. Used by the `custom` backend
     /// to fill `ACME_NOTIFY_CLIENT_IP`.
     fn client_ip(&self) -> Option<&str> {
         match self {
@@ -311,7 +311,7 @@ impl NotifyEvent {
 /// The configured notify backends for one profile.
 ///
 /// Cheap to clone behind the `Arc` it is always held in (`Profile::notify`,
-/// and the `profile name -> dispatcher` map handed to the `acme_proxy` signer
+/// and the `profile name -> dispatcher` map handed to the `relay` signer
 /// backend).
 #[derive(Default)]
 pub struct NotifyDispatcher {
@@ -527,7 +527,7 @@ fn build_custom_backends(cfg: &NotifyConfig) -> anyhow::Result<Vec<Arc<dyn Notif
 }
 
 /// Builds one [`NotifyDispatcher`] per resolved profile, keyed by profile
-/// name — the map the `acme_proxy` signer backend needs to notify the right
+/// name — the map the `relay` signer backend needs to notify the right
 /// profile from its background completion task, where there is no
 /// `AppState`/`Profile` to reach through.
 pub fn build_registry(

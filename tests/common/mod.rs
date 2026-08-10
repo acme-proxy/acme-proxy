@@ -23,8 +23,8 @@ use acme_proxy::challenge::{
 use acme_proxy::config::Config;
 use acme_proxy::filter::{ConnectionContext, Filter, FilterChain, FilterError, IdentifierContext};
 use acme_proxy::notify::{NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent};
-use acme_proxy::signer::acme_proxy::http01::MemoryTokenStore;
 use acme_proxy::signer::local_ca::LocalCa;
+use acme_proxy::signer::relay::http01::MemoryTokenStore;
 use acme_proxy::signer::{
     Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError,
 };
@@ -1109,7 +1109,7 @@ impl SignerBackend for TokenStoreSigner {
 /// *before* handing anything to a backend. `local_ca` makes that check itself,
 /// so a test using the real signer cannot tell the handler's refusal from the
 /// backend's — and it is precisely the backends that do *not* check
-/// (`custom` shells out to an operator script, `acme_proxy` relays to an
+/// (`custom` shells out to an operator script, `relay` relays to an
 /// upstream that never saw the local authorizations) whose safety rests on the
 /// handler getting there first. This backend refuses nothing, so if it is ever
 /// called the CSR was accepted.

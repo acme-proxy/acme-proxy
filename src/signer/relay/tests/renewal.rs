@@ -32,7 +32,7 @@ async fn renewal_info_uses_the_upstream_window() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -67,7 +67,7 @@ async fn no_upstream_renewal_info_means_no_opinion() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -92,7 +92,7 @@ async fn no_upstream_renewal_info_means_no_opinion() {
 async fn a_certificate_without_an_aki_yields_no_opinion() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -120,7 +120,7 @@ async fn an_unparsable_window_is_an_error() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let signer = AcmeProxySigner::from_config(
+    let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,

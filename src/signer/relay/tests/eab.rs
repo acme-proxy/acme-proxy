@@ -1,7 +1,7 @@
 use super::*;
 
 /// An upstream that demands EAB, and finds no credential at all — neither
-/// `signer.acme_proxy.eab` nor a prior `acme-proxy upstream register` —
+/// `signer.relay.eab` nor a prior `acme-proxy upstream register` —
 /// must name both fixes, rather than surfacing as a bare 403 from a CA
 /// the operator may not control.
 #[tokio::test(flavor = "multi_thread")]
@@ -12,7 +12,7 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
         database().await,
@@ -24,13 +24,13 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
         "the error must name the fix: {error}"
     );
     assert!(
-        error.contains("signer.acme_proxy.eab"),
+        error.contains("signer.relay.eab"),
         "the error must also name the config alternative: {error}"
     );
 }
 
 /// The config-file alternative to `acme-proxy upstream register`: `serve`
-/// registers on its own, with no CLI step, when `signer.acme_proxy.eab`
+/// registers on its own, with no CLI step, when `signer.relay.eab`
 /// supplies a credential the upstream accepts.
 #[tokio::test(flavor = "multi_thread")]
 async fn from_config_registers_with_a_credential_supplied_in_config() {
@@ -40,15 +40,15 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let cfg = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let cfg = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
         ..config(&upstream, &dir)
     };
 
-    AcmeProxySigner::from_config(
+    RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -67,7 +67,7 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
     assert!(payload.contains("externalAccountBinding"), "{payload}");
 }
 
-/// `signer.acme_proxy.eab.kid` without `hmac_key`, or vice versa, is a
+/// `signer.relay.eab.kid` without `hmac_key`, or vice versa, is a
 /// configuration mistake, not "no credential" — silently treating it as
 /// the latter would surface as a confusing upstream-side 403 instead of
 /// the actual config error.
@@ -76,14 +76,14 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
 
-    let kid_only = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let kid_only = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: String::new(),
         },
         ..config(&upstream, &dir)
     };
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &kid_only,
         vec!["default".to_string()],
         database().await,
@@ -92,14 +92,14 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     ));
     assert!(error.contains("hmac_key"), "{error}");
 
-    let secret_only = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let secret_only = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: String::new(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
         ..config(&upstream, &dir)
     };
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &secret_only,
         vec!["default".to_string()],
         database().await,
@@ -116,14 +116,14 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
 async fn a_config_credential_with_bad_base64_is_a_startup_error() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
-    let cfg = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let cfg = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: "not base64!!!".to_string(),
         },
         ..config(&upstream, &dir)
     };
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -145,14 +145,14 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let cfg = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let cfg = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
         ..config(&upstream, &dir)
     };
-    let error = startup_error(AcmeProxySigner::from_config(
+    let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -160,7 +160,7 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
         test_resolver(),
     ));
     assert!(
-        error.contains("rejected signer.acme_proxy.eab"),
+        error.contains("rejected signer.relay.eab"),
         "the error must name the credential that was actually tried, not read as though \
          none had been offered: {error}"
     );
@@ -169,7 +169,7 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
 /// Once registered, a config-supplied credential left in place is inert
 /// but harmless: startup must succeed exactly as it does after a
 /// CLI-driven registration (this is also what exercises the
-/// `signer_acme_proxy_eab_secret_in_config` warning path).
+/// `signer_relay_eab_secret_in_config` warning path).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     let upstream = testsrv::start(Script {
@@ -178,15 +178,15 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     })
     .await;
     let dir = TempDir::new("upstream");
-    let cfg = AcmeProxyConfig {
-        eab: crate::config::AcmeProxyEabConfig {
+    let cfg = RelayConfig {
+        eab: crate::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
         ..config(&upstream, &dir)
     };
 
-    AcmeProxySigner::from_config(
+    RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -197,7 +197,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
 
     // Second startup: the kid sidecar exists, the (still-configured)
     // secret is unused, and nothing fails.
-    AcmeProxySigner::from_config(
+    RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,
@@ -284,7 +284,7 @@ async fn after_registering_startup_needs_no_credential() {
     .await
     .unwrap();
 
-    AcmeProxySigner::from_config(
+    RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
         database().await,

@@ -43,7 +43,7 @@ async fn an_empty_crl_is_served_by_default() {
 /// A backend with no CRL to offer answers `404`, **not** an empty `200`.
 ///
 /// Reachable in production today: `signer.backend = "custom"` with
-/// `supports_crl` unset, or `acme_proxy`, both of which leave `crl_der`'s
+/// `supports_crl` unset, or `relay`, both of which leave `crl_der`'s
 /// default "nothing to say here" in place. The distinction is the whole point
 /// of the test — an empty but validly-signed CRL is a positive statement that
 /// *nothing is revoked*, so serving one on behalf of a backend that was never

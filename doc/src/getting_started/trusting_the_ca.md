@@ -7,7 +7,7 @@ browsers, `curl`, and every TLS library will reject them until you install the
 root.
 
 This page covers distributing that root. It does not apply when you use the
-[`acme_proxy`](../signers/acme_proxy.md) backend to relay to a public CA, whose
+[`relay`](../signers/relay.md) backend to relay to a public CA, whose
 roots are already trusted everywhere.
 
 ## Getting the root certificate
