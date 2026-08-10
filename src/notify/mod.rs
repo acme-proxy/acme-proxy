@@ -91,6 +91,11 @@ pub struct ProfileMountedData {
     pub profile: String,
 }
 
+/// Payload of [`NotifyEvent::AccountCreated`]: a client registered a new
+/// account at this endpoint.
+///
+/// `contact` is what the client supplied, which may legitimately be empty —
+/// RFC 8555 does not require one.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountCreatedData {
     pub profile: String,
@@ -99,6 +104,10 @@ pub struct AccountCreatedData {
     pub client_ip: Option<String>,
 }
 
+/// Payload of [`NotifyEvent::AccountDeactivated`]: an account was deactivated,
+/// either by the client (§7.3.6) or by `acme-proxy account deactivate`.
+///
+/// Deactivation is permanent, so this event has no counterpart.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AccountDeactivatedData {
     pub profile: String,
@@ -106,6 +115,11 @@ pub struct AccountDeactivatedData {
     pub client_ip: Option<String>,
 }
 
+/// Payload of [`NotifyEvent::CertificateIssued`]: a certificate was signed.
+///
+/// `cert_serial` is the hex serial, the same value `POST /revokeCert` and the
+/// audit trail identify a certificate by. `identifiers` are the names the
+/// certificate covers.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CertificateIssuedData {
     pub profile: String,
@@ -116,6 +130,11 @@ pub struct CertificateIssuedData {
     pub client_ip: Option<String>,
 }
 
+/// Payload of [`NotifyEvent::CertificateRevoked`]: a certificate was withdrawn.
+///
+/// `reason` is the RFC 5280 §5.3.1 code the caller supplied, and is `None` when
+/// none was given — which is not the same as `Some(0)`. It reaches a `custom`
+/// script only in the JSON on stdin, since it has no environment variable.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CertificateRevokedData {
     pub profile: String,
@@ -126,6 +145,13 @@ pub struct CertificateRevokedData {
     pub client_ip: Option<String>,
 }
 
+/// Payload of [`NotifyEvent::ChallengeFailed`]: a validation attempt did not
+/// succeed.
+///
+/// This fires on the failure of one *challenge*, which is not necessarily the
+/// failure of the order: a client may have another enabled type left to try.
+/// `error` is the human-readable detail, the same text the challenge object's
+/// `error` member carries back to the client.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChallengeFailedData {
     pub profile: String,

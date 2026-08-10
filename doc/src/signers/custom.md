@@ -2,8 +2,8 @@
 
 The `custom` signer backend delegates certificate issuance, revocation and
 metadata retrieval to an external script (Bash, Python, Go, …). Use it to
-integrate `acme-proxy` with legacy PKI systems, HSMs, or internal APIs that do not
-speak ACME natively.
+integrate `acme-proxy` with legacy PKI systems, HSMs, or internal APIs that do
+not speak ACME natively.
 
 `acme-proxy` still serves ACME to its own clients and still enforces domain
 control, filters and EAB; only the signing step is handed off.
@@ -24,41 +24,41 @@ supports_renewal_info = false
 
 ### Reference
 
-**`script_path`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_SIGNER__CUSTOM__SCRIPT_PATH`*  
+**`script_path`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__CUSTOM__SCRIPT_PATH`*
+
 Path to the executable. An empty value is a **startup error** once this backend
 is selected.
 
-**`timeout_ms`** (`Integer`)  
-*Default: `5000` | Env: `ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS`*  
-Budget for one invocation. Because issuance runs inline in the `finalize`
-request, this must stay below `server.request_timeout_ms` — the server refuses to
-start otherwise.
+**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS`*
 
-**`args`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_SIGNER__CUSTOM__ARGS`*  
+Budget for one invocation. Because issuance runs inline in the `finalize`
+request, this must stay below `server.request_timeout_ms` — the server refuses
+to start otherwise.
+
+**`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__CUSTOM__ARGS`*
+
 Static arguments passed on every invocation. These are the **only** command-line
 arguments the script receives; the hook is *not* passed as an argument.
 
-**`supports_crl`** (`Boolean`)  
-*Default: `false` | Env: `ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_CRL`*  
+**`supports_crl`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_CRL`*
+
 Whether the script implements the `crl` hook. While `false`, the hook is **never
 invoked** — no process is spawned at all — and `GET /crl` has nothing to serve.
 
-**`supports_renewal_info`** (`Boolean`)  
-*Default: `false` | Env: `ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEWAL_INFO`*  
-Whether the script implements the `renewal_info` hook. While `false`, the hook is
-**never invoked** and `GET /renewalInfo/{certID}` falls back to the server's own
-local estimate.
+**`supports_renewal_info`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEWAL_INFO`*
 
-> These two flags default to `false` and gate the hooks entirely. A `renewal_info`
-> hook written without setting `supports_renewal_info = true` will simply never
-> run, with no error to explain why.
+Whether the script implements the `renewal_info` hook. While `false`, the hook
+is **never invoked** and `GET /renewalInfo/{certID}` falls back to the server's
+own local estimate.
+
+> These two flags default to `false` and gate the hooks entirely. A
+> `renewal_info` hook written without setting `supports_renewal_info = true`
+> will simply never run, with no error to explain why.
 
 ## Hooks
 
-The hook is selected by the **`ACME_SIGNER_HOOK` environment variable**, not by a
-command-line argument. Every hook receives a JSON object on **stdin**.
+The hook is selected by the **`ACME_SIGNER_HOOK` environment variable**, not by
+a command-line argument. Every hook receives a JSON object on **stdin**.
 
 | Hook | stdin | stdout | Gated by |
 | --- | --- | --- | --- |
@@ -80,16 +80,16 @@ Exit codes are the contract:
 - **`3`** — reserved: the CSR is bad. The client gets `400 badCSR` and the order
   stays `ready`, so it can retry with a corrected CSR. Do not use this exit code
   for backend failures.
-- **anything else** — an internal failure. The client gets `500` and the order is
-  marked `invalid` (terminal, but pollable).
+- **anything else** — an internal failure. The client gets `500` and the order
+  is marked `invalid` (terminal, but pollable).
 
 This backend always answers **synchronously**: a shelled-out script cannot call
 back later, so the order never enters the `processing` state.
 
-> The order's requested `notBefore`/`notAfter` (RFC 8555 §7.4) are **not** passed
-> to the script — there is no contract for it, and inventing one would break
-> existing scripts. Your script decides validity on its own. (The `local_ca`
-> backend does honour them, clamped.)
+> The order's requested `notBefore`/`notAfter` (RFC 8555 §7.4) are **not**
+> passed to the script — there is no contract for it, and inventing one would
+> break existing scripts. Your script decides validity on its own. (The
+> `local_ca` backend does honour them, clamped.)
 
 ### `revoke`
 
@@ -98,8 +98,8 @@ Exit `0` means revoked. Any non-zero exit is an internal failure, and
 the CA-side action is authoritative.
 
 Revocation must be **idempotent**: `acme-proxy` may call this hook for a
-certificate your PKI already considers revoked, and that must succeed rather than
-error.
+certificate your PKI already considers revoked, and that must succeed rather
+than error.
 
 ### `renewal_info`
 
@@ -116,8 +116,8 @@ Any other token count, or a non-integer timestamp, is an internal failure.
 ### `crl`
 
 stdout is the raw DER of the CRL, served by `GET /crl`. Empty stdout means "no
-CRL". Failures here are logged and swallowed — a broken `crl` hook degrades to no
-CRL rather than taking the endpoint down.
+CRL". Failures here are logged and swallowed — a broken `crl` hook degrades to
+no CRL rather than taking the endpoint down.
 
 ## Environment variables
 
@@ -128,9 +128,9 @@ CRL rather than taking the endpoint down.
 | `ACME_SIGNER_IDENTIFIERS` | `issue` | Comma-joined identifier values |
 | `ACME_SIGNER_REASON` | `revoke` | RFC 5280 reason code, empty when none given |
 
-There is no `ACME_SIGNER_PROFILE`; the signer backend is never told which profile
-it is serving. (Backends are shared between profiles with identical `[signer]`
-configuration, so there would not always be one answer.)
+There is no `ACME_SIGNER_PROFILE`; the signer backend is never told which
+profile it is serving. (Backends are shared between profiles with identical
+`[signer]` configuration, so there would not always be one answer.)
 
 ## Security & process isolation
 
@@ -139,8 +139,8 @@ configuration, so there would not always be one answer.)
    server's own environment may hold the NetBox token, SMTP password or RFC 2136
    TSIG key, and a signing script has no business reading them.
 2. **Zombie protection**: the child runs with `kill_on_drop(true)` under a
-   `tokio::time::timeout`. A timeout alone only drops the future, so without this
-   a hung script would outlive its deadline and leak a process per request.
+   `tokio::time::timeout`. A timeout alone only drops the future, so without
+   this a hung script would outlive its deadline and leak a process per request.
 3. **Failure reporting**: on a non-zero exit, the first non-empty line of stdout
    (falling back to stderr) is used as the error detail.
 

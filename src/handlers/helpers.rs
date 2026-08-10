@@ -912,8 +912,9 @@ mod tests {
 
     #[test]
     fn a_wildcard_csr_matching_its_order_is_accepted() {
-        // `post_new_order` a déjà refusé l'identifiant joker si `dns-01` n'est
-        // pas activé ; ici l'égalité suffit à l'épingler à la commande.
+        // `post_new_order` has already refused the wildcard identifier if
+        // `dns-01` is not enabled; here set equality is all that pins the CSR
+        // to the order.
         let der = csr_with(
             vec![SanType::DnsName("*.example.com".try_into().unwrap())],
             None,
@@ -925,8 +926,8 @@ mod tests {
 
     #[test]
     fn a_csr_differing_only_in_case_is_refused() {
-        // Comparaison brute : renormaliser ici laisserait signer une feuille
-        // portant la forme non normalisée qui n'a jamais été comparée.
+        // A raw comparison: re-normalising here would let a leaf be signed
+        // carrying the un-normalised form, which was never the form compared.
         let der = csr_with(
             vec![SanType::DnsName("A.Example.COM".try_into().unwrap())],
             None,

@@ -6,6 +6,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Documentation
+
+- Four new chapters: **Protocol Support** (an RFC 8555 conformance summary and
+  what is deliberately not implemented), **Security Model** and **Hardening
+  Checklist**, and **Database Schema** — the eleven tables, their constraints,
+  and why `audit_log` deliberately has no foreign keys.
+- Fourteen diagrams where prose was carrying branching, positional or state
+  facts: the JWS verification pipeline, the order and authorization state
+  machines, the relay's two stacked ACME conversations, the filter hooks on the
+  request path, the MFA sign-in states, deployment topology, and an ER diagram
+  of the schema.
+- `[challenge]`'s keys were documented both in the configuration reference and
+  in the challenges chapter, and the two copies had drifted. The chapter now
+  owns them, and the reference carries an index of **every** section — with the
+  seven that a `[profiles.<name>]` block may override marked as such, a fact
+  that had not been written down anywhere.
+- One voice across the book: sentence-case headings, no numbered headings for
+  unordered content, 80-column prose, and no marketing register.
+- `config.toml.example` gained a section index and per-section markers for what
+  is overridable per profile.
+- `CONTRIBUTING.md` and `SECURITY.md`, issue and pull-request templates, README
+  badges, a container install path and the MSRV stated numerically.
+
+### Added
+
+- `doc/lint.py`, a style and link gate for the book, run by a new **docs** CI
+  job that builds the book on pull requests — the deploy workflow only ran after
+  merge, so a broken `SUMMARY.md` entry was previously found too late.
+
+### Changed
+
+- `Cargo.toml` declares `description`, `repository`, `documentation`, `homepage`,
+  `readme`, `keywords` and `categories`, and a `docs.rs` block building with all
+  features, so the PKCS#11 module is documented rather than absent.
+- Crate-level and module-level rustdoc: the module map now covers the web admin,
+  the audit trail and the CLI, and the six modules that had no `//!` at all —
+  `handlers`, `extractors`, `sqlite`, `admin`, `middlewares`, `cli` — have one.
+  The `notify` payload structs, a plugin-facing data contract, are documented.
+
+### Fixed
+
+- Two French comments in `src/handlers/helpers.rs`, contrary to the project's
+  stated English-only rule.
+- The `### Reference` entries throughout the book depended on invisible trailing
+  double-spaces for their line breaks, which an editor trimming on save would
+  have silently broken — and had already broken in twelve places. They are now a
+  single line that cannot break that way.
+- Several run-on paragraphs in the troubleshooting guide, where
+  `Symptoms`/`Cause`/`Fix` lines were rendering joined into one block.
+- `mdbook.yml` pinned `mdbook-version: latest` and installed `mdbook-mermaid`
+  from source; both tools are now version-pinned, and every action in that
+  workflow is SHA-pinned like `ci.yml`'s.
+
 ## [0.1.0] — 2026-08-09
 
 First release.

@@ -186,6 +186,41 @@ jobs:
       - name: Test
         run: cargo nextest run --locked --features hsm
 
+  # The book is deployed by `mdbook.yml`, which runs only on a push to `main`.
+  # Until this job existed, nothing built `doc/` on a pull request — and
+  # `create-missing = false` makes a `SUMMARY.md` entry with no file a *build
+  # failure*, so the first sign of a broken chapter was a failed deployment
+  # after merge. Cheap enough (no Rust toolchain, no cargo build) to run on
+  # every change rather than only on ones that touch `doc/`: the README and
+  # `config.toml.example` are checked against the book too.
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Pinned, and installed as prebuilt binaries rather than `cargo install`
+      # from source: `mdbook-version: latest` in the deploy workflow means an
+      # upstream release can break the build with no change on this side.
+      - name: Install mdBook
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: mdbook@0.5.4,mdbook-mermaid@0.17.0
+
+      # `create-missing = false` turns a SUMMARY entry with no file into an
+      # error here rather than a stub nobody notices.
+      - name: Build the book
+        run: mdbook build doc/
+
+      # The mechanical half of the house style: 80-column prose, no numbered
+      # headings, tagged code fences, links and anchors that resolve, and no
+      # configuration key documented in two files at once. The last one is the
+      # rule that actually rots — two copies of a default drift silently.
+      - name: Style and link check
+        run: python3 doc/lint.py
+
   supply-chain:
     name: Advisories, licenses & sources
     runs-on: ubuntu-latest

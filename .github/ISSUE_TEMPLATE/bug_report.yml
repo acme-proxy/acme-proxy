@@ -1,0 +1,98 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do **not** report security vulnerabilities here — see
+        [SECURITY.md](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md).
+
+        Most of what makes an `acme-proxy` report actionable is context: the
+        same request succeeds or fails depending on which signer backend is in
+        use, which challenge type the client picked, and which filters ran.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The client command, if there was one, and what you did before it.
+      placeholder: |
+        1. certbot certonly --server http://localhost:3000/profile/default/directory ...
+        2. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Signer backend
+      description: "`signer.backend` for the profile involved."
+      options:
+        - local_ca
+        - acme_proxy (relay to an upstream CA)
+        - custom (script)
+        - not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: challenge
+    attributes:
+      label: Challenge type
+      description: Which type the client actually used, if the problem involves validation.
+      options:
+        - http-01
+        - dns-01
+        - tls-alpn-01
+        - bypassed (challenge.bypass = true)
+        - not applicable
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: |
+        Every line carries an `event = "..."` field and a request id; the lines
+        sharing one request id are the ones that matter. `RUST_LOG=acme_proxy=debug`
+        adds per-request detail. Redact tokens, keys and identifiers as needed.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: |
+        The relevant part of `config.toml` (or the `ACME_PROXY_*` variables).
+        **Redact `filter.netbox.token`, any TSIG secret, and any EAB secret.**
+      render: toml
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`acme-proxy --version`, or the commit."
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "e.g. Debian 13, x86_64, container"
+    validations:
+      required: false

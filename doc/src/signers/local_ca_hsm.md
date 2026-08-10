@@ -13,10 +13,10 @@ enterprise HSM tomorrow are the same configuration with a different
 
 ## What this protects, and what it does not
 
-Everything else about the Local CA is unchanged: the same
-[CSR sanitisation](local_ca.md#security-constraints), the same
-`leaf_validity_days` clamping, the same CRL and revocation ledger. Only *where
-the signature comes from* moves.
+Everything else about the Local CA is unchanged: the same [CSR
+sanitisation](local_ca.md#security-constraints), the same `leaf_validity_days`
+clamping, the same CRL and revocation ledger. Only *where the signature comes
+from* moves.
 
 It protects **the CA issuing key** — the one that, if stolen, lets an attacker
 mint certificates your fleet trusts. It does **not** protect the ACME account
@@ -58,55 +58,53 @@ At startup, the token key's `SubjectPublicKeyInfo` is compared against the one
 in `cert_path`. A mismatch — almost always a wrong `key_label` — stops the
 server.
 
-This is **stricter than the file path**, where (as
-[Local CA](local_ca.md#multi-tier-pki-using-an-intermediate-ca) warns) nothing
-checks that `key_path` corresponds to `cert_path`, and a mismatched pair simply
+This is **stricter than the file path**, where (as [Local
+CA](local_ca.md#multi-tier-pki-using-an-intermediate-ca) warns) nothing checks
+that `key_path` corresponds to `cert_path`, and a mismatched pair simply
 produces certificates that verify nowhere. Here a typo is caught before the
 first certificate is issued rather than discovered by a client days later.
 
 ## Reference
 
-**`key_source`** (`String`)
-*Default: `"file"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__KEY_SOURCE`*
-Where the issuing private key lives. `"file"` is the historical behaviour and
-the default; `"pkcs11"` reads the table below. Any other value is a startup
-error — there is deliberately no silent fallback, since falling back would hand
-an operator who asked for hardware a software key with no indication of it.
+Reaching this table at all takes `signer.local_ca.key_source = "pkcs11"`, which
+is documented with the rest of `[signer.local_ca]` in [Local
+CA](local_ca.md#reference). Everything below is `[signer.local_ca.pkcs11]`, read
+only when that key is set.
 
-**`pkcs11.module_path`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__MODULE_PATH`*
+**`pkcs11.module_path`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__MODULE_PATH`*
+
 The PKCS#11 module to load. Required. See each walkthrough for the usual paths.
 
-**`pkcs11.token_label`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__TOKEN_LABEL`*
+**`pkcs11.token_label`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__TOKEN_LABEL`*
+
 Which token to use, by label. Preferred over `slot_id`: slot numbers are
 assigned dynamically and change across reboots and re-plugs on most drivers
 (SoftHSM2 will hand you something like `276468771`).
 
-**`pkcs11.slot_id`** (`Integer`)
-*Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__SLOT_ID`*
+**`pkcs11.slot_id`** (`Integer`) — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__SLOT_ID`*
+
 Which slot to use, for tokens with no usable label. Consulted only when
 `token_label` is empty.
 
-**`pkcs11.key_label`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_LABEL`*
+**`pkcs11.key_label`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_LABEL`*
+
 The private key's `CKA_LABEL`. Required. On a YubiKey the labels are fixed by
 the driver, so this is something you look up rather than choose — see below.
 
-**`pkcs11.key_id`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_ID`*
+**`pkcs11.key_id`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__KEY_ID`*
+
 The key's `CKA_ID` as hex (`01`, or `01:ff`), to disambiguate a token holding
 several keys under one label. Optional; two keys sharing a label and no `key_id`
 to separate them is a startup error rather than a coin flip.
 
-**`pkcs11.pin_file`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN_FILE`*
+**`pkcs11.pin_file`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN_FILE`*
+
 A file holding the user PIN. Trailing whitespace is trimmed, so a PIN written
 with `echo` works. The file is checked for permissions and warns if it is
 world-readable, exactly as `ca.key` does.
 
-**`pkcs11.pin`** (`String`)
-*Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN`*
+**`pkcs11.pin`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__PKCS11__PIN`*
+
 **SENSITIVE.** The PIN directly. Prefer `pin_file`, or set this through the
 environment variable; a PIN in `config.toml` is a long-lived secret in a file
 that tends to get copied around. `pin_file` wins when both are set, and having
@@ -131,7 +129,7 @@ sudo apt install softhsm2
 sudo pacman -S softhsm
 ```
 
-### 1. Create a token
+### Step 1 — Create a token
 
 ```bash
 softhsm2-util --init-token --free --label acme-ca --so-pin 3737 --pin 1234
@@ -141,11 +139,11 @@ softhsm2-util --init-token --free --label acme-ca --so-pin 3737 --pin 1234
 to a *new* slot number afterwards — which is exactly why `token_label` is the
 selector to use, not `slot_id`.
 
-### 2. Create the CA key and certificate
+### Step 2 — Create the CA key and certificate
 
-The key must exist inside the token, and `cert_path` must hold a certificate
-for it. For SoftHSM2 the simplest route is to generate both locally, import the
-key, and destroy the local copy:
+The key must exist inside the token, and `cert_path` must hold a certificate for
+it. For SoftHSM2 the simplest route is to generate both locally, import the key,
+and destroy the local copy:
 
 ```bash
 # The CA key and its self-signed certificate
@@ -171,7 +169,7 @@ shred -u ca.key
 `pathlen:0` matches what the Local CA generates for itself: it may issue leaves
 but no further CAs.
 
-### 3. Configure
+### Step 3 — Configure
 
 ```toml
 [signer]
@@ -198,7 +196,7 @@ If SoftHSM2's token store is not in its default location, `SOFTHSM2_CONF` must
 be set in the server's environment — it is read by the module, not by
 `acme-proxy`.
 
-### 4. Confirm it is really using the token
+### Step 4 — Confirm it is really using the token
 
 ```bash
 RUST_LOG=info acme-proxy serve
@@ -241,11 +239,11 @@ sudo pacman -S yubico-piv-tool
 Both paths are in circulation; check which one you have before configuring
 `module_path`.
 
-### 1. Generate the key and certificate on the device
+### Step 1 — Generate the key and certificate on the device
 
-Use slot **9c** (Digital Signature). Its PIV policy requires the PIN for
-*every* private-key operation, which is the right posture for a CA key and the
-reason to prefer it over 9a.
+Use slot **9c** (Digital Signature). Its PIV policy requires the PIN for *every*
+private-key operation, which is the right posture for a CA key and the reason to
+prefer it over 9a.
 
 ```bash
 # Generate the key inside the YubiKey — it never leaves
@@ -267,7 +265,7 @@ Copy `ca.pem` to wherever `cert_path` points.
 > the key*. That is correct for an offline root and catastrophic for an ACME
 > server expected to issue unattended.
 
-### 2. Find the key label
+### Step 2 — Find the key label
 
 You do not choose the label on a YubiKey — `libykcs11` assigns fixed ones per
 PIV slot. Read it off the device:
@@ -279,7 +277,7 @@ pkcs11-tool --module /usr/lib/libykcs11.so --list-objects --login
 Slot 9c reports as `Private key for Digital Signature`; 9a as `Private key for
 PIV Authentication`. Use that string verbatim.
 
-### 3. Configure
+### Step 3 — Configure
 
 ```toml
 [signer.local_ca]
@@ -297,7 +295,7 @@ pin_file    = "/etc/acme-proxy/hsm.pin"
 The PIN is the **PIV PIN** (factory default `123456`), not the PIV management
 key and not the FIDO PIN.
 
-### 4. Expect `CKM_ECDSA`
+### Step 4 — Expect `CKM_ECDSA`
 
 `libykcs11` does not offer `CKM_ECDSA_SHA256`, so `acme-proxy` computes the
 SHA-256 digest itself and asks the token to sign that. The startup line reads:
@@ -341,9 +339,9 @@ files, and the ledger is what makes revocations durable.
 ### When the token disappears
 
 If the session drops — the YubiKey is unplugged, a network HSM times out —
-`acme-proxy` reopens the session, logs back in and retries the signature **once**.
-The relevant log lines are `local_ca_pkcs11_session_lost` followed by either a
-successful issuance or `local_ca_pkcs11_reconnect_failed`.
+`acme-proxy` reopens the session, logs back in and retries the signature
+**once**. The relevant log lines are `local_ca_pkcs11_session_lost` followed by
+either a successful issuance or `local_ca_pkcs11_reconnect_failed`.
 
 If that fails, finalize requests return `serverInternal` (500) and clients
 retry, which is the right behaviour: the order stays valid and issuance resumes

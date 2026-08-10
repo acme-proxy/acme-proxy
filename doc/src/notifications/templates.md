@@ -1,8 +1,11 @@
 # Customizing Templates
 
-`acme-proxy` uses the [MiniJinja](https://docs.rs/minijinja/latest/minijinja/) templating engine to render notification payloads. The server embeds sensible default templates inside the binary, but you can override any of them by pointing the server to a custom template directory.
+`acme-proxy` uses the [MiniJinja](https://docs.rs/minijinja/latest/minijinja/)
+templating engine to render notification payloads. The server embeds sensible
+default templates inside the binary, but you can override any of them by
+pointing the server to a custom template directory.
 
-## Enabling Custom Templates
+## Enabling custom templates
 In your `config.toml`, define a `template_dir`:
 
 ```toml
@@ -11,10 +14,12 @@ enabled = ["email", "mattermost"]
 template_dir = "/etc/acme-proxy/templates"
 ```
 
-The server will look in this directory before falling back to its embedded defaults. You only need to create the files you want to override.
+The server will look in this directory before falling back to its embedded
+defaults. You only need to create the files you want to override.
 
-## Template File Structure
-Templates are grouped by backend and event name. Email requires separate files for the subject line and body.
+## Template file structure
+Templates are grouped by backend and event name. Email requires separate files
+for the subject line and body.
 
 ```text
 /etc/acme-proxy/templates/
@@ -28,11 +33,16 @@ Templates are grouped by backend and event name. Email requires separate files f
     └── challenge_failed.j2
 ```
 
-*(Available event names: `profile_mounted`, `account_created`, `account_deactivated`, `certificate_issued`, `certificate_revoked`, `challenge_failed`).*
+*(Available event names: `profile_mounted`, `account_created`,
+`account_deactivated`, `certificate_issued`, `certificate_revoked`,
+`challenge_failed`).*
 
-## Context Variables
+## Context variables
 
-When rendering a template, `acme-proxy` passes a context object containing the event's data. All events include `profile` (the name of the profile triggered) and most include `client_ip` (the IP address of the ACME client that initiated the request).
+When rendering a template, `acme-proxy` passes a context object containing the
+event's data. All events include `profile` (the name of the profile triggered)
+and most include `client_ip` (the IP address of the ACME client that initiated
+the request).
 
 ### `certificate_issued`
 Triggered when an order is finalized and the signer mints a certificate.
@@ -67,7 +77,8 @@ Triggered when an HTTP-01 or DNS-01 validation attempt fails.
 Triggered on account lifecycle events.
 - `profile` (String)
 - `account_id` (String)
-- `contact` (List of Strings) - e.g. `["mailto:admin@example.com"]` *(only on created)*
+- `contact` (List of Strings) - e.g. `["mailto:admin@example.com"]` *(only on
+  created)*
 - `client_ip` (Option&lt;String&gt;)
 
 ### `certificate_revoked`

@@ -1,9 +1,9 @@
 # Customizing the Panel
 
 The pages at `/ui` are [minijinja] templates compiled into the binary. Any one
-of them can be replaced on disk without rebuilding, the same way
-[notification templates](../notifications/templates.md) work — an operator who
-has already overridden a notification should not have to learn a second scheme.
+of them can be replaced on disk without rebuilding, the same way [notification
+templates](../notifications/templates.md) work — an operator who has already
+overridden a notification should not have to learn a second scheme.
 
 ```toml
 [admin]
@@ -57,11 +57,11 @@ root element — that id is what the page's `hx-target` points at.
 ### The extension is a security control
 
 Every page template is named `.html`, and that is deliberate. minijinja decides
-auto-escaping from the template *name*, and the notify templates are named
-`.j2` precisely so that escaping is **off** for them (an email body is not
-markup). Renaming a page template to `.j2` — or adding a new one under a name
-minijinja does not recognise as HTML — turns an account contact or an EAB label
-into stored XSS.
+auto-escaping from the template *name*, and the notify templates are named `.j2`
+precisely so that escaping is **off** for them (an email body is not markup).
+Renaming a page template to `.j2` — or adding a new one under a name minijinja
+does not recognise as HTML — turns an account contact or an EAB label into
+stored XSS.
 
 ### The CSRF token has to stay on `<body>`
 
@@ -83,18 +83,18 @@ The same file sets two htmx options that the
       content='{"includeIndicatorStyles":false,"responseHandling":[...]}'>
 ```
 
-`includeIndicatorStyles: false` stops htmx injecting an inline `<style>`
-element that `style-src 'self'` would block — the rules it would have injected
-live in `admin.css` instead. `responseHandling` makes htmx swap non-2xx
-responses, without which a `409` conflict would fail silently instead of
-showing the operator a banner.
+`includeIndicatorStyles: false` stops htmx injecting an inline `<style>` element
+that `style-src 'self'` would block — the rules it would have injected live in
+`admin.css` instead. `responseHandling` makes htmx swap non-2xx responses,
+without which a `409` conflict would fail silently instead of showing the
+operator a banner.
 
 ## Context
 
 Every full page gets `csrf_token`, `user`, `nav` (the active navigation item)
-and `title`, plus its own data. That data is the **same JSON the API returns**
-— `render_account_json`, `render_order_detail_json`, `render_eab_json` — so
-`GET /api/accounts/{id}` is an accurate description of what `account` holds in
+and `title`, plus its own data. That data is the **same JSON the API returns** —
+`render_account_json`, `render_order_detail_json`, `render_eab_json` — so `GET
+/api/accounts/{id}` is an accurate description of what `account` holds in
 `accounts/_card.html`. Lists additionally get `page` (`{items, total}`),
 `pager`, `filters` and `profiles`.
 

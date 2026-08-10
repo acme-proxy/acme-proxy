@@ -15,7 +15,7 @@ does not need to be enabled yet.
 
 If the panel is enabled with no operators, startup says so:
 
-```
+```text
 WARN event="admin_no_users" the web admin is enabled but has no operators:
      create one with `acme-proxy admin user create <username>`
 ```
@@ -44,25 +44,24 @@ $ acme-proxy admin user create alice --password-file /run/secrets/pw
 whether the file was written with `printf '%s'` or `printf '%s\n'`.
 
 Typing it interactively works too, but the password **will echo** — there is no
-`rpassword` here, because echo suppression needs a real TTY and that would
-break the injectable-reader design the whole admin layer is testable through.
-The command warns when it notices a terminal.
+`rpassword` here, because echo suppression needs a real TTY and that would break
+the injectable-reader design the whole admin layer is testable through. The
+command warns when it notices a terminal.
 
 ## Password policy
 
 Minimum 12 characters, maximum 1024 bytes. Length is the only rule: composition
-rules ("one digit, one symbol") measurably push people towards weaker,
-more guessable passwords, and this is an operator surface with a handful of
-accounts rather than a consumer signup.
+rules ("one digit, one symbol") measurably push people towards weaker, more
+guessable passwords, and this is an operator surface with a handful of accounts
+rather than a consumer signup.
 
-Length is counted in **characters**, so a 12-character passphrase in a
-non-Latin script is 12, not its byte count.
+Length is counted in **characters**, so a 12-character passphrase in a non-Latin
+script is 12, not its byte count.
 
-Passwords are stored as PBKDF2-HMAC-SHA256 at 600 000 iterations
-(OWASP's current recommendation for the non-Argon2 case), in a self-describing
-format:
+Passwords are stored as PBKDF2-HMAC-SHA256 at 600 000 iterations (OWASP's
+current recommendation for the non-Argon2 case), in a self-describing format:
 
-```
+```text
 pbkdf2-sha256$600000$<salt-b64url>$<hash-b64url>
 ```
 
@@ -77,6 +76,39 @@ Off by default and per-operator. Once enrolled, signing in is two requests: the
 password mints a **half-authenticated** session that reaches nothing but the
 page finishing the login, and a code from an authenticator app turns it into a
 real one.
+
+```mermaid
+stateDiagram-v2
+    [*] --> anonymous
+    anonymous --> anonymous: wrong password<br/>(counts against login_max_attempts)
+    anonymous --> locked_out: limiter tripped, by peer address
+    locked_out --> anonymous: login_window_seconds elapses
+
+    anonymous --> active: password ok, no factor enrolled<br/>and require_mfa is off
+    anonymous --> pending_mfa: password ok, factor enrolled
+    anonymous --> enrolling: password ok, no factor<br/>and require_mfa is on
+
+    pending_mfa --> pending_mfa: wrong code<br/>(counts against mfa_attempts)
+    pending_mfa --> [*]: mfa_attempts exceeded —<br/>the pending row is DELETED
+    pending_mfa --> active: correct TOTP code
+    pending_mfa --> active: unused recovery code
+    enrolling --> active: enrolment confirmed
+
+    active --> [*]: sign out, expiry, idle timeout,<br/>or a revoked session
+```
+
+Three things the diagram is making explicit:
+
+- **Promotion mints a new session.** `pending_mfa → active` is an insert plus a
+  delete, not an `UPDATE` — a new cookie *and* a new CSRF token — because the
+  pending token crossed the wire before authentication had finished.
+- **Guessing is bounded twice**, and the two bounds are not redundant. The
+  limiter is keyed on the peer address; `mfa_attempts` is keyed on the session,
+  because a `pending_mfa` cookie is deliberately valid from any address and one
+  IPv6 /64 supplies 2⁶⁴ fresh addresses.
+- **`enrolling` is only reachable with no factor.** A session that owes a *code*
+  can never reach an enrolment route, or the factor would be bypassable by
+  enrolling a new one over it.
 
 ### Enrolling
 
@@ -171,7 +203,7 @@ Two consequences worth knowing:
 
 While it is on and somebody still has no factor, every start says so:
 
-```
+```text
 WARN event="admin_mfa_enrolment_pending" count=2
      admin.require_mfa is on and some operators have no second factor
 ```
@@ -204,8 +236,8 @@ $ acme-proxy admin user enable alice
 $ acme-proxy admin user delete alice          # asks first; -y skips
 ```
 
-Usernames are stored lowercased, so `Alice` and `alice` cannot become two
-logins that read as one in a log line.
+Usernames are stored lowercased, so `Alice` and `alice` cannot become two logins
+that read as one in a log line.
 
 **A password change revokes every session that user held.** A password changed
 because it may have leaked, that left the leaked session alive, would be a
@@ -235,8 +267,8 @@ Two deadlines apply, and whichever comes first wins:
 | `admin.session_ttl_seconds` | `43200` (12 h) | absolute; never extended |
 | `admin.session_idle_timeout_seconds` | `3600` (1 h) | advanced on use |
 
-The idle deadline is advanced at most once a minute, so a page polling every
-few seconds is not a stream of database writes.
+The idle deadline is advanced at most once a minute, so a page polling every few
+seconds is not a stream of database writes.
 
 A reaper sweeps expired and idle rows for the life of the process, and once at
 startup. Unlike nonces, sessions outlive a restart, so a startup-only sweep
@@ -252,7 +284,7 @@ browser update.
 A failed sign-in returns one `invalid_credentials` whatever went wrong, so the
 endpoint cannot be used to enumerate operators. The log keeps the distinction:
 
-```
+```text
 WARN event="admin_login_failed" username="alice" client_ip=… reason="wrong_password"
 WARN event="admin_login_failed" username="ghost" client_ip=… reason="unknown_user"
 WARN event="admin_login_failed" username="bob"   client_ip=… reason="account_disabled"
@@ -264,7 +296,7 @@ The second step keeps the same shape — one refusal to the client, the reason i
 the log — and note that `admin_login_succeeded` is emitted at *promotion*, not
 when the password is accepted:
 
-```
+```text
 INFO event="admin_login_mfa_pending" username="alice" client_ip=… step="verify"
 WARN event="admin_mfa_failed" username="alice" client_ip=… reason="wrong_code"
 WARN event="admin_mfa_failed" username="alice" client_ip=… reason="replayed"
@@ -280,7 +312,7 @@ observed code looks like.
 
 One more worth knowing, because nobody will guess it from a `401`:
 
-```
+```text
 WARN event="admin_password_hash_unreadable" username="alice"
      stored password hash could not be decoded; run
      `acme-proxy admin user passwd` to rewrite it

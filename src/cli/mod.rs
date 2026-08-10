@@ -1,3 +1,25 @@
+//! The command tree, and the startup path itself.
+//!
+//! [`run`] is the **only** place in the crate that prints an error and calls
+//! `std::process::exit`. Every command body returns `Result<(), CliError>` and
+//! `dispatch` routes to it, so each arm is a plain function a test can call and
+//! assert on rather than an unreachable dead end.
+//!
+//! Startup is split on the socket boundary, which is what lets a test drive the
+//! whole path on an ephemeral port with its own shutdown future instead of a
+//! process signal:
+//!
+//! - `serve` binds `server.bind_address` and hands the socket on.
+//! - [`serve_on`] validates the admin configuration and binds that socket too,
+//!   when `[admin]` is enabled.
+//! - [`serve_on_with`] does everything else — profile resolution, deduplicated
+//!   signer backends, per-profile filters and validators, TLS, the nonce and
+//!   audit reapers, and `axum::serve` with connect info attached.
+//!
+//! The logic behind each admin subcommand lives in [`crate::admin`], not here;
+//! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
+//! an installed subscriber, validating every value before installing anything.
+
 use std::future::Future;
 use std::io::BufRead;
 use std::net::SocketAddr;

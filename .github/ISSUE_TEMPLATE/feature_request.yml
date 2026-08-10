@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a capability acme-proxy does not have
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [TODO.md](https://github.com/acme-proxy/acme-proxy/blob/main/TODO.md)
+        first — several likely requests (PostgreSQL, Prometheus metrics, OCSP,
+        phpIPAM, a generic webhook) are already on the roadmap, and that file
+        sometimes records why something was deferred.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: |
+        If it is a new subsystem backend — a signer, a filter, a notification
+        channel, an IPAM — say which, since each of those is a trait with a
+        `from_config` selector and a new one is an additive change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: |
+        The `custom` script hooks (signer, filter, notify) are the escape hatch
+        for exactly this. If one of them almost worked, saying where it fell
+        short is the most useful thing in this form.
+    validations:
+      required: false

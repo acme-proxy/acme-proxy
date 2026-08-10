@@ -28,30 +28,29 @@ args = ["--strict"]
 
 ### Reference
 
-**`custom_enabled`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM_ENABLED`*  
-An ordered list of custom filter names to execute.
+Which entries run, and in what order, is `filter.custom_enabled` — a `[filter]`
+key, documented with the rest of them in [Filters](index.md#reference). The keys
+below are per entry, and each `<NAME>` in an environment variable is that
+entry's own name uppercased.
 
-*(For each name listed, configure its parameters under `[filter.custom.<name>]`.)*
+**`script_path`** (`String`) — *Default: `""` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__SCRIPT_PATH`*
 
-**`script_path`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__SCRIPT_PATH`*  
 Path to the executable script.
 
-**`timeout_ms`** (`Integer`)  
-*Default: `5000` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__TIMEOUT_MS`*  
+**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__TIMEOUT_MS`*
+
 Maximum execution time in milliseconds.
 
-**`pass_stdin`** (`Boolean`)  
-*Default: `true` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__PASS_STDIN`*  
-Whether to write the JSON context to the script's standard input. Set it to
-`false` for a script that reads only environment variables — it then never has to
-drain stdin.
+**`pass_stdin`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__PASS_STDIN`*
 
-**`args`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__ARGS`*  
-Static arguments passed to the script. The hook is **not** among them; it arrives
-as an environment variable.
+Whether to write the JSON context to the script's standard input. Set it to
+`false` for a script that reads only environment variables — it then never has
+to drain stdin.
+
+**`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__ARGS`*
+
+Static arguments passed to the script. The hook is **not** among them; it
+arrives as an environment variable.
 
 ## Hooks
 
@@ -90,8 +89,8 @@ otherwise — the script is called for both.
 
 ### JSON on stdin
 
-When `pass_stdin` is `true` (the default), a JSON **object** — not a bare array —
-is written to the script's standard input.
+When `pass_stdin` is `true` (the default), a JSON **object** — not a bare array
+— is written to the script's standard input.
 
 `connection`:
 ```json
@@ -111,18 +110,18 @@ is written to the script's standard input.
 
 `client_ip` is `null` rather than a string when the address is unknown.
 
-At the `CSR` stage the `identifiers` list is the flattened projection of the whole
-CSR — SANs *and* the subject Common Name — so entries of type `ip`, `email`,
-`uri`, `other` and `cn` appear alongside `dns`. That is deliberate: a deny rule
-cannot be dodged by moving a name from a SAN into the CN.
+At the `CSR` stage the `identifiers` list is the flattened projection of the
+whole CSR — SANs *and* the subject Common Name — so entries of type `ip`,
+`email`, `uri`, `other` and `cn` appear alongside `dns`. That is deliberate: a
+deny rule cannot be dodged by moving a name from a SAN into the CN.
 
 ## Return codes
 
 - **`0`** — permitted.
 - **Any non-zero exit** — denied. This includes exit code 255 and death by
   signal; the check is simply "did it exit successfully".
-- **Timeout, or failure to spawn** — treated as an internal error (`500`), so the
-  client retries rather than seeing a permanent refusal.
+- **Timeout, or failure to spawn** — treated as an internal error (`500`), so
+  the client retries rather than seeing a permanent refusal.
 
 On denial, the reason sent to the ACME client is the **first non-empty line of
 stdout**, falling back to the first non-empty line of stderr, and finally to a

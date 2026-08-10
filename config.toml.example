@@ -21,6 +21,53 @@
 # /profile/<name>, so a profile named `default` answers at
 # {base_url}/profile/default/directory. See that section for what a profile
 # inherits and what it can override.
+#
+# ---------------------------------------------------------------------------
+# Sections in this file, in order. Sections marked [per-profile] may also
+# appear inside a [profiles.<name>] block, where they override the value set
+# here; everything else is process-wide, one setting for the whole server.
+#
+#   [database]                          the SQLite file
+#   [server]                            listen socket, public URL, admission
+#   [server.tls]                        HTTPS on the ACME listener
+#   [admin]                             the web admin listener and its sessions
+#   [admin.tls]                         HTTPS on the admin listener
+#   [nonce]                             replay-nonce freshness
+#   [audit]                             reverse lookups and trail retention
+#   [logging]                           filter, format, target
+#   [order]                    [per-profile]  the order object's lifetime
+#   [signer]                   [per-profile]  how a certificate is obtained
+#     [signer.local_ca]                 the embedded CA
+#     [signer.local_ca.subject]         its self-generated certificate's subject
+#     [signer.local_ca.pkcs11]          its key in a token (--features hsm)
+#     [signer.acme_proxy]               relaying to an upstream ACME CA
+#     [signer.acme_proxy.eab]           upstream EAB bootstrap credential
+#     [signer.acme_proxy.dns01]         solving the upstream's DNS-01
+#     [signer.acme_proxy.dns01.rfc2136] the TSIG-authenticated DNS update
+#     [signer.custom]                   shelling out to a script
+#   [challenge]                [per-profile]  how control of a name is proven
+#     [challenge.http_01]               (there is no [challenge.dns_01])
+#     [challenge.tls_alpn_01]
+#   [filter]                   [per-profile]  who may ask, and for what
+#     [filter.allowed_ip]
+#     [filter.reverse_dns]
+#     [filter.identifiers]
+#     [filter.netbox]
+#     [filter.custom.<name>]            one table per named script hook
+#   [eab]                      [per-profile]  External Account Binding
+#   [meta]                     [per-profile]  directory `meta` members
+#   [notify]                   [per-profile]  outbound notifications
+#     [notify.email]
+#     [notify.mattermost]
+#     [notify.custom.<name>]            one table per named script hook
+#   [dns]                               the resolver every lookup goes through
+#   [profiles.<name>]                   an ACME endpoint — at least one required
+#
+# The seven [per-profile] sections are exactly those a profile may override,
+# and inheritance is per *key*, not per section: a profile setting only
+# challenge.bypass keeps the global challenge.enabled. Arrays replace
+# wholesale, never append.
+# ---------------------------------------------------------------------------
 
 [database]
 # Database connection URL. This database persists ACME orders and nonces.
@@ -194,12 +241,12 @@ span_events = "none"                # ACME_PROXY_LOGGING__SPAN_EVENTS
 # format's reserved keys.
 flatten_event = false               # ACME_PROXY_LOGGING__FLATTEN_EVENT
 
-[order]
+[order]   # [per-profile] — a [profiles.<name>] block may override these
 # Validity window for ACME order objects in seconds (RFC 8555 §7.1.3).
 # This defines the order's lifetime, not the resulting certificate's validity.
 validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
 
-[signer]
+[signer]   # [per-profile] — a [profiles.<name>] block may override these
 # The issuance backend to use.
 #   "local_ca"   — this server IS the CA: it signs every certificate itself.
 #   "acme_proxy" — this server RELAYS to an upstream ACME server, becoming a
@@ -490,7 +537,7 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # supports_crl = true
 # supports_renewal_info = false
 
-[challenge]
+[challenge]   # [per-profile] — a [profiles.<name>] block may override these
 # Which challenge types each new authorization offers, in the order they appear
 # in the authorization object. The client picks one of them to satisfy.
 # Known names: "http-01", "dns-01", "tls-alpn-01".
@@ -567,7 +614,7 @@ max_response_bytes = 4096           # ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONS
 # that is already there.
 port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 
-[filter]
+[filter]   # [per-profile] — a [profiles.<name>] block may override these
 # Request filtering: which clients may reach the server, and which names they may
 # have certified. Independent of [challenge] above, and the only access control
 # left when challenge.bypass is on — with it set, anyone who can reach this
@@ -796,7 +843,7 @@ insecure_skip_verify = false        # ACME_PROXY_FILTER__NETBOX__INSECURE_SKIP_V
 # requests' worst case.
 timeout_ms = 5000                   # ACME_PROXY_FILTER__NETBOX__TIMEOUT_MS
 
-[eab]
+[eab]   # [per-profile] — a [profiles.<name>] block may override these
 # Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that
 # would create an account. A request missing it gets 400
 # externalAccountRequired; one that is malformed, unknown, revoked, or fails to
@@ -812,7 +859,7 @@ timeout_ms = 5000                   # ACME_PROXY_FILTER__NETBOX__TIMEOUT_MS
 # never through this file: a credential must be revocable without a restart.
 enabled = false                     # ACME_PROXY_EAB__ENABLED
 
-[meta]
+[meta]   # [per-profile] — a [profiles.<name>] block may override these
 # The optional `meta` members of the directory object (RFC 8555 §7.1.1). All
 # empty by default; an empty one is omitted from the directory rather than
 # advertised blank. Like every other profile section, these can be overridden
@@ -839,7 +886,7 @@ website = ""                        # ACME_PROXY_META__WEBSITE
 # private networks where public CAA policy is not the trust anchor.
 caa_identities = []                 # ACME_PROXY_META__CAA_IDENTITIES
 
-[notify]
+[notify]   # [per-profile] — a [profiles.<name>] block may override these
 # Operator notifications on lifecycle events: a profile mounting at startup,
 # account creation/deactivation, certificate issuance/revocation, and a
 # challenge validation failure. Dispatch is fire-and-forget — a notify

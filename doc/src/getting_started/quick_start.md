@@ -2,7 +2,7 @@
 
 Get `acme-proxy` running in a couple of minutes with an auto-generated Local CA.
 
-## 1. Write a configuration file
+## Step 1 — Write a configuration file
 
 `acme-proxy` serves ACME only through **profiles**, so at least one enabled
 profile is required — the server refuses to start without one. Everything else
@@ -26,7 +26,7 @@ bypass = true
 > defaults to `true`, so naming the profile is all that is required. The profile
 > name becomes part of the URL, and of every `kid` a client stores.
 
-## 2. Run the server
+## Step 2 — Run the server
 
 ```bash
 acme-proxy serve
@@ -45,14 +45,14 @@ ACME_PROXY_CONFIG=/etc/acme-proxy/config.toml acme-proxy serve
 configuration file is not an error: the server falls back to defaults, which is
 why an environment-only deployment works.
 
-Individual keys can also be overridden with `ACME_PROXY_*` environment variables;
-see the [Configuration Reference](../configuration/reference.md).
+Individual keys can also be overridden with `ACME_PROXY_*` environment
+variables; see the [Configuration Reference](../configuration/reference.md).
 
 The server binds `[::]:3000` and serves the ACME directory at
 `http://localhost:3000/profile/default/directory`. On first run it creates
 `sqlite.db`, `ca.pem` and `ca.key` in the working directory.
 
-## 3. Request a certificate
+## Step 3 — Request a certificate
 
 Point any standard ACME client at the profile's directory URL. Examples for
 `internal.example.com`:
@@ -113,16 +113,16 @@ internal.example.com {
 2. It registered an account and created a new order.
 3. `acme-proxy` offered an HTTP-01 challenge.
 4. Because `challenge.bypass = true`, the proxy marked the challenge `valid` the
-   moment the client triggered it, without making any network request back to the
-   client's responder.
+   moment the client triggered it, without making any network request back to
+   the client's responder.
 5. The proxy signed the CSR with its auto-generated local ECDSA CA and returned
    the certificate.
 
-The certificate is signed by a CA nothing trusts yet. See
-[Trusting the CA](trusting_the_ca.md) for how to install `ca.pem` where your
-clients will accept it.
+The certificate is signed by a CA nothing trusts yet. See [Trusting the
+CA](trusting_the_ca.md) for how to install `ca.pem` where your clients will
+accept it.
 
-## 4. Moving to production
+## Step 4 — Moving to production
 
 The defaults are safe; this quick start deliberately relaxed them. Before
 exposing the server:

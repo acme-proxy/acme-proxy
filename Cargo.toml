@@ -3,6 +3,13 @@ name = "acme-proxy"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "An ACME (RFC 8555) server that issues from a local CA, relays to an upstream CA, or delegates to a script"
+repository = "https://github.com/acme-proxy/acme-proxy"
+documentation = "https://acme-proxy.github.io/acme-proxy/"
+homepage = "https://acme-proxy.github.io/acme-proxy/"
+readme = "README.md"
+keywords = ["acme", "rfc8555", "certificate", "tls", "ca"]
+categories = ["cryptography", "network-programming", "web-programming::http-server"]
 # Edition 2024 requires 1.85. Stated so `cargo` reports a clear version error on
 # an older toolchain rather than a wall of syntax errors. Not verified by CI,
 # which builds on stable — raise it if a newer feature is adopted.
@@ -19,6 +26,12 @@ default = []
 # pregenerated bindings and only its opt-in `generate-bindings` feature would
 # want `bindgen`/`clang`.
 hsm = ["dep:cryptoki"]
+
+# docs.rs builds with every feature on, so `signer::local_ca::pkcs11` — which is
+# `#[cfg(feature = "hsm")]` and therefore absent from a default build — is
+# documented rather than silently missing from the published API.
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 axum = "0.8"

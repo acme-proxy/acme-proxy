@@ -1,15 +1,15 @@
 # Monitoring & Observability
 
-Running an ACME server in production requires visibility into its health, request
-volume, and error rates. Today `acme-proxy` offers that through **structured
-logging** and a **health endpoint**.
+Running an ACME server in production requires visibility into its health,
+request volume, and error rates. Today `acme-proxy` offers that through
+**structured logging** and a **health endpoint**.
 
 > **There is no `/metrics` endpoint.** A Prometheus exporter is on the roadmap
-> (see `TODO.md` in the repository), but the binary does not currently expose one
-> and there is no cargo feature to enable it. Alerting is built on the log stream
-> described below.
+> (see `TODO.md` in the repository), but the binary does not currently expose
+> one and there is no cargo feature to enable it. Alerting is built on the log
+> stream described below.
 
-## Health Checks
+## Health checks
 
 - **Endpoint**: `GET /health`
 - **Response**: `200 OK` with the body `{"healthy": true}`
@@ -20,13 +20,13 @@ able to accept a connection, and it has no other failure mode. Treat it as a
 **liveness** probe, not a readiness probe — it will not tell you that the disk
 holding `sqlite.db` filled up.
 
-What makes it worth polling is *where* it is mounted. `/health` lives on the root
-router, not inside a profile, which means it is deliberately outside:
+What makes it worth polling is *where* it is mounted. `/health` lives on the
+root router, not inside a profile, which means it is deliberately outside:
 
 - the admission-control layer, so a saturated server still answers the probe
   (inside the limit, the probe was starved exactly when it mattered, and a load
-  balancer would go on reporting the node healthy right up to the point where the
-  probe could no longer get a slot);
+  balancer would go on reporting the node healthy right up to the point where
+  the probe could no longer get a slot);
 - every profile's filter chain, so an IP allowlist never has to be widened for
   your load balancer;
 - the `Replay-Nonce` middleware, so probing costs no database write; and
@@ -36,44 +36,24 @@ router, not inside a profile, which means it is deliberately outside:
 
 ## Logging
 
-`acme-proxy` uses the `tracing` crate. Six configuration keys control it. Every
-one of them is validated at startup: an unknown value is a refusal to start with
-a message naming the key, never a silent fallback — a CA running at a log level
-or to a destination its operator did not ask for is the worse failure.
+`acme-proxy` uses the `tracing` crate, configured by the six keys in
+[`[logging]`](../configuration/reference.md#logging) — filter, JSON or
+human-readable output, `stdout` or `stderr`, ANSI colour, span timing, and
+whether JSON fields sit at the top level. Every one of them is validated at
+startup: an unknown value is a refusal to start with a message naming the key,
+never a silent fallback.
 
-**`logging.filter`** (`String`)  
-*Default: `"acme_proxy=info"` | Env: `ACME_PROXY_LOGGING__FILTER`*  
-An `EnvFilter` directive used **only when `RUST_LOG` is unset**. `RUST_LOG` wins
-whenever it is present.
+Two of them are worth setting deliberately in production:
 
-**`logging.json_format`** (`Boolean`)  
-*Default: `false` | Env: `ACME_PROXY_LOGGING__JSON_FORMAT`*  
-Emit JSON instead of the human-readable format. Set this in production if you ship
-logs to ELK, Loki, Datadog or similar — the structured fields below become
-first-class keys rather than text to be re-parsed.
+```toml
+[logging]
+# Structured fields become first-class keys rather than text to be re-parsed.
+json_format = true
+# ... and at the top level, which is what most pipelines want.
+flatten_event = true
+```
 
-**`logging.target`** (`String`)  
-*Default: `"stdout"` | Env: `ACME_PROXY_LOGGING__TARGET`*  
-`stdout` or `stderr`.
-
-**`logging.ansi`** (`Boolean`)  
-*Default: `true` | Env: `ACME_PROXY_LOGGING__ANSI`*  
-ANSI colour in the human-readable format. Turn it off when the log is piped to a
-file or a collector that does not strip escape sequences. Ignored under
-`json_format`.
-
-**`logging.span_events`** (`String`)  
-*Default: `"none"` | Env: `ACME_PROXY_LOGGING__SPAN_EVENTS`*  
-`none`, `close` or `full`. `close` emits one record as each span ends, carrying
-the time spent busy and idle inside it — the closest thing to per-operation
-timing available without a metrics endpoint, and cheap enough to leave on.
-`full` adds `new`/`enter`/`exit` and is a debugging tool.
-
-**`logging.flatten_event`** (`Boolean`)  
-*Default: `false` | Env: `ACME_PROXY_LOGGING__FLATTEN_EVENT`*  
-JSON only: lift a record's own fields (`event`, and everything beside it) to the
-top level instead of nesting them under `fields`. What most pipelines want; off
-by default because a field can then collide with one of the format's own keys.
+The rest of this page is about what those records contain.
 
 ### Log levels
 
@@ -87,9 +67,9 @@ RUST_LOG=acme_proxy=debug  # per-request detail, challenge validation steps,
 There is no `trace` level to reach for: the crate emits nothing below `debug`.
 
 `RUST_LOG` replaces the whole filter, so a bare `RUST_LOG=debug` also turns on
-debug logging for every dependency. `acme-proxy` does not configure SQL statement
-logging itself; to see `sqlx`'s own statement logs you must ask for them
-explicitly, e.g. `RUST_LOG=acme_proxy=info,sqlx=debug`.
+debug logging for every dependency. `acme-proxy` does not configure SQL
+statement logging itself; to see `sqlx`'s own statement logs you must ask for
+them explicitly, e.g. `RUST_LOG=acme_proxy=info,sqlx=debug`.
 
 ### Request correlation
 
@@ -97,11 +77,11 @@ Every request passes through one server-wide middleware that reads an incoming
 `x-request-id` header or generates a UUID when absent, opens the `request` span,
 and echoes the id back on the response. Every log line emitted while handling
 that request is nested under that span and carries the id, so one client's
-failing renewal can be pulled out of a busy log in a single query — and a reverse
-proxy that already assigns request ids will have its value preserved rather than
-replaced. A header whose bytes are not valid ASCII cannot be echoed back, so it
-is replaced by a generated id and a `request_id_header_invalid` line at `debug`
-says so.
+failing renewal can be pulled out of a busy log in a single query — and a
+reverse proxy that already assigns request ids will have its value preserved
+rather than replaced. A header whose bytes are not valid ASCII cannot be echoed
+back, so it is replaced by a generated id and a `request_id_header_invalid` line
+at `debug` says so.
 
 The span carries `method`, `uri`, `version`, `request_id` and — for a request
 that reached an ACME endpoint rather than `/health` — `profile`.
@@ -175,8 +155,8 @@ Only with `[admin]` enabled — see [Web Admin](webadmin.md):
 | `admin_session_orphaned` | warn | A session outlived its user despite the FK cascade. Should be impossible; the session is deleted and refused. |
 
 The full set is much broader than this table. Names follow a
-`<subsystem>_<outcome>` shape, so patterns like `event = "revoke_cert` or
-`event = "replaces_` work well for ad-hoc investigation.
+`<subsystem>_<outcome>` shape, so patterns like `event = "revoke_cert` or `event
+= "replaces_` work well for ad-hoc investigation.
 
 ### Suggested alerts
 

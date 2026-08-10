@@ -28,9 +28,10 @@ openssl x509 -in internal-root.pem -noout -subject -issuer -dates -ext basicCons
 A freshly generated root is self-signed (subject equals issuer) and carries
 `CA:TRUE, pathlen:0`.
 
-If `cert_path` holds a **bundle** — an intermediate followed by a root, as in the
-[multi-tier setup](../signers/local_ca.md#multi-tier-pki-using-an-intermediate-ca) —
-then the *last* certificate in the file is the root, and it is the only one your
+If `cert_path` holds a **bundle** — an intermediate followed by a root, as in
+the [multi-tier
+setup](../signers/local_ca.md#multi-tier-pki-using-an-intermediate-ca) — then
+the *last* certificate in the file is the root, and it is the only one your
 clients need to trust. The intermediate is shipped with every issued certificate
 and does not need installing.
 
@@ -74,7 +75,8 @@ openssl verify -CAfile internal-root.pem issued-cert.pem
 
 ## Applications with their own trust store
 
-Updating the system store is not enough for everything. These maintain their own:
+Updating the system store is not enough for everything. These maintain their
+own:
 
 | Runtime | How to add the root |
 | --- | --- |
@@ -92,15 +94,15 @@ Installing a root by hand does not survive a fleet. In practice:
 
 - **Ansible / Puppet / Chef** — ship the file and run the update command as a
   handler. This is the common approach for Linux estates.
-- **Active Directory Group Policy** — Computer Configuration → Windows Settings →
-  Security Settings → Public Key Policies → Trusted Root Certification
+- **Active Directory Group Policy** — Computer Configuration → Windows Settings
+  → Security Settings → Public Key Policies → Trusted Root Certification
   Authorities.
 - **MDM (Jamf, Intune, …)** — deploy as a certificate payload.
 - **Golden images** — bake the root into your base image so new hosts trust it
   from first boot.
 
-Whichever you use, deploy the root **before** you start issuing certificates from
-it, or the first clients to renew will break.
+Whichever you use, deploy the root **before** you start issuing certificates
+from it, or the first clients to renew will break.
 
 ## Revocation
 
@@ -113,8 +115,8 @@ openssl crl -in internal.crl -inform DER -noout -text
 ```
 
 Note the CRL is not advertised in the ACME directory, and issued certificates do
-not currently carry a CRL distribution point extension — so a client will not find
-it automatically. Distribute the URL alongside the root if your validation
+not currently carry a CRL distribution point extension — so a client will not
+find it automatically. Distribute the URL alongside the root if your validation
 policy needs it. See [Revocation & CRL](../operations/revocation.md).
 
 ## Planning ahead
@@ -123,10 +125,10 @@ The root's validity is finite, and replacing it later means touching every host
 that trusts it. Two things make that easier:
 
 - **Use an intermediate.** Keep an offline root and hand `acme-proxy` only an
-  intermediate. The root you distribute then long outlives any single signing key,
-  and a compromised proxy costs you an intermediate rather than your whole trust
-  anchor. See
+  intermediate. The root you distribute then long outlives any single signing
+  key, and a compromised proxy costs you an intermediate rather than your whole
+  trust anchor. See
   [Multi-Tier PKI](../signers/local_ca.md#multi-tier-pki-using-an-intermediate-ca).
-- **Distribute early, rotate overlapping.** Trust stores accept multiple roots, so
-  push a replacement root well before it is needed and remove the old one only
-  after nothing is signed by it.
+- **Distribute early, rotate overlapping.** Trust stores accept multiple roots,
+  so push a replacement root well before it is needed and remove the old one
+  only after nothing is signed by it.

@@ -1,9 +1,9 @@
 # Custom Script Notifications
 
 The `custom` notification backend runs a local script (Bash, Python, Go, …) when
-an ACME event occurs. Use it to integrate with internal ticketing systems, custom
-logging infrastructure, or alerting pipelines that a plain HTTP webhook cannot
-satisfy.
+an ACME event occurs. Use it to integrate with internal ticketing systems,
+custom logging infrastructure, or alerting pipelines that a plain HTTP webhook
+cannot satisfy.
 
 ## Configuration
 
@@ -27,7 +27,8 @@ Three ways to get this wrong, all of which fail at **startup** rather than at
 delivery time:
 
 - Listing `"custom"` in `notify.enabled` while `custom_enabled` is empty.
-- Naming an entry in `custom_enabled` that has no `[notify.custom.<name>]` table.
+- Naming an entry in `custom_enabled` that has no `[notify.custom.<name>]`
+  table.
 - Using an entry name outside `^[a-z0-9-]+$` — `ticket_creator` (underscore) is
   rejected; `ticket-creator` is fine.
 
@@ -35,20 +36,20 @@ One process is spawned per enabled script per event.
 
 ### Reference
 
-**`script_path`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__SCRIPT_PATH`*  
+**`script_path`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__SCRIPT_PATH`*
+
 Path to the executable. Required.
 
-**`timeout_ms`** (`Integer`)  
-*Default: `5000` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__TIMEOUT_MS`*  
+**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__TIMEOUT_MS`*
+
 Maximum execution time. A script still running when this expires is killed.
 
-**`args`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__ARGS`*  
+**`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__ARGS`*
+
 Static arguments passed to the script on every invocation.
 
-**`events`** (`Array`)  
-*Default: all six events | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__EVENTS`*  
+**`events`** (`Array`) — *Default: all six events | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__EVENTS`*
+
 Which events this script reacts to. Valid names are `profile_mounted`,
 `account_created`, `account_deactivated`, `certificate_issued`,
 `certificate_revoked`, `challenge_failed`. An unrecognised name is a startup
@@ -109,9 +110,9 @@ event's own fields plus a `"hook"` key naming the event — the same data the
 }
 ```
 
-The exact fields per event are listed in
-[Customizing Templates](templates.md#context-variables) — the template context
-and the stdin payload carry the same values.
+The exact fields per event are listed in [Customizing
+Templates](templates.md#context-variables) — the template context and the stdin
+payload carry the same values.
 
 > The issued **certificate itself is never passed** to a notification script, on
 > stdin or otherwise. Only its serial and the identifiers it covers are

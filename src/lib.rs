@@ -6,33 +6,56 @@
 //!
 //! ## Features
 //!
-//! - Implements the ACME endpoints: directory, newNonce, newAccount, account
-//!   lookup/update, and the full order → finalize → certificate flow (newOrder,
-//!   order/certificate reads via signed POST-as-GET, and the account order list)
+//! - The full RFC 8555 flow: directory, newNonce, newAccount, account
+//!   lookup/update and deactivation, newOrder, authorizations and challenges,
+//!   finalize, certificate retrieval via signed POST-as-GET, and revocation
 //! - JWS signature verification for EC (ES256) and RSA (RS256) keys
 //! - Automatic nonce management with replay protection
 //! - Challenge validation behind pluggable validators (`http-01`, `dns-01`,
 //!   `tls-alpn-01`), with a configurable bypass
-//! - Certificate issuance behind a pluggable signer backend (a persistent local CA)
-//! - `SQLite` persistence for accounts, nonces, and orders
+//! - Certificate issuance behind a pluggable signer backend: a local CA (whose
+//!   key may live in a PKCS#11 token), a relay to an upstream ACME CA, or an
+//!   operator-supplied script
+//! - **Profiles** — several independent ACME endpoints in one process, each with
+//!   its own signer, filters, challenge validators and EAB policy
+//! - External Account Binding (§7.3.4), account key rollover (§7.3.5) and
+//!   Renewal Information (RFC 9773)
+//! - An append-only audit trail of every issuance *and every refusal*
+//! - An optional web admin listener, and admin subcommands in the same binary
+//! - `SQLite` persistence for accounts, nonces, orders and the audit trail
 //! - Configurable via TOML, environment variables, or defaults
 //!
 //! ## Architecture
 //!
-//! The server follows a modular architecture:
-//! - `handlers` - ACME protocol HTTP endpoint handlers
-//! - `extractors` - Parse and validate ACME JWS requests with signature verification
-//! - `middlewares` - Provide common functionality like nonce management
-//! - `signer` - Pluggable certificate-issuance backends (the local CA)
-//! - `challenge` - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
-//! - `filter` - Pluggable request filtering (who may ask at all)
-//! - `notify` - Pluggable operator notifications on lifecycle events (email, Mattermost, custom)
-//! - `eab` - Verification of the External Account Binding inner JWS (RFC 8555 §7.3.4)
-//! - `key_change` - Verification of account key rollover JWS (RFC 8555 §7.3.5)
-//! - `dns` - The resolver shared by challenge and filter subsystems
-//! - `sqlite` - Database interactions for accounts, nonces, and orders
-//! - `config` - Configuration loading from multiple sources
-//! - `error` - ACME error types and problem document rendering
+//! The ACME request path, in the order a request meets it:
+//! - [`middlewares`] - Server-wide layers: request correlation and the access
+//!   line, admission control, the `Replay-Nonce` and `Link: rel="index"` headers
+//! - [`filter`] - Pluggable request filtering (who may ask at all)
+//! - [`extractors`] - Parse and validate ACME JWS requests, verifying the media
+//!   type, the `crit` header, the signature, the JWS `url` and the nonce before
+//!   any handler runs
+//! - [`handlers`] - One module per ACME resource
+//! - [`challenge`] - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
+//! - [`signer`] - Pluggable certificate-issuance backends (local CA, ACME relay,
+//!   custom script)
+//!
+//! Supporting subsystems:
+//! - [`audit`] - The durable record of who asked this CA to sign or revoke
+//! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
+//!   Mattermost, custom)
+//! - [`eab`] - Verification of the External Account Binding inner JWS (§7.3.4)
+//! - [`key_change`] - Verification of account key rollover JWS (§7.3.5)
+//! - [`dns`] - The resolver shared by every subsystem that looks anything up
+//! - [`tls`] - Optional HTTPS termination for either listener
+//! - [`cert`] - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
+//! - [`sqlite`] - Database access, one module per table
+//! - [`config`] - Configuration loading from multiple sources
+//! - [`error`] - ACME error types and problem document rendering
+//!
+//! Administration, which serves no ACME and is a second listener plus a CLI:
+//! - [`admin`] - The operation layer both front ends dispatch to
+//! - [`webadmin`] - The optional HTML + JSON admin listener
+//! - [`cli`] - The `clap` command tree, and the startup path itself
 //!
 //! ## Usage
 //!

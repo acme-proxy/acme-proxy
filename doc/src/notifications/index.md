@@ -3,7 +3,7 @@
 The `notify` subsystem alerts operators on lifecycle events within the ACME
 server.
 
-## Supported Events
+## Supported events
 
 | Event | Fired when |
 | --- | --- |
@@ -44,22 +44,22 @@ template_dir = "/etc/acme-proxy/templates"
 
 ### Reference
 
-**`enabled`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_NOTIFY__ENABLED`*  
+**`enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__ENABLED`*
+
 Active backends: any of `email`, `mattermost`, `custom`. Empty means the
 subsystem is off.
 
-**`custom_enabled`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_NOTIFY__CUSTOM_ENABLED`*  
-Which entries under `[notify.custom.<name>]` to run, and in what order. Listing
-`"custom"` in `enabled` while leaving this empty is a startup error, as is naming
-an entry that has no table. Same shape as `filter.custom_enabled`.
+**`custom_enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__CUSTOM_ENABLED`*
 
-**`template_dir`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__TEMPLATE_DIR`*  
+Which entries under `[notify.custom.<name>]` to run, and in what order. Listing
+`"custom"` in `enabled` while leaving this empty is a startup error, as is
+naming an entry that has no table. Same shape as `filter.custom_enabled`.
+
+**`template_dir`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__TEMPLATE_DIR`*
+
 Directory searched for template overrides. Lookup is **per file**, so overriding
-one message (say `email/certificate_issued.body.j2`) leaves every other message at
-its compiled-in default. Empty means defaults only.
+one message (say `email/certificate_issued.body.j2`) leaves every other message
+at its compiled-in default. Empty means defaults only.
 
 Each backend additionally takes its own `events` list and `timeout_ms`; see the
 backend pages.
@@ -68,8 +68,8 @@ backend pages.
 
 Dispatch is **fire-and-forget**: an event is handed to a background task and the
 ACME response proceeds immediately. A notification backend can never delay or
-fail the request that triggered it, and failures are logged
-(`event = "notify_delivery_failed"`) rather than retried.
+fail the request that triggered it, and failures are logged (`event =
+"notify_delivery_failed"`) rather than retried.
 
 The one refinement to "detached": at shutdown the dispatcher makes a bounded
 attempt to drain tasks still in flight, so a notification generated moments

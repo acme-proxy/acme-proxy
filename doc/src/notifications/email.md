@@ -1,21 +1,26 @@
 # Email Notifications
 
-The `email` notification backend sends alerts via SMTP. It uses the robust `lettre` crate to format and dispatch multipart messages.
+The `email` notification backend sends alerts via SMTP, using the `lettre` crate
+to format and dispatch multipart messages.
 
-## Delivery Semantics
+## Delivery semantics
 Notifications in `acme-proxy` are designed to be entirely non-blocking.
-1. When an event occurs (e.g., a certificate is issued or revoked), the notification subsystem spawns a background Tokio task.
+1. When an event occurs (e.g., a certificate is issued or revoked), the
+   notification subsystem spawns a background Tokio task.
 2. The task attempts to connect to the SMTP server and send the email.
-3. **Fire and Forget**: If the delivery fails (e.g., the SMTP server is unreachable), `acme-proxy` logs an error at the `warn` level but does *not* retry. Notification failure does not cause the ACME transaction (like `finalize`) to fail.
+3. **Fire and Forget**: If the delivery fails (e.g., the SMTP server is
+   unreachable), `acme-proxy` logs an error at the `warn` level but does *not*
+   retry. Notification failure does not cause the ACME transaction (like
+   `finalize`) to fail.
 
-## Template Customization
+## Template customization
 
 By default, `acme-proxy` sends plain, functional emails rendered from templates
 compiled into the binary. You can override any of them by setting
 `notify.template_dir`.
 
-The engine is **MiniJinja** and the files are `.j2`. Email needs **two** files per
-event — one for the subject line and one for the body — under an `email/`
+The engine is **MiniJinja** and the files are `.j2`. Email needs **two** files
+per event — one for the subject line and one for the body — under an `email/`
 subdirectory of `template_dir`:
 
 ```text
@@ -53,41 +58,42 @@ timeout_ms = 5000
 ### Reference
 
 `notify.enabled` and `notify.template_dir` are subsystem-wide keys documented in
-[Notifications](index.md#reference). The keys below are specific to this backend.
+[Notifications](index.md#reference). The keys below are specific to this
+backend.
 
-**`smtp_host`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_HOST`*  
+**`smtp_host`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_HOST`*
+
 SMTP server hostname.
 
-**`smtp_port`** (`Integer`)  
-*Default: `587` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_PORT`*  
+**`smtp_port`** (`Integer`) — *Default: `587` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_PORT`*
+
 SMTP server port.
 
-**`smtp_username`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_USERNAME`*  
+**`smtp_username`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_USERNAME`*
+
 SMTP authentication username.
 
-**`smtp_password`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_PASSWORD`*  
+**`smtp_password`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_PASSWORD`*
+
 SMTP authentication password. **Sensitive** — prefer the environment variable to
 a file on disk, as with every other secret in the configuration.
 
-**`smtp_security`** (`String`)  
-*Default: `"starttls"` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_SECURITY`*  
+**`smtp_security`** (`String`) — *Default: `"starttls"` | Env: `ACME_PROXY_NOTIFY__EMAIL__SMTP_SECURITY`*
+
 TLS requirement: `"starttls"`, `"tls"`, or `"none"`.
 
-**`from`** (`String`)  
-*Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__FROM`*  
+**`from`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__EMAIL__FROM`*
+
 Sender email address.
 
-**`to`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_NOTIFY__EMAIL__TO`*  
+**`to`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EMAIL__TO`*
+
 List of recipient email addresses.
 
-**`events`** (`Array`)  
-*Default: `["profile_mounted", "account_created", "account_deactivated", "certificate_issued", "certificate_revoked", "challenge_failed"]` | Env: `ACME_PROXY_NOTIFY__EMAIL__EVENTS`*  
+**`events`** (`Array`) — *Default: `["profile_mounted", "account_created", "account_deactivated", "certificate_issued", "certificate_revoked", "challenge_failed"]` | Env: `ACME_PROXY_NOTIFY__EMAIL__EVENTS`*
+
 Lifecycle events this backend reacts to.
 
-**`timeout_ms`** (`Integer`)  
-*Default: `5000` | Env: `ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS`*  
+**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS`*
+
 Timeout budget for the SMTP exchange.

@@ -1,48 +1,81 @@
 # Architecture
 
-`acme-proxy` is built with asynchronous Rust components, heavily leveraging `axum` and `tokio`. The design focuses on strict RFC 8555 compliance, isolated profile routing, and modular components for signing, filtering, and notifications.
+This page is about how the pieces fit, and about the handful of decisions that
+are load-bearing enough that changing them would break something non-obvious.
+The organising ideas are three: RFC 8555's checks are hoisted into an extractor
+so no route can forget them, an ACME endpoint is a profile, and signing,
+filtering and notifying are each a trait with several implementations.
 
-## Request Flow and Extractors
+## Request flow and extractors
 
-Nearly every ACME endpoint is signed by the client using JSON Web Signatures (JWS). Rather than parsing this manually in each handler, the server leverages an `AcmeRequest<T>` Extractor.
+Nearly every ACME endpoint is signed by the client using JSON Web Signatures
+(JWS). Rather than parsing this manually in each handler, the server leverages
+an `AcmeRequest<T>` Extractor.
 
-### The JWS Extractor Core
-1. **Header Validation**: Checks `Content-Type: application/jose+json` (returns `415` if mismatched).
-2. **JWS Decoding**: Decodes the flattened JWS and protected header.
-3. **Critical Extensions**: Rejects any `crit` extension (as the server implements none, so every value is by definition unrecognized — RFC 7515 §4.1.11).
-4. **Signature Verification**: Uses the `ring` crate to verify ECDSA (ES256) or RSA (RS256) signatures.
-5. **URL & Nonce**: Validates the JWS `url` field against the actual route hit (RFC 8555 §6.4) and consumes the nonce (RFC 8555 §6.5).
+### The JWS extractor core
 
-Only once all of this succeeds is the request handed to the Axum handler. Hoisting
-these checks into the extractor makes them structural: a new signed route cannot
-forget them, and no handler repeats a four-line preamble.
+Eight checks run in a fixed order, and five of them have their own way out. The
+shape matters more than the list: the `jwk`/`kid` branch in the middle is where
+the two security properties below live, and a linear numbered list hides it.
 
-Three extractors build on that core: `AcmeRequest<T>` (decode and deserialize the
-payload), `AcmePostAsGet` (require an empty payload, else `malformed`), and
+```mermaid
+graph TD
+    REQ["Signed POST"] --> CT{"Content-Type is<br/>application/jose+json?"}
+    CT -->|no| E415["415 — body never read,<br/>so no nonce is burned"]
+    CT -->|yes| DEC["Decode the flattened JWS<br/>and its protected header"]
+    DEC -->|unparsable| EMAL["malformed (400)"]
+    DEC --> CRIT{"crit header present?"}
+    CRIT -->|"yes — this server<br/>implements none"| EMAL
+    CRIT -->|no| AUTH{"jwk or kid?"}
+    AUTH -->|"both, or neither"| EMAL
+    AUTH -->|jwk| JWK["Re-encode the key as DER SPKI"]
+    AUTH -->|kid| KID["Load the account, then check the<br/>stored SPKI's own OID against alg"]
+    KID -->|"unknown kid"| EACC["accountDoesNotExist (400)"]
+    KID -->|"OID does not match alg"| EALG["badSignatureAlgorithm (400)"]
+    JWK --> SIG{"Signature verifies?<br/>ES256 or RS256, via ring"}
+    KID --> SIG
+    SIG -->|no| E401["unauthorized (401)"]
+    SIG -->|yes| URL{"JWS url equals<br/>the route reached?"}
+    URL -->|"no — §6.4"| EMAL
+    URL -->|yes| NONCE{"Nonce fresh and unused?"}
+    NONCE -->|"no — §6.5"| EBAD["badNonce (400)"]
+    NONCE -->|yes| H["Handler"]
+```
+
+Only once all of this succeeds is the request handed to the axum handler.
+Hoisting these checks into the extractor makes them structural: a new signed
+route cannot forget them, and no handler repeats a four-line preamble.
+
+Three extractors build on that core: `AcmeRequest<T>` (decode and deserialize
+the payload), `AcmePostAsGet` (require an empty payload, else `malformed`), and
 `AcmeOptionalPayload<T>` — the last exists for the authorization resource, where
 one URL serves both a POST-as-GET read and a §7.5.2 deactivation.
 
 ### Two security properties worth not breaking
 
-**`jwk` and `kid` are mutually exclusive** (RFC 8555 §6.2). Both present, or
-neither, is `malformed`. An embedded `jwk` is verified and re-encoded as DER SPKI;
-a `kid` is resolved to its account and verified against the account's **stored**
-SPKI.
+**`jwk` and `kid` are mutually exclusive** (RFC 8555 §6.2) — the branch in the
+middle of the diagram. Both present, or neither, is `malformed`. An embedded
+`jwk` is verified and re-encoded as DER SPKI; a `kid` is resolved to its account
+and verified against the account's **stored** SPKI.
 
-**The verification algorithm never rests on `alg` alone.** On the `kid` path, the
-stored SPKI's own `AlgorithmIdentifier` OID is checked against the client's
-claimed `alg` before verification. EC coordinates must additionally be exactly 32
-octets (RFC 7518 §6.2.1.2) — a short or long one parses as a *different* point,
-which would register one key as two accounts.
+**The verification algorithm never rests on `alg` alone.** On the `kid` path,
+the stored SPKI's own `AlgorithmIdentifier` OID is checked against the client's
+claimed `alg` before verification — that is the `badSignatureAlgorithm` exit. EC
+coordinates must additionally be exactly 32 octets (RFC 7518 §6.2.1.2) — a short
+or long one parses as a *different* point, which would register one key as two
+accounts.
 
-## Database & Persistence
+## Database & persistence
 
-The server uses `sqlx` with `sqlite`. 
+The server uses `sqlx` with `sqlite`.
 
 ### Migrations
-Database migrations are embedded into the binary using `sqlx::migrate!()` and run automatically at startup. The database connects with two crucial pragmas:
-- `foreign_keys = ON`: Ensures the `ON DELETE CASCADE` constraints work, allowing accounts and orders to be genuinely deleted without leaving orphans.
-- `journal_mode = WAL`: Write-Ahead Logging allows high concurrency, crucial because every single request consumes and mints a nonce.
+Database migrations are embedded into the binary using `sqlx::migrate!()` and
+run automatically at startup. The database connects with two crucial pragmas:
+- `foreign_keys = ON`: Ensures the `ON DELETE CASCADE` constraints work,
+  allowing accounts and orders to be genuinely deleted without leaving orphans.
+- `journal_mode = WAL`: Write-Ahead Logging allows high concurrency, crucial
+  because every single request consumes and mints a nonce.
 
 **The migration set is frozen as of 0.1.0 and append-only from here.** A schema
 change is a new `sqlx migrate add` file, never an edit to a committed one:
@@ -56,12 +89,17 @@ add one in place.
 Because upgrading is therefore just "run the new binary against the existing
 database", there is no separate upgrade procedure and no dump/restore step.
 
-### Schema Details
-- **Profiles Isolation**: Both the `accounts` and `orders` tables include a `profile` column. The `accounts` table uses `UNIQUE(profile, pubkey)`. This means the same client key connecting to two different profiles is treated as two entirely isolated accounts.
-- **Constraints**: Heavy use of `CHECK (status IN (...))` for the state machines to ensure an invalid state cannot be parked in the database.
-- **Revocation**: The `cert_serial` column is indexed to allow rapid lookup during `POST /revokeCert`. Revocation writes a reason and timestamp, but deliberately does not touch the order `status` (as RFC 8555 defines no "revoked" order status).
-- **The audit trail has no foreign keys, deliberately.** `audit_log` is the one table that names an `account_id` and an `order_id` without a constraint behind either, because an audit row has to survive the account or order it describes being deleted — a `CASCADE` there would destroy the evidence along with its subject. The identifiers are frozen into the row for the same reason, and the primary key is `AUTOINCREMENT` so SQLite cannot reuse the rowid of a purged row. Rows are only ever inserted: there is no setter and no `UPDATE` anywhere in the crate. See [Audit Trail](../operations/audit.md).
-- **Admin identities**: `admin_users` and `admin_sessions` are the web admin's own tables and never join to an ACME concept — an `admin_users` row is an operator, an `accounts` row is a client key. They are deliberately the *opposite* of `eab_keys`: that table stores its secret as retrievable bytes because HMAC verification needs the same secret back on every request, whereas a password is only ever compared, so it is stored one-way and no code path can read it out. A session row stores only the SHA-256 of its token, so a database read yields nothing replayable.
+### Schema details
+
+The tables, their constraints and the reasoning behind each — profile isolation,
+the `CHECK`ed state machines, the audit trail's deliberate lack of foreign keys,
+and the three different ways a secret is stored — have their own page:
+[Database Schema](database.md).
+
+Revocation is the one piece worth naming here, because it constrains the request
+path rather than the schema: it writes a reason and a timestamp and deliberately
+does not touch the order `status`, since RFC 8555 defines no "revoked" order
+status.
 
 ## Two front ends, one operation layer
 
@@ -103,7 +141,7 @@ rather than a borrow error to rediscover. Its state is `AdminState`, not
 cross-profile by nature (revoking an order needs *that order's own* profile's
 signer, which may be a different CA from any default).
 
-## Order Lifecycle
+## Order lifecycle
 
 ```mermaid
 sequenceDiagram
@@ -127,6 +165,7 @@ sequenceDiagram
     Axum Router->>Order Manager: Commit challenge + authz + order
     Note over Order Manager: Order -> "ready" once every<br/>authorization is valid
     Axum Router-->>Client: 200 OK + challenge object (either way)
+    Note over Client,Challenge Validator: This exchange in detail:<br/>Challenge Validation
 
     Client->>Axum Router: POST /finalize (with CSR)
     Axum Router->>Filters: Re-validate identifiers from CSR
@@ -142,22 +181,35 @@ Three transactional properties hold this together:
   **one transaction**. A half-written order would be finalizable for names that
   were never authorized.
 - A validation outcome commits the challenge, the authorization and the order
-  **together**, and the "is every authorization valid?" read happens *inside* that
-  transaction. From the pool, two concurrent validations of one order could each
-  read before the other's write landed, and neither would promote the order to
-  `ready`.
+  **together**, and the "is every authorization valid?" read happens *inside*
+  that transaction. From the pool, two concurrent validations of one order could
+  each read before the other's write landed, and neither would promote the order
+  to `ready`.
 - Challenge validation returns **`200` plus the challenge object whether it
   passed or failed** (§7.5.1). A 4xx would surface as a transport failure to
   certbot's `acme` library rather than as a failed challenge.
 
 
-## Pluggable Signing Keys
+## Pluggable signing keys
 
 The [`SignerBackend`](../signers/index.md) trait is the seam for *how a
 certificate is obtained* — locally, from an upstream ACME server, or from a
 script. Inside the `local_ca` backend there is a second, narrower seam for
 *where the private key lives*, and it is worth knowing that it is **rcgen's own
 trait, not one this project invented**.
+
+```mermaid
+graph LR
+    ISSUE["LocalCa::issue<br/>LocalCa::revoke"] --> SB["spawn_blocking<br/>— unconditionally"]
+    SB --> ISS["Issuer&lt;'static, CaSigningKey&gt;"]
+    ISS --> SW["Software(KeyPair)<br/>a PEM file on disk"]
+    ISS --> PK["Pkcs11(...)<br/>behind --features hsm"]
+    PK --> MOD["the PKCS#11 module (.so)"]
+    MOD --> TOK[("token / HSM")]
+```
+
+The `spawn_blocking` sits **before** the branch, not inside one arm of it: see
+the first consequence below.
 
 `rcgen::SigningKey` is public, and every signing entry point `local_ca` uses is
 generic over it:
@@ -184,7 +236,7 @@ Two consequences worth preserving:
   and the CRL rebuild in `revoke` both go through `spawn_blocking`
   unconditionally — not gated on the variant, which would be a branch someone
   eventually gets wrong.
-- **The key type must be `Send + Sync`.** It lives inside an
-  `Arc<dyn SignerBackend>`. Where the underlying handle is not (cryptoki's
-  `Session` is `Send` but not `Sync`), a `std::sync::Mutex` is the right wrapper:
-  the signing call never awaits, so an async mutex would buy nothing.
+- **The key type must be `Send + Sync`.** It lives inside an `Arc<dyn
+  SignerBackend>`. Where the underlying handle is not (cryptoki's `Session` is
+  `Send` but not `Sync`), a `std::sync::Mutex` is the right wrapper: the signing
+  call never awaits, so an async mutex would buy nothing.

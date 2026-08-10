@@ -19,15 +19,15 @@ overrides — so it must be run where the configuration points at the same
 database. There is no `--config` flag.
 
 Commands operate directly on SQLite. Running them against a live server is safe
-(the database is in WAL mode), but they act immediately and are not transactional
-across the server's own in-flight requests.
+(the database is in WAL mode), but they act immediately and are not
+transactional across the server's own in-flight requests.
 
 ### Global flags
 
 **`-y`, `--yes`** — skip the interactive "Are you sure?" prompt on destructive
-commands. It is a global flag, so it may be given anywhere on the line.
-`account delete`, `order delete`, `audit cleanup`, `admin user delete` and
-`admin user totp reset` prompt; nothing else is gated by it.
+commands. It is a global flag, so it may be given anywhere on the line. `account
+delete`, `order delete`, `audit cleanup`, `admin user delete` and `admin user
+totp reset` prompt; nothing else is gated by it.
 
 **`--json`** — where supported, emit JSON instead of the human-readable line
 format. List commands print a **single JSON array**; single-item commands print
@@ -54,8 +54,8 @@ one JSON object. (It is not newline-delimited JSON.)
   and mobile — and none of them reaches an ACME object.
 - `account deactivate` prevents the account from making any further requests. It
   is the operator-side equivalent of a client deactivating itself.
-- `account delete` cascades: every order, authorization and challenge belonging to
-  the account is destroyed with it. The prompt names what will go.
+- `account delete` cascades: every order, authorization and challenge belonging
+  to the account is destroyed with it. The prompt names what will go.
 
 ## Order management
 
@@ -106,8 +106,8 @@ The web admin can read this trail but not prune it — see
 | `nonce cleanup` | `--ttl-seconds <n>` |
 
 Deletes expired nonces. The server already sweeps them on an interval for the
-life of the process, so this is mainly a debugging tool. `--ttl-seconds` defaults
-to the configured `nonce.ttl_seconds`.
+life of the process, so this is mainly a debugging tool. `--ttl-seconds`
+defaults to the configured `nonce.ttl_seconds`.
 
 ## Upstream account management
 
@@ -123,8 +123,8 @@ profile.** `[signer]` is a per-profile section, so acting on "the upstream"
 without saying which one would be acting on nothing. It may be omitted only when
 exactly one profile exists.
 
-`upstream register` performs this proxy's own `newAccount` at the upstream CA and
-stores the resulting account URL beside `account_key_path` with a `.kid`
+`upstream register` performs this proxy's own `newAccount` at the upstream CA
+and stores the resulting account URL beside `account_key_path` with a `.kid`
 extension. Only that first startup ever contacts the upstream.
 
 > **Security note**: the EAB HMAC secret is read from `--eab-hmac-key-file`, or
@@ -154,8 +154,8 @@ See [External Account Binding](../features/eab.md) for the protocol side.
 ## Web admin operators and sessions
 
 The web admin has no sign-up page: the first operator is created here. These
-commands work whether or not `[admin]` is enabled, and whether or not the
-server is running.
+commands work whether or not `[admin]` is enabled, and whether or not the server
+is running.
 
 | Command | Flags |
 | --- | --- |

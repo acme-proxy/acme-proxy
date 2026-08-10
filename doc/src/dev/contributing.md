@@ -1,15 +1,18 @@
 # Contributing to acme-proxy
 
-Thank you for your interest in contributing to `acme-proxy`! Whether you're fixing a bug, adding a new feature, or improving documentation, your help is welcome.
+Thank you for your interest in contributing to `acme-proxy`! Whether you're
+fixing a bug, adding a new feature, or improving documentation, your help is
+welcome.
 
-## Development Environment
+## Development environment
 
 To start developing, ensure you have the following installed:
 - [Rust](https://rustup.rs/) (latest stable version)
 - `sqlite3` (for database inspection, though `sqlx` handles migrations)
-- [mdBook](https://rust-lang.github.io/mdBook/) (if you want to build this documentation locally)
+- [mdBook](https://rust-lang.github.io/mdBook/) (if you want to build this
+  documentation locally)
 
-### Initial Setup
+### Initial setup
 
 Clone the repository and build the project:
 ```bash
@@ -20,9 +23,11 @@ cargo build
 
 ## Testing
 
-We take testing seriously. `acme-proxy` relies heavily on automated tests to ensure strict RFC 8555 compliance.
+The suite is what holds RFC 8555 compliance in place, and CI enforces a
+coverage floor, so a change that adds a branch generally has to add a test for
+it.
 
-Before submitting a Pull Request, run the full test suite with **nextest**:
+Before submitting a pull request, run the full suite with **nextest**:
 ```bash
 cargo nextest run
 ```
@@ -32,8 +37,8 @@ cargo nextest run
 > under `cargo test` — which runs tests as threads of a single process — another
 > thread's `Command::spawn` can fork while the file's write descriptor is still
 > open, failing with `ETXTBSY` roughly one run in three. nextest's
-> process-per-test isolation removes the race entirely. See
-> [Testing & Coverage](testing.md).
+> process-per-test isolation removes the race entirely. See [Testing &
+> Coverage](testing.md).
 
 ### What CI will check
 
@@ -51,23 +56,25 @@ Note the coverage floor is enforced, so new code generally needs new tests.
 `cargo test --doc` is the only thing that compiles the startup example in
 `src/lib.rs`.
 
-### Writing Tests
-- **Unit Tests:** Keep them close to the code (in the same file, in a `mod tests`).
-- **Integration Tests:** Located in the `tests/` directory. These tests spin up a full in-memory axum router and SQLite database to test the entire ACME flow.
+### Writing tests
+- **Unit Tests:** Keep them close to the code (in the same file, in a `mod
+  tests`).
+- **Integration Tests:** Located in the `tests/` directory. These tests spin up
+  a full in-memory axum router and SQLite database to test the entire ACME flow.
 
 See the [Testing & Coverage](testing.md) page for more details.
 
-## Code Style
+## Code style
 
 - Format your code using `cargo fmt`.
 - Ensure all lints pass by running `cargo clippy --all-targets -- -D warnings`.
 - Document public APIs using rustdoc comments (`///`).
 - Comments, doc comments and error-message strings are written in **English**,
   as are identifiers and log messages.
-- Every `tracing` call carries `event = "<subsystem>_<outcome>"` as its **first**
-  field, as a string literal rather than a computed value, so the name stays
-  greppable. Several are asserted by the end-to-end suite — grep before renaming
-  one.
+- Every `tracing` call carries `event = "<subsystem>_<outcome>"` as its
+  **first** field, as a string literal rather than a computed value, so the name
+  stays greppable. Several are asserted by the end-to-end suite — grep before
+  renaming one.
 - The crate is edition 2024; see `rust-version` in `Cargo.toml` for the minimum
   toolchain.
 
@@ -88,14 +95,14 @@ and a schema change meant editing the migration and running `rm -f sqlite.db*`.
 Two consequences:
 
 - **A new column is a new file**, even when it plainly belongs to an existing
-  table. `ALTER TABLE ADD COLUMN` is cheap; putting it in the original
-  `CREATE TABLE` is what breaks.
+  table. `ALTER TABLE ADD COLUMN` is cheap; putting it in the original `CREATE
+  TABLE` is what breaks.
 - **A new `CHECK`, `UNIQUE` or foreign key needs a table rebuild**, because
   SQLite cannot add one to an existing table. Write the rebuild in the new
   migration, and remember that an `INSERT … SELECT` silently drops any column
   you forget to name.
 
-## Submitting a Pull Request
+## Submitting a pull request
 
 1. Fork the repository and create your branch from `main`.
 2. Write clear, descriptive commit messages.
@@ -103,6 +110,8 @@ Two consequences:
 4. If you've changed APIs, update the documentation in this `mdBook`.
 5. Open a PR, describing the problem you're solving and how you fixed it.
 
-## Architecture Guidelines
+## Architecture guidelines
 
-If you are proposing a large feature (like a new Signer or Filter), please review the [Architecture & Design](architecture.md) documentation first. It's often best to open an Issue to discuss the design before writing extensive code.
+If you are proposing a large feature (like a new Signer or Filter), please
+review the [Architecture & Design](architecture.md) documentation first. It's
+often best to open an Issue to discuss the design before writing extensive code.

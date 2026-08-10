@@ -30,7 +30,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```bash
    cargo build --release
    ```
-   The binary will be located at `target/release/acme-proxy`.
+The binary will be located at `target/release/acme-proxy`.
 
 ### Optional features
 
@@ -60,8 +60,8 @@ podman build -t acme-proxy:latest .
 ```
 
 The image's working directory is `/data` and its entrypoint is the `acme-proxy`
-binary, so mount a volume there for the SQLite database, the configuration and the
-CA key material — all of which default to paths relative to the working
+binary, so mount a volume there for the SQLite database, the configuration and
+the CA key material — all of which default to paths relative to the working
 directory.
 
 ```bash
@@ -71,8 +71,8 @@ podman run -d \
   acme-proxy:latest
 ```
 
-Drop a `config.toml` into `./data` (it must define at least one profile — see the
-[Quick Start](quick_start.md)), or configure the container entirely through
+Drop a `config.toml` into `./data` (it must define at least one profile — see
+the [Quick Start](quick_start.md)), or configure the container entirely through
 `ACME_PROXY_*` environment variables:
 
 ```bash

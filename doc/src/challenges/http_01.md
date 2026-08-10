@@ -4,12 +4,11 @@ The default challenge type. The client serves a token at a well-known path over
 plain HTTP, and `acme-proxy` fetches it.
 
 > **Not to be confused with the `http01` upstream strategy.** This page is about
-> `acme-proxy` *validating* its own clients. The
-> [ACME Proxy signer](../signers/acme_proxy.md#http01) has a
-> `challenge_strategy = "http01"` that runs the same challenge type in the
-> opposite direction — `acme-proxy` *serving* the file, to prove itself to an
-> upstream CA. The two share the well-known path and nothing else, and are
-> configured independently.
+> `acme-proxy` *validating* its own clients. The [ACME Proxy
+> signer](../signers/acme_proxy.md#http01) has a `challenge_strategy = "http01"`
+> that runs the same challenge type in the opposite direction — `acme-proxy`
+> *serving* the file, to prove itself to an upstream CA. The two share the
+> well-known path and nothing else, and are configured independently.
 
 ## How it works
 
@@ -51,39 +50,41 @@ max_redirects = 5
 max_response_bytes = 4096
 ```
 
-**`port`** (`Integer`)  
-*Default: `80` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__PORT`*  
+### Reference
+
+**`port`** (`Integer`) — *Default: `80` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__PORT`*
+
 Port the challenge is fetched from. RFC 8555 fixes this at 80 for the public
 Internet; it is configurable here because internal deployments frequently cannot
 bind low ports.
 
-**`https_port`** (`Integer`)  
-*Default: `443` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__HTTPS_PORT`*  
+**`https_port`** (`Integer`) — *Default: `443` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__HTTPS_PORT`*
+
 Port used when a redirect sends the fetch to `https`.
 
-**`follow_redirects`** (`Boolean`)  
-*Default: `true` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__FOLLOW_REDIRECTS`*  
+**`follow_redirects`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__FOLLOW_REDIRECTS`*
+
 Follow 3xx responses. Required by the specification, and commonly needed in
 practice — many hosts redirect all HTTP to HTTPS.
 
-**`max_redirects`** (`Integer`)  
-*Default: `5` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__MAX_REDIRECTS`*  
+**`max_redirects`** (`Integer`) — *Default: `5` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__MAX_REDIRECTS`*
+
 Hop limit before the validation fails.
 
-**`max_response_bytes`** (`Integer`)  
-*Default: `4096` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONSE_BYTES`*  
+**`max_response_bytes`** (`Integer`) — *Default: `4096` | Env: `ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONSE_BYTES`*
+
 Cap on how much of the response body is read. A key authorization is under 100
 bytes; this exists so a client cannot make the server read an unbounded stream.
 
 The TLS certificate presented after a redirect to HTTPS is **not** validated
-(RFC 8555 §8.3) — at validation time the client by definition does not yet have a
-trusted certificate for the name.
+(RFC 8555 §8.3) — at validation time the client by definition does not yet have
+a trusted certificate for the name.
 
 ## Redirects are an SSRF surface
 
 Following redirects means a client can steer the server's fetch at an address of
-its choosing. Boulder's usual mitigation — refusing to connect to RFC 1918
-space — cannot apply here, because serving private networks is the entire point of
+its choosing. Boulder's usual mitigation — refusing to connect to RFC 1918 space
+— cannot apply here, because serving private networks is the entire point of
 this server.
 
 What contains it instead:
@@ -91,7 +92,8 @@ What contains it instead:
 - Only `http` and `https` schemes are followed.
 - Only the two configured ports (`port` and `https_port`) are connected to.
 - At most `max_redirects` hops.
-- The shared `challenge.timeout_ms` bounds the whole attempt, redirects included.
+- The shared `challenge.timeout_ms` bounds the whole attempt, redirects
+  included.
 - `follow_redirects = false` turns the surface off entirely.
 - **The fetched body is never echoed back to the client.** The error a client
   sees reports only the body's *length* on a mismatch; a truncated preview is

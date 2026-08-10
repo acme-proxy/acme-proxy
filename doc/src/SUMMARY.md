@@ -7,7 +7,8 @@
 - [Quick Start](getting_started/quick_start.md)
 - [Installation](getting_started/installation.md)
 - [Trusting the CA](getting_started/trusting_the_ca.md)
-- [Deployment Guide](getting_started/deployment.md)
+- [Deployment](getting_started/deployment.md)
+  - [TLS Termination](features/tls_termination.md)
 
 # Core Components
 - [Profiles & Routing](core/profiles.md)
@@ -27,31 +28,38 @@
   - [NetBox](filters/netbox.md)
   - [Custom Script](filters/custom.md)
 
-# Configuration & Operations
+# Configuration
 - [Configuration Reference](configuration/reference.md)
 - [Common Scenarios](configuration/scenarios.md)
+
+# ACME Protocol
+- [Protocol Support](features/index.md)
+  - [External Account Binding (EAB)](features/eab.md)
+  - [Key Rollover](features/key_change.md)
+  - [Renewal Information (ARI)](features/renewal_info.md)
+
+# Operations
 - [Admin CLI](operations/cli.md)
 - [Web Admin](operations/webadmin.md)
   - [Users & Sessions](operations/webadmin_users.md)
   - [Customizing the Panel](operations/webadmin_templates.md)
+- [Revocation & CRL](operations/revocation.md)
 - [Notifications](notifications/index.md)
   - [Custom Templates](notifications/templates.md)
   - [Email](notifications/email.md)
   - [Mattermost](notifications/mattermost.md)
   - [Custom WebHook](notifications/custom.md)
-- [Revocation & CRL](operations/revocation.md)
 - [Audit Trail](operations/audit.md)
-- [Maintenance & Troubleshooting](operations/troubleshooting.md)
 - [Monitoring & Observability](operations/monitoring.md)
+- [Maintenance & Troubleshooting](operations/troubleshooting.md)
 
-# ACME Features
-- [External Account Binding (EAB)](features/eab.md)
-- [Key Rollover](features/key_change.md)
-- [Renewal Information (ARI)](features/renewal_info.md)
-- [TLS Termination](features/tls_termination.md)
+# Security
+- [Security Model](security/index.md)
+- [Hardening Checklist](security/hardening.md)
 
 # Developer Documentation
 - [Architecture & Design](dev/architecture.md)
+- [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)
 - [Contributing](dev/contributing.md)

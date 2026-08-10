@@ -1,8 +1,8 @@
 # Filters
 
 Filters provide access control for `acme-proxy`. They restrict which clients can
-reach the server and which identifiers (e.g. DNS names) those clients can request
-certificates for.
+reach the server and which identifiers (e.g. DNS names) those clients can
+request certificates for.
 
 Filters run in the order they are listed in `filter.enabled`. **All** enabled
 filters must pass; the first denial wins.
@@ -12,15 +12,35 @@ filters must pass; the first denial wins.
 Every filter can act at two points, and both default to "allow" for filters that
 do not implement them:
 
-- **`check_connection`** — runs on every non-exempt request, before anything else.
-  Refusal is `403 access_denied`.
+- **`check_connection`** — runs on every non-exempt request, before anything
+  else. Refusal is `403 access_denied`.
 - **`check_identifiers`** — runs at `newOrder` *and* again at `finalize` against
   the names projected out of the CSR. It runs **after** the account is resolved,
-  so a filter can bind names to an account as well as to an IP. Refusal is
-  `403 rejectedIdentifier` at `newOrder`, `400 badCSR` at `finalize`.
+  so a filter can bind names to an account as well as to an IP. Refusal is `403
+  rejectedIdentifier` at `newOrder`, `400 badCSR` at `finalize`.
 
 Checking again at `finalize` is what stops a client from passing a benign
-`newOrder` and then smuggling extra names into the CSR.
+`newOrder` and then smuggling extra names into the CSR. It is the same filter
+chain appearing twice on one request path:
+
+```mermaid
+graph LR
+    REQ["Any request"] --> EX{"path in<br/>filter.exempt_paths?"}
+    EX -->|"yes — e.g. /health"| SKIP["no filtering at all"]
+    EX -->|no| CONN["check_connection<br/>client address"]
+    CONN -->|deny| D403["403 access_denied"]
+    CONN -->|allow| ROUTE{"which resource?"}
+    ROUTE -->|"newOrder"| ID1["check_identifiers<br/>names from the order"]
+    ROUTE -->|"finalize"| ID2["check_identifiers<br/>names from the CSR"]
+    ROUTE -->|"anything else"| OK["handler"]
+    ID1 -->|deny| DREJ["403 rejectedIdentifier"]
+    ID2 -->|deny| DCSR["400 badCSR"]
+    ID1 --> OK
+    ID2 --> OK
+```
+
+`exempt_paths` is matched against the **profile-stripped** path, so `/health`
+covers it at every endpoint.
 
 ## Available filters
 
@@ -53,38 +73,38 @@ forwarded_header = "x-forwarded-for"
 
 ### Reference
 
-**`enabled`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__ENABLED`*  
+**`enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__ENABLED`*
+
 Filters to activate, in evaluation order. Known names: `allowed_ip`,
 `reverse_dns`, `identifiers`, `netbox`, `custom`. Empty means no filtering at
 all — anyone who can reach the server can obtain a certificate if they satisfy
 the challenges (or if `challenge.bypass` is on, with no proof at all).
 
-**`custom_enabled`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM_ENABLED`*  
+**`custom_enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM_ENABLED`*
+
 Which `[filter.custom.<name>]` entries to run, and in what order. See
 [Custom Script Filter](custom.md).
 
-**`exempt_paths`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__EXEMPT_PATHS`*  
+**`exempt_paths`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__EXEMPT_PATHS`*
+
 Paths that skip connection-level filtering. Matching is done against the path
 **with the `/profile/<name>` prefix stripped**, so `/directory` — not
 `/profile/default/directory` — is the value to list.
 
-You rarely need this: server-level routes such as `GET /health` are served by the
-root router, which no profile's filters ever see, so they are already unfiltered.
-The mechanism remains for an operator who wants to leave, say, `/directory` open
-while filtering everything else.
+You rarely need this: server-level routes such as `GET /health` are served by
+the root router, which no profile's filters ever see, so they are already
+unfiltered. The mechanism remains for an operator who wants to leave, say,
+`/directory` open while filtering everything else.
 
-**`trusted_proxies`** (`Array`)  
-*Default: `[]` | Env: `ACME_PROXY_FILTER__TRUSTED_PROXIES`*  
+**`trusted_proxies`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__TRUSTED_PROXIES`*
+
 CIDRs (or bare addresses) whose forwarded-for header is believed. A request from
 any other peer is attributed to its own address, and its forwarded header is
-ignored. Note this is a **`[filter]`** key — placing it under `[server]` silently
-does nothing.
+ignored. Note this is a **`[filter]`** key — placing it under `[server]`
+silently does nothing.
 
-**`forwarded_header`** (`String`)  
-*Default: `"x-forwarded-for"` | Env: `ACME_PROXY_FILTER__FORWARDED_HEADER`*  
+**`forwarded_header`** (`String`) — *Default: `"x-forwarded-for"` | Env: `ACME_PROXY_FILTER__FORWARDED_HEADER`*
+
 The header consulted for the forwarded client address.
 
 ## Fail-closed semantics

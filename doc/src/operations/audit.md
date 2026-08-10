@@ -1,9 +1,9 @@
 # Audit Trail
 
 A certificate authority's most important record is not what it holds but what it
-did: who asked it to sign something, from where, and what it answered. `acme-proxy`
-writes that down in one append-only table and surfaces it in three places — the
-CLI, the JSON API and the panel.
+did: who asked it to sign something, from where, and what it answered.
+`acme-proxy` writes that down in one append-only table and surfaces it in three
+places — the CLI, the JSON API and the panel.
 
 There is deliberately **no `audit.enabled`**. Recording who asked the CA to sign
 something is not a feature of this server, it is what a CA does. The only thing
@@ -37,8 +37,8 @@ the question a trail exists to answer.
 Two boundaries worth knowing:
 
 - **Nothing is ever compared against any of this.** Pinning an identity to an
-  address breaks CGNAT and mobile clients, so these columns answer "who asked for
-  this certificate, and from where", never "may this request proceed".
+  address breaks CGNAT and mobile clients, so these columns answer "who asked
+  for this certificate, and from where", never "may this request proceed".
 - **None of it reaches an ACME object.** The wire format is RFC 8555's and stays
   that way. The trail is visible through the admin surfaces only.
 
@@ -64,10 +64,11 @@ acme-proxy audit show 4213
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
 `audit list` is **paged**, defaulting to 50 rows, unlike `account list` and
-`order list`. This table grows a row per issuance for the life of the deployment,
-so it always prints `N of M row(s)` — a page must never be mistaken for the whole
-trail. There is no "everything" spelling on purpose; on a year-old CA that is a
-terminal full of scrollback and a table loaded into memory. Page with `--offset`.
+`order list`. This table grows a row per issuance for the life of the
+deployment, so it always prints `N of M row(s)` — a page must never be mistaken
+for the whole trail. There is no "everything" spelling on purpose; on a year-old
+CA that is a terminal full of scrollback and a table loaded into memory. Page
+with `--offset`.
 
 ```console
 $ acme-proxy audit list --outcome failure --since-days 7
@@ -77,8 +78,8 @@ $ acme-proxy audit list --outcome failure --since-days 7
 
 **An unknown `--event` or `--outcome` is refused by name**, listing the values
 this build knows. Passed through to SQL it would answer "no rows", which looks
-exactly like "nothing happened" — the single most misleading answer an audit tool
-can give.
+exactly like "nothing happened" — the single most misleading answer an audit
+tool can give.
 
 `audit show` prints one field per line, omitting every field that was not
 recorded rather than showing it as empty:
@@ -145,9 +146,9 @@ confirm-gated and its prompt names the number of rows it is about to remove. Use
 | `/ui/audit` | the list, filterable, with a detail page per row |
 
 The API omits absent fields rather than sending them as `null`, so a client can
-test for presence directly. There is no `since` filter on this surface: a browser
-filters by picking a page, and a date parser here would be a second definition of
-"how far back" that the CLI already has.
+test for presence directly. There is no `since` filter on this surface: a
+browser filters by picking a page, and a date parser here would be a second
+definition of "how far back" that the CLI already has.
 
 > **Rows carry remote text.** A `User-Agent` and a reverse DNS name are both
 > written by whoever is on the other end — the PTR for a client's address is
@@ -157,11 +158,11 @@ filters by picking a page, and a date parser here would be a second definition o
 ## Why it survives deletion
 
 `audit_log` is the one table in the schema with **no foreign keys**, and that is
-the design rather than an oversight. An audit row has to outlive
-`account delete` and `order delete`; a `CASCADE` would destroy the evidence along
-with its subject. So `account_id` and `order_id` are plain columns naming a row
-that may be gone, and the identifiers are frozen into the row rather than joined
-back to an order that no longer exists.
+the design rather than an oversight. An audit row has to outlive `account
+delete` and `order delete`; a `CASCADE` would destroy the evidence along with
+its subject. So `account_id` and `order_id` are plain columns naming a row that
+may be gone, and the identifiers are frozen into the row rather than joined back
+to an order that no longer exists.
 
 The rest follows from the same rule: rows are only ever inserted — there is no
 setter and no `UPDATE` anywhere in the crate — and the primary key is

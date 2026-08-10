@@ -6,7 +6,13 @@ on:
       - main
     paths:
       - 'doc/**'
+      - '.github/workflows/mdbook.yml'
   workflow_dispatch:
+
+# Every action is pinned to a commit SHA rather than a tag, the same rule
+# `ci.yml` states and for the same reason: a tag is mutable, and this workflow
+# holds a token that can write to GitHub Pages. The trailing comment is the tag
+# the SHA stood for when it was pinned; update both together.
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -27,27 +33,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v2
+      # Pinned, not 'latest': an upstream mdBook release should not be able to
+      # break a deployment with no change on this side. Installed as prebuilt
+      # binaries rather than `cargo install` from source, which took minutes.
+      # Keep these versions in step with the `docs` job in `ci.yml`.
+      - name: Install mdBook
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
-          mdbook-version: 'latest'
+          tool: mdbook@0.5.4,mdbook-mermaid@0.17.0
 
-      - name: Install mdbook-mermaid
-        run: cargo install mdbook-mermaid
+      - name: Style and link check
+        run: python3 doc/lint.py
 
       - name: Build mdBook
         run: mdbook build doc/
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: './doc/book'
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

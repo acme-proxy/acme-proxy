@@ -6,8 +6,8 @@
 ## `POST /revokeCert`
 
 Revocation is available to a client through the standard ACME endpoint,
-advertised in the directory. The request payload carries the base64url DER of the
-certificate and an optional `reason` code.
+advertised in the directory. The request payload carries the base64url DER of
+the certificate and an optional `reason` code.
 
 ### Two ways to authorize it
 
@@ -19,16 +19,16 @@ RFC 8555 allows either, and `acme-proxy` accepts both:
    holder of a compromised key revoke it even if the ACME account is gone.
 
 Because of the second form, this endpoint resolves authorization itself rather
-than going through the usual account lookup, and it is deliberately **not** gated
-on the account's status — a deactivated account can still revoke its
+than going through the usual account lookup, and it is deliberately **not**
+gated on the account's status — a deactivated account can still revoke its
 certificates.
 
 ### How the certificate is identified
 
 The submitted DER is decoded, the order is looked up by the certificate's serial
 number, and the stored leaf is then compared to the submitted bytes for an
-**exact DER match**. A serial-only lookup would not be enough on its own; the byte
-comparison is the safety net.
+**exact DER match**. A serial-only lookup would not be enough on its own; the
+byte comparison is the safety net.
 
 > One subtlety worth stating, because getting it wrong is a vulnerability: the
 > key checked against the account is the one **stored** with the order, never a
@@ -39,27 +39,27 @@ comparison is the safety net.
 ### Responses
 
 - **`200 OK`** — revoked.
-- **`400 alreadyRevoked`** — the certificate was already revoked. This is checked
-  *after* authorization, so an unauthorized caller cannot use the endpoint to
-  probe whether a certificate has been revoked.
+- **`400 alreadyRevoked`** — the certificate was already revoked. This is
+  checked *after* authorization, so an unauthorized caller cannot use the
+  endpoint to probe whether a certificate has been revoked.
 - **`400 badRevocationReason`** — the reason code is out of range.
 - **`401 unauthorized`** — the signer is neither the order's account nor the
   certificate's key.
 
 ### Reason codes
 
-Reason codes are RFC 5280 §5.3.1 values. Codes 7 and 11 are not valid CRL reasons,
-and out-of-range values are meaningless; in all three cases `acme-proxy` records
-the revocation with **no reason** rather than refusing it. Revoking is always
-preferable to arguing about why.
+Reason codes are RFC 5280 §5.3.1 values. Codes 7 and 11 are not valid CRL
+reasons, and out-of-range values are meaningless; in all three cases
+`acme-proxy` records the revocation with **no reason** rather than refusing it.
+Revoking is always preferable to arguing about why.
 
 ## Ordering: the CA acts first
 
 The signer backend's own `revoke` is called **before** the order is marked
-revoked locally. The CA-side action is authoritative, so if the signer fails, the
-order is deliberately left un-revoked and the operation can simply be retried.
-A backend's `revoke` must therefore be **idempotent** — it may legitimately be
-called again for a certificate it has already revoked.
+revoked locally. The CA-side action is authoritative, so if the signer fails,
+the order is deliberately left un-revoked and the operation can simply be
+retried. A backend's `revoke` must therefore be **idempotent** — it may
+legitimately be called again for a certificate it has already revoked.
 
 ## Revocation is orthogonal to the order state machine
 
@@ -97,13 +97,13 @@ With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
 - It is **routed but deliberately not advertised** in the ACME directory. A CRL
   is CA infrastructure, not an ACME resource, so it has no directory entry.
 - A valid, correctly signed **empty** CRL exists from the moment the CA is
-  created, before anything has ever been revoked. Clients fetching it do not have
-  to special-case "no revocations yet".
+  created, before anything has ever been revoked. Clients fetching it do not
+  have to special-case "no revocations yet".
 - It is regenerated on every revocation and at startup.
 
 The durable record of revoked serials is a **JSON sidecar** beside `crl_path` —
-the same path with the extension swapped to `.json`, so `ca.crl` is accompanied by
-`ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
+the same path with the extension swapped to `.json`, so `ca.crl` is accompanied
+by `ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
 both files**: losing the sidecar loses the revocation ledger, and the next
 regeneration would publish an empty CRL.
 
@@ -118,9 +118,9 @@ regeneration would publish an empty CRL.
 ## Interaction with renewal information
 
 A certificate `acme-proxy` knows to be revoked is reported through
-[ARI](../features/renewal_info.md) with a renewal window **entirely in the past**,
-prompting a compliant client to renew immediately.
+[ARI](../features/renewal_info.md) with a renewal window **entirely in the
+past**, prompting a compliant client to renew immediately.
 
-That check happens *before* the signer backend is consulted, so a locally revoked
-certificate is never talked out of renewing by an upstream CA that has not yet
-noticed.
+That check happens *before* the signer backend is consulted, so a locally
+revoked certificate is never talked out of renewing by an upstream CA that has
+not yet noticed.

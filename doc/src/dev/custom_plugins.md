@@ -1,10 +1,13 @@
 # Custom Plugins Examples
 
-This section provides complete examples of custom plugin scripts that can be integrated into `acme-proxy`. These scripts must be marked as executable (`chmod +x`).
+This section provides complete examples of custom plugin scripts that can be
+integrated into `acme-proxy`. These scripts must be marked as executable (`chmod
++x`).
 
-## 1. Custom Signer Script
+## Custom signer script
 
-A custom signer that passes the CSR to a fictional internal API to obtain a certificate.
+A custom signer that passes the CSR to a fictional internal API to obtain a
+certificate.
 
 ```bash
 #!/bin/bash
@@ -15,19 +18,19 @@ set -e
 if [ "$ACME_SIGNER_HOOK" = "issue" ]; then
     # Read the JSON payload from stdin
     PAYLOAD=$(cat)
-    
+
     # Extract the base64 encoded CSR
     CSR_B64=$(echo "$PAYLOAD" | jq -r '.csr_der_base64')
-    
+
     # Call internal PKI API
     # The API is expected to return a JSON with a 'certificate_pem' field.
     RESPONSE=$(curl -s -X POST https://pki.internal.company.com/api/sign \
         -H "Content-Type: application/json" \
         -d "{\"csr\": \"$CSR_B64\", \"order_id\": \"$ACME_SIGNER_ORDER_ID\"}")
-        
+
     # Extract PEM from response
     PEM=$(echo "$RESPONSE" | jq -r '.certificate_pem')
-    
+
     if [ -n "$PEM" ] && [ "$PEM" != "null" ]; then
         # Output the PEM chain to stdout (leaf first, then issuers)
         echo "$PEM"
@@ -45,16 +48,18 @@ if [ "$ACME_SIGNER_HOOK" = "issue" ]; then
     fi
 fi
 
-# Hooks we don't implement. `revoke` must succeed or the proxy leaves the order
-# un-revoked, so returning non-zero here would be wrong for a real deployment;
+# Hooks this example does not implement. `revoke` must succeed or the proxy
+# leaves the order un-revoked, so returning non-zero here would be wrong for a
+# real deployment;
 # implement it, or set supports_crl/supports_renewal_info = false (the default)
 # so those hooks are never invoked at all.
 exit 1
 ```
 
-## 2. Custom Filter Script
+## Custom filter script
 
-A custom filter that checks the client IP against a threat intelligence feed before allowing the connection.
+A custom filter that checks the client IP against a threat intelligence feed
+before allowing the connection.
 
 ```bash
 #!/bin/bash
@@ -65,10 +70,10 @@ if [ "$ACME_FILTER_HOOK" = "connection" ]; then
     if [[ "$ACME_FILTER_CLIENT_IP" == 10.* ]] || [[ "$ACME_FILTER_CLIENT_IP" == 192.168.* ]]; then
         exit 0
     fi
-    
+
     # Query threat intel API
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://threat.internal/api/check?ip=$ACME_FILTER_CLIENT_IP")
-    
+
     if [ "$STATUS" = "200" ]; then
         # IP is clean
         exit 0
@@ -82,9 +87,10 @@ fi
 exit 0
 ```
 
-## 3. Custom Notification Script
+## Custom notification script
 
-A custom notification script that sends a Slack message when a certificate is revoked.
+A custom notification script that sends a Slack message when a certificate is
+revoked.
 
 ```bash
 #!/bin/bash

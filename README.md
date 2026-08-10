@@ -1,5 +1,10 @@
 # acme-proxy
 
+[![CI](https://github.com/acme-proxy/acme-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/acme-proxy/acme-proxy/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-mdBook-blue)](https://acme-proxy.github.io/acme-proxy/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![MSRV 1.97](https://img.shields.io/badge/MSRV-1.97-orange)
+
 An ACME (RFC 8555) server in Rust, built on [axum](https://docs.rs/axum). It sits
 between your internal clients — certbot, acme.sh, lego, Traefik, Caddy — and the
 certificate authority that actually signs, whether that is an embedded local CA,
@@ -59,6 +64,13 @@ produced.
   a TOTP second factor with recovery codes, and a session cookie. Loopback by
   default; refuses to bind elsewhere without TLS.
 - **Optional TLS termination**, or run it behind a reverse proxy.
+- **Revocation** — `POST /revokeCert` by either the account key or the
+  certificate's own key pair, with an
+  [RFC 5280 CRL](https://acme-proxy.github.io/acme-proxy/operations/revocation.html)
+  served at `GET /crl`.
+- **Structured logging** — one `event = "..."` field per line, JSON on request,
+  and a request id threaded through every line of a request. See
+  [Monitoring](https://acme-proxy.github.io/acme-proxy/operations/monitoring.html).
 
 ## Quick start
 
@@ -85,15 +97,61 @@ certbot certonly --server http://localhost:3000/profile/default/directory \
 
 `serve` is the default subcommand. Configuration comes from `config.toml` in the
 working directory (or `ACME_PROXY_CONFIG`), overridden by `ACME_PROXY_*`
-environment variables; `config.toml.example` documents every key.
+environment variables; `config.toml.example` documents every key, and the
+[Configuration Reference](https://acme-proxy.github.io/acme-proxy/configuration/reference.html)
+is the same list with the reasoning.
+
+The same binary carries the admin subcommands, so a deployment never needs a
+second tool:
+
+```bash
+acme-proxy account list                    # who has registered
+acme-proxy order list --status valid       # what has been issued
+acme-proxy audit list --outcome failure    # what was refused, and to whom
+acme-proxy eab create --label "web tier"   # mint an EAB credential
+acme-proxy order revoke <id> --reason 1    # withdraw a certificate
+```
+
+The full tree is in the
+[Admin CLI](https://acme-proxy.github.io/acme-proxy/operations/cli.html) chapter.
+
+## Installing
+
+```bash
+cargo build --release      # target/release/acme-proxy
+```
+
+Or build the container image — the repository ships a `Containerfile`:
+
+```bash
+podman build -t acme-proxy .      # or: docker build -t acme-proxy .
+podman run --rm -p 3000:3000 -v ./data:/data acme-proxy
+```
+
+See [Installation](https://acme-proxy.github.io/acme-proxy/getting_started/installation.html)
+and [Deployment](https://acme-proxy.github.io/acme-proxy/getting_started/deployment.html)
+for systemd units, reverse-proxy configuration and where each socket belongs.
+
+### Feature flags
+
+One non-default feature: `hsm` puts the local CA's issuing key in a **PKCS#11
+token** (a YubiKey, an enterprise HSM, or SoftHSM2 for development) instead of a
+file on disk, so it can be used but never copied.
+
+```bash
+cargo build --release --features hsm
+```
+
+See [Hardware Keys (PKCS#11)](https://acme-proxy.github.io/acme-proxy/signers/local_ca_hsm.html).
 
 ## Building & testing
 
-Requires a Rust toolchain matching `rust-version` in `Cargo.toml` (edition 2024).
+Requires Rust 1.97 or newer (edition 2024); the MSRV is `rust-version` in
+`Cargo.toml` and CI verifies it.
 
 ```bash
 cargo build
-cargo nextest run       # NOT `cargo test` — see doc/src/dev/testing.md
+cargo nextest run       # NOT `cargo test` — see the note below
 cargo fmt
 cargo clippy --all-targets -- -D warnings
 ```
@@ -119,8 +177,13 @@ cargo install mdbook mdbook-mermaid
 mdbook serve doc/
 ```
 
-Contributions welcome — see
-[Contributing](https://acme-proxy.github.io/acme-proxy/dev/contributing.html).
+Contributions welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md), which
+points at the
+[Contributing](https://acme-proxy.github.io/acme-proxy/dev/contributing.html)
+chapter.
+
+To report a security issue, see [SECURITY.md](SECURITY.md) — please do not open
+a public issue.
 
 ## License
 

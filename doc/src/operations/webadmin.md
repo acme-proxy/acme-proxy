@@ -1,12 +1,12 @@
 # Web Admin
 
 A browser- and script-facing management interface for the server: the accounts
-it has registered, the orders it has issued, the EAB credentials it honours,
-and the nonce table.
+it has registered, the orders it has issued, the EAB credentials it honours, and
+the nonce table.
 
 It is a **second listener, on its own socket**, serving no ACME — and it is
-**off by default**. A certificate authority should not grow a management
-surface because somebody upgraded it.
+**off by default**. A certificate authority should not grow a management surface
+because somebody upgraded it.
 
 It has two faces over the same operations: **HTML pages at `/ui`** for a
 browser, and a **JSON API at `/api`** for a script. Neither is built on the
@@ -18,8 +18,8 @@ other; both are thin layers over the same `src/admin/` operations the
 enabled = true
 ```
 
-> There is no sign-up page and never will be. The first operator is created
-> from a shell on the host — see [Users & Sessions](webadmin_users.md).
+> There is no sign-up page and never will be. The first operator is created from
+> a shell on the host — see [Users & Sessions](webadmin_users.md).
 
 ## Why a second listener
 
@@ -49,8 +49,8 @@ bind_address = "127.0.0.1:3001"
 base_url     = "http://localhost:3001"
 ```
 
-**The recommended way to reach it from elsewhere is an SSH tunnel**, which
-needs no configuration change at all:
+**The recommended way to reach it from elsewhere is an SSH tunnel**, which needs
+no configuration change at all:
 
 ```console
 $ ssh -N -L 3001:127.0.0.1:3001 ca.example.com
@@ -64,7 +64,7 @@ because from the browser's point of view the panel really is on localhost.
 Startup **refuses** a non-loopback `bind_address` while `admin.tls.enabled` is
 `false`:
 
-```
+```text
 admin.bind_address `0.0.0.0:3001` is not loopback while admin.tls.enabled is
 false: the session cookie is sent `Secure`, which a browser will not store over
 plain HTTP on anything but localhost, so signing in would appear to succeed and
@@ -91,10 +91,10 @@ enabled = true
 ```
 
 As with `[server.tls]`, a self-signed certificate for the host of
-`admin.base_url` is generated on first start when the files are missing, and
-the key is created `0600`. The paths default to `admin.pem`/`admin.key`,
-separate from the ACME listener's — the two answer to different names and
-should not share a certificate by accident.
+`admin.base_url` is generated on first start when the files are missing, and the
+key is created `0600`. The paths default to `admin.pem`/`admin.key`, separate
+from the ACME listener's — the two answer to different names and should not
+share a certificate by accident.
 
 ## Authentication
 
@@ -105,9 +105,8 @@ Sign-in exchanges a username and password for an opaque session token:
 - It travels in a `__Host-acme_admin_session` cookie, `HttpOnly; Secure;
   SameSite=Strict; Path=/`. The `__Host-` prefix is browser-enforced: it
   *requires* those attributes, so an edit that drops one breaks visibly.
-- Sessions have both an absolute lifetime (`session_ttl_seconds`, never
-  extended by activity) and an idle timeout
-  (`session_idle_timeout_seconds`).
+- Sessions have both an absolute lifetime (`session_ttl_seconds`, never extended
+  by activity) and an idle timeout (`session_idle_timeout_seconds`).
 - Passwords are hashed with PBKDF2-HMAC-SHA256 at 600 000 iterations. A failed
   sign-in costs the same whether the username exists or not, so the endpoint
   cannot be used to enumerate operators — and every failure returns the same
@@ -115,9 +114,8 @@ Sign-in exchanges a username and password for an opaque session token:
 
 ### CSRF
 
-Every request with an unsafe method must carry an `X-CSRF-Token` header
-matching the session's `csrfToken`, which sign-in and `GET /api/session` both
-return.
+Every request with an unsafe method must carry an `X-CSRF-Token` header matching
+the session's `csrfToken`, which sign-in and `GET /api/session` both return.
 
 `SameSite=Strict` is set as well, but it is **not sufficient on its own here**,
 and the reason is specific: SameSite is scoped to the registrable domain, not
@@ -127,13 +125,12 @@ not cover.
 
 There is also an origin gate: a request whose `Origin` does not match
 `admin.base_url`, or whose `Sec-Fetch-Site` says `cross-site`, is refused. That
-is what covers sign-in itself, which by definition carries no session token
-yet. Both headers are checked only when present, so a script or `curl` is
-unaffected.
+is what covers sign-in itself, which by definition carries no session token yet.
+Both headers are checked only when present, so a script or `curl` is unaffected.
 
 > `SameSite=Strict` also means clicking a link *into* the panel from another
-> site will not carry your session. For an admin panel that is a feature, but
-> it surprises people.
+> site will not carry your session. For an admin panel that is a feature, but it
+> surprises people.
 
 ## The panel
 
@@ -150,9 +147,9 @@ it that needs a session bounces to `/ui/login`.
 | `/ui/nonces` | The table size, and a manual sweep |
 | `/ui/profiles` | The endpoints this process serves, and a warning for any that bypass validation |
 
-The account pages surface the CA's account-side traceability columns:
-where `newAccount` was called from and the reverse name that address had at the
-time (**Created from**), and when and where the key last authenticated a request
+The account pages surface the CA's account-side traceability columns: where
+`newAccount` was called from and the reverse name that address had at the time
+(**Created from**), and when and where the key last authenticated a request
 (**Last seen**, **Last seen from**). Each is shown only when it was recorded — a
 reverse lookup that found nothing leaves the address alone, and an estate where
 it can never succeed leaves both names blank rather than every row saying
@@ -161,9 +158,9 @@ asked for this certificate, and from where", not "may this request proceed".
 
 ### How it is built
 
-[htmx], vendored into the binary — no npm, no build step, no CDN. The
-templates are [minijinja] and can be
-[overridden on disk](webadmin_templates.md) without rebuilding.
+[htmx], vendored into the binary — no npm, no build step, no CDN. The templates
+are [minijinja] and can be [overridden on disk](webadmin_templates.md) without
+rebuilding.
 
 Each list and detail route serves **two representations of one URL**: a whole
 document for a normal navigation, and the bare fragment htmx is going to swap
@@ -242,14 +239,14 @@ send, exactly as `POST /api/session` has none, and the origin check covers both.
 
 `POST /api/orders/{id}/revoke` resolves the signer from **the order's own
 profile**. Two profiles can hold two different CAs, and revoking against the
-wrong one would record nothing useful and leave the real CRL untouched. An
-order belonging to a profile this process no longer mounts answers `409
+wrong one would record nothing useful and leave the real CRL untouched. An order
+belonging to a profile this process no longer mounts answers `409
 profile_not_mounted` rather than guessing.
 
 This is strictly better than the CLI's equivalent, which has to rebuild a
 backend from configuration: the server already holds the live, deduplicated
-instance, so a local CA's CRL is regenerated by the very object that serves
-`GET /crl`.
+instance, so a local CA's CRL is regenerated by the very object that serves `GET
+/crl`.
 
 ### The audit trail is read-only here
 
@@ -261,8 +258,8 @@ watched thing can erase proves nothing. Pruning happens on the host with
 `acme-proxy audit cleanup`, or on a schedule via `audit.retention_days`.
 
 This is also why `/api/audit` contributes no entry to the CSRF test table — with
-no mutating verb, there is nothing to protect. Every other verb on those paths is
-unroutable. See [Audit Trail](audit.md).
+no mutating verb, there is nothing to protect. Every other verb on those paths
+is unroutable. See [Audit Trail](audit.md).
 
 ### Errors
 
@@ -320,21 +317,21 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
   spoof the key the rate limiter counts on. Behind a reverse proxy the limiter
   therefore counts the proxy, which is another reason to prefer an SSH tunnel.
 - Every response carries `Content-Security-Policy: default-src 'none';
-  script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src
-  'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. No
+  script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self';
+  form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. No
   `unsafe-inline`, no `unsafe-eval` — affordable because htmx is served from
-  this origin and drives everything through `hx-*` attributes rather than
-  inline handlers. Alongside it: `no-store`, `nosniff`, `X-Frame-Options:
-  DENY`, `Referrer-Policy: same-origin` and HSTS.
+  this origin and drives everything through `hx-*` attributes rather than inline
+  handlers. Alongside it: `no-store`, `nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: same-origin` and HSTS.
 - `htmx.min.js` is a **vendored third-party file**, and `cargo deny` audits the
   crate graph and cannot see it. Its version, source URL, SHA-256 and licence
   are recorded in `src/webadmin/static/README.md`, which is the only provenance
   record there is — check it when you update.
-- A **second factor (TOTP)** is available per operator, and
-  `admin.require_mfa` makes it compulsory — see
-  [Operators and sessions](webadmin_users.md#second-factor-totp). It is off by
-  default, so the loopback bind plus an SSH tunnel remains the baseline posture
-  and not a substitute for one.
+- A **second factor (TOTP)** is available per operator, and `admin.require_mfa`
+  makes it compulsory — see [Operators and
+  sessions](webadmin_users.md#second-factor-totp). It is off by default, so the
+  loopback bind plus an SSH tunnel remains the baseline posture and not a
+  substitute for one.
 - WebAuthn is **not** implemented. `webauthn-rs` 0.5 hard-depends on
   `openssl`/`openssl-sys` and is MPL-2.0, neither of which this tree carries;
   the design does not preclude it later (another factor is another branch in the
@@ -343,8 +340,7 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
 ## Configuration
 
 See the [Configuration Reference](../configuration/reference.md) for every
-`[admin]` and `[admin.tls]` key, and
-[Customizing the Panel](webadmin_templates.md) for `admin.template_dir`.
+`[admin]` and `[admin.tls]` key, and [Customizing the
+Panel](webadmin_templates.md) for `admin.template_dir`.
 
-[htmx]: https://htmx.org
-[minijinja]: https://docs.rs/minijinja
+[htmx]: https://htmx.org [minijinja]: https://docs.rs/minijinja
