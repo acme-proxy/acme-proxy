@@ -59,9 +59,10 @@ authorizations, orders, or nonces.
 Profiles inherit from the base (global) configuration keys. A profile only needs
 to override the specific keys that differ.
 
-**Seven sections can be overridden**, and no others: `signer`, `filter`,
-`challenge`, `eab`, `order`, `notify` and `meta`. Everything else — the listen
-socket, the database, logging, audit, the admin listener — is process-wide.
+**Eight sections can be overridden**, and no others: `signer`, `filter`,
+`ipam`, `challenge`, `eab`, `order`, `notify` and `meta`. Everything else — the
+listen socket, the database, logging, audit, the admin listener — is
+process-wide.
 
 ```mermaid
 graph LR
@@ -76,6 +77,22 @@ graph LR
 `challenge.bypass` keeps the *global* `challenge.enabled` rather than reverting
 it to the compiled default. Arrays, however, replace wholesale — they never
 append. Precedence is: profile key, then global key, then compiled default.
+
+That split is why `[filter]` is shaped the way it is. `filter.rules` is an
+array, so a profile naming its own rules replaces the sequence outright — which
+is right, because order *is* the policy. `[filter.check.<name>]` and
+`[filter.rule.<name>]` are tables, so they merge per key, and a profile can
+dry-run one rule without restating anything:
+
+```toml
+[profiles.staging.filter.rule.inventory-owned]
+mode = "warn"
+```
+
+A profile inherits every globally defined check and cannot remove one, which
+costs nothing: a check no selected rule names is never built. A global
+`[filter]` section can therefore carry a library of checks and each profile pick
+the subset its own `filter.rules` uses.
 
 ```toml
 [signer]

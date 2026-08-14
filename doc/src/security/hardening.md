@@ -27,6 +27,35 @@ decision from you are marked **decide**.
 - [ ] **ACME is served over HTTPS** — either `server.tls.enabled = true` or a
       reverse proxy in front. RFC 8555 §6.1 expects it.
       → [TLS Termination](../features/tls_termination.md)
+- [ ] **`acme-proxy filter explain` agrees with what you meant**, for both a
+      client that should be served and one that should not. A policy is easier
+      to get subtly wrong than a list.
+      → [CLI](../operations/cli.md#access-policy)
+- [ ] **`/crl` is still reachable** if any check is address-based. It is served
+      by the profile router, so an allowlist covers it too, and the relying
+      parties that fetch it are not the ACME clients you allowlisted.
+      → [Path Check](../filters/path.md#the-crl-trap)
+
+### An `or` is a hole you opened deliberately
+
+A check that cannot reach its authority answers "unknown" rather than "no", and
+`pass or unknown` is `pass`. That is the point — it is what keeps an inventory
+outage from locking every client out — but it means **an `or` weakens the
+fail-closed property to whatever its other side says**.
+
+```toml
+when = "mgmt-net or inventory"
+```
+
+reads as "the inventory decides, unless the address is already trusted". If
+`mgmt-net` is wide, the inventory is decorative for everything inside it. That
+may be exactly what you want; what you must not do is write it believing both
+checks apply.
+
+The rule of thumb: **an `or` over an address check is a bypass for that
+address range**, so keep the range as small as the outage you are insuring
+against. `and` has no such property — `fail and unknown` is `fail`, so a
+conjunction never becomes more permissive because something broke.
 
 ## The CA key
 

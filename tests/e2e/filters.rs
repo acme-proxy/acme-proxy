@@ -4,8 +4,11 @@ use crate::common::Lab;
 #[ignore]
 async fn test_allowed_ip() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "allowed_ip"),
-        ("ACME_PROXY_FILTER__ALLOWED_IP__ALLOW", "CERTBOT_IP/32"),
+        ("ACME_PROXY_FILTER__RULES", "permitted"),
+        ("ACME_PROXY_FILTER__RULE__PERMITTED__WHEN", "net"),
+        ("ACME_PROXY_FILTER__RULE__PERMITTED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__NET__TYPE", "allowed_ip"),
+        ("ACME_PROXY_FILTER__CHECK__NET__ALLOW", "CERTBOT_IP/32"),
     ])
     .await;
 
@@ -47,10 +50,12 @@ async fn test_allowed_ip() {
 #[ignore]
 async fn test_custom_script() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "custom"),
-        ("ACME_PROXY_FILTER__CUSTOM_ENABLED", "main"),
+        ("ACME_PROXY_FILTER__RULES", "scripted"),
+        ("ACME_PROXY_FILTER__RULE__SCRIPTED__WHEN", "main"),
+        ("ACME_PROXY_FILTER__RULE__SCRIPTED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__MAIN__TYPE", "custom"),
         (
-            "ACME_PROXY_FILTER__CUSTOM__MAIN__SCRIPT_PATH",
+            "ACME_PROXY_FILTER__CHECK__MAIN__SCRIPT_PATH",
             "/tmp/filter_script.sh",
         ),
     ])
@@ -135,9 +140,12 @@ exit 0
 #[ignore]
 async fn test_identifiers() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "identifiers"),
+        ("ACME_PROXY_FILTER__RULES", "names"),
+        ("ACME_PROXY_FILTER__RULE__NAMES__WHEN", "names"),
+        ("ACME_PROXY_FILTER__RULE__NAMES__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__NAMES__TYPE", "identifiers"),
         (
-            "ACME_PROXY_FILTER__IDENTIFIERS__DENY",
+            "ACME_PROXY_FILTER__CHECK__NAMES__DENY_REGEX",
             "denied\\.example\\.com",
         ),
     ])
@@ -199,7 +207,10 @@ async fn test_identifiers() {
 #[ignore]
 async fn test_netbox() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "ipam"),
+        ("ACME_PROXY_FILTER__RULES", "owned"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__WHEN", "inventory"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__INVENTORY__TYPE", "ipam"),
         ("ACME_PROXY_IPAM__BACKEND", "netbox"),
         ("ACME_PROXY_IPAM__NETBOX__URL", "http://NETBOX_IP:8080"),
         ("ACME_PROXY_IPAM__NETBOX__TOKEN", "labtoken"),
@@ -303,7 +314,10 @@ async fn test_netbox() {
 #[ignore]
 async fn test_netbox_fhrp_group_membership() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "ipam"),
+        ("ACME_PROXY_FILTER__RULES", "owned"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__WHEN", "inventory"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__INVENTORY__TYPE", "ipam"),
         ("ACME_PROXY_IPAM__BACKEND", "netbox"),
         ("ACME_PROXY_IPAM__NETBOX__URL", "http://NETBOX_IP:8080"),
         ("ACME_PROXY_IPAM__NETBOX__TOKEN", "labtoken"),
@@ -398,7 +412,10 @@ async fn test_netbox_fhrp_group_membership() {
 #[ignore]
 async fn test_phpipam() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "ipam"),
+        ("ACME_PROXY_FILTER__RULES", "owned"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__WHEN", "inventory"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__INVENTORY__TYPE", "ipam"),
         ("ACME_PROXY_IPAM__BACKEND", "phpipam"),
         ("ACME_PROXY_IPAM__PHPIPAM__URL", "http://PHPIPAM_IP:8080"),
         ("ACME_PROXY_IPAM__PHPIPAM__TOKEN", "labtoken"),
@@ -503,7 +520,10 @@ async fn test_phpipam() {
 async fn test_phpipam_unknown_address() {
     let lab = Lab::new(vec![
         ("ACME_PROXY_SERVER__TLS__ENABLED", "true"),
-        ("ACME_PROXY_FILTER__ENABLED", "ipam"),
+        ("ACME_PROXY_FILTER__RULES", "owned"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__WHEN", "inventory"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__INVENTORY__TYPE", "ipam"),
         ("ACME_PROXY_IPAM__BACKEND", "phpipam"),
         ("ACME_PROXY_IPAM__PHPIPAM__URL", "http://PHPIPAM_IP:8080"),
         ("ACME_PROXY_IPAM__PHPIPAM__TOKEN", "labtoken"),
@@ -554,7 +574,10 @@ async fn test_phpipam_unknown_address() {
 #[ignore]
 async fn test_reverse_dns() {
     let lab = Lab::new(vec![
-        ("ACME_PROXY_FILTER__ENABLED", "reverse_dns"),
+        ("ACME_PROXY_FILTER__RULES", "has-ptr"),
+        ("ACME_PROXY_FILTER__RULE__HAS-PTR__WHEN", "ptr"),
+        ("ACME_PROXY_FILTER__RULE__HAS-PTR__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__PTR__TYPE", "reverse_dns"),
         ("ACME_PROXY_DNS__RESOLVER", "dns:53"),
     ])
     .await;

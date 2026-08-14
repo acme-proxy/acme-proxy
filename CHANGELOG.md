@@ -8,6 +8,77 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- **`[filter]` is now a policy of named checks and boolean rules, and every key
+  of the old shape is gone.** The flat all-must-pass chain could not express
+  "this address is in the management network **or** the inventory confirms it
+  owns the name": everything was AND, there was one instance per type, and the
+  two-valued verdict could not tell "policy says no" from "I could not decide",
+  so an `or` over an IPAM check would either refuse every request during an
+  outage or quietly admit every request during one.
+
+  Each filter is now a `[filter.check.<name>]` with a `type`, each rule a
+  `[filter.rule.<name>]` whose `when` is a boolean expression over check names,
+  and `filter.rules` lists the rules to evaluate in order. Two checks of one
+  type are ordinary; `custom` is a type like any other.
+
+  Migration, key by key:
+
+  | Removed | Replacement |
+  | --- | --- |
+  | `filter.enabled` | a check per filter, a rule naming them, listed in `filter.rules` |
+  | `filter.exempt_paths` | a `type = "path"` check plus a rule |
+  | `filter.custom_enabled` | nothing — `filter.rules` already orders them |
+  | `[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]`, `[filter.custom.<name>]` | the type's keys move onto its `[filter.check.<name>]` |
+
+  Every one of them is **refused by name at startup**, from a file or the
+  environment, so an unmigrated configuration stops the server rather than
+  coming up looking configured and filtering nothing. `acme-proxy filter show`
+  builds the policy exactly as startup does, so it is the cheapest way to check
+  a migration before restarting.
+
+  `allow`/`deny` on the name-matching checks now take **globs** (`*` is one
+  label); the anchored regexes moved to `allow_regex`/`deny_regex` and union
+  with them. Regex was the biggest footgun in this section and is no longer the
+  only spelling.
+
+  There is no compatibility path, deliberately: 0.1.0 is deployed nowhere, so
+  this deletes rather than accumulates — no legacy lowering, no dual syntax, no
+  alias to keep tested for ever.
+
+- **`request_blocked` is now `filter_request_blocked`**, the one event in the
+  subsystem that lacked its prefix. `filter_denied` and `filter_failed` keep
+  their names and gain a `check` field carrying the *instance* name, so three
+  `custom` scripts are finally distinguishable from one another.
+
+### Added
+
+- **An `eab` check binds names to a tenant.** An EAB credential is minted
+  before any account exists and its label is chosen by the operator, so it is a
+  handle configuration can name up front — unlike an account id, which is a
+  UUID you could only discover after the fact. `kids` pins a credential by id;
+  `require_active` makes `eab revoke` reach accounts already registered under
+  it, which it does not by default. No schema change: `accounts.eab_kid` has
+  recorded this since EAB was implemented.
+
+- **A `path` check**, replacing `filter.exempt_paths` and composing with the
+  rest of a policy. It can restrict a path to a network, and it globs, so
+  `/renewalInfo/*` is expressible where the exact-match list it replaces could
+  not. Worth knowing: `/crl` is served by the profile router, so an
+  address-based policy without a path rule silently breaks revocation checking
+  for every relying party outside the allowlist.
+
+- **`acme-proxy filter show` and `acme-proxy filter explain`.** `show` prints
+  the resolved policy with each condition re-parenthesized, so precedence is
+  visible rather than inferred. `explain` evaluates it against a hypothetical
+  request across all three stages and reports every check's verdict, the checks
+  short-circuited past, and the HTTP answer. It really runs the policy, scripts
+  and inventory lookups included, and names what reached outside the process.
+
+- **`mode = "warn"` on a rule** logs `filter_rule_warned` and does not decide,
+  so a tightened policy can be watched in production before it bites. Rules are
+  a map rather than an array of tables precisely so a profile can dry-run one
+  of them and inherit the rest.
+
 - **The structured-logging vocabulary is normalized, and every record now
   carries an `outcome` field.** Log records are an operator contract — the
   monitoring page tells you to alert on `event`, and ~450 names had drifted far
