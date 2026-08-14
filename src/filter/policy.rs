@@ -580,8 +580,13 @@ impl FilterPolicy {
         let mut decision: Option<&Rule> = None;
         let mut warned = Vec::new();
         let mut pending: Vec<PendingUnknown> = Vec::new();
+        // Where the last rule's own checks begin in the trace — see
+        // `denial_detail` for why the *last* rule is the one whose refusal is
+        // worth quoting.
+        let mut last_rule_start = 0;
 
         for compiled in applicable {
+            last_rule_start = run.trace.len();
             match run.eval(&compiled.rule.when).await {
                 Verdict::Pass => {
                     if compiled.rule.mode == Mode::Warn {
@@ -632,7 +637,7 @@ impl FilterPolicy {
 
         let outcome = match effect {
             Effect::Allow => Outcome::Allow,
-            Effect::Deny => Outcome::Deny(denial_detail(decision, &run.trace)),
+            Effect::Deny => Outcome::Deny(denial_detail(decision, &run.trace, last_rule_start)),
         };
 
         Evaluation {
@@ -704,10 +709,28 @@ fn stages_for(condition: &Condition, checks: &BTreeMap<String, CheckSlot>) -> St
 /// What the client is told when a stage refuses.
 ///
 /// A matching rule speaks for itself — the operator's `message` if they wrote
-/// one, otherwise its own name, which is at least greppable. Falling through to
-/// the default is different: nothing *decided* to refuse, so the most useful
-/// thing to hand back is the first check that actually said no.
-fn denial_detail(decision: Option<&Rule>, trace: &[CheckOutcome]) -> String {
+/// one, otherwise its own name, which is at least greppable.
+///
+/// Falling through to the default is different: nothing *decided* to refuse, so
+/// the most useful thing to hand back is a check that actually said no. Which
+/// one matters. Rules are first-match-wins, so the ones an operator writes
+/// first are the narrow bypasses and the last is the general case — and the
+/// general case is the one a refused client was expected to satisfy. Quoting
+/// the first failure across the whole stage instead would answer a policy of
+///
+/// ```text
+/// rules = ["public-paths", "mgmt-net", "corp-names-from-inventory"]
+/// ```
+///
+/// with "path /newOrder is not allowed", which is true of the bypass and
+/// actively misleading about the request: the path is fine, the address is not.
+/// So the search starts at the last rule evaluated and only widens if that rule
+/// left no refusal behind.
+fn denial_detail(
+    decision: Option<&Rule>,
+    trace: &[CheckOutcome],
+    last_rule_start: usize,
+) -> String {
     if let Some(rule) = decision {
         return rule
             .message
@@ -715,12 +738,15 @@ fn denial_detail(decision: Option<&Rule>, trace: &[CheckOutcome]) -> String {
             .unwrap_or_else(|| format!("refused by policy rule `{}`", rule.name));
     }
 
-    trace
-        .iter()
-        .find_map(|outcome| match &outcome.verdict {
+    let first_failure = |slice: &[CheckOutcome]| {
+        slice.iter().find_map(|outcome| match &outcome.verdict {
             Verdict::Fail(detail) => Some(detail.clone()),
             _ => None,
         })
+    };
+
+    first_failure(trace.get(last_rule_start..).unwrap_or_default())
+        .or_else(|| first_failure(trace))
         .unwrap_or_else(|| "no policy rule permits this request".to_string())
 }
 
@@ -1306,6 +1332,67 @@ mod tests {
         let policy = FilterPolicy::new(
             vec![("addr".to_string(), check)],
             vec![rule("permitted", "addr", Effect::Allow)],
+            Effect::Deny,
+            ProxyPolicy::default(),
+        );
+
+        assert_eq!(
+            decide(&policy).await,
+            Outcome::Deny("stub refused".to_string())
+        );
+    }
+
+    /// The regression: with rules ordered bypass-first, quoting the first
+    /// failure anywhere in the stage tells a refused client about the bypass
+    /// it was never going to match, not about the rule it actually failed.
+    #[tokio::test]
+    async fn a_default_deny_quotes_the_last_rule_not_the_first_bypass() {
+        let (bypass, _) = StubCheck::with(
+            Verdict::Fail("path /newOrder is not allowed".to_string()),
+            StageSet::both(),
+        );
+        let (main, _) = StubCheck::with(
+            Verdict::Fail("address 203.0.113.9 is not allowed".to_string()),
+            StageSet::both(),
+        );
+
+        let policy = FilterPolicy::new(
+            vec![
+                ("public-paths".to_string(), bypass),
+                ("mgmt-net".to_string(), main),
+            ],
+            vec![
+                rule("public", "public-paths", Effect::Allow),
+                rule("mgmt-bypass", "mgmt-net", Effect::Allow),
+            ],
+            Effect::Deny,
+            ProxyPolicy::default(),
+        );
+
+        assert_eq!(
+            decide(&policy).await,
+            Outcome::Deny("address 203.0.113.9 is not allowed".to_string())
+        );
+    }
+
+    /// ...and it widens to the whole stage when the last rule left no refusal
+    /// of its own, so the fallback never loses information it had before.
+    #[tokio::test]
+    async fn a_default_deny_widens_when_the_last_rule_refused_nothing() {
+        let (failing, _) = StubCheck::failing();
+        let (passing, _) = StubCheck::passing();
+
+        let policy = FilterPolicy::new(
+            vec![
+                ("first".to_string(), failing),
+                ("second".to_string(), passing),
+            ],
+            vec![
+                rule("early", "first", Effect::Allow),
+                // Passes its check, so `not` refuses the rule without any
+                // check having failed.
+                rule("late", "not second", Effect::Allow),
+            ],
             Effect::Deny,
             ProxyPolicy::default(),
         );
