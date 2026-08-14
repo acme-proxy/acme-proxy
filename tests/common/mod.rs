@@ -21,7 +21,9 @@ use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
 };
 use acme_proxy::config::Config;
-use acme_proxy::filter::{ConnectionContext, Filter, FilterChain, FilterError, IdentifierContext};
+use acme_proxy::filter::expr::Condition;
+use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
+use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, ProxyPolicy, Stage};
 use acme_proxy::notify::{NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent};
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::signer::relay::http01::MemoryTokenStore;
@@ -190,7 +192,7 @@ pub async fn test_app_with_signer(signer: Arc<dyn SignerBackend>) -> (Router, Ar
     test_app_full(
         Config::default(),
         signer,
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications(),
     )
@@ -199,7 +201,7 @@ pub async fn test_app_with_signer(signer: Arc<dyn SignerBackend>) -> (Router, Ar
 
 /// Builds the full router with a caller-supplied filter chain, the default
 /// config and an in-memory local CA.
-pub async fn test_app_with_filter(filter: Arc<FilterChain>) -> (Router, Arc<Database>) {
+pub async fn test_app_with_filter(filter: Arc<FilterPolicy>) -> (Router, Arc<Database>) {
     let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
     test_app_full(
         Config::default(),
@@ -221,7 +223,7 @@ pub async fn test_app_with_challenges(
     test_app_full(
         config,
         signer,
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         challenges,
         no_notifications(),
     )
@@ -236,7 +238,7 @@ pub async fn test_app_with_notify(notify: Arc<NotifyDispatcher>) -> (Router, Arc
     test_app_full(
         Config::default(),
         signer,
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         default_challenges(),
         notify,
     )
@@ -286,7 +288,7 @@ pub fn bypassing_challenges(types: &[&str]) -> Arc<ChallengeRegistry> {
 pub struct TestProfile {
     pub name: &'static str,
     pub signer: Arc<dyn SignerBackend>,
-    pub filter: Arc<FilterChain>,
+    pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
     pub eab: acme_proxy::config::EabConfig,
     pub meta: acme_proxy::config::MetaConfig,
@@ -302,7 +304,7 @@ impl TestProfile {
         Self {
             name,
             signer: Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
-            filter: Arc::new(FilterChain::default()),
+            filter: Arc::new(FilterPolicy::default()),
             challenges: default_challenges(),
             eab: acme_proxy::config::EabConfig::default(),
             meta: acme_proxy::config::MetaConfig::default(),
@@ -317,7 +319,7 @@ impl TestProfile {
     }
 
     #[must_use]
-    pub fn with_filter(mut self, filter: Arc<FilterChain>) -> Self {
+    pub fn with_filter(mut self, filter: Arc<FilterPolicy>) -> Self {
         self.filter = filter;
         self
     }
@@ -385,7 +387,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 pub async fn test_app_full(
     config: Config,
     signer: Arc<dyn SignerBackend>,
-    filter: Arc<FilterChain>,
+    filter: Arc<FilterPolicy>,
     challenges: Arc<ChallengeRegistry>,
     notify: Arc<NotifyDispatcher>,
 ) -> (Router, Arc<Database>) {
@@ -408,7 +410,7 @@ pub async fn test_app_full(
 fn one_profile(
     config: &Config,
     signer: Arc<dyn SignerBackend>,
-    filter: Arc<FilterChain>,
+    filter: Arc<FilterPolicy>,
     challenges: Arc<ChallengeRegistry>,
     notify: Arc<NotifyDispatcher>,
 ) -> Arc<Profile> {
@@ -474,7 +476,7 @@ pub async fn test_admin_app_with_signer(
     let profile = one_profile(
         &config,
         signer.clone(),
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications(),
     );
@@ -1294,14 +1296,14 @@ impl NotifyBackend for RecordingNotifyBackend {
     }
 }
 
-/// A filter that refuses everything, at whichever hook it is configured for.
-pub struct RejectingFilter {
+/// A check that refuses everything, at whichever hook it is configured for.
+pub struct RejectingCheck {
     pub connections: bool,
     pub identifiers: bool,
     pub internal: bool,
 }
 
-impl RejectingFilter {
+impl RejectingCheck {
     /// Refuses at the connection hook.
     pub fn connections() -> Self {
         Self {
@@ -1330,7 +1332,7 @@ impl RejectingFilter {
     }
 
     /// Fails to reach a decision at the *identifier* hook. Distinct from
-    /// [`RejectingFilter::failing`]: the two hooks are mapped to problems by
+    /// [`RejectingCheck::failing`]: the two hooks are mapped to problems by
     /// different callers (the middleware vs. the handlers).
     pub fn failing_identifiers() -> Self {
         Self {
@@ -1340,34 +1342,84 @@ impl RejectingFilter {
         }
     }
 
-    fn refusal(&self) -> FilterError {
+    fn refusal(&self) -> Verdict {
         if self.internal {
-            FilterError::Internal("resolver exploded".to_string())
+            Verdict::Undecided("resolver exploded".to_string())
         } else {
-            FilterError::Denied("refused by test filter".to_string())
+            Verdict::Fail("refused by test filter".to_string())
         }
     }
 }
 
 #[async_trait]
-impl Filter for RejectingFilter {
-    fn name(&self) -> &'static str {
+impl Check for RejectingCheck {
+    fn kind(&self) -> &'static str {
         "rejecting"
     }
 
-    async fn check_connection(&self, _ctx: &ConnectionContext<'_>) -> Result<(), FilterError> {
-        if self.connections {
-            return Err(self.refusal());
-        }
-        Ok(())
+    /// Both, so the stage it actually refuses at is the one its constructor
+    /// chose rather than one this declaration forces.
+    fn stages(&self) -> StageSet {
+        StageSet::both()
     }
 
-    async fn check_identifiers(&self, _ctx: &IdentifierContext<'_>) -> Result<(), FilterError> {
-        if self.identifiers {
-            return Err(self.refusal());
+    async fn check_connection(&self, _context: &ConnectionContext<'_>) -> Verdict {
+        if self.connections {
+            return self.refusal();
         }
-        Ok(())
+        Verdict::Pass
     }
+
+    async fn check_identifiers(&self, _context: &IdentifierContext<'_>) -> Verdict {
+        if self.identifiers {
+            return self.refusal();
+        }
+        Verdict::Pass
+    }
+}
+
+/// A policy where **every** named check must pass — the all-must-pass shape
+/// most tests want, without writing a rule per suite.
+///
+/// One rule per stage, each a conjunction of the checks that can decide there,
+/// which is exactly what "all of these must pass" means once checks no longer
+/// all answer at both hooks. A stage with no capable check gets no rule and
+/// therefore allows, which is the policy engine's own law rather than a
+/// special case here.
+pub fn policy_of(checks: Vec<(String, Arc<dyn Check>)>) -> Arc<FilterPolicy> {
+    let mut rules = Vec::new();
+    for (stage, label) in [
+        (Stage::Connection, "connection"),
+        (Stage::Identifiers, "identifiers"),
+    ] {
+        let names: Vec<&str> = checks
+            .iter()
+            .filter(|(_, check)| check.stages().contains(stage))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        rules.push(Rule {
+            name: format!("all-{label}"),
+            when: Condition::parse(&names.join(" and ")).expect("test condition should parse"),
+            then: Effect::Allow,
+            message: None,
+            mode: Mode::Enforce,
+        });
+    }
+
+    Arc::new(FilterPolicy::new(
+        checks,
+        rules,
+        Effect::Deny,
+        ProxyPolicy::default(),
+    ))
+}
+
+/// [`policy_of`] for the common case of a single unnamed check.
+pub fn policy_with(check: Arc<dyn Check>) -> Arc<FilterPolicy> {
+    policy_of(vec![("only".to_string(), check)])
 }
 
 /// Sends a request as if it arrived from `peer`, by inserting the

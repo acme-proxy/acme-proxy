@@ -10,13 +10,14 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
+
 use acme_proxy::config::{
-    AllowedIpConfig, Config, DnsConfig, FilterConfig, IdentifierListConfig, IpamConfig,
-    NetboxConfig, PhpIpamConfig,
+    CheckConfig, Config, DnsConfig, FilterConfig, IpamConfig, NetboxConfig, PhpIpamConfig,
+    RuleConfig,
 };
-use acme_proxy::filter::{
-    self, Filter, FilterChain, FilterError, IdentifierContext, IdentifierStage, ProxyPolicy,
-};
+use acme_proxy::filter::policy::{Check, StageSet, Verdict};
+use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
 use acme_proxy::signer::local_ca::LocalCa;
 use async_trait::async_trait;
 use axum::Router;
@@ -27,9 +28,9 @@ use serde_json::{Value, json};
 
 mod common;
 use common::{
-    EcSigner, RejectingFilter, TestSigner, body_json, default_challenges, fetch_nonce_from,
-    make_csr, make_csr_with_sans, no_notifications, p, post_from, send_from, test_app_full,
-    test_app_with_filter,
+    EcSigner, RejectingCheck, TestSigner, body_json, default_challenges, fetch_nonce_from,
+    make_csr, make_csr_with_sans, no_notifications, p, policy_of, policy_with, post_from,
+    send_from, test_app_full, test_app_with_filter,
 };
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
@@ -77,34 +78,98 @@ async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     .0
 }
 
-/// A `[filter]` config enabling only the IP allowlist for `192.168.1.0/24`.
+/// Which stages a check type decides at, so [`policy_config`] can group the
+/// checks into one rule per stage the way the policy engine itself does.
+fn stages_of(kind: &str) -> StageSet {
+    match kind {
+        "allowed_ip" | "custom" => StageSet::both(),
+        "reverse_dns" => StageSet::connection_only(),
+        _ => StageSet::identifiers_only(),
+    }
+}
+
+/// A `[filter]` config where **every** named check must pass.
+///
+/// One rule per stage, each a conjunction of the checks that can decide there
+/// — the all-must-pass shape most of this suite wants, without a rule table
+/// per test. Tests exercising the *policy* (`or`, `not`, `warn`, `message`)
+/// write their own configuration.
+fn policy_config(checks: &[(&str, CheckConfig)]) -> FilterConfig {
+    let mut rules = Vec::new();
+    let mut rule = BTreeMap::new();
+
+    for (stage, label) in [
+        (acme_proxy::filter::Stage::Connection, "connection"),
+        (acme_proxy::filter::Stage::Identifiers, "identifiers"),
+    ] {
+        let names: Vec<&str> = checks
+            .iter()
+            .filter(|(_, config)| stages_of(&config.r#type).contains(stage))
+            .map(|(name, _)| *name)
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let rule_name = format!("all-{label}");
+        rules.push(rule_name.clone());
+        rule.insert(
+            rule_name,
+            RuleConfig {
+                when: names.join(" and "),
+                then: "allow".to_string(),
+                ..RuleConfig::default()
+            },
+        );
+    }
+
+    FilterConfig {
+        rules,
+        rule,
+        check: checks
+            .iter()
+            .map(|(name, config)| ((*name).to_string(), config.clone()))
+            .collect(),
+        ..FilterConfig::default()
+    }
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect()
+}
+
+/// A `[filter]` config with only an IP allowlist for `192.168.1.0/24`.
 fn ip_allowlist_config() -> FilterConfig {
     ip_config(&["192.168.1.0/24"], &[])
 }
 
-/// A `[filter]` config enabling only the IP filter, with the given lists.
+/// A `[filter]` config with only an `allowed_ip` check, with the given lists.
 fn ip_config(allow: &[&str], deny: &[&str]) -> FilterConfig {
-    FilterConfig {
-        enabled: vec!["allowed_ip".to_string()],
-        allowed_ip: AllowedIpConfig {
-            allow: allow.iter().map(std::string::ToString::to_string).collect(),
-            deny: deny.iter().map(std::string::ToString::to_string).collect(),
+    policy_config(&[(
+        "net",
+        CheckConfig {
+            r#type: "allowed_ip".to_string(),
+            allow: strings(allow),
+            deny: strings(deny),
+            ..CheckConfig::default()
         },
-        ..FilterConfig::default()
-    }
+    )])
 }
 
-/// A `[filter]` config enabling only the identifier list.
+/// A `[filter]` config with only an identifier list, written as regexes —
+/// which is what this suite's patterns are.
 fn identifiers_config(allow: &[&str], deny: &[&str]) -> FilterConfig {
-    FilterConfig {
-        enabled: vec!["identifiers".to_string()],
-        identifiers: IdentifierListConfig {
-            allow: allow.iter().map(std::string::ToString::to_string).collect(),
-            deny: deny.iter().map(std::string::ToString::to_string).collect(),
-            ..IdentifierListConfig::default()
+    policy_config(&[(
+        "names",
+        CheckConfig {
+            r#type: "identifiers".to_string(),
+            allow_regex: strings(allow),
+            deny_regex: strings(deny),
+            ..CheckConfig::default()
         },
-        ..FilterConfig::default()
-    }
+    )])
 }
 
 async fn assert_problem(res: Response, status: StatusCode, typ: &str) -> Value {
@@ -345,8 +410,11 @@ async fn a_rejection_still_carries_a_replay_nonce() {
     );
 }
 
+/// `/health` is served by the *root* router, which no profile's policy ever
+/// sees — which is why nothing has to be exempted for a health probe to keep
+/// working from a blocked address.
 #[tokio::test]
-async fn exempt_paths_are_reachable_from_a_blocked_address() {
+async fn a_server_level_route_is_reachable_from_a_blocked_address() {
     let app = app_with_config(ip_allowlist_config()).await;
     let res = send_from(
         &app,
@@ -358,12 +426,8 @@ async fn exempt_paths_are_reachable_from_a_blocked_address() {
 }
 
 #[tokio::test]
-async fn a_non_exempt_path_is_still_filtered() {
-    let config = FilterConfig {
-        exempt_paths: vec!["/health".to_string()],
-        ..ip_allowlist_config()
-    };
-    let app = app_with_config(config).await;
+async fn a_profile_route_is_still_filtered() {
+    let app = app_with_config(ip_allowlist_config()).await;
     let res = send_from(
         &app,
         Request::get(p("/newNonce")).body(Body::empty()).unwrap(),
@@ -389,11 +453,7 @@ async fn a_request_with_no_peer_address_is_refused() {
 
 #[tokio::test]
 async fn a_filter_that_cannot_decide_returns_500_not_403() {
-    let chain = Arc::new(FilterChain::new(
-        vec![Arc::new(RejectingFilter::failing())],
-        vec!["/health".to_string()],
-        ProxyPolicy::default(),
-    ));
+    let chain = policy_with(Arc::new(RejectingCheck::failing()));
     let (app, _db) = test_app_with_filter(chain).await;
 
     let res = send_from(
@@ -413,14 +473,13 @@ async fn a_filter_that_cannot_decide_returns_500_not_403() {
 #[tokio::test]
 async fn every_filter_must_pass() {
     // First filter allows, second refuses: the chain still denies.
-    let chain = Arc::new(FilterChain::new(
-        vec![
-            Arc::new(RejectingFilter::identifiers()),
-            Arc::new(RejectingFilter::connections()),
-        ],
-        vec!["/health".to_string()],
-        ProxyPolicy::default(),
-    ));
+    let chain = policy_of(vec![
+        (
+            "names".to_string(),
+            Arc::new(RejectingCheck::identifiers()) as Arc<dyn Check>,
+        ),
+        ("net".to_string(), Arc::new(RejectingCheck::connections())),
+    ]);
     let (app, _db) = test_app_with_filter(chain).await;
 
     let res = send_from(
@@ -492,11 +551,7 @@ async fn a_trusted_proxy_can_forward_the_real_client() {
 /// will never issue this name", which is a different and permanent claim.
 #[tokio::test]
 async fn a_filter_that_cannot_decide_about_identifiers_returns_500() {
-    let chain = Arc::new(FilterChain::new(
-        vec![Arc::new(RejectingFilter::failing_identifiers())],
-        vec!["/health".to_string()],
-        ProxyPolicy::default(),
-    ));
+    let chain = policy_with(Arc::new(RejectingCheck::failing_identifiers()));
     let (app, _db) = test_app_with_filter(chain).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer, ALLOWED).await;
@@ -602,30 +657,27 @@ async fn a_permitted_csr_finalizes_normally() {
 struct DenyAtCsr(&'static str);
 
 #[async_trait]
-impl Filter for DenyAtCsr {
-    fn name(&self) -> &'static str {
+impl Check for DenyAtCsr {
+    fn kind(&self) -> &'static str {
         "deny-at-csr"
     }
 
-    async fn check_identifiers(&self, ctx: &IdentifierContext<'_>) -> Result<(), FilterError> {
+    fn stages(&self) -> StageSet {
+        StageSet::identifiers_only()
+    }
+
+    async fn check_identifiers(&self, ctx: &IdentifierContext<'_>) -> Verdict {
         if ctx.stage == IdentifierStage::Csr && ctx.identifiers.iter().any(|id| id.value == self.0)
         {
-            return Err(FilterError::Denied(format!(
-                "{} refused at CSR stage",
-                self.0
-            )));
+            return Verdict::Fail(format!("{} refused at CSR stage", self.0));
         }
-        Ok(())
+        Verdict::Pass
     }
 }
 
 #[tokio::test]
 async fn a_denied_csr_name_is_rejected_at_finalize_as_bad_csr() {
-    let chain = Arc::new(FilterChain::new(
-        vec![Arc::new(DenyAtCsr("host.example.com"))],
-        vec!["/health".to_string()],
-        ProxyPolicy::default(),
-    ));
+    let chain = policy_with(Arc::new(DenyAtCsr("host.example.com")));
     let (app, _db) = test_app_with_filter(chain).await;
     let signer = EcSigner::new();
 
@@ -804,7 +856,6 @@ async fn the_default_configuration_filters_nothing() {
 
 #[tokio::test]
 async fn a_custom_script_filter_enforces_policy_end_to_end() {
-    use acme_proxy::config::CustomFilterConfig;
     use std::fs;
 
     let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::new_v4()));
@@ -825,18 +876,14 @@ exit 0
         fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let filter_cfg = FilterConfig {
-        enabled: vec!["custom".to_string()],
-        custom_enabled: vec!["main".to_string()],
-        custom: std::collections::BTreeMap::from([(
-            "main".to_string(),
-            CustomFilterConfig {
-                script_path: script_path.to_str().unwrap().to_string(),
-                ..Default::default()
-            },
-        )]),
-        ..FilterConfig::default()
-    };
+    let filter_cfg = policy_config(&[(
+        "main",
+        CheckConfig {
+            r#type: "custom".to_string(),
+            script_path: script_path.to_str().unwrap().to_string(),
+            ..CheckConfig::default()
+        },
+    )]);
 
     let app = app_with_config(filter_cfg).await;
     let signer = EcSigner::new();
@@ -864,7 +911,6 @@ exit 0
 /// than only the first `[[filter.custom]]` entry taking effect.
 #[tokio::test]
 async fn two_custom_script_filters_both_run() {
-    use acme_proxy::config::CustomFilterConfig;
     use std::fs;
 
     let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::new_v4()));
@@ -887,27 +933,24 @@ async fn two_custom_script_filters_both_run() {
     let script_a = write_script("a.sh", "forbidden-by-a.example.com");
     let script_b = write_script("b.sh", "forbidden-by-b.example.com");
 
-    let filter_cfg = FilterConfig {
-        enabled: vec!["custom".to_string()],
-        custom_enabled: vec!["a".to_string(), "b".to_string()],
-        custom: std::collections::BTreeMap::from([
-            (
-                "a".to_string(),
-                CustomFilterConfig {
-                    script_path: script_a.to_str().unwrap().to_string(),
-                    ..Default::default()
-                },
-            ),
-            (
-                "b".to_string(),
-                CustomFilterConfig {
-                    script_path: script_b.to_str().unwrap().to_string(),
-                    ..Default::default()
-                },
-            ),
-        ]),
-        ..FilterConfig::default()
-    };
+    let filter_cfg = policy_config(&[
+        (
+            "a",
+            CheckConfig {
+                r#type: "custom".to_string(),
+                script_path: script_a.to_str().unwrap().to_string(),
+                ..CheckConfig::default()
+            },
+        ),
+        (
+            "b",
+            CheckConfig {
+                r#type: "custom".to_string(),
+                script_path: script_b.to_str().unwrap().to_string(),
+                ..CheckConfig::default()
+            },
+        ),
+    ]);
 
     let app = app_with_config(filter_cfg).await;
     let signer = EcSigner::new();
@@ -1003,10 +1046,13 @@ mod netbox_stub {
 
 /// The `[filter]` half: only `ipam`, whichever backend is behind it.
 fn ipam_filter_config() -> FilterConfig {
-    FilterConfig {
-        enabled: vec!["ipam".to_string()],
-        ..FilterConfig::default()
-    }
+    policy_config(&[(
+        "inventory",
+        CheckConfig {
+            r#type: "ipam".to_string(),
+            ..CheckConfig::default()
+        },
+    )])
 }
 
 /// An `[ipam]` config pointing the NetBox backend at a loopback stub.

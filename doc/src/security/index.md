@@ -16,14 +16,14 @@ are independent, and **each covers something the others do not**.
 
 | Gate | Answers | Default | Owned by |
 | --- | --- | --- | --- |
-| Connection filters | May this address talk to this endpoint at all? | off (`filter.enabled = []`) | [Filters](../filters/index.md) |
+| Connection filters | May this address talk to this endpoint at all? | off (`filter.rules = []`) | [Filters](../filters/index.md) |
 | EAB | Is this client allowed to register an account here? | off | [EAB](../features/eab.md) |
 | Challenge validation | Does the client actually control the name? | **on** | [Challenge Validation](../challenges/index.md) |
 | Identifier filters | Is this client allowed *these particular names*? | off | [Filters](../filters/index.md) |
 
 Two of the four are off by default, which makes the third load-bearing:
 
-> With `challenge.bypass = true` and an empty `filter.enabled`, every client
+> With `challenge.bypass = true` and an empty `filter.rules`, every client
 > that can reach the socket can obtain a certificate for every name it asks for.
 > That combination is why validation is on by default.
 

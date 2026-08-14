@@ -44,7 +44,7 @@ fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
 ///
 /// The handler and the route path are the real ones; only `build_app`'s
 /// surrounding profile machinery is skipped — building it here would need a
-/// `FilterChain`, a `ChallengeRegistry` and a `NotifyDispatcher` for no
+/// `FilterPolicy`, a `ChallengeRegistry` and a `NotifyDispatcher` for no
 /// added coverage, and `tests/http01_responder.rs` covers the mounting
 /// against the real `build_app` instead.
 async fn spawn_responder(tokens: Arc<dyn http01::TokenStore>) -> String {

@@ -6,51 +6,31 @@ cannot be expressed with the built-in filters.
 
 ## Configuration
 
-`custom` is a **named map**, so several independent scripts can run in a defined
-order. Two keys switch it on: `filter.enabled` activates the filter, and
-`filter.custom_enabled` selects which scripts run and in what order.
-
 ```toml
 [filter]
-enabled = ["custom"]
-custom_enabled = ["threat-intel"]
+rules = ["scripted"]
 
-[filter.custom.threat-intel]
-script_path = "/etc/acme-proxy/scripts/threat-intel.sh"
-timeout_ms = 5000
-pass_stdin = true
-args = ["--strict"]
+[filter.check.check-network]
+type        = "custom"
+script_path = "/etc/acme-proxy/filters/check-network.sh"
+timeout_ms  = 5000
+pass_stdin  = true
+args        = []
+
+[filter.rule.scripted]
+when = "check-network"
+then = "allow"
 ```
 
-> Entry names must match `^[a-z0-9-]+$`. An underscore — `threat_intel` — is a
-> **startup error**, not a warning. So is listing an entry in `custom_enabled`
-> with no matching `[filter.custom.<name>]` table.
+`custom` is an ordinary check type: there is no separate selection list, because
+`filter.rules` already says which checks run and in what order. Several
+`[filter.check.<name>]` entries may point at the same script — each is told
+which one invoked it through `ACME_FILTER_CHECK_NAME`, so one script can serve
+them all and branch on it.
 
-### Reference
-
-Which entries run, and in what order, is `filter.custom_enabled` — a `[filter]`
-key, documented with the rest of them in [Filters](index.md#reference). The keys
-below are per entry, and each `<NAME>` in an environment variable is that
-entry's own name uppercased.
-
-**`script_path`** (`String`) — *Default: `""` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__SCRIPT_PATH`*
-
-Path to the executable script.
-
-**`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__TIMEOUT_MS`*
-
-Maximum execution time in milliseconds.
-
-**`pass_stdin`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__PASS_STDIN`*
-
-Whether to write the JSON context to the script's standard input. Set it to
-`false` for a script that reads only environment variables — it then never has
-to drain stdin.
-
-**`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__CUSTOM__<NAME>__ARGS`*
-
-Static arguments passed to the script. The hook is **not** among them; it
-arrives as an environment variable.
+The keys and their defaults are documented under
+[Checks](checks.md#keys-by-type). An empty `script_path` on a check some rule
+names is a startup error.
 
 ## Hooks
 

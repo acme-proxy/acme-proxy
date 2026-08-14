@@ -141,7 +141,8 @@ The events worth building alerts on:
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |
-| `request_blocked`, `filter_denied` | warn | A filter refused a request. Expected in normal operation; a spike is either an attack or a policy change that broke a legitimate client. |
+| `filter_request_blocked`, `filter_denied` | warn | The filter policy refused a request. Expected in normal operation; a spike is either an attack or a policy change that broke a legitimate client. |
+| `filter_rule_warned` | warn | A `mode = "warn"` rule matched and did **not** decide. This is the line a dry-run rollout is watched on: when it stops appearing for legitimate clients, the rule is safe to switch to `enforce`. |
 | `challenge_validation_failed`, `challenge_failed`, `challenge_validation_timeout` | warn | Domain-control validation did not pass. The most useful signal that clients are misconfigured — or that egress to them is blocked. The `timeout` variant means nothing answered within `challenge.timeout_ms` at all. |
 | `challenge_http_01_mismatch` | warn | The responder answered, but with the wrong key authorization. The body itself is never logged here; a truncated preview goes to `challenge_http_01_mismatch_body` at `debug`. |
 | `nonce_replayed` | warn | A JWS carried a nonce that was unknown, already consumed or expired. Routine in small numbers (a client racing itself); a flood is a client stuck in a retry loop, or a replay attempt. |

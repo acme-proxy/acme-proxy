@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acme_proxy::config::Config;
-use acme_proxy::filter::FilterChain;
+use acme_proxy::filter::FilterPolicy;
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::sqlite::db::Database;
 use axum::Router;
@@ -65,7 +65,7 @@ async fn app_with(config: Config) -> (Router, Arc<Database>) {
     test_app_full(
         config,
         signer,
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications(),
     )

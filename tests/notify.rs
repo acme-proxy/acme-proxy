@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acme_proxy::config::Config;
-use acme_proxy::filter::FilterChain;
+use acme_proxy::filter::FilterPolicy;
 use acme_proxy::notify::{NotifyDispatcher, NotifyEvent};
 use acme_proxy::signer::local_ca::LocalCa;
 use axum::Router;
@@ -284,7 +284,7 @@ async fn challenge_failed_dispatches_with_the_error_kind() {
     let (app, _db) = test_app_full(
         Config::default(),
         signer_backend,
-        Arc::new(FilterChain::default()),
+        Arc::new(FilterPolicy::default()),
         challenges_with(
             &["http-01"],
             vec![Arc::new(StubValidator::failing(

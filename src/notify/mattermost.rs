@@ -40,7 +40,7 @@ pub struct MattermostNotifier {
 impl std::fmt::Debug for MattermostNotifier {
     /// `dyn Resolver` is not `Debug`; the webhook host is the part worth
     /// reading, and the URL's path carries the shared secret so it must not be
-    /// rendered. Mirrors `FilterChain`'s own impl.
+    /// rendered. Mirrors `FilterPolicy`'s own impl.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MattermostNotifier")

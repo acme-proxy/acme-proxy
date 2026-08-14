@@ -112,7 +112,7 @@ pub struct ValidationContext<'a> {
 
 /// Why a validation failed, mapped by the caller to the right ACME error.
 ///
-/// The split mirrors [`FilterError`](crate::filter::FilterError): a statement
+/// The split mirrors [`Verdict`](crate::filter::Verdict): a statement
 /// about the client's setup is not the same as the server being unable to reach
 /// a verdict at all.
 #[derive(Debug)]

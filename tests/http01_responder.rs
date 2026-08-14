@@ -18,12 +18,11 @@ use tower::ServiceExt;
 
 mod common;
 use common::{
-    RejectingFilter, TokenStoreSigner, default_challenges, no_notifications, test_app,
+    RejectingCheck, TokenStoreSigner, default_challenges, no_notifications, test_app,
     test_app_full, test_app_with_signer,
 };
 
 use acme_proxy::config::Config;
-use acme_proxy::filter::{FilterChain, ProxyPolicy};
 
 /// The well-known path, as an upstream CA would build it.
 fn well_known(token: &str) -> String {
@@ -184,13 +183,9 @@ async fn the_route_carries_no_acme_layers() {
 async fn the_route_is_not_filtered() {
     let signer = Arc::new(TokenStoreSigner::new());
     signer.0.publish("tok", "tok.thumbprint");
-    let filter = Arc::new(FilterChain::new(
-        vec![Arc::new(RejectingFilter::connections())],
-        // Not even `/health` exempt, so nothing but the routing itself can be
-        // what lets the fetch through.
-        Vec::new(),
-        ProxyPolicy::default(),
-    ));
+    // A policy that refuses every connection, so nothing but the routing
+    // itself can be what lets the fetch through.
+    let filter = common::policy_with(Arc::new(RejectingCheck::connections()));
     let (app, _db) = test_app_full(
         Config::default(),
         signer,

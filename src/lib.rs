@@ -192,7 +192,7 @@ pub mod webadmin;
 use crate::challenge::ChallengeRegistry;
 use crate::config::Config;
 use crate::error::Problem;
-use crate::filter::FilterChain;
+use crate::filter::FilterPolicy;
 use crate::notify::NotifyDispatcher;
 use crate::signer::SignerBackend;
 use crate::sqlite::db::Database;
@@ -265,7 +265,7 @@ pub struct Profile {
     /// RFC 8555 §6.4 `url` check: `server.base_url` + [`Profile::path`].
     pub base_url: String,
     pub signer: Arc<dyn SignerBackend>,
-    pub filter: Arc<FilterChain>,
+    pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
     pub order: config::OrderConfig,
     pub eab: config::EabConfig,
@@ -288,7 +288,7 @@ pub struct Profile {
 /// makes "the path is never configured" visible in the signature.
 pub struct ProfileParts {
     pub signer: Arc<dyn SignerBackend>,
-    pub filter: Arc<FilterChain>,
+    pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
     pub order: config::OrderConfig,
     pub eab: config::EabConfig,

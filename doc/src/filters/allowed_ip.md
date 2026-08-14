@@ -45,22 +45,30 @@ treated as IPv4.
 ## Configuration
 
 ```toml
-[filter.allowed_ip]
+[filter]
+rules = ["internal-only"]
+
+[filter.check.internal-nets]
+type = "allowed_ip"
 # Deny external bad actors
-deny = ["198.51.100.0/24", "203.0.113.0/24"]
+deny = ["203.0.113.9", "198.51.100.0/24"]
 # Allow internal networks
-allow = ["10.0.0.0/8", "192.168.0.0/16"]
+allow = ["192.168.1.0/24", "10.0.0.0/8", "fd00::/8"]
+
+[filter.rule.internal-only]
+when = "internal-nets"
+then = "allow"
 ```
 
-### Reference
+`allow` and `deny` take CIDRs or bare addresses (a bare address becoming a host
+route), IPv4 or IPv6. Both empty while a rule names the check is a startup
+error: an empty `allow` imposes no constraint, so the check would accept
+everything, and an operator who configured it did not mean to turn on something
+inert.
 
-**`allow`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__ALLOWED_IP__ALLOW`*
+The shared allow/deny semantics, and the keys themselves, are documented under
+[Checks](checks.md#keys-by-type).
 
-List of CIDRs allowed to connect.
-
-**`deny`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__ALLOWED_IP__DENY`*
-
-List of CIDRs explicitly denied.
-
-If both `allow` and `deny` are empty, `acme-proxy` will emit a fatal error at
-startup, as an empty IP filter is a no-op.
+This check answers at **both** stages, since it reads nothing but the client
+address — which is what lets a rule say `internal-nets or inventory` and still
+have the address half answerable once the requested names are known.

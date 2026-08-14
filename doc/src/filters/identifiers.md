@@ -29,28 +29,36 @@ All matching is performed via Regular Expressions (Regex).
 ## Configuration
 
 ```toml
-[filter.identifiers]
+[filter]
+rules = ["corp-names-only"]
+
+[filter.check.corp-names]
+type = "identifiers"
 allowed_types = ["dns", "cn"]
+allow = ["*.corp.example.com", "corp.example.com"]
+deny  = ["secret.corp.example.com"]
 allow_wildcards = false
-allow = [".*\\.internal\\.corp"]
-deny = ["internal\\.corp"]
+
+[filter.rule.corp-names-only]
+when = "corp-names"
+then = "allow"
 ```
 
-### Reference
+`allow`/`deny` take globs, where `*` is one label — so `*.corp.example.com` does
+not cover `corp.example.com` and both are listed, exactly as they would be in a
+certificate. `allow_regex`/`deny_regex` take anchored regexes and are unioned
+with the globs, for what a glob cannot express. The keys and their defaults are
+documented under [Checks](checks.md#keys-by-type).
 
-**`allowed_types`** (`Array`) — *Default: `["dns", "cn"]` | Env: `ACME_PROXY_FILTER__IDENTIFIERS__ALLOWED_TYPES`*
+Two instances of this type with different lists are ordinary, which is the usual
+way to say "these names from this network, those names from that one":
 
-List of identifier types permitted (e.g., `dns`, `ip`, `email`, `uri`, `other`,
-`cn`).
+```toml
+[filter.rule.tenant-a]
+when = "tenant-a-net and tenant-a-names"
+then = "allow"
 
-**`allow`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__IDENTIFIERS__ALLOW`*
-
-List of regex patterns to allow.
-
-**`deny`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__IDENTIFIERS__DENY`*
-
-List of regex patterns to deny.
-
-**`allow_wildcards`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILDCARDS`*
-
-Whether to allow wildcard CSRs (e.g., `*.example.com`).
+[filter.rule.tenant-b]
+when = "tenant-b-net and tenant-b-names"
+then = "allow"
+```

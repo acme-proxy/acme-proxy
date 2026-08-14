@@ -40,32 +40,29 @@ defeated by a cached negative answer. Both honour `dns.resolver`.
 ## Configuration
 
 ```toml
-[filter.reverse_dns]
+[filter]
+rules = ["known-hosts"]
+
+[filter.check.has-ptr]
+type = "reverse_dns"
 # Require the PTR record to correctly forward-resolve back to the IP
 require_forward_confirm = true
+# Allow any host in the specific internal domain
+allow = ["*.corp.example.com"]
+# Deny the guest network infrastructure
+deny = ["*.guest.example.com"]
 timeout_ms = 2000
 
-# Allow connections from any host in the specific internal domain
-allow = [".*\\.internal\\.company\\.com"]
-
-# Deny connections from the guest network infrastructure
-deny = [".*\\.guest\\.company\\.com"]
+[filter.rule.known-hosts]
+when = "has-ptr"
+then = "allow"
 ```
 
-### Reference
+`allow`/`deny` take globs over the resolved hostname; `allow_regex`/`deny_regex`
+take anchored regexes and are unioned with them. The keys and their defaults are
+documented under [Checks](checks.md#keys-by-type).
 
-**`require_forward_confirm`** (`Boolean`) — *Default: `true` | Env: `ACME_PROXY_FILTER__REVERSE_DNS__REQUIRE_FORWARD_CONFIRM`*
-
-Require the PTR record to correctly forward-resolve back to the IP.
-
-**`allow`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__REVERSE_DNS__ALLOW`*
-
-List of regex patterns to allow.
-
-**`deny`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__REVERSE_DNS__DENY`*
-
-List of regex patterns to deny.
-
-**`timeout_ms`** (`Integer`) — *Default: `2000` | Env: `ACME_PROXY_FILTER__REVERSE_DNS__TIMEOUT_MS`*
-
-Timeout budget for DNS queries.
+Connection stage by default. It is *capable* of the identifier stage from the
+same address, but a PTR plus forward-confirmation exchange at `newOrder` **and**
+again at `finalize` triples the lookups for an answer that has not changed —
+so opt in with `stages = ["identifiers"]` when a rule needs it there.

@@ -20,7 +20,7 @@
 //! signing over the network (an upstream ACME CA, a remote signer) can await its
 //! IO instead of blocking a runtime thread. [`local_ca::LocalCa`] never awaits —
 //! its file IO happens once at startup and signing is CPU-bound — but the trait
-//! is shaped for the backends that do. Like [`crate::filter::Filter`], it needs
+//! is shaped for the backends that do. Like [`crate::filter::Check`], it needs
 //! `#[async_trait]`: `Arc<dyn SignerBackend>` with an `async fn` is not dyn-safe.
 //!
 //! Construction stays synchronous: [`from_config`] runs once at startup, where a

@@ -104,16 +104,7 @@ pub(crate) fn resolve_custom_entries<'a, T>(
     entries: &'a BTreeMap<String, T>,
     enabled: &'a [String],
 ) -> anyhow::Result<Vec<(&'a str, &'a T)>> {
-    for key in entries.keys() {
-        anyhow::ensure!(
-            valid_config_key_name(key),
-            "{subsystem}.custom.{key}: invalid name (use lowercase letters, digits and `-` \
-             — a custom-{subsystem} name is also an environment variable segment, and the \
-             config crate lowercases those, so anything else could silently name a \
-             different entry through ACME_PROXY_{}__CUSTOM__… than in the file)",
-            subsystem.to_ascii_uppercase()
-        );
-    }
+    validate_key_names(&format!("{subsystem}.custom"), entries.keys())?;
     anyhow::ensure!(
         !enabled.is_empty(),
         "{subsystem}.custom is enabled but {subsystem}.custom_enabled is empty; \
@@ -135,24 +126,64 @@ pub(crate) fn resolve_custom_entries<'a, T>(
         .collect()
 }
 
+/// Checks every key of an operator-named config table, naming the offender.
+///
+/// `prefix` is the table's path (`filter.check`, `notify.custom`), used only to
+/// word the error so an operator is told which key to go and look at. The
+/// reasoning in that error is the part worth stating once rather than three
+/// times: a table key is also an environment-variable segment, and the `config`
+/// crate lowercases those, so anything outside the permitted set could name one
+/// entry in a file and a silently different one through the environment.
+pub(crate) fn validate_key_names<'a>(
+    prefix: &str,
+    keys: impl Iterator<Item = &'a String>,
+) -> anyhow::Result<()> {
+    let env_prefix = prefix.to_ascii_uppercase().replace('.', "__");
+    for key in keys {
+        anyhow::ensure!(
+            valid_config_key_name(key),
+            "{prefix}.{key}: invalid name (use lowercase letters, digits and `-` — the \
+             name is also an environment variable segment, and the config crate \
+             lowercases those, so anything else could silently name a different entry \
+             through ACME_PROXY_{env_prefix}__… than in the file)"
+        );
+    }
+    Ok(())
+}
+
 /// Profile names are URL segments (`/profile/<name>`) as well as config-key
 /// names; see [`valid_config_key_name`].
 fn valid_profile_name(name: &str) -> bool {
     valid_config_key_name(name)
 }
 
+/// The list-valued fields of `[filter.check.<name>]`.
+///
+/// Separate from [`LIST_KEYS`] because the entry name is only known at runtime,
+/// so these are registered by scanning the environment rather than by literal.
+/// A new list field on `CheckConfig` needs an entry here or its environment
+/// variable is silently dropped.
+const CHECK_LIST_KEYS: &[&str] = &[
+    "stages",
+    "allow",
+    "deny",
+    "allow_regex",
+    "deny_regex",
+    "allowed_types",
+    "kids",
+    "args",
+];
+
 const LIST_KEYS: &[&str] = &[
     "challenge.enabled",
+    "filter.rules",
+    "filter.trusted_proxies",
+    // Removed keys. Registered so they still parse from the environment,
+    // which is what lets `filter::build` refuse them by name there as well as
+    // in a file — unregistered, they would fail as an opaque serde type error
+    // instead.
     "filter.enabled",
     "filter.exempt_paths",
-    "filter.trusted_proxies",
-    "filter.allowed_ip.allow",
-    "filter.allowed_ip.deny",
-    "filter.reverse_dns.allow",
-    "filter.reverse_dns.deny",
-    "filter.identifiers.allowed_types",
-    "filter.identifiers.allow",
-    "filter.identifiers.deny",
     "filter.custom_enabled",
     "ipam.netbox.sources",
     "ipam.netbox.vip_roles",
@@ -173,16 +204,10 @@ impl Config {
     fn list_key(&self, key: &str) -> Option<Vec<String>> {
         let value = match key {
             "challenge.enabled" => &self.challenge.enabled,
+            "filter.rules" => &self.filter.rules,
+            "filter.trusted_proxies" => &self.filter.trusted_proxies,
             "filter.enabled" => &self.filter.enabled,
             "filter.exempt_paths" => &self.filter.exempt_paths,
-            "filter.trusted_proxies" => &self.filter.trusted_proxies,
-            "filter.allowed_ip.allow" => &self.filter.allowed_ip.allow,
-            "filter.allowed_ip.deny" => &self.filter.allowed_ip.deny,
-            "filter.reverse_dns.allow" => &self.filter.reverse_dns.allow,
-            "filter.reverse_dns.deny" => &self.filter.reverse_dns.deny,
-            "filter.identifiers.allowed_types" => &self.filter.identifiers.allowed_types,
-            "filter.identifiers.allow" => &self.filter.identifiers.allow,
-            "filter.identifiers.deny" => &self.filter.identifiers.deny,
             "filter.custom_enabled" => &self.filter.custom_enabled,
             "ipam.netbox.sources" => &self.ipam.netbox.sources,
             "ipam.netbox.vip_roles" => &self.ipam.netbox.vip_roles,
@@ -223,21 +248,28 @@ impl Config {
                 environment = environment.with_list_parse_key(&format!("profiles.{name}.{key}"));
             }
         }
-        // One level deeper than the above: `filter.custom.<name>.args` is a
-        // list nested inside a table keyed by a name only known at runtime,
-        // same reasoning as the profile-scoped loop just above (and as
-        // `profiles_in_env` itself).
-        for name in names_in_env("ACME_PROXY_FILTER__CUSTOM__") {
-            environment = environment.with_list_parse_key(&format!("filter.custom.{name}.args"));
+        // One level deeper than the above: `[filter.check.<name>]` is a table
+        // keyed by a name only known at runtime, and it has eight list-valued
+        // fields. Same reasoning as the profile-scoped loop just above (and as
+        // `profiles_in_env` itself) — without this, every one of these is
+        // silently dropped from the environment rather than refused.
+        for name in names_in_env("ACME_PROXY_FILTER__CHECK__") {
+            for key in CHECK_LIST_KEYS {
+                environment =
+                    environment.with_list_parse_key(&format!("filter.check.{name}.{key}"));
+            }
         }
         for profile in &profiles_in_env {
             let prefix = format!(
-                "ACME_PROXY_PROFILES__{}__FILTER__CUSTOM__",
+                "ACME_PROXY_PROFILES__{}__FILTER__CHECK__",
                 profile.to_ascii_uppercase()
             );
             for name in names_in_env(&prefix) {
-                environment = environment
-                    .with_list_parse_key(&format!("profiles.{profile}.filter.custom.{name}.args"));
+                for key in CHECK_LIST_KEYS {
+                    environment = environment.with_list_parse_key(&format!(
+                        "profiles.{profile}.filter.check.{name}.{key}"
+                    ));
+                }
             }
         }
         // Same reasoning, one level deeper: `notify.custom.<name>` is also a
@@ -602,19 +634,44 @@ mod tests {
         let config = load_toml(
             r#"
             [filter]
-            identifiers.deny = ["a\\.example", "b\\.example"]
+            check.names.deny = ["a.example", "b.example"]
 
             [profiles.narrow]
-            filter.identifiers.deny = ["c\\.example"]
+            filter.check.names.deny = ["c.example"]
             "#,
         );
 
         let profiles = config.resolve_profiles().unwrap();
         assert_eq!(
-            profiles[0].sections.filter.identifiers.deny,
-            vec!["c\\.example"],
+            profiles[0].sections.filter.check["names"].deny,
+            vec!["c.example"],
             "arrays are replaced, never merged"
         );
+    }
+
+    /// The other half of the inheritance promise, and the reason
+    /// `[filter.rule.<name>]` is a map rather than an array of tables: a
+    /// profile overrides one field of one rule and inherits the rest, which an
+    /// array could not express at all.
+    #[test]
+    fn a_profile_overrides_one_field_of_an_inherited_rule() {
+        let config = load_toml(
+            r#"
+            [filter]
+            rules = ["inventory"]
+            rule.inventory.when = "inv"
+            rule.inventory.then = "allow"
+            rule.inventory.message = "not yours"
+
+            [profiles.staging]
+            filter.rule.inventory.mode = "warn"
+            "#,
+        );
+
+        let rule = &config.resolve_profiles().unwrap()[0].sections.filter.rule["inventory"];
+        assert_eq!(rule.mode, "warn");
+        assert_eq!(rule.when, "inv", "the condition is inherited");
+        assert_eq!(rule.message, "not yours", "so is the message");
     }
 
     #[test]
@@ -776,92 +833,87 @@ mod tests {
         assert_eq!(config.proxy.http_url, ProxyConfig::default().http_url);
     }
 
-    /// `filter.custom` entries are named tables, not a list — so unlike an
-    /// ordinary `LIST_KEYS` entry they need their own `with_list_parse_key`
-    /// registration for the nested `args` list, keyed by a name only known
-    /// at runtime (the same reason `filter.custom_enabled` alone isn't
-    /// enough to reconstruct a script's full configuration from env vars).
+    /// `[filter.check.<name>]` entries are named tables, not a list — so unlike
+    /// an ordinary `LIST_KEYS` entry, each of their list-valued fields needs
+    /// its own `with_list_parse_key` registration, keyed by a name only known
+    /// at runtime. Without that scan every one of them is silently dropped
+    /// from the environment rather than refused, which is the single most
+    /// forgettable part of this section.
     #[test]
-    fn env_configures_multiple_named_custom_scripts() {
+    fn env_configures_multiple_named_checks_with_all_their_lists() {
         let _guard = EnvGuard::new(&[
-            ("ACME_PROXY_FILTER__CUSTOM_ENABLED", "main,extra"),
+            ("ACME_PROXY_FILTER__RULES", "main"),
+            ("ACME_PROXY_FILTER__CHECK__MAIN__TYPE", "custom"),
             (
-                "ACME_PROXY_FILTER__CUSTOM__MAIN__SCRIPT_PATH",
+                "ACME_PROXY_FILTER__CHECK__MAIN__SCRIPT_PATH",
                 "/path/to/one.sh",
             ),
-            ("ACME_PROXY_FILTER__CUSTOM__MAIN__ARGS", "foo,bar"),
+            ("ACME_PROXY_FILTER__CHECK__MAIN__ARGS", "foo,bar"),
+            ("ACME_PROXY_FILTER__CHECK__MAIN__STAGES", "connection"),
+            ("ACME_PROXY_FILTER__CHECK__EXTRA__TYPE", "identifiers"),
             (
-                "ACME_PROXY_FILTER__CUSTOM__EXTRA__SCRIPT_PATH",
-                "/path/to/two.sh",
+                "ACME_PROXY_FILTER__CHECK__EXTRA__ALLOW",
+                "*.example.com,example.com",
             ),
+            ("ACME_PROXY_FILTER__CHECK__EXTRA__DENY_REGEX", "secret\\..*"),
+            ("ACME_PROXY_FILTER__CHECK__EXTRA__ALLOWED_TYPES", "dns"),
+            ("ACME_PROXY_FILTER__CHECK__EXTRA__KIDS", "k1,k2"),
         ]);
 
         let config = Config::load().expect("load should succeed");
-        assert_eq!(
-            config.filter.custom_enabled,
-            vec!["main".to_string(), "extra".to_string()]
-        );
-        assert_eq!(
-            config.filter.custom.get("main").unwrap().script_path,
-            "/path/to/one.sh"
-        );
-        assert_eq!(
-            config.filter.custom.get("main").unwrap().args,
-            vec!["foo".to_string(), "bar".to_string()]
-        );
-        assert_eq!(
-            config.filter.custom.get("extra").unwrap().script_path,
-            "/path/to/two.sh"
-        );
+        let check = &config.filter.check;
+        assert_eq!(check["main"].script_path, "/path/to/one.sh");
+        assert_eq!(check["main"].args, vec!["foo", "bar"]);
+        assert_eq!(check["main"].stages, vec!["connection"]);
+        assert_eq!(check["extra"].allow, vec!["*.example.com", "example.com"]);
+        assert_eq!(check["extra"].deny_regex, vec!["secret\\..*"]);
+        assert_eq!(check["extra"].allowed_types, vec!["dns"]);
+        assert_eq!(check["extra"].kids, vec!["k1", "k2"]);
+        assert_eq!(config.filter.rules, vec!["main"]);
     }
 
     /// The same, scoped to one profile — proving the runtime name scan also
-    /// covers `ACME_PROXY_PROFILES__<NAME>__FILTER__CUSTOM__<NAME>__…`.
+    /// covers `ACME_PROXY_PROFILES__<NAME>__FILTER__CHECK__<NAME>__…`.
     #[test]
-    fn env_configures_a_profile_scoped_named_custom_script() {
+    fn env_configures_a_profile_scoped_named_check() {
         let file = TempConfig::new("[profiles.le]\n");
         let path = file.path();
         let _guard = EnvGuard::new(&[
             ("ACME_PROXY_CONFIG", &path),
-            ("ACME_PROXY_PROFILES__LE__FILTER__CUSTOM_ENABLED", "main"),
+            ("ACME_PROXY_PROFILES__LE__FILTER__RULES", "only"),
             (
-                "ACME_PROXY_PROFILES__LE__FILTER__CUSTOM__MAIN__SCRIPT_PATH",
+                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__TYPE",
+                "custom",
+            ),
+            (
+                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__SCRIPT_PATH",
                 "/path/to/profile.sh",
             ),
             (
-                "ACME_PROXY_PROFILES__LE__FILTER__CUSTOM__MAIN__ARGS",
+                "ACME_PROXY_PROFILES__LE__FILTER__CHECK__MAIN__ARGS",
                 "a,b,c",
             ),
         ]);
 
         let config = Config::load().unwrap();
         let profiles = config.resolve_profiles().unwrap();
-        let custom = &profiles[0].sections.filter.custom;
-        assert_eq!(
-            custom.get("main").unwrap().script_path,
-            "/path/to/profile.sh"
-        );
-        assert_eq!(
-            custom.get("main").unwrap().args,
-            vec!["a".to_string(), "b".to_string(), "c".to_string()]
-        );
+        let check = &profiles[0].sections.filter.check;
+        assert_eq!(check["main"].script_path, "/path/to/profile.sh");
+        assert_eq!(check["main"].args, vec!["a", "b", "c"]);
+        assert_eq!(profiles[0].sections.filter.rules, vec!["only"]);
     }
 
-    /// The old (pre-list) unindexed shape
-    /// (`ACME_PROXY_FILTER__CUSTOM__SCRIPT_PATH`, with no name segment) is a
-    /// clear load-time error rather than something silently accepted or
-    /// ignored: `filter.custom` is now a table of *named* entries, so the
-    /// missing name segment makes `script_path`'s plain string value land
-    /// exactly where one script's whole table is expected.
+    /// The unindexed shape (`ACME_PROXY_FILTER__CHECK__TYPE`, with no name
+    /// segment) is a clear load-time error rather than something silently
+    /// accepted or ignored: `filter.check` is a table of *named* entries, so
+    /// the missing name segment makes `type`'s plain string value land exactly
+    /// where one check's whole table is expected.
     #[test]
-    fn the_old_unindexed_custom_filter_env_shape_is_a_clear_load_error() {
-        let _guard = EnvGuard::new(&[(
-            "ACME_PROXY_FILTER__CUSTOM__SCRIPT_PATH",
-            "/should/not/work.sh",
-        )]);
+    fn an_unindexed_check_env_shape_is_a_clear_load_error() {
+        let _guard = EnvGuard::new(&[("ACME_PROXY_FILTER__CHECK__TYPE", "allowed_ip")]);
 
         let error = Config::load().unwrap_err().to_string();
-        assert!(error.contains("filter.custom.script_path"), "{error}");
+        assert!(error.contains("filter.check.type"), "{error}");
     }
 
     /// An environment-only profile: no `[profiles]` table in the file at all.
@@ -918,24 +970,17 @@ mod tests {
         assert_eq!(config.challenge.http_01.max_redirects, 5);
         assert_eq!(config.challenge.http_01.max_response_bytes, 4096);
         assert_eq!(config.challenge.tls_alpn_01.port, 443);
-        assert!(config.filter.enabled.is_empty());
-        assert!(config.filter.exempt_paths.is_empty());
+        assert!(config.filter.rules.is_empty());
+        assert_eq!(config.filter.default, "deny");
         assert!(config.filter.trusted_proxies.is_empty());
         assert_eq!(config.filter.forwarded_header, "x-forwarded-for");
-        assert!(config.filter.allowed_ip.allow.is_empty());
-        assert!(config.filter.allowed_ip.deny.is_empty());
-        assert!(config.filter.reverse_dns.require_forward_confirm);
-        assert!(config.filter.reverse_dns.allow.is_empty());
-        assert!(config.filter.reverse_dns.deny.is_empty());
-        assert_eq!(config.filter.reverse_dns.timeout_ms, 2000);
-        assert_eq!(
-            config.filter.identifiers.allowed_types,
-            vec!["dns".to_string(), "cn".to_string()]
-        );
-        assert!(config.filter.identifiers.allow.is_empty());
-        assert!(config.filter.identifiers.deny.is_empty());
-        assert!(!config.filter.identifiers.allow_wildcards);
-        assert!(config.filter.custom.is_empty());
+        assert!(config.filter.rule.is_empty());
+        assert!(config.filter.check.is_empty());
+        // The keys the policy redesign removed default to empty so that a
+        // configuration which never set them is not refused for having them.
+        assert!(config.filter.enabled.is_empty());
+        assert!(config.filter.exempt_paths.is_empty());
+        assert!(config.filter.custom_enabled.is_empty());
         assert!(!config.eab.enabled);
         assert!(config.notify.enabled.is_empty());
         assert!(config.notify.custom_enabled.is_empty());
@@ -984,11 +1029,8 @@ mod tests {
         assert_eq!(loaded.challenge.bypass, direct.challenge.bypass);
         assert_eq!(loaded.challenge.timeout_ms, direct.challenge.timeout_ms);
         assert_eq!(loaded.challenge.http_01.port, direct.challenge.http_01.port);
-        assert_eq!(loaded.filter.exempt_paths, direct.filter.exempt_paths);
-        assert_eq!(
-            loaded.filter.identifiers.allowed_types,
-            direct.filter.identifiers.allowed_types
-        );
+        assert_eq!(loaded.filter.rules, direct.filter.rules);
+        assert_eq!(loaded.filter.default, direct.filter.default);
         assert_eq!(loaded.eab.enabled, direct.eab.enabled);
         assert_eq!(loaded.dns.resolver, direct.dns.resolver);
         assert_eq!(loaded.proxy.http_url, direct.proxy.http_url);
@@ -1166,28 +1208,16 @@ mod tests {
             example.challenge.tls_alpn_01.port,
             defaults.challenge.tls_alpn_01.port
         );
-        assert_eq!(example.filter.enabled, defaults.filter.enabled);
-        assert_eq!(example.filter.exempt_paths, defaults.filter.exempt_paths);
+        assert_eq!(example.filter.rules, defaults.filter.rules);
+        assert_eq!(example.filter.default, defaults.filter.default);
         assert_eq!(
             example.filter.forwarded_header,
             defaults.filter.forwarded_header
         );
-        assert_eq!(
-            example.filter.reverse_dns.require_forward_confirm,
-            defaults.filter.reverse_dns.require_forward_confirm
-        );
-        assert_eq!(
-            example.filter.reverse_dns.timeout_ms,
-            defaults.filter.reverse_dns.timeout_ms
-        );
-        assert_eq!(
-            example.filter.identifiers.allowed_types,
-            defaults.filter.identifiers.allowed_types
-        );
-        assert_eq!(
-            example.filter.identifiers.allow_wildcards,
-            defaults.filter.identifiers.allow_wildcards
-        );
+        // Every check and rule the example documents is commented out, so the
+        // file stays an all-defaults document that still boots.
+        assert!(example.filter.check.is_empty());
+        assert!(example.filter.rule.is_empty());
         assert_eq!(example.ipam.backend, defaults.ipam.backend);
         assert_eq!(example.ipam.timeout_ms, defaults.ipam.timeout_ms);
         assert_eq!(example.ipam.netbox.url, defaults.ipam.netbox.url);
@@ -1342,18 +1372,18 @@ mod tests {
     #[test]
     fn load_parses_list_valued_env_overrides() {
         let _guard = EnvGuard::new(&[
-            ("ACME_PROXY_FILTER__ENABLED", "allowed_ip,identifiers"),
+            ("ACME_PROXY_FILTER__RULES", "mgmt-bypass,inventory-owned"),
             (
-                "ACME_PROXY_FILTER__ALLOWED_IP__ALLOW",
+                "ACME_PROXY_FILTER__CHECK__NET__ALLOW",
                 "192.168.1.0/24,fd00::/8",
             ),
         ]);
 
         let config = Config::load().expect("load should succeed with list env overrides");
 
-        assert_eq!(config.filter.enabled, vec!["allowed_ip", "identifiers"]);
+        assert_eq!(config.filter.rules, vec!["mgmt-bypass", "inventory-owned"]);
         assert_eq!(
-            config.filter.allowed_ip.allow,
+            config.filter.check["net"].allow,
             vec!["192.168.1.0/24", "fd00::/8"]
         );
         assert_eq!(config.filter.forwarded_header, "x-forwarded-for");
@@ -1372,7 +1402,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            24,
+            18,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );
@@ -1380,9 +1410,8 @@ mod tests {
         for key in LIST_KEYS {
             let (first, second) = match *key {
                 "challenge.enabled" => ("http-01", "dns-01"),
-                "filter.enabled" => ("allowed_ip", "identifiers"),
+                "filter.rules" => ("mgmt-bypass", "inventory-owned"),
                 "filter.exempt_paths" => ("/health", "/directory"),
-                "filter.identifiers.allowed_types" => ("dns", "cn"),
                 _ => ("first-value", "second-value"),
             };
 

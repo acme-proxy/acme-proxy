@@ -36,7 +36,7 @@
 //! "The inventory does not associate this name with this address" is a decision
 //! about the client and denies the request. "It answered 500", "the token was
 //! refused", "the lookup timed out" are not — the server failed to reach a
-//! decision, so they become [`FilterError::Internal`] and surface as a 500 the
+//! decision, so they become [`Verdict::Undecided`] and surface as a 500 the
 //! client can retry. The split is enforced by the types rather than by care
 //! here: an [`IpamError`](crate::ipam::IpamError) cannot express a refusal, so
 //! every one of them maps to `Internal` and there is no branch in which an
@@ -48,7 +48,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::debug;
 
-use super::{Filter, FilterError, IdentifierContext, SUBJECT_ONLY_TYPES, canonical};
+use super::policy::{Check, StageSet, Verdict};
+use super::{IdentifierContext, SUBJECT_ONLY_TYPES, canonical};
 use crate::ipam::{AddressNames, IpamRegistry, normalize};
 
 /// Requires every requested name to be one the inventory associates with the
@@ -66,15 +67,15 @@ impl IpamFilter {
     }
 
     /// The names the inventory holds, or the refusal its answer implies.
-    async fn permitted_names(&self, client_ip: IpAddr) -> Result<AddressNames, FilterError> {
+    async fn permitted_names(&self, client_ip: IpAddr) -> Result<AddressNames, Verdict> {
         let names = self
             .ipam
             .names_for(client_ip)
             .await
-            .map_err(|error| FilterError::Internal(error.0))?;
+            .map_err(|error| Verdict::Undecided(error.0))?;
 
         if !names.is_known() {
-            return Err(FilterError::Denied(format!(
+            return Err(Verdict::Fail(format!(
                 "{} holds no record of {client_ip}",
                 self.ipam.backend_name()
             )));
@@ -84,20 +85,15 @@ impl IpamFilter {
     }
 }
 
-#[async_trait]
-impl Filter for IpamFilter {
-    fn name(&self) -> &'static str {
-        "ipam"
-    }
-
-    async fn check_identifiers(&self, ctx: &IdentifierContext<'_>) -> Result<(), FilterError> {
-        let client_ip = ctx.require_client_ip()?;
+impl IpamFilter {
+    async fn decide(&self, ctx: &IdentifierContext<'_>) -> Result<(), Verdict> {
+        let client_ip = super::require_client_ip(ctx.client_ip)?;
         let stage = ctx.stage.as_str();
         let backend = self.ipam.backend_name();
 
         // A CSR carrying nothing but a common name asks the inventory no
         // question, so it is not worth a round trip. Same reasoning as
-        // `FilterChain::is_active`.
+        // `FilterPolicy::has_rules_at`.
         if ctx.identifiers.iter().all(is_subject_only) {
             return Ok(());
         }
@@ -116,7 +112,7 @@ impl Filter for IpamFilter {
             match typ.as_str() {
                 "dns" => {
                     if !names.contains(&value) {
-                        return Err(FilterError::Denied(format!(
+                        return Err(Verdict::Fail(format!(
                             "{stage} identifier {} is not among the names {backend} associates \
                              with {client_ip}",
                             identifier.value
@@ -130,7 +126,7 @@ impl Filter for IpamFilter {
                         .parse::<IpAddr>()
                         .is_ok_and(|ip| canonical(ip) == client_ip);
                     if !is_client && !names.contains(&value) {
-                        return Err(FilterError::Denied(format!(
+                        return Err(Verdict::Fail(format!(
                             "{stage} identifier {} is neither {client_ip} nor a name {backend} \
                              associates with it",
                             identifier.value
@@ -138,7 +134,7 @@ impl Filter for IpamFilter {
                     }
                 }
                 other => {
-                    return Err(FilterError::Denied(format!(
+                    return Err(Verdict::Fail(format!(
                         "{stage} requests a {other} identifier, which {backend} cannot confirm \
                          for {client_ip}"
                     )));
@@ -155,6 +151,23 @@ impl Filter for IpamFilter {
             identifiers = ctx.identifiers.len(),
         );
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Check for IpamFilter {
+    fn kind(&self) -> &'static str {
+        "ipam"
+    }
+
+    /// Identifiers only, and not overridable: a connection hook would query the
+    /// inventory on every `newNonce`.
+    fn stages(&self) -> StageSet {
+        StageSet::identifiers_only()
+    }
+
+    async fn check_identifiers(&self, context: &IdentifierContext<'_>) -> Verdict {
+        self.decide(context).await.err().unwrap_or(Verdict::Pass)
     }
 }
 
@@ -245,7 +258,7 @@ mod tests {
         filter: &IpamFilter,
         ip: Option<&str>,
         identifiers: &[Identifier],
-    ) -> Result<(), FilterError> {
+    ) -> Verdict {
         filter
             .check_identifiers(&IdentifierContext {
                 client_ip: ip.map(|ip| ip.parse().unwrap()),
@@ -256,25 +269,25 @@ mod tests {
             .await
     }
 
-    async fn check(filter: &IpamFilter, identifiers: &[Identifier]) -> Result<(), FilterError> {
+    async fn check(filter: &IpamFilter, identifiers: &[Identifier]) -> Verdict {
         check_from(filter, Some("10.0.0.5"), identifiers).await
     }
 
-    fn assert_denied(error: FilterError, needle: &str) {
-        match error {
-            FilterError::Denied(detail) => {
+    fn assert_denied(verdict: Verdict, needle: &str) {
+        match verdict {
+            Verdict::Fail(detail) => {
                 assert!(detail.contains(needle), "{detail:?} lacks {needle:?}");
             }
-            other => panic!("expected Denied, got {other:?}"),
+            other => panic!("expected Fail, got {other:?}"),
         }
     }
 
-    fn assert_internal(error: FilterError, needle: &str) {
-        match error {
-            FilterError::Internal(detail) => {
+    fn assert_internal(verdict: Verdict, needle: &str) {
+        match verdict {
+            Verdict::Undecided(detail) => {
                 assert!(detail.contains(needle), "{detail:?} lacks {needle:?}");
             }
-            other => panic!("expected Internal, got {other:?}"),
+            other => panic!("expected Undecided, got {other:?}"),
         }
     }
 
@@ -284,37 +297,40 @@ mod tests {
     async fn a_listed_name_is_permitted() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        check(&filter, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("dns", "host.example.com")])).await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
     async fn matching_ignores_case_and_a_trailing_dot() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        check(&filter, &ids(&[("dns", "HOST.example.com.")]))
-            .await
-            .unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("dns", "HOST.example.com.")])).await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
     async fn every_requested_name_must_be_permitted() {
         let filter = filter(StubIpam::owning(&["a.example.com", "b.example.com"]));
 
-        check(
-            &filter,
-            &ids(&[("dns", "a.example.com"), ("dns", "b.example.com")]),
-        )
-        .await
-        .unwrap();
+        assert_eq!(
+            check(
+                &filter,
+                &ids(&[("dns", "a.example.com"), ("dns", "b.example.com")]),
+            )
+            .await,
+            Verdict::Pass
+        );
 
         let error = check(
             &filter,
             &ids(&[("dns", "a.example.com"), ("dns", "c.example.com")]),
         )
-        .await
-        .unwrap_err();
+        .await;
         assert_denied(error, "c.example.com");
     }
 
@@ -322,13 +338,15 @@ mod tests {
     async fn an_ipv4_mapped_client_is_canonicalized_before_the_lookup() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        check_from(
-            &filter,
-            Some("::ffff:10.0.0.5"),
-            &ids(&[("dns", "host.example.com")]),
-        )
-        .await
-        .unwrap();
+        assert_eq!(
+            check_from(
+                &filter,
+                Some("::ffff:10.0.0.5"),
+                &ids(&[("dns", "host.example.com")]),
+            )
+            .await,
+            Verdict::Pass
+        );
     }
 
     // ------------------------------------------------------------- refusals
@@ -339,14 +357,10 @@ mod tests {
     async fn an_unlisted_name_is_denied_naming_it_the_stage_and_the_backend() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        let error = check(&filter, &ids(&[("dns", "evil.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "evil.example.com")])).await;
         assert_denied(error, "newOrder identifier evil.example.com");
 
-        let error = check(&filter, &ids(&[("dns", "evil.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "evil.example.com")])).await;
         assert_denied(error, "StubIPAM associates with 10.0.0.5");
     }
 
@@ -357,9 +371,7 @@ mod tests {
     async fn an_unrecorded_address_is_denied_saying_so() {
         let filter = filter(StubIpam::unknown());
 
-        let error = check(&filter, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "host.example.com")])).await;
         assert_denied(error, "StubIPAM holds no record of 10.0.0.5");
     }
 
@@ -367,9 +379,7 @@ mod tests {
     async fn a_recorded_address_owning_nothing_is_denied_per_name() {
         let filter = filter(StubIpam::owning(&[]));
 
-        let error = check(&filter, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "host.example.com")])).await;
         assert_denied(error, "is not among the names");
     }
 
@@ -377,9 +387,7 @@ mod tests {
     async fn a_missing_client_address_is_denied() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        let error = check_from(&filter, None, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check_from(&filter, None, &ids(&[("dns", "host.example.com")])).await;
         assert_denied(error, "client address unavailable");
     }
 
@@ -392,9 +400,7 @@ mod tests {
     async fn a_failed_lookup_is_internal_not_a_denial() {
         let filter = filter(StubIpam::failing("HTTP 500"));
 
-        let error = check(&filter, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "host.example.com")])).await;
         assert_internal(error, "HTTP 500");
     }
 
@@ -418,9 +424,7 @@ mod tests {
             Duration::from_millis(10),
         )));
 
-        let error = check(&filter, &ids(&[("dns", "host.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "host.example.com")])).await;
         assert_internal(error, "timed out after 10ms");
     }
 
@@ -430,9 +434,7 @@ mod tests {
     async fn a_wildcard_needs_the_literal_entry() {
         let filter = filter(StubIpam::owning(&["example.com"]));
 
-        let error = check(&filter, &ids(&[("dns", "*.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "*.example.com")])).await;
         assert_denied(error, "*.example.com");
     }
 
@@ -440,18 +442,17 @@ mod tests {
     async fn a_literal_wildcard_entry_permits_the_wildcard() {
         let filter = filter(StubIpam::owning(&["*.example.com"]));
 
-        check(&filter, &ids(&[("dns", "*.example.com")]))
-            .await
-            .unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("dns", "*.example.com")])).await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
     async fn a_wildcard_entry_does_not_expand_to_subdomains() {
         let filter = filter(StubIpam::owning(&["*.example.com"]));
 
-        let error = check(&filter, &ids(&[("dns", "a.example.com")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("dns", "a.example.com")])).await;
         assert_denied(error, "a.example.com");
     }
 
@@ -461,16 +462,17 @@ mod tests {
     async fn the_connecting_address_may_always_be_certified() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        check(&filter, &ids(&[("ip", "10.0.0.5")])).await.unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("ip", "10.0.0.5")])).await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
     async fn another_address_is_denied_unless_listed() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        let error = check(&filter, &ids(&[("ip", "10.0.0.9")]))
-            .await
-            .unwrap_err();
+        let error = check(&filter, &ids(&[("ip", "10.0.0.9")])).await;
         assert_denied(error, "10.0.0.9");
     }
 
@@ -478,22 +480,27 @@ mod tests {
     async fn another_address_may_be_listed_like_any_other_name() {
         let filter = filter(StubIpam::owning(&["10.0.0.9"]));
 
-        check(&filter, &ids(&[("ip", "10.0.0.9")])).await.unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("ip", "10.0.0.9")])).await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
     async fn a_common_name_is_left_alone() {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
-        check(
-            &filter,
-            &ids(&[
-                ("dns", "host.example.com"),
-                ("cn", "rcgen self signed cert"),
-            ]),
-        )
-        .await
-        .unwrap();
+        assert_eq!(
+            check(
+                &filter,
+                &ids(&[
+                    ("dns", "host.example.com"),
+                    ("cn", "rcgen self signed cert"),
+                ]),
+            )
+            .await,
+            Verdict::Pass
+        );
     }
 
     /// No round trip at all for a CSR carrying nothing but a common name.
@@ -502,7 +509,10 @@ mod tests {
         let stub = Arc::new(StubIpam::failing("must not be called"));
         let filter = filter_over(stub.clone());
 
-        check(&filter, &ids(&[("cn", "some label")])).await.unwrap();
+        assert_eq!(
+            check(&filter, &ids(&[("cn", "some label")])).await,
+            Verdict::Pass
+        );
         assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
     }
 
@@ -511,9 +521,7 @@ mod tests {
         let filter = filter(StubIpam::owning(&["host.example.com"]));
 
         for typ in ["email", "uri", "other"] {
-            let error = check(&filter, &ids(&[(typ, "whatever")]))
-                .await
-                .unwrap_err();
+            let error = check(&filter, &ids(&[(typ, "whatever")])).await;
             assert_denied(error, &format!("requests a {typ} identifier"));
         }
     }
@@ -521,8 +529,10 @@ mod tests {
     // ------------------------------------------------------ startup + wiring
 
     #[test]
-    fn reports_its_config_name() {
-        assert_eq!(filter(StubIpam::unknown()).name(), "ipam");
+    fn reports_its_type_and_stages() {
+        let check = filter(StubIpam::unknown());
+        assert_eq!(check.kind(), "ipam");
+        assert_eq!(check.stages(), StageSet::identifiers_only());
     }
 
     #[tokio::test]
@@ -530,14 +540,16 @@ mod tests {
         let stub = Arc::new(StubIpam::failing("must not be called"));
         let filter = filter_over(stub.clone());
 
-        filter
-            .check_connection(&ConnectionContext {
-                client_ip: Some("203.0.113.9".parse().unwrap()),
-                method: &Method::POST,
-                path: "/newOrder",
-            })
-            .await
-            .unwrap();
+        assert_eq!(
+            filter
+                .check_connection(&ConnectionContext {
+                    client_ip: Some("203.0.113.9".parse().unwrap()),
+                    method: &Method::POST,
+                    path: "/newOrder",
+                })
+                .await,
+            Verdict::Pass
+        );
         assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
     }
 

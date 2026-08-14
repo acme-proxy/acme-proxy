@@ -73,7 +73,7 @@ authority on which host may hold which name, making a network round-trip
 redundant.
 
 It defaulted to `true` early in this project's life. That was reconsidered: an
-empty `filter.enabled` plus the default bind on every interface made the
+empty `filter.rules` plus the default bind on every interface made the
 combination an open CA, so the default is now `false`.
 
 ## The two state machines

@@ -13,12 +13,22 @@
 //! resolve back to the address the request came from, which requires control of
 //! the *forward* zone too. It is on by default and should stay on.
 //!
-//! ## Denied versus Internal
+//! ## Fail versus Undecided
 //!
-//! "No PTR record" is a decision about the client and denies the request. "The
-//! resolver timed out" is not — it is the server failing to reach a decision,
-//! so it becomes [`FilterError::Internal`] and surfaces as a 500 the client can
-//! retry. Both refuse the request; only one blames the client.
+//! "No PTR record" is a decision about the client and refuses the request.
+//! "The resolver timed out" is not — it is the server failing to reach a
+//! decision, so it becomes [`Verdict::Undecided`] and surfaces as a 500 the
+//! client can retry. Both refuse the request; only one blames the client, and
+//! only one can be rescued by the other side of an `or`.
+//!
+//! ## Stages
+//!
+//! Naturally connection-only, though it is *capable* of deciding at the
+//! identifier stage from the same address. It is not there by default because
+//! a PTR plus forward-confirmation exchange at `newOrder` **and** again at
+//! `finalize` triples the lookups for an answer that has not changed. An
+//! operator who wants it in an identifier-stage rule says so with
+//! `stages = ["identifiers"]`.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -28,11 +38,36 @@ use async_trait::async_trait;
 use regex::Regex;
 use tracing::{debug, info};
 
+use super::policy::{Check, StageSet, Verdict};
 use super::{
-    ConnectionContext, Filter, FilterError, ListVerdict, canonical, check_lists, compile_anchored,
+    ConnectionContext, IdentifierContext, ListVerdict, canonical, check_lists, compile_matchers,
 };
-use crate::config::{DnsConfig, ReverseDnsConfig};
+use crate::config::DnsConfig;
 use crate::dns::{HickoryResolver, Resolver, resolver_addr};
+
+/// Resolved `[filter.check.<name>]` settings for `type = "reverse_dns"`.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub require_forward_confirm: bool,
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    pub allow_regex: Vec<String>,
+    pub deny_regex: Vec<String>,
+    pub timeout_ms: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            require_forward_confirm: true,
+            allow: Vec::new(),
+            deny: Vec::new(),
+            allow_regex: Vec::new(),
+            deny_regex: Vec::new(),
+            timeout_ms: 2000,
+        }
+    }
+}
 
 /// Requires the client's address to have a PTR record, optionally
 /// forward-confirmed and optionally matching a hostname pattern.
@@ -65,49 +100,49 @@ impl ClientHasValidReverseDns {
     ///
     /// The resolver is shared with the rest of the crate, so it reports failures
     /// without knowing who asked; naming the setting is this caller's job.
-    pub fn from_config(cfg: &ReverseDnsConfig, dns: &DnsConfig) -> anyhow::Result<Self> {
+    pub fn from_settings(name: &str, settings: &Settings, dns: &DnsConfig) -> anyhow::Result<Self> {
         let resolver: Arc<dyn Resolver> = Arc::new(match resolver_addr(dns)? {
             Some(addr) => HickoryResolver::from_address(addr)
-                .map_err(|error| anyhow::anyhow!("filter.reverse_dns: {error}"))?,
+                .map_err(|error| anyhow::anyhow!("filter.check.{name}: {error}"))?,
             None => HickoryResolver::from_system()
-                .map_err(|error| anyhow::anyhow!("filter.reverse_dns: {error}"))?,
+                .map_err(|error| anyhow::anyhow!("filter.check.{name}: {error}"))?,
         });
-        let filter = Self::with_resolver(cfg, resolver)?;
+        let check = Self::with_resolver(name, settings, resolver)?;
         info!(
             event = "filter_reverse_dns_loaded",
             outcome = "success",
-            require_forward_confirm = cfg.require_forward_confirm,
-            timeout_ms = cfg.timeout_ms,
+            check = name,
+            require_forward_confirm = settings.require_forward_confirm,
+            timeout_ms = settings.timeout_ms,
         );
-        Ok(filter)
+        Ok(check)
     }
 
     /// Same, against a caller-supplied resolver. Used by tests.
     pub fn with_resolver(
-        cfg: &ReverseDnsConfig,
+        name: &str,
+        settings: &Settings,
         resolver: Arc<dyn Resolver>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             resolver,
-            require_forward_confirm: cfg.require_forward_confirm,
-            allow: compile_anchored(&cfg.allow, "filter.reverse_dns.allow")?,
-            deny: compile_anchored(&cfg.deny, "filter.reverse_dns.deny")?,
-            timeout: Duration::from_millis(cfg.timeout_ms),
+            require_forward_confirm: settings.require_forward_confirm,
+            allow: compile_matchers(&settings.allow, &settings.allow_regex, name, "allow")?,
+            deny: compile_matchers(&settings.deny, &settings.deny_regex, name, "deny")?,
+            timeout: Duration::from_millis(settings.timeout_ms),
         })
     }
 
     /// Resolves and vets the client's hostname, inside the configured budget.
-    async fn resolve_hostname(&self, client_ip: IpAddr) -> Result<String, FilterError> {
+    async fn resolve_hostname(&self, client_ip: IpAddr) -> Result<String, Verdict> {
         let names = self
             .resolver
             .reverse(client_ip)
             .await
-            .map_err(|error| FilterError::Internal(format!("PTR lookup failed: {error}")))?;
+            .map_err(|error| Verdict::Undecided(format!("PTR lookup failed: {error}")))?;
 
         if names.is_empty() {
-            return Err(FilterError::Denied(format!(
-                "no PTR record for {client_ip}"
-            )));
+            return Err(Verdict::Fail(format!("no PTR record for {client_ip}")));
         }
 
         // `deny` is checked across *all* candidates before any is accepted.
@@ -125,7 +160,7 @@ impl ClientHasValidReverseDns {
             check_lists(&[], &self.deny, |pattern: &Regex| pattern.is_match(name))
                 == ListVerdict::Denied
         }) {
-            return Err(FilterError::Denied(format!("hostname {denied} is denied")));
+            return Err(Verdict::Fail(format!("hostname {denied} is denied")));
         }
 
         // A single address may publish several PTR names; one acceptable name
@@ -142,30 +177,28 @@ impl ClientHasValidReverseDns {
             }
         }
 
-        Err(last_refusal.unwrap_or_else(|| {
-            FilterError::Denied(format!("no acceptable PTR name for {client_ip}"))
-        }))
+        Err(last_refusal
+            .unwrap_or_else(|| Verdict::Fail(format!("no acceptable PTR name for {client_ip}"))))
     }
 
     /// Applies the allow list to one candidate name and forward-confirms it.
     /// `deny` is handled by the caller, across every candidate at once.
-    async fn vet(&self, client_ip: IpAddr, name: &str) -> Result<(), FilterError> {
+    async fn vet(&self, client_ip: IpAddr, name: &str) -> Result<(), Verdict> {
         // `deny` was already applied across every candidate by the caller.
         if check_lists(&self.allow, &[], |pattern: &Regex| pattern.is_match(name))
             == ListVerdict::NotAllowed
         {
-            return Err(FilterError::Denied(format!(
-                "hostname {name} is not allowed"
-            )));
+            return Err(Verdict::Fail(format!("hostname {name} is not allowed")));
         }
 
         if self.require_forward_confirm {
-            let addresses = self.resolver.forward(name).await.map_err(|error| {
-                FilterError::Internal(format!("forward lookup failed: {error}"))
-            })?;
+            let addresses =
+                self.resolver.forward(name).await.map_err(|error| {
+                    Verdict::Undecided(format!("forward lookup failed: {error}"))
+                })?;
 
             if !addresses.iter().any(|addr| canonical(*addr) == client_ip) {
-                return Err(FilterError::Denied(format!(
+                return Err(Verdict::Fail(format!(
                     "hostname {name} does not resolve back to {client_ip}"
                 )));
             }
@@ -173,32 +206,52 @@ impl ClientHasValidReverseDns {
 
         Ok(())
     }
-}
 
-#[async_trait]
-impl Filter for ClientHasValidReverseDns {
-    fn name(&self) -> &'static str {
-        "reverse_dns"
-    }
-
-    async fn check_connection(&self, ctx: &ConnectionContext<'_>) -> Result<(), FilterError> {
+    /// The whole decision, shared by both hooks because it reads only the
+    /// address.
+    async fn decide(&self, client_ip: Option<IpAddr>) -> Verdict {
         // Fail closed, as the IP allowlist does. Canonicalized so the forward
         // confirmation below compares like with like.
-        let client_ip = ctx.require_client_ip()?;
+        let client_ip = match super::require_client_ip(client_ip) {
+            Ok(client_ip) => client_ip,
+            Err(verdict) => return verdict,
+        };
 
         // One budget for the whole PTR + confirmation exchange, so a wedged
         // resolver cannot pin a request open.
         match tokio::time::timeout(self.timeout, self.resolve_hostname(client_ip)).await {
             Ok(Ok(hostname)) => {
                 debug!(event = "filter_reverse_dns_accepted", outcome = "success", client_ip = %client_ip, hostname);
-                Ok(())
+                Verdict::Pass
             }
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(FilterError::Internal(format!(
+            Ok(Err(verdict)) => verdict,
+            Err(_) => Verdict::Undecided(format!(
                 "reverse DNS for {client_ip} timed out after {}ms",
                 self.timeout.as_millis()
-            ))),
+            )),
         }
+    }
+}
+
+#[async_trait]
+impl Check for ClientHasValidReverseDns {
+    fn kind(&self) -> &'static str {
+        "reverse_dns"
+    }
+
+    /// Connection-only by default; `stages = ["identifiers"]` moves it, which
+    /// is why the identifier hook below is implemented rather than left to the
+    /// trait's default.
+    fn stages(&self) -> StageSet {
+        StageSet::connection_only()
+    }
+
+    async fn check_connection(&self, context: &ConnectionContext<'_>) -> Verdict {
+        self.decide(context.client_ip).await
+    }
+
+    async fn check_identifiers(&self, context: &IdentifierContext<'_>) -> Verdict {
+        self.decide(context.client_ip).await
     }
 }
 
@@ -264,11 +317,11 @@ mod tests {
         }
     }
 
-    fn filter(cfg: &ReverseDnsConfig, resolver: StubResolver) -> ClientHasValidReverseDns {
-        ClientHasValidReverseDns::with_resolver(cfg, Arc::new(resolver)).unwrap()
+    fn filter(cfg: &Settings, resolver: StubResolver) -> ClientHasValidReverseDns {
+        ClientHasValidReverseDns::with_resolver("ptr", cfg, Arc::new(resolver)).unwrap()
     }
 
-    async fn check(filter: &ClientHasValidReverseDns, ip: &str) -> Result<(), FilterError> {
+    async fn check(filter: &ClientHasValidReverseDns, ip: &str) -> Verdict {
         filter
             .check_connection(&ConnectionContext {
                 client_ip: Some(ip.parse().unwrap()),
@@ -278,21 +331,24 @@ mod tests {
             .await
     }
 
-    fn assert_denied(error: FilterError, needle: &str) {
-        match error {
-            FilterError::Denied(detail) => {
+    fn assert_denied(verdict: Verdict, needle: &str) {
+        match verdict {
+            Verdict::Fail(detail) => {
                 assert!(detail.contains(needle), "{detail:?} lacks {needle:?}");
             }
-            other => panic!("expected Denied, got {other:?}"),
+            other => panic!("expected Fail, got {other:?}"),
         }
     }
 
-    fn assert_internal(error: FilterError, needle: &str) {
-        match error {
-            FilterError::Internal(detail) => {
+    /// An unreachable resolver is an *unknown*, never a refusal — that is what
+    /// lets the other side of an `or` rescue it, and what keeps a resolver
+    /// outage a retryable 500 rather than a permanent-looking 403.
+    fn assert_internal(verdict: Verdict, needle: &str) {
+        match verdict {
+            Verdict::Undecided(detail) => {
                 assert!(detail.contains(needle), "{detail:?} lacks {needle:?}");
             }
-            other => panic!("expected Internal, got {other:?}"),
+            other => panic!("expected Undecided, got {other:?}"),
         }
     }
 
@@ -301,14 +357,14 @@ mod tests {
         let resolver = StubResolver::default()
             .with_ptr("203.0.113.9", &["host.example.com"])
             .with_forward("host.example.com", &["203.0.113.9"]);
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert!(check(&filter, "203.0.113.9").await.is_ok());
+        let filter = filter(&Settings::default(), resolver);
+        assert_eq!(check(&filter, "203.0.113.9").await, Verdict::Pass);
     }
 
     #[tokio::test]
     async fn denies_a_client_without_a_ptr_record() {
-        let filter = filter(&ReverseDnsConfig::default(), StubResolver::default());
-        assert_denied(check(&filter, "203.0.113.9").await.unwrap_err(), "no PTR");
+        let filter = filter(&Settings::default(), StubResolver::default());
+        assert_denied(check(&filter, "203.0.113.9").await, "no PTR");
     }
 
     #[tokio::test]
@@ -317,21 +373,21 @@ mod tests {
         let resolver = StubResolver::default()
             .with_ptr("203.0.113.9", &["trusted.example.com"])
             .with_forward("trusted.example.com", &["198.51.100.4"]);
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert_denied(
-            check(&filter, "203.0.113.9").await.unwrap_err(),
-            "does not resolve back",
-        );
+        let filter = filter(&Settings::default(), resolver);
+        assert_denied(check(&filter, "203.0.113.9").await, "does not resolve back");
     }
 
     #[tokio::test]
     async fn accepts_an_unconfirmed_ptr_when_confirmation_is_off() {
         let resolver = StubResolver::default().with_ptr("203.0.113.9", &["host.example.com"]);
-        let cfg = ReverseDnsConfig {
+        let cfg = Settings {
             require_forward_confirm: false,
-            ..ReverseDnsConfig::default()
+            ..Settings::default()
         };
-        assert!(check(&filter(&cfg, resolver), "203.0.113.9").await.is_ok());
+        assert_eq!(
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
+            Verdict::Pass
+        );
     }
 
     #[tokio::test]
@@ -339,14 +395,12 @@ mod tests {
         let resolver = StubResolver::default()
             .with_ptr("203.0.113.9", &["host.other.net"])
             .with_forward("host.other.net", &["203.0.113.9"]);
-        let cfg = ReverseDnsConfig {
-            allow: vec![r".*\.corp\.example\.com".to_string()],
-            ..ReverseDnsConfig::default()
+        let cfg = Settings {
+            allow_regex: vec![r".*\.corp\.example\.com".to_string()],
+            ..Settings::default()
         };
         assert_denied(
-            check(&filter(&cfg, resolver), "203.0.113.9")
-                .await
-                .unwrap_err(),
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
             "is not allowed",
         );
     }
@@ -356,14 +410,12 @@ mod tests {
         let resolver = StubResolver::default()
             .with_ptr("203.0.113.9", &["bad.example.com"])
             .with_forward("bad.example.com", &["203.0.113.9"]);
-        let cfg = ReverseDnsConfig {
-            deny: vec![r"bad\..*".to_string()],
-            ..ReverseDnsConfig::default()
+        let cfg = Settings {
+            deny_regex: vec![r"bad\..*".to_string()],
+            ..Settings::default()
         };
         assert_denied(
-            check(&filter(&cfg, resolver), "203.0.113.9")
-                .await
-                .unwrap_err(),
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
             "is denied",
         );
     }
@@ -381,14 +433,12 @@ mod tests {
             .with_ptr("203.0.113.9", &["bad.example.com", "ok.example.com"])
             .with_forward("bad.example.com", &["203.0.113.9"])
             .with_forward("ok.example.com", &["203.0.113.9"]);
-        let cfg = ReverseDnsConfig {
-            deny: vec![r"bad\..*".to_string()],
-            ..ReverseDnsConfig::default()
+        let cfg = Settings {
+            deny_regex: vec![r"bad\..*".to_string()],
+            ..Settings::default()
         };
         assert_denied(
-            check(&filter(&cfg, resolver), "203.0.113.9")
-                .await
-                .unwrap_err(),
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
             "bad.example.com",
         );
     }
@@ -400,14 +450,12 @@ mod tests {
             .with_ptr("203.0.113.9", &["ok.example.com", "bad.example.com"])
             .with_forward("bad.example.com", &["203.0.113.9"])
             .with_forward("ok.example.com", &["203.0.113.9"]);
-        let cfg = ReverseDnsConfig {
-            deny: vec![r"bad\..*".to_string()],
-            ..ReverseDnsConfig::default()
+        let cfg = Settings {
+            deny_regex: vec![r"bad\..*".to_string()],
+            ..Settings::default()
         };
         assert_denied(
-            check(&filter(&cfg, resolver), "203.0.113.9")
-                .await
-                .unwrap_err(),
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
             "bad.example.com",
         );
     }
@@ -418,8 +466,8 @@ mod tests {
             .with_ptr("203.0.113.9", &["stale.example.com", "host.example.com"])
             .with_forward("stale.example.com", &["198.51.100.4"])
             .with_forward("host.example.com", &["203.0.113.9"]);
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert!(check(&filter, "203.0.113.9").await.is_ok());
+        let filter = filter(&Settings::default(), resolver);
+        assert_eq!(check(&filter, "203.0.113.9").await, Verdict::Pass);
     }
 
     #[tokio::test]
@@ -428,8 +476,8 @@ mod tests {
             ptr_error: Some("SERVFAIL".to_string()),
             ..StubResolver::default()
         };
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert_internal(check(&filter, "203.0.113.9").await.unwrap_err(), "SERVFAIL");
+        let filter = filter(&Settings::default(), resolver);
+        assert_internal(check(&filter, "203.0.113.9").await, "SERVFAIL");
     }
 
     #[tokio::test]
@@ -438,11 +486,8 @@ mod tests {
             forward_error: Some("SERVFAIL".to_string()),
             ..StubResolver::default().with_ptr("203.0.113.9", &["host.example.com"])
         };
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert_internal(
-            check(&filter, "203.0.113.9").await.unwrap_err(),
-            "forward lookup failed",
-        );
+        let filter = filter(&Settings::default(), resolver);
+        assert_internal(check(&filter, "203.0.113.9").await, "forward lookup failed");
     }
 
     #[tokio::test]
@@ -451,29 +496,26 @@ mod tests {
             hang: true,
             ..StubResolver::default()
         };
-        let cfg = ReverseDnsConfig {
+        let cfg = Settings {
             timeout_ms: 10,
-            ..ReverseDnsConfig::default()
+            ..Settings::default()
         };
         assert_internal(
-            check(&filter(&cfg, resolver), "203.0.113.9")
-                .await
-                .unwrap_err(),
+            check(&filter(&cfg, resolver), "203.0.113.9").await,
             "timed out",
         );
     }
 
     #[tokio::test]
     async fn a_missing_client_address_is_denied() {
-        let filter = filter(&ReverseDnsConfig::default(), StubResolver::default());
+        let filter = filter(&Settings::default(), StubResolver::default());
         let error = filter
             .check_connection(&ConnectionContext {
                 client_ip: None,
                 method: &Method::POST,
                 path: "/newOrder",
             })
-            .await
-            .unwrap_err();
+            .await;
         assert_denied(error, "unavailable");
     }
 
@@ -482,29 +524,31 @@ mod tests {
         let resolver = StubResolver::default()
             .with_ptr("192.168.1.5", &["host.example.com"])
             .with_forward("host.example.com", &["192.168.1.5"]);
-        let filter = filter(&ReverseDnsConfig::default(), resolver);
-        assert!(check(&filter, "::ffff:192.168.1.5").await.is_ok());
+        let filter = filter(&Settings::default(), resolver);
+        assert_eq!(check(&filter, "::ffff:192.168.1.5").await, Verdict::Pass);
     }
 
     #[test]
     fn a_bad_hostname_pattern_is_a_startup_error() {
-        let cfg = ReverseDnsConfig {
-            deny: vec!["[unclosed".to_string()],
-            ..ReverseDnsConfig::default()
+        let cfg = Settings {
+            deny_regex: vec!["[unclosed".to_string()],
+            ..Settings::default()
         };
         let error =
-            ClientHasValidReverseDns::with_resolver(&cfg, Arc::new(StubResolver::default()))
+            ClientHasValidReverseDns::with_resolver("ptr", &cfg, Arc::new(StubResolver::default()))
                 .unwrap_err()
                 .to_string();
-        assert!(error.contains("filter.reverse_dns.deny"), "{error}");
+        assert!(error.contains("filter.check.ptr.deny_regex"), "{error}");
     }
 
     #[test]
-    fn reports_its_config_name() {
-        assert_eq!(
-            filter(&ReverseDnsConfig::default(), StubResolver::default()).name(),
-            "reverse_dns"
-        );
+    fn reports_its_type_and_stages() {
+        let check = filter(&Settings::default(), StubResolver::default());
+        assert_eq!(check.kind(), "reverse_dns");
+        // Capable of both, but connection-only unless an operator says
+        // otherwise — a PTR exchange at newOrder *and* finalize triples the
+        // lookups for an answer that has not changed.
+        assert_eq!(check.stages(), StageSet::connection_only());
     }
 
     /// `dyn Resolver` is not `Debug`, so the filter renders the policy it was
@@ -512,11 +556,12 @@ mod tests {
     #[test]
     fn the_filter_debug_shows_its_policy() {
         let filter = ClientHasValidReverseDns::with_resolver(
-            &ReverseDnsConfig {
+            "ptr",
+            &Settings {
                 require_forward_confirm: true,
-                allow: vec![r"host\.example\.com".to_string()],
-                deny: Vec::new(),
+                allow_regex: vec![r"host\.example\.com".to_string()],
                 timeout_ms: 1234,
+                ..Settings::default()
             },
             Arc::new(StubResolver::default()),
         )

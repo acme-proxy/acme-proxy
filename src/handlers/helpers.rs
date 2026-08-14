@@ -9,7 +9,7 @@ use tracing::{error, instrument, warn};
 
 use crate::challenge::ChallengeError;
 use crate::error::Problem;
-use crate::filter::{FilterChain, FilterError, IdentifierContext, IdentifierStage};
+use crate::filter::{FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},
@@ -18,11 +18,11 @@ use crate::sqlite::{
     order::{Identifier, Order},
 };
 
-/// Runs the filter chain's identifier hook and maps a refusal to the ACME error
-/// the stage calls for.
+/// Runs the policy's identifier stage and maps a refusal to the ACME error the
+/// sub-stage calls for.
 #[instrument(name = "check_identifiers", skip_all)]
 pub(crate) async fn check_identifiers(
-    filter: &FilterChain,
+    filter: &FilterPolicy,
     client_ip: Option<IpAddr>,
     account_id: &str,
     stage: IdentifierStage,
@@ -36,12 +36,12 @@ pub(crate) async fn check_identifiers(
     };
 
     match filter.check_identifiers(&context).await {
-        Ok(()) => Ok(()),
-        Err(FilterError::Denied(detail)) => Err(match stage {
+        Outcome::Allow => Ok(()),
+        Outcome::Deny(detail) => Err(match stage {
             IdentifierStage::NewOrder => Problem::rejected_identifier(detail),
             IdentifierStage::Csr => Problem::bad_csr(detail),
         }),
-        Err(FilterError::Internal(_)) => Err(Problem::server_internal("Request filtering failed")),
+        Outcome::Undecided(_) => Err(Problem::server_internal("Request filtering failed")),
     }
 }
 

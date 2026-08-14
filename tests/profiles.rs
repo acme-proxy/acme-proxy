@@ -11,7 +11,8 @@
 
 use std::sync::Arc;
 
-use acme_proxy::filter::{ConnectionContext, Filter, FilterChain, FilterError, IdentifierContext};
+use acme_proxy::filter::policy::{Check, StageSet, Verdict};
+use acme_proxy::filter::{ConnectionContext, IdentifierContext};
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
@@ -495,17 +496,21 @@ async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
 struct DenyAll;
 
 #[async_trait]
-impl Filter for DenyAll {
-    fn name(&self) -> &'static str {
-        "deny_all"
+impl Check for DenyAll {
+    fn kind(&self) -> &'static str {
+        "deny-all"
     }
 
-    async fn check_connection(&self, _ctx: &ConnectionContext<'_>) -> Result<(), FilterError> {
-        Err(FilterError::Denied("denied by policy".to_string()))
+    fn stages(&self) -> StageSet {
+        StageSet::both()
     }
 
-    async fn check_identifiers(&self, _ctx: &IdentifierContext<'_>) -> Result<(), FilterError> {
-        Ok(())
+    async fn check_connection(&self, _ctx: &ConnectionContext<'_>) -> Verdict {
+        Verdict::Fail("denied by policy".to_string())
+    }
+
+    async fn check_identifiers(&self, _ctx: &IdentifierContext<'_>) -> Verdict {
+        Verdict::Pass
     }
 }
 
@@ -513,11 +518,7 @@ impl Filter for DenyAll {
 /// which is the point of running both in one process.
 #[tokio::test]
 async fn filters_apply_to_their_own_profile_only() {
-    let closed = Arc::new(FilterChain::new(
-        vec![Arc::new(DenyAll)],
-        Vec::new(),
-        acme_proxy::filter::client_ip::ProxyPolicy::default(),
-    ));
+    let closed = common::policy_with(Arc::new(DenyAll));
     let app = test_app_with_profiles(vec![
         TestProfile::new("open"),
         TestProfile::new("closed").with_filter(closed),

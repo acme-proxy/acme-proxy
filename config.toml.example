@@ -618,134 +618,197 @@ max_response_bytes = 4096           # ACME_PROXY_CHALLENGE__HTTP_01__MAX_RESPONS
 port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 
 [filter]   # [per-profile] — a [profiles.<name>] block may override these
-# Request filtering: which clients may reach the server, and which names they may
-# have certified. Independent of [challenge] above, and the only access control
-# left when challenge.bypass is on — with it set, anyone who can reach this
-# server can obtain a certificate for any name.
+# Request filtering: which clients may reach the server, and which names they
+# may have certified. Independent of [challenge] above, and the only access
+# control left when challenge.bypass is on — with it set, anyone who can reach
+# this server can obtain a certificate for any name.
 #
-# Filters run in the order listed and ALL of them must pass; the first denial
-# wins. An empty list (the default) disables filtering entirely, and the server
-# logs a `filter_disabled` warning at startup saying so.
-# Known names: "allowed_ip", "reverse_dns", "identifiers", "custom", "ipam".
-# ("netbox" was renamed to "ipam" and moved to its own [ipam] section; the old
-# spelling is refused by name at startup rather than silently ignored.)
-enabled = []                        # ACME_PROXY_FILTER__ENABLED
-# Paths that skip connection-level filtering, relative to the profile's own
-# mount point (so "/directory", not "/profile/<name>/directory").
+# The shape is a small policy engine: NAMED CHECKS, and RULES over them.
 #
-# Empty by default: `/health` and the other server-level routes are served by
-# the root router, which no profile's filters ever see, so nothing needs
-# exempting for a health probe to keep working from a blocked address.
-exempt_paths = []                   # ACME_PROXY_FILTER__EXEMPT_PATHS
+#   - a [filter.check.<name>] is one question about a request — "is this
+#     address in the management network?", "does the inventory say this address
+#     owns this name?" — with a `type` saying which question.
+#   - a [filter.rule.<name>] is a boolean expression over check names plus what
+#     a match means: `then = "allow"` or `then = "deny"`.
+#   - `rules` below lists the rules to evaluate, IN ORDER. First match wins.
+#
+# Everything is a named check, `custom` included, and two checks of one type
+# are ordinary — two identifier lists, two script hooks, an address list per
+# network. See doc/src/filters/ for the whole chapter.
+
+# Which [filter.rule.<name>] entries to evaluate, and in what order.
+# Empty (the default) disables filtering entirely, and the server logs a
+# `filter_disabled` warning at startup saying so.
+rules = []                          # ACME_PROXY_FILTER__RULES
+# What happens at a stage where a rule was applicable and none of them matched.
+# "deny" or "allow".
+#
+# Never consulted at a stage no rule applies to, which matters more than it
+# sounds: a policy made entirely of identifier-stage rules must not refuse every
+# connection before a name has even been mentioned. So a policy of nothing but
+# `identifiers` checks still serves /directory and /newNonce.
+default = "deny"                    # ACME_PROXY_FILTER__DEFAULT
 # CIDRs of reverse proxies whose forwarded-for header is believed. Leave empty
 # when clients connect directly: the header is then ignored, and a client cannot
 # claim an allowlisted address by setting it itself.
 trusted_proxies = []                # ACME_PROXY_FILTER__TRUSTED_PROXIES
 # Header carrying the original client address, read only from a trusted proxy.
 forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
-# Which of the named [filter.custom.<name>] entries below to run, and in what
-# order, when "custom" is listed in `enabled` above. See [filter.custom].
-custom_enabled = []                 # ACME_PROXY_FILTER__CUSTOM_ENABLED
 
-[filter.allowed_ip]
-# Which networks may reach the server. CIDR notation or a bare address (which
-# becomes a host route), IPv4 or IPv6. For example:
-#   allow = ["192.168.1.0/24", "10.0.0.0/8", "fd00::/8", "203.0.113.7"]
-#   deny  = ["192.168.1.66"]
+# --------------------------------------------------------------------- checks
 #
-# `deny` is checked first and wins, and an empty `allow` imposes no constraint,
-# which gives three usable shapes:
-#   - allow only: a strict allowlist.
-#   - deny only:  a blocklist, everything else served.
-#   - both:       an allowlist with holes punched in it (as above).
-# Deny-wins is plain membership, not longest-prefix-match: a /32 in `allow` does
-# not beat a /8 in `deny`.
+# Each [filter.check.<name>] takes a `type` plus that type's own keys. The
+# available types are:
 #
-# Enabling "allowed_ip" with BOTH lists empty is a startup error, since it would
-# accept every request — an enabled filter that does nothing.
-allow = []                          # ACME_PROXY_FILTER__ALLOWED_IP__ALLOW
-deny  = []                          # ACME_PROXY_FILTER__ALLOWED_IP__DENY
-
-[filter.reverse_dns]
-# Require the client's address to have a usable PTR record.
-# Forward confirmation re-resolves that PTR name and requires the client's own
-# address back. Keep it on: a PTR alone proves nothing, because it is published
-# by whoever controls the reverse zone — often the client itself.
-require_forward_confirm = true      # ACME_PROXY_FILTER__REVERSE_DNS__REQUIRE_FORWARD_CONFIRM
-# Optional regexes on the resolved hostname. Empty `allow` accepts any confirmed
-# hostname; `deny` is checked first. Both are anchored (see [filter.identifiers]).
-allow = []                          # ACME_PROXY_FILTER__REVERSE_DNS__ALLOW
-deny  = []                          # ACME_PROXY_FILTER__REVERSE_DNS__DENY
-# Budget for the whole PTR + confirmation exchange. A timeout is reported as a
-# server error rather than a denial, since the server failed to decide.
-timeout_ms = 2000                   # ACME_PROXY_FILTER__REVERSE_DNS__TIMEOUT_MS
-
-[filter.identifiers]
-# Which names a client may have certified. Checked at newOrder against the
-# requested identifiers, and again at finalize against the CSR itself — the
-# second is the one that matters, because the CSR is what gets signed.
-#
-# A CSR can request more than DNS names: its subject alternative names may be IP
-# addresses, email addresses or URIs, and its subject may carry a common name
-# ("cn") that no SAN repeats. All of them are checked, so a rule cannot be
-# sidestepped by moving a name from a DNS SAN into the common name.
-# Any type not listed here is refused outright.
-allowed_types = ["dns", "cn"]       # ACME_PROXY_FILTER__IDENTIFIERS__ALLOWED_TYPES
-# Regexes matched against each value, case-insensitively. They are ANCHORED
-# automatically as `^(?:...)$` — without that, an allow entry of `example\.com`
-# would also match `example.com.evil.net`. Write `.*\.example\.com` for a suffix.
-#
-# Values are normalized before matching: DNS names are lowercased with any
-# trailing dot removed, and IP addresses are canonicalized, so a pattern does not
-# have to anticipate `EXAMPLE.com.` or `::ffff:10.0.0.1`.
-#
-# `deny` wins over `allow` and reaches every value, common name included.
-# `allow` constrains only the names the certificate is issued FOR (those from
-# subject alternative names), not the common name, which is legacy subject
-# metadata and is often a human label rather than a hostname.
-# An empty `allow` permits any value whose type is allowed. For example:
-#   allow = ['.*\.example\.com']
-#   deny  = ['.*\.internal\.example\.com']
-allow = []                          # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW
-deny  = []                          # ACME_PROXY_FILTER__IDENTIFIERS__DENY
-# Permit wildcard identifiers ("*.example.com"). OFF by default, because the
-# patterns above are anchored: a deny rule for `secret\.example\.com` does NOT
-# match the string `*.example.com`, yet the resulting certificate covers that
-# name anyway. Leaving this false means enabling the dns-01 challenge — which is
-# what makes wildcards orderable at all — cannot silently widen a list you
-# already rely on. Turn it on once the patterns account for the `*.` form.
-allow_wildcards = false             # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILDCARDS
-
-# filter.custom holds NAMED external scripts, e.g. [filter.custom.check-network]
-# below. Which of them actually run, and in what order, is `custom_enabled`
-# (see [filter] above) — not every name defined here, so a script can be kept
-# around and switched on or off (e.g. per environment, via that one env var)
-# without redefining it. "custom" listed once in filter.enabled runs every
-# name custom_enabled lists, spliced into the same all-must-pass chain as
-# every other filter — not a nested chain of its own. custom_enabled naming
-# an entry not defined here, or "custom" enabled with custom_enabled empty, is
-# a startup error, the same as any other enabled filter that resolves to
-# nothing configured.
+#   allowed_ip    which networks an address may be in         (CIDR lists)
+#   reverse_dns   the address must have a usable PTR record
+#   identifiers   which names may be certified
+#   ipam          ask the [ipam] inventory whether this address owns this name
+#   custom        shell out to an operator-supplied script
 #
 # Each name must match ^[a-z0-9-]+$ — lowercase letters, digits and `-`, the
 # same restriction profile names have. Reason: a name is also an environment
-# variable segment (ACME_PROXY_FILTER__CUSTOM__<NAME>__...), and the config
-# crate lowercases those, so e.g. "CheckNetwork" in this file and
-# "ACME_PROXY_FILTER__CUSTOM__CHECKNETWORK__..." would silently become TWO
-# different entries instead of one overriding the other.
+# variable segment (ACME_PROXY_FILTER__CHECK__<NAME>__...), and the config crate
+# lowercases those, so e.g. "MgmtNet" in this file and
+# "ACME_PROXY_FILTER__CHECK__MGMTNET__..." would silently become TWO different
+# entries instead of one overriding the other. `and`, `or` and `not` are the
+# condition language's own words and cannot name a check.
 #
-# Each script receives context via environment variables:
+# A check defined here but named by no selected rule is never built: it opens no
+# connection, validates nothing, and is reported once at startup as
+# `filter_check_unused`. That is deliberate — a global [filter] section can hold
+# a library of checks and each profile pick the subset its `rules` names.
+#
+# Setting a key that belongs to another type is a STARTUP ERROR naming both, so
+# `script_path` on an `allowed_ip` check stops the server rather than being read
+# by nothing.
+#
+# WHERE A CHECK DECIDES. There are two hook points: the connection (before the
+# handler, address only) and the identifiers (at newOrder, and again at finalize
+# against the CSR). `allowed_ip` and `custom` answer at both; `identifiers` and
+# `ipam` only once names are known; `reverse_dns` at the connection, because a
+# PTR plus forward-confirmation exchange at newOrder AND finalize triples the
+# lookups for an answer that has not changed. Override with `stages`, e.g.
+# stages = ["identifiers"] on a reverse_dns check. Naming a stage the type
+# cannot serve is a startup error.
+#
+# A RULE runs at the INTERSECTION of its checks' stages — never the union,
+# because evaluating a rule where one of its checks cannot run would silently
+# treat that check as passing. A rule combining a connection-only check with an
+# identifiers-only one therefore has no stage at all, and is a startup error
+# naming both sides rather than a rule that quietly never fires.
+#
+# GLOBS AND REGEXES. `allow`/`deny` on the name-matching checks take globs,
+# where `*` matches ONE label: "*.example.com" matches "a.example.com", not
+# "a.b.example.com" and not "example.com" — list the bare name too, exactly as
+# in a certificate. Everything else in a glob is literal. `allow_regex` and
+# `deny_regex` take regexes instead, anchored automatically as ^(?:...)$, and
+# are unioned with the globs. `deny` wins over `allow`, and an empty `allow`
+# imposes no constraint, which gives three usable shapes: allow-only (a strict
+# allowlist), deny-only (a blocklist, everything else served), or both (an
+# allowlist with holes punched in it).
+#
+# On `allowed_ip`, `allow`/`deny` are CIDRs or bare addresses instead. Deny-wins
+# there is plain membership, not longest-prefix-match: a /32 in `allow` does not
+# beat a /8 in `deny`.
+
+# ---------------------------------------------------------------------- rules
+#
+# `when` is a boolean expression over check names: `and`, `or`, `not` and
+# parentheses, with `not` binding tightest, then `and`, then `or`. A parse error
+# names the column it gave up at.
+#
+# `message` replaces the failing check's own wording in the 403 the client sees,
+# so an operator can say "ask the network team" instead of exposing which check
+# bit. `mode = "warn"` makes a matching rule log `filter_rule_warned` and NOT
+# decide, so a tightened policy can be watched in production before it bites —
+# a policy of nothing but warn rules falls through to `default`.
+#
+# A rule whose condition could not be evaluated — an inventory outage, a DNS
+# timeout — does not silently drop out. It is remembered, and if the answer the
+# policy does reach differs from what that rule would have decided, the whole
+# request is a retryable 500 rather than a refusal the client would believe.
+# This is also why `mgmt-net or inventory` survives an inventory outage while
+# `inventory` alone does not: an `or` whose other side already passed does not
+# care what the unknown would have been.
+
+# A worked example, commented out so this file still describes the
+# all-defaults configuration. Turning it on needs `rules` above as well:
+#
+# rules = ["public", "mgmt-bypass", "inventory-owned"]
+#
+# # Relying parties fetching the CRL are not the ACME clients you allowlisted,
+# # and /crl is served by the profile router — so an address-based policy
+# # without this makes revocation checking fail for everyone outside it.
+# [filter.check.public-paths]
+# type  = "path"
+# allow = ["/crl"]
+#
+# [filter.check.mgmt-net]
+# type  = "allowed_ip"
+# allow = ["10.0.0.0/8", "192.168.1.0/24"]
+# deny  = ["10.1.2.0/24"]
+#
+# [filter.check.corp-names]
+# type            = "identifiers"
+# allow           = ["*.corp.example.com", "corp.example.com"]
+# deny            = ["secret.corp.example.com"]
+# allowed_types   = ["dns", "cn"]
+# allow_wildcards = false
+#
+# [filter.check.inventory]
+# type = "ipam"           # consults the [ipam] section below
+#
+# [filter.check.has-ptr]
+# type                    = "reverse_dns"
+# require_forward_confirm = true
+# timeout_ms              = 2000
+#
+# [filter.check.check-network]
+# type        = "custom"
+# script_path = "/etc/acme-proxy/filters/check-network.sh"
+# timeout_ms  = 5000
+# pass_stdin  = true
+# args        = []
+#
+# [filter.rule.public]
+# when = "public-paths"
+# then = "allow"
+#
+# [filter.rule.mgmt-bypass]
+# when = "mgmt-net"
+# then = "allow"
+#
+# [filter.rule.inventory-owned]
+# when    = "corp-names and (inventory or mgmt-net)"
+# then    = "allow"
+# message = "this address owns no such name in the inventory"
+# mode    = "enforce"
+#
+# Equivalent via environment variables:
+#   ACME_PROXY_FILTER__RULES=public,mgmt-bypass,inventory-owned
+#   ACME_PROXY_FILTER__CHECK__MGMT-NET__TYPE=allowed_ip
+#   ACME_PROXY_FILTER__CHECK__MGMT-NET__ALLOW=10.0.0.0/8,192.168.1.0/24
+#   ACME_PROXY_FILTER__RULE__MGMT-BYPASS__WHEN=mgmt-net
+#   ACME_PROXY_FILTER__RULE__MGMT-BYPASS__THEN=allow
+#
+# THE CUSTOM SCRIPT CONTRACT. Each script receives context via environment
+# variables:
 #   ACME_FILTER_HOOK        - "connection" or "identifiers"
-#   ACME_FILTER_CLIENT_IP   - Client IP address (or empty if unresolvable)
+#   ACME_FILTER_CHECK_NAME  - which [filter.check.<name>] invoked it
+#   ACME_FILTER_CLIENT_IP   - client IP address (or empty if unresolvable)
 #   ACME_FILTER_METHOD      - HTTP method (for connection hook)
 #   ACME_FILTER_PATH        - HTTP path (for connection hook)
-#   ACME_FILTER_ACCOUNT_ID  - Account ID (for identifiers hook)
+#   ACME_FILTER_ACCOUNT_ID  - account ID (for identifiers hook)
 #   ACME_FILTER_STAGE       - "newOrder" or "CSR" (for identifiers hook)
-#   ACME_FILTER_IDENTIFIERS - Comma-separated list of values (for identifiers hook)
+#   ACME_FILTER_IDENTIFIERS - comma-separated values (for identifiers hook)
 #
-# If pass_stdin is true, a JSON payload with the full context is also piped to stdin.
-# An exit code of 0 permits the request. Exit code 1 (or any non-zero code) denies it,
-# using the first non-empty line of stdout (or stderr) as the detail message.
+# If pass_stdin is true, a JSON payload with the full context is also piped to
+# stdin. Exit code 0 permits the request. Any non-zero code refuses it, using
+# the first non-empty line of stdout (or stderr) as the detail message.
+# Anything that stops the script answering at all — it could not be spawned, it
+# timed out — is an *unknown* rather than a refusal, so a broken hook is a
+# retryable 500 and never fails open.
 #
 # The script does NOT inherit the server's environment: it is started from an
 # empty one holding only the ACME_FILTER_* variables above plus a minimal PATH
@@ -755,32 +818,10 @@ allow_wildcards = false             # ACME_PROXY_FILTER__IDENTIFIERS__ALLOW_WILD
 # and a filter hook has no business reading them. A script needing a value of
 # its own should read it from a file, or be given it through `args`.
 #
-# One process is spawned per enabled script per hook invocation, i.e. per
-# script named in custom_enabled per non-exempt request for the connection
-# hook: keep each script cheap, and keep timeout_ms tight. A script still
-# running when timeout_ms expires is killed, not left behind.
-#
-# Two-script example (commented out, so this file still describes the
-# all-defaults configuration, i.e. custom_enabled = [] and no scripts
-# configured). Turning it on needs both this and
-# custom_enabled = ["check-network", "check-inventory"] above:
-#
-# [filter.custom.check-network]
-# script_path = "/etc/acme-proxy/filters/check-network.sh"
-# timeout_ms = 5000
-# pass_stdin = true
-# args = []
-#
-# [filter.custom.check-inventory]
-# script_path = "/etc/acme-proxy/filters/check-inventory.sh"
-# timeout_ms = 5000
-# pass_stdin = true
-# args = []
-#
-# Equivalent via environment variables:
-#   ACME_PROXY_FILTER__CUSTOM_ENABLED=check-network,check-inventory
-#   ACME_PROXY_FILTER__CUSTOM__CHECK-NETWORK__SCRIPT_PATH=/etc/acme-proxy/filters/check-network.sh
-#   ACME_PROXY_FILTER__CUSTOM__CHECK-INVENTORY__SCRIPT_PATH=/etc/acme-proxy/filters/check-inventory.sh
+# One process is spawned per custom check per hook invocation, i.e. per
+# non-exempt request for the connection hook: keep each script cheap, and keep
+# timeout_ms tight. A script still running when timeout_ms expires is killed,
+# not left behind.
 
 [ipam]   # [per-profile] — a [profiles.<name>] block may override these
 # The IP address management inventory the `ipam` filter consults.

@@ -53,7 +53,7 @@ subsystem is off.
 
 Which entries under `[notify.custom.<name>]` to run, and in what order. Listing
 `"custom"` in `enabled` while leaving this empty is a startup error, as is
-naming an entry that has no table. Same shape as `filter.custom_enabled`.
+naming an entry that has no table.
 
 **`template_dir`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__TEMPLATE_DIR`*
 

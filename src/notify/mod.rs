@@ -19,7 +19,7 @@
 //!
 //! ## Per-backend event filtering
 //!
-//! Unlike [`FilterConfig::enabled`](crate::config::FilterConfig), where every
+//! Unlike [`FilterConfig::rules`](crate::config::FilterConfig), where every
 //! filter must agree, notify backends are independent broadcast side-channels
 //! — an operator plausibly wants email only for issuance/revocation and
 //! Mattermost for everything including failures. Each backend's own `events`
@@ -326,7 +326,7 @@ pub struct NotifyDispatcher {
 
 impl std::fmt::Debug for NotifyDispatcher {
     /// `dyn NotifyBackend` is not `Debug`, so show the names — the only part
-    /// worth reading anyway. Mirrors `FilterChain`'s own `Debug` impl.
+    /// worth reading anyway. Mirrors `FilterPolicy`'s own `Debug` impl.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NotifyDispatcher")
