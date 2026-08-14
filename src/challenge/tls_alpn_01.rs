@@ -33,7 +33,7 @@ use x509_parser::prelude::*;
 
 use super::{ChallengeError, ChallengeValidator, TLS_ALPN_01, ValidationContext};
 use crate::config::TlsAlpnConfig;
-use crate::dns::{self, Resolver};
+use crate::dns::Resolver;
 
 /// The ALPN protocol identifier RFC 8737 §3 reserves for this challenge. A
 /// server that does not negotiate it is not answering the challenge.
@@ -149,16 +149,21 @@ pub(crate) fn accept_any_client_config(alpn: &[&[u8]]) -> anyhow::Result<Arc<Cli
 pub struct RustlsProbe {
     config: Arc<ClientConfig>,
     resolver: Arc<dyn Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 }
 
 impl RustlsProbe {
     /// Resolves its connect target through `resolver` — the same one
     /// `challenge::from_config` selected for `dns-01` (`dns.resolver` if set,
     /// else the system configuration).
-    pub fn new(resolver: Arc<dyn Resolver>) -> anyhow::Result<Self> {
+    pub fn new(
+        resolver: Arc<dyn Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             config: accept_any_client_config(&[ACME_TLS_ALPN])?,
             resolver,
+            proxies,
         })
     }
 }
@@ -171,12 +176,16 @@ impl TlsAlpnProbe for RustlsProbe {
         })?;
 
         // Trying every resolved address in turn, the way `TcpStream::connect`
-        // used to via the OS resolver — see `crate::dns::connect`.
-        let stream = dns::connect(self.resolver.as_ref(), identifier, port)
-            .await
-            .map_err(|error| {
-                ProbeError::Connect(format!("connecting to {identifier}:{port}: {error}"))
-            })?;
+        // used to via the OS resolver — see `crate::dns::connect`. Through a
+        // CONNECT tunnel when `[proxy]` selects one: this is TCP under TLS, so
+        // the tunnel is transparent to everything below.
+        let endpoint = crate::http_client::Endpoint::tls(identifier, port);
+        let stream =
+            crate::http_client::connect_stream(self.resolver.as_ref(), &self.proxies, &endpoint)
+                .await
+                .map_err(|error| {
+                    ProbeError::Connect(format!("connecting to {identifier}:{port}: {error}"))
+                })?;
 
         let stream = TlsConnector::from(self.config.clone())
             .connect(server_name, stream)
@@ -234,9 +243,13 @@ impl std::fmt::Debug for TlsAlpn01Validator {
 
 impl TlsAlpn01Validator {
     /// Builds the validator with a real TLS probe.
-    pub fn from_config(cfg: &TlsAlpnConfig, resolver: Arc<dyn Resolver>) -> anyhow::Result<Self> {
+    pub fn from_config(
+        cfg: &TlsAlpnConfig,
+        resolver: Arc<dyn Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
+    ) -> anyhow::Result<Self> {
         let probe = Arc::new(
-            RustlsProbe::new(resolver)
+            RustlsProbe::new(resolver, proxies)
                 .map_err(|error| anyhow::anyhow!("challenge.tls_alpn_01: {error}"))?,
         );
         info!(
@@ -655,7 +668,7 @@ mod tests {
         }
 
         fn probe() -> RustlsProbe {
-            RustlsProbe::new(Arc::new(UnreachableResolver)).unwrap()
+            RustlsProbe::new(Arc::new(UnreachableResolver), crate::testutil::no_proxies()).unwrap()
         }
 
         /// Hands back a fixed certificate without letting rustls vet it.
@@ -805,6 +818,7 @@ mod tests {
             let validator = TlsAlpn01Validator::from_config(
                 &TlsAlpnConfig { port: 8443 },
                 Arc::new(UnreachableResolver),
+                crate::testutil::no_proxies(),
             )
             .expect("the real probe must build");
 

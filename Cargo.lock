@@ -23,6 +23,7 @@ dependencies = [
  "ipnet",
  "lettre",
  "minijinja",
+ "percent-encoding",
  "rcgen",
  "regex",
  "ring",

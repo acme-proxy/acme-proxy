@@ -358,6 +358,7 @@ pub fn build_resolver(addr: Option<std::net::SocketAddr>) -> anyhow::Result<Arc<
 pub fn from_config(
     cfg: &ChallengeConfig,
     dns: &DnsConfig,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<Arc<ChallengeRegistry>> {
     validate_enabled(&cfg.enabled)?;
 
@@ -396,11 +397,13 @@ pub fn from_config(
             HTTP_01 => Arc::new(http_01::Http01Validator::from_config(
                 &cfg.http_01,
                 resolver.clone(),
+                proxies.clone(),
             )?),
             DNS_01 => Arc::new(dns_01::Dns01Validator::from_config(resolver.clone())),
             TLS_ALPN_01 => Arc::new(tls_alpn_01::TlsAlpn01Validator::from_config(
                 &cfg.tls_alpn_01,
                 resolver.clone(),
+                proxies.clone(),
             )?),
             // Unreachable: the loop above rejected every unknown name.
             other => anyhow::bail!("unknown challenge type: {other}"),
@@ -494,7 +497,12 @@ mod tests {
     /// the zero-config case an open certificate authority.
     #[test]
     fn the_default_config_validates_and_offers_http_01_alone() {
-        let registry = from_config(&ChallengeConfig::default(), &DnsConfig::default()).unwrap();
+        let registry = from_config(
+            &ChallengeConfig::default(),
+            &DnsConfig::default(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         assert!(!registry.is_bypassed());
         assert_eq!(registry.enabled_types(), [HTTP_01.to_string()]);
         // The real validator is built, since nothing is being bypassed.
@@ -506,7 +514,12 @@ mod tests {
     /// bypass is a flag on the registry rather than a `NoopValidator`.
     #[test]
     fn bypassing_constructs_no_validators() {
-        let registry = from_config(&cfg(&["http-01"], true), &DnsConfig::default()).unwrap();
+        let registry = from_config(
+            &cfg(&["http-01"], true),
+            &DnsConfig::default(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         assert!(registry.is_bypassed());
         assert!(registry.validators.is_empty());
     }
@@ -519,7 +532,12 @@ mod tests {
     /// decision rather than a drift somebody discovers later.
     #[test]
     fn the_test_default_bypasses_where_the_configured_default_does_not() {
-        let configured = from_config(&ChallengeConfig::default(), &DnsConfig::default()).unwrap();
+        let configured = from_config(
+            &ChallengeConfig::default(),
+            &DnsConfig::default(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         let direct = ChallengeRegistry::default();
 
         assert!(!configured.is_bypassed());
@@ -537,6 +555,7 @@ mod tests {
             let error = from_config(
                 &cfg(&["http-01", "htttp-01"], bypass),
                 &DnsConfig::default(),
+                crate::testutil::no_proxies(),
             )
             .unwrap_err()
             .to_string();
@@ -551,9 +570,13 @@ mod tests {
     /// same reasoning that makes `allowed_ip` refuse two empty lists.
     #[test]
     fn an_empty_enabled_list_is_a_startup_error() {
-        let error = from_config(&cfg(&[], true), &DnsConfig::default())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            &cfg(&[], true),
+            &DnsConfig::default(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("challenge.enabled is empty"), "{error}");
     }
 
@@ -565,9 +588,13 @@ mod tests {
             resolver: Some("not-a-socket-address".to_string()),
         };
         for bypass in [true, false] {
-            let error = from_config(&cfg(&["http-01"], bypass), &dns)
-                .unwrap_err()
-                .to_string();
+            let error = from_config(
+                &cfg(&["http-01"], bypass),
+                &dns,
+                crate::testutil::no_proxies(),
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("dns.resolver"), "{error}");
         }
     }
@@ -578,7 +605,12 @@ mod tests {
         let dns = DnsConfig {
             resolver: Some("127.0.0.1:5300".to_string()),
         };
-        let registry = from_config(&cfg(&["dns-01"], false), &dns).unwrap();
+        let registry = from_config(
+            &cfg(&["dns-01"], false),
+            &dns,
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         assert!(!registry.is_bypassed());
     }
 

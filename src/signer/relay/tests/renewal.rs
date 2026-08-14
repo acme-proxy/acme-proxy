@@ -38,6 +38,7 @@ async fn renewal_info_uses_the_upstream_window() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -73,6 +74,7 @@ async fn no_upstream_renewal_info_means_no_opinion() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -98,6 +100,7 @@ async fn a_certificate_without_an_aki_yields_no_opinion() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -126,6 +129,7 @@ async fn an_unparsable_window_is_an_error() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 

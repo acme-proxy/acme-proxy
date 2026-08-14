@@ -77,6 +77,9 @@
 //!     let database = Arc::new(Database::connect(&config.database.url).await?);
 //!
 //!     let resolved = config.resolve_profiles()?;
+//!     // Resolved before anything can dial: a proxy URL that cannot be
+//!     // understood must stop the process rather than leave egress elsewhere.
+//!     let proxies = acme_proxy::proxy::from_config(&config.proxy)?;
 //!     // One resolver for the whole process: `dns.resolver` governs every
 //!     // outbound connection this server makes, not just challenge lookups.
 //!     let resolver = challenge::build_resolver(acme_proxy::dns::resolver_addr(&config.dns)?)?;
@@ -87,7 +90,11 @@
 //!     for profile in &resolved {
 //!         notifiers.insert(
 //!             profile.name.clone(),
-//!             notify::from_config(&profile.sections.notify, resolver.clone())?,
+//!             notify::from_config(
+//!                 &profile.sections.notify,
+//!                 resolver.clone(),
+//!                 proxies.clone(),
+//!             )?,
 //!         );
 //!     }
 //!     let notifiers = Arc::new(notifiers);
@@ -105,13 +112,18 @@
 //!                     database.clone(),
 //!                     notifiers.clone(),
 //!                     resolver.clone(),
+//!                     proxies.clone(),
 //!                 )?,
 //!                 filter: filter::from_config(
 //!                     &sections.filter,
 //!                     &config.dns,
-//!                     ipam::from_config(&sections.ipam, resolver.clone())?,
+//!                     ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())?,
 //!                 )?,
-//!                 challenges: challenge::from_config(&sections.challenge, &config.dns)?,
+//!                 challenges: challenge::from_config(
+//!                     &sections.challenge,
+//!                     &config.dns,
+//!                     proxies.clone(),
+//!                 )?,
 //!                 order: sections.order.clone(),
 //!                 eab: sections.eab.clone(),
 //!                 meta: sections.meta.clone(),
@@ -168,6 +180,7 @@ pub mod key_change;
 pub mod middlewares;
 pub mod notify;
 pub mod pemfile;
+pub mod proxy;
 pub mod script_hook;
 pub mod signer;
 pub mod sqlite;
@@ -332,6 +345,10 @@ impl Profile {
         database: Arc<Database>,
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let resolved = config.resolve_profiles()?;
+        // Resolved before anything can dial: a proxy URL that cannot be
+        // understood must stop the process, and the `relay` backend below makes
+        // a real network call on its very first startup.
+        let proxies = crate::proxy::from_config(&config.proxy)?;
         // One resolver for the whole process, handed to every subsystem that
         // makes an outbound connection. `dns.resolver` is documented as "the
         // nameserver every DNS lookup this server makes goes through", and
@@ -349,9 +366,18 @@ impl Profile {
         // it is handed `database`), so it is instead handed this whole
         // `profile name -> dispatcher` map and looks up the right one by
         // `Order.profile` once an issuance settles.
-        let notifiers = Arc::new(notify::build_registry(&resolved, resolver.clone())?);
-        let backends =
-            signer::build_backends(&resolved, database, notifiers.clone(), resolver.clone())?;
+        let notifiers = Arc::new(notify::build_registry(
+            &resolved,
+            resolver.clone(),
+            proxies.clone(),
+        )?);
+        let backends = signer::build_backends(
+            &resolved,
+            database,
+            notifiers.clone(),
+            resolver.clone(),
+            proxies.clone(),
+        )?;
 
         let mut profiles = Vec::with_capacity(resolved.len());
         for profile in &resolved {
@@ -365,12 +391,13 @@ impl Profile {
                 // owns no files and holds no mutable state, so two profiles
                 // naming the same inventory each building one costs nothing
                 // but a `rustls::ClientConfig`.
-                let ipam = ipam::from_config(&sections.ipam, resolver.clone())
+                let ipam = ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 let filter = filter::from_config(&sections.filter, &config.dns, ipam)
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                let challenges = challenge::from_config(&sections.challenge, &config.dns)
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                let challenges =
+                    challenge::from_config(&sections.challenge, &config.dns, proxies.clone())
+                        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 check_request_timeout(config, profile.name.as_str(), sections)?;
                 Ok::<_, anyhow::Error>((filter, challenges))
             })?;

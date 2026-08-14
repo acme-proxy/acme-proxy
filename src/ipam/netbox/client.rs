@@ -43,6 +43,7 @@ impl NetboxClient {
     pub fn new(
         cfg: &NetboxConfig,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.url.trim().is_empty(),
@@ -66,6 +67,7 @@ impl NetboxClient {
                     "ipam.netbox.ca_cert_path",
                 )?,
                 resolver,
+                proxies,
             )?,
         })
     }
@@ -303,9 +305,13 @@ mod tests {
 
     #[test]
     fn an_empty_url_is_a_startup_error() {
-        let error = NetboxClient::new(&config("  "), test_resolver())
-            .unwrap_err()
-            .to_string();
+        let error = NetboxClient::new(
+            &config("  "),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.netbox.url"), "{error}");
     }
 
@@ -315,7 +321,7 @@ mod tests {
             token: String::new(),
             ..config("https://netbox.example.com")
         };
-        let error = NetboxClient::new(&cfg, test_resolver())
+        let error = NetboxClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.netbox.token"), "{error}");
@@ -324,9 +330,13 @@ mod tests {
 
     #[test]
     fn an_unparsable_url_is_a_startup_error() {
-        let error = NetboxClient::new(&config("not a url"), test_resolver())
-            .unwrap_err()
-            .to_string();
+        let error = NetboxClient::new(
+            &config("not a url"),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.netbox.url"), "{error}");
     }
 
@@ -336,7 +346,7 @@ mod tests {
             ca_cert_path: "/nonexistent/netbox-ca.pem".to_string(),
             ..config("https://netbox.example.com")
         };
-        let error = NetboxClient::new(&cfg, test_resolver())
+        let error = NetboxClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.netbox.ca_cert_path"), "{error}");
@@ -344,8 +354,12 @@ mod tests {
 
     #[test]
     fn the_debug_impl_never_renders_the_token() {
-        let client =
-            NetboxClient::new(&config("https://netbox.example.com"), test_resolver()).unwrap();
+        let client = NetboxClient::new(
+            &config("https://netbox.example.com"),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         let rendered = format!("{client:?}");
         assert!(!rendered.contains("t0ken"), "{rendered}");
     }
@@ -413,6 +427,7 @@ mod tests {
             NetboxClient::new(
                 &config(&format!("http://127.0.0.1:{port}")),
                 test_resolver(),
+                crate::testutil::no_proxies(),
             )
             .unwrap()
         }
@@ -675,7 +690,7 @@ mod tests {
             let (port, server) = serve_once(ok(json!({ "results": [] }))).await;
             let cfg = config(&format!("http://127.0.0.1:{port}/netbox"));
 
-            NetboxClient::new(&cfg, test_resolver())
+            NetboxClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
                 .unwrap()
                 .ip_addresses("10.0.0.5".parse().unwrap())
                 .await
@@ -788,11 +803,15 @@ mod tests {
         async fn a_self_signed_netbox_is_refused_by_default() {
             let port = serve_once_tls(json!({ "results": [] })).await;
 
-            let error = NetboxClient::new(&https_config(port, false), test_resolver())
-                .unwrap()
-                .ip_addresses("10.0.0.5".parse().unwrap())
-                .await
-                .unwrap_err();
+            let error = NetboxClient::new(
+                &https_config(port, false),
+                test_resolver(),
+                crate::testutil::no_proxies(),
+            )
+            .unwrap()
+            .ip_addresses("10.0.0.5".parse().unwrap())
+            .await
+            .unwrap_err();
             assert!(error.contains("TLS handshake"), "{error}");
         }
 
@@ -803,11 +822,15 @@ mod tests {
             }))
             .await;
 
-            let objects = NetboxClient::new(&https_config(port, true), test_resolver())
-                .unwrap()
-                .ip_addresses("10.0.0.5".parse().unwrap())
-                .await
-                .expect("skip-verify must accept a self-signed certificate");
+            let objects = NetboxClient::new(
+                &https_config(port, true),
+                test_resolver(),
+                crate::testutil::no_proxies(),
+            )
+            .unwrap()
+            .ip_addresses("10.0.0.5".parse().unwrap())
+            .await
+            .expect("skip-verify must accept a self-signed certificate");
             assert_eq!(objects[0].dns_name, "host.example.com");
         }
     }

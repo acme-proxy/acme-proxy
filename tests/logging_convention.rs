@@ -55,6 +55,7 @@ const SUBSYSTEMS: &[&str] = &[
     "notify",
     "order",
     "profile",
+    "proxy",
     "renewal_info",
     "replaces",
     "request",

@@ -18,6 +18,7 @@ async fn an_empty_directory_url_is_a_startup_error() {
         db,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("directory_url"), "{error}");
 }
@@ -42,6 +43,7 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
         db,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(
         error.contains("challenge_strategy") && error.contains("tlsalpn01"),
@@ -71,6 +73,7 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
         db,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("rfc2136.server"), "{error}");
 }
@@ -91,6 +94,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let key_file = PathBuf::from(cfg.account_key_path.clone());
@@ -106,6 +110,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
         db,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(&kid_file).unwrap(), kid);
@@ -132,6 +137,7 @@ async fn the_generated_account_key_is_owner_only() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -160,6 +166,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -214,6 +221,7 @@ async fn a_settle_for_an_order_that_vanished_is_survived() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -237,6 +245,7 @@ async fn an_unusable_upstream_chain_fails_the_order() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -304,6 +313,7 @@ async fn settle_notifies_only_the_owning_profile() {
         db.clone(),
         Arc::new(notifiers),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order_for("a", db.clone()).await;
@@ -367,6 +377,7 @@ async fn issue_polls_until_the_upstream_settles() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -406,6 +417,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -454,6 +466,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -496,6 +509,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -550,6 +564,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -578,6 +593,7 @@ async fn revoke_reaches_the_upstream() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -604,6 +620,7 @@ async fn revoke_treats_already_revoked_as_success() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -648,6 +665,7 @@ async fn resume_finishes_a_relay_left_behind_by_a_restart() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     signer.resume().await;
@@ -689,6 +707,7 @@ async fn resume_ignores_rows_that_already_settled() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     signer.resume().await;
@@ -712,6 +731,7 @@ async fn resume_with_no_pending_rows_does_nothing() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     signer.resume().await;

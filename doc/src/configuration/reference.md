@@ -48,6 +48,7 @@ endpoints it mounts.
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
 | `[audit]` | Reverse lookups and retention for the trail | no | [below](#audit) |
 | `[dns]` | The resolver every outbound lookup uses | no | [below](#dns) |
+| `[proxy]` | The forward proxy outbound clients dial through | no | [below](#proxy) |
 | `[logging]` | Filter, format, target | no | [below](#logging) |
 | `[order]` | The ACME order object's lifetime | **yes** | [below](#order) |
 | `[meta]` | Directory `meta` members | **yes** | [below](#meta) |
@@ -347,6 +348,103 @@ The shared resolver is deliberately **uncached**, so a TXT record published
 moments before a challenge is triggered is not defeated by a cached negative
 answer. `filter.reverse_dns` is the one exception and keeps its own cached
 resolver.
+
+---
+
+## `[proxy]`
+
+The forward proxy every outbound HTTP client dials through: the upstream CA the
+`relay` signer talks to, the IPAM inventory, the Mattermost webhook, and the
+`http-01` and `tls-alpn-01` challenge validators — the last through a `CONNECT`
+tunnel, since it is TLS rather than HTTP.
+
+Not everything outbound. SMTP (`notify.email`) and the RFC 2136 updates
+`signer.relay.dns01` makes are not HTTP and keep dialling directly; an estate
+whose egress is proxy-only needs a separate route for those two.
+
+Every key is empty by default, which means no proxy at all. There is no
+`enabled` key — the presence of a URL is the switch.
+
+**`http_url`** (`String`) — *Default: `""` | Env: `ACME_PROXY_PROXY__HTTP_URL`*
+
+Proxy for `http://` targets, e.g. `http://proxy.example.com:3128`. Falls back to
+`$http_proxy` when empty. A cleartext target is *forwarded* rather than
+tunnelled: the request line carries the whole URL, which is what RFC 9112
+§3.2.2's absolute-form is for.
+
+**`https_url`** (`String`) — *Default: `""` | Env: `ACME_PROXY_PROXY__HTTPS_URL`*
+
+Proxy for `https://` targets, reached by `CONNECT`. Falls back to
+`$https_proxy`, then `$HTTPS_PROXY`.
+
+Normally the same `http://proxy.example.com:3128` as `http_url`: this key names
+the proxy used **for** https targets, not a proxy spoken to over https. An
+`https://` value is a startup error rather than a second TLS layer with no trust
+anchor configured for it, and so is a `socks5://` one.
+
+The two keys are independent on purpose. An estate that proxies only its TLS
+egress is ordinary, and "it worked for http and silently did nothing for https"
+is the failure a single key would produce.
+
+**`no_proxy`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_PROXY__NO_PROXY`*
+
+Targets that bypass the proxy. An entry is `*` (everything), a domain — which
+also matches everything under it — a `.domain` (the same thing), an address, or
+a CIDR block. Matching is case-insensitive and ignores a trailing root dot.
+
+A network entry is compared only against a target that is **already an address
+literal**: a hostname is never resolved to test one, which would mean a DNS
+lookup on every outbound request and a race with the connect that follows.
+
+An entry carrying a port is a startup error. Matching is on the host, and an
+entry that silently ignored half of itself is worse than one that is refused.
+
+Loopback and `localhost` bypass unconditionally, before this list is consulted.
+That rule exists because of the environment fallback: an operator's inherited
+shell `http_proxy` must not route this server's own loopback traffic through a
+corporate proxy, and the failure that would cause carries no signal at all.
+
+### Environment fallback
+
+Each key falls back to its conventional variable when left empty:
+
+| key | then | then |
+| --- | --- | --- |
+| `http_url` | `$http_proxy` | — |
+| `https_url` | `$https_proxy` | `$HTTPS_PROXY` |
+| `no_proxy` | `$no_proxy` | `$NO_PROXY` |
+
+An empty string counts as unset in both sources, so a `${VAR:-}` shell default
+does not become a proxy at the empty URL.
+
+Uppercase `HTTP_PROXY` is **deliberately not read**. Under CGI a client-supplied
+`Proxy:` request header lands in the environment under exactly that name
+(httpoxy, CVE-2016-5385 and its siblings). This server is never a CGI process,
+so the vector does not reach it — but Go's `net/http` dropped the variable for
+this reason, matching it costs nothing, and honouring a variable purely because
+everything else does is the kind of decision that is only ever wrong.
+`HTTPS_PROXY` has no such history and is honoured.
+
+### Credentials
+
+Userinfo in the URL becomes a `Proxy-Authorization: Basic` header:
+`http://user:password@proxy.example.com:3128`. Percent-encode anything unusual —
+`DOMAIN%5Cuser` is decoded before the header is built, since a backslash or an
+`@` in a proxy username is entirely ordinary and encoding it verbatim sends the
+wrong credential.
+
+On a tunnelled connection the credential is spent on the `CONNECT` and is
+**not** repeated inside the tunnel, where the origin server would read it. The
+configured URL is never logged with its password: every log line and every error
+message renders it with the password replaced.
+
+### When the proxy is down
+
+A configured but unreachable proxy is an error, every time. There is no fallback
+to a direct connection: dialling around a controlled egress path at exactly the
+moment the control fails is the opposite of what the setting is for. Errors name
+the proxy rather than the origin, so a refused connection points at the host
+that actually refused it.
 
 ---
 

@@ -106,8 +106,9 @@ impl PhpIpamBackend {
     pub fn from_config(
         cfg: &PhpIpamConfig,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
-        let api = Arc::new(client::PhpIpamClient::new(cfg, resolver)?);
+        let api = Arc::new(client::PhpIpamClient::new(cfg, resolver, proxies)?);
         let backend = Self::with_api(cfg, api)?;
 
         info!(

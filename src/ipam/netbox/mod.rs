@@ -187,8 +187,9 @@ impl NetboxBackend {
     pub fn from_config(
         cfg: &NetboxConfig,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
-        let api = Arc::new(client::NetboxClient::new(cfg, resolver)?);
+        let api = Arc::new(client::NetboxClient::new(cfg, resolver, proxies)?);
         let backend = Self::with_api(cfg, api)?;
 
         info!(

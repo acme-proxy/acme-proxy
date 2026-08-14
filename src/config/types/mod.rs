@@ -13,6 +13,7 @@ pub mod filter;
 pub mod ipam;
 pub mod notify;
 pub mod profile;
+pub mod proxy;
 pub mod server;
 pub mod signer;
 
@@ -22,6 +23,7 @@ pub use filter::*;
 pub use ipam::*;
 pub use notify::*;
 pub use profile::*;
+pub use proxy::*;
 pub use server::*;
 pub use signer::*;
 

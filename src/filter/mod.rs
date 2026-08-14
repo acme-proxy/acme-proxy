@@ -527,7 +527,7 @@ mod tests {
 
     /// The inventory `Profile::build_all` would have built for this config.
     fn ipam_from(cfg: &IpamConfig) -> Option<Arc<crate::ipam::IpamRegistry>> {
-        crate::ipam::from_config(cfg, test_resolver()).unwrap()
+        crate::ipam::from_config(cfg, test_resolver(), crate::testutil::no_proxies()).unwrap()
     }
 
     fn cfg(enabled: &[&str]) -> FilterConfig {

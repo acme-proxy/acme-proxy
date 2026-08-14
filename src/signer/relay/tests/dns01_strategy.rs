@@ -64,6 +64,7 @@ async fn bypass_triggers_the_offered_challenge() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -106,6 +107,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -141,6 +143,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
         db.clone(),
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
     let order = ready_order(db.clone()).await;
@@ -177,6 +180,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         updater.clone(),
@@ -237,6 +241,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         updater.clone(),
@@ -280,6 +285,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         Arc::new(StubUpdater::default()),
@@ -326,6 +332,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         Arc::new(StubUpdater {

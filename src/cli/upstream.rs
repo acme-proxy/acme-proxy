@@ -121,7 +121,9 @@ pub async fn run_upstream_command(
             let resolver = crate::dns::resolver_addr(&config.dns)
                 .and_then(crate::challenge::build_resolver)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
-            match relay::register_upstream_account(cfg, resolver, eab).await {
+            let proxies = crate::proxy::from_config(&config.proxy)
+                .map_err(|error| CliError(format!("configuration error: {error}")))?;
+            match relay::register_upstream_account(cfg, resolver, proxies, eab).await {
                 Ok(kid) => println!("Registered. kid = {kid}"),
                 Err(error) => {
                     return Err(CliError(format!("upstream registration failed: {error}")));

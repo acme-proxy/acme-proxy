@@ -63,6 +63,7 @@
 #     [notify.mattermost]
 #     [notify.custom.<name>]            one table per named script hook
 #   [dns]                               the resolver every lookup goes through
+#   [proxy]                             the forward proxy outbound clients use
 #   [profiles.<name>]                   an ACME endpoint — at least one required
 #
 # The eight [per-profile] sections are exactly those a profile may override,
@@ -1061,6 +1062,50 @@ timeout_ms = 5000                   # ACME_PROXY_NOTIFY__MATTERMOST__TIMEOUT_MS
 # every lookup at a specific nameserver instead — a split-horizon test network
 # being the main reason to.
 # resolver = "10.60.0.2:53"           # ACME_PROXY_DNS__RESOLVER
+
+[proxy]
+# The forward proxy every outbound HTTP client dials through: the upstream CA
+# the `relay` signer talks to, the IPAM inventory, the Mattermost webhook, and
+# the http-01/tls-alpn-01 challenge validators (the latter through a CONNECT
+# tunnel, since it is TLS rather than HTTP).
+#
+# Not everything outbound: SMTP (notify.email) and the RFC 2136 DNS updates
+# signer.relay.dns01 makes are not HTTP and keep dialling directly. An estate
+# whose egress is proxy-only needs a separate route for those two.
+#
+# Every key is empty by default, which means no proxy at all. Each falls back
+# to its conventional environment variable when left empty:
+#
+#   http_url   ->  $http_proxy
+#   https_url  ->  $https_proxy, then $HTTPS_PROXY
+#   no_proxy   ->  $no_proxy,    then $NO_PROXY
+#
+# Uppercase HTTP_PROXY is deliberately *not* read (httpoxy, CVE-2016-5385:
+# under CGI a client-supplied `Proxy:` header lands in the environment under
+# that name). This server is never a CGI process, but Go's net/http dropped
+# the variable for the same reason and matching it costs nothing.
+#
+# The proxy itself is always reached in the clear: https_url names the proxy
+# used *for* https targets, and that proxy is normally still http://host:port.
+# An https:// value here is a startup error, as is a socks5:// one.
+#
+# A proxy that is configured but unreachable is an error, every time — there is
+# no fallback to a direct connection, since dialling around a controlled egress
+# path exactly when the control fails is the opposite of what it is for.
+# http_url  = "http://proxy.example.com:3128"   # ACME_PROXY_PROXY__HTTP_URL
+# https_url = "http://proxy.example.com:3128"   # ACME_PROXY_PROXY__HTTPS_URL
+#
+# Credentials go in the URL and are sent as `Proxy-Authorization: Basic`:
+# http://user:password@proxy.example.com:3128 (percent-encode anything odd —
+# DOMAIN%5Cuser is decoded before the header is built).
+#
+# Targets that bypass the proxy. An entry is `*` (everything), a domain (which
+# also matches everything under it), a `.domain` (the same thing), an address,
+# or a CIDR block. A network entry is compared only against a target that is
+# already an address literal — a hostname is never resolved to test one, which
+# would be a DNS lookup per request and a race with the connect that follows.
+# Loopback and `localhost` bypass unconditionally and need no entry.
+# no_proxy = ["10.0.0.0/8", ".internal.example"]  # ACME_PROXY_PROXY__NO_PROXY
 
 # ---------------------------------------------------------------------------
 # Profiles: the ACME endpoints this server actually serves.

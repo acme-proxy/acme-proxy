@@ -113,9 +113,13 @@ impl Http01Validator {
     /// selected for `dns-01` (`dns.resolver` if set, else the system
     /// configuration), so a deployment overriding it gets one consistent
     /// answer for every challenge type rather than `dns-01` alone.
-    pub fn from_config(cfg: &Http01Config, resolver: Arc<dyn Resolver>) -> anyhow::Result<Self> {
+    pub fn from_config(
+        cfg: &Http01Config,
+        resolver: Arc<dyn Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
+    ) -> anyhow::Result<Self> {
         let fetcher = Arc::new(
-            HyperFetcher::new(resolver)
+            HyperFetcher::new(resolver, proxies)
                 .map_err(|error| anyhow::anyhow!("challenge.http_01: {error}"))?,
         );
         info!(
@@ -294,22 +298,27 @@ fn is_redirect(status: u16) -> bool {
 pub struct HyperFetcher {
     tls: Arc<rustls::ClientConfig>,
     resolver: Arc<dyn Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 }
 
 impl HyperFetcher {
-    pub fn new(resolver: Arc<dyn Resolver>) -> anyhow::Result<Self> {
+    pub fn new(
+        resolver: Arc<dyn Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
+    ) -> anyhow::Result<Self> {
         // No ALPN: this is an ordinary https request, not a challenge handshake.
         // The certificate is not validated — RFC 8555 §8.3 says so explicitly,
         // and the proof is the body, not the transport.
         Ok(Self {
             tls: super::tls_alpn_01::accept_any_client_config(&[])?,
             resolver,
+            proxies,
         })
     }
 
     /// Sends the request over an established connection and reads a capped body.
     async fn exchange(
-        mut sender: hyper::client::conn::http1::SendRequest<Empty<Bytes>>,
+        mut connection: crate::http_client::Connection<Empty<Bytes>>,
         url: &Url,
         max_bytes: usize,
     ) -> Result<HttpResponse, FetchError> {
@@ -321,11 +330,9 @@ impl HyperFetcher {
             })
             .ok_or_else(|| FetchError::Protocol(format!("{url} has no host")))?;
 
-        let mut target = url.path().to_string();
-        if let Some(query) = url.query() {
-            target.push('?');
-            target.push_str(query);
-        }
+        // Origin-form directly, absolute-form when this connection forwards
+        // through a proxy — the connection knows which, the caller does not.
+        let target = connection.request_target(url);
 
         // The low-level client sends what it is given: hyper 1.x does not add a
         // `Host` header, and a request without one is rejected by most servers.
@@ -337,7 +344,7 @@ impl HyperFetcher {
             .body(Empty::<Bytes>::new())
             .map_err(|error| FetchError::Protocol(format!("building the request: {error}")))?;
 
-        let response = sender
+        let response = connection
             .send_request(request)
             .await
             .map_err(|error| FetchError::Protocol(format!("request to {url} failed: {error}")))?;
@@ -385,11 +392,16 @@ impl HttpFetcher for HyperFetcher {
         // for itself, and the only reason it cannot share more than transport.
         let endpoint = crate::http_client::Endpoint::from_url(url).map_err(FetchError::Protocol)?;
 
-        let sender = crate::http_client::connect(self.resolver.as_ref(), &endpoint, &self.tls)
-            .await
-            .map_err(FetchError::Connect)?;
+        let connection = crate::http_client::connect(
+            self.resolver.as_ref(),
+            &self.proxies,
+            &endpoint,
+            &self.tls,
+        )
+        .await
+        .map_err(FetchError::Connect)?;
 
-        Self::exchange(sender, url, max_bytes).await
+        Self::exchange(connection, url, max_bytes).await
     }
 }
 
@@ -757,7 +769,7 @@ mod tests {
         }
 
         fn fetcher() -> HyperFetcher {
-            HyperFetcher::new(Arc::new(UnreachableResolver)).unwrap()
+            HyperFetcher::new(Arc::new(UnreachableResolver), crate::testutil::no_proxies()).unwrap()
         }
 
         /// Serves one canned response and returns the request it received.

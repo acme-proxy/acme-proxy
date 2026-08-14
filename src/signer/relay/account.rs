@@ -24,10 +24,11 @@ pub(super) fn kid_path(account_key_path: &str) -> PathBuf {
 pub(super) async fn provision(
     cfg: &RelayConfig,
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
+    proxies: std::sync::Arc<crate::proxy::OutboundProxies>,
     timeout: Duration,
 ) -> anyhow::Result<(AcmeClient, AccountKey, String)> {
     let account = load_or_generate_key(&cfg.account_key_path)?;
-    let client = AcmeClient::discover(&cfg.directory_url, resolver, timeout).await?;
+    let client = AcmeClient::discover(&cfg.directory_url, resolver, proxies, timeout).await?;
 
     if let Some(kid) = stored_kid(cfg) {
         info!(event = "upstream_account_loaded", outcome = "success", kid = %kid);
@@ -188,12 +189,14 @@ pub(super) async fn register(
 pub async fn register_upstream_account(
     cfg: &RelayConfig,
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
+    proxies: std::sync::Arc<crate::proxy::OutboundProxies>,
     eab: Option<(&str, &[u8])>,
 ) -> anyhow::Result<String> {
     let account = load_or_generate_key(&cfg.account_key_path)?;
     let client = AcmeClient::discover(
         &cfg.directory_url,
         resolver,
+        proxies,
         Duration::from_secs(cfg.poll_timeout_secs),
     )
     .await?;

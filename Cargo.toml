@@ -90,6 +90,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }  # the TokioIo adapter
 http-body-util = "0.1"  # Empty request body, Limited response body
 bytes = "1"
 url = "2"  # absolute/relative Location resolution + scheme and port checks
+# Decoding the userinfo of a proxy URL, which `Url::username`/`password` hand
+# back percent-encoded: `DOMAIN\user` is an ordinary proxy credential. Already
+# in the tree via `url` itself, so this is a direct edge, not a new dependency.
+percent-encoding = "2"
 # The `tls-alpn-01` handshake, and the https hop of an `http-01` redirect.
 # `ring` provider rather than aws-lc-rs: no C toolchain, matching rcgen's
 # backend. For the challenge validators there is deliberately no root store:

@@ -12,8 +12,8 @@ pub use types::*;
 /// The eight sections a profile can carry (`signer`, `filter`, `ipam`,
 /// `challenge`, `eab`, `order`, `notify`, `meta`) are kept here as the **base
 /// every profile inherits**; nothing serves them directly. The rest (`database`, `server`,
-/// `admin`, `nonce`, `audit`, `logging`, `dns`) is process-wide and has no per-profile
-/// form — an operator of the web admin manages every endpoint this process
+/// `admin`, `nonce`, `audit`, `logging`, `dns`, `proxy`) is process-wide and has no
+/// per-profile form — an operator of the web admin manages every endpoint this process
 /// serves, so `admin` in particular has no per-profile meaning, and `audit`
 /// records one trail for the whole CA.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -41,6 +41,10 @@ pub struct Config {
     pub notify: NotifyConfig,
     pub meta: MetaConfig,
     pub dns: DnsConfig,
+    /// The forward proxy every outbound client dials through. Process-wide for
+    /// the reason [`ProxyConfig`] gives, so also absent from
+    /// [`PROFILE_SECTIONS`].
+    pub proxy: ProxyConfig,
     /// The configuration sources as they were read, *before* serde filled in
     /// any default — the only form in which "unset" and "set to the default
     /// value" can still be told apart, which is what per-key inheritance
@@ -161,6 +165,7 @@ const LIST_KEYS: &[&str] = &[
     "notify.mattermost.events",
     "notify.custom_enabled",
     "meta.caa_identities",
+    "proxy.no_proxy",
 ];
 
 impl Config {
@@ -190,6 +195,7 @@ impl Config {
             "notify.mattermost.events" => &self.notify.mattermost.events,
             "notify.custom_enabled" => &self.notify.custom_enabled,
             "meta.caa_identities" => &self.meta.caa_identities,
+            "proxy.no_proxy" => &self.proxy.no_proxy,
             _ => return None,
         };
         Some(value.clone())
@@ -414,38 +420,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct EnvGuard {
-        keys: Vec<&'static str>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvGuard {
-        fn new(vars: &[(&'static str, &str)]) -> Self {
-            let _lock = ENV_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut keys = vec!["ACME_PROXY_CONFIG"];
-            unsafe {
-                std::env::set_var("ACME_PROXY_CONFIG", "/nonexistent/acme-proxy-config");
-                for (key, value) in vars {
-                    std::env::set_var(key, value);
-                    keys.push(key);
-                }
-            }
-            Self { keys, _lock }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe {
-                for key in &self.keys {
-                    std::env::remove_var(key);
-                }
-            }
-        }
-    }
+    use crate::testutil::EnvGuard;
 
     /// A throwaway directory holding one `config.toml`, removed on drop.
     ///
@@ -775,6 +750,32 @@ mod tests {
         );
     }
 
+    /// The `[proxy]` section, the other one an environment-only deployment is
+    /// likely to set without a file at all.
+    ///
+    /// The `ACME_PROXY_PROXY__` prefix reads oddly and is worth pinning for
+    /// exactly that reason: the section is `proxy`, and the crate prefix is not
+    /// dropped for a section that happens to share its name.
+    #[test]
+    fn the_proxy_section_round_trips_through_the_environment() {
+        let _guard = EnvGuard::new(&[
+            (
+                "ACME_PROXY_PROXY__HTTPS_URL",
+                "http://proxy.example.com:3128",
+            ),
+            ("ACME_PROXY_PROXY__NO_PROXY", "10.0.0.0/8,.internal.example"),
+        ]);
+
+        let config = Config::load().unwrap();
+        assert_eq!(config.proxy.https_url, "http://proxy.example.com:3128");
+        assert_eq!(
+            config.proxy.no_proxy,
+            vec!["10.0.0.0/8", ".internal.example"]
+        );
+        // Untouched keys keep their defaults rather than resetting.
+        assert_eq!(config.proxy.http_url, ProxyConfig::default().http_url);
+    }
+
     /// `filter.custom` entries are named tables, not a list — so unlike an
     /// ordinary `LIST_KEYS` entry they need their own `with_list_parse_key`
     /// registration for the nested `args` list, keyed by a name only known
@@ -955,6 +956,9 @@ mod tests {
         );
         assert_eq!(config.notify.mattermost.events, config.notify.email.events);
         assert!(config.dns.resolver.is_none());
+        assert_eq!(config.proxy.http_url, "");
+        assert_eq!(config.proxy.https_url, "");
+        assert!(config.proxy.no_proxy.is_empty());
     }
 
     #[test]
@@ -987,6 +991,9 @@ mod tests {
         );
         assert_eq!(loaded.eab.enabled, direct.eab.enabled);
         assert_eq!(loaded.dns.resolver, direct.dns.resolver);
+        assert_eq!(loaded.proxy.http_url, direct.proxy.http_url);
+        assert_eq!(loaded.proxy.https_url, direct.proxy.https_url);
+        assert_eq!(loaded.proxy.no_proxy, direct.proxy.no_proxy);
     }
 
     #[test]
@@ -1239,6 +1246,9 @@ mod tests {
             defaults.notify.mattermost.events
         );
         assert_eq!(example.dns.resolver, defaults.dns.resolver);
+        assert_eq!(example.proxy.http_url, defaults.proxy.http_url);
+        assert_eq!(example.proxy.https_url, defaults.proxy.https_url);
+        assert_eq!(example.proxy.no_proxy, defaults.proxy.no_proxy);
     }
 
     #[test]
@@ -1362,7 +1372,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            23,
+            24,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );

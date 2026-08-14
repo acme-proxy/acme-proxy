@@ -88,6 +88,180 @@ pub(crate) fn write_script(dir: &TempDir, name: &str, body: &str) -> PathBuf {
     path
 }
 
+/// Sets `ACME_PROXY_*`-style variables for the life of the guard, holding
+/// [`crate::config::ENV_LOCK`] throughout.
+///
+/// Environment variables are process state, so a test setting one while another
+/// calls `Config::load()` makes the second read the first's. Lives here rather
+/// than inside `config::tests` because [`crate::proxy`] reads the conventional
+/// `http_proxy` family and needs exactly the same serialisation — a second copy
+/// would take a *different* lock and serialise nothing.
+///
+/// `ACME_PROXY_CONFIG` is always pinned at a path that does not exist, so a
+/// `config.toml` in the working directory cannot leak into a test.
+pub(crate) struct EnvGuard {
+    keys: Vec<String>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl EnvGuard {
+    pub(crate) fn new(vars: &[(&str, &str)]) -> Self {
+        let _lock = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut keys = vec!["ACME_PROXY_CONFIG".to_string()];
+        unsafe {
+            std::env::set_var("ACME_PROXY_CONFIG", "/nonexistent/acme-proxy-config");
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+                keys.push((*key).to_string());
+            }
+        }
+        Self { keys, _lock }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            for key in &self.keys {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
+
+/// No proxy at all — what every test that is not *about* proxying wants.
+pub(crate) fn no_proxies() -> std::sync::Arc<crate::proxy::OutboundProxies> {
+    std::sync::Arc::new(crate::proxy::OutboundProxies::direct())
+}
+
+/// How a [`FakeProxy`] answers the request it is handed.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum ProxyBehaviour {
+    /// Answer a `CONNECT` with this literal status line and headers (the
+    /// trailing blank line is added), then splice the two sockets together.
+    ///
+    /// The status line is a parameter because real proxies do not agree on it:
+    /// squid answers `HTTP/1.0 200 Connection established` with a `Proxy-Agent`
+    /// header, which is what the framing here has to survive.
+    Tunnel {
+        status: &'static str,
+        /// Ignore the `CONNECT` target's host and dial `127.0.0.1` on this port
+        /// instead, so a test can use a real *name* in the request — which is
+        /// what an SNI assertion needs — without that name having to resolve.
+        force_port: Option<u16>,
+    },
+    /// Refuse, with this literal response including its body — the `407` shape.
+    Refuse(&'static str),
+    /// Answer a forwarded (absolute-form) request with this literal response.
+    Forward(&'static str),
+}
+
+/// A loopback forward proxy that records what it was asked for.
+///
+/// Real proxies are not available in a unit test and a container would be a
+/// different suite; what this has to prove is the wire shape — the `CONNECT`
+/// request-target, the absolute-form request line, `Proxy-Authorization`, and
+/// that a tunnel really carries bytes end to end.
+#[cfg(test)]
+pub(crate) struct FakeProxy {
+    pub port: u16,
+    /// The head of every request this proxy received, in order.
+    requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Connections accepted. A bypass test asserts this is zero, which no
+    /// assertion about the *response* could ever prove.
+    connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+impl FakeProxy {
+    pub(crate) async fn start(behaviour: ProxyBehaviour) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let seen = requests.clone();
+        let counter = connections.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    // Read exactly the head: anything past the blank line is the
+                    // tunnelled payload and belongs to the far end.
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while stream.read_exact(&mut byte).await.is_ok() {
+                        head.push(byte[0]);
+                        if head.ends_with(b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    let target = head
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_string();
+                    seen.lock().unwrap().push(head);
+
+                    match behaviour {
+                        ProxyBehaviour::Refuse(response) => {
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            let _ = stream.shutdown().await;
+                        }
+                        ProxyBehaviour::Forward(response) => {
+                            let _ = stream.write_all(response.as_bytes()).await;
+                            let _ = stream.shutdown().await;
+                        }
+                        ProxyBehaviour::Tunnel { status, force_port } => {
+                            let target = match force_port {
+                                Some(port) => format!("127.0.0.1:{port}"),
+                                None => target,
+                            };
+                            let Ok(mut upstream) = tokio::net::TcpStream::connect(&target).await
+                            else {
+                                let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").await;
+                                return;
+                            };
+                            let _ = stream.write_all(status.as_bytes()).await;
+                            let _ = stream.write_all(b"\r\n").await;
+                            let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+                        }
+                    }
+                });
+            }
+        });
+
+        Self {
+            port,
+            requests,
+            connections,
+        }
+    }
+
+    /// `http://127.0.0.1:<port>`, for a `proxy.http_url`/`https_url`.
+    pub(crate) fn url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub(crate) fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    pub(crate) fn connections(&self) -> usize {
+        self.connections.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// A list of `(type, value)` pairs as [`Identifier`]s.
 ///
 /// The `Identifier::dns`/`Identifier::new` constructors cover the single-name

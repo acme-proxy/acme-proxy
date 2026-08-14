@@ -143,6 +143,7 @@ impl RelaySigner {
         database: Arc<Database>,
         notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
@@ -213,7 +214,7 @@ impl RelaySigner {
                     let (client, account, kid) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?
-                        .block_on(provision(cfg, resolver, poll.timeout))?;
+                        .block_on(provision(cfg, resolver, proxies, poll.timeout))?;
                     Ok((client, account, kid, strategy))
                 })
                 .join()

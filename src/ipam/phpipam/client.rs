@@ -57,6 +57,7 @@ impl PhpIpamClient {
     pub fn new(
         cfg: &PhpIpamConfig,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.url.trim().is_empty(),
@@ -94,6 +95,7 @@ impl PhpIpamClient {
                     "ipam.phpipam.ca_cert_path",
                 )?,
                 resolver,
+                proxies,
             )?,
             app_id,
         })
@@ -213,9 +215,13 @@ mod tests {
 
     #[test]
     fn an_empty_url_is_a_startup_error() {
-        let error = PhpIpamClient::new(&config("  "), test_resolver())
-            .unwrap_err()
-            .to_string();
+        let error = PhpIpamClient::new(
+            &config("  "),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.phpipam.url"), "{error}");
     }
 
@@ -225,7 +231,7 @@ mod tests {
             token: String::new(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, test_resolver())
+        let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.phpipam.token"), "{error}");
@@ -241,7 +247,7 @@ mod tests {
                 app_id: bad.to_string(),
                 ..config("https://ipam.example.com")
             };
-            let error = PhpIpamClient::new(&cfg, test_resolver())
+            let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("ipam.phpipam.app_id"), "{bad}: {error}");
@@ -254,7 +260,7 @@ mod tests {
             ca_cert_path: "/nonexistent/ipam-ca.pem".to_string(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, test_resolver())
+        let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.phpipam.ca_cert_path"), "{error}");
@@ -262,8 +268,12 @@ mod tests {
 
     #[test]
     fn the_debug_impl_never_renders_the_token() {
-        let client =
-            PhpIpamClient::new(&config("https://ipam.example.com"), test_resolver()).unwrap();
+        let client = PhpIpamClient::new(
+            &config("https://ipam.example.com"),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         let rendered = format!("{client:?}");
         assert!(!rendered.contains("t0ken"), "{rendered}");
     }
@@ -293,6 +303,7 @@ mod tests {
             PhpIpamClient::new(
                 &config(&format!("http://127.0.0.1:{port}")),
                 test_resolver(),
+                crate::testutil::no_proxies(),
             )
             .unwrap()
         }
@@ -348,7 +359,7 @@ mod tests {
                 ..config(&format!("http://127.0.0.1:{port}"))
             };
 
-            PhpIpamClient::new(&cfg, test_resolver())
+            PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
                 .unwrap()
                 .search("10.0.0.5".parse().unwrap())
                 .await
@@ -520,11 +531,15 @@ mod tests {
         async fn a_self_signed_phpipam_is_refused_by_default() {
             let port = serve_once_tls(json!({ "data": [] })).await;
 
-            let error = PhpIpamClient::new(&https_config(port, false), test_resolver())
-                .unwrap()
-                .search("10.0.0.5".parse().unwrap())
-                .await
-                .unwrap_err();
+            let error = PhpIpamClient::new(
+                &https_config(port, false),
+                test_resolver(),
+                crate::testutil::no_proxies(),
+            )
+            .unwrap()
+            .search("10.0.0.5".parse().unwrap())
+            .await
+            .unwrap_err();
             assert!(error.contains("TLS handshake"), "{error}");
         }
 
@@ -535,12 +550,16 @@ mod tests {
             }))
             .await;
 
-            let objects = PhpIpamClient::new(&https_config(port, true), test_resolver())
-                .unwrap()
-                .search("10.0.0.5".parse().unwrap())
-                .await
-                .expect("skip-verify must accept a self-signed certificate")
-                .unwrap();
+            let objects = PhpIpamClient::new(
+                &https_config(port, true),
+                test_resolver(),
+                crate::testutil::no_proxies(),
+            )
+            .unwrap()
+            .search("10.0.0.5".parse().unwrap())
+            .await
+            .expect("skip-verify must accept a self-signed certificate")
+            .unwrap();
             assert_eq!(objects[0].hostname, "host.example.com");
         }
     }

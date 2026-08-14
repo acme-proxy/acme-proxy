@@ -202,12 +202,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A `[proxy]` section: every outbound HTTP request can now go through a
+  forward proxy.** Three keys — `http_url`, `https_url` and `no_proxy` — and
+  they govern the upstream CA the `relay` signer talks to, the IPAM inventory,
+  the Mattermost webhook, and both network-touching challenge validators. An
+  `https://` target is reached by a `CONNECT` tunnel and an `http://` one is
+  forwarded (absolute-form request line plus `Proxy-Authorization`);
+  `tls-alpn-01`'s raw TLS probe is tunnelled too, since a `CONNECT` tunnel is
+  transparent under TLS.
+
+  Each key falls back to its conventional environment variable when left empty:
+  `http_url` to `$http_proxy`, `https_url` to `$https_proxy` then
+  `$HTTPS_PROXY`, `no_proxy` to `$no_proxy` then `$NO_PROXY`. Uppercase
+  `HTTP_PROXY` is **deliberately not read** — under CGI a client-supplied
+  `Proxy:` header arrives in the environment under exactly that name (httpoxy,
+  CVE-2016-5385), and while this server is never a CGI process, Go's `net/http`
+  dropped the variable for the same reason and matching it costs nothing.
+
+  Loopback and `localhost` bypass unconditionally, before `no_proxy` is
+  consulted: an inherited shell `http_proxy` must not route this server's own
+  loopback traffic through a corporate proxy. A configured but unreachable proxy
+  is an error every time — there is no fallback to a direct connection, since
+  dialling around a controlled egress path exactly when the control fails is the
+  opposite of what the setting is for.
+
+  **Not everything outbound**: SMTP (`notify.email`, via `lettre`) and the
+  RFC 2136 DNS updates `signer.relay.dns01` makes are not HTTP, dial directly,
+  and are documented as doing so. An estate whose egress is proxy-only needs a
+  separate route for those two. `filter` is untouched — `reverse_dns` is DNS,
+  the `ipam` filter receives an already-built inventory client, and `custom`
+  shells out.
+
 - `doc/lint.py`, a style and link gate for the book, run by a new **docs** CI
   job that builds the book on pull requests — the deploy workflow only ran after
   merge, so a broken `SUMMARY.md` entry was previously found too late.
 
 ### Changed
 
+- The `relay` signer's upstream client and the Mattermost notifier now send an
+  **origin-form** request line (`GET /path`) on a direct connection, where both
+  previously sent absolute-form unconditionally. RFC 9112 §3.2.1 reserves
+  absolute-form for requests *to a proxy*, so this is the conformant direction;
+  both already set `Host` explicitly, so nothing routes differently. Absolute
+  form is still used, and only used, when a proxy is forwarding the request.
 - `Cargo.toml` declares `description`, `repository`, `documentation`, `homepage`,
   `readme`, `keywords` and `categories`, and a `docs.rs` block building with all
   features, so the PKCS#11 module is documented rather than absent.
@@ -218,6 +255,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- An `https://[2001:db8::1]/…` URL never connected. `Url::host_str` hands back
+  the *bracketed* literal, which `IpAddr::from_str` rejects, so the connect path
+  handed it to the resolver as if it were a name. The brackets are now stripped
+  for the lookup and kept for the `Host` header and the request line, where they
+  belong.
 - Two French comments in `src/handlers/helpers.rs`, contrary to the project's
   stated English-only rule.
 - The `### Reference` entries throughout the book depended on invisible trailing

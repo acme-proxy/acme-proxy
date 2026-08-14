@@ -83,6 +83,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         tokens.clone(),
@@ -150,6 +151,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         tokens.clone(),
@@ -197,6 +199,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -246,6 +249,7 @@ async fn http01_refuses_a_wildcard_authorization() {
             db.clone(),
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -291,6 +295,7 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("route53"), "{error}");
 }

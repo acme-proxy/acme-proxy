@@ -480,6 +480,7 @@ fn validate_events(field: &str, events: &[String]) -> anyhow::Result<()> {
 pub fn from_config(
     cfg: &NotifyConfig,
     resolver: Arc<dyn crate::dns::Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<Arc<NotifyDispatcher>> {
     // Built once and shared: both templating backends render from the same
     // `template_dir` override, and `Environment` is cheap to clone (it holds
@@ -503,6 +504,7 @@ pub fn from_config(
                         &cfg.mattermost,
                         env.clone(),
                         resolver.clone(),
+                        proxies.clone(),
                     )?),
                     &cfg.mattermost.events,
                 )]
@@ -544,10 +546,11 @@ fn build_custom_backends(cfg: &NotifyConfig) -> anyhow::Result<Vec<Arc<dyn Notif
 pub fn build_registry(
     profiles: &[ProfileConfig],
     resolver: Arc<dyn crate::dns::Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<HashMap<String, Arc<NotifyDispatcher>>> {
     let mut registry = HashMap::with_capacity(profiles.len());
     for profile in profiles {
-        let dispatcher = from_config(&profile.sections.notify, resolver.clone())
+        let dispatcher = from_config(&profile.sections.notify, resolver.clone(), proxies.clone())
             .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
         registry.insert(profile.name.clone(), dispatcher);
     }
@@ -867,7 +870,8 @@ mod tests {
             ..NotifyConfig::default()
         };
 
-        let dispatcher = from_config(&cfg, test_resolver()).expect("both backends must build");
+        let dispatcher = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .expect("both backends must build");
         let rendered = format!("{dispatcher:?}");
         assert!(rendered.contains("email"), "{rendered}");
         assert!(rendered.contains("mattermost"), "{rendered}");
@@ -879,13 +883,17 @@ mod tests {
     async fn every_smtp_security_mode_is_recognised() {
         for mode in ["starttls", "tls", "none"] {
             let cfg = email_config(mode);
-            from_config(&cfg, test_resolver())
+            from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
                 .unwrap_or_else(|error| panic!("`{mode}` must build: {error}"));
         }
 
-        let error = from_config(&email_config("carrier-pigeon"), test_resolver())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            &email_config("carrier-pigeon"),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("smtp_security"), "{error}");
     }
 
@@ -910,7 +918,7 @@ mod tests {
     async fn an_unknown_event_name_is_caught_on_each_backend() {
         let mut email = email_config("none");
         email.email.events = vec!["certificate_exploded".to_string()];
-        let error = from_config(&email, test_resolver())
+        let error = from_config(&email, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("notify.email.events"), "{error}");
@@ -924,7 +932,7 @@ mod tests {
             },
             ..NotifyConfig::default()
         };
-        let error = from_config(&mattermost, test_resolver())
+        let error = from_config(&mattermost, test_resolver(), crate::testutil::no_proxies())
             .unwrap_err()
             .to_string();
         assert!(error.contains("notify.mattermost.events"), "{error}");
@@ -939,7 +947,9 @@ mod tests {
             custom_enabled: vec!["webhook".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains("notify.custom_enabled names `webhook`"),
             "{error}"
@@ -958,7 +968,9 @@ mod tests {
             custom,
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("invalid name"), "{error}");
     }
 
@@ -968,7 +980,9 @@ mod tests {
             enabled: vec!["carrier-pigeon".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("unknown notify backend"), "{error}");
     }
 
@@ -978,7 +992,9 @@ mod tests {
             enabled: vec!["custom".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("notify.custom_enabled is empty"), "{error}");
     }
 
@@ -993,7 +1009,9 @@ mod tests {
             },
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("unknown event"), "{error}");
     }
 
@@ -1039,7 +1057,8 @@ mod tests {
                 sections: crate::config::ProfileSections::default(),
             },
         ];
-        let registry = build_registry(&profiles, test_resolver()).unwrap();
+        let registry =
+            build_registry(&profiles, test_resolver(), crate::testutil::no_proxies()).unwrap();
         assert_eq!(registry.len(), 2);
         assert!(registry.contains_key("a"));
         assert!(registry.contains_key("b"));

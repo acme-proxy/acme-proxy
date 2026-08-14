@@ -133,12 +133,17 @@ pub async fn run_order_command(
             let resolver = crate::dns::resolver_addr(&config.dns)
                 .and_then(crate::challenge::build_resolver)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
+            // …and a throwaway proxy configuration beside it, from the same
+            // `[proxy]` section `serve` reads.
+            let proxies = crate::proxy::from_config(&config.proxy)
+                .map_err(|error| CliError(format!("configuration error: {error}")))?;
             let signer = signer::from_config(
                 &profile.sections.signer,
                 vec![profile.name.clone()],
                 database.clone(),
                 Arc::new(std::collections::HashMap::new()),
                 resolver,
+                proxies,
             )
             .map_err(|error| CliError(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
@@ -257,6 +262,7 @@ mod tests {
             database.clone(),
             Arc::new(std::collections::HashMap::new()),
             resolver,
+            crate::testutil::no_proxies(),
         )
         .unwrap();
 

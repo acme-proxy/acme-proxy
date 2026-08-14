@@ -18,6 +18,7 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(
         error.contains("acme-proxy upstream register"),
@@ -54,6 +55,7 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .expect("a config-supplied credential the upstream accepts must register");
 
@@ -89,6 +91,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("hmac_key"), "{error}");
 
@@ -105,6 +108,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("kid"), "{error}");
 }
@@ -129,6 +133,7 @@ async fn a_config_credential_with_bad_base64_is_a_startup_error() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(error.contains("base64"), "{error}");
 }
@@ -158,6 +163,7 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     ));
     assert!(
         error.contains("rejected signer.relay.eab"),
@@ -192,6 +198,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .unwrap();
 
@@ -203,6 +210,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .expect("a leftover config credential must not block a registered server");
 }
@@ -221,10 +229,11 @@ async fn registering_without_a_location_header_is_refused() {
     let dir = TempDir::new("upstream");
     let cfg = config(&upstream, &dir);
 
-    let error = register_upstream_account(&cfg, test_resolver(), None)
-        .await
-        .expect_err("an account with no URL is not an account")
-        .to_string();
+    let error =
+        register_upstream_account(&cfg, test_resolver(), crate::testutil::no_proxies(), None)
+            .await
+            .expect_err("an account with no URL is not an account")
+            .to_string();
     assert!(error.contains("no Location header"), "{error}");
     assert!(
         stored_kid(&cfg).is_none(),
@@ -247,6 +256,7 @@ async fn register_upstream_account_supplies_the_eab() {
     let kid = register_upstream_account(
         &cfg,
         test_resolver(),
+        crate::testutil::no_proxies(),
         Some(("eab-kid-1", b"secret-bytes-secret-bytes!!")),
     )
     .await
@@ -279,6 +289,7 @@ async fn after_registering_startup_needs_no_credential() {
     register_upstream_account(
         &cfg,
         test_resolver(),
+        crate::testutil::no_proxies(),
         Some(("eab-kid-1", b"secret-bytes-secret-bytes!!")),
     )
     .await
@@ -290,6 +301,7 @@ async fn after_registering_startup_needs_no_credential() {
         database().await,
         no_notifiers(),
         test_resolver(),
+        crate::testutil::no_proxies(),
     )
     .expect("a registered server must start with no EAB in reach");
 }

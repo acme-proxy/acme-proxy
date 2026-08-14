@@ -264,6 +264,8 @@ pub struct AcmeClient {
     /// The resolver every outbound hop in this server shares — so the upstream
     /// CA is reached through `dns.resolver` like everything else.
     resolver: Arc<dyn crate::dns::Resolver>,
+    /// The forward proxy, if any, the upstream CA is reached through.
+    proxies: Arc<crate::proxy::OutboundProxies>,
     timeout: Duration,
 }
 
@@ -274,12 +276,22 @@ impl AcmeClient {
     pub async fn discover(
         directory_url: &str,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
         timeout: Duration,
     ) -> Result<Self, UpstreamError> {
         let tls = Arc::new(crate::http_client::webpki_tls_config());
         let url = Url::parse(directory_url)
             .map_err(|error| UpstreamError::Url(format!("{directory_url}: {error}")))?;
-        let response = request(&tls, resolver.as_ref(), Method::GET, &url, None, timeout).await?;
+        let response = request(
+            &tls,
+            resolver.as_ref(),
+            proxies.as_ref(),
+            Method::GET,
+            &url,
+            None,
+            timeout,
+        )
+        .await?;
         if !response.status.is_success() {
             return Err(problem_from(&response));
         }
@@ -288,6 +300,7 @@ impl AcmeClient {
         Ok(Self {
             directory,
             resolver,
+            proxies,
             tls,
             timeout,
         })
@@ -305,6 +318,7 @@ impl AcmeClient {
         let response = request(
             &self.tls,
             self.resolver.as_ref(),
+            self.proxies.as_ref(),
             Method::HEAD,
             &url,
             None,
@@ -384,6 +398,7 @@ impl AcmeClient {
         let response = request(
             &self.tls,
             self.resolver.as_ref(),
+            self.proxies.as_ref(),
             Method::POST,
             &parsed,
             Some(Bytes::from(body)),
@@ -415,6 +430,7 @@ impl AcmeClient {
         let response = request(
             &self.tls,
             self.resolver.as_ref(),
+            self.proxies.as_ref(),
             Method::GET,
             &parsed,
             None,
@@ -460,29 +476,39 @@ fn problem_from(response: &AcmeResponse) -> UpstreamError {
 async fn request(
     tls: &Arc<rustls::ClientConfig>,
     resolver: &dyn crate::dns::Resolver,
+    proxies: &crate::proxy::OutboundProxies,
     method: Method,
     url: &Url,
     body: Option<Bytes>,
     timeout: Duration,
 ) -> Result<AcmeResponse, UpstreamError> {
-    tokio::time::timeout(timeout, request_inner(tls, resolver, method, url, body))
-        .await
-        .map_err(|_| UpstreamError::Transport(format!("timed out after {timeout:?}")))?
+    tokio::time::timeout(
+        timeout,
+        request_inner(tls, resolver, proxies, method, url, body),
+    )
+    .await
+    .map_err(|_| UpstreamError::Transport(format!("timed out after {timeout:?}")))?
 }
 
 async fn request_inner(
     tls: &Arc<rustls::ClientConfig>,
     resolver: &dyn crate::dns::Resolver,
+    proxies: &crate::proxy::OutboundProxies,
     method: Method,
     url: &Url,
     body: Option<Bytes>,
 ) -> Result<AcmeResponse, UpstreamError> {
     let endpoint = crate::http_client::Endpoint::from_url(url).map_err(UpstreamError::Url)?;
 
+    let connection = crate::http_client::connect(resolver, proxies, &endpoint, tls)
+        .await
+        .map_err(UpstreamError::Transport)?;
+
     let has_body = body.is_some();
+    // Origin-form directly, absolute-form when a proxy forwards this hop.
     let request = Request::builder()
         .method(method)
-        .uri(url.as_str())
+        .uri(connection.request_target(url))
         .header(hyper::header::HOST, endpoint.authority())
         .header(hyper::header::USER_AGENT, "acme-proxy")
         .header(
@@ -496,17 +522,14 @@ async fn request_inner(
         .body(Full::new(body.unwrap_or_default()))
         .map_err(|error| UpstreamError::Transport(error.to_string()))?;
 
-    let sender = crate::http_client::connect(resolver, &endpoint, tls)
-        .await
-        .map_err(UpstreamError::Transport)?;
-    send(sender, request).await
+    send(connection, request).await
 }
 
 async fn send(
-    mut sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+    mut connection: crate::http_client::Connection<Full<Bytes>>,
     request: Request<Full<Bytes>>,
 ) -> Result<AcmeResponse, UpstreamError> {
-    let response = sender
+    let response = connection
         .send_request(request)
         .await
         .map_err(|error| UpstreamError::Transport(error.to_string()))?;
@@ -672,9 +695,14 @@ mod tests {
     #[tokio::test]
     async fn discover_reads_the_directory() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             client.directory().new_order,
             format!("{}/newOrder", upstream.base)
@@ -686,11 +714,23 @@ mod tests {
     #[tokio::test]
     async fn discover_fails_on_an_unusable_url() {
         assert!(matches!(
-            AcmeClient::discover("not a url", test_resolver(), TIMEOUT).await,
+            AcmeClient::discover(
+                "not a url",
+                test_resolver(),
+                crate::testutil::no_proxies(),
+                TIMEOUT
+            )
+            .await,
             Err(UpstreamError::Url(_))
         ));
         assert!(matches!(
-            AcmeClient::discover("ftp://example.invalid/dir", test_resolver(), TIMEOUT).await,
+            AcmeClient::discover(
+                "ftp://example.invalid/dir",
+                test_resolver(),
+                crate::testutil::no_proxies(),
+                TIMEOUT
+            )
+            .await,
             Err(UpstreamError::Url(_))
         ));
     }
@@ -705,6 +745,7 @@ mod tests {
         let error = AcmeClient::discover(
             &format!("http://127.0.0.1:{port}/directory"),
             test_resolver(),
+            crate::testutil::no_proxies(),
             TIMEOUT,
         )
         .await
@@ -717,9 +758,14 @@ mod tests {
     #[tokio::test]
     async fn every_signed_post_fetches_a_fresh_nonce() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         let key = key();
 
         for _ in 0..3 {
@@ -745,9 +791,14 @@ mod tests {
             ..Script::default()
         })
         .await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
 
         let response = client
             .post(
@@ -766,9 +817,14 @@ mod tests {
     #[tokio::test]
     async fn a_created_response_carries_its_location() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         let response = client
             .post(
                 &key(),
@@ -789,9 +845,14 @@ mod tests {
     #[tokio::test]
     async fn post_as_get_sends_an_empty_payload() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         let response = client
             .get(&key(), "kid-1", &format!("{}/order/1", upstream.base))
             .await
@@ -805,9 +866,14 @@ mod tests {
     #[tokio::test]
     async fn an_error_response_becomes_a_problem() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         let error = client
             .get(&key(), "kid-1", &format!("{}/nope", upstream.base))
             .await
@@ -893,6 +959,7 @@ mod tests {
         let error = AcmeClient::discover(
             &format!("http://127.0.0.1:{port}/directory"),
             test_resolver(),
+            crate::testutil::no_proxies(),
             Duration::from_millis(150),
         )
         .await
@@ -906,9 +973,14 @@ mod tests {
     #[tokio::test]
     async fn get_unsigned_reaches_an_endpoint_that_takes_no_jws() {
         let upstream = testsrv::start(Script::default()).await;
-        let client = AcmeClient::discover(&upstream.directory_url(), test_resolver(), TIMEOUT)
-            .await
-            .unwrap();
+        let client = AcmeClient::discover(
+            &upstream.directory_url(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
         // The directory itself is the one unsigned GET target the fake serves.
         let response = client
             .get_unsigned(&upstream.directory_url())

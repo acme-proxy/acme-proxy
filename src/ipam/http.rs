@@ -81,6 +81,8 @@ pub(crate) struct JsonApi {
     /// estate does not have the inventory resolving differently from the
     /// challenge validators.
     resolver: Arc<dyn crate::dns::Resolver>,
+    /// The forward proxy, if any, this inventory is reached through.
+    proxies: Arc<crate::proxy::OutboundProxies>,
 }
 
 impl std::fmt::Debug for JsonApi {
@@ -104,6 +106,7 @@ impl JsonApi {
         headers: Vec<(HeaderName, String)>,
         tls: Arc<rustls::ClientConfig>,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
         let parsed = Url::parse(url.trim())
             .map_err(|error| anyhow::anyhow!("{setting}: {url} is not a URL: {error}"))?;
@@ -119,6 +122,7 @@ impl JsonApi {
             headers,
             tls,
             resolver,
+            proxies,
         })
     }
 
@@ -138,11 +142,18 @@ impl JsonApi {
             JsonApiError::transport(format!("{target} is not a usable endpoint: {error}"))
         })?;
 
-        let mut request_target = url.path().to_string();
-        if let Some(query) = url.query() {
-            request_target.push('?');
-            request_target.push_str(query);
-        }
+        let connection = crate::http_client::connect(
+            self.resolver.as_ref(),
+            &self.proxies,
+            &endpoint,
+            &self.tls,
+        )
+        .await
+        .map_err(JsonApiError::transport)?;
+
+        // Origin-form directly, absolute-form when this connection forwards
+        // through a proxy — which is why the connection is opened first.
+        let request_target = connection.request_target(&url);
 
         // hyper 1.x's low-level client sends exactly what it is given, `Host`
         // included — see `HyperFetcher`, whose loopback test is what caught it.
@@ -159,20 +170,17 @@ impl JsonApi {
             .body(Empty::<Bytes>::new())
             .map_err(|error| JsonApiError::transport(format!("building the request: {error}")))?;
 
-        let sender = crate::http_client::connect(self.resolver.as_ref(), &endpoint, &self.tls)
-            .await
-            .map_err(JsonApiError::transport)?;
-        exchange(sender, request, &url).await
+        exchange(connection, request, &url).await
     }
 }
 
 /// Sends the request over an established stream and parses the answer.
 async fn exchange(
-    mut sender: hyper::client::conn::http1::SendRequest<Empty<Bytes>>,
+    mut connection: crate::http_client::Connection<Empty<Bytes>>,
     request: Request<Empty<Bytes>>,
     url: &Url,
 ) -> Result<Value, JsonApiError> {
-    let response = sender
+    let response = connection
         .send_request(request)
         .await
         .map_err(|error| JsonApiError::transport(format!("request to {url} failed: {error}")))?;
@@ -408,6 +416,7 @@ mod tests {
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "ipam.test.ca_cert_path").unwrap(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap()
     }
@@ -422,6 +431,7 @@ mod tests {
             Vec::new(),
             tls_config("", false, "x").unwrap(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap_err()
         .to_string();
@@ -436,6 +446,7 @@ mod tests {
             Vec::new(),
             tls_config("", false, "x").unwrap(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap_err()
         .to_string();
@@ -452,6 +463,7 @@ mod tests {
             Vec::new(),
             tls_config("", false, "x").unwrap(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
         assert_eq!(api.base(), "https://example.com/netbox");
@@ -465,6 +477,7 @@ mod tests {
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "x").unwrap(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
         let rendered = format!("{api:?}");

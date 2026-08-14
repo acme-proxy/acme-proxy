@@ -311,13 +311,19 @@ impl IpamRegistry {
 pub fn from_config(
     cfg: &IpamConfig,
     resolver: Arc<dyn crate::dns::Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<Option<Arc<IpamRegistry>>> {
     let backend: Arc<dyn Ipam> = match cfg.backend.trim() {
         "" => return Ok(None),
-        "netbox" => Arc::new(netbox::NetboxBackend::from_config(&cfg.netbox, resolver)?),
+        "netbox" => Arc::new(netbox::NetboxBackend::from_config(
+            &cfg.netbox,
+            resolver,
+            proxies,
+        )?),
         "phpipam" => Arc::new(phpipam::PhpIpamBackend::from_config(
             &cfg.phpipam,
             resolver,
+            proxies,
         )?),
         other => anyhow::bail!("unknown IPAM backend: {other} (expected `netbox` or `phpipam`)"),
     };
@@ -584,7 +590,11 @@ mod tests {
     #[test]
     fn no_backend_builds_nothing() {
         let cfg = IpamConfig::default();
-        assert!(from_config(&cfg, resolver()).unwrap().is_none());
+        assert!(
+            from_config(&cfg, resolver(), crate::testutil::no_proxies())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -600,6 +610,7 @@ mod tests {
                 ..IpamConfig::default()
             },
             resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap()
         .unwrap();
@@ -616,6 +627,7 @@ mod tests {
                 ..IpamConfig::default()
             },
             resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap()
         .unwrap();
@@ -628,7 +640,9 @@ mod tests {
             backend: "racktables".to_string(),
             ..IpamConfig::default()
         };
-        let error = from_config(&cfg, resolver()).unwrap_err().to_string();
+        let error = from_config(&cfg, resolver(), crate::testutil::no_proxies())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("racktables"), "{error}");
         assert!(error.contains("netbox"), "{error}");
         assert!(error.contains("phpipam"), "{error}");

@@ -57,8 +57,12 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 /// The same, with an `[ipam]` section — the two are built together at startup,
 /// `[ipam]` first, exactly as `Profile::build_all` does it.
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
-    let inventory =
-        acme_proxy::ipam::from_config(ipam, test_resolver()).expect("ipam config should build");
+    let inventory = acme_proxy::ipam::from_config(
+        ipam,
+        test_resolver(),
+        std::sync::Arc::new(acme_proxy::proxy::OutboundProxies::direct()),
+    )
+    .expect("ipam config should build");
     let chain = filter::from_config(&filter, &DnsConfig::default(), inventory)
         .expect("filter config should build");
     let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());

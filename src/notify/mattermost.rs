@@ -32,6 +32,8 @@ pub struct MattermostNotifier {
     /// The same resolver every other outbound hop uses, so `dns.resolver`
     /// governs this webhook too.
     resolver: Arc<dyn crate::dns::Resolver>,
+    /// The forward proxy, if any, the webhook host is reached through.
+    proxies: Arc<crate::proxy::OutboundProxies>,
     env: Arc<minijinja::Environment<'static>>,
 }
 
@@ -55,6 +57,7 @@ impl MattermostNotifier {
         cfg: &MattermostNotifyConfig,
         env: Arc<minijinja::Environment<'static>>,
         resolver: Arc<dyn crate::dns::Resolver>,
+        proxies: Arc<crate::proxy::OutboundProxies>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.webhook_url.trim().is_empty(),
@@ -77,6 +80,7 @@ impl MattermostNotifier {
             timeout: Duration::from_millis(cfg.timeout_ms),
             tls: Arc::new(crate::http_client::webpki_tls_config()),
             resolver,
+            proxies,
             env,
         })
     }
@@ -104,7 +108,13 @@ impl NotifyBackend for MattermostNotifier {
 
         let status = tokio::time::timeout(
             self.timeout,
-            post(&self.tls, self.resolver.as_ref(), &self.webhook_url, body),
+            post(
+                &self.tls,
+                self.resolver.as_ref(),
+                &self.proxies,
+                &self.webhook_url,
+                body,
+            ),
         )
         .await
         .map_err(|_| NotifyError::new(format!("timed out after {:?}", self.timeout)))??;
@@ -120,25 +130,28 @@ impl NotifyBackend for MattermostNotifier {
 async fn post(
     tls: &Arc<rustls::ClientConfig>,
     resolver: &dyn crate::dns::Resolver,
+    proxies: &crate::proxy::OutboundProxies,
     url: &Url,
     body: Bytes,
 ) -> Result<hyper::StatusCode, NotifyError> {
     let endpoint = crate::http_client::Endpoint::from_url(url).map_err(NotifyError::new)?;
 
+    let mut connection = crate::http_client::connect(resolver, proxies, &endpoint, tls)
+        .await
+        .map_err(NotifyError::new)?;
+
+    // Origin-form directly, absolute-form through a proxy — the connection
+    // decides, which is why it is opened before the request is built.
     let request = Request::builder()
         .method(Method::POST)
-        .uri(url.as_str())
+        .uri(connection.request_target(url))
         .header(hyper::header::HOST, endpoint.authority())
         .header(hyper::header::USER_AGENT, "acme-proxy")
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .body(Full::new(body))
         .map_err(|error| NotifyError::new(format!("failed to build request: {error}")))?;
 
-    let mut sender = crate::http_client::connect(resolver, &endpoint, tls)
-        .await
-        .map_err(NotifyError::new)?;
-
-    let response = sender
+    let response = connection
         .send_request(request)
         .await
         .map_err(|error| NotifyError::new(error.to_string()))?;
@@ -175,9 +188,13 @@ mod tests {
             webhook_url: String::new(),
             ..cfg()
         };
-        let error =
-            MattermostNotifier::from_config(&cfg, Arc::new(build_environment("")), test_resolver())
-                .unwrap_err();
+        let error = MattermostNotifier::from_config(
+            &cfg,
+            Arc::new(build_environment("")),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("webhook_url is empty"));
     }
 
@@ -187,9 +204,13 @@ mod tests {
             webhook_url: "ftp://mattermost.example.com/hooks/xyz".to_string(),
             ..cfg()
         };
-        let error =
-            MattermostNotifier::from_config(&cfg, Arc::new(build_environment("")), test_resolver())
-                .unwrap_err();
+        let error = MattermostNotifier::from_config(
+            &cfg,
+            Arc::new(build_environment("")),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("http"));
     }
 
@@ -199,6 +220,7 @@ mod tests {
             &cfg(),
             Arc::new(build_environment("")),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
         let event = NotifyEvent::ProfileMounted(ProfileMountedData {
@@ -234,6 +256,7 @@ mod tests {
         let status = post(
             &tls,
             test_resolver().as_ref(),
+            &crate::proxy::OutboundProxies::direct(),
             &url,
             Bytes::from_static(b"{}"),
         )
@@ -282,6 +305,7 @@ mod tests {
             },
             Arc::new(crate::notify::build_environment("")),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
 
@@ -335,6 +359,7 @@ mod tests {
             },
             Arc::new(crate::notify::build_environment("")),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
 
@@ -359,6 +384,7 @@ mod tests {
         let error = post(
             &tls,
             test_resolver().as_ref(),
+            &crate::proxy::OutboundProxies::direct(),
             &url,
             Bytes::from_static(b"{}"),
         )
@@ -376,6 +402,7 @@ mod tests {
         let error = post(
             &tls,
             test_resolver().as_ref(),
+            &crate::proxy::OutboundProxies::direct(),
             &url,
             Bytes::from_static(b"{}"),
         )

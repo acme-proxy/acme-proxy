@@ -255,13 +255,14 @@ pub fn from_config(
     database: Arc<Database>,
     notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
     resolver: Arc<dyn crate::dns::Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
     match cfg.backend.as_str() {
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
         )?)),
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay, profiles, database, notifiers, resolver,
+            &cfg.relay, profiles, database, notifiers, resolver, proxies,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -297,6 +298,7 @@ pub fn build_backends(
     database: Arc<Database>,
     notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
     resolver: Arc<dyn crate::dns::Resolver>,
+    proxies: Arc<crate::proxy::OutboundProxies>,
 ) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
     // The identity of a configuration is its `Debug` rendering: every config
     // type derives `Debug`, the output is deterministic for equal values, and
@@ -344,6 +346,7 @@ pub fn build_backends(
                     database.clone(),
                     notifiers.clone(),
                     resolver.clone(),
+                    proxies.clone(),
                 )
                 .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 built.insert(key, backend.clone());
@@ -442,8 +445,14 @@ mod tests {
         let (cfg, _dir) = config("local_ca");
         let profiles = vec![profile("a", cfg.clone()), profile("b", cfg)];
 
-        let backends =
-            build_backends(&profiles, database().await, no_notifiers(), test_resolver()).unwrap();
+        let backends = build_backends(
+            &profiles,
+            database().await,
+            no_notifiers(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         assert_eq!(backends.len(), 2);
         assert!(
             Arc::ptr_eq(&backends["a"], &backends["b"]),
@@ -457,8 +466,14 @@ mod tests {
         let (second, dir_b) = config("local_ca");
         let profiles = vec![profile("a", first), profile("b", second)];
 
-        let backends =
-            build_backends(&profiles, database().await, no_notifiers(), test_resolver()).unwrap();
+        let backends = build_backends(
+            &profiles,
+            database().await,
+            no_notifiers(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        )
+        .unwrap();
         assert!(
             !Arc::ptr_eq(&backends["a"], &backends["b"]),
             "different CA material must mean different CAs"
@@ -478,11 +493,16 @@ mod tests {
         second.local_ca.leaf_validity_days = 7;
 
         let profiles = vec![profile("a", first), profile("b", second)];
-        let error =
-            match build_backends(&profiles, database().await, no_notifiers(), test_resolver()) {
-                Err(error) => error.to_string(),
-                Ok(_) => panic!("two backends over one key file must not both be built"),
-            };
+        let error = match build_backends(
+            &profiles,
+            database().await,
+            no_notifiers(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        ) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("two backends over one key file must not both be built"),
+        };
         assert!(error.contains("different signer configuration"), "{error}");
         assert!(
             error.contains("ca.key") || error.contains("ca.pem"),
@@ -500,11 +520,16 @@ mod tests {
             },
         )];
 
-        let error =
-            match build_backends(&profiles, database().await, no_notifiers(), test_resolver()) {
-                Err(error) => error.to_string(),
-                Ok(_) => panic!("an unknown backend is a startup error"),
-            };
+        let error = match build_backends(
+            &profiles,
+            database().await,
+            no_notifiers(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+        ) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("an unknown backend is a startup error"),
+        };
         assert!(error.contains("profile `le`"), "{error}");
     }
 
@@ -517,6 +542,7 @@ mod tests {
             database().await,
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .expect("local_ca is a known backend");
 
@@ -570,6 +596,7 @@ mod tests {
             database().await,
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .expect("custom is a known backend");
 
@@ -597,6 +624,7 @@ mod tests {
             database().await,
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         )
         .unwrap();
         assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
@@ -614,6 +642,7 @@ mod tests {
             database().await,
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend must not build"),
@@ -638,6 +667,7 @@ mod tests {
             database().await,
             no_notifiers(),
             test_resolver(),
+            crate::testutil::no_proxies(),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("the old backend name must not build"),
