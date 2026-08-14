@@ -82,7 +82,8 @@ impl AdminRecoveryCode {
         tx.commit().await?;
 
         info!(
-            event = "admin_recovery_codes_replaced",
+            event = "db_admin_recovery_codes_replaced",
+            outcome = "success",
             user_id = %user_id,
             minted = hashes.len()
         );
@@ -144,7 +145,7 @@ impl AdminRecoveryCode {
             // Only reachable from a race or a double-submit, both of which are
             // worth seeing: the caller already matched the hash, so this is a
             // correct code arriving a second time.
-            warn!(event = "admin_recovery_code_already_used", code_id = %id);
+            warn!(event = "db_admin_recovery_code_already_used", outcome = "failure", code_id = %id);
         }
         Ok(consumed)
     }

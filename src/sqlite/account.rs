@@ -122,7 +122,7 @@ impl Account {
         pubkey: &[u8],
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
-        debug!(event = "account_find_by_pubkey_started", profile = %profile, pubkey_hash = %pubkey_fingerprint(pubkey));
+        debug!(event = "db_account_find_by_pubkey_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
         let row = sqlx::query(
             "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? AND pubkey = ?;",
         )
@@ -133,9 +133,9 @@ impl Account {
 
         let result = row.map(Account::from_row).transpose()?;
         if let Some(ref account) = result {
-            debug!(event = "account_found_by_pubkey", account_id = %account.id, pubkey_hash = %pubkey_fingerprint(pubkey));
+            debug!(event = "db_account_found_by_pubkey", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
         } else {
-            debug!(event = "account_not_found_by_pubkey", pubkey_hash = %pubkey_fingerprint(pubkey));
+            debug!(event = "db_account_not_found_by_pubkey", outcome = "failure", pubkey_fp = %pubkey_fingerprint(pubkey));
         }
         Ok(result)
     }
@@ -150,7 +150,7 @@ impl Account {
         id: &str,
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
-        debug!(event = "account_find_by_id_started", profile = %profile, account_id = %id);
+        debug!(event = "db_account_find_by_id_started", outcome = "progress", profile = %profile, account_id = %id);
         let row = sqlx::query(
             "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? AND id = ?;",
         )
@@ -161,9 +161,9 @@ impl Account {
 
         let result = row.map(Account::from_row).transpose()?;
         if let Some(ref account) = result {
-            debug!(event = "account_found_by_id", account_id = %account.id);
+            debug!(event = "db_account_found_by_id", outcome = "success", account_id = %account.id);
         } else {
-            debug!(event = "account_not_found_by_id", account_id = %id);
+            debug!(event = "db_account_not_found_by_id", outcome = "failure", account_id = %id);
         }
         Ok(result)
     }
@@ -185,9 +185,9 @@ impl Account {
         client: &ClientContext,
         database: &Database,
     ) -> Result<(Account, bool), sqlx::Error> {
-        debug!(event = "account_find_or_create_started", profile = %profile, pubkey_hash = %pubkey_fingerprint(pubkey));
+        debug!(event = "db_account_find_or_create_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
         if let Some(account) = Account::find_by_pubkey(profile, pubkey, database).await? {
-            debug!(event = "account_found_existing", account_id = %account.id, pubkey_hash = %pubkey_fingerprint(pubkey));
+            debug!(event = "db_account_found_existing", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
             return Ok((account, false));
         }
 
@@ -215,7 +215,7 @@ impl Account {
         // `contact` is a `Vec<String>`, so serialization is infallible.
         let contact_json = Value::from(account.contact.clone()).to_string();
 
-        debug!(event = "db_account_create_started", account_id = %account.id);
+        debug!(event = "db_account_create_started", outcome = "progress", account_id = %account.id);
         sqlx::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, created_ip, \
              created_ptr, last_seen_at, last_seen_ip, last_seen_ptr) \
@@ -235,7 +235,7 @@ impl Account {
         .execute(&database.pool)
         .await?;
 
-        debug!(event = "db_account_created", account_id = %account.id, pubkey_hash = %pubkey_fingerprint(pubkey));
+        debug!(event = "db_account_created", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
         Ok((account, true))
     }
 
@@ -293,7 +293,7 @@ impl Account {
         self.last_seen_at = Some(now);
         self.last_seen_ip = client.ip.clone();
         self.last_seen_ptr = client.ptr.clone();
-        debug!(event = "db_account_touched", account_id = %self.id);
+        debug!(event = "db_account_touched", outcome = "success", account_id = %self.id);
         Ok(())
     }
 
@@ -306,7 +306,7 @@ impl Account {
         contact: Vec<String>,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "account_contact_update_started", account_id = %self.id);
+        debug!(event = "db_account_contact_update_started", outcome = "progress", account_id = %self.id);
         // `contact` is a `Vec<String>`, so serialization is infallible.
         let contact_json = Value::from(contact.clone()).to_string();
 
@@ -317,7 +317,7 @@ impl Account {
             .await?;
 
         self.contact = contact;
-        debug!(event = "db_account_contact_updated", account_id = %self.id);
+        debug!(event = "db_account_contact_updated", outcome = "success", account_id = %self.id);
         Ok(())
     }
 
@@ -325,14 +325,14 @@ impl Account {
     /// a terminal state. Keeps `self.status` in sync.
     #[tracing::instrument(name = "Account::deactivate", skip(self, database), fields(account_id = %self.id))]
     pub async fn deactivate(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "account_deactivation_started", account_id = %self.id);
+        debug!(event = "db_account_deactivation_started", outcome = "progress", account_id = %self.id);
         sqlx::query("UPDATE accounts SET status = 'deactivated' WHERE id = ?;")
             .bind(&self.id)
             .execute(&database.pool)
             .await?;
 
         self.status = "deactivated".to_string();
-        debug!(event = "db_account_deactivated", account_id = %self.id);
+        debug!(event = "db_account_deactivated", outcome = "success", account_id = %self.id);
         Ok(())
     }
 
@@ -346,7 +346,7 @@ impl Account {
         pubkey: &[u8],
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "account_pubkey_update_started", account_id = ?self.id);
+        debug!(event = "db_account_pubkey_update_started", outcome = "progress", account_id = ?self.id);
         sqlx::query("UPDATE accounts SET pubkey = ? WHERE id = ?;")
             .bind(pubkey)
             .bind(&self.id)
@@ -354,7 +354,7 @@ impl Account {
             .await?;
 
         self.pubkey = pubkey.to_vec();
-        info!(event = "account_pubkey_updated", account_id = ?self.id);
+        info!(event = "db_account_pubkey_updated", outcome = "success", account_id = ?self.id);
         Ok(())
     }
 
@@ -369,7 +369,7 @@ impl Account {
         eab_kid: &str,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "account_eab_kid_set_started", account_id = ?self.id, eab_kid = ?eab_kid);
+        debug!(event = "db_account_eab_kid_set_started", outcome = "progress", account_id = ?self.id, eab_kid = ?eab_kid);
         sqlx::query("UPDATE accounts SET eab_kid = ? WHERE id = ?;")
             .bind(eab_kid)
             .bind(&self.id)
@@ -377,7 +377,7 @@ impl Account {
             .await?;
 
         self.eab_kid = Some(eab_kid.to_string());
-        info!(event = "account_eab_kid_set", account_id = ?self.id, eab_kid = ?eab_kid);
+        info!(event = "db_account_eab_kid_set", outcome = "success", account_id = ?self.id, eab_kid = ?eab_kid);
         Ok(())
     }
 
@@ -390,14 +390,14 @@ impl Account {
     /// and a ToS added to the configuration later does not retroactively make
     /// old accounts look like they accepted it.
     pub async fn set_terms_agreed(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "account_terms_agreed_started", account_id = ?self.id);
+        debug!(event = "db_account_terms_agreed_started", outcome = "progress", account_id = ?self.id);
         sqlx::query("UPDATE accounts SET terms_of_service_agreed = 1 WHERE id = ?;")
             .bind(&self.id)
             .execute(&database.pool)
             .await?;
 
         self.terms_of_service_agreed = Some(true);
-        info!(event = "account_terms_agreed", account_id = ?self.id);
+        info!(event = "db_account_terms_agreed", outcome = "success", account_id = ?self.id);
         Ok(())
     }
 
@@ -411,7 +411,7 @@ impl Account {
         id: &str,
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
-        debug!(event = "account_find_any_by_id_started", account_id = %id);
+        debug!(event = "db_account_find_any_by_id_started", outcome = "progress", account_id = %id);
         let row = sqlx::query(
             "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE id = ?;",
         )
@@ -429,7 +429,7 @@ impl Account {
         profile: Option<&str>,
         database: &Database,
     ) -> Result<Vec<Account>, sqlx::Error> {
-        debug!(event = "account_list_all_started", profile = ?profile);
+        debug!(event = "db_account_list_all_started", outcome = "progress", profile = ?profile);
         let rows = match profile {
             Some(profile) => sqlx::query(
                 "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? ORDER BY created_at ASC;",
@@ -463,7 +463,7 @@ impl Account {
         offset: i64,
         database: &Database,
     ) -> Result<(Vec<Account>, i64), sqlx::Error> {
-        debug!(event = "account_search_started", profile = ?profile, limit = limit, offset = offset);
+        debug!(event = "db_account_search_started", outcome = "progress", profile = ?profile, limit = limit, offset = offset);
 
         // `id` breaks the `created_at` tie for the same reason it does for
         // orders: whole-second timestamps would otherwise let two rows swap
@@ -519,7 +519,7 @@ impl Account {
     /// existed to delete, so the caller can distinguish "gone" from "never
     /// there".
     pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
-        debug!(event = "account_delete_started", account_id = ?id);
+        debug!(event = "db_account_delete_started", outcome = "progress", account_id = ?id);
         let result = sqlx::query("DELETE FROM accounts WHERE id = ?;")
             .bind(id)
             .execute(&database.pool)
@@ -527,9 +527,9 @@ impl Account {
 
         let deleted = result.rows_affected() > 0;
         if deleted {
-            info!(event = "account_deleted", account_id = ?id);
+            info!(event = "db_account_deleted", outcome = "success", account_id = ?id);
         } else {
-            debug!(event = "account_delete_missing", account_id = ?id);
+            debug!(event = "db_account_delete_missing", outcome = "success", account_id = ?id);
         }
         Ok(deleted)
     }

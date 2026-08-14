@@ -92,27 +92,52 @@ Each request closes with exactly one `request_completed` record carrying
 `status` and `latency_ms`. It is emitted under this crate's own target, so it is
 visible at the default filter. Its level varies:
 
-| Case | Level |
-| --- | --- |
-| Response status is 5xx | `warn` |
-| `GET`/`HEAD` of `/health` or `/` | `debug` |
-| Everything else | `info` |
+| Case | Level | `outcome` |
+| --- | --- | --- |
+| Response status is 5xx | `warn` | `failure` |
+| `GET`/`HEAD` of `/health` or `/` | `debug` | `success` |
+| Everything else | `info` | `success` |
 
-Liveness probes are at `debug` deliberately: at one probe per second per node
-they would otherwise be most of the log. Set `RUST_LOG=acme_proxy=debug` to see
-them.
+This is the **only** event name emitted at more than one level, and the only one
+whose `outcome` comes from the response rather than from its own name. Liveness
+probes are at `debug` deliberately: at one probe per second per node they would
+otherwise be most of the log. Set `RUST_LOG=acme_proxy=debug` to see them.
 
 ### Structured events
 
-Log records carry an `event` field with a stable, greppable name. This is the
-practical hook for alerting today, and it is what the end-to-end suite itself
-asserts against. The ones worth building alerts on:
+Every log record carries two fields you can build alerting on, and their shape
+is enforced by a test rather than by convention (`tests/logging_convention.rs`).
+
+**`event`** is a stable, greppable name, shaped `<subsystem>_<object>_<outcome>`
+— always a literal in the source, so a name in a log greps straight back to the
+line that wrote it. The subsystem prefix comes from a closed list, so a family
+grep finds the whole family: `event = "certificate_revoke` reaches every
+revocation refusal, `db_` reaches the storage layer, `challenge_http_01_`
+reaches one validator. Challenge types are always spelled with separators
+(`http_01`, `dns_01`, `tls_alpn_01`).
+
+**`outcome`** is one of four values, and it exists so that "show me everything
+that broke" is an exact match instead of a suffix glob. Failure is spelled a
+dozen ways across the ~450 event names (`_failed`, but also `_invalid`,
+`_mismatch`, `_missing`, `_unauthorized`, `_rejected`), so globbing on the name
+silently misses most of it:
+
+| `outcome` | Meaning |
+| --- | --- |
+| `success` | The operation completed. |
+| `failure` | The operation did not. **This is the field to alert on.** |
+| `progress` | An operation began or was asked for; its result is not yet known. Always paired with a `_started` or `_requested` name. |
+| `advisory` | Nothing failed, but the operator should keep seeing it — a configuration posture like `tls_disabled` or `challenge_validation_bypassed`. |
+
+Every `error`-level record is `outcome = "failure"`; an advisory sits at `warn`.
+
+The events worth building alerts on:
 
 | Event | Level | Meaning |
 | --- | --- | --- |
 | `request_completed` | info / warn / debug | One per request. See "The access line" above for the level. |
 | `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. |
-| `server_fatal_error`, `socket_bind_failed`, `profiles_init_failed` | error | The process is not serving. |
+| `server_fatal_error`, `server_socket_bind_failed`, `profile_init_failed` | error | The process is not serving. |
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |
@@ -121,8 +146,8 @@ asserts against. The ones worth building alerts on:
 | `challenge_http_01_mismatch` | warn | The responder answered, but with the wrong key authorization. The body itself is never logged here; a truncated preview goes to `challenge_http_01_mismatch_body` at `debug`. |
 | `nonce_replayed` | warn | A JWS carried a nonce that was unknown, already consumed or expired. Routine in small numbers (a client racing itself); a flood is a client stuck in a retry loop, or a replay attempt. |
 | `key_change_rejected` | warn | `POST /keyChange` refused. `reason = bad_signature` means the inner JWS did not verify — somebody attempted a rollover they could not prove possession for. |
-| `leaf_issued`, `order_finalized` | info | A certificate was issued. |
-| `cert_revoked`, `revoke_cert_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
+| `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. |
+| `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
 | `upstream_relay_succeeded`, `upstream_relay_failed` | info / warn | Outcome of one relayed issuance under the `relay` signer backend. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
 | `notify_delivery_failed` | warn | A notification backend could not deliver. Never affects the ACME response. |
@@ -141,36 +166,42 @@ Only with `[admin]` enabled — see [Web Admin](webadmin.md):
 | `admin_config_invalid` | error | `[admin]` cannot work; the process did not start. The message names the two keys that disagree. |
 | `admin_no_users` | warn | The panel is enabled but has no operators — a running service with no way in. Fix with `acme-proxy admin user create`. |
 | `admin_login_succeeded` | info | Carries `username` and `client_ip`. |
-| `admin_login_failed` | warn | Carries `reason`: `wrong_password`, `unknown_user`, `account_disabled` or `rate_limited`. **The client is told none of this** — every failure returns one `invalid_credentials` — so this log line is the only place the distinction exists. A run of `unknown_user` from one address is somebody guessing usernames. |
-| `admin_login_rate_limited` | warn | Reported as `admin_login_failed` with `reason = "rate_limited"`. Sustained occurrences mean a brute-force attempt, or an operator locked out by their own retries. |
-| `admin_logout` | info | Carries `scope = "one"` or `"all"`. |
+| `admin_login_failed` | warn | Carries `reason`: `wrong_password`, `unknown_user`, `account_disabled` or `rate_limited`. **The client is told none of this** — every failure returns one `invalid_credentials` — so this log line is the only place the distinction exists. A run of `unknown_user` from one address is somebody guessing usernames; a run of `rate_limited` is a brute-force attempt, or an operator locked out by their own retries. |
+| `admin_logout` | info | Carries `scope = "one"` or `"all"`, and `surface = "api"` or `"ui"`. |
 | `admin_password_hash_unreadable` | warn | A stored hash could not be decoded. The account is unusable until `acme-proxy admin user passwd` rewrites it, and nothing else will tell you. |
-| `admin_user_created`, `admin_user_deleted`, `admin_user_password_changed`, `admin_user_status_changed` | info | The operator audit trail. |
-| `admin_sessions_revoked`, `admin_session_deleted` | info | Sessions ended, by a password change, a disable, or an explicit revoke. |
+| `db_admin_user_created`, `db_admin_user_deleted`, `db_admin_user_password_changed`, `db_admin_user_status_changed` | info | The operator audit trail. |
+| `db_admin_sessions_revoked`, `db_admin_session_deleted` | info | Sessions ended, by a password change, a disable, or an explicit revoke. `db_admin_sessions_revoked` carries `scope`: `user`, `user_except_current` (what a password change does, so the operator making it is not logged out by their own action) or `all`. |
 | `admin_eab_created`, `admin_eab_revoked` | info | Carries the `kid` and the operator who did it — **never** the secret. |
-| `admin_order_revoked`, `admin_order_deleted`, `admin_account_deleted`, `admin_nonces_cleaned` | info | Destructive admin actions, each naming the operator. |
+| `admin_order_revoked`, `admin_order_deleted`, `admin_account_deleted`, `admin_nonces_cleaned` | info | Destructive admin actions, each naming the operator. Each carries `surface = "api"` or `"ui"`, since the JSON API and the HTML panel reach the same operation by different routes. |
 | `admin_revoke_signer_failed` | error | The CA-side revocation failed, so the order is left un-revoked for a retry. Answered as `502` rather than `500`. |
 | `admin_db_error` | error | A database failure on an admin route. The `sqlx` message is here and deliberately *not* in the response body, which says only "internal error". |
 | `admin_session_reaper_swept` | debug | The periodic session sweep ran. |
 | `admin_session_orphaned` | warn | A session outlived its user despite the FK cascade. Should be impossible; the session is deleted and refused. |
 
-The full set is much broader than this table. Names follow a
-`<subsystem>_<outcome>` shape, so patterns like `event = "revoke_cert` or `event
-= "replaces_` work well for ad-hoc investigation.
+The full set is much broader than this table — around 450 names, of which the
+ones above are the curated subset worth an alert. Because the subsystem prefix
+is drawn from a closed list, an ad-hoc investigation can grep a whole family:
+`event = "certificate_revoke` for every revocation refusal, `event = "replaces_`
+for RFC 9773 correspondence, `event = "db_` for the storage layer.
 
 ### Suggested alerts
 
-Without a metrics endpoint, these are log-derived rates:
+Without a metrics endpoint, these are log-derived rates. The first one is the
+general case and subsumes most of the rest; the others are worth splitting out
+because each has a different response:
 
+- **`outcome = "failure"` above its usual rate** → something broke. This is the
+  one query that catches every refusal, whatever the event is called, and it is
+  the reason the field exists.
 - `request_shed` above zero for more than a few minutes → the server is
   undersized, or a client is in a retry loop.
-- `challenge_validation_failed` rising against a flat `leaf_issued` rate →
-  clients are asking and failing; check egress and the responder ports.
+- `challenge_validation_failed` rising against a flat `local_ca_leaf_issued`
+  rate → clients are asking and failing; check egress and the responder ports.
 - Any `upstream_relay_failed` → issuance is broken for every client behind the
   relay, not just one.
-- No `leaf_issued` at all over a window longer than your shortest renewal
-  interval → silent breakage.
+- No `local_ca_leaf_issued` at all over a window longer than your shortest
+  renewal interval → silent breakage.
 - Any `audit_write_failed` → the audit trail is silently incomplete, and nothing
   else will tell you. See [Audit Trail](audit.md).
-- `server_fatal_error`, `db_migration_failed`, `profiles_init_failed` → page
+- `server_fatal_error`, `db_migration_failed`, `profile_init_failed` → page
   immediately.

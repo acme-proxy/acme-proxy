@@ -295,6 +295,7 @@ fn log_rejection(filter: &'static str, hook: &str, client_ip: Option<IpAddr>, er
     match error {
         FilterError::Denied(detail) => tracing::warn!(
             event = "filter_denied",
+            outcome = "failure",
             filter,
             hook,
             client_ip = ?client_ip,
@@ -302,6 +303,7 @@ fn log_rejection(filter: &'static str, hook: &str, client_ip: Option<IpAddr>, er
         ),
         FilterError::Internal(detail) => tracing::error!(
             event = "filter_failed",
+            outcome = "failure",
             filter,
             hook,
             client_ip = ?client_ip,
@@ -396,12 +398,13 @@ pub fn from_config(
         // [`challenge::from_config`](crate::challenge::from_config) warns about
         // separately and in its own words.
         warn!(
-            event = "filters_disabled",
+            event = "filter_disabled",
+            outcome = "advisory",
             "no filters configured: every client that can reach this server may \
              request a certificate for any name (set filter.enabled)"
         );
     } else {
-        info!(event = "filters_enabled", filters = ?cfg.enabled, exempt_paths = ?cfg.exempt_paths);
+        info!(event = "filter_enabled", outcome = "success", filters = ?cfg.enabled, exempt_paths = ?cfg.exempt_paths);
     }
 
     Ok(Arc::new(FilterChain::new(

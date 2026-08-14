@@ -406,6 +406,7 @@ impl Auditor {
         };
         info!(
             event = "audit_loaded",
+            outcome = "success",
             reverse_dns = cfg.reverse_dns,
             reverse_dns_timeout_ms = cfg.reverse_dns_timeout_ms,
             retention_days = cfg.retention_days,
@@ -448,12 +449,13 @@ impl Auditor {
         match tokio::time::timeout(self.ptr_timeout, resolver.reverse(ip)).await {
             Ok(Ok(names)) => names.into_iter().next(),
             Ok(Err(error)) => {
-                debug!(event = "audit_reverse_dns_failed", ip = %ip, error = %error);
+                debug!(event = "audit_reverse_dns_failed", outcome = "failure", ip = %ip, error = %error);
                 None
             }
             Err(_) => {
                 debug!(
                     event = "audit_reverse_dns_timeout",
+                    outcome = "failure",
                     ip = %ip,
                     timeout_ms = crate::millis(self.ptr_timeout),
                 );
@@ -506,6 +508,7 @@ pub async fn write(record: AuditRecord, database: &Database) {
     if let Err(error) = AuditEntry::insert(record, database).await {
         error!(
             event = "audit_write_failed",
+            outcome = "failure",
             audit_event = event.as_str(),
             profile = %profile,
             order_id = ?order_id,

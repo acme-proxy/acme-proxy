@@ -160,7 +160,11 @@ pub(crate) fn redirect(location: &str, hx: bool) -> Response {
     let Ok(value) = header::HeaderValue::from_str(location) else {
         // Every caller passes a constant or a path this crate built; an
         // unencodable one is a bug, and a `500` beats a panic in a handler.
-        tracing::error!(event = "admin_redirect_unencodable", location = location);
+        tracing::error!(
+            event = "admin_redirect_unencodable",
+            outcome = "failure",
+            location = location
+        );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
 

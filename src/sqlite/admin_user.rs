@@ -90,7 +90,7 @@ impl AdminUser {
             last_login_at: None,
         };
 
-        debug!(event = "admin_user_create_started", username = %user.username);
+        debug!(event = "db_admin_user_create_started", outcome = "progress", username = %user.username);
         sqlx::query(
             "INSERT INTO admin_users (id, username, password_hash, status, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
@@ -104,7 +104,7 @@ impl AdminUser {
         .execute(&database.pool)
         .await?;
 
-        info!(event = "admin_user_created", id = %user.id, username = %user.username);
+        info!(event = "db_admin_user_created", outcome = "success", user_id = %user.id, username = %user.username);
         Ok(user)
     }
 
@@ -112,7 +112,7 @@ impl AdminUser {
         id: &str,
         database: &Database,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
-        debug!(event = "db_admin_user_find_by_id_started", id = ?id);
+        debug!(event = "db_admin_user_find_by_id_started", outcome = "progress", id = ?id);
         let row = sqlx::query(
             "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
              totp_last_step, created_at, updated_at, last_login_at \
@@ -131,7 +131,10 @@ impl AdminUser {
         username: &str,
         database: &Database,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
-        debug!(event = "db_admin_user_find_by_username_started");
+        debug!(
+            event = "db_admin_user_find_by_username_started",
+            outcome = "progress"
+        );
         let row = sqlx::query(
             "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
              totp_last_step, created_at, updated_at, last_login_at \
@@ -146,7 +149,10 @@ impl AdminUser {
 
     /// Every operator, oldest first -- `admin user list`.
     pub async fn list_all(database: &Database) -> Result<Vec<AdminUser>, sqlx::Error> {
-        debug!(event = "db_admin_user_list_all_started");
+        debug!(
+            event = "db_admin_user_list_all_started",
+            outcome = "progress"
+        );
         let rows = sqlx::query(
             "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
              totp_last_step, created_at, updated_at, last_login_at \
@@ -176,7 +182,7 @@ impl AdminUser {
 
         self.password_hash = password_hash.to_string();
         self.updated_at = now;
-        info!(event = "admin_user_password_changed", id = %self.id, username = %self.username);
+        info!(event = "db_admin_user_password_changed", outcome = "success", user_id = %self.id, username = %self.username);
         Ok(())
     }
 
@@ -199,7 +205,7 @@ impl AdminUser {
 
         self.status = status.to_string();
         self.updated_at = now;
-        info!(event = "admin_user_status_changed", id = %self.id, username = %self.username, status = %status);
+        info!(event = "db_admin_user_status_changed", outcome = "success", user_id = %self.id, username = %self.username, status = %status);
         Ok(())
     }
 
@@ -223,7 +229,7 @@ impl AdminUser {
 
         self.totp_pending_secret = Some(secret.to_vec());
         self.updated_at = now;
-        info!(event = "admin_totp_enrolment_started", id = %self.id, username = %self.username);
+        info!(event = "db_admin_totp_enrolment_started", outcome = "progress", user_id = %self.id, username = %self.username);
         Ok(())
     }
 
@@ -256,7 +262,7 @@ impl AdminUser {
         self.totp_pending_secret = None;
         self.totp_last_step = None;
         self.updated_at = now;
-        info!(event = "admin_totp_enabled", id = %self.id, username = %self.username);
+        info!(event = "db_admin_totp_enabled", outcome = "success", user_id = %self.id, username = %self.username);
         Ok(())
     }
 
@@ -278,7 +284,7 @@ impl AdminUser {
         self.totp_pending_secret = None;
         self.totp_last_step = None;
         self.updated_at = now;
-        info!(event = "admin_totp_disabled", id = %self.id, username = %self.username);
+        info!(event = "db_admin_totp_disabled", outcome = "success", user_id = %self.id, username = %self.username);
         Ok(())
     }
 
@@ -335,7 +341,7 @@ impl AdminUser {
     /// `ON DELETE CASCADE`, which needs `foreign_keys` on -- `Database::connect`
     /// and `connect_in_memory` both pin it. Returns whether a row existed.
     pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
-        debug!(event = "db_admin_user_delete_started", id = ?id);
+        debug!(event = "db_admin_user_delete_started", outcome = "progress", id = ?id);
         let result = sqlx::query("DELETE FROM admin_users WHERE id = ?;")
             .bind(id)
             .execute(&database.pool)
@@ -343,7 +349,7 @@ impl AdminUser {
 
         let deleted = result.rows_affected() > 0;
         if deleted {
-            info!(event = "admin_user_deleted", id = %id);
+            info!(event = "db_admin_user_deleted", outcome = "success", user_id = %id);
         }
         Ok(deleted)
     }

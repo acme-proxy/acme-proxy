@@ -14,7 +14,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::admin::{mfa, totp};
 use crate::webadmin::AdminState;
@@ -64,15 +64,19 @@ pub(crate) fn check_step_up(
     match crate::admin::password::verify_password(&user.password_hash, password) {
         Ok(true) => Ok(()),
         Ok(false) => {
-            warn!(event = "admin_mfa_step_up_refused", username = %user.username);
+            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username);
             Err(AdminError::invalid_credentials())
         }
         Err(error) => {
             // A stored hash this process cannot parse is a corrupt row, not a
             // wrong password. Refuse rather than let the change through.
-            error!(event = "admin_password_hash_unreadable",
-                   username = %user.username,
-                   error = %error);
+            //
+            // `warn`, matching `admin::users::authenticate`'s report of the
+            // same condition: one name emits at one level.
+            warn!(event = "admin_password_hash_unreadable",
+                  outcome = "failure",
+                  username = %user.username,
+                  error = %error);
             Err(AdminError::invalid_credentials())
         }
     }

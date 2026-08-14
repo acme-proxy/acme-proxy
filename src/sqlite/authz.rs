@@ -117,7 +117,7 @@ impl Authorization {
         let identifier_json = serde_json::to_string(&self.identifier)
             .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
-        debug!(event = "authz_create_started", authz_id = ?self.id, order_id = ?self.order_id);
+        debug!(event = "db_authz_create_started", outcome = "progress", authz_id = ?self.id, order_id = ?self.order_id);
         sqlx::query(
             "INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
@@ -131,7 +131,7 @@ impl Authorization {
         .execute(executor)
         .await?;
 
-        info!(event = "authz_created", authz_id = ?self.id, order_id = ?self.order_id);
+        info!(event = "db_authz_created", outcome = "success", authz_id = ?self.id, order_id = ?self.order_id);
         Ok(())
     }
 
@@ -151,7 +151,7 @@ impl Authorization {
         id: &str,
         database: &Database,
     ) -> Result<Option<Authorization>, sqlx::Error> {
-        debug!(event = "authz_find_by_id_started", authz_id = ?id);
+        debug!(event = "db_authz_find_by_id_started", outcome = "progress", authz_id = ?id);
         let row = sqlx::query(
             "SELECT id, order_id, identifier, status, expires, created_at \
              FROM authorizations WHERE id = ?;",
@@ -214,6 +214,7 @@ impl Authorization {
 
         debug!(
             event = "db_authz_find_ids_by_orders",
+            outcome = "success",
             orders = order_ids.len()
         );
         for row in builder.build().fetch_all(&database.pool).await? {
@@ -239,7 +240,7 @@ impl Authorization {
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        debug!(event = "authz_find_by_order_started", order_id = ?order_id);
+        debug!(event = "db_authz_find_by_order_started", outcome = "progress", order_id = ?order_id);
         let rows = sqlx::query(
             "SELECT id, order_id, identifier, status, expires, created_at \
              FROM authorizations WHERE order_id = ? ORDER BY created_at ASC;",
@@ -296,11 +297,11 @@ impl Authorization {
     /// Moves the authorization to the `valid` state and keeps `self` in sync (the
     /// same persist-and-sync pattern as [`crate::sqlite::order::Order::finalize`]).
     pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "authz_mark_valid_started", authz_id = ?self.id);
+        debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
         Self::set_valid(&self.id, &database.pool).await?;
 
         self.status = "valid".to_string();
-        info!(event = "authz_marked_valid", authz_id = ?self.id);
+        info!(event = "db_authz_marked_valid", outcome = "success", authz_id = ?self.id);
         Ok(())
     }
 
@@ -311,11 +312,11 @@ impl Authorization {
     /// *challenge*, and the authorization object has no `error` member — a client
     /// reads the reason from the challenge it triggered.
     pub async fn mark_invalid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "authz_mark_invalid_started", authz_id = ?self.id);
+        debug!(event = "db_authz_mark_invalid_started", outcome = "progress", authz_id = ?self.id);
         Self::set_invalid(&self.id, &database.pool).await?;
 
         self.status = "invalid".to_string();
-        info!(event = "authz_marked_invalid", authz_id = ?self.id);
+        info!(event = "db_authz_marked_invalid", outcome = "failure", authz_id = ?self.id);
         Ok(())
     }
 
@@ -326,11 +327,11 @@ impl Authorization {
     /// §8 defines that as the time of a *successful* validation, and relinquishing
     /// an authorization is the opposite.
     pub async fn mark_deactivated(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "authz_mark_deactivated_started", authz_id = ?self.id);
+        debug!(event = "db_authz_mark_deactivated_started", outcome = "progress", authz_id = ?self.id);
         Self::set_deactivated(&self.id, &database.pool).await?;
 
         self.status = "deactivated".to_string();
-        info!(event = "authz_marked_deactivated", authz_id = ?self.id);
+        info!(event = "db_authz_marked_deactivated", outcome = "success", authz_id = ?self.id);
         Ok(())
     }
 
@@ -429,7 +430,7 @@ impl Challenge {
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        debug!(event = "challenge_create_started", challenge_id = ?self.id, authz_id = ?self.authz_id);
+        debug!(event = "db_challenge_create_started", outcome = "progress", challenge_id = ?self.id, authz_id = ?self.authz_id);
         sqlx::query(
             "INSERT INTO challenges (id, authz_id, type, token, status, validated, created_at) \
              VALUES (?, ?, ?, ?, ?, NULL, ?);",
@@ -443,7 +444,7 @@ impl Challenge {
         .execute(executor)
         .await?;
 
-        info!(event = "challenge_created", challenge_id = ?self.id, authz_id = ?self.authz_id);
+        info!(event = "db_challenge_created", outcome = "success", challenge_id = ?self.id, authz_id = ?self.authz_id);
         Ok(())
     }
 
@@ -463,7 +464,7 @@ impl Challenge {
         id: &str,
         database: &Database,
     ) -> Result<Option<Challenge>, sqlx::Error> {
-        debug!(event = "challenge_find_by_id_started", challenge_id = ?id);
+        debug!(event = "db_challenge_find_by_id_started", outcome = "progress", challenge_id = ?id);
         let row = sqlx::query(
             "SELECT id, authz_id, type, token, status, validated, error, created_at \
              FROM challenges WHERE id = ?;",
@@ -481,7 +482,7 @@ impl Challenge {
         authz_id: &str,
         database: &Database,
     ) -> Result<Vec<Challenge>, sqlx::Error> {
-        debug!(event = "challenge_find_by_authz_started", authz_id = ?authz_id);
+        debug!(event = "db_challenge_find_by_authz_started", outcome = "progress", authz_id = ?authz_id);
         let rows = sqlx::query(
             "SELECT id, authz_id, type, token, status, validated, error, created_at \
              FROM challenges WHERE authz_id = ? ORDER BY created_at ASC;",
@@ -538,12 +539,12 @@ impl Challenge {
 
     pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         let validated = now_secs();
-        debug!(event = "challenge_mark_valid_started", challenge_id = ?self.id);
+        debug!(event = "db_challenge_mark_valid_started", outcome = "progress", challenge_id = ?self.id);
         Self::set_valid(&self.id, validated, &database.pool).await?;
 
         self.status = "valid".to_string();
         self.validated = Some(validated);
-        info!(event = "challenge_marked_valid", challenge_id = ?self.id);
+        info!(event = "db_challenge_marked_valid", outcome = "success", challenge_id = ?self.id);
         Ok(())
     }
 
@@ -558,12 +559,12 @@ impl Challenge {
         error: Value,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "challenge_mark_invalid_started", challenge_id = ?self.id);
+        debug!(event = "db_challenge_mark_invalid_started", outcome = "progress", challenge_id = ?self.id);
         Self::set_invalid(&self.id, &error, &database.pool).await?;
 
         self.status = "invalid".to_string();
         self.error = Some(error);
-        info!(event = "challenge_marked_invalid", challenge_id = ?self.id);
+        info!(event = "db_challenge_marked_invalid", outcome = "failure", challenge_id = ?self.id);
         Ok(())
     }
 

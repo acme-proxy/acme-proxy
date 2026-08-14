@@ -30,7 +30,7 @@ pub(super) async fn provision(
     let client = AcmeClient::discover(&cfg.directory_url, resolver, timeout).await?;
 
     if let Some(kid) = stored_kid(cfg) {
-        info!(event = "upstream_account_loaded", kid = %kid);
+        info!(event = "upstream_account_loaded", outcome = "success", kid = %kid);
         warn_if_eab_secret_still_configured(cfg, &kid);
         return Ok((client, account, kid));
     }
@@ -68,7 +68,7 @@ pub(super) async fn provision(
     };
 
     write_kid(cfg, &kid)?;
-    info!(event = "upstream_account_registered", kid = %kid);
+    info!(event = "upstream_account_registered", outcome = "success", kid = %kid);
     warn_if_eab_secret_still_configured(cfg, &kid);
     Ok((client, account, kid))
 }
@@ -112,6 +112,7 @@ fn warn_if_eab_secret_still_configured(cfg: &RelayConfig, kid: &str) {
     if !cfg.eab.hmac_key.is_empty() {
         warn!(
             event = "signer_relay_eab_secret_in_config",
+            outcome = "advisory",
             kid = %kid,
             "signer.relay.eab.hmac_key is set but this proxy is already registered \
              upstream; the credential is no longer needed and does nothing now except sit on \
@@ -202,7 +203,7 @@ pub async fn register_upstream_account(
     // Distinct from the `serve`-path event of the same shape above: this one
     // says an operator ran `upstream register` deliberately, which is the only
     // way a bootstrap EAB secret never touches configuration.
-    info!(event = "upstream_account_registered_by_cli", kid = %kid);
+    info!(event = "upstream_account_registered_by_cli", outcome = "success", kid = %kid);
     Ok(kid)
 }
 
@@ -212,13 +213,13 @@ pub async fn register_upstream_account(
 pub(super) fn load_or_generate_key(path: &str) -> anyhow::Result<AccountKey> {
     let path = Path::new(path);
     if path.exists() {
-        crate::pemfile::warn_if_key_is_readable("upstream_account_key_readable", path);
+        crate::pemfile::warn_if_key_is_readable("upstream_account_key_permissive", path);
         let key = crate::pemfile::read_private_key(path)?;
         return Ok(AccountKey::from_pkcs8(key.secret_der())?);
     }
 
     let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
     crate::pemfile::write_private_key(path, &key_pair.serialize_pem())?;
-    info!(event = "upstream_account_key_generated", path = ?path);
+    info!(event = "upstream_account_key_generated", outcome = "success", file_path = ?path);
     Ok(AccountKey::from_pkcs8(&key_pair.serialize_der())?)
 }

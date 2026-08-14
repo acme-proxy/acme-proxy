@@ -67,7 +67,7 @@ where
     // Read before the body is consumed below, and kept for the `last_seen_*`
     // stamp at the very end of this function.
     let request_context = crate::audit::RequestContext::from_request(&req);
-    debug!(event = "jws_request_received", path = %request_path);
+    debug!(event = "jws_request_received", outcome = "progress", path = %request_path);
 
     // RFC 8555 §6.2: an ACME request body is a flattened JWS and so "must have
     // the Content-Type header field set to `application/jose+json`. If a
@@ -80,7 +80,7 @@ where
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok());
     if !is_jose_json(content_type) {
-        warn!(event = "jws_bad_content_type", content_type = ?content_type, path = %request_path);
+        warn!(event = "jws_bad_content_type", outcome = "failure", content_type = ?content_type, path = %request_path);
         return Err(Problem::unsupported_media_type(
             "Content-Type must be application/jose+json",
         ));
@@ -94,25 +94,25 @@ where
             // JWS is malformed" would rebuild a JWS that is not the problem. axum
             // reports the limit through the rejection's own status.
             if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-                warn!(event = "jws_body_too_large", path = %request_path);
+                warn!(event = "jws_body_too_large", outcome = "failure", path = %request_path);
                 return Problem::payload_too_large("Request body exceeds the configured limit");
             }
-            warn!(event = "jws_body_read_failed", path = %request_path);
+            warn!(event = "jws_body_read_failed", outcome = "failure", path = %request_path);
             Problem::malformed("Cannot read HTTP Body")
         })?;
 
     let jws: AcmeJwsRequest = serde_json::from_str(&body_str).map_err(|_| {
-        warn!(event = "jws_json_parse_failed", body_length = body_str.len(), path = %request_path);
+        warn!(event = "jws_json_parse_failed", outcome = "failure", body_bytes = body_str.len(), path = %request_path);
         Problem::malformed("JSON JWS format invalid")
     })?;
 
     let protected_bytes = BASE64_URL_SAFE_NO_PAD.decode(&jws.protected).map_err(|_| {
-        warn!(event = "jws_protected_decode_failed", protected_length = jws.protected.len(), path = %request_path);
+        warn!(event = "jws_protected_decode_failed", outcome = "failure", protected_b64_chars = jws.protected.len(), path = %request_path);
         Problem::malformed("Base64 protected invalid")
     })?;
 
     let header: ProtectedHeader = serde_json::from_slice(&protected_bytes).map_err(|_| {
-        warn!(event = "jws_header_parse_failed", protected_length = protected_bytes.len(), path = %request_path);
+        warn!(event = "jws_header_parse_failed", outcome = "failure", protected_bytes = protected_bytes.len(), path = %request_path);
         Problem::malformed("JSON protected invalid")
     })?;
 
@@ -123,7 +123,7 @@ where
     // any `crit` at all — even an empty array, which §4.1.11 also forbids — is
     // a rejection.
     if let Some(crit) = &header.crit {
-        warn!(event = "jws_crit_header_present", extensions = ?crit, url = %header.url);
+        warn!(event = "jws_crit_header_present", outcome = "failure", extensions = ?crit, url = %header.url);
         return Err(Problem::malformed(
             "Unsupported critical JWS header extension",
         ));
@@ -140,7 +140,7 @@ where
     // client was given, and a JWS signed for another endpoint fails here.
     let expected_url = format!("{}{request_path}", app.profile.base_url);
     if header.url != expected_url {
-        warn!(event = "jws_url_mismatch", url = %header.url, expected = %expected_url);
+        warn!(event = "jws_url_mismatch", outcome = "failure", url = %header.url, expected = %expected_url);
         return Err(Problem::malformed("URL invalid"));
     }
 
@@ -149,16 +149,16 @@ where
     let mut signer_account: Option<Account> = None;
     let pubkey = match (&header.jwk, &header.kid) {
         (Some(_), Some(_)) => {
-            warn!(event = "jwk_and_kid_both_present", url = %header.url, algorithm = %header.alg);
+            warn!(event = "jws_jwk_and_kid_both_present", outcome = "failure", url = %header.url, algorithm = %header.alg);
             return Err(Problem::malformed("jwk and kid are mutually exclusive"));
         }
         (Some(_), None) => {
-            debug!(event = "verifying_jwk_signature", algorithm = %header.alg, url = %header.url);
+            debug!(event = "jws_jwk_verification_started", outcome = "progress", algorithm = %header.alg, url = %header.url);
             verify_signature_and_get_der(&header, &signing_input, &jws.signature)
                 .map_err(map_signature_error)?
         }
         (None, Some(kid)) => {
-            debug!(event = "verifying_kid_signature", algorithm = %header.alg, kid = %kid);
+            debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
             // The account URL is the one *this* endpoint minted, prefix and
             // all: a `kid` naming another profile does not match here, and the
             // lookup below is scoped to this profile besides.
@@ -166,7 +166,7 @@ where
             let id = kid
                 .strip_prefix(&format!("{base}/acct/"))
                 .ok_or_else(|| {
-                    warn!(event = "jws_kid_prefix_mismatch", kid = %kid, expected_prefix = %format!("{base}/acct/"));
+                    warn!(event = "jws_kid_prefix_mismatch", outcome = "failure", kid = %kid, expected_prefix = %format!("{base}/acct/"));
                     Problem::malformed("kid invalid")
                 })?;
 
@@ -175,7 +175,7 @@ where
             let account = Account::find_by_id(&app.profile.name, id, &app.database)
                 .await
                 .map_err(|error| {
-                    error!(event = "account_lookup_during_kid_verification", account_id = %id, error = %error);
+                    error!(event = "jws_kid_account_lookup_failed", outcome = "failure", account_id = %id, error = %error);
                     Problem::server_internal("Account lookup failed")
                 })?
                 .ok_or_else(|| Problem::account_does_not_exist("Unknown account"))?;
@@ -193,7 +193,7 @@ where
             pubkey
         }
         (None, None) => {
-            warn!(event = "missing_jwk_and_kid", url = %header.url, algorithm = %header.alg);
+            warn!(event = "jws_jwk_and_kid_missing", outcome = "failure", url = %header.url, algorithm = %header.alg);
             return Err(Problem::malformed("missing jwk or kid"));
         }
     };
@@ -208,7 +208,8 @@ where
             // a client stuck replaying is a client that will never issue.
             warn!(
                 event = "nonce_replayed",
-                nonce = %crate::sqlite::nonce::fingerprint(&header.nonce),
+                outcome = "failure",
+                nonce_fp = %crate::sqlite::nonce::fingerprint(&header.nonce),
                 path = %request_path
             );
             return Err(Problem::bad_nonce("Nonce invalid"));
@@ -219,7 +220,8 @@ where
             // consumed. See `Nonce::fingerprint`.
             error!(
                 event = "nonce_verification_failed",
-                nonce = %crate::sqlite::nonce::fingerprint(&header.nonce),
+                outcome = "failure",
+                nonce_fp = %crate::sqlite::nonce::fingerprint(&header.nonce),
                 error = %error
             );
             return Err(Problem::server_internal("Nonce verification failed"));
@@ -238,6 +240,7 @@ where
 
     debug!(
         event = "jws_request_validated",
+        outcome = "success",
         algorithm = %header.alg,
         url = %header.url,
         signature_type = match (&header.jwk, &header.kid) {
@@ -245,7 +248,7 @@ where
             (None, Some(_)) => "kid",
             _ => "unknown",
         },
-        signature_size = jws.signature.len()
+        signature_b64_chars = jws.signature.len()
     );
 
     Ok((header, pubkey, signer_account, jws.payload))
@@ -280,6 +283,7 @@ async fn touch_account(
     if let Err(error) = account.touch(&client, &app.database).await {
         warn!(
             event = "account_touch_failed",
+            outcome = "failure",
             account_id = %account.id,
             error = %error
         );
@@ -300,7 +304,8 @@ where
         let payload_bytes = BASE64_URL_SAFE_NO_PAD.decode(&payload_b64).map_err(|_| {
             warn!(
                 event = "jws_payload_decode_failed",
-                payload_length = payload_b64.len()
+                outcome = "failure",
+                payload_b64_chars = payload_b64.len()
             );
             Problem::malformed("Base64 payload invalid")
         })?;
@@ -308,7 +313,8 @@ where
         let payload: T = serde_json::from_slice(&payload_bytes).map_err(|_| {
             warn!(
                 event = "jws_payload_parse_failed",
-                payload_length = payload_bytes.len()
+                outcome = "failure",
+                payload_bytes = payload_bytes.len()
             );
             Problem::malformed("Payload JSON invalid for this endpoint")
         })?;
@@ -341,8 +347,9 @@ where
 
         if !payload_b64.is_empty() {
             warn!(
-                event = "post_as_get_payload_not_empty",
-                payload_length = payload_b64.len(),
+                event = "jws_post_as_get_payload_not_empty",
+                outcome = "failure",
+                payload_b64_chars = payload_b64.len(),
                 url = %header.url
             );
             return Err(Problem::malformed("POST-as-GET payload must be empty"));
@@ -389,7 +396,8 @@ where
             let payload_bytes = BASE64_URL_SAFE_NO_PAD.decode(&payload_b64).map_err(|_| {
                 warn!(
                     event = "jws_payload_decode_failed",
-                    payload_length = payload_b64.len()
+                    outcome = "failure",
+                    payload_b64_chars = payload_b64.len()
                 );
                 Problem::malformed("Base64 payload invalid")
             })?;
@@ -397,7 +405,8 @@ where
             Some(serde_json::from_slice(&payload_bytes).map_err(|_| {
                 warn!(
                     event = "jws_payload_parse_failed",
-                    payload_length = payload_bytes.len()
+                    outcome = "failure",
+                    payload_bytes = payload_bytes.len()
                 );
                 Problem::malformed("Payload JSON invalid for this endpoint")
             })?)
@@ -416,19 +425,22 @@ where
 fn map_signature_error(error: SignatureError) -> Problem {
     match error {
         SignatureError::Malformed(detail) => {
-            warn!(event = "signature_verification_malformed", detail = %detail);
+            warn!(event = "jws_signature_malformed", outcome = "failure", detail = %detail);
             Problem::malformed(detail)
         }
         SignatureError::BadAlgorithm(detail) => {
-            warn!(event = "signature_algorithm_unsupported", detail = %detail);
+            warn!(event = "jws_signature_algorithm_unsupported", outcome = "failure", detail = %detail);
             Problem::bad_signature_algorithm(detail)
         }
         SignatureError::BadSignature(_) => {
-            warn!(event = "signature_verification_failed");
+            warn!(
+                event = "jws_signature_verification_failed",
+                outcome = "failure"
+            );
             Problem::unauthorized("Signature JWS invalid")
         }
         SignatureError::Encoding(detail) => {
-            error!(event = "signature_encoding_error", detail = %detail);
+            error!(event = "jws_signature_encoding_failed", outcome = "failure", detail = %detail);
             Problem::server_internal(detail)
         }
     }

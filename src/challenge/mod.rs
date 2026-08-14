@@ -263,6 +263,7 @@ impl ChallengeRegistry {
         if self.bypass {
             debug!(
                 event = "challenge_bypassed",
+                outcome = "success",
                 typ,
                 identifier = ctx.identifier,
                 challenge_id = ctx.challenge_id,
@@ -282,6 +283,7 @@ impl ChallengeRegistry {
             Ok(result) => result.inspect_err(|error| {
                 warn!(
                     event = "challenge_validation_failed",
+                    outcome = "failure",
                     typ,
                     identifier = ctx.identifier,
                     challenge_id = ctx.challenge_id,
@@ -295,6 +297,7 @@ impl ChallengeRegistry {
             Err(_) => {
                 warn!(
                     event = "challenge_validation_timeout",
+                    outcome = "failure",
                     typ,
                     identifier = ctx.identifier,
                     challenge_id = ctx.challenge_id,
@@ -367,10 +370,11 @@ pub fn from_config(
     let timeout = Duration::from_millis(cfg.timeout_ms);
 
     if cfg.bypass {
-        // Worth being noisy about, for the same reason `filters_disabled` is:
+        // Worth being noisy about, for the same reason `filter_disabled` is:
         // this is the setting that makes the server an open CA.
         warn!(
             event = "challenge_validation_bypassed",
+            outcome = "advisory",
             enabled = ?cfg.enabled,
             "challenge.bypass is on: triggering a challenge marks it valid with no network \
              check, so any client that can reach this server can obtain a certificate for \
@@ -406,6 +410,7 @@ pub fn from_config(
 
     info!(
         event = "challenge_validation_enabled",
+        outcome = "success",
         enabled = ?cfg.enabled,
         timeout_ms = cfg.timeout_ms,
     );

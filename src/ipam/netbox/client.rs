@@ -184,6 +184,7 @@ fn assigned_ref(typ: Option<&str>, object: Option<&Value>) -> Option<AssignedRef
         other => {
             debug!(
                 event = "ipam_netbox_assignment_ignored",
+                outcome = "advisory",
                 assigned_object_type = other,
                 "address is assigned to an object with no machine behind it"
             );

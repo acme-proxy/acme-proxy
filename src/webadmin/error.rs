@@ -144,7 +144,7 @@ impl AdminError {
 /// log, where the operator can read it, and not in the body.
 impl From<sqlx::Error> for AdminError {
     fn from(error: sqlx::Error) -> Self {
-        error!(event = "admin_db_error", error = %error);
+        error!(event = "admin_db_error", outcome = "failure", error = %error);
         AdminError::internal()
     }
 }

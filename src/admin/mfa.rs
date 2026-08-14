@@ -126,6 +126,7 @@ pub async fn verify_second_factor(
                 }
                 let left = AdminRecoveryCode::count_unused(&user.id, &database).await?;
                 warn!(event = "admin_mfa_recovery_code_used",
+                      outcome = "success",
                       user_id = %user.id,
                       username = %user.username,
                       remaining = left);
@@ -140,6 +141,7 @@ pub async fn verify_second_factor(
                 // `users::authenticate` draws. Skip it and say so; the operator
                 // has nine others and no way to guess this from a 401.
                 warn!(event = "admin_recovery_code_hash_unreadable",
+                      outcome = "failure",
                       user_id = %user.id,
                       code_id = %code.id,
                       error = %error);
@@ -224,6 +226,7 @@ pub async fn confirm_totp_enrolment(
     revoke_other_sessions(user, keep_session, database).await?;
 
     info!(event = "admin_mfa_enabled",
+          outcome = "success",
           user_id = %user.id,
           username = %user.username,
           recovery_codes = codes.len());
@@ -246,7 +249,7 @@ pub async fn disable_totp(
     AdminRecoveryCode::delete_for_user(&user.id, &database).await?;
     revoke_other_sessions(user, keep_session, database).await?;
 
-    info!(event = "admin_mfa_disabled", user_id = %user.id, username = %user.username);
+    info!(event = "admin_mfa_disabled", outcome = "success", user_id = %user.id, username = %user.username);
     Ok(())
 }
 
@@ -258,6 +261,7 @@ pub async fn regenerate_recovery_codes(
 ) -> Result<Vec<String>, sqlx::Error> {
     let codes = issue_recovery_codes(user, database).await?;
     info!(event = "admin_mfa_recovery_codes_regenerated",
+          outcome = "success",
           user_id = %user.id,
           username = %user.username,
           minted = codes.len());

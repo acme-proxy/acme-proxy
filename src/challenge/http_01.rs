@@ -120,6 +120,7 @@ impl Http01Validator {
         );
         info!(
             event = "challenge_http_01_loaded",
+            outcome = "success",
             port = cfg.port,
             follow_redirects = cfg.follow_redirects,
         );
@@ -212,6 +213,7 @@ impl ChallengeValidator for Http01Validator {
                 self.redirect_allowed(&target)?;
                 debug!(
                     event = "challenge_http_01_redirect",
+                    outcome = "progress",
                     from = %url,
                     to = %target,
                     hop,
@@ -241,7 +243,8 @@ impl ChallengeValidator for Http01Validator {
             if body.trim() == ctx.key_authorization {
                 debug!(
                     event = "challenge_http_01_matched",
-                    url = %url,
+                    outcome = "success",
+                    probe_url = %url,
                     challenge_id = ctx.challenge_id,
                 );
                 return Ok(());
@@ -252,9 +255,10 @@ impl ChallengeValidator for Http01Validator {
             // at `warn` where the default filter shows it.
             warn!(
                 event = "challenge_http_01_mismatch",
-                url = %url,
+                outcome = "failure",
+                probe_url = %url,
                 challenge_id = ctx.challenge_id,
-                body_length = response.body.len(),
+                body_bytes = response.body.len(),
             );
             // The preview stays at `debug`, separately: the body is
             // attacker-controlled and may be the response to a redirect the
@@ -263,7 +267,8 @@ impl ChallengeValidator for Http01Validator {
             // the content.
             debug!(
                 event = "challenge_http_01_mismatch_body",
-                url = %url,
+                outcome = "failure",
+                probe_url = %url,
                 challenge_id = ctx.challenge_id,
                 preview = %body.chars().take(64).collect::<String>(),
             );

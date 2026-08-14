@@ -148,6 +148,7 @@ impl Filter for IpamFilter {
 
         debug!(
             event = "filter_ipam_accepted",
+            outcome = "success",
             backend,
             client_ip = %client_ip,
             stage,

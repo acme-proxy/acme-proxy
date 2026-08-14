@@ -66,6 +66,8 @@ pub async fn create_eab(
 
     let eab = Eab::create(body.label, body.profile, &state.database).await?;
     tracing::info!(event = "admin_eab_created",
+                   outcome = "success",
+                   surface = "api",
                    kid = %eab.kid,
                    profile = ?eab.profile,
                    username = %auth.user.username);
@@ -90,7 +92,7 @@ pub async fn revoke_eab(
     if !Eab::revoke(&kid, &state.database).await? {
         return Err(not_found(&kid));
     }
-    tracing::info!(event = "admin_eab_revoked", kid = %kid, username = %auth.user.username);
+    tracing::info!(event = "admin_eab_revoked", outcome = "success", surface = "api", kid = %kid, username = %auth.user.username);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -82,6 +82,7 @@ impl EmailNotifier {
 
         info!(
             event = "notify_email_loaded",
+            outcome = "success",
             smtp_host = %cfg.smtp_host,
             smtp_port = cfg.smtp_port,
             smtp_security = %cfg.smtp_security,

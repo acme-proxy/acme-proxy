@@ -112,7 +112,8 @@ impl PhpIpamBackend {
 
         info!(
             event = "ipam_phpipam_loaded",
-            url = %cfg.url,
+            outcome = "success",
+            backend_url = %cfg.url,
             app_id = %cfg.app_id,
             custom_field = %cfg.custom_field,
             sources = ?backend.sources,
@@ -123,7 +124,8 @@ impl PhpIpamBackend {
         if cfg.insecure_skip_verify {
             warn!(
                 event = "ipam_phpipam_tls_verification_disabled",
-                url = %cfg.url,
+                outcome = "advisory",
+                backend_url = %cfg.url,
                 "ipam.phpipam.insecure_skip_verify is on: phpIPAM's TLS certificate is not \
                  verified, so the answers this server trusts could come from anyone able to \
                  intercept the connection (ipam.phpipam.ca_cert_path is ignored while it is set)"

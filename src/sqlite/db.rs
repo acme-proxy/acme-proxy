@@ -17,9 +17,9 @@ impl Database {
     /// not exist yet, then runs the embedded migrations.
     pub async fn connect(url: &str) -> Result<Database, Error> {
         if !Sqlite::database_exists(url).await.unwrap_or(false) {
-            info!(event = "db_creation_started", url = %url);
+            info!(event = "db_creation_started", outcome = "progress", database_url = %url);
             Sqlite::create_database(url).await?;
-            info!(event = "db_creation_completed", url = %url);
+            info!(event = "db_creation_completed", outcome = "success", database_url = %url);
         }
 
         let options = SqliteConnectOptions::from_str(url)?
@@ -59,10 +59,10 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
     MIGRATOR.run(pool).await.map_err(|error| {
         // Startup-only, and the caller exits on error — but a `Result`-returning
         // function should not decide that on its own by panicking.
-        error!(event = "db_migration_failed", error = %error);
+        error!(event = "db_migration_failed", outcome = "failure", error = %error);
         Error::Migrate(Box::new(error))
     })?;
-    info!(event = "db_migration_completed");
+    info!(event = "db_migration_completed", outcome = "success");
     Ok(())
 }
 

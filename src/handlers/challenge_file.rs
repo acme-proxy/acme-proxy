@@ -45,7 +45,7 @@ pub async fn get_challenge_file(
 ) -> Response {
     match stores.0.iter().find_map(|store| store.lookup(&token)) {
         Some(key_authorization) => {
-            debug!(event = "http01_responder_served", token = %token);
+            debug!(event = "http_01_responder_served", outcome = "success", token = %token);
             (
                 StatusCode::OK,
                 // §8.3 recommends application/octet-stream. Nothing in reach
@@ -61,7 +61,7 @@ pub async fn get_challenge_file(
                 .into_response()
         }
         None => {
-            debug!(event = "http01_responder_unknown_token", token = %token);
+            debug!(event = "http_01_responder_unknown_token", outcome = "failure", token = %token);
             // Deliberately not a `Problem`: this route is a public file, not an
             // ACME resource, and an `application/problem+json` carrying a
             // `urn:ietf:params:acme:error:` type would tell anyone who probes

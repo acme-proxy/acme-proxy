@@ -8,6 +8,145 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- **The structured-logging vocabulary is normalized, and every record now
+  carries an `outcome` field.** Log records are an operator contract — the
+  monitoring page tells you to alert on `event`, and ~450 names had drifted far
+  enough that the advice no longer worked. Two call sites *computed* `event`
+  instead of writing a literal, so neither spelling could be grepped back to
+  its source; ~24 names carried no subsystem prefix; nine concepts were spelled
+  two ways, three of them inside a single file (`authorization_*` beside
+  `authz_*` eleven lines apart); and `payload_length` meant base64 characters at
+  one call site and decoded bytes eight lines below, which made any threshold
+  set on it meaningless.
+
+  Nothing here fails at startup — a log line has nothing to refuse — so **this
+  is the one breaking change in this release that is silent**. Alerting rules,
+  saved searches and log-pipeline field mappings need updating by hand.
+
+  **New: `outcome`.** Every record carries `outcome = "success"`, `"failure"`,
+  `"progress"` or `"advisory"` directly after `event`. This is what
+  `audit_log.outcome` already does for the audit trail, for the same reason:
+  failure is spelled a dozen ways across the event names (`_failed`, but also
+  `_invalid`, `_mismatch`, `_missing`, `_unauthorized`, `_rejected`), so
+  `event LIKE '%_failed'` silently missed most of it. **`outcome = "failure"`
+  is now the one query that catches everything that broke.** `progress` marks a
+  `_started`/`_requested` line whose result is not yet known; `advisory` marks a
+  `warn` where nothing failed (`tls_disabled`,
+  `challenge_validation_bypassed`), so it stays separable from real breakage.
+
+  **Every event emitted from the storage layer is now `db_`-prefixed** — 93
+  names, mechanically (`account_deleted` → `db_account_deleted`,
+  `admin_user_created` → `db_admin_user_created`, and so on for everything
+  under `src/sqlite/`). The prefix marks the layer; the level is unchanged, so
+  what was `info` is still `info`.
+
+  **The remaining 68 renames**, which are the ones worth reading:
+
+  | `account_lookup_during_kid_verification` | `jws_kid_account_lookup_failed` |
+  | `ari_cert_id_underivable` | `upstream_renewal_info_cert_id_underivable` |
+  | `attempt_to_modify_deactivated_account` | `account_deactivated_modify_refused` |
+  | `authorization_already_deactivated` | `authz_already_deactivated` |
+  | `authorization_deactivated` | `authz_deactivated` |
+  | `authorization_expired` | `authz_expired` |
+  | `authorization_lookup_requested` | `authz_lookup_requested` |
+  | `cert_revoked` | `certificate_revoked` |
+  | `certificate_revoked` | `local_ca_certificate_revoked` |
+  | `deactivated_account_request` | `account_deactivated_request_refused` |
+  | `directory_endpoint_requested` | `directory_requested` |
+  | `dns01_cleanup_failed` | `signer_relay_dns_01_cleanup_failed` |
+  | `dns_update_truncated_retrying_tcp` | `signer_relay_dns_01_update_truncated` |
+  | `filters_disabled` | `filter_disabled` |
+  | `filters_enabled` | `filter_enabled` |
+  | `finalize_chain_unparsable` | `order_finalize_chain_unparsable` |
+  | `finalize_leaf_unparsable` | `order_finalize_leaf_unparsable` |
+  | `finalize_order_not_ready` | `order_finalize_not_ready` |
+  | `health_check_requested` | `server_health_requested` |
+  | `http01_responder_mounted` | `http_01_responder_mounted` |
+  | `http01_responder_served` | `http_01_responder_served` |
+  | `http01_responder_unknown_token` | `http_01_responder_unknown_token` |
+  | `index_link_header_invalid` | `request_index_link_header_invalid` |
+  | `jwk_and_kid_both_present` | `jws_jwk_and_kid_both_present` |
+  | `leaf_issued` | `local_ca_leaf_issued` |
+  | `leaf_signing_failed` | `local_ca_leaf_signing_failed` |
+  | `leaf_signing_panicked` | `local_ca_leaf_signing_panicked` |
+  | `malformed_identifier` | `order_identifier_malformed` |
+  | `missing_jwk_and_kid` | `jws_jwk_and_kid_missing` |
+  | `new_account_request` | `account_creation_requested` |
+  | `new_nonce_get_requested` | `nonce_new_get_requested` |
+  | `new_nonce_head_requested` | `nonce_new_head_requested` |
+  | `new_nonce_post_requested` | `nonce_new_post_requested` |
+  | `only_return_existing_lookup_failed` | `account_only_return_existing_lookup_failed` |
+  | `only_return_existing_miss` | `account_only_return_existing_miss` |
+  | `post_as_get_payload_not_empty` | `jws_post_as_get_payload_not_empty` |
+  | `profiles_init_failed` | `profile_init_failed` |
+  | `requested_validity_discarded` | `local_ca_requested_validity_discarded` |
+  | `reverse_dns_accepted` | `filter_reverse_dns_accepted` |
+  | `reverse_dns_candidate_refused` | `filter_reverse_dns_candidate_refused` |
+  | `revoke_cert_account_lookup_failed` | `certificate_revoke_account_lookup_failed` |
+  | `revoke_cert_already_revoked` | `certificate_revoke_already_revoked` |
+  | `revoke_cert_bad_reason` | `certificate_revoke_bad_reason` |
+  | `revoke_cert_base64_invalid` | `certificate_revoke_base64_invalid` |
+  | `revoke_cert_lookup_failed` | `certificate_revoke_lookup_failed` |
+  | `revoke_cert_parse_failed` | `certificate_revoke_parse_failed` |
+  | `revoke_cert_persist_failed` | `certificate_revoke_persist_failed` |
+  | `revoke_cert_requested` | `certificate_revoke_requested` |
+  | `revoke_cert_signer_failed` | `certificate_revoke_signer_failed` |
+  | `revoke_cert_unauthorized` | `certificate_revoke_unauthorized` |
+  | `revoke_cert_unknown_certificate` | `certificate_revoke_unknown_certificate` |
+  | `serial_generation_failed` | `local_ca_serial_generation_failed` |
+  | `signature_algorithm_unsupported` | `jws_signature_algorithm_unsupported` |
+  | `signature_encoding_error` | `jws_signature_encoding_failed` |
+  | `signature_verification_failed` | `jws_signature_verification_failed` |
+  | `signature_verification_malformed` | `jws_signature_malformed` |
+  | `signer_relay_http01_selected` | `signer_relay_http_01_selected` |
+  | `socket_bind_failed` | `server_socket_bind_failed` |
+  | `startup_admin_session_cleanup_failed` | `admin_session_cleanup_failed` |
+  | `startup_nonce_cleanup_failed` | `nonce_cleanup_failed` |
+  | `terms_of_service_not_agreed` | `account_terms_not_agreed` |
+  | `thumbprint_failed` | `authz_thumbprint_failed` |
+  | `unsupported_identifier_type` | `order_identifier_type_unsupported` |
+  | `upstream_relays_batch_capped` | `upstream_relay_batch_capped` |
+  | `upstream_relays_resuming` | `upstream_relay_resume_started` |
+  | `verifying_jwk_signature` | `jws_jwk_verification_started` |
+  | `verifying_kid_signature` | `jws_kid_verification_started` |
+  | `wildcard_identifier_rejected` | `order_identifier_wildcard_rejected` |
+
+  Two further changes that are not renames:
+
+  - `startup_nonce_cleanup_completed` is **removed**. It duplicated
+    `db_nonce_cleanup_completed`, which is emitted from the sweep itself.
+  - Three events that shared one name now carry a discriminator rather than
+    colliding: `db_admin_sessions_revoked` gains
+    `scope = "user" | "user_except_current" | "all"` (replacing a magic
+    `user_id = "*"`), and the seven admin actions reachable from both the JSON
+    API and the HTML panel gain `surface = "api" | "ui"`.
+
+  **Field renames**, for the same "one name, one meaning" reason:
+
+  | Old | New | Why |
+  | --- | --- | --- |
+  | `payload_length`, `protected_length` | `*_bytes` / `*_b64_chars` | one name meant both the encoded and the decoded size |
+  | `body_length`, `signature_size`, `certificate_length` | `*_bytes` / `*_b64_chars` | a size field says which unit it is in |
+  | `removed`, `deleted` | `rows_removed` | one spelling for a delete count |
+  | `pubkey_hash` | `pubkey_fp` | `*_fp` for every fingerprint |
+  | `session` | `session_fp` | as above |
+  | `nonce` | `nonce_fp` | as above |
+  | `id` (admin user) | `user_id` | the name the other 21 sites already used |
+  | `serial` | `cert_serial` | as above; `cert_id` stays RFC 9773's ARI certID |
+  | `url` (database, upstream, IPAM, challenge probe) | `database_url`, `upstream_url`, `backend_url`, `probe_url` | `url` is now the JWS `url` header alone |
+  | `path` (filesystem) | `file_path` | `path` is the HTTP request path alone |
+
+  `server_startup` is deliberately **not** renamed: `tests/e2e/common.rs` gates
+  container readiness on it, so a change there fails as a start timeout rather
+  than an assertion, and it already followed the convention.
+
+  All nine rules are now enforced by `tests/logging_convention.rs`, which walks
+  `src/` and fails CI on a stray call site — including one check that reaches
+  outside the crate, asserting that every event
+  `doc/src/operations/monitoring.md` names is still emitted. That check found a
+  pre-existing bug on its first run: the page documented
+  `admin_login_rate_limited`, which nothing has ever emitted.
+
 - **The `acme_proxy` signer backend is now `relay`.** It shared its name with
   the program that hosts it — the binary, the crate, the `ACME_PROXY_*`
   environment prefix and the default log filter are all `acme-proxy` — which

@@ -161,8 +161,9 @@ impl AdminSession {
         // A fingerprint of the *hash*, not the token -- enough to follow one
         // session across log lines, and derived from something already useless
         // to a reader.
-        info!(event = "admin_session_created",
-              session = %fingerprint(&session.token_hash),
+        info!(event = "db_admin_session_created",
+              outcome = "success",
+              session_fp = %fingerprint(&session.token_hash),
               user_id = %session.user_id,
               state = %session.state);
         Ok(session)
@@ -254,8 +255,9 @@ impl AdminSession {
 
         tx.commit().await?;
 
-        info!(event = "admin_session_promoted",
-              session = %fingerprint(&session.token_hash),
+        info!(event = "db_admin_session_promoted",
+              outcome = "success",
+              session_fp = %fingerprint(&session.token_hash),
               replaced = %fingerprint(pending_token_hash),
               user_id = %session.user_id);
         Ok(Some(session))
@@ -294,7 +296,8 @@ impl AdminSession {
             .transpose()?;
         if let Some(attempts) = attempts {
             debug!(event = "db_admin_session_mfa_failure_recorded",
-                   session = %fingerprint(token_hash),
+                   outcome = "success",
+                   session_fp = %fingerprint(token_hash),
                    attempts);
         }
         Ok(attempts)
@@ -343,7 +346,7 @@ impl AdminSession {
 
         let deleted = result.rows_affected() > 0;
         if deleted {
-            info!(event = "admin_session_deleted", session = %fingerprint(token_hash));
+            info!(event = "db_admin_session_deleted", outcome = "success", session_fp = %fingerprint(token_hash));
         }
         Ok(deleted)
     }
@@ -356,7 +359,9 @@ impl AdminSession {
             .execute(&database.pool)
             .await?;
 
-        info!(event = "admin_sessions_revoked",
+        info!(event = "db_admin_sessions_revoked",
+              outcome = "success",
+              scope = "user",
               user_id = %user_id,
               rows_removed = result.rows_affected());
         Ok(result.rows_affected())
@@ -377,7 +382,9 @@ impl AdminSession {
                 .execute(&database.pool)
                 .await?;
 
-        info!(event = "admin_sessions_revoked",
+        info!(event = "db_admin_sessions_revoked",
+              outcome = "success",
+              scope = "user_except_current",
               user_id = %user_id,
               rows_removed = result.rows_affected());
         Ok(result.rows_affected())
@@ -390,9 +397,13 @@ impl AdminSession {
             .execute(&database.pool)
             .await?;
 
+        // `scope` rather than the `user_id = "*"` this used to carry: three
+        // different operations shared this event name, and a magic value in a
+        // field is not a thing an operator can filter on.
         info!(
-            event = "admin_sessions_revoked",
-            user_id = "*",
+            event = "db_admin_sessions_revoked",
+            outcome = "success",
+            scope = "all",
             rows_removed = result.rows_affected()
         );
         Ok(result.rows_affected())
@@ -447,7 +458,8 @@ impl AdminSession {
                 .await?;
 
         debug!(
-            event = "admin_session_cleanup_completed",
+            event = "db_admin_session_cleanup_completed",
+            outcome = "success",
             rows_removed = result.rows_affected(),
             idle_cutoff = idle_cutoff
         );

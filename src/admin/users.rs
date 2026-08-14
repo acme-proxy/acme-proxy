@@ -222,6 +222,7 @@ pub async fn authenticate(
             // so loudly -- nobody will ever guess this from a 401, and the
             // account is unusable until `admin user passwd` rewrites it.
             warn!(event = "admin_password_hash_unreadable",
+                  outcome = "failure",
                   user_id = %user.id,
                   username = %user.username,
                   error = %error,
@@ -244,7 +245,7 @@ pub async fn authenticate(
     if password::needs_rehash(&user.password_hash) {
         let rehashed = password::hash_password(plaintext);
         user.set_password_hash(&rehashed, &database).await?;
-        info!(event = "admin_password_rehashed", user_id = %user.id);
+        info!(event = "admin_password_rehashed", outcome = "success", user_id = %user.id);
     }
 
     Ok(AuthOutcome::Authenticated(Box::new(user)))

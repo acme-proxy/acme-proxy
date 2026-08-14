@@ -80,7 +80,7 @@ impl Eab {
             created_at: now_secs(),
         };
 
-        debug!(event = "eab_create_started", kid = ?eab.kid, profile = ?eab.profile);
+        debug!(event = "db_eab_create_started", outcome = "progress", kid = ?eab.kid, profile = ?eab.profile);
         sqlx::query(
             "INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
@@ -94,7 +94,7 @@ impl Eab {
         .execute(&database.pool)
         .await?;
 
-        info!(event = "eab_created", kid = ?eab.kid);
+        info!(event = "db_eab_created", outcome = "success", kid = ?eab.kid);
         Ok(eab)
     }
 
@@ -106,7 +106,7 @@ impl Eab {
         profile: &str,
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
-        debug!(event = "eab_find_by_kid_started", kid = ?kid, profile = %profile);
+        debug!(event = "db_eab_find_by_kid_started", outcome = "progress", kid = ?kid, profile = %profile);
         let row = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
              WHERE kid = ? AND (profile IS NULL OR profile = ?);",
@@ -127,7 +127,7 @@ impl Eab {
         kid: &str,
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
-        debug!(event = "eab_find_any_by_kid_started", kid = ?kid);
+        debug!(event = "db_eab_find_any_by_kid_started", outcome = "progress", kid = ?kid);
         let row = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys WHERE kid = ?;",
         )
@@ -140,7 +140,7 @@ impl Eab {
 
     /// Lists every key, oldest first -- the admin CLI's `eab list`.
     pub async fn list_all(database: &Database) -> Result<Vec<Eab>, sqlx::Error> {
-        debug!(event = "eab_list_all_started");
+        debug!(event = "db_eab_list_all_started", outcome = "progress");
         let rows = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys ORDER BY created_at ASC;",
         )
@@ -155,7 +155,7 @@ impl Eab {
     /// `accounts.eab_kid`). Idempotent: revoking an already-revoked key still
     /// matches the row and reports `true`. Returns whether a row existed.
     pub async fn revoke(kid: &str, database: &Database) -> Result<bool, sqlx::Error> {
-        debug!(event = "eab_revoke_started", kid = ?kid);
+        debug!(event = "db_eab_revoke_started", outcome = "progress", kid = ?kid);
         let result = sqlx::query("UPDATE eab_keys SET status = 'revoked' WHERE kid = ?;")
             .bind(kid)
             .execute(&database.pool)
@@ -163,9 +163,9 @@ impl Eab {
 
         let updated = result.rows_affected() > 0;
         if updated {
-            info!(event = "eab_revoked", kid = ?kid);
+            info!(event = "db_eab_revoked", outcome = "success", kid = ?kid);
         } else {
-            debug!(event = "eab_revoke_missing", kid = ?kid);
+            debug!(event = "db_eab_revoke_missing", outcome = "success", kid = ?kid);
         }
         Ok(updated)
     }

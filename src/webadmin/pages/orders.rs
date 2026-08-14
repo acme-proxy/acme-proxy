@@ -159,6 +159,8 @@ pub async fn revoke_order(
             {
                 Ok(RevokeOutcome::Revoked(order)) => {
                     tracing::info!(event = "admin_order_revoked",
+                                   outcome = "success",
+                                   surface = "ui",
                                    order_id = %id,
                                    profile = %order.profile,
                                    reason = ?reason,
@@ -210,6 +212,8 @@ pub async fn delete_order(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_order_deleted",
+                   outcome = "success",
+                   surface = "ui",
                    order_id = %id,
                    username = %session.auth.user.username,
                    cascaded_authorizations = deleted.cascaded);

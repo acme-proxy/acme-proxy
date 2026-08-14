@@ -204,11 +204,11 @@ pub(crate) fn render(
     context: minijinja::Value,
 ) -> Result<Html<String>, PageError> {
     let template = env.get_template(name).map_err(|error| {
-        tracing::error!(event = "admin_template_missing", template = name, error = %error);
+        tracing::error!(event = "admin_template_missing", outcome = "failure", template = name, error = %error);
         PageError::internal()
     })?;
     let body = template.render(context).map_err(|error| {
-        tracing::error!(event = "admin_template_render_failed", template = name, error = %error);
+        tracing::error!(event = "admin_template_render_failed", outcome = "failure", template = name, error = %error);
         PageError::internal()
     })?;
     Ok(Html(body))

@@ -96,18 +96,18 @@ async fn check_replaces(
     // the field as "constructed in the same way as the path component for GET
     // requests described in Section 4.1", so the two must not drift.
     let parsed = crate::cert::parse_ari_cert_id(cert_id).map_err(|error| {
-        warn!(event = "replaces_malformed", replaces = %cert_id, error = %error);
+        warn!(event = "replaces_malformed", outcome = "failure", replaces = %cert_id, error = %error);
         Problem::malformed(format!("Invalid `replaces` certID: {error}"))
     })?;
 
     let predecessor = Order::find_by_cert_serial(profile, &parsed.serial_hex(), database)
         .await
         .map_err(|error| {
-            error!(event = "replaces_lookup_failed", error = %error);
+            error!(event = "replaces_lookup_failed", outcome = "failure", error = %error);
             Problem::server_internal("Predecessor lookup failed")
         })?
         .ok_or_else(|| {
-            warn!(event = "replaces_unknown", replaces = %cert_id);
+            warn!(event = "replaces_unknown", outcome = "failure", replaces = %cert_id);
             Problem::malformed("`replaces` names no certificate issued here")
         })?;
 
@@ -120,7 +120,7 @@ async fn check_replaces(
         && let Ok((aki, _)) = crate::cert::ari_cert_id_parts(&leaf_der)
         && aki != parsed.aki
     {
-        warn!(event = "replaces_aki_mismatch", replaces = %cert_id);
+        warn!(event = "replaces_aki_mismatch", outcome = "failure", replaces = %cert_id);
         return Err(Problem::malformed(
             "`replaces` key identifier does not match the certificate",
         ));
@@ -129,7 +129,7 @@ async fn check_replaces(
     // "…correspond to the same ACME Account". Also what stops one account
     // probing another's certificates through this field.
     if predecessor.account_id != account_id {
-        warn!(event = "replaces_wrong_account", replaces = %cert_id, order_id = %predecessor.id);
+        warn!(event = "replaces_wrong_account", outcome = "failure", replaces = %cert_id, order_id = %predecessor.id);
         return Err(Problem::malformed(
             "`replaces` names a certificate belonging to another account",
         ));
@@ -143,7 +143,7 @@ async fn check_replaces(
             .any(|had| had.typ == wanted.typ && had.value == wanted.value)
     });
     if !shares_identifier {
-        warn!(event = "replaces_no_shared_identifier", replaces = %cert_id);
+        warn!(event = "replaces_no_shared_identifier", outcome = "failure", replaces = %cert_id);
         return Err(Problem::malformed(
             "`replaces` names a certificate sharing no identifier with this order",
         ));
@@ -154,12 +154,13 @@ async fn check_replaces(
     if let Some(existing) = Order::find_by_replaces(profile, cert_id, database)
         .await
         .map_err(|error| {
-            error!(event = "replaces_conflict_lookup_failed", error = %error);
+            error!(event = "replaces_conflict_lookup_failed", outcome = "failure", error = %error);
             Problem::server_internal("Replacement lookup failed")
         })?
     {
         warn!(
             event = "replaces_already_claimed",
+            outcome = "failure",
             replaces = %cert_id,
             existing_order_id = %existing.id,
         );
@@ -168,7 +169,7 @@ async fn check_replaces(
         ));
     }
 
-    info!(event = "replaces_accepted", replaces = %cert_id, predecessor_order_id = %predecessor.id);
+    info!(event = "replaces_accepted", outcome = "success", replaces = %cert_id, predecessor_order_id = %predecessor.id);
     Ok(cert_id.to_string())
 }
 
@@ -231,6 +232,7 @@ pub async fn post_new_order(
 ) -> Result<Response, Problem> {
     info!(
         event = "order_creation_requested",
+        outcome = "progress",
         algorithm = %header.alg
     );
     let AppState {
@@ -243,11 +245,11 @@ pub async fn post_new_order(
     let challenges = &profile.challenges;
 
     if payload.identifiers.is_empty() {
-        warn!(event = "order_no_identifiers");
+        warn!(event = "order_no_identifiers", outcome = "failure");
         return Err(Problem::malformed("No identifiers"));
     }
     if let Some(bad) = payload.identifiers.iter().find(|id| id.typ != "dns") {
-        warn!(event = "unsupported_identifier_type", typ = %bad.typ);
+        warn!(event = "order_identifier_type_unsupported", outcome = "failure", typ = %bad.typ);
         return Err(Problem::unsupported_identifier(
             "Only dns identifiers supported",
         ));
@@ -266,7 +268,7 @@ pub async fn post_new_order(
         .iter()
         .filter_map(|identifier| {
             if !well_formed_name(&identifier.value) {
-                warn!(event = "malformed_identifier", value = %identifier.value);
+                warn!(event = "order_identifier_malformed", outcome = "failure", value = %identifier.value);
                 Some(
                     Problem::malformed(format!(
                         "Malformed identifier {}: `*` is only legal as a single leading `*.`",
@@ -278,7 +280,7 @@ pub async fn post_new_order(
                 .types_for(is_wildcard(&identifier.value))
                 .is_empty()
             {
-                warn!(event = "wildcard_identifier_rejected", value = %identifier.value);
+                warn!(event = "order_identifier_wildcard_rejected", outcome = "failure", value = %identifier.value);
                 Some(
                     Problem::rejected_identifier(format!(
                         "Wildcard identifier {} requires the dns-01 challenge, which is not enabled",
@@ -368,13 +370,14 @@ pub async fn post_new_order(
         // of the race would get a 500 for a condition RFC 9773 §5 gives a
         // status and a type for.
         if is_replaces_conflict(&error) {
-            warn!(event = "replaces_claim_race_lost", account_id = %account.id);
+            warn!(event = "replaces_claim_race_lost", outcome = "failure", account_id = %account.id);
             return Problem::already_replaced(
                 "This certificate has already been marked as replaced by another order",
             );
         }
         error!(
             event = "order_creation_failed",
+            outcome = "failure",
             error = %error,
             account_id = %account.id
         );
@@ -384,6 +387,7 @@ pub async fn post_new_order(
     let location = format!("{base}/order/{}", order.id);
     info!(
         event = "order_created",
+        outcome = "success",
         order_id = %order.id,
         account_id = %account.id,
         identifiers_count = order.identifiers.len()
@@ -408,6 +412,7 @@ pub async fn post_order(
 ) -> Result<Response, Problem> {
     info!(
         event = "order_lookup_requested",
+        outcome = "progress",
         order_id = %id
     );
     let AppState {
@@ -459,6 +464,7 @@ pub async fn post_finalize(
 ) -> Result<Response, Problem> {
     info!(
         event = "order_finalize_requested",
+        outcome = "progress",
         order_id = %id
     );
     let AppState {
@@ -474,7 +480,7 @@ pub async fn post_finalize(
     let mut order = load_owned_order(&id, &account, &database).await?;
 
     if order.status != "ready" {
-        warn!(event = "finalize_order_not_ready", order_id = %id, status = %order.status);
+        warn!(event = "order_finalize_not_ready", outcome = "failure", order_id = %id, status = %order.status);
         return Err(Problem::order_not_ready("Order is not ready"));
     }
 
@@ -570,6 +576,7 @@ pub async fn post_finalize(
             order.mark_processing(&database).await.map_err(|error| {
                 error!(
                     event = "order_mark_processing_failed",
+                    outcome = "failure",
                     order_id = %id,
                     error = %error
                 );
@@ -588,17 +595,19 @@ pub async fn post_finalize(
             {
                 warn!(
                     event = "upstream_order_client_context_failed",
+                    outcome = "failure",
                     order_id = %id,
                     error = %error
                 );
             }
             let authz_ids = order_authz_ids(&order.id, &database).await?;
-            info!(event = "order_finalize_delegated", order_id = %id);
+            info!(event = "order_finalize_delegated", outcome = "success", order_id = %id);
             return Ok(order_response(&order, base, &authz_ids));
         }
         Err(SignerError::BadCsr) => {
             warn!(
                 event = "order_finalize_bad_csr",
+                outcome = "failure",
                 order_id = %id
             );
             audit
@@ -613,6 +622,7 @@ pub async fn post_finalize(
         Err(SignerError::Internal(detail)) => {
             error!(
                 event = "order_finalize_issuance_failed",
+                outcome = "failure",
                 order_id = %id,
                 detail = %detail
             );
@@ -623,6 +633,7 @@ pub async fn post_finalize(
             if let Err(error) = order.mark_invalid(problem.to_value(), &database).await {
                 error!(
                     event = "order_mark_invalid_failed",
+                    outcome = "failure",
                     order_id = %id,
                     error = %error
                 );
@@ -632,12 +643,12 @@ pub async fn post_finalize(
     };
 
     let leaf_der = crate::cert::leaf_der_from_chain(&chain).map_err(|error| {
-        error!(event = "finalize_chain_unparsable", order_id = %id, error = %error);
+        error!(event = "order_finalize_chain_unparsable", outcome = "failure", order_id = %id, error = %error);
         Problem::server_internal("Issued certificate chain is unparsable")
     })?;
     let (cert_serial, cert_pubkey) =
         crate::cert::cert_serial_and_spki(&leaf_der).map_err(|error| {
-            error!(event = "finalize_leaf_unparsable", order_id = %id, error = %error);
+            error!(event = "order_finalize_leaf_unparsable", outcome = "failure", order_id = %id, error = %error);
             Problem::server_internal("Issued certificate is unparsable")
         })?;
 
@@ -647,6 +658,7 @@ pub async fn post_finalize(
         .map_err(|error| {
             error!(
                 event = "order_finalize_persistence_failed",
+                outcome = "failure",
                 order_id = %id,
                 error = %error
             );
@@ -656,6 +668,7 @@ pub async fn post_finalize(
     let authz_ids = order_authz_ids(&order.id, &database).await?;
     info!(
         event = "order_finalized",
+        outcome = "success",
         order_id = %id,
         cert_serial = %cert_serial
     );

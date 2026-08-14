@@ -261,7 +261,7 @@ impl Order {
         let identifiers_json = serde_json::to_string(&self.identifiers)
             .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
-        debug!(event = "order_create_started", order_id = ?self.id, profile = %self.profile, account_id = ?self.account_id);
+        debug!(event = "db_order_create_started", outcome = "progress", order_id = ?self.id, profile = %self.profile, account_id = ?self.account_id);
         sqlx::query(
             "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, created_at, created_ip, created_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?);",
@@ -281,7 +281,7 @@ impl Order {
         .execute(executor)
         .await?;
 
-        debug!(event = "db_order_created", order_id = ?self.id, account_id = ?self.account_id);
+        debug!(event = "db_order_created", outcome = "success", order_id = ?self.id, account_id = ?self.account_id);
         Ok(())
     }
 
@@ -309,7 +309,7 @@ impl Order {
     }
 
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
-        debug!(event = "order_find_by_id_started", order_id = ?id);
+        debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
         let row = sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
              FROM orders WHERE id = ?;")
             .bind(id)
@@ -318,9 +318,9 @@ impl Order {
 
         let result = row.map(Order::from_row).transpose()?;
         if result.is_some() {
-            info!(event = "order_found_by_id", order_id = ?id);
+            info!(event = "db_order_found_by_id", outcome = "success", order_id = ?id);
         } else {
-            debug!(event = "order_not_found_by_id", order_id = ?id);
+            debug!(event = "db_order_not_found_by_id", outcome = "failure", order_id = ?id);
         }
         Ok(result)
     }
@@ -335,7 +335,7 @@ impl Order {
         account_id: &str,
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
-        debug!(event = "order_find_by_account_started", account_id = ?account_id);
+        debug!(event = "db_order_find_by_account_started", outcome = "progress", account_id = ?account_id);
         let rows =
             sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
              FROM orders WHERE account_id = ? ORDER BY created_at DESC;")
@@ -362,7 +362,7 @@ impl Order {
         account_id: &str,
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
-        debug!(event = "order_find_active_by_account_started", account_id = ?account_id);
+        debug!(event = "db_order_find_active_by_account_started", outcome = "progress", account_id = ?account_id);
         let rows =
             sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
              FROM orders WHERE account_id = ? AND status != 'invalid' AND (status = 'valid' OR expires > ?) \
@@ -385,7 +385,7 @@ impl Order {
         profile: Option<&str>,
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
-        debug!(event = "order_list_all_started", profile = ?profile);
+        debug!(event = "db_order_list_all_started", outcome = "progress", profile = ?profile);
         let rows = match profile {
             Some(profile) => sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
                  FROM orders WHERE profile = ? ORDER BY created_at ASC;")
@@ -424,7 +424,8 @@ impl Order {
         query: &OrderQuery,
         database: &Database,
     ) -> Result<(Vec<Order>, i64), sqlx::Error> {
-        debug!(event = "order_search_started",
+        debug!(event = "db_order_search_started",
+               outcome = "progress",
                profile = ?query.profile,
                account_id = ?query.account_id,
                status = ?query.status,
@@ -481,7 +482,7 @@ impl Order {
     /// Hard-deletes the order row — cascading, via `ON DELETE CASCADE`, to its
     /// authorizations and challenges. Returns whether a row existed to delete.
     pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
-        debug!(event = "order_delete_started", order_id = ?id);
+        debug!(event = "db_order_delete_started", outcome = "progress", order_id = ?id);
         let result = sqlx::query("DELETE FROM orders WHERE id = ?;")
             .bind(id)
             .execute(&database.pool)
@@ -489,9 +490,9 @@ impl Order {
 
         let deleted = result.rows_affected() > 0;
         if deleted {
-            info!(event = "order_deleted", order_id = ?id);
+            info!(event = "db_order_deleted", outcome = "success", order_id = ?id);
         } else {
-            debug!(event = "order_delete_missing", order_id = ?id);
+            debug!(event = "db_order_delete_missing", outcome = "success", order_id = ?id);
         }
         Ok(deleted)
     }
@@ -510,7 +511,7 @@ impl Order {
         cert_pubkey: Vec<u8>,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "order_finalize_started", order_id = ?self.id);
+        debug!(event = "db_order_finalize_started", outcome = "progress", order_id = ?self.id);
         sqlx::query(
             "UPDATE orders SET certificate = ?, cert_serial = ?, cert_pubkey = ?, status = 'valid' WHERE id = ?;",
         )
@@ -525,7 +526,7 @@ impl Order {
         self.cert_serial = Some(cert_serial);
         self.cert_pubkey = Some(cert_pubkey);
         self.status = "valid".to_string();
-        debug!(event = "db_order_finalized", order_id = ?self.id);
+        debug!(event = "db_order_finalized", outcome = "success", order_id = ?self.id);
         Ok(())
     }
 
@@ -545,7 +546,7 @@ impl Order {
         serial: &str,
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
-        debug!(event = "order_find_by_cert_serial_started", profile = %profile, cert_serial = ?serial);
+        debug!(event = "db_order_find_by_cert_serial_started", outcome = "progress", profile = %profile, cert_serial = ?serial);
         let row = sqlx::query(
             "SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, \
              cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
@@ -558,9 +559,9 @@ impl Order {
 
         let result = row.map(Order::from_row).transpose()?;
         if result.is_some() {
-            info!(event = "order_found_by_cert_serial", cert_serial = ?serial);
+            info!(event = "db_order_found_by_cert_serial", outcome = "success", cert_serial = ?serial);
         } else {
-            debug!(event = "order_not_found_by_cert_serial", cert_serial = ?serial);
+            debug!(event = "db_order_not_found_by_cert_serial", outcome = "failure", cert_serial = ?serial);
         }
         Ok(result)
     }
@@ -578,7 +579,7 @@ impl Order {
         cert_id: &str,
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
-        debug!(event = "order_find_by_replaces_started", profile = %profile, replaces = %cert_id);
+        debug!(event = "db_order_find_by_replaces_started", outcome = "progress", profile = %profile, replaces = %cert_id);
         let row = sqlx::query(
             "SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, \
              cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
@@ -603,7 +604,7 @@ impl Order {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        debug!(event = "order_revoke_started", order_id = ?self.id, reason = ?reason);
+        debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?self.id, reason = ?reason);
         sqlx::query("UPDATE orders SET revoked_at = ?, revocation_reason = ? WHERE id = ?;")
             .bind(now)
             .bind(reason)
@@ -613,7 +614,7 @@ impl Order {
 
         self.revoked_at = Some(now);
         self.revocation_reason = reason;
-        info!(event = "order_revoked", order_id = ?self.id, reason = ?reason);
+        info!(event = "db_order_revoked", outcome = "success", order_id = ?self.id, reason = ?reason);
         Ok(())
     }
 
@@ -673,12 +674,12 @@ impl Order {
         error: Value,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        debug!(event = "order_mark_invalid_started", order_id = ?self.id);
+        debug!(event = "db_order_mark_invalid_started", outcome = "progress", order_id = ?self.id);
         Self::set_invalid(&self.id, &error, &database.pool).await?;
 
         self.error = Some(error);
         self.status = "invalid".to_string();
-        info!(event = "order_marked_invalid", order_id = ?self.id);
+        info!(event = "db_order_marked_invalid", outcome = "failure", order_id = ?self.id);
         Ok(())
     }
 
@@ -686,11 +687,11 @@ impl Order {
     /// `valid`, so it can be finalized. Keeps `self` in sync (like
     /// [`Order::finalize`]).
     pub async fn mark_ready(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "order_mark_ready_started", order_id = ?self.id);
+        debug!(event = "db_order_mark_ready_started", outcome = "progress", order_id = ?self.id);
         Self::set_ready(&self.id, &database.pool).await?;
 
         self.status = "ready".to_string();
-        info!(event = "order_marked_ready", order_id = ?self.id);
+        info!(event = "db_order_marked_ready", outcome = "success", order_id = ?self.id);
         Ok(())
     }
 
@@ -706,11 +707,11 @@ impl Order {
     /// becoming true rather than a one-way latch, so re-deriving it is in
     /// keeping with the model.
     pub async fn mark_pending(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "order_mark_pending_started", order_id = ?self.id);
+        debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
         Self::set_pending(&self.id, &database.pool).await?;
 
         self.status = "pending".to_string();
-        info!(event = "order_marked_pending", order_id = ?self.id);
+        info!(event = "db_order_marked_pending", outcome = "success", order_id = ?self.id);
         Ok(())
     }
 
@@ -723,14 +724,14 @@ impl Order {
     /// `CHECK` has always allowed it; until the `relay` backend existed
     /// there was simply no asynchronous issuance to use it.
     pub async fn mark_processing(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "order_mark_processing_started", order_id = ?self.id);
+        debug!(event = "db_order_mark_processing_started", outcome = "progress", order_id = ?self.id);
         sqlx::query("UPDATE orders SET status = 'processing' WHERE id = ?;")
             .bind(&self.id)
             .execute(&database.pool)
             .await?;
 
         self.status = "processing".to_string();
-        info!(event = "order_marked_processing", order_id = ?self.id);
+        info!(event = "db_order_marked_processing", outcome = "success", order_id = ?self.id);
         Ok(())
     }
 

@@ -94,6 +94,7 @@ pub fn from_config(cfg: &ServerConfig) -> anyhow::Result<Option<TlsAcceptor>> {
     if !cfg.tls.enabled {
         warn!(
             event = "tls_disabled",
+            outcome = "advisory",
             "serving ACME in cleartext: RFC 8555 §6.1 expects HTTPS, so either \
              enable server.tls or terminate TLS in front of this server"
         );
@@ -105,7 +106,7 @@ pub fn from_config(cfg: &ServerConfig) -> anyhow::Result<Option<TlsAcceptor>> {
     // request the moment this listener speaks TLS. The converse — `https://` with
     // TLS off — is the legitimate reverse-proxy setup, and says nothing.
     if cfg.base_url.starts_with("http://") {
-        warn!(event = "tls_base_url_mismatch", base_url = ?cfg.base_url,
+        warn!(event = "tls_base_url_mismatch", outcome = "advisory", base_url = ?cfg.base_url,
               "server.base_url names http:// while TLS is enabled: signed requests \
                will be refused until it names https://");
     }
@@ -168,13 +169,13 @@ fn acceptor_from(
 
     if cert_path.exists() && key_path.exists() {
         pemfile::warn_if_key_is_readable("tls_key_permissive", key_path);
-        info!(event = "tls_cert_loaded", listener = listener, cert_path = ?cfg.cert_path);
+        info!(event = "tls_cert_loaded", outcome = "success", listener = listener, cert_path = ?cfg.cert_path);
     } else {
         let (cert_pem, key_pem) = generate_self_signed(host_url)?;
         std::fs::write(cert_path, &cert_pem)
             .map_err(|error| anyhow::anyhow!("{}: {error}", cert_path.display()))?;
         pemfile::write_private_key(key_path, &key_pem)?;
-        info!(event = "tls_cert_generated", listener = listener, cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
+        info!(event = "tls_cert_generated", outcome = "success", listener = listener, cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
     }
 
     // Read back what was just written rather than keeping the DER in hand: what
@@ -200,7 +201,7 @@ fn acceptor_from(
     // advertising `h2` would promise a protocol this server does not speak.
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
-    info!(event = "tls_enabled", listener = listener, bind_address = ?bind_address, cert_path = ?cfg.cert_path);
+    info!(event = "tls_enabled", outcome = "success", listener = listener, bind_address = ?bind_address, cert_path = ?cfg.cert_path);
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
@@ -288,14 +289,14 @@ impl TlsListener {
                 // `MAX_PENDING_CONNECTIONS` connections are in flight, and a
                 // dropped listener closes the channel, which ends this task.
                 let Ok(permit) = sender.clone().reserve_owned().await else {
-                    debug!(event = "tls_accept_loop_ended");
+                    debug!(event = "tls_accept_loop_ended", outcome = "success");
                     return;
                 };
 
                 let (stream, peer) = match tcp.accept().await {
                     Ok(connection) => connection,
                     Err(error) => {
-                        warn!(event = "tls_accept_failed", error = %error);
+                        warn!(event = "tls_accept_failed", outcome = "failure", error = %error);
                         tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
@@ -310,9 +311,11 @@ impl TlsListener {
                         // Neither is the server's problem: a port scan, a
                         // cleartext client, a stalled handshake. Never fatal.
                         Ok(Err(error)) => {
-                            debug!(event = "tls_handshake_failed", peer = %peer, error = %error);
+                            debug!(event = "tls_handshake_failed", outcome = "failure", peer = %peer, error = %error);
                         }
-                        Err(_) => debug!(event = "tls_handshake_timeout", peer = %peer),
+                        Err(_) => {
+                            debug!(event = "tls_handshake_timeout", outcome = "failure", peer = %peer)
+                        }
                     }
                 });
             }
@@ -346,6 +349,7 @@ impl Listener for TlsListener {
             None => {
                 error!(
                     event = "tls_acceptor_stopped",
+                    outcome = "failure",
                     "the TLS accept task ended: no further connection will be served"
                 );
                 pending().await

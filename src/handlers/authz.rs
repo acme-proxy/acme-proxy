@@ -49,7 +49,8 @@ pub async fn post_authz(
     }: AcmeOptionalPayload<AuthzUpdatePayload>,
 ) -> Result<Response, Problem> {
     info!(
-        event = "authorization_lookup_requested",
+        event = "authz_lookup_requested",
+        outcome = "progress",
         authz_id = %id,
         deactivating = payload.is_some(),
     );
@@ -68,7 +69,7 @@ pub async fn post_authz(
         // §7.5.2 defines exactly one payload; anything else is a client sending
         // us something we would otherwise silently ignore.
         if update.status.as_deref() != Some("deactivated") {
-            warn!(event = "authz_update_unsupported", authz_id = %id, status = ?update.status);
+            warn!(event = "authz_update_unsupported", outcome = "failure", authz_id = %id, status = ?update.status);
             return Err(Problem::malformed(
                 "Only {\"status\": \"deactivated\"} is supported on an authorization",
             ));
@@ -81,6 +82,7 @@ pub async fn post_authz(
         .map_err(|error| {
             error!(
                 event = "challenge_list_failed",
+                outcome = "failure",
                 authz_id = %id,
                 error = %error
             );
@@ -136,14 +138,14 @@ async fn deactivate_authz(
     // about giving up the *ability* to issue, not about undoing issuance —
     // that is what revocation (§7.6) is for.
     if order.status == "valid" {
-        warn!(event = "authz_deactivate_refused_order_valid", authz_id = %authz.id, order_id = %order.id);
+        warn!(event = "authz_deactivate_refused_order_valid", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
         return Err(Problem::malformed(
             "Cannot deactivate an authorization whose order has already been issued; revoke the certificate instead",
         ));
     }
 
     if authz.status != "pending" && authz.status != "valid" {
-        warn!(event = "authz_deactivate_refused_terminal", authz_id = %authz.id, status = %authz.status);
+        warn!(event = "authz_deactivate_refused_terminal", outcome = "failure", authz_id = %authz.id, status = %authz.status);
         return Err(Problem::malformed(
             "Authorization is in a terminal state and cannot be deactivated",
         ));
@@ -169,7 +171,7 @@ async fn deactivate_authz(
     .await;
 
     outcome.map_err(|error| {
-        error!(event = "authz_deactivate_failed", authz_id = %authz.id, error = %error);
+        error!(event = "authz_deactivate_failed", outcome = "failure", authz_id = %authz.id, error = %error);
         Problem::server_internal("Authorization deactivation failed")
     })?;
 
@@ -180,7 +182,7 @@ async fn deactivate_authz(
         order.status = "pending".to_string();
     }
 
-    info!(event = "authorization_deactivated", authz_id = %authz.id, order_id = %order.id);
+    info!(event = "authz_deactivated", outcome = "success", authz_id = %authz.id, order_id = %order.id);
     Ok(())
 }
 
@@ -246,6 +248,7 @@ async fn commit_validation(
         Err(error) => {
             error!(
                 event = "challenge_validation_persist_failed",
+                outcome = "failure",
                 challenge_id = %challenge.id,
                 authz_id = %authz.id,
                 order_id = %order.id,
@@ -287,6 +290,7 @@ async fn commit_validation_failure(
         Err(error) => {
             error!(
                 event = "challenge_failure_persist_failed",
+                outcome = "failure",
                 challenge_id = %challenge.id,
                 authz_id = %authz.id,
                 order_id = %order.id,
@@ -309,6 +313,7 @@ pub async fn post_challenge(
 ) -> Result<Response, Problem> {
     info!(
         event = "challenge_trigger_requested",
+        outcome = "progress",
         challenge_id = %id
     );
     let AppState {
@@ -322,7 +327,7 @@ pub async fn post_challenge(
         load_owned_challenge(&id, &account, &database).await?;
 
     if authz.status != "valid" && authz.expires <= now_secs() {
-        warn!(event = "authorization_expired", authz_id = %authz.id, expires = authz.expires);
+        warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
         return Err(Problem::malformed("Authorization has expired"));
     }
 
@@ -330,7 +335,7 @@ pub async fn post_challenge(
     // challenge under it would walk it straight back to `valid` — which §7.5.2
     // forbids being sufficient for issuance — so refuse before doing any work.
     if authz.status == "deactivated" {
-        warn!(event = "authorization_already_deactivated", authz_id = %authz.id);
+        warn!(event = "authz_already_deactivated", outcome = "failure", authz_id = %authz.id);
         return Err(Problem::malformed("Authorization has been deactivated"));
     }
 
@@ -339,7 +344,7 @@ pub async fn post_challenge(
 
     if !decided {
         let thumbprint = jwk_thumbprint(&account.pubkey).map_err(|error| {
-            error!(event = "thumbprint_failed", account_id = %account.id, error = %error);
+            error!(event = "authz_thumbprint_failed", outcome = "failure", account_id = %account.id, error = %error);
             Problem::server_internal("Key authorization could not be computed")
         })?;
         let key_authorization = format!("{}.{}", challenge.token, thumbprint);
@@ -360,6 +365,7 @@ pub async fn post_challenge(
                 let problem = challenge_problem(&error).to_value();
                 warn!(
                     event = "challenge_failed",
+                    outcome = "failure",
                     challenge_id = %id,
                     typ = %challenge.typ,
                     kind = error.kind()
@@ -397,6 +403,7 @@ pub async fn post_challenge(
 
     info!(
         event = "challenge_answered",
+        outcome = "success",
         challenge_id = %id,
         authz_id = %authz.id,
         order_id = %order.id,

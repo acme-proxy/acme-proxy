@@ -34,6 +34,7 @@ pub async fn post_certificate(
 ) -> Result<Response, Problem> {
     info!(
         event = "certificate_request_processed",
+        outcome = "success",
         order_id = %id
     );
     let AppState {
@@ -49,6 +50,7 @@ pub async fn post_certificate(
         Some(pem) => {
             info!(
                 event = "certificate_served",
+                outcome = "success",
                 order_id = %id
             );
             Ok((
@@ -59,7 +61,7 @@ pub async fn post_certificate(
                 .into_response())
         }
         None => {
-            debug!(event = "certificate_not_ready", order_id = %id, status = %order.status);
+            debug!(event = "certificate_not_ready", outcome = "failure", order_id = %id, status = %order.status);
             Err(Problem::malformed("Certificate not ready"))
         }
     }
@@ -78,7 +80,7 @@ pub async fn post_revoke_cert(
         ..
     }: AcmeRequest<RevokeCertPayload>,
 ) -> Result<Response, Problem> {
-    info!(event = "revoke_cert_requested",);
+    info!(event = "certificate_revoke_requested", outcome = "progress",);
     let AppState {
         database,
         profile,
@@ -91,20 +93,21 @@ pub async fn post_revoke_cert(
         .decode(&payload.certificate)
         .map_err(|_| {
             warn!(
-                event = "revoke_cert_base64_invalid",
-                certificate_length = payload.certificate.len()
+                event = "certificate_revoke_base64_invalid",
+                outcome = "failure",
+                certificate_b64_chars = payload.certificate.len()
             );
             Problem::malformed("certificate base64 invalid")
         })?;
     let (serial_hex, _) = crate::cert::cert_serial_and_spki(&cert_der).map_err(|error| {
-        warn!(event = "revoke_cert_parse_failed", error = %error);
+        warn!(event = "certificate_revoke_parse_failed", outcome = "failure", error = %error);
         Problem::malformed("certificate is unparsable")
     })?;
 
     let order = Order::find_by_cert_serial(&profile.name, &serial_hex, &database)
         .await
         .map_err(|error| {
-            error!(event = "revoke_cert_lookup_failed", cert_serial = %serial_hex, error = %error);
+            error!(event = "certificate_revoke_lookup_failed", outcome = "failure", cert_serial = %serial_hex, error = %error);
             Problem::server_internal("Certificate lookup failed")
         })?
         .filter(|order| {
@@ -148,7 +151,7 @@ pub async fn post_revoke_cert(
             // exists to a caller who has not proven anything yet. The audit row
             // does not distinguish them either, for the same reason — and it
             // exists because a stream of these is somebody enumerating.
-            warn!(event = "revoke_cert_unknown_certificate", cert_serial = %serial_hex);
+            warn!(event = "certificate_revoke_unknown_certificate", outcome = "failure", cert_serial = %serial_hex);
             audit
                 .record(revoke_failed(
                     "malformed",
@@ -180,14 +183,14 @@ pub async fn post_revoke_cert(
             None => Account::find_by_pubkey(&profile.name, &pubkey, &database)
                 .await
                 .map_err(|error| {
-                    error!(event = "revoke_cert_account_lookup_failed", error = %error);
+                    error!(event = "certificate_revoke_account_lookup_failed", outcome = "failure", error = %error);
                     Problem::server_internal("Account lookup failed")
                 })?
                 .is_some_and(|found| found.id == order.account_id),
         }
     };
     if !authorized {
-        warn!(event = "revoke_cert_unauthorized", order_id = %order.id, cert_serial = %serial_hex);
+        warn!(event = "certificate_revoke_unauthorized", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex);
         // The one refusal here that is somebody else's certificate being
         // attacked rather than a client's own mistake, and the reason failures
         // are audited at all.
@@ -206,7 +209,7 @@ pub async fn post_revoke_cert(
     }
 
     if order.revoked_at.is_some() {
-        warn!(event = "revoke_cert_already_revoked", order_id = %order.id, cert_serial = %serial_hex);
+        warn!(event = "certificate_revoke_already_revoked", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex);
         audit
             .record(revoke_failed("alreadyRevoked", "already revoked").with_order(&order))
             .await;
@@ -216,7 +219,11 @@ pub async fn post_revoke_cert(
     if let Some(reason) = payload.reason
         && !crate::cert::is_valid_revocation_reason(reason)
     {
-        warn!(event = "revoke_cert_bad_reason", reason = reason);
+        warn!(
+            event = "certificate_revoke_bad_reason",
+            outcome = "failure",
+            reason = reason
+        );
         audit
             .record(
                 revoke_failed("badRevocationReason", &format!("reason code {reason}"))
@@ -229,14 +236,14 @@ pub async fn post_revoke_cert(
     }
 
     if let Err(error) = signer.revoke(&cert_der, payload.reason).await {
-        error!(event = "revoke_cert_signer_failed", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+        error!(event = "certificate_revoke_signer_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
         audit
             .record(revoke_failed("serverInternal", &error.to_string()).with_order(&order))
             .await;
         return Err(Problem::server_internal("Revocation failed"));
     }
     if let Err(error) = order.revoke(payload.reason.map(i64::from), &database).await {
-        error!(event = "revoke_cert_persist_failed", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+        error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
         // The signer already withdrew trust, so the CA-side action stands; what
         // failed is this server's record of it. Audited as a failure because
         // that is what a later reader needs to know — the order still reads
@@ -247,7 +254,7 @@ pub async fn post_revoke_cert(
         return Err(Problem::server_internal("Revocation failed"));
     }
 
-    info!(event = "cert_revoked", order_id = %order.id, cert_serial = %serial_hex);
+    info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);
     let revoked = crate::audit::AuditRecord::new(
         crate::audit::AuditEvent::CertificateRevoked,
         &profile.name,

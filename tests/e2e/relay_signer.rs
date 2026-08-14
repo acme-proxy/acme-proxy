@@ -62,7 +62,7 @@ async fn test_relay_signer_bypass_order() {
 
     let upstream_logs = lab.get_proxy_upstream_logs().await;
     assert!(
-        upstream_logs.contains("leaf_issued"),
+        upstream_logs.contains("local_ca_leaf_issued"),
         "the upstream never issued a leaf"
     );
 
@@ -239,11 +239,11 @@ async fn test_relay_signer_http_01() {
 
     let proxy_logs = lab.get_proxy_logs().await;
     assert!(
-        proxy_logs.contains("http01_responder_mounted"),
+        proxy_logs.contains("http_01_responder_mounted"),
         "the responder route was never mounted"
     );
     assert!(
-        proxy_logs.contains("http01_responder_served"),
+        proxy_logs.contains("http_01_responder_served"),
         "the upstream never fetched the challenge file from this server"
     );
     assert!(

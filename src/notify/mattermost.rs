@@ -68,7 +68,7 @@ impl MattermostNotifier {
             "notify.mattermost.webhook_url must be http:// or https://"
         );
 
-        info!(event = "notify_mattermost_loaded", webhook_host = ?webhook_url.host_str());
+        info!(event = "notify_mattermost_loaded", outcome = "success", webhook_host = ?webhook_url.host_str());
 
         Ok(Self {
             webhook_url,

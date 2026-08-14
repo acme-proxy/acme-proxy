@@ -82,7 +82,7 @@ pub async fn admission_middleware(
     )
     .await
     else {
-        warn!(event = "request_shed", method = %method, path = %path);
+        warn!(event = "request_shed", outcome = "failure", method = %method, path = %path);
         let mut response = Problem::service_unavailable(
             "The server is at capacity and did not process this request; retry shortly",
         )
@@ -102,6 +102,7 @@ pub async fn admission_middleware(
         Err(_) => {
             warn!(
                 event = "request_deadline_exceeded",
+                outcome = "failure",
                 method = %method,
                 path = %path,
                 deadline_ms = crate::millis(admission.deadline),

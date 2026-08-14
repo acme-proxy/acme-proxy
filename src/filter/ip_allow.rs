@@ -51,7 +51,7 @@ impl AllowedFromIpAddress {
 
         let allow = parse_nets(&cfg.allow, "filter.allowed_ip.allow")?;
         let deny = parse_nets(&cfg.deny, "filter.allowed_ip.deny")?;
-        info!(event = "filter_allowed_ip_loaded", allow = ?cfg.allow, deny = ?cfg.deny);
+        info!(event = "filter_allowed_ip_loaded", outcome = "success", allow = ?cfg.allow, deny = ?cfg.deny);
         Ok(Self { allow, deny })
     }
 }

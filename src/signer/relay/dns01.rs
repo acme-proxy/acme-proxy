@@ -214,7 +214,10 @@ impl Rfc2136Updater {
             .map(|message| message.truncation)
             .unwrap_or(false)
         {
-            debug!(event = "dns_update_truncated_retrying_tcp");
+            debug!(
+                event = "signer_relay_dns_01_update_truncated",
+                outcome = "progress"
+            );
             return self.exchange_tcp(request).await;
         }
         Ok(buffer)

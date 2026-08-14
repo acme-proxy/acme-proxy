@@ -193,7 +193,8 @@ impl NetboxBackend {
 
         info!(
             event = "ipam_netbox_loaded",
-            url = %cfg.url,
+            outcome = "success",
+            backend_url = %cfg.url,
             custom_field = %cfg.custom_field,
             sources = ?backend.sources,
             vip_roles = ?cfg.vip_roles,
@@ -206,7 +207,8 @@ impl NetboxBackend {
         if cfg.insecure_skip_verify {
             warn!(
                 event = "ipam_netbox_tls_verification_disabled",
-                url = %cfg.url,
+                outcome = "advisory",
+                backend_url = %cfg.url,
                 "ipam.netbox.insecure_skip_verify is on: NetBox's TLS certificate is not \
                  verified, so the answers this server trusts could come from anyone able to \
                  intercept the connection (ipam.netbox.ca_cert_path is ignored while it is set)"
@@ -326,6 +328,7 @@ impl NetboxBackend {
             if !permitted {
                 debug!(
                     event = "ipam_netbox_vip_role_ignored",
+                    outcome = "advisory",
                     role = object.role.as_deref().unwrap_or(""),
                     "service address does not carry a configured role"
                 );
@@ -356,6 +359,7 @@ impl NetboxBackend {
         if groups.is_empty() {
             debug!(
                 event = "ipam_netbox_fhrp_no_membership",
+                outcome = "advisory",
                 interface_id = reference.interface_id,
             );
             return Ok(());

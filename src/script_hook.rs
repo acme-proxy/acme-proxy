@@ -164,6 +164,7 @@ impl ScriptHook {
                 if let Some(detail) = &stdin_error {
                     debug!(
                         event = "script_stdin_write_failed",
+                        outcome = "failure",
                         script_path = %self.path.display(),
                         error = %detail,
                     );

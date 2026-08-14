@@ -194,6 +194,7 @@ impl AuditEntry {
 
         debug!(
             event = "db_audit_row_written",
+            outcome = "success",
             audit_id = id,
             audit_event = event.as_str(),
             profile = %profile,
@@ -221,7 +222,8 @@ impl AuditEntry {
         database: &Database,
     ) -> Result<(Vec<Self>, i64), sqlx::Error> {
         debug!(
-            event = "audit_search_started",
+            event = "db_audit_search_started",
+            outcome = "progress",
             profile = ?query.profile,
             account_id = ?query.account_id,
             audit_event = ?query.event,
@@ -281,7 +283,8 @@ impl AuditEntry {
             .rows_affected();
         debug!(
             event = "db_audit_cleanup",
-            deleted = deleted,
+            outcome = "success",
+            rows_removed = deleted,
             cutoff = cutoff
         );
         Ok(deleted)

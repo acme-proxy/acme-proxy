@@ -324,7 +324,7 @@ impl Profile {
     /// caller to report and exit on.
     ///
     /// Each profile's subsystems are built inside a span naming it, so the
-    /// warnings they emit at build time (`filters_disabled`,
+    /// warnings they emit at build time (`filter_disabled`,
     /// `challenge_validation_bypassed`) say *which* endpoint is wide open —
     /// with several mounted, an unattributed warning is worse than none.
     pub fn build_all(
@@ -495,7 +495,8 @@ pub fn build_app(
     let stores = http01_stores(&profiles);
     if !stores.is_empty() {
         info!(
-            event = "http01_responder_mounted",
+            event = "http_01_responder_mounted",
+            outcome = "advisory",
             path = challenge::http_01::WELL_KNOWN_PREFIX,
             stores = stores.len(),
             "a reverse proxy must forward or redirect \
@@ -657,7 +658,8 @@ pub fn build_router(
         )),
         Err(error) => {
             tracing::error!(
-                event = "index_link_header_invalid",
+                event = "request_index_link_header_invalid",
+                outcome = "failure",
                 base_url = %profile.base_url,
                 error = %error,
             );

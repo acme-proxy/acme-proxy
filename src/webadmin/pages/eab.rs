@@ -106,6 +106,8 @@ pub async fn create_eab(
 
     let eab = Eab::create(label, profile, &state.database).await?;
     tracing::info!(event = "admin_eab_created",
+                   outcome = "success",
+                   surface = "ui",
                    kid = %eab.kid,
                    username = %session.auth.user.username);
 
@@ -134,6 +136,8 @@ pub async fn revoke_eab(
     }
 
     tracing::info!(event = "admin_eab_revoked",
+                   outcome = "success",
+                   surface = "ui",
                    kid = %kid,
                    username = %session.auth.user.username);
 

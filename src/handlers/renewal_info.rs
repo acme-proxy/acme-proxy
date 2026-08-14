@@ -62,6 +62,7 @@ pub async fn get_renewal_info(
 ) -> Result<Response, Problem> {
     info!(
         event = "renewal_info_requested",
+        outcome = "progress",
         cert_id = %id
     );
 
@@ -71,7 +72,7 @@ pub async fn get_renewal_info(
     // that certificate, and answering anyway would let a caller learn a window
     // for someone else's certificate that happens to share a serial.
     let cert_id = crate::cert::parse_ari_cert_id(&id).map_err(|error| {
-        warn!(event = "renewal_info_invalid_id_format", cert_id = %id, error = %error);
+        warn!(event = "renewal_info_invalid_id_format", outcome = "failure", cert_id = %id, error = %error);
         Problem::malformed(format!("Invalid certID: {error}"))
     })?;
     let serial_hex = cert_id.serial_hex();
@@ -79,24 +80,24 @@ pub async fn get_renewal_info(
     let order = Order::find_by_cert_serial(&state.profile.name, &serial_hex, &state.database)
         .await
         .map_err(|error| {
-            warn!(event = "renewal_info_lookup_error", error = %error);
+            warn!(event = "renewal_info_lookup_error", outcome = "failure", error = %error);
             Problem::server_internal("Database error looking up certificate")
         })?
         // RFC 9773 does not define a status code for an unknown certID; we keep
         // the 400 + `malformed` that this codebase returns for any other unknown
         // resource (see `load_owned_order`), rather than an isolated 404.
         .ok_or_else(|| {
-            warn!(event = "renewal_info_not_found", serial = %serial_hex);
+            warn!(event = "renewal_info_not_found", outcome = "failure", cert_serial = %serial_hex);
             Problem::malformed("Unknown certificate")
         })?;
 
     let certificate_pem = order.certificate.as_ref().ok_or_else(|| {
-        debug!(event = "renewal_info_no_certificate", order_id = %order.id);
+        debug!(event = "renewal_info_no_certificate", outcome = "success", order_id = %order.id);
         Problem::malformed("Order does not have a certificate")
     })?;
 
     let leaf_der = crate::cert::leaf_der_from_chain(certificate_pem).map_err(|error| {
-        error!(event = "renewal_info_cert_parse_failed", error = %error);
+        error!(event = "renewal_info_cert_parse_failed", outcome = "failure", error = %error);
         Problem::server_internal("Stored certificate is unparsable")
     })?;
 
@@ -106,7 +107,7 @@ pub async fn get_renewal_info(
     // every certificate issued by an older build would become unqueryable.
     match crate::cert::ari_cert_id_parts(&leaf_der) {
         Ok((aki, _serial)) if aki != cert_id.aki => {
-            warn!(event = "renewal_info_aki_mismatch", cert_id = %id, serial = %serial_hex);
+            warn!(event = "renewal_info_aki_mismatch", outcome = "failure", cert_id = %id, cert_serial = %serial_hex);
             return Err(Problem::malformed(
                 "certID key identifier does not match the certificate",
             ));
@@ -115,7 +116,8 @@ pub async fn get_renewal_info(
         Err(error) => {
             debug!(
                 event = "renewal_info_aki_unavailable",
-                serial = %serial_hex,
+                outcome = "advisory",
+                cert_serial = %serial_hex,
                 error = %error,
                 "certificate carries no Authority Key Identifier; matching on serial alone"
             );
@@ -123,7 +125,7 @@ pub async fn get_renewal_info(
     }
 
     let (not_before, not_after) = crate::cert::cert_validity(&leaf_der).map_err(|error| {
-        error!(event = "renewal_info_cert_validity_parse_failed", error = %error);
+        error!(event = "renewal_info_cert_validity_parse_failed", outcome = "failure", error = %error);
         Problem::server_internal("Failed to parse certificate validity")
     })?;
 
@@ -146,7 +148,7 @@ pub async fn get_renewal_info(
             Ok(Some(window)) => window,
             Ok(None) => calculate_suggested_window(not_before, not_after, false, now),
             Err(error) => {
-                warn!(event = "renewal_info_upstream_failed", error = %error);
+                warn!(event = "renewal_info_upstream_failed", outcome = "failure", error = %error);
                 calculate_suggested_window(not_before, not_after, false, now)
             }
         }
@@ -160,7 +162,8 @@ pub async fn get_renewal_info(
     if window.end <= window.start {
         error!(
             event = "renewal_info_invalid_window",
-            serial = %serial_hex,
+            outcome = "failure",
+            cert_serial = %serial_hex,
             start = window.start,
             end = window.end,
         );

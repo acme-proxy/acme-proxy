@@ -182,7 +182,12 @@ pub(crate) fn key_change_problem(error: KeyChangeError) -> Problem {
         KeyChangeError::BadSignature => ("bad_signature", "inner JWS signature invalid"),
         KeyChangeError::Internal(detail) => ("internal", *detail),
     };
-    warn!(event = "key_change_rejected", reason, detail);
+    warn!(
+        event = "key_change_rejected",
+        outcome = "failure",
+        reason,
+        detail
+    );
 
     match error {
         KeyChangeError::Malformed(detail) => Problem::malformed(detail),

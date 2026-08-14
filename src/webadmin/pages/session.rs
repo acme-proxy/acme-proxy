@@ -217,6 +217,8 @@ pub async fn post_logout(
     };
 
     tracing::info!(event = "admin_logout",
+                   outcome = "success",
+                   surface = "ui",
                    username = %session.auth.user.username,
                    scope = scope);
 

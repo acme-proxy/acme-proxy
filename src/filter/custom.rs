@@ -27,6 +27,7 @@ impl CustomScriptFilter {
 
         info!(
             event = "filter_custom_loaded",
+            outcome = "success",
             script_path = %hook.path().display(),
             timeout_ms = cfg.timeout_ms,
             pass_stdin = cfg.pass_stdin,

@@ -171,6 +171,7 @@ pub(crate) async fn sign_in(
     .await?;
 
     info!(event = "admin_login_mfa_pending",
+          outcome = "success",
           username = %user.username,
           client_ip = ?client,
           step = step.as_str());
@@ -231,12 +232,14 @@ pub(crate) async fn finish_mfa(
             // pending row, and `sign_in`'s limiter bounds *that*.
             AdminSession::delete(&pending.session.token_hash, &state.database).await?;
             warn!(event = "admin_mfa_attempts_exhausted",
+                  outcome = "failure",
                   username = %user.username,
                   client_ip = ?client,
                   max_attempts = state.config.admin.login_max_attempts);
         }
 
         warn!(event = "admin_mfa_failed",
+              outcome = "failure",
               username = %user.username,
               client_ip = ?client,
               reason = outcome.reason());
@@ -253,6 +256,7 @@ pub(crate) async fn finish_mfa(
     user.mark_logged_in(&state.database).await?;
     state.logins.record_success(client);
     info!(event = "admin_mfa_verified",
+          outcome = "success",
           username = %user.username,
           method = via.as_str());
     log_login(true, &user.username, client, "");
@@ -323,7 +327,7 @@ pub(crate) async fn finish_enrolment(
     let (session, cookie) = promote_pending(state, pending_token_hash).await?;
     user.mark_logged_in(&state.database).await?;
     state.logins.record_success(client);
-    info!(event = "admin_mfa_enrolled", username = %user.username);
+    info!(event = "admin_mfa_enrolled", outcome = "success", username = %user.username);
     log_login(true, &user.username, client, "");
     Ok((session, cookie))
 }
@@ -420,7 +424,7 @@ pub async fn delete_session(
         "one"
     };
 
-    tracing::info!(event = "admin_logout", username = %auth.user.username, scope = scope);
+    tracing::info!(event = "admin_logout", outcome = "success", surface = "api", username = %auth.user.username, scope = scope);
     Ok((
         StatusCode::NO_CONTENT,
         [(header::SET_COOKIE, clearing_cookie())],

@@ -135,7 +135,7 @@ async fn relay(
     if let Err(error) =
         UpstreamOrder::mark_valid(order_id, Some(&certificate_url), &inner.database).await
     {
-        warn!(event = "upstream_order_mark_valid_failed", error = %error);
+        warn!(event = "upstream_order_mark_valid_failed", outcome = "failure", error = %error);
     }
 
     Ok(chain)
@@ -208,7 +208,7 @@ async fn answer_dns01(
         // Cleanup is best-effort and happens whether or not validation passed:
         // a challenge record has no reason to outlive the attempt.
         if let Err(error) = updater.delete_txt(&fqdn, &value).await {
-            warn!(event = "dns01_cleanup_failed", name = %fqdn, error = %error);
+            warn!(event = "signer_relay_dns_01_cleanup_failed", outcome = "failure", name = %fqdn, error = %error);
         }
         triggered?;
     }
@@ -415,11 +415,11 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, outcome: Result<String
     let mut order = match Order::find_by_id(order_id, &inner.database).await {
         Ok(Some(order)) => order,
         Ok(None) => {
-            warn!(event = "upstream_relay_order_vanished", order_id = %order_id);
+            warn!(event = "upstream_relay_order_vanished", outcome = "failure", order_id = %order_id);
             return;
         }
         Err(error) => {
-            error!(event = "upstream_relay_order_lookup_failed", order_id = %order_id, error = %error);
+            error!(event = "upstream_relay_order_lookup_failed", outcome = "failure", order_id = %order_id, error = %error);
             return;
         }
     };
@@ -454,10 +454,10 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, outcome: Result<String
                 .finalize(chain, serial.clone(), pubkey, &inner.database)
                 .await
             {
-                error!(event = "upstream_relay_finalize_failed", order_id = %order_id, error = %error);
+                error!(event = "upstream_relay_finalize_failed", outcome = "failure", order_id = %order_id, error = %error);
                 return;
             }
-            info!(event = "upstream_relay_succeeded", order_id = %order_id, cert_serial = %serial);
+            info!(event = "upstream_relay_succeeded", outcome = "success", order_id = %order_id, cert_serial = %serial);
 
             // The audit row for this issuance, written here and nowhere else:
             // `post_finalize` answered `processing` without signing anything,
@@ -512,7 +512,7 @@ async fn relay_record(
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &inner.database)
         .await
         .unwrap_or_else(|error| {
-            warn!(event = "upstream_order_client_context_lookup_failed", order_id = %order.id, error = %error);
+            warn!(event = "upstream_order_client_context_lookup_failed", outcome = "failure", order_id = %order.id, error = %error);
             None
         });
     let (actor, client) = match &mapping {
@@ -533,7 +533,7 @@ async fn relay_record(
 /// Records a failed relay on both the local order (client-visible) and the
 /// mapping row (operator-visible).
 async fn fail(inner: &Inner, order: &mut Order, reason: &str) {
-    warn!(event = "upstream_relay_failed", order_id = %order.id, reason = %reason);
+    warn!(event = "upstream_relay_failed", outcome = "failure", order_id = %order.id, reason = %reason);
 
     crate::audit::write(
         relay_record(
@@ -553,9 +553,9 @@ async fn fail(inner: &Inner, order: &mut Order, reason: &str) {
         .mark_invalid(problem.to_value(), &inner.database)
         .await
     {
-        error!(event = "upstream_relay_mark_invalid_failed", order_id = %order.id, error = %error);
+        error!(event = "upstream_relay_mark_invalid_failed", outcome = "failure", order_id = %order.id, error = %error);
     }
     if let Err(error) = UpstreamOrder::mark_invalid(&order.id, reason, &inner.database).await {
-        warn!(event = "upstream_order_mark_invalid_failed", error = %error);
+        warn!(event = "upstream_order_mark_invalid_failed", outcome = "failure", error = %error);
     }
 }

@@ -119,6 +119,8 @@ pub async fn revoke_order(
         )),
         RevokeOutcome::Revoked(order) => {
             tracing::info!(event = "admin_order_revoked",
+                           outcome = "success",
+                           surface = "api",
                            order_id = %id,
                            profile = %order.profile,
                            reason = ?reason,
@@ -144,6 +146,8 @@ pub async fn delete_order(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_order_deleted",
+                   outcome = "success",
+                   surface = "api",
                    order_id = %id,
                    username = %auth.user.username,
                    cascaded_authorizations = deleted.cascaded);
@@ -202,12 +206,12 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
             "unsupported revocation reason code {reason} (RFC 5280 §5.3.1)"
         )),
         RevokeError::Signer(_) => {
-            tracing::error!(event = "admin_revoke_signer_failed", error = %error);
+            tracing::error!(event = "admin_revoke_signer_failed", outcome = "failure", error = %error);
             AdminError::signer_failed("the signer backend refused the revocation; retry")
         }
         RevokeError::Database(inner) => AdminError::from(inner),
         RevokeError::Internal(detail) => {
-            tracing::error!(event = "admin_revoke_internal_error", error = %detail);
+            tracing::error!(event = "admin_revoke_internal_error", outcome = "failure", error = %detail);
             AdminError::internal()
         }
     }

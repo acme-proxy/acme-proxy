@@ -59,7 +59,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
                 // right — but silently, an operator correlating with the
                 // reverse proxy's own logs would find nothing and have no clue
                 // why.
-                debug!(event = "request_id_header_invalid");
+                debug!(event = "request_id_header_invalid", outcome = "failure");
                 String::new()
             }
         },
@@ -94,12 +94,30 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     let status = response.status().as_u16();
 
     span.in_scope(|| {
+        // The one event name emitted at three levels, and the one whose
+        // `outcome` is the response status rather than the name: a 5xx is this
+        // server failing, and every other status is it answering.
         if response.status().is_server_error() {
-            warn!(event = "request_completed", status, latency_ms);
+            warn!(
+                event = "request_completed",
+                outcome = "failure",
+                status,
+                latency_ms
+            );
         } else if probe {
-            debug!(event = "request_completed", status, latency_ms);
+            debug!(
+                event = "request_completed",
+                outcome = "success",
+                status,
+                latency_ms
+            );
         } else {
-            info!(event = "request_completed", status, latency_ms);
+            info!(
+                event = "request_completed",
+                outcome = "success",
+                status,
+                latency_ms
+            );
         }
     });
 
@@ -108,7 +126,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     } else {
         // Only reachable for a client-supplied id: a generated UUID is always a
         // valid header value.
-        debug!(event = "request_id_header_not_returned", request_id = %id_str);
+        debug!(event = "request_id_header_not_returned", outcome = "success", request_id = %id_str);
     }
 
     response

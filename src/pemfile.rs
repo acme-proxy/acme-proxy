@@ -145,6 +145,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Resu
 /// Loading it anyway is deliberate — refusing to start over file permissions
 /// would be a poor trade — but it should never pass unremarked. `event` names the
 /// subsystem, so a log line says *which* key is exposed.
+///
+/// This is the **one** place `event` is not a bare string literal, and the only
+/// exemption `tests/logging_convention.rs` grants: four subsystems share one
+/// warning rather than writing it out four times. Every caller passes
+/// `<subsystem>_key_permissive`.
 pub(crate) fn warn_if_key_is_readable(event: &'static str, path: &Path) {
     #[cfg(unix)]
     {
@@ -153,7 +158,8 @@ pub(crate) fn warn_if_key_is_readable(event: &'static str, path: &Path) {
             let mode = metadata.permissions().mode() & 0o077;
             if mode != 0 {
                 warn!(event,
-                      path = ?path,
+                      outcome = "advisory",
+                      file_path = ?path,
                       mode = format!("{:o}", metadata.permissions().mode() & 0o777),
                       "private key is readable beyond its owner");
             }

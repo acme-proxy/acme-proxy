@@ -284,7 +284,7 @@ impl AcmeClient {
             return Err(problem_from(&response));
         }
         let directory: Directory = response.json()?;
-        debug!(event = "upstream_directory_discovered", url = %directory_url);
+        debug!(event = "upstream_directory_discovered", outcome = "success", upstream_url = %directory_url);
         Ok(Self {
             directory,
             resolver,
@@ -335,7 +335,7 @@ impl AcmeClient {
     ) -> Result<AcmeResponse, UpstreamError> {
         match self.post_once(key, signer, url, payload).await {
             Err(error) if error.is_bad_nonce() => {
-                debug!(event = "upstream_bad_nonce_retry", url = %url);
+                debug!(event = "upstream_bad_nonce_retry", outcome = "progress", upstream_url = %url);
                 self.post_once(key, signer, url, payload).await
             }
             other => other,

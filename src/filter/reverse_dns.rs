@@ -75,6 +75,7 @@ impl ClientHasValidReverseDns {
         let filter = Self::with_resolver(cfg, resolver)?;
         info!(
             event = "filter_reverse_dns_loaded",
+            outcome = "success",
             require_forward_confirm = cfg.require_forward_confirm,
             timeout_ms = cfg.timeout_ms,
         );
@@ -135,7 +136,7 @@ impl ClientHasValidReverseDns {
             match self.vet(client_ip, name).await {
                 Ok(()) => return Ok(name.clone()),
                 Err(refusal) => {
-                    debug!(event = "reverse_dns_candidate_refused", name, reason = ?refusal);
+                    debug!(event = "filter_reverse_dns_candidate_refused", outcome = "failure", name, reason = ?refusal);
                     last_refusal = Some(refusal);
                 }
             }
@@ -189,7 +190,7 @@ impl Filter for ClientHasValidReverseDns {
         // resolver cannot pin a request open.
         match tokio::time::timeout(self.timeout, self.resolve_hostname(client_ip)).await {
             Ok(Ok(hostname)) => {
-                debug!(event = "reverse_dns_accepted", client_ip = %client_ip, hostname);
+                debug!(event = "filter_reverse_dns_accepted", outcome = "success", client_ip = %client_ip, hostname);
                 Ok(())
             }
             Ok(Err(error)) => Err(error),

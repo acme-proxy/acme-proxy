@@ -397,7 +397,7 @@ async fn resolve_live(
     let Some(user) = AdminUser::find_by_id(&session.user_id, &state.database).await? else {
         // The FK cascade should make this impossible; if it happens, the
         // session is orphaned and must not authenticate anybody.
-        warn!(event = "admin_session_orphaned", session = %fingerprint(&token_hash));
+        warn!(event = "admin_session_orphaned", outcome = "failure", session_fp = %fingerprint(&token_hash));
         AdminSession::delete(&token_hash, &state.database).await?;
         return Err(AdminError::session_invalid());
     };
@@ -614,10 +614,14 @@ pub fn spawn_session_reaper(
             ticker.tick().await;
             match AdminSession::cleanup(idle_timeout, &database).await {
                 Ok(removed) => {
-                    debug!(event = "admin_session_reaper_swept", removed = removed);
+                    debug!(
+                        event = "admin_session_reaper_swept",
+                        outcome = "success",
+                        rows_removed = removed
+                    );
                 }
                 Err(error) => {
-                    error!(event = "admin_session_reaper_failed", error = %error);
+                    error!(event = "admin_session_reaper_failed", outcome = "failure", error = %error);
                 }
             }
         }
@@ -628,10 +632,12 @@ pub fn spawn_session_reaper(
 pub fn log_login(succeeded: bool, username: &str, client: Option<IpAddr>, reason: &'static str) {
     if succeeded {
         info!(event = "admin_login_succeeded",
+              outcome = "success",
               username = %username,
               client_ip = ?client);
     } else {
         warn!(event = "admin_login_failed",
+              outcome = "failure",
               username = %username,
               client_ip = ?client,
               reason = reason);

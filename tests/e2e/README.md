@@ -125,7 +125,7 @@ already uses for `lego` itself (see "key_change.rs" below).
   `get_phpipam_mock_logs`** grep a
   container's log for a marker proving something real happened — the same
   pattern the unit suite uses (e.g. `challenge_dns_01_matched`,
-  `cert_revoked`, `account_key_changed`).
+  `certificate_revoked`, `account_key_changed`).
 - **`dns_add_a`/`dns_add_ptr`** push real records into the `dns` (BIND)
   container via `nsupdate` over RFC 2136 + TSIG, the same mechanism
   `acme-proxy` itself would use for a real deployment.

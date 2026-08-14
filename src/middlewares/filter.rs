@@ -75,7 +75,7 @@ pub async fn add_filter_middleware(
 fn problem_for(error: FilterError, client_ip: Option<IpAddr>, path: &str) -> Problem {
     match error {
         FilterError::Denied(detail) => {
-            warn!(event = "request_blocked", client_ip = ?client_ip, path, %detail);
+            warn!(event = "request_blocked", outcome = "failure", client_ip = ?client_ip, path, %detail);
             Problem::access_denied(detail)
         }
         // The detail is deliberately generic: a resolver outage is server

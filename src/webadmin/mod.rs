@@ -322,6 +322,7 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
     // proxy case (https:// in the URL, TLS terminated in front) is legitimate.
     if admin.tls.enabled && url.scheme() == "http" {
         warn!(event = "admin_base_url_mismatch",
+              outcome = "advisory",
               base_url = %admin.base_url,
               "admin.base_url names http:// while admin.tls.enabled is true: the CSRF origin \
                check compares against it, so browser requests will be refused until it names \
@@ -334,6 +335,7 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
     // somewhere else. Logging the resolved origin makes the mismatch visible
     // at startup rather than at the first refused request.
     info!(event = "admin_origin_resolved",
+          outcome = "success",
           origin = %url.origin().ascii_serialization(),
           bind_address = %admin.bind_address);
 
@@ -370,7 +372,7 @@ fn check_templates(template_dir: &str) -> anyhow::Result<()> {
     }
 
     if !template_dir.is_empty() {
-        info!(event = "admin_templates_overridden", template_dir = %template_dir);
+        info!(event = "admin_templates_overridden", outcome = "success", template_dir = %template_dir);
     }
 
     Ok(())

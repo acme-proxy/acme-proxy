@@ -149,7 +149,7 @@ pub async fn run() {
         Database::connect(&config.database.url)
             .await
             .unwrap_or_else(|error| {
-                error!(event = "db_connect_failed", url = %config.database.url, error = %error);
+                error!(event = "db_connect_failed", outcome = "failure", database_url = %config.database.url, error = %error);
                 std::process::exit(1);
             }),
     );
@@ -202,7 +202,7 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
     let listener = TcpListener::bind(&config.server.bind_address)
         .await
         .map_err(|error| {
-            error!(event = "socket_bind_failed", bind_address = %config.server.bind_address, error = %error);
+            error!(event = "server_socket_bind_failed", outcome = "failure", bind_address = %config.server.bind_address, error = %error);
             CliError(format!(
                 "cannot bind {}: {error}",
                 config.server.bind_address
@@ -212,7 +212,7 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
     serve_on(config, database, listener, shutdown_signal())
         .await
         .map_err(|error| {
-            error!(event = "server_fatal_error", error = %error);
+            error!(event = "server_fatal_error", outcome = "failure", error = %error);
             CliError(error.to_string())
         })
 }
@@ -237,7 +237,7 @@ pub async fn serve_on(
     // Before anything binds: a misconfigured panel must not take the ACME
     // listener down with it halfway through startup.
     crate::webadmin::check_config(&config).inspect_err(|error| {
-        error!(event = "admin_config_invalid", error = %error);
+        error!(event = "admin_config_invalid", outcome = "failure", error = %error);
     })?;
 
     let admin_listener = match config.admin.enabled {
@@ -247,6 +247,7 @@ pub async fn serve_on(
                 .await
                 .inspect_err(|error| {
                     error!(event = "admin_socket_bind_failed",
+                           outcome = "failure",
                            bind_address = %config.admin.bind_address,
                            error = %error);
                 })?,
@@ -271,19 +272,21 @@ pub async fn serve_on_with(
 ) -> anyhow::Result<()> {
     info!(
         event = "server_startup",
+        outcome = "success",
         bind_address = %config.server.bind_address,
         base_url = %config.server.base_url,
         tls = config.server.tls.enabled,
-        database_url = %config.database.url
+        database_database_url = %config.database.url
     );
 
     // Assembly lives in `Profile::build_all`: this function only reports.
     let profiles = Profile::build_all(&config, database.clone()).inspect_err(|error| {
-        error!(event = "profiles_init_failed", error = %error);
+        error!(event = "profile_init_failed", outcome = "failure", error = %error);
     })?;
     for profile in &profiles {
         info!(
             event = "profile_mounted",
+            outcome = "success",
             profile = %profile.name,
             directory = %profile.directory_url(),
             challenge_bypass = profile.challenges.is_bypassed(),
@@ -299,7 +302,7 @@ pub async fn serve_on_with(
     }
 
     let tls = tls::from_config(&config.server).inspect_err(|error| {
-        error!(event = "tls_init_failed", error = %error);
+        error!(event = "tls_init_failed", outcome = "failure", error = %error);
     })?;
 
     // Before serving: hand each backend a chance to pick up issuance a previous
@@ -320,9 +323,7 @@ pub async fn serve_on_with(
 
     let ttl = Duration::from_secs(config.nonce.ttl_seconds);
     if let Err(error) = sqlite::nonce::Nonce::cleanup(&database, ttl).await {
-        error!(event = "startup_nonce_cleanup_failed", error = %error);
-    } else {
-        debug!(event = "startup_nonce_cleanup_completed");
+        error!(event = "nonce_cleanup_failed", outcome = "failure", error = %error);
     }
     // Held for the life of this function: `serve_on` is `pub` and a caller may
     // run it more than once (its own tests do), and an un-cancelled reaper is
@@ -347,7 +348,7 @@ pub async fn serve_on_with(
     let auditor = Arc::new(
         crate::audit::Auditor::from_config(&config.audit, &config.dns, database.clone())
             .inspect_err(|error| {
-                error!(event = "audit_init_failed", error = %error);
+                error!(event = "audit_init_failed", outcome = "failure", error = %error);
             })?,
     );
 
@@ -403,6 +404,7 @@ pub async fn serve_on_with(
 
     info!(
         event = "server_listening",
+        outcome = "success",
         bind_address = %config.server.bind_address,
         protocol = if tls.is_some() { "https" } else { "http" }
     );
@@ -414,7 +416,7 @@ pub async fn serve_on_with(
             let handshake_timeout = Duration::from_millis(config.server.tls.handshake_timeout_ms);
             let listener = tls::TlsListener::spawn(listener, acceptor, handshake_timeout)
                 .inspect_err(|error| {
-                    error!(event = "tls_listener_start_failed", error = %error);
+                    error!(event = "tls_listener_start_failed", outcome = "failure", error = %error);
                 })?;
             Box::pin(
                 axum::serve(
@@ -490,6 +492,7 @@ async fn serve_admin(
     {
         warn!(
             event = "admin_no_users",
+            outcome = "advisory",
             "the web admin is enabled but has no operators: create one with \
                `acme-proxy admin user create <username>`"
         );
@@ -505,6 +508,7 @@ async fn serve_admin(
     {
         warn!(
             event = "admin_mfa_enrolment_pending",
+            outcome = "advisory",
             count = count,
             "admin.require_mfa is on and some operators have no second factor: \
                their next sign-in will require enrolment before the session is usable"
@@ -515,15 +519,16 @@ async fn serve_admin(
     // startup-only sweep would leak every one an operator never signed out of.
     let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
     if let Err(error) = crate::sqlite::admin_session::AdminSession::cleanup(idle, &database).await {
-        error!(event = "startup_admin_session_cleanup_failed", error = %error);
+        error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);
     }
 
     let tls = tls::admin_from_config(&config.admin).inspect_err(|error| {
-        error!(event = "admin_tls_init_failed", error = %error);
+        error!(event = "admin_tls_init_failed", outcome = "failure", error = %error);
     })?;
 
     info!(
         event = "admin_listening",
+        outcome = "success",
         bind_address = %bind_address,
         protocol = if tls.is_some() { "https" } else { "http" },
         base_url = %config.admin.base_url
@@ -534,7 +539,7 @@ async fn serve_admin(
             let handshake_timeout = Duration::from_millis(config.admin.tls.handshake_timeout_ms);
             let listener = tls::TlsListener::spawn(listener, acceptor, handshake_timeout)
                 .inspect_err(|error| {
-                    error!(event = "admin_tls_listener_start_failed", error = %error);
+                    error!(event = "admin_tls_listener_start_failed", outcome = "failure", error = %error);
                 })?;
             Box::pin(
                 axum::serve(
@@ -612,8 +617,14 @@ pub fn spawn_nonce_reaper(database: Arc<Database>, ttl: Duration) -> tokio::task
         loop {
             ticker.tick().await;
             match sqlite::nonce::Nonce::cleanup(&database, ttl).await {
-                Ok(removed) => debug!(event = "nonce_reaper_swept", removed),
-                Err(error) => error!(event = "nonce_reaper_failed", error = %error),
+                Ok(removed) => debug!(
+                    event = "nonce_reaper_swept",
+                    outcome = "success",
+                    rows_removed = removed
+                ),
+                Err(error) => {
+                    error!(event = "nonce_reaper_failed", outcome = "failure", error = %error)
+                }
             }
         }
     })
@@ -646,8 +657,15 @@ pub fn spawn_audit_reaper(
             ticker.tick().await;
             let cutoff = crate::admin::ops::audit_cutoff(retention_days);
             match sqlite::audit::AuditEntry::cleanup(cutoff, &database).await {
-                Ok(removed) => info!(event = "audit_reaper_swept", removed, cutoff),
-                Err(error) => error!(event = "audit_reaper_failed", error = %error),
+                Ok(removed) => info!(
+                    event = "audit_reaper_swept",
+                    outcome = "success",
+                    rows_removed = removed,
+                    cutoff
+                ),
+                Err(error) => {
+                    error!(event = "audit_reaper_failed", outcome = "failure", error = %error)
+                }
             }
         }
     })

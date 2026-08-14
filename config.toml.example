@@ -624,7 +624,7 @@ port = 443                          # ACME_PROXY_CHALLENGE__TLS_ALPN_01__PORT
 #
 # Filters run in the order listed and ALL of them must pass; the first denial
 # wins. An empty list (the default) disables filtering entirely, and the server
-# logs a `filters_disabled` warning at startup saying so.
+# logs a `filter_disabled` warning at startup saying so.
 # Known names: "allowed_ip", "reverse_dns", "identifiers", "custom", "ipam".
 # ("netbox" was renamed to "ipam" and moved to its own [ipam] section; the old
 # spelling is refused by name at startup rather than silently ignored.)

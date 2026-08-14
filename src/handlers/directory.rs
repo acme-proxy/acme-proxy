@@ -17,7 +17,7 @@ pub const NO_STORE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-sto
 
 /// Health check endpoint that returns a simple JSON response indicating the server is running.
 pub async fn get_health_check() -> Json<Value> {
-    debug!(event = "health_check_requested");
+    debug!(event = "server_health_requested", outcome = "progress");
     Json(json!({
         "healthy": true,
     }))
@@ -25,7 +25,7 @@ pub async fn get_health_check() -> Json<Value> {
 
 /// ACME Directory endpoint that lists supported ACME endpoints.
 pub async fn get_directory(State(state): State<AppState>) -> Json<Value> {
-    debug!(event = "directory_endpoint_requested");
+    debug!(event = "directory_requested", outcome = "progress");
     // Every advertised URL is the *endpoint's* own, prefix included: this is
     // where a client learns which profile it is talking to.
     let base = &state.profile.base_url;
@@ -82,13 +82,13 @@ pub async fn post_directory(state: State<AppState>, _: AcmePostAsGet) -> Json<Va
 
 /// HEAD request handler for newNonce endpoint.
 pub async fn head_new_nonce() -> impl IntoResponse {
-    debug!(event = "new_nonce_head_requested");
+    debug!(event = "nonce_new_head_requested", outcome = "progress");
     (StatusCode::OK, [NO_STORE])
 }
 
 /// GET request handler for newNonce endpoint.
 pub async fn get_new_nonce() -> impl IntoResponse {
-    debug!(event = "new_nonce_get_requested");
+    debug!(event = "nonce_new_get_requested", outcome = "progress");
     (StatusCode::NO_CONTENT, [NO_STORE])
 }
 
@@ -100,6 +100,6 @@ pub async fn get_new_nonce() -> impl IntoResponse {
 /// a normal ACME response — and §7.2 only pins the `204` for the `GET` form.
 /// The `Replay-Nonce` itself comes from the response middleware either way.
 pub async fn post_new_nonce(_: AcmePostAsGet) -> impl IntoResponse {
-    debug!(event = "new_nonce_post_requested");
+    debug!(event = "nonce_new_post_requested", outcome = "progress");
     (StatusCode::OK, [NO_STORE])
 }

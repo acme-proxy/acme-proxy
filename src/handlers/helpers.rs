@@ -64,7 +64,7 @@ pub(crate) fn challenge_problem(error: &ChallengeError) -> Problem {
 pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParams, Problem> {
     let der = CertificateSigningRequestDer::from(csr_der.to_vec());
     CertificateSigningRequestParams::from_der(&der).map_err(|error| {
-        warn!(event = "csr_parse_failed", error = %error);
+        warn!(event = "csr_parse_failed", outcome = "failure", error = %error);
         Problem::bad_csr("CSR is unparsable")
     })
 }
@@ -100,7 +100,7 @@ pub(crate) fn check_csr_matches_order(
         .iter()
         .find(|san| !matches!(san, SanType::DnsName(_)))
     {
-        warn!(event = "csr_non_dns_san", san = ?other);
+        warn!(event = "csr_non_dns_san", outcome = "failure", san = ?other);
         return Err(Problem::bad_csr(
             "CSR carries a subject alternative name that is not a DNS name",
         ));
@@ -122,7 +122,7 @@ pub(crate) fn check_csr_matches_order(
         .collect();
 
     if csr_dns != want_dns {
-        warn!(event = "csr_identifier_mismatch", csr = ?csr_dns, order = ?want_dns);
+        warn!(event = "csr_identifier_mismatch", outcome = "failure", csr = ?csr_dns, order = ?want_dns);
         return Err(Problem::bad_csr(
             "CSR does not request the order's identifiers",
         ));
@@ -150,7 +150,7 @@ pub(crate) fn check_csr_matches_order(
     {
         let candidate = normalize_dns_name(&text);
         if looks_like_dns_name(&candidate) && !want_dns.contains(candidate.as_str()) {
-            warn!(event = "csr_common_name_mismatch", common_name = %candidate);
+            warn!(event = "csr_common_name_mismatch", outcome = "failure", common_name = %candidate);
             return Err(Problem::bad_csr(
                 "CSR common name is a domain the order does not cover",
             ));
@@ -340,7 +340,7 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
     for contact in contacts {
         let Some(rest) = contact.strip_prefix("mailto:") else {
             let scheme = contact.split_once(':').map_or("(none)", |(s, _)| s);
-            warn!(event = "contact_scheme_unsupported", scheme = %scheme);
+            warn!(event = "contact_scheme_unsupported", outcome = "failure", scheme = %scheme);
             return unsupported(format!(
                 "Contact {contact} uses an unsupported scheme; only mailto: is supported"
             ));
@@ -352,7 +352,10 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
         // *off*. A `mailto:a@b.test\nBcc: …` would otherwise be accepted,
         // stored, and echoed into a message body verbatim.
         if rest.chars().any(|c| c.is_control()) {
-            warn!(event = "contact_has_control_characters");
+            warn!(
+                event = "contact_has_control_characters",
+                outcome = "failure"
+            );
             return invalid(format!(
                 "Contact {contact:?} carries a control character, which is not part of an address"
             ));
@@ -360,7 +363,7 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
 
         // RFC 6068 §2: `hfields` is everything after a `?`.
         if rest.contains('?') {
-            warn!(event = "contact_has_hfields");
+            warn!(event = "contact_has_hfields", outcome = "failure");
             return invalid(format!(
                 "Contact {contact} carries hfields, which RFC 8555 §7.3 forbids"
             ));
@@ -369,7 +372,10 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
         // RFC 6068 §2: multiple addresses in the `to` component are
         // comma-separated.
         if rest.contains(',') {
-            warn!(event = "contact_has_multiple_addresses");
+            warn!(
+                event = "contact_has_multiple_addresses",
+                outcome = "failure"
+            );
             return invalid(format!(
                 "Contact {contact} names more than one address; RFC 8555 §7.3 allows one"
             ));
@@ -378,11 +384,11 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
         // A `mailto:` with nothing to mail, or no domain to mail it to, is not
         // an address anyone could reach.
         let Some((local, domain)) = rest.rsplit_once('@') else {
-            warn!(event = "contact_not_an_address");
+            warn!(event = "contact_not_an_address", outcome = "failure");
             return invalid(format!("Contact {contact} is not an email address"));
         };
         if local.is_empty() || domain.is_empty() || !domain.contains('.') {
-            warn!(event = "contact_address_incomplete");
+            warn!(event = "contact_address_incomplete", outcome = "failure");
             return invalid(format!("Contact {contact} is not a complete email address"));
         }
     }
@@ -415,14 +421,14 @@ pub(crate) async fn signer_account(
         None => Account::find_by_pubkey(profile, pubkey, database)
             .await
             .map_err(|error| {
-                error!(event = "account_lookup_failed", error = %error);
+                error!(event = "account_lookup_failed", outcome = "failure", error = %error);
                 Problem::server_internal("Account lookup failed")
             })?
             .ok_or_else(|| Problem::account_does_not_exist("Unknown account"))?,
     };
 
     if account.status == "deactivated" {
-        warn!(event = "deactivated_account_request", account_id = %account.id);
+        warn!(event = "account_deactivated_request_refused", outcome = "failure", account_id = %account.id);
         return Err(Problem::unauthorized("Account is deactivated"));
     }
     Ok(account)
@@ -438,7 +444,7 @@ pub(crate) async fn load_owned_order(
     let order = Order::find_by_id(id, database)
         .await
         .map_err(|error| {
-            error!(event = "order_lookup_failed", order_id = %id, error = %error);
+            error!(event = "order_lookup_failed", outcome = "failure", order_id = %id, error = %error);
             Problem::server_internal("Order lookup failed")
         })?
         .ok_or_else(|| Problem::malformed("Unknown order"))?;
@@ -450,6 +456,7 @@ pub(crate) async fn load_owned_order(
     if order.profile != account.profile {
         warn!(
             event = "order_profile_mismatch",
+            outcome = "failure",
             order_id = %id,
             order_profile = %order.profile,
             request_profile = %account.profile
@@ -458,14 +465,14 @@ pub(crate) async fn load_owned_order(
     }
 
     if order.account_id != account.id {
-        warn!(event = "order_ownership_mismatch", order_id = %id, account_id = %account.id);
+        warn!(event = "order_ownership_mismatch", outcome = "failure", order_id = %id, account_id = %account.id);
         return Err(Problem::unauthorized(
             "Order belongs to a different account",
         ));
     }
 
     if order.status != "valid" && order.expires <= now_secs() {
-        warn!(event = "order_expired", order_id = %id, expires = order.expires);
+        warn!(event = "order_expired", outcome = "failure", order_id = %id, expires = order.expires);
         return Err(Problem::malformed("Order has expired"));
     }
     Ok(order)
@@ -481,7 +488,7 @@ pub(crate) async fn load_owned_authz(
     let authz = Authorization::find_by_id(id, database)
         .await
         .map_err(|error| {
-            error!(event = "authz_lookup_failed", authz_id = %id, error = %error);
+            error!(event = "authz_lookup_failed", outcome = "failure", authz_id = %id, error = %error);
             Problem::server_internal("Authorization lookup failed")
         })?
         .ok_or_else(|| Problem::malformed("Unknown authorization"))?;
@@ -500,7 +507,7 @@ pub(crate) async fn load_owned_challenge(
     let challenge = Challenge::find_by_id(id, database)
         .await
         .map_err(|error| {
-            error!(event = "challenge_lookup_failed", challenge_id = %id, error = %error);
+            error!(event = "challenge_lookup_failed", outcome = "failure", challenge_id = %id, error = %error);
             Problem::server_internal("Challenge lookup failed")
         })?
         .ok_or_else(|| Problem::malformed("Unknown challenge"))?;
@@ -518,7 +525,7 @@ pub(crate) async fn order_authz_ids(
     Ok(Authorization::find_by_order(order_id, database)
         .await
         .map_err(|error| {
-            error!(event = "authz_list_failed", order_id = %order_id, error = %error);
+            error!(event = "authz_list_failed", outcome = "failure", order_id = %order_id, error = %error);
             Problem::server_internal("Authorization lookup failed")
         })?
         .into_iter()
@@ -531,7 +538,7 @@ pub(crate) fn parse_rfc3339(field: &str, value: &str) -> Result<i64, Problem> {
     OffsetDateTime::parse(value, &Rfc3339)
         .map(time::OffsetDateTime::unix_timestamp)
         .map_err(|_| {
-            warn!(event = "order_datetime_invalid", field = %field, value = %value);
+            warn!(event = "order_datetime_invalid", outcome = "failure", field = %field, value = %value);
             Problem::malformed("Invalid notBefore/notAfter datetime")
         })
 }

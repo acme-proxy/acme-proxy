@@ -239,7 +239,11 @@ impl TlsAlpn01Validator {
             RustlsProbe::new(resolver)
                 .map_err(|error| anyhow::anyhow!("challenge.tls_alpn_01: {error}"))?,
         );
-        info!(event = "challenge_tls_alpn_01_loaded", port = cfg.port);
+        info!(
+            event = "challenge_tls_alpn_01_loaded",
+            outcome = "success",
+            port = cfg.port
+        );
         Ok(Self::with_probe(cfg, probe))
     }
 
@@ -271,6 +275,7 @@ impl ChallengeValidator for TlsAlpn01Validator {
         verify_acme_identifier(&leaf, ctx.identifier, ctx.key_authorization).inspect(|()| {
             debug!(
                 event = "challenge_tls_alpn_01_matched",
+                outcome = "success",
                 identifier = ctx.identifier,
                 challenge_id = ctx.challenge_id,
             );

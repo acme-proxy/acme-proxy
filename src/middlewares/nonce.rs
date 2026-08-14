@@ -87,11 +87,11 @@ pub async fn add_nonce_middleware(
                 // Unreachable for a base64url nonce, but the client sees the
                 // same thing either way — a response with no `Replay-Nonce` —
                 // so it must not be the one branch that says nothing.
-                tracing::error!(event = "nonce_header_invalid");
+                tracing::error!(event = "nonce_header_invalid", outcome = "failure");
             }
         }
         Err(error) => {
-            tracing::error!(event = "nonce_persist_failed", error = %error);
+            tracing::error!(event = "nonce_persist_failed", outcome = "failure", error = %error);
         }
     }
 

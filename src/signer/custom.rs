@@ -38,6 +38,7 @@ impl CustomScriptSigner {
 
         info!(
             event = "signer_custom_loaded",
+            outcome = "success",
             script_path = %hook.path().display(),
             timeout_ms = cfg.timeout_ms,
             supports_crl = cfg.supports_crl,
@@ -170,12 +171,13 @@ impl SignerBackend for CustomScriptSigner {
             Ok(outcome) => {
                 warn!(
                     event = "signer_custom_crl_rejected",
+                    outcome = "failure",
                     detail = %Self::detail_from(&outcome),
                 );
                 None
             }
             Err(err) => {
-                warn!(event = "signer_custom_crl_failed", detail = %err);
+                warn!(event = "signer_custom_crl_failed", outcome = "failure", detail = %err);
                 None
             }
         }

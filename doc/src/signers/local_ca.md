@@ -47,7 +47,7 @@ A client may narrow that window using the order's `notBefore`/`notAfter` (RFC
 *later* than the default start, and a requested end only if it is *earlier* than
 the default end. A request whose clamped window would be empty or inverted is
 discarded whole, the policy default is used, and a
-`requested_validity_discarded` warning is logged.
+`local_ca_requested_validity_discarded` warning is logged.
 
 ## Configuration
 

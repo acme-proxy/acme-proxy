@@ -382,12 +382,17 @@ impl NotifyDispatcher {
         }
 
         let pending = set.len();
-        info!(event = "notify_drain_started", pending);
+        info!(
+            event = "notify_drain_started",
+            outcome = "progress",
+            pending
+        );
         let drained =
             tokio::time::timeout(budget, async { while set.join_next().await.is_some() {} }).await;
         if drained.is_err() {
             warn!(
                 event = "notify_drain_timed_out",
+                outcome = "failure",
                 pending,
                 budget_ms = crate::millis(budget),
             );
@@ -408,13 +413,18 @@ impl NotifyDispatcher {
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok((name, Ok(()))) => {
-                    info!(event = "notify_delivered", backend = name, kind);
+                    info!(
+                        event = "notify_delivered",
+                        outcome = "success",
+                        backend = name,
+                        kind
+                    );
                 }
                 Ok((name, Err(error))) => {
-                    warn!(event = "notify_delivery_failed", backend = name, kind, error = %error);
+                    warn!(event = "notify_delivery_failed", outcome = "failure", backend = name, kind, error = %error);
                 }
                 Err(join_error) => {
-                    warn!(event = "notify_task_panicked", kind, error = %join_error);
+                    warn!(event = "notify_task_panicked", outcome = "failure", kind, error = %join_error);
                 }
             }
         }
@@ -506,10 +516,11 @@ pub fn from_config(
     if backends.is_empty() {
         info!(
             event = "notify_disabled",
+            outcome = "success",
             "no notification backends configured"
         );
     } else {
-        info!(event = "notify_enabled", backends = ?cfg.enabled);
+        info!(event = "notify_enabled", outcome = "success", backends = ?cfg.enabled);
     }
 
     Ok(Arc::new(NotifyDispatcher::new(backends)))

@@ -194,7 +194,8 @@ impl RelaySigner {
                             // out of this process's reach, so say so on every
                             // startup rather than at the first failed issuance.
                             info!(
-                                event = "signer_relay_http01_selected",
+                                event = "signer_relay_http_01_selected",
+                                outcome = "advisory",
                                 path = crate::challenge::http_01::WELL_KNOWN_PREFIX,
                                 "the upstream will fetch \
                                  http://<identifier>:80/.well-known/acme-challenge/<token>; a \
@@ -293,11 +294,11 @@ impl SignerBackend for RelaySigner {
         .map_err(|error| SignerError::Internal(format!("recording upstream order: {error}")))?;
 
         if created.is_none() {
-            warn!(event = "upstream_relay_already_in_flight", order_id = %order_id);
+            warn!(event = "upstream_relay_already_in_flight", outcome = "advisory", order_id = %order_id);
             return Ok(IssueOutcome::Processing);
         }
 
-        info!(event = "upstream_order_opened", order_id = %order_id, upstream_url = %order_url);
+        info!(event = "upstream_order_opened", outcome = "success", order_id = %order_id, upstream_url = %order_url);
 
         spawn_relay(inner, order_id.to_string(), csr_der.to_vec(), order_url);
 
@@ -322,7 +323,7 @@ impl SignerBackend for RelaySigner {
             Ok(pending) => pending,
             Err(error) => {
                 // Best-effort by contract: log and let the server start.
-                error!(event = "upstream_resume_lookup_failed", error = %error);
+                error!(event = "upstream_resume_lookup_failed", outcome = "failure", error = %error);
                 return;
             }
         };
@@ -330,10 +331,15 @@ impl SignerBackend for RelaySigner {
         if pending.is_empty() {
             return;
         }
-        info!(event = "upstream_relays_resuming", count = pending.len());
+        info!(
+            event = "upstream_relay_resume_started",
+            outcome = "progress",
+            count = pending.len()
+        );
         if pending.len() >= crate::sqlite::upstream_order::MAX_PROCESSING_BATCH {
             warn!(
-                event = "upstream_relays_batch_capped",
+                event = "upstream_relay_batch_capped",
+                outcome = "advisory",
                 count = pending.len(),
                 "more orders are still processing than one resume picks up; the rest \
                  are taken by a later restart or by their own retry",
@@ -383,7 +389,7 @@ impl SignerBackend for RelaySigner {
             // `SignerBackend::revoke` is contractually idempotent, so the
             // upstream telling us it is already revoked *is* the desired state.
             Err(error) if error.is_already_revoked() => {
-                debug!(event = "upstream_already_revoked");
+                debug!(event = "upstream_already_revoked", outcome = "success");
                 Ok(())
             }
             Err(error) => Err(upstream_to_signer_error(error)),
@@ -401,7 +407,7 @@ impl SignerBackend for RelaySigner {
     async fn renewal_info(&self, cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
         let inner = &self.0;
         let Some(base) = inner.client.directory().renewal_info.clone() else {
-            debug!(event = "upstream_has_no_renewal_info");
+            debug!(event = "upstream_has_no_renewal_info", outcome = "success");
             return Ok(None);
         };
 
@@ -410,7 +416,7 @@ impl SignerBackend for RelaySigner {
         let cert_id = match crate::cert::ari_cert_id(cert_der) {
             Ok(cert_id) => cert_id,
             Err(error) => {
-                debug!(event = "ari_cert_id_underivable", error = %error);
+                debug!(event = "upstream_renewal_info_cert_id_underivable", outcome = "failure", error = %error);
                 return Ok(None);
             }
         };
@@ -427,6 +433,7 @@ impl SignerBackend for RelaySigner {
         let end = parse_rfc3339(&info.suggested_window.end)?;
         info!(
             event = "upstream_renewal_info_used",
+            outcome = "success",
             start,
             end,
             explanation_url = ?info.explanation_url,

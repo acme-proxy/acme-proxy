@@ -89,8 +89,9 @@ impl Nonce {
         // the response middleware, so it is the one log line in the server that
         // would otherwise publish a live, unconsumed credential on every single
         // response.
-        debug!(event = "nonce_saved",
-               nonce = %fingerprint(&self.value),
+        debug!(event = "db_nonce_saved",
+               outcome = "success",
+               nonce_fp = %fingerprint(&self.value),
                created_at = ?self.created_at);
         Ok(())
     }
@@ -113,13 +114,26 @@ impl Nonce {
         // A verified nonce is spent, so logging it would leak nothing — but a
         // *rejected* one may simply have been sent to the wrong endpoint and
         // still be live elsewhere, and one rule is easier to keep than two.
+        // Two arms rather than one `event = if …`: the name has to stay a bare
+        // literal, or neither spelling is greppable from a log back to here.
         let is_valid = result.rows_affected() == 1;
-        debug!(
-            event = if is_valid { "nonce_verified_valid" } else { "nonce_verified_invalid" },
-            nonce = %fingerprint(&nonce),
-            cutoff = cutoff,
-            ttl_seconds = ttl.as_secs(),
-        );
+        if is_valid {
+            debug!(
+                event = "db_nonce_verified_valid",
+                outcome = "success",
+                nonce_fp = %fingerprint(&nonce),
+                cutoff = cutoff,
+                ttl_seconds = ttl.as_secs(),
+            );
+        } else {
+            debug!(
+                event = "db_nonce_verified_invalid",
+                outcome = "failure",
+                nonce_fp = %fingerprint(&nonce),
+                cutoff = cutoff,
+                ttl_seconds = ttl.as_secs(),
+            );
+        }
         Ok(is_valid)
     }
 
@@ -145,7 +159,8 @@ impl Nonce {
             .execute(&database.pool)
             .await?;
 
-        info!(event = "nonce_cleanup_completed",
+        info!(event = "db_nonce_cleanup_completed",
+              outcome = "success",
               rows_removed = ?result.rows_affected(),
               cutoff = ?cutoff,
               ttl_seconds = ?ttl.as_secs());

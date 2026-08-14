@@ -324,6 +324,7 @@ pub fn from_config(
 
     info!(
         event = "ipam_enabled",
+        outcome = "success",
         backend = backend.name(),
         timeout_ms = cfg.timeout_ms,
     );
@@ -362,6 +363,7 @@ pub(crate) fn field_values(
                 other => {
                     warn!(
                         event = "ipam_field_entry_ignored",
+                        outcome = "advisory",
                         backend,
                         field,
                         source,
@@ -375,6 +377,7 @@ pub(crate) fn field_values(
         Some(other) => {
             warn!(
                 event = "ipam_field_ignored",
+                outcome = "advisory",
                 backend,
                 field,
                 source,

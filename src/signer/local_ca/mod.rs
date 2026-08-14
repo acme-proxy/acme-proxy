@@ -127,7 +127,8 @@ fn clamp_leaf_validity(
 
     if start >= end {
         warn!(
-            event = "requested_validity_discarded",
+            event = "local_ca_requested_validity_discarded",
+            outcome = "advisory",
             not_before = ?requested.not_before,
             not_after = ?requested.not_after,
             "requested window is empty once clamped to this CA's policy",
@@ -169,7 +170,7 @@ impl LocalCa {
             warn_if_key_is_readable("local_ca_key_permissive", key_path);
             let key_pair = KeyPair::from_pem(&key_pem)?;
             let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
-            info!(event = "local_ca_loaded", cert_path = ?cfg.cert_path);
+            info!(event = "local_ca_loaded", outcome = "success", cert_path = ?cfg.cert_path);
             return Self::assemble(issuer, ca_pem, cfg.leaf_validity_days, Some(paths));
         }
 
@@ -177,7 +178,7 @@ impl LocalCa {
         fs::write(cert_path, &ca_pem)?;
         write_private_key(key_path, &key_pair.serialize_pem())?;
         let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
-        info!(event = "local_ca_generated", cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
+        info!(event = "local_ca_generated", outcome = "success", cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
         Self::assemble(issuer, ca_pem, cfg.leaf_validity_days, Some(paths))
     }
 
@@ -218,6 +219,7 @@ impl LocalCa {
         if cfg.key_type != LocalCaConfig::default().key_type {
             warn!(
                 event = "local_ca_key_type_ignored",
+                outcome = "advisory",
                 key_type = %cfg.key_type,
                 "key_type applies only to a generated key; with key_source = \"pkcs11\" the \
                  algorithm comes from the token",
@@ -253,6 +255,7 @@ impl LocalCa {
         let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Pkcs11(signing_key))?;
         info!(
             event = "local_ca_pkcs11_loaded",
+            outcome = "success",
             cert_path = ?cfg.cert_path,
             key_label = %cfg.pkcs11.key_label,
         );
@@ -325,7 +328,7 @@ fn check_csr_matches_order(
         .iter()
         .find(|san| !matches!(san, SanType::DnsName(_)))
     {
-        warn!(event = "local_ca_csr_non_dns_san", san = ?other);
+        warn!(event = "local_ca_csr_non_dns_san", outcome = "failure", san = ?other);
         return Err(SignerError::BadCsr);
     }
 
@@ -352,7 +355,7 @@ fn check_csr_matches_order(
         .map(|id| id.value.as_str())
         .collect();
     if csr_dns != want_dns {
-        warn!(event = "local_ca_csr_identifier_mismatch", csr = ?csr_dns, order = ?want_dns);
+        warn!(event = "local_ca_csr_identifier_mismatch", outcome = "failure", csr = ?csr_dns, order = ?want_dns);
         return Err(SignerError::BadCsr);
     }
 
@@ -401,7 +404,7 @@ fn sanitize_csr_params(params: &mut CertificateParams) -> Result<(), SignerError
     ];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.serial_number = Some(random_serial().map_err(|error| {
-        error!(event = "serial_generation_failed", error = %error);
+        error!(event = "local_ca_serial_generation_failed", outcome = "failure", error = %error);
         SignerError::Internal(error.to_string())
     })?);
 
@@ -438,7 +441,7 @@ impl SignerBackend for LocalCa {
         // Parse the PKCS#10 CSR (also verifies its self-signature).
         let der = CertificateSigningRequestDer::from(csr_der.to_vec());
         let mut csr = CertificateSigningRequestParams::from_der(&der).map_err(|error| {
-            warn!(event = "local_ca_csr_parse_failed", error = %error);
+            warn!(event = "local_ca_csr_parse_failed", outcome = "failure", error = %error);
             SignerError::BadCsr
         })?;
 
@@ -464,14 +467,14 @@ impl SignerBackend for LocalCa {
         let leaf = tokio::task::spawn_blocking(move || csr.signed_by(&issuer))
             .await
             .map_err(|error| {
-                error!(event = "leaf_signing_panicked", error = %error);
+                error!(event = "local_ca_leaf_signing_panicked", outcome = "failure", error = %error);
                 SignerError::Internal(format!("leaf signing panicked: {error}"))
             })?
             .map_err(|error| {
-                error!(event = "leaf_signing_failed", error = %error);
+                error!(event = "local_ca_leaf_signing_failed", outcome = "failure", error = %error);
                 SignerError::Internal(error.to_string())
             })?;
-        info!(event = "leaf_issued", dns = ?identifiers.iter().map(|i| i.value.as_str()).collect::<Vec<_>>());
+        info!(event = "local_ca_leaf_issued", outcome = "success", dns = ?identifiers.iter().map(|i| i.value.as_str()).collect::<Vec<_>>());
         Ok(IssueOutcome::Issued(format!(
             "{}{}",
             leaf.pem(),
@@ -547,7 +550,7 @@ impl SignerBackend for LocalCa {
         // more confusing half of that.
         ledger.crl_der = crl_der;
 
-        info!(event = "certificate_revoked", serial = ?serial_hex);
+        info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
         Ok(())
     }
 

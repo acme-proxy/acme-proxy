@@ -53,7 +53,8 @@ pub async fn post_new_account(
     }: AcmeRequest<NewAccountPayload>,
 ) -> Result<Response, Problem> {
     info!(
-        event = "new_account_request",
+        event = "account_creation_requested",
+        outcome = "progress",
         algorithm = %header.alg
     );
     let AppState {
@@ -71,11 +72,11 @@ pub async fn post_new_account(
                 // Distinct from `helpers.rs`'s `account_lookup_failed`: same
                 // query, but this one is `newAccount`'s §7.3.1 lookup, not the
                 // one that resolves the signer of an order-side request.
-                error!(event = "only_return_existing_lookup_failed", error = %error);
+                error!(event = "account_only_return_existing_lookup_failed", outcome = "failure", error = %error);
                 Problem::server_internal("Account lookup failed")
             })?
             .ok_or_else(|| {
-                info!(event = "only_return_existing_miss");
+                info!(event = "account_only_return_existing_miss", outcome = "failure");
                 Problem::account_does_not_exist("No account for this key")
             })?;
 
@@ -98,7 +99,7 @@ pub async fn post_new_account(
     // §7.3.3 ties the requirement to the directory advertising a ToS, so an
     // endpoint with none must not demand agreement to something it never named.
     if !profile.meta.terms_of_service.is_empty() && !payload.terms_of_service_agreed {
-        warn!(event = "terms_of_service_not_agreed");
+        warn!(event = "account_terms_not_agreed", outcome = "failure");
         let problem = Problem::user_action_required(
             "Terms of service must be agreed to before an account can be created",
         );
@@ -146,7 +147,7 @@ pub async fn post_new_account(
         Account::find_or_create(&profile.name, &pubkey, payload.contact, &client, &database)
             .await
             .map_err(|error| {
-                error!(event = "account_creation_failed", error = %error);
+                error!(event = "account_creation_failed", outcome = "failure", error = %error);
                 Problem::server_internal("Account persistence failed")
             })?;
 
@@ -154,7 +155,7 @@ pub async fn post_new_account(
         if let Some(kid) = &eab_kid
             && let Err(error) = account.set_eab_kid(kid, &database).await
         {
-            error!(event = "account_eab_kid_persist_failed", account_id = %account.id, error = %error);
+            error!(event = "account_eab_kid_persist_failed", outcome = "failure", account_id = %account.id, error = %error);
         }
         // Recorded only where the endpoint actually has terms to agree to — the
         // check above already refused a request that did not agree, so reaching
@@ -162,7 +163,7 @@ pub async fn post_new_account(
         if !profile.meta.terms_of_service.is_empty()
             && let Err(error) = account.set_terms_agreed(&database).await
         {
-            error!(event = "account_terms_agreed_persist_failed", account_id = %account.id, error = %error);
+            error!(event = "account_terms_agreed_persist_failed", outcome = "failure", account_id = %account.id, error = %error);
         }
         profile
             .notify
@@ -183,6 +184,7 @@ pub async fn post_new_account(
 
     info!(
         event = "account_created",
+        outcome = "success",
         account_id = %account.id,
         created = created,
         status = %status
@@ -205,12 +207,12 @@ pub async fn verify_eab(
     database: &Arc<Database>,
 ) -> Result<String, Problem> {
     let eab_jws = eab_jws.ok_or_else(|| {
-        warn!(event = "eab_required", profile);
+        warn!(event = "eab_required", outcome = "failure", profile);
         Problem::external_account_required("This server requires External Account Binding")
     })?;
 
     let outer_jwk = header.jwk.as_ref().ok_or_else(|| {
-        warn!(event = "eab_missing_jwk", profile);
+        warn!(event = "eab_missing_jwk", outcome = "failure", profile);
         Problem::malformed("newAccount requires an embedded jwk for External Account Binding")
     })?;
 
@@ -219,18 +221,18 @@ pub async fn verify_eab(
     let key = Eab::find_by_kid(&eab_header.kid, profile, database)
         .await
         .map_err(|error| {
-            error!(event = "eab_lookup_failed", kid = %eab_header.kid, error = %error);
+            error!(event = "eab_lookup_failed", outcome = "failure", kid = %eab_header.kid, error = %error);
             Problem::server_internal("External Account Binding lookup failed")
         })?
         .filter(Eab::is_active)
         .ok_or_else(|| {
-            warn!(event = "eab_unknown_or_revoked_kid", kid = %eab_header.kid);
+            warn!(event = "eab_unknown_or_revoked_kid", outcome = "failure", kid = %eab_header.kid);
             Problem::unauthorized("Unknown or revoked External Account Binding key")
         })?;
 
     eab::verify_payload_and_signature(eab_jws, &key.secret, outer_jwk).map_err(eab::eab_problem)?;
 
-    info!(event = "eab_verified", kid = %key.kid);
+    info!(event = "eab_verified", outcome = "success", kid = %key.kid);
     Ok(key.kid)
 }
 
@@ -257,6 +259,7 @@ pub async fn post_account(
 ) -> Result<Json<Value>, Problem> {
     info!(
         event = "account_update_requested",
+        outcome = "progress",
         account_id = %id,
         algorithm = %header.alg
     );
@@ -268,12 +271,13 @@ pub async fn post_account(
     let mut account = match Account::find_by_id(&profile.name, &id, &database).await {
         Ok(Some(account)) => account,
         Ok(None) => {
-            warn!(event = "account_not_found", account_id = %id);
+            warn!(event = "account_not_found", outcome = "failure", account_id = %id);
             return Err(Problem::account_does_not_exist("Unknown account"));
         }
         Err(error) => {
             error!(
                 event = "account_update_lookup_failed",
+                outcome = "failure",
                 account_id = %id,
                 error = %error
             );
@@ -284,6 +288,7 @@ pub async fn post_account(
     if account.pubkey != pubkey {
         warn!(
             event = "account_key_mismatch",
+            outcome = "failure",
             account_id = %id,
             expected_pubkey_fp = %pubkey_fingerprint(&account.pubkey),
             actual_pubkey_fp = %pubkey_fingerprint(&pubkey)
@@ -293,7 +298,8 @@ pub async fn post_account(
 
     if account.status == "deactivated" {
         warn!(
-            event = "attempt_to_modify_deactivated_account",
+            event = "account_deactivated_modify_refused",
+            outcome = "failure",
             account_id = %id
         );
         return Err(Problem::unauthorized("Account deactivated"));
@@ -301,12 +307,13 @@ pub async fn post_account(
 
     if let Some(status) = payload.status {
         if status != "deactivated" {
-            warn!(event = "account_update_bad_status", account_id = %id, status = %status);
+            warn!(event = "account_update_bad_status", outcome = "failure", account_id = %id, status = %status);
             return Err(Problem::malformed("Only 'deactivated' status is accepted"));
         }
         account.deactivate(&database).await.map_err(|error| {
             error!(
                 event = "account_deactivation_failed",
+                outcome = "failure",
                 account_id = %id,
                 error = %error
             );
@@ -314,6 +321,7 @@ pub async fn post_account(
         })?;
         info!(
             event = "account_deactivated",
+            outcome = "success",
             account_id = %id
         );
         profile
@@ -331,6 +339,7 @@ pub async fn post_account(
             .map_err(|error| {
                 error!(
                     event = "account_contact_update_failed",
+                    outcome = "failure",
                     account_id = %id,
                     error = %error
                 );
@@ -338,12 +347,14 @@ pub async fn post_account(
             })?;
         info!(
             event = "account_contact_updated",
+            outcome = "success",
             account_id = %id
         );
     }
 
     info!(
         event = "account_updated",
+        outcome = "success",
         account_id = %id
     );
     Ok(Json(account.to_json(base)))
@@ -361,7 +372,7 @@ pub async fn post_key_change(
         ..
     }: AcmeRequest<key_change::KeyChangeJws>,
 ) -> Result<Response, Problem> {
-    info!(event = "key_change_requested",);
+    info!(event = "key_change_requested", outcome = "progress",);
     let AppState {
         database, profile, ..
     } = state;
@@ -376,7 +387,7 @@ pub async fn post_key_change(
 
     let account_url = format!("{base}/acct/{}", old_account.id);
     let old_key_jwk = spki_to_jwk(&old_account.pubkey).map_err(|error| {
-        error!(event = "key_change_old_key_decode_failed", account_id = %old_account.id, error = %error);
+        error!(event = "key_change_old_key_decode_failed", outcome = "failure", account_id = %old_account.id, error = %error);
         Problem::server_internal("Stored account key could not be decoded")
     })?;
     key_change::verify_payload(&inner_jws, &account_url, &old_key_jwk)
@@ -386,11 +397,11 @@ pub async fn post_key_change(
         Account::find_by_pubkey(&profile.name, &new_pubkey, &database)
         .await
         .map_err(|error| {
-            error!(event = "key_change_conflict_lookup_failed", account_id = %old_account.id, error = %error);
+            error!(event = "key_change_conflict_lookup_failed", outcome = "failure", account_id = %old_account.id, error = %error);
             Problem::server_internal("Account lookup failed")
         })?;
     if let Some(existing) = conflicting_account {
-        warn!(event = "key_change_conflict", account_id = %old_account.id, conflicting_account_id = %existing.id);
+        warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %existing.id);
         let location = format!("{base}/acct/{}", existing.id);
         let problem = Problem::key_change_conflict(
             "The new key is already associated with a different account",
@@ -410,11 +421,11 @@ pub async fn post_key_change(
         .update_pubkey(&new_pubkey, &database)
         .await
         .map_err(|error| {
-            error!(event = "key_change_persist_failed", account_id = %old_account.id, error = %error);
+            error!(event = "key_change_persist_failed", outcome = "failure", account_id = %old_account.id, error = %error);
             Problem::server_internal("Account key update failed")
         })?;
 
-    info!(event = "account_key_changed", account_id = %old_account.id);
+    info!(event = "account_key_changed", outcome = "success", account_id = %old_account.id);
     Ok(Json(old_account.to_json(base)).into_response())
 }
 
@@ -429,6 +440,7 @@ pub async fn post_account_orders(
 ) -> Result<Json<Value>, Problem> {
     info!(
         event = "account_orders_requested",
+        outcome = "progress",
         account_id = %id
     );
     let AppState {
@@ -440,6 +452,7 @@ pub async fn post_account_orders(
     if account.id != id {
         warn!(
             event = "account_orders_ownership_mismatch",
+            outcome = "failure",
             requested = %id,
             signer = %account.id
         );
@@ -453,6 +466,7 @@ pub async fn post_account_orders(
         .map_err(|error| {
             error!(
                 event = "account_orders_lookup_failed",
+                outcome = "failure",
                 account_id = %id,
                 error = %error
             );

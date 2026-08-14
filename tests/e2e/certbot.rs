@@ -156,7 +156,7 @@ PYEOF
 
     let proxy_logs = lab.get_proxy_logs().await;
     assert!(
-        proxy_logs.contains("cert_revoked"),
+        proxy_logs.contains("certificate_revoked"),
         "the server never logged a successful revocation"
     );
 }

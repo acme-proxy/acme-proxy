@@ -144,7 +144,7 @@ impl UpstreamOrder {
             request_id: None,
         };
 
-        debug!(event = "upstream_order_create_started", order_id = ?order_id);
+        debug!(event = "db_upstream_order_create_started", outcome = "progress", order_id = ?order_id);
         let result = sqlx::query(
             "INSERT OR IGNORE INTO upstream_orders \
              (order_id, upstream_order_url, upstream_finalize_url, csr_der, status, \

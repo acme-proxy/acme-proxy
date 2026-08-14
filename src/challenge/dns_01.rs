@@ -47,7 +47,7 @@ impl Dns01Validator {
     /// triggering, so a cached negative answer would fail a challenge that is
     /// in fact satisfied — for a TTL neither side controls.
     pub fn from_config(resolver: Arc<dyn Resolver>) -> Self {
-        info!(event = "challenge_dns_01_loaded");
+        info!(event = "challenge_dns_01_loaded", outcome = "success");
         Self::with_resolver(resolver)
     }
 
@@ -102,6 +102,7 @@ impl ChallengeValidator for Dns01Validator {
         if records.iter().any(|record| record.trim() == expected) {
             debug!(
                 event = "challenge_dns_01_matched",
+                outcome = "success",
                 name,
                 challenge_id = ctx.challenge_id
             );

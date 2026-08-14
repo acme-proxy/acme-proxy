@@ -221,6 +221,7 @@ impl Pkcs11SigningKey {
         );
         info!(
             event = "local_ca_pkcs11_opened",
+            outcome = "success",
             module = %pkcs11.module_path,
             slot = %slot,
             key_label = %pkcs11.key_label,
@@ -321,6 +322,7 @@ impl SigningKey for Pkcs11SigningKey {
                 // PUK-blocked slot.
                 warn!(
                     event = "local_ca_pkcs11_session_lost",
+                    outcome = "advisory",
                     error = %error,
                     token = %self.description,
                     "reopening the PKCS#11 session and retrying the signature once",
@@ -328,6 +330,7 @@ impl SigningKey for Pkcs11SigningKey {
                 self.reconnect().map_err(|error| {
                     error!(
                         event = "local_ca_pkcs11_reconnect_failed",
+                        outcome = "failure",
                         error = %error,
                         token = %self.description,
                     );
@@ -342,6 +345,7 @@ impl SigningKey for Pkcs11SigningKey {
                     // which rules the session out as the cause.
                     error!(
                         event = "local_ca_pkcs11_sign_retry_failed",
+                        outcome = "failure",
                         error = %error,
                         token = %self.description,
                     );
@@ -351,6 +355,7 @@ impl SigningKey for Pkcs11SigningKey {
             Err(error) => {
                 error!(
                     event = "local_ca_pkcs11_sign_failed",
+                    outcome = "failure",
                     error = %error,
                     token = %self.description,
                 );
@@ -361,6 +366,7 @@ impl SigningKey for Pkcs11SigningKey {
         raw_ecdsa_to_der(&raw).map_err(|error| {
             error!(
                 event = "local_ca_pkcs11_signature_malformed",
+                outcome = "failure",
                 error = %error,
                 len = raw.len(),
                 token = %self.description,
@@ -506,6 +512,7 @@ fn resolve_slot(context: &Pkcs11, token_label: &str, slot_id: Option<u64>) -> an
                 Err(error) => {
                     warn!(
                         event = "local_ca_pkcs11_token_info_failed",
+                        outcome = "failure",
                         slot = %slot,
                         error = %error,
                     );
@@ -654,6 +661,7 @@ fn choose_mechanism(
         // `CKM_ECDSA` is the safer assumption.
         warn!(
             event = "local_ca_pkcs11_mechanism_list_failed",
+            outcome = "failure",
             slot = %slot,
             error = %error,
         );

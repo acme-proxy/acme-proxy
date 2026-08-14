@@ -156,6 +156,8 @@ pub async fn delete_account(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_account_deleted",
+                   outcome = "success",
+                   surface = "api",
                    account_id = %id,
                    username = %auth.user.username,
                    cascaded_orders = deleted.cascaded);

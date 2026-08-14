@@ -150,7 +150,7 @@ under a profile's `/profile/<name>` prefix, carries no filter chain, mints no
 nonce, and answers a plain `404` rather than an ACME problem document for an
 unknown token. It exists only while some profile's signer uses this strategy;
 with any other backend the path is not routed at all. A
-`http01_responder_mounted` line at startup confirms it is live.
+`http_01_responder_mounted` line at startup confirms it is live.
 
 ## Configuration
 

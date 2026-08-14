@@ -83,6 +83,7 @@ impl IdentifierList {
         };
         info!(
             event = "filter_identifiers_loaded",
+            outcome = "success",
             allowed_types = ?cfg.allowed_types,
             allow = cfg.allow.len(),
             deny = cfg.deny.len(),

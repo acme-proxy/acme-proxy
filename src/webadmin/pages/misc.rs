@@ -129,7 +129,9 @@ pub async fn cleanup_nonces(
     let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
     tracing::info!(event = "admin_nonces_cleaned",
-                   removed = removed,
+                   outcome = "success",
+                   surface = "ui",
+                   rows_removed = removed,
                    ttl_seconds = seconds,
                    username = %session.auth.user.username);
 

@@ -166,6 +166,7 @@ pub async fn post_account_contact(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_account_contact_updated",
+                   outcome = "success",
                    account_id = %id,
                    username = %session.auth.user.username);
 
@@ -184,6 +185,7 @@ pub async fn deactivate_account(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_account_deactivated",
+                   outcome = "success",
                    account_id = %id,
                    username = %session.auth.user.username);
 
@@ -213,6 +215,8 @@ pub async fn delete_account(
         .ok_or_else(|| not_found(&id))?;
 
     tracing::info!(event = "admin_account_deleted",
+                   outcome = "success",
+                   surface = "ui",
                    account_id = %id,
                    username = %session.auth.user.username,
                    cascaded_orders = deleted.cascaded);

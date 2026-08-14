@@ -30,6 +30,7 @@ impl CustomScriptNotifier {
 
         info!(
             event = "notify_custom_loaded",
+            outcome = "success",
             script_path = %hook.path().display(),
             timeout_ms = cfg.timeout_ms,
             args = ?cfg.args,
