@@ -239,6 +239,8 @@ mod tests {
             account_id: "acc_1",
             stage: IdentifierStage::NewOrder,
             identifiers: &identifiers,
+
+            eab: None,
         };
         assert!(matches!(
             filter.check_identifiers(&ctx).await,
@@ -316,6 +318,8 @@ exit 0
             account_id: "acc_123",
             stage: IdentifierStage::NewOrder,
             identifiers: &identifiers,
+
+            eab: None,
         };
 
         assert_eq!(filter.check_identifiers(&ctx).await, Verdict::Pass);

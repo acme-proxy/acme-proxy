@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use super::expr::{Condition, is_reserved_word};
 use super::policy::{Check, Effect, FilterPolicy, Mode, Rule, StageSet};
-use super::{ProxyPolicy, custom, identifiers, ip_allow, ipam, path, reverse_dns};
+use super::{ProxyPolicy, custom, eab, identifiers, ip_allow, ipam, path, reverse_dns};
 use crate::config::{CheckConfig, DnsConfig, FilterConfig, RuleConfig, validate_key_names};
 use crate::ipam::IpamRegistry;
 
@@ -77,6 +77,19 @@ const TYPES: &[TypeSpec] = &[
             "deny_regex",
             "allowed_types",
             "allow_wildcards",
+        ],
+    },
+    TypeSpec {
+        name: "eab",
+        natural: StageSet::identifiers_only(),
+        capable: StageSet::identifiers_only(),
+        keys: &[
+            "allow",
+            "deny",
+            "allow_regex",
+            "deny_regex",
+            "kids",
+            "require_active",
         ],
     },
     TypeSpec {
@@ -297,6 +310,17 @@ fn build_check(
                 allow_wildcards: config.allow_wildcards.unwrap_or(false),
             },
         )?),
+        "eab" => Arc::new(eab::EabList::from_settings(
+            name,
+            &eab::Settings {
+                allow: config.allow.clone(),
+                deny: config.deny.clone(),
+                allow_regex: config.allow_regex.clone(),
+                deny_regex: config.deny_regex.clone(),
+                kids: config.kids.clone(),
+                require_active: config.require_active.unwrap_or(false),
+            },
+        )?),
         "ipam" => {
             let registry = inventory.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -398,6 +422,7 @@ pub fn build(
     cfg: &FilterConfig,
     dns: &DnsConfig,
     inventory: Option<Arc<IpamRegistry>>,
+    eab_enabled: bool,
 ) -> anyhow::Result<FilterPolicy> {
     refuse_removed_keys(cfg)?;
 
@@ -494,6 +519,15 @@ pub fn build(
     let mut inventories = 0;
     for name in &referenced {
         let config = &cfg.check[*name];
+        // An `eab` check reads which credential the account registered under.
+        // With EAB off, every account has none, so the check could do nothing
+        // but refuse every request — a policy an operator did not write.
+        anyhow::ensure!(
+            config.r#type.trim() != "eab" || eab_enabled,
+            "filter.check.{name} is type = \"eab\" but eab.enabled is false for this \
+             profile, so no account has a credential and the check could only ever \
+             refuse; turn EAB on or drop the check"
+        );
         if config.r#type.trim() == "ipam" {
             inventories += 1;
             anyhow::ensure!(
@@ -645,7 +679,7 @@ mod tests {
     }
 
     fn build_with(cfg: &FilterConfig) -> anyhow::Result<FilterPolicy> {
-        build(cfg, &DnsConfig::default(), no_ipam())
+        build(cfg, &DnsConfig::default(), no_ipam(), true)
     }
 
     fn error_of(cfg: &FilterConfig) -> String {
@@ -791,7 +825,7 @@ mod tests {
                 },
             )],
         );
-        let error = build(&cfg, &DnsConfig::default(), inventory())
+        let error = build(&cfg, &DnsConfig::default(), inventory(), true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("filter.check.inv.stages"), "{error}");
@@ -1016,10 +1050,58 @@ mod tests {
             &[("r", rule_of("inv-a or inv-b", "allow"))],
             &[("inv-a", check_of("ipam")), ("inv-b", check_of("ipam"))],
         );
-        let error = build(&cfg, &DnsConfig::default(), inventory())
+        let error = build(&cfg, &DnsConfig::default(), inventory(), true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("second type = \"ipam\" check"), "{error}");
+    }
+
+    #[test]
+    fn an_eab_check_without_eab_enabled_is_refused() {
+        let cfg = simple(
+            &["r"],
+            &[("r", rule_of("tenant", "allow"))],
+            &[(
+                "tenant",
+                CheckConfig {
+                    r#type: "eab".to_string(),
+                    allow: vec!["tenant-a".to_string()],
+                    ..CheckConfig::default()
+                },
+            )],
+        );
+        let error = build(&cfg, &DnsConfig::default(), no_ipam(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("eab.enabled is false"), "{error}");
+        // ...and it builds once EAB is on.
+        assert!(build_with(&cfg).is_ok());
+    }
+
+    /// The gate the whole plumbing turns on: nothing resolves a credential
+    /// unless some check asks for one.
+    #[test]
+    fn only_a_policy_with_an_eab_check_needs_one_resolved() {
+        let without = simple(
+            &["mgmt"],
+            &[("mgmt", rule_of("net", "allow"))],
+            &[("net", net_check())],
+        );
+        assert!(!build_with(&without).unwrap().needs_eab());
+
+        let with = simple(
+            &["r"],
+            &[("r", rule_of("tenant", "allow"))],
+            &[(
+                "tenant",
+                CheckConfig {
+                    r#type: "eab".to_string(),
+                    allow: vec!["tenant-a".to_string()],
+                    ..CheckConfig::default()
+                },
+            )],
+        );
+        assert!(build_with(&with).unwrap().needs_eab());
     }
 
     #[test]

@@ -299,6 +299,8 @@ mod tests {
                 account_id: "acct",
                 stage: IdentifierStage::NewOrder,
                 identifiers: &identifiers,
+
+                eab: None,
             })
             .await;
         assert_eq!(verdict, Verdict::Pass);
@@ -309,6 +311,8 @@ mod tests {
                 account_id: "acct",
                 stage: IdentifierStage::NewOrder,
                 identifiers: &identifiers,
+
+                eab: None,
             })
             .await;
         assert_failed(verdict, "is not allowed");

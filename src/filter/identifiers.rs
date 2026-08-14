@@ -234,6 +234,8 @@ mod tests {
                 account_id: "acct-1",
                 stage,
                 identifiers,
+
+                eab: None,
             })
             .await
     }

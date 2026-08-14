@@ -13,7 +13,7 @@ use tracing::{error, info, instrument, warn};
 use crate::AppState;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
-use crate::filter::{ClientIp, IdentifierStage};
+use crate::filter::{ClientIp, IdentifierStage, Stage as FilterStage};
 use crate::handlers::helpers::{
     check_csr_matches_order, check_identifiers, csr_identifiers, is_wildcard, load_owned_order,
     normalize_dns_name, order_authz_ids, parse_csr, parse_rfc3339, signer_account,
@@ -313,8 +313,10 @@ pub async fn post_new_order(
         &profile.filter,
         client_ip,
         &account.id,
+        &profile.name,
         IdentifierStage::NewOrder,
         &identifiers,
+        &database,
     )
     .await?;
 
@@ -530,24 +532,35 @@ pub async fn post_finalize(
         return Err(problem);
     }
 
-    if filter.is_active() {
+    // Gated on the *identifier* stage specifically: a policy of nothing but
+    // connection-stage rules would otherwise pay for a CSR projection nothing
+    // reads.
+    if filter.has_rules_at(FilterStage::Identifiers) {
         let requested = csr_identifiers(&csr);
         if let Err(problem) = check_identifiers(
             filter,
             client_ip,
             &order.account_id,
+            &profile.name,
             IdentifierStage::Csr,
             &requested,
+            &database,
         )
         .await
         {
-            audit
-                .record(failed(
-                    &order,
-                    "badCSR",
-                    "the filter chain refused the CSR identifiers",
-                ))
-                .await;
+            // A refusal and a policy the server could not evaluate are
+            // different things, and the trail said "badCSR" for both until
+            // three-valued verdicts made the second visible. `500` here means
+            // nobody decided anything about this CSR.
+            let (reason, detail) = if problem.status() == StatusCode::BAD_REQUEST {
+                ("badCSR", "the filter policy refused the CSR identifiers")
+            } else {
+                (
+                    "serverInternal",
+                    "the filter policy could not be evaluated for the CSR identifiers",
+                )
+            };
+            audit.record(failed(&order, reason, detail)).await;
             return Err(problem);
         }
     }

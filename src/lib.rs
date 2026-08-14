@@ -118,6 +118,7 @@
 //!                     &sections.filter,
 //!                     &config.dns,
 //!                     ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())?,
+//!                     sections.eab.enabled,
 //!                 )?,
 //!                 challenges: challenge::from_config(
 //!                     &sections.challenge,
@@ -393,8 +394,9 @@ impl Profile {
                 // but a `rustls::ClientConfig`.
                 let ipam = ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                let filter = filter::from_config(&sections.filter, &config.dns, ipam)
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                let filter =
+                    filter::from_config(&sections.filter, &config.dns, ipam, sections.eab.enabled)
+                        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 let challenges =
                     challenge::from_config(&sections.challenge, &config.dns, proxies.clone())
                         .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;

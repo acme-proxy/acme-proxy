@@ -663,6 +663,7 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 #   allowed_ip    which networks an address may be in         (CIDR lists)
 #   reverse_dns   the address must have a usable PTR record
 #   identifiers   which names may be certified
+#   eab           which EAB credential the account registered under
 #   ipam          ask the [ipam] inventory whether this address owns this name
 #   custom        shell out to an operator-supplied script
 #
@@ -758,6 +759,16 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 #
 # [filter.check.inventory]
 # type = "ipam"           # consults the [ipam] section below
+#
+# # Multi-tenancy: `acme-proxy eab create --label tenant-a` mints the credential
+# # BEFORE any account exists, so the label is a handle you can write here up
+# # front — unlike an account id, which is generated and only knowable after the
+# # fact. require_active makes `eab revoke` reach accounts already registered.
+# [filter.check.is-tenant-a]
+# type           = "eab"
+# allow          = ["tenant-a"]
+# kids           = []
+# require_active = false
 #
 # [filter.check.has-ptr]
 # type                    = "reverse_dns"

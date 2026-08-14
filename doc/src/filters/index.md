@@ -87,6 +87,7 @@ would refuse every request before a name had been mentioned.
 | [`path`](path.md) | connection | Glob allow/deny on the request path |
 | [`reverse_dns`](reverse_dns.md) | connection | PTR lookup with optional forward confirmation |
 | [`identifiers`](identifiers.md) | identifiers | Glob or regex allow/deny on requested names |
+| [`eab`](eab.md) | identifiers | Which EAB credential the account registered under |
 | [`ipam`](../ipam/index.md) | identifiers | Ask an IPAM whether the client owns the names |
 | [`custom`](custom.md) | both | Shell out to an operator-supplied script |
 

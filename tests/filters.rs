@@ -19,6 +19,7 @@ use acme_proxy::config::{
 use acme_proxy::filter::policy::{Check, StageSet, Verdict};
 use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
 use acme_proxy::signer::local_ca::LocalCa;
+use acme_proxy::sqlite::eab::Eab;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
@@ -28,9 +29,9 @@ use serde_json::{Value, json};
 
 mod common;
 use common::{
-    EcSigner, RejectingCheck, TestSigner, body_json, default_challenges, fetch_nonce_from,
-    make_csr, make_csr_with_sans, no_notifications, p, policy_of, policy_with, post_from,
-    send_from, test_app_full, test_app_with_filter,
+    EcSigner, RejectingCheck, TestSigner, body_json, build_eab, default_challenges,
+    fetch_nonce_from, make_csr, make_csr_with_sans, no_notifications, p, policy_of, policy_with,
+    post_from, send_from, test_app_full, test_app_with_filter,
 };
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
@@ -64,7 +65,7 @@ async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
         std::sync::Arc::new(acme_proxy::proxy::OutboundProxies::direct()),
     )
     .expect("ipam config should build");
-    let chain = filter::from_config(&filter, &DnsConfig::default(), inventory)
+    let chain = filter::from_config(&filter, &DnsConfig::default(), inventory, true)
         .expect("filter config should build");
     let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
     test_app_full(
@@ -378,7 +379,7 @@ async fn deny_punches_a_hole_in_the_allow_list() {
 /// it is caught at startup rather than running inert.
 #[test]
 fn enabling_the_ip_filter_with_no_lists_is_a_startup_error() {
-    let error = filter::from_config(&ip_config(&[], &[]), &DnsConfig::default(), None)
+    let error = filter::from_config(&ip_config(&[], &[]), &DnsConfig::default(), None, true)
         .unwrap_err()
         .to_string();
     assert!(error.contains("would accept every request"), "{error}");
@@ -1332,4 +1333,141 @@ async fn a_refused_phpipam_token_is_a_server_error_not_a_denial() {
         "urn:ietf:params:acme:error:serverInternal",
     )
     .await;
+}
+
+// ------------------------------------------------------------ the eab check
+
+/// A two-tenant policy: each EAB label is bound to its own name space, and
+/// nothing else is permitted.
+fn tenant_policy() -> FilterConfig {
+    fn tenant(label: &str) -> CheckConfig {
+        CheckConfig {
+            r#type: "eab".to_string(),
+            allow: strings(&[label]),
+            ..CheckConfig::default()
+        }
+    }
+    fn names(suffix: &str) -> CheckConfig {
+        CheckConfig {
+            r#type: "identifiers".to_string(),
+            allow: strings(&[&format!("*.{suffix}")]),
+            ..CheckConfig::default()
+        }
+    }
+
+    FilterConfig {
+        rules: strings(&["tenant-a", "tenant-b"]),
+        rule: BTreeMap::from([
+            (
+                "tenant-a".to_string(),
+                RuleConfig {
+                    when: "is-tenant-a and tenant-a-names".to_string(),
+                    then: "allow".to_string(),
+                    ..RuleConfig::default()
+                },
+            ),
+            (
+                "tenant-b".to_string(),
+                RuleConfig {
+                    when: "is-tenant-b and tenant-b-names".to_string(),
+                    then: "allow".to_string(),
+                    ..RuleConfig::default()
+                },
+            ),
+        ]),
+        check: BTreeMap::from([
+            ("is-tenant-a".to_string(), tenant("tenant-a")),
+            ("is-tenant-b".to_string(), tenant("tenant-b")),
+            ("tenant-a-names".to_string(), names("tenant-a.example.com")),
+            ("tenant-b-names".to_string(), names("tenant-b.example.com")),
+        ]),
+        ..FilterConfig::default()
+    }
+}
+
+/// Registers an account under an EAB credential, returning its `kid` URL.
+async fn register_with_eab(app: &Router, signer: &EcSigner, kid: &str, secret: &[u8]) -> String {
+    let nonce = fetch_nonce_from(app, ALLOWED).await;
+    let eab = build_eab(kid, secret, NEW_ACCOUNT_URL, &signer.jwk());
+    let payload = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": eab });
+    let res = post_from(
+        app,
+        &p("/newAccount"),
+        signer.sign(NEW_ACCOUNT_URL, &nonce, &payload),
+        ALLOWED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    res.headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .expect("newAccount must set a Location header")
+        .to_string()
+}
+
+/// The multi-tenant story end to end: two credentials minted out of band, each
+/// bound by a rule to its own name space, and neither able to reach the
+/// other's. This is the policy an account-id check could not express, because
+/// the ids do not exist until after the configuration would have to name them.
+#[tokio::test]
+async fn eab_labels_scope_each_tenant_to_its_own_names() {
+    let mut config = Config::default();
+    config.eab.enabled = true;
+
+    let policy = filter::from_config(&tenant_policy(), &DnsConfig::default(), None, true)
+        .expect("tenant policy should build");
+    let ca = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let (app, db) =
+        test_app_full(config, ca, policy, default_challenges(), no_notifications()).await;
+
+    let key_a = Eab::create(Some("tenant-a".to_string()), None, &db)
+        .await
+        .unwrap();
+    let key_b = Eab::create(Some("tenant-b".to_string()), None, &db)
+        .await
+        .unwrap();
+
+    let signer_a = EcSigner::new();
+    let signer_b = EcSigner::new();
+    let account_a = register_with_eab(&app, &signer_a, &key_a.kid, &key_a.secret).await;
+    let account_b = register_with_eab(&app, &signer_b, &key_b.kid, &key_b.secret).await;
+
+    // Each tenant may have its own names.
+    for (account, signer, name) in [
+        (&account_a, &signer_a, "web.tenant-a.example.com"),
+        (&account_b, &signer_b, "web.tenant-b.example.com"),
+    ] {
+        let res = new_order(&app, signer, account, name).await;
+        assert_eq!(res.status(), StatusCode::CREATED, "{name}");
+    }
+
+    // Neither may have the other's, even though the address is identical and
+    // both credentials are perfectly valid.
+    let res = new_order(&app, &signer_a, &account_a, "web.tenant-b.example.com").await;
+    assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:rejectedIdentifier",
+    )
+    .await;
+}
+
+/// The gate that keeps the credential lookup off every other deployment's
+/// request path: with no `eab` check configured, the policy never asks.
+#[tokio::test]
+async fn a_policy_without_an_eab_check_resolves_no_credential() {
+    let policy = filter::from_config(
+        &identifiers_config(&[r".*\.example\.com"], &[]),
+        &DnsConfig::default(),
+        None,
+        false,
+    )
+    .unwrap();
+    assert!(!policy.needs_eab());
+
+    // And one with an eab check does.
+    let mut config = tenant_policy();
+    config.rules = strings(&["tenant-a"]);
+    let policy = filter::from_config(&config, &DnsConfig::default(), None, true).unwrap();
+    assert!(policy.needs_eab());
 }

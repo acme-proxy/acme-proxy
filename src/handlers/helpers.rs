@@ -9,7 +9,7 @@ use tracing::{error, instrument, warn};
 
 use crate::challenge::ChallengeError;
 use crate::error::Problem;
-use crate::filter::{FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
+use crate::filter::{EabIdentity, FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},
@@ -25,14 +25,26 @@ pub(crate) async fn check_identifiers(
     filter: &FilterPolicy,
     client_ip: Option<IpAddr>,
     account_id: &str,
+    profile: &str,
     stage: IdentifierStage,
     identifiers: &[Identifier],
+    database: &Database,
 ) -> Result<(), Problem> {
+    // Two indexed reads, and only when some check actually asks about the
+    // credential — see `FilterPolicy::needs_eab`. A policy without an `eab`
+    // check pays nothing for the field existing.
+    let eab = if filter.needs_eab() {
+        resolve_eab(account_id, profile, database).await?
+    } else {
+        None
+    };
+
     let context = IdentifierContext {
         client_ip,
         account_id,
         stage,
         identifiers,
+        eab,
     };
 
     match filter.check_identifiers(&context).await {
@@ -43,6 +55,45 @@ pub(crate) async fn check_identifiers(
         }),
         Outcome::Undecided(_) => Err(Problem::server_internal("Request filtering failed")),
     }
+}
+
+/// Resolves the external account binding an account registered under.
+///
+/// `None` means the account used no EAB — a refusal for any `eab` check, and
+/// the only reading that makes sense for a question about *which* credential
+/// authorised it. A database failure is a 500 instead, because "we could not
+/// look" must never be reported as "there is none".
+async fn resolve_eab(
+    account_id: &str,
+    profile: &str,
+    database: &Database,
+) -> Result<Option<EabIdentity>, Problem> {
+    let account = Account::find_by_id(profile, account_id, database)
+        .await
+        .map_err(|error| {
+            error!(event = "account_lookup_failed", outcome = "failure", account_id, error = %error);
+            Problem::server_internal("Database error")
+        })?;
+
+    let Some(kid) = account.and_then(|account| account.eab_kid) else {
+        return Ok(None);
+    };
+
+    // Deliberately the unscoped lookup: the credential authorised this account
+    // when it was created, and re-checking the profile scope now would make a
+    // later narrowing of that scope silently rewrite history.
+    let key = crate::sqlite::eab::Eab::find_any_by_kid(&kid, database)
+        .await
+        .map_err(|error| {
+            error!(event = "eab_lookup_failed", outcome = "failure", kid = %kid, error = %error);
+            Problem::server_internal("Database error")
+        })?;
+
+    Ok(key.map(|key| EabIdentity {
+        kid: key.kid,
+        label: key.label,
+        active: key.status == "active",
+    }))
 }
 
 /// Maps a failed challenge validation to the ACME error that describes it.

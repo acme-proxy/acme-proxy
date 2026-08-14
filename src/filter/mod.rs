@@ -77,6 +77,7 @@ use crate::sqlite::order::Identifier;
 pub mod build;
 pub mod client_ip;
 pub mod custom;
+pub mod eab;
 pub mod expr;
 pub mod identifiers;
 pub mod ip_allow;
@@ -86,6 +87,7 @@ pub mod policy;
 pub mod reverse_dns;
 
 pub use client_ip::{ClientIp, ProxyPolicy};
+pub use eab::EabIdentity;
 pub use policy::{Check, Effect, FilterPolicy, Mode, Outcome, Rule, Stage, StageSet, Verdict};
 
 /// Identifier types that are subject metadata rather than a name the
@@ -152,6 +154,14 @@ pub struct IdentifierContext<'a> {
     /// from the CSR, so `typ` may be `ip`, `email`, `uri`, `other` or `cn` as
     /// well as `dns`.
     pub identifiers: &'a [Identifier],
+    /// The external account binding this account registered under.
+    ///
+    /// Resolved by the caller **only when the policy contains an `eab` check**
+    /// ([`FilterPolicy::needs_eab`]), so a policy without one costs no lookup;
+    /// `None` therefore means either "no such check is configured" or "this
+    /// account used no EAB", and only [`eab::EabList`] is ever in a position
+    /// to tell the two apart — it is the sole reader.
+    pub eab: Option<EabIdentity>,
 }
 
 /// The client address, canonicalized, or the refusal its absence implies.
@@ -180,6 +190,10 @@ pub(crate) fn require_client_ip(client_ip: Option<IpAddr>) -> Result<IpAddr, Ver
 /// for, while the shared resolver is deliberately uncached so a `dns-01` record
 /// published moments before a trigger is not defeated by a cached negative.
 ///
+/// `eab_enabled` is the profile's `eab.enabled`: an `eab` check under an endpoint
+/// that does not require EAB could only ever refuse, which is a startup error
+/// rather than a policy.
+///
 /// `ipam` is the profile's already-built inventory — `None` when `ipam.backend`
 /// is unset, which is a startup error if any selected rule names an `ipam`
 /// check. It is built by [`Profile::build_all`](crate::Profile::build_all)
@@ -189,8 +203,9 @@ pub fn from_config(
     cfg: &FilterConfig,
     dns: &crate::config::DnsConfig,
     ipam: Option<Arc<crate::ipam::IpamRegistry>>,
+    eab_enabled: bool,
 ) -> anyhow::Result<Arc<FilterPolicy>> {
-    build::build(cfg, dns, ipam).map(Arc::new)
+    build::build(cfg, dns, ipam, eab_enabled).map(Arc::new)
 }
 
 /// Parses one allow-list entry as a network.

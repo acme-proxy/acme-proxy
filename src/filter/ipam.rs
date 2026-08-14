@@ -265,6 +265,8 @@ mod tests {
                 account_id: "acct-1",
                 stage: IdentifierStage::NewOrder,
                 identifiers,
+
+                eab: None,
             })
             .await
     }

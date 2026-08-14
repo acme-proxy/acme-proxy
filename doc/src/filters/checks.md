@@ -52,12 +52,13 @@ an `allowed_ip` check would simply be read by nothing.
 | `path` | `allow`, `deny` | [path](path.md) |
 | `reverse_dns` | `allow`, `deny`, `allow_regex`, `deny_regex`, `require_forward_confirm`, `timeout_ms` | [reverse_dns](reverse_dns.md) |
 | `identifiers` | `allow`, `deny`, `allow_regex`, `deny_regex`, `allowed_types`, `allow_wildcards` | [identifiers](identifiers.md) |
+| `eab` | `allow`, `deny`, `allow_regex`, `deny_regex`, `kids`, `require_active` | [eab](eab.md) |
 | `ipam` | *(none — configured by the `[ipam]` section)* | [ipam](../ipam/index.md) |
 | `custom` | `script_path`, `timeout_ms`, `pass_stdin`, `args` | [custom](custom.md) |
 
 Defaults, where a type has one: `require_forward_confirm = true`,
 `timeout_ms = 2000` for `reverse_dns` and `5000` for `custom`,
-`pass_stdin = true`, `allow_wildcards = false`,
+`pass_stdin = true`, `allow_wildcards = false`, `require_active = false`,
 `allowed_types = ["dns", "cn"]`.
 
 Every list defaults to empty, and **empty always means "this type's natural
@@ -109,7 +110,7 @@ answers at the ones it can:
 | `allowed_ip`, `custom` | connection + identifiers | the same |
 | `path` | connection | connection |
 | `reverse_dns` | connection | connection + identifiers |
-| `identifiers`, `ipam` | identifiers | identifiers |
+| `identifiers`, `ipam`, `eab` | identifiers | identifiers |
 
 `reverse_dns` is the one whose default is narrower than its capability: it could
 answer at the identifier stage from the same address, but a PTR plus
@@ -136,8 +137,9 @@ where the names are known.
 **`filter.check.<name>.type`** (`String`) — *Required | Env: `ACME_PROXY_FILTER__CHECK__<NAME>__TYPE`*
 
 Which check type this instance is: `allowed_ip`, `path`, `reverse_dns`,
-`identifiers`, `ipam` or `custom`. An unknown value is refused by name, as is
-the old `netbox`, which became `ipam` with its settings in `[ipam.netbox]`.
+`identifiers`, `eab`, `ipam` or `custom`. An unknown value is refused by name,
+as is the old `netbox`, which became `ipam` with its settings in
+`[ipam.netbox]`.
 
 **`filter.check.<name>.stages`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_FILTER__CHECK__<NAME>__STAGES`*
 

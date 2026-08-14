@@ -28,6 +28,7 @@
   - [Path](filters/path.md)
   - [Reverse DNS](filters/reverse_dns.md)
   - [Identifiers](filters/identifiers.md)
+  - [EAB](filters/eab.md)
   - [Custom Script](filters/custom.md)
 - [IPAM](ipam/index.md)
   - [NetBox](ipam/netbox.md)

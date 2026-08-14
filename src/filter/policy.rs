@@ -451,6 +451,15 @@ impl FilterPolicy {
         !self.rules.is_empty()
     }
 
+    /// Whether any check asks about the requesting account's EAB credential.
+    ///
+    /// The handlers gate the two database reads that resolve one on this, so a
+    /// policy with no `eab` check pays nothing for the field's existence.
+    #[must_use]
+    pub fn needs_eab(&self) -> bool {
+        self.checks.values().any(|slot| slot.kind == "eab")
+    }
+
     /// Evaluates the connection stage, keeping the whole trace.
     ///
     /// The trace is what `acme-proxy filter explain` renders; a request path
