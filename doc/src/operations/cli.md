@@ -99,6 +99,69 @@ one JSON object. (It is not newline-delimited JSON.)
 The web admin can read this trail but not prune it — see
 [Audit Trail](audit.md).
 
+## Access policy
+
+| Command | Flags |
+| --- | --- |
+| `filter show` | `--profile <name>` |
+| `filter explain` | `--profile <name>`, `--client-ip <ip>`, `--identifier <name>`, `--path <p>`, `--account-id <id>`, `--json` |
+
+`--profile` may be omitted only when exactly one profile exists, the same rule
+`upstream show` follows: `[filter]` is per-profile, so acting on "the policy"
+without saying which one would be acting on nothing.
+
+`filter show` prints the resolved policy — every check with its type and the
+stages it decides at, then every rule in evaluation order with its condition
+**re-parenthesized**. That last part is the point: an operator who wrote
+`a or b and c` sees `a or (b and c)` printed back and has their answer about
+precedence without reading the grammar.
+
+Both commands *build* the policy rather than reading the file back, so every
+startup refusal reaches you here too. `filter show` is therefore the cheapest
+way to check a policy before restarting the server:
+
+```console
+$ acme-proxy filter show
+profile: default
+default: deny (when a rule was applicable and none matched)
+
+checks
+  inventory            ipam         identifiers only
+  mgmt-net             allowed_ip   connection and identifiers
+
+rules (first match wins)
+  mgmt-bypass          mgmt-net -> allow
+                         evaluated at: connection and identifiers
+  inventory-owned      inventory or mgmt-net -> allow
+                         evaluated at: identifiers only
+```
+
+`filter explain` evaluates it against a hypothetical request and reports all
+three stages — connection, `newOrder` and CSR — because **every stage must
+allow**, and that is the thing most easily misread. For each it prints every
+check's verdict with its reason, which rule matched, and the HTTP answer that
+stage would produce.
+
+```console
+$ acme-proxy filter explain --client-ip 10.0.0.5 --identifier web.corp.example.com
+```
+
+Checks the evaluation never reached are listed as **skipped**: a
+short-circuited operand and a passing one look identical in the outcome, so
+this is the only way the output can answer "why did my inventory check not
+run".
+
+> **This really runs the policy.** `filter explain` executes your `custom`
+> scripts and issues real IPAM and DNS requests, exactly as a request would,
+> because a stubbed answer would be worse than nothing the first time it
+> disagreed with production. It touches no database and creates nothing, and it
+> names the checks that reached outside the process at the end of its output
+> (`sideEffects` under `--json`).
+>
+> That is also why it is a host-only command with no web-admin equivalent: the
+> address and names are chosen by the caller, so behind a session it would be
+> script execution and outbound requests driven from one stolen cookie.
+
 ## Nonce housekeeping
 
 | Command | Flags |

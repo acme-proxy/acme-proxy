@@ -78,6 +78,7 @@ pub mod build;
 pub mod client_ip;
 pub mod custom;
 pub mod eab;
+pub mod explain;
 pub mod expr;
 pub mod identifiers;
 pub mod ip_allow;
@@ -88,7 +89,10 @@ pub mod reverse_dns;
 
 pub use client_ip::{ClientIp, ProxyPolicy};
 pub use eab::EabIdentity;
-pub use policy::{Check, Effect, FilterPolicy, Mode, Outcome, Rule, Stage, StageSet, Verdict};
+pub use policy::{
+    Check, CheckSummary, Effect, FilterPolicy, Mode, Outcome, Rule, RuleSummary, Stage, StageSet,
+    Verdict,
+};
 
 /// Identifier types that are subject metadata rather than a name the
 /// certificate is issued *for*.

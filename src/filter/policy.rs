@@ -313,6 +313,24 @@ pub struct Evaluation {
     pub warned: Vec<WarnedRule>,
 }
 
+/// One configured check, as `filter show` and `filter explain` describe it.
+#[derive(Debug, Clone, Copy)]
+pub struct CheckSummary<'a> {
+    pub name: &'a str,
+    pub kind: &'static str,
+    pub stages: StageSet,
+}
+
+/// One configured rule, as `filter show` and `filter explain` describe it.
+#[derive(Debug, Clone, Copy)]
+pub struct RuleSummary<'a> {
+    pub name: &'a str,
+    pub when: &'a Condition,
+    pub then: Effect,
+    pub mode: Mode,
+    pub stages: StageSet,
+}
+
 /// A rule that could not be evaluated, remembered until the answer is known.
 struct PendingUnknown {
     rule: String,
@@ -449,6 +467,33 @@ impl FilterPolicy {
     #[must_use]
     pub fn is_active(&self) -> bool {
         !self.rules.is_empty()
+    }
+
+    /// Every configured check, for `acme-proxy filter show` and for working
+    /// out which checks an evaluation short-circuited past.
+    pub fn checks(&self) -> Vec<CheckSummary<'_>> {
+        self.checks
+            .iter()
+            .map(|(name, slot)| CheckSummary {
+                name,
+                kind: slot.kind,
+                stages: slot.stages,
+            })
+            .collect()
+    }
+
+    /// Every rule, in evaluation order.
+    pub fn rules(&self) -> Vec<RuleSummary<'_>> {
+        self.rules
+            .iter()
+            .map(|compiled| RuleSummary {
+                name: &compiled.rule.name,
+                when: &compiled.rule.when,
+                then: compiled.rule.then,
+                mode: compiled.rule.mode,
+                stages: compiled.stages,
+            })
+            .collect()
     }
 
     /// Whether any check asks about the requesting account's EAB credential.

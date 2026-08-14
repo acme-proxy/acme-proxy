@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 
-use crate::cli::CliError;
+use crate::cli::{CliError, resolve_profile};
 use crate::config::Config;
 use crate::signer::relay;
 
@@ -61,31 +61,6 @@ pub enum UpstreamCommand {
 /// `[profiles.le].signer.relay` was told "directory_url is not set", which
 /// was simply false; and if a *different* upstream happened to be configured
 /// globally, `register` would write the account key and `.kid` sidecar for the
-/// wrong CA, at the wrong paths. This follows `order revoke`'s pattern instead.
-fn resolve_profile(
-    config: &Config,
-    wanted: Option<&str>,
-) -> Result<crate::config::ProfileConfig, CliError> {
-    let profiles = config
-        .resolve_profiles()
-        .map_err(|error| CliError(format!("configuration error: {error}")))?;
-
-    match wanted {
-        Some(name) => profiles
-            .into_iter()
-            .find(|p| p.name == name)
-            .ok_or_else(|| CliError(format!("no profile named `{name}` in this configuration"))),
-        None if profiles.len() == 1 => Ok(profiles.into_iter().next().expect("length checked")),
-        None => {
-            let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
-            Err(CliError(format!(
-                "this configuration defines several profiles ({}); say which one with --profile",
-                names.join(", ")
-            )))
-        }
-    }
-}
-
 pub async fn run_upstream_command(
     command: UpstreamCommand,
     reader: &mut impl BufRead,

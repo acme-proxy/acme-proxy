@@ -33,6 +33,7 @@ use tracing::{debug, error, info, warn};
 pub mod account;
 pub mod audit;
 pub mod eab;
+pub mod filter;
 mod logging;
 pub mod nonce;
 pub mod order;
@@ -47,6 +48,7 @@ pub use order::OrderCommand;
 pub use upstream::UpstreamCommand;
 pub use webadmin::AdminCommand;
 
+use crate::cli::filter::FilterCommand;
 use crate::config::Config;
 use crate::sqlite::db::Database;
 use crate::{Profile, build_app, sqlite, tls};
@@ -94,6 +96,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EabCommand,
     },
+    /// Read and test the access policy of an endpoint.
+    Filter {
+        #[command(subcommand)]
+        command: FilterCommand,
+    },
     /// Manage this server's own account at the upstream ACME server
     /// (`signer.backend = "relay"`).
     Upstream {
@@ -106,6 +113,36 @@ pub enum Command {
         #[command(subcommand)]
         command: AdminCommand,
     },
+}
+
+/// Picks the profile a command acts on.
+///
+/// `--profile` is optional only when the configuration defines exactly one:
+/// most per-profile sections would otherwise be acted on ambiguously, and
+/// guessing is worse than asking. Shared by `upstream` and `filter`, which had
+/// grown one copy each.
+pub(crate) fn resolve_profile(
+    config: &Config,
+    wanted: Option<&str>,
+) -> Result<crate::config::ProfileConfig, CliError> {
+    let profiles = config
+        .resolve_profiles()
+        .map_err(|error| CliError(format!("configuration error: {error}")))?;
+
+    match wanted {
+        Some(name) => profiles
+            .into_iter()
+            .find(|profile| profile.name == name)
+            .ok_or_else(|| CliError(format!("no profile named `{name}` in this configuration"))),
+        None if profiles.len() == 1 => Ok(profiles.into_iter().next().expect("length checked")),
+        None => {
+            let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+            Err(CliError(format!(
+                "this configuration defines several profiles ({}); say which one with --profile",
+                names.join(", ")
+            )))
+        }
+    }
 }
 
 /// A command that could not complete, carrying the message to print.
@@ -187,6 +224,7 @@ pub async fn dispatch(
             nonce::run_nonce_command(command, yes, reader, config, database).await
         }
         Command::Eab { command } => eab::run_eab_command(command, database).await,
+        Command::Filter { command } => filter::run_filter_command(command, config).await,
         Command::Upstream { command } => {
             upstream::run_upstream_command(command, reader, config).await
         }
