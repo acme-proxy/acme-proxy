@@ -269,8 +269,9 @@ pub fn from_config(
         )?)),
         // The one name worth explaining rather than merely refusing: it was
         // this backend's own until it was renamed away from the host program's
-        // name, so an operator hitting it has a working deployment and a
-        // one-line fix, not a typo.
+        // name, so an operator hitting it has a written-down configuration and
+        // a one-line fix, not a typo. A diagnostic, not a compatibility path —
+        // nothing reads the old spelling, and this arm goes at 1.0.0.
         "acme_proxy" => anyhow::bail!(
             "unknown signer backend: acme_proxy — renamed to `relay`. Set \
              signer.backend = \"relay\" and rename the [signer.acme_proxy] table to \
@@ -653,11 +654,11 @@ mod tests {
         );
     }
 
-    /// The one unknown backend that is somebody's working 0.1.0 deployment
-    /// rather than a typo: `acme_proxy` was this backend's own name until it
-    /// was renamed away from the host program's. The refusal has to carry the
-    /// new name and the new environment prefix, since neither is guessable
-    /// from "unknown signer backend" alone.
+    /// The one unknown backend that is a renamed key rather than a typo:
+    /// `acme_proxy` was this backend's own name until it was renamed away from
+    /// the host program's. The refusal has to carry the new name and the new
+    /// environment prefix, since neither is guessable from "unknown signer
+    /// backend" alone.
     #[tokio::test]
     async fn the_old_acme_proxy_backend_name_is_refused_by_its_new_one() {
         let (cfg, _dir) = config("acme_proxy");

@@ -12,7 +12,9 @@ a name they do not control. Reports are taken seriously.
 
 Before 1.0.0 there is no long-term support branch: fixes land on `main` and in
 the next release. The database schema is frozen and append-only, so upgrading is
-starting the new binary against the existing database.
+starting the new binary against the existing database — but that schema is the
+only compatibility guarantee before 1.0.0, so a security release may also move a
+configuration key. See [Compatibility](CHANGELOG.md#compatibility).
 
 ## Reporting a vulnerability
 

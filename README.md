@@ -14,11 +14,14 @@ an upstream public CA, or a legacy PKI reached through a script.
 📖 **[Full documentation](https://acme-proxy.github.io/acme-proxy/)** — start with the
 [Quick Start](https://acme-proxy.github.io/acme-proxy/getting_started/quick_start.html).
 
-> **First release (0.1.0).** The database schema is frozen: `migrations/` is
-> append-only from here, so upgrading is a matter of starting the new binary
-> against the existing database. Everything else — configuration keys, the JSON
-> admin API, log event names — may still move before 1.0.0, and breaking changes
-> will be called out in [CHANGELOG.md](CHANGELOG.md).
+> **First release (0.1.0).** Before 1.0.0 the database schema is the *only*
+> compatibility guarantee: `migrations/` is append-only, so upgrading is a
+> matter of starting the new binary against the existing database. Everything
+> else — configuration keys, profile names, the JSON admin API, log event names,
+> the CLI — may still be renamed or removed, and every such change is listed
+> under `### Breaking` in
+> [CHANGELOG.md](CHANGELOG.md#compatibility). Read that section before an
+> upgrade.
 
 ## Why
 

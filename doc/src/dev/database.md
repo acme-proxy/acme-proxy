@@ -7,7 +7,9 @@ database directly, writing a migration, or trying to understand what a delete
 cascades to.
 
 The migration set is **frozen and append-only as of 0.1.0**: a schema change is
-a new `sqlx migrate add` file, never an edit to a committed one. See
+a new `sqlx migrate add` file, never an edit to a committed one. It is also the
+only surface frozen before 1.0.0 — the freeze says nothing about configuration
+keys, which may still be renamed. See
 [Contributing](contributing.md#changing-the-database-schema) for the two
 consequences that catch people out.
 

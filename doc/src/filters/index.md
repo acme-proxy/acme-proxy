@@ -149,7 +149,11 @@ for a policy built out of `or` is worth reading in
 
 Each of these is refused **by name** at startup, so a configuration written
 against the older shape stops the server rather than coming up looking
-configured and filtering nothing.
+configured and filtering nothing. The refusal is a diagnostic and nothing more:
+none of these keys is still read, and the errors themselves go away at 1.0.0.
+Before then a configuration key may be renamed in any release, with every such
+change listed in the
+[changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
 
 | Removed | Replacement |
 | --- | --- |

@@ -241,7 +241,9 @@ fn build_check(
     // Renamed when NetBox was lifted into its own subsystem. Refused by name
     // rather than aliased, the way `signer.backend = \"acme_proxy\"` is: the
     // section moved too, so a silent alias would leave `[ipam.netbox]` being
-    // read by nothing while the server came up looking configured.
+    // read by nothing while the server came up looking configured. This is a
+    // diagnostic, not a compatibility path — the old shape is read by nothing,
+    // and the arm goes at 1.0.0.
     if kind == "netbox" {
         anyhow::bail!(
             "filter.check.{name}.type = \"netbox\" is now \"ipam\": set type = \"ipam\" and \
@@ -394,6 +396,12 @@ fn build_rule(name: &str, config: &RuleConfig) -> anyhow::Result<Rule> {
 }
 
 /// Refuses a key that the policy redesign removed, naming its replacement.
+///
+/// The standing pre-1.0 rule: a removed key is deleted rather than aliased, and
+/// what it leaves behind is an error message naming the new shape, so an
+/// unmigrated configuration stops the server instead of coming up looking
+/// configured and filtering nothing. These refusals are diagnostics with no
+/// reader behind them and go away at 1.0.0.
 fn refuse_removed_keys(cfg: &FilterConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         cfg.enabled.is_empty(),

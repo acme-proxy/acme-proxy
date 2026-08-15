@@ -87,7 +87,11 @@ consequences that catch people out — a new column is a new file, and a new
 add one in place.
 
 Because upgrading is therefore just "run the new binary against the existing
-database", there is no separate upgrade procedure and no dump/restore step.
+database", there is no separate upgrade procedure and no dump/restore step. The
+schema is also the *only* frozen surface before 1.0.0 — configuration keys and
+the rest may still move, which is what
+[Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility)
+sets out.
 
 ### Schema details
 

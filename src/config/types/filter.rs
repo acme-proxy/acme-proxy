@@ -59,6 +59,10 @@ pub struct FilterConfig {
     /// without somewhere for it to land, a configuration written against the
     /// old shape would come up looking configured and filtering nothing.
     /// [`filter::build`](crate::filter::build) refuses each of these by name.
+    ///
+    /// Nothing reads these — a key has to parse before it can be refused *by
+    /// name*, and that is the whole job. They are a startup diagnostic rather
+    /// than a compatibility path, and go away at 1.0.0 along with the refusals.
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub enabled: Vec<String>,
     /// Removed: write a `type = "path"` check and a rule instead. See `enabled`.

@@ -23,13 +23,21 @@ cargo install cargo-nextest
 cargo nextest run
 ```
 
-**`migrations/` is append-only.** The twelve files there are frozen as of 0.1.0.
-`sqlx` records each migration's checksum, so editing a committed file makes every
-existing deployment fail at startup with a mismatch — it does not silently
-diverge. A schema change is `sqlx migrate add <name>`, always. Two consequences
-catch people out: a new column is a **new file** even when it obviously belongs
-to an existing table, and a new `CHECK`/`UNIQUE`/foreign key needs a full table
-rebuild, because SQLite cannot add one in place.
+**`migrations/` is append-only — and it is the only thing that is.** The twelve
+files there are frozen as of 0.1.0. `sqlx` records each migration's checksum, so
+editing a committed file makes every existing deployment fail at startup with a
+mismatch — it does not silently diverge. A schema change is
+`sqlx migrate add <name>`, always. Two consequences catch people out: a new
+column is a **new file** even when it obviously belongs to an existing table,
+and a new `CHECK`/`UNIQUE`/foreign key needs a full table rebuild, because
+SQLite cannot add one in place.
+
+Everything else is fair game before 1.0.0 — renaming or removing a configuration
+key is a normal change, not one to avoid. What it owes: an entry in
+[`CHANGELOG.md`](CHANGELOG.md#compatibility) under `### Breaking`, and a startup
+error naming the old spelling and the new one where practical, so an unmigrated
+configuration stops the server rather than coming up looking configured. Never
+an alias or a dual syntax — delete the old shape.
 
 **CI is strict about formatting and lints.** `cargo fmt --all --check` and
 `cargo clippy --all-targets -- -D warnings` both gate the build, as does a

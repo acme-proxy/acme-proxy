@@ -102,6 +102,26 @@ Two consequences:
   migration, and remember that an `INSERT … SELECT` silently drops any column
   you forget to name.
 
+## Changing a configuration key
+
+The schema is the only frozen surface. Before 1.0.0, renaming or removing a
+configuration key is a normal change rather than one to design around — that is
+what keeps the code free of a compatibility layer for every shape a section has
+ever had. What such a change owes:
+
+- **An entry in the changelog** under the release's `### Breaking` heading,
+  naming the old spelling and the new one. See
+  [Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
+- **A startup error naming the replacement**, where practical, so an unmigrated
+  configuration stops the server instead of coming up looking configured and
+  doing nothing. `src/filter/build.rs`'s `refuse_removed_keys` and the
+  `signer.backend = "acme_proxy"` arm in `src/signer/mod.rs` are the worked
+  examples. A key must still *parse* to be refused by name, which is why the
+  removed `[filter]` fields survive in `src/config/types/filter.rs` and in
+  `LIST_KEYS`; an unregistered one fails as an opaque serde error instead.
+- **No alias, no dual syntax, no legacy lowering.** Delete the old shape. The
+  refusals themselves are one-line diagnostics and go away at 1.0.0.
+
 ## Submitting a pull request
 
 1. Fork the repository and create your branch from `main`.

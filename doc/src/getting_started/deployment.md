@@ -278,7 +278,11 @@ Worth knowing before you do it:
   persist across an upgrade — back them up on the same schedule as the database,
   since the CA key is the one thing that cannot be regenerated without
   redistributing trust. See [Trusting the CA](trusting_the_ca.md).
-- **Check the
-  [changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md)**
-  for configuration keys and admin API changes, which are *not* covered by the
-  schema promise before 1.0.0.
+- **Read the changelog's `Breaking` section first.** Before 1.0.0 the schema is
+  the only compatibility guarantee: configuration keys, profile names, the admin
+  JSON API, log event names and the CLI may all have moved, and every such
+  change is listed there. See
+  [Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
+  A renamed key is normally refused by name at startup — the server stops with
+  an error naming the replacement rather than coming up looking configured — so
+  `acme-proxy filter show` and a `--help` are cheap pre-restart checks.

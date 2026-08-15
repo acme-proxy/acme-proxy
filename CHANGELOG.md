@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Compatibility
+
+**Before 1.0.0, the database schema is the only compatibility guarantee.**
+`migrations/` is append-only: a schema change is a new migration file, never an
+edit to a committed one. Upgrading is therefore just starting the new binary
+against the existing database — there is no dump/restore step, and no upgrade
+procedure beyond replacing the binary.
+
+Everything else may change in any release: configuration keys, profile names and
+the ACME URLs derived from them, the admin JSON API, log event names, and the
+CLI. That is deliberate — it is what lets the design keep improving instead of
+carrying a compatibility layer for every shape it has ever had. In exchange:
+
+- **Every such change is listed here**, under the release's `### Breaking`
+  heading, with the old spelling and the new one.
+- **A removed or renamed configuration key is refused by name at startup**
+  wherever practical, so an unmigrated configuration stops the server instead of
+  coming up looking configured. That refusal is a one-line error message, not a
+  compatibility layer — there are no aliases, no dual syntax and no legacy
+  lowering, and the refusals themselves go away at 1.0.0.
+
+Read this section before an upgrade, and `acme-proxy filter show` builds a
+`[filter]` policy exactly as startup does, so it is the cheapest way to check a
+migrated configuration before restarting.
+
 ## [Unreleased]
 
 ### Breaking
@@ -41,66 +66,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with them. Regex was the biggest footgun in this section and is no longer the
   only spelling.
 
-  There is no compatibility path, deliberately: 0.1.0 is deployed nowhere, so
-  this deletes rather than accumulates — no legacy lowering, no dual syntax, no
-  alias to keep tested for ever.
+  There is no compatibility path, which is the standing pre-1.0 rule rather
+  than a judgement about this section: a removed key is deleted and refused by
+  name, never aliased. No legacy lowering, no dual syntax, nothing to keep
+  tested for ever.
+
+- **The `netbox` filter is now the `ipam` check, and `[filter.netbox]` is now
+  `[ipam]`.** Asking an inventory "which names does this address own?" is one
+  question, and welding it to one vendor's REST API meant a second inventory
+  could only ever arrive as a second filter with its own copy of the policy.
+  The question now lives in its own subsystem with two backends, `netbox` and
+  `phpipam`, and the filter is the thin consumer that turns an answer into a
+  verdict. To migrate:
+
+  - a `[filter.check.<name>]` with `type = "netbox"` becomes `type = "ipam"`.
+  - `[filter.netbox]` becomes `[ipam.netbox]`, and the backend is selected with
+    `ipam.backend = "netbox"`.
+  - `filter.netbox.timeout_ms` becomes `ipam.timeout_ms` — the budget covers a
+    whole lookup however many requests a backend makes of it.
+  - `ACME_PROXY_FILTER__NETBOX__*` becomes `ACME_PROXY_IPAM__NETBOX__*`.
+
+  `type = "netbox"` is refused at startup with an error naming all three moves.
+  The section moved as well as the name, so a silent alias would have left
+  `[filter.netbox]` read by nothing while the server came up looking configured.
 
 - **`request_blocked` is now `filter_request_blocked`**, the one event in the
   subsystem that lacked its prefix. `filter_denied` and `filter_failed` keep
   their names and gain a `check` field carrying the *instance* name, so three
   `custom` scripts are finally distinguishable from one another.
-
-### Added
-
-- **Issued leaves can now say where this CA's CRL and certificate live.** Two
-  keys under `[signer.local_ca]`: `crl_distribution_points` writes
-  `cRLDistributionPoints` (RFC 5280 §4.2.1.13) into every leaf, and
-  `ca_issuer_urls` writes `authorityInfoAccess` with the `caIssuers` access
-  method (§4.2.2.1). Both are empty by default, in which case neither extension
-  is emitted and a certificate is byte-for-byte what this CA issued before —
-  which is also the state every existing deployment stays in until it opts in.
-
-  The URLs are the operator's to name, not derived from `server.base_url`. A
-  derived value would be frozen into every certificate signed while it held,
-  and would silently stop resolving the day a `base_url` or a profile name
-  changed. It would also point at `{base_url}/profile/<name>/crl`, which is
-  served *inside* the profile router and therefore behind that profile's filter
-  policy — refused to exactly the relying parties the extension exists for.
-
-  Several `crl_distribution_points` entries mean one CRL reachable in several
-  places, not several CRLs. Credentials in a URL, a non-`http(s)` scheme, and
-  anything the URL parser would normalize (a missing trailing `/`, or the
-  leading space an environment list written `a, b` produces) are each a startup
-  error naming the key and the value — these are signed into certificates that
-  outlive the mistake by `leaf_validity_days`. No OCSP pointer is ever written:
-  this server runs no responder.
-
-- **An `eab` check binds names to a tenant.** An EAB credential is minted
-  before any account exists and its label is chosen by the operator, so it is a
-  handle configuration can name up front — unlike an account id, which is a
-  UUID you could only discover after the fact. `kids` pins a credential by id;
-  `require_active` makes `eab revoke` reach accounts already registered under
-  it, which it does not by default. No schema change: `accounts.eab_kid` has
-  recorded this since EAB was implemented.
-
-- **A `path` check**, replacing `filter.exempt_paths` and composing with the
-  rest of a policy. It can restrict a path to a network, and it globs, so
-  `/renewalInfo/*` is expressible where the exact-match list it replaces could
-  not. Worth knowing: `/crl` is served by the profile router, so an
-  address-based policy without a path rule silently breaks revocation checking
-  for every relying party outside the allowlist.
-
-- **`acme-proxy filter show` and `acme-proxy filter explain`.** `show` prints
-  the resolved policy with each condition re-parenthesized, so precedence is
-  visible rather than inferred. `explain` evaluates it against a hypothetical
-  request across all three stages and reports every check's verdict, the checks
-  short-circuited past, and the HTTP answer. It really runs the policy, scripts
-  and inventory lookups included, and names what reached outside the process.
-
-- **`mode = "warn"` on a rule** logs `filter_rule_warned` and does not decide,
-  so a tightened policy can be watched in production before it bites. Rules are
-  a map rather than an array of tables precisely so a profile can dry-run one
-  of them and inherit the rest.
 
 - **The structured-logging vocabulary is normalized, and every record now
   carries an `outcome` field.** Log records are an operator contract — the
@@ -271,30 +264,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   surface changes; `upstream_orders` and `upstream_account.key` keep their
   names, which were already about the far side rather than the backend.
 
-### Documentation
 
-- Four new chapters: **Protocol Support** (an RFC 8555 conformance summary and
-  what is deliberately not implemented), **Security Model** and **Hardening
-  Checklist**, and **Database Schema** — the eleven tables, their constraints,
-  and why `audit_log` deliberately has no foreign keys.
-- Fourteen diagrams where prose was carrying branching, positional or state
-  facts: the JWS verification pipeline, the order and authorization state
-  machines, the relay's two stacked ACME conversations, the filter hooks on the
-  request path, the MFA sign-in states, deployment topology, and an ER diagram
-  of the schema.
-- `[challenge]`'s keys were documented both in the configuration reference and
-  in the challenges chapter, and the two copies had drifted. The chapter now
-  owns them, and the reference carries an index of **every** section — with the
-  seven that a `[profiles.<name>]` block may override marked as such, a fact
-  that had not been written down anywhere.
-- One voice across the book: sentence-case headings, no numbered headings for
-  unordered content, 80-column prose, and no marketing register.
-- `config.toml.example` gained a section index and per-section markers for what
-  is overridable per profile.
-- `CONTRIBUTING.md` and `SECURITY.md`, issue and pull-request templates, README
-  badges, a container install path and the MSRV stated numerically.
-
-### Added
 
 - **A `[proxy]` section: every outbound HTTP request can now go through a
   forward proxy.** Three keys — `http_url`, `https_url` and `no_proxy` — and
@@ -331,6 +301,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   job that builds the book on pull requests — the deploy workflow only ran after
   merge, so a broken `SUMMARY.md` entry was previously found too late.
 
+### Added
+
+- **Issued leaves can now say where this CA's CRL and certificate live.** Two
+  keys under `[signer.local_ca]`: `crl_distribution_points` writes
+  `cRLDistributionPoints` (RFC 5280 §4.2.1.13) into every leaf, and
+  `ca_issuer_urls` writes `authorityInfoAccess` with the `caIssuers` access
+  method (§4.2.2.1). Both are empty by default, in which case neither extension
+  is emitted and a certificate is byte-for-byte what this CA issued before —
+  which is also the state every existing deployment stays in until it opts in.
+
+  The URLs are the operator's to name, not derived from `server.base_url`. A
+  derived value would be frozen into every certificate signed while it held,
+  and would silently stop resolving the day a `base_url` or a profile name
+  changed. It would also point at `{base_url}/profile/<name>/crl`, which is
+  served *inside* the profile router and therefore behind that profile's filter
+  policy — refused to exactly the relying parties the extension exists for.
+
+  Several `crl_distribution_points` entries mean one CRL reachable in several
+  places, not several CRLs. Credentials in a URL, a non-`http(s)` scheme, and
+  anything the URL parser would normalize (a missing trailing `/`, or the
+  leading space an environment list written `a, b` produces) are each a startup
+  error naming the key and the value — these are signed into certificates that
+  outlive the mistake by `leaf_validity_days`. No OCSP pointer is ever written:
+  this server runs no responder.
+
+- **An `eab` check binds names to a tenant.** An EAB credential is minted
+  before any account exists and its label is chosen by the operator, so it is a
+  handle configuration can name up front — unlike an account id, which is a
+  UUID you could only discover after the fact. `kids` pins a credential by id;
+  `require_active` makes `eab revoke` reach accounts already registered under
+  it, which it does not by default. No schema change: `accounts.eab_kid` has
+  recorded this since EAB was implemented.
+
+- **A `path` check**, replacing `filter.exempt_paths` and composing with the
+  rest of a policy. It can restrict a path to a network, and it globs, so
+  `/renewalInfo/*` is expressible where the exact-match list it replaces could
+  not. Worth knowing: `/crl` is served by the profile router, so an
+  address-based policy without a path rule silently breaks revocation checking
+  for every relying party outside the allowlist.
+
+- **`acme-proxy filter show` and `acme-proxy filter explain`.** `show` prints
+  the resolved policy with each condition re-parenthesized, so precedence is
+  visible rather than inferred. `explain` evaluates it against a hypothetical
+  request across all three stages and reports every check's verdict, the checks
+  short-circuited past, and the HTTP answer. It really runs the policy, scripts
+  and inventory lookups included, and names what reached outside the process.
+
+- **`mode = "warn"` on a rule** logs `filter_rule_warned` and does not decide,
+  so a tightened policy can be watched in production before it bites. Rules are
+  a map rather than an array of tables precisely so a profile can dry-run one
+  of them and inherit the rest.
+
 ### Changed
 
 - The `relay` signer's upstream client and the Mattermost notifier now send an
@@ -366,20 +388,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from source; both tools are now version-pinned, and every action in that
   workflow is SHA-pinned like `ci.yml`'s.
 
+### Documentation
+
+- Four new chapters: **Protocol Support** (an RFC 8555 conformance summary and
+  what is deliberately not implemented), **Security Model** and **Hardening
+  Checklist**, and **Database Schema** — the eleven tables, their constraints,
+  and why `audit_log` deliberately has no foreign keys.
+- Fourteen diagrams where prose was carrying branching, positional or state
+  facts: the JWS verification pipeline, the order and authorization state
+  machines, the relay's two stacked ACME conversations, the filter hooks on the
+  request path, the MFA sign-in states, deployment topology, and an ER diagram
+  of the schema.
+- `[challenge]`'s keys were documented both in the configuration reference and
+  in the challenges chapter, and the two copies had drifted. The chapter now
+  owns them, and the reference carries an index of **every** section — with the
+  seven that a `[profiles.<name>]` block may override marked as such, a fact
+  that had not been written down anywhere.
+- One voice across the book: sentence-case headings, no numbered headings for
+  unordered content, 80-column prose, and no marketing register.
+- `config.toml.example` gained a section index and per-section markers for what
+  is overridable per profile.
+- `CONTRIBUTING.md` and `SECURITY.md`, issue and pull-request templates, README
+  badges, a container install path and the MSRV stated numerically.
+
 ## [0.1.0] — 2026-08-09
 
 First release.
 
 ### The compatibility promise
 
-**The database schema is frozen.** `migrations/` is append-only from this release
-on: a schema change is a new migration file, never an edit to a committed one.
-Upgrading is therefore just starting the new binary against the existing
-database — there is no dump/restore step, and no upgrade procedure beyond
-replacing the binary.
-
-Everything else may still move before 1.0.0 — configuration keys, the JSON admin
-API, and log event names. Breaking changes will be listed here.
+The schema freeze starts here: `migrations/` is append-only from this release
+on. See [Compatibility](#compatibility) above for the standing rule and what it
+does *not* cover.
 
 ### ACME (RFC 8555)
 

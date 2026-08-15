@@ -11,8 +11,9 @@ readme = "README.md"
 keywords = ["acme", "rfc8555", "certificate", "tls", "ca"]
 categories = ["cryptography", "network-programming", "web-programming::http-server"]
 # Edition 2024 requires 1.85. Stated so `cargo` reports a clear version error on
-# an older toolchain rather than a wall of syntax errors. Not verified by CI,
-# which builds on stable — raise it if a newer feature is adopted.
+# an older toolchain rather than a wall of syntax errors. CI's `msrv` job reads
+# this value and runs `cargo check --locked` on that exact toolchain, so raising
+# it here is what raises it everywhere.
 rust-version = "1.97"
 
 [features]

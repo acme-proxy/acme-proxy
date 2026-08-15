@@ -11,7 +11,8 @@ that, and it decides the same way whichever product answered.
 > **Renamed at this release.** This used to be a filter called `netbox`, with
 > its settings under `[filter.netbox]`. Both moved. See
 > [Migrating from `filter.netbox`](#migrating-from-filternetbox) below — the
-> old spelling is refused by name at startup rather than silently ignored.
+> old spelling is refused by name at startup, with an error naming all three
+> moves, rather than silently ignored.
 
 ## Backends
 
@@ -102,7 +103,7 @@ request — and it must stay below `server.request_timeout_ms`.
 
 Three changes, and the server states all three if it finds the old spelling:
 
-1. `filter.enabled = ["netbox"]` becomes `filter.enabled = ["ipam"]`, plus
+1. A check declared with `type = "netbox"` becomes `type = "ipam"`, plus
    `ipam.backend = "netbox"`.
 2. `[filter.netbox]` becomes `[ipam.netbox]`. Most keys are unchanged.
 3. Three keys moved or changed shape:
@@ -121,7 +122,11 @@ all. Environment variables move from `ACME_PROXY_FILTER__NETBOX__*` to
 Startup **fails** on the old filter name rather than aliasing it. The section
 moved too, so a silent alias would leave `[filter.netbox]` read by nothing
 while the server came up looking configured — the same reasoning that made
-`signer.backend = "acme_proxy"` a named refusal when it became `relay`.
+`signer.backend = "acme_proxy"` a named refusal when it became `relay`. Both are
+error messages rather than compatibility paths: nothing reads the old spelling,
+and the refusals go away at 1.0.0. Renames like this are expected before then
+and are listed in the
+[changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
 
 ## Configuration
 
