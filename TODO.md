@@ -89,16 +89,13 @@ keeps its corpses stops being read.
 
 ## Signers — local CA
 
-- [ ] **`cRLDistributionPoints` (and AIA) in issued leaves.** `LocalCa::issue`
-      already overwrites every extension the CSR asked for, so this is one more
-      line there — but it needs a public URL for the CRL, which today is served
-      per-profile at `{base_url}/profile/<name>/crl` and advertised nowhere.
-      Until then the CRL this CA maintains is unreachable by anything holding
-      only the leaf.
 - [ ] **Serve the CA material for client bootstrap** — `GET /ca.pem`, and the
       chain, beside `/crl`, so installing the trust anchor is one `curl`. Same
       routing answer as `/crl`: per-profile (each profile has its own signer),
-      unauthenticated, and deliberately not advertised in the directory.
+      unauthenticated, and deliberately not advertised in the directory. Note
+      it is still not what `signer.local_ca.ca_issuer_urls` should point at by
+      default, for the reason that key is operator-named at all: the route sits
+      inside the profile router, behind that profile's filter policy.
 - [ ] **Drop expired certificates from the CRL.** The ledger behind
       `local_ca/crl.rs` grows for ever; RFC 5280 §3.3 permits removing an entry
       once the certificate itself has expired. The ledger stores serials only,
@@ -109,7 +106,11 @@ keeps its corpses stops being read.
       duty), and a route that is emphatically not an ACME resource. Worth
       deciding whether it is wanted at all before building it: the ecosystem
       moved towards RFC 9773 renewal info plus a small CRL, and this server
-      serves both already.
+      serves both already. The pointer half is already cheap if this ever
+      lands: `id-ad-ocsp` is a second `AccessDescription` inside the
+      `authorityInfoAccess` extension `local_ca/policy.rs` builds today, so it
+      is one more caller of `access_description` and a key beside
+      `ca_issuer_urls`, not a rewrite.
 
 ## IPAM
 

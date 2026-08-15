@@ -190,6 +190,8 @@ const LIST_KEYS: &[&str] = &[
     "ipam.phpipam.sources",
     "signer.relay.contact",
     "signer.custom.args",
+    "signer.local_ca.crl_distribution_points",
+    "signer.local_ca.ca_issuer_urls",
     "notify.enabled",
     "notify.email.to",
     "notify.email.events",
@@ -214,6 +216,10 @@ impl Config {
             "ipam.phpipam.sources" => &self.ipam.phpipam.sources,
             "signer.relay.contact" => &self.signer.relay.contact,
             "signer.custom.args" => &self.signer.custom.args,
+            "signer.local_ca.crl_distribution_points" => {
+                &self.signer.local_ca.crl_distribution_points
+            }
+            "signer.local_ca.ca_issuer_urls" => &self.signer.local_ca.ca_issuer_urls,
             "notify.enabled" => &self.notify.enabled,
             "notify.email.to" => &self.notify.email.to,
             "notify.email.events" => &self.notify.email.events,
@@ -1158,6 +1164,14 @@ mod tests {
             defaults.signer.local_ca.leaf_validity_days
         );
         assert_eq!(
+            example.signer.local_ca.crl_distribution_points,
+            defaults.signer.local_ca.crl_distribution_points
+        );
+        assert_eq!(
+            example.signer.local_ca.ca_issuer_urls,
+            defaults.signer.local_ca.ca_issuer_urls
+        );
+        assert_eq!(
             example.signer.local_ca.subject.common_name,
             defaults.signer.local_ca.subject.common_name
         );
@@ -1402,7 +1416,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            18,
+            20,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );

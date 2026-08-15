@@ -90,6 +90,45 @@ of revoked serials is a **JSON sidecar** beside it — the same path with the
 extension swapped to `.json` (so `ca.crl` → `ca.json`) — not the CRL's own DER
 read back. Back up both.
 
+**`crl_distribution_points`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CRL_DISTRIBUTION_POINTS`*
+
+Where a relying party can **fetch** that CRL. Each URL is written into every
+issued leaf as `cRLDistributionPoints` (RFC 5280 §4.2.1.13); empty — the default
+— emits no extension at all, which is why a certificate from this CA says
+nothing about revocation until you set this.
+
+Nothing derives it, deliberately. The URL is frozen into every certificate
+signed while it is set, so a value read from `server.base_url` would silently
+break certificates already issued the day that changed. And this server's own
+copy is served at `{base_url}/profile/<name>/crl`, *inside* the profile router
+and therefore behind that profile's filter policy — an address-based rule would
+refuse it to exactly the relying parties the extension exists for. Name a URL
+you know is publicly reachable; a webroot or CDN copy of `crl_path` is the usual
+answer.
+
+Several entries mean **one CRL reachable in several places**, not several
+different CRLs. `http://` is idiomatic and gets no warning: fetching a signed
+CRL over TLS means validating that connection's certificate first, which is the
+loop this extension exists to break. Credentials in the URL, a non-`http(s)`
+scheme, and any value the URL parser would normalize (a missing trailing `/`, a
+leading space from an environment-variable list) are each a startup error naming
+the key and the value.
+
+Note that two profiles sharing one CA share this list too: they share one
+`[signer]` section, one ledger and one CRL, so there is one place that CRL is
+published. Giving them different URLs while they share `ca.key` is refused at
+startup — see [Profiles & Routing](../core/profiles.md).
+
+**`ca_issuer_urls`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CA_ISSUER_URLS`*
+
+Where a relying party can fetch **this CA's own certificate**, written into
+every issued leaf as `authorityInfoAccess` with the `caIssuers` access method
+(RFC 5280 §4.2.2.1). Empty — the default — emits no extension. Same reasoning,
+same validation and the same startup errors as `crl_distribution_points` above.
+
+The sibling access method, `id-ad-ocsp`, is never written: this server runs no
+OCSP responder, and a pointer at one that does not exist is worse than none.
+
 **`leaf_validity_days`** (`Integer`) — *Default: `90` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__LEAF_VALIDITY_DAYS`*
 
 The validity period (in days) for issued leaf certificates. Distinct from

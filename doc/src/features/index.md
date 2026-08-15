@@ -89,7 +89,10 @@ Stated explicitly, because each is something a reader may reasonably expect:
   does no CAA lookup of its own. Where the [relay
   backend](../signers/relay.md) is in use, the upstream CA performs its own.
 - **OCSP.** Revocation is published as a CRL at `GET /crl`. There is no OCSP
-  responder and no `authorityInfoAccess` OCSP pointer in issued certificates.
+  responder, and no `authorityInfoAccess` OCSP pointer is ever written into an
+  issued certificate. The local CA does write the `caIssuers` half of that
+  extension, and a `cRLDistributionPoints` pointer, once an operator names the
+  URLs — see [Local CA](../signers/local_ca.md#reference).
 - **Identifier types other than `dns`.** `newOrder` accepts DNS names, including
   wildcards; `ip` identifiers (RFC 8738) and `permanent-identifier` are not
   supported.

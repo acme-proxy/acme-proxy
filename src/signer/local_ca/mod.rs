@@ -23,9 +23,11 @@
 mod ca;
 mod crl;
 pub mod key;
+mod policy;
 
 use ca::{generate_ca, random_serial};
 use crl::{CrlPaths, RevokedEntry, RevokedLedger, build_crl, init_ledger};
+use policy::LeafPolicy;
 #[cfg(feature = "hsm")]
 pub mod pkcs11;
 
@@ -69,6 +71,10 @@ pub struct LocalCa {
     ca_pem: String,
     /// Issued-leaf validity, in days (backend policy — see the module doc).
     leaf_validity_days: u64,
+    /// What an issued leaf says about this CA's own services: where its CRL
+    /// and its certificate can be fetched. Validated and DER-encoded once, at
+    /// construction — see [`policy`].
+    leaf_policy: LeafPolicy,
     /// Revoked-certificate ledger + the current signed CRL derived from it.
     revoked: Mutex<RevokedLedger>,
     /// Where the ledger/CRL are persisted. `None` for [`LocalCa::generate_in_memory`]
@@ -163,6 +169,9 @@ impl LocalCa {
             crl_path: PathBuf::from(&cfg.crl_path),
             revoked_path: Path::new(&cfg.crl_path).with_extension("json"),
         };
+        // Before either branch touches disk: a URL this CA could not honour is
+        // a startup error, not a CA generated and then refused.
+        let leaf_policy = LeafPolicy::from_config(cfg)?;
 
         if cert_path.exists() && key_path.exists() {
             let ca_pem = fs::read_to_string(cert_path)?;
@@ -171,7 +180,13 @@ impl LocalCa {
             let key_pair = KeyPair::from_pem(&key_pem)?;
             let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
             info!(event = "local_ca_loaded", outcome = "success", cert_path = ?cfg.cert_path);
-            return Self::assemble(issuer, ca_pem, cfg.leaf_validity_days, Some(paths));
+            return Self::assemble(
+                issuer,
+                ca_pem,
+                cfg.leaf_validity_days,
+                leaf_policy,
+                Some(paths),
+            );
         }
 
         let (key_pair, ca_pem) = generate_ca(&cfg.key_type, &cfg.subject)?;
@@ -179,7 +194,13 @@ impl LocalCa {
         write_private_key(key_path, &key_pair.serialize_pem())?;
         let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
         info!(event = "local_ca_generated", outcome = "success", cert_path = ?cfg.cert_path, key_path = ?cfg.key_path);
-        Self::assemble(issuer, ca_pem, cfg.leaf_validity_days, Some(paths))
+        Self::assemble(
+            issuer,
+            ca_pem,
+            cfg.leaf_validity_days,
+            leaf_policy,
+            Some(paths),
+        )
     }
 
     /// Loads a CA whose issuing key lives on a PKCS#11 token.
@@ -202,6 +223,7 @@ impl LocalCa {
             crl_path: PathBuf::from(&cfg.crl_path),
             revoked_path: Path::new(&cfg.crl_path).with_extension("json"),
         };
+        let leaf_policy = LeafPolicy::from_config(cfg)?;
 
         if !cert_path.exists() {
             anyhow::bail!(
@@ -259,7 +281,13 @@ impl LocalCa {
             cert_path = ?cfg.cert_path,
             key_label = %cfg.pkcs11.key_label,
         );
-        Self::assemble(issuer, ca_pem, cfg.leaf_validity_days, Some(paths))
+        Self::assemble(
+            issuer,
+            ca_pem,
+            cfg.leaf_validity_days,
+            leaf_policy,
+            Some(paths),
+        )
     }
 
     /// The same entry point in a build without `--features hsm`.
@@ -281,7 +309,13 @@ impl LocalCa {
     pub fn generate_in_memory(key_type: &str, leaf_validity_days: u64) -> anyhow::Result<Self> {
         let (key_pair, ca_pem) = generate_ca(key_type, &LocalCaSubjectConfig::default())?;
         let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
-        Self::assemble(issuer, ca_pem, leaf_validity_days, None)
+        Self::assemble(
+            issuer,
+            ca_pem,
+            leaf_validity_days,
+            LeafPolicy::default(),
+            None,
+        )
     }
 
     /// The tail every constructor shares: load or create the revocation
@@ -292,6 +326,7 @@ impl LocalCa {
         issuer: Issuer<'static, CaSigningKey>,
         ca_pem: String,
         leaf_validity_days: u64,
+        leaf_policy: LeafPolicy,
         paths: Option<CrlPaths>,
     ) -> anyhow::Result<Self> {
         let revoked = init_ledger(paths.as_ref(), &issuer)?;
@@ -299,6 +334,7 @@ impl LocalCa {
             issuer: Arc::new(issuer),
             ca_pem,
             leaf_validity_days,
+            leaf_policy,
             revoked: Mutex::new(revoked),
             paths,
         })
@@ -368,7 +404,10 @@ fn check_csr_matches_order(
 /// Extracted from `issue` because it is the security-critical part of it and it
 /// was buried two thirds of the way down a 116-line function, behind the very
 /// comment explaining why it matters.
-fn sanitize_csr_params(params: &mut CertificateParams) -> Result<(), SignerError> {
+fn sanitize_csr_params(
+    params: &mut CertificateParams,
+    leaf_policy: &LeafPolicy,
+) -> Result<(), SignerError> {
     // Everything the certificate asserts beyond its public key and its names
     // is decided *here*, never by the CSR.
     //
@@ -420,6 +459,29 @@ fn sanitize_csr_params(params: &mut CertificateParams) -> Result<(), SignerError
     // including for a CA generated by an older version of this code.
     params.use_authority_key_identifier_extension = true;
 
+    // Where this CA's CRL and its own certificate can be fetched — both
+    // operator-configured, both empty by default, in which case rcgen writes
+    // neither extension and the leaf is what it always was.
+    //
+    // Assignment, not `extend`, for the same reason as everything above it: the
+    // contract of this function is that nothing the CSR asked for survives.
+    // That is defence in depth rather than a live fix — rcgen's CSR parser
+    // already refuses a request carrying either extension outright
+    // (`Error::UnsupportedExtension`), so these are provably empty on entry —
+    // but the day it learns to parse one, this line is what keeps a client
+    // from choosing where relying parties look for revocation data.
+    //
+    // One trap worth knowing about, three lines up: rcgen decides whether to
+    // write the extensions block at all from a disjunction
+    // (`CertificateParams::write`) that does **not** mention
+    // `crl_distribution_points`. `use_authority_key_identifier_extension = true`
+    // above is what keeps that block present today. Remove it and the CRL
+    // pointer silently disappears from every leaf — one that still parses and
+    // still verifies, so nothing fails except revocation checking, weeks later,
+    // at a relying party.
+    params.crl_distribution_points = leaf_policy.crl_distribution_points();
+    params.custom_extensions = leaf_policy.custom_extensions();
+
     Ok(())
 }
 
@@ -446,7 +508,7 @@ impl SignerBackend for LocalCa {
         })?;
 
         check_csr_matches_order(&csr, identifiers)?;
-        sanitize_csr_params(&mut csr.params)?;
+        sanitize_csr_params(&mut csr.params, &self.leaf_policy)?;
 
         // The leaf's validity: this backend's policy, narrowed by whatever the
         // order asked for.
@@ -796,6 +858,124 @@ mod tests {
         // …and the whole certID round-trips, which is what a client actually
         // builds and this server then has to recognize.
         assert!(crate::cert::ari_cert_id(&leaf_der).is_ok());
+    }
+
+    /// Goes through `load_or_generate` rather than handing a policy to a
+    /// constructor: the point is that `LocalCaConfig` → `LeafPolicy` →
+    /// `assemble` → `issue` is genuinely wired, which a policy passed in
+    /// directly would not prove.
+    #[tokio::test]
+    async fn configured_urls_reach_every_issued_leaf() {
+        use x509_parser::extensions::{DistributionPointName, GeneralName, ParsedExtension};
+        use x509_parser::oid_registry::{
+            OID_PKIX_ACCESS_DESCRIPTOR_CA_ISSUERS, OID_PKIX_AUTHORITY_INFO_ACCESS,
+            OID_X509_EXT_CRL_DISTRIBUTION_POINTS,
+        };
+
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = LocalCaConfig {
+            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
+            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
+            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+            crl_distribution_points: vec![
+                "http://ca.example/ca.crl".to_string(),
+                "http://mirror.example/ca.crl".to_string(),
+            ],
+            ca_issuer_urls: vec!["http://ca.example/ca.crt".to_string()],
+            ..LocalCaConfig::default()
+        };
+
+        let ca = LocalCa::load_or_generate(&cfg).unwrap();
+        let chain = issue_chain(
+            &ca,
+            &make_csr_der("example.com"),
+            &[Identifier::dns("example.com")],
+        )
+        .await
+        .unwrap();
+        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let (_, leaf) = x509_parser::parse_x509_certificate(&leaf_der).unwrap();
+
+        let cdp = leaf
+            .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+            .unwrap()
+            .expect("the leaf must name where the CRL lives");
+        let ParsedExtension::CRLDistributionPoints(points) = cdp.parsed_extension() else {
+            panic!("cRLDistributionPoints could not be parsed");
+        };
+        assert_eq!(
+            points.points.len(),
+            1,
+            "both URLs serve the same CRL, so they belong to one distribution point"
+        );
+        let Some(DistributionPointName::FullName(names)) = &points.points[0].distribution_point
+        else {
+            panic!("expected a full name");
+        };
+        let uris: Vec<&str> = names
+            .iter()
+            .map(|name| match name {
+                GeneralName::URI(uri) => *uri,
+                other => panic!("expected a URI, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            uris,
+            vec!["http://ca.example/ca.crl", "http://mirror.example/ca.crl"]
+        );
+
+        let aia = leaf
+            .get_extension_unique(&OID_PKIX_AUTHORITY_INFO_ACCESS)
+            .unwrap()
+            .expect("the leaf must name where this CA's own certificate lives");
+        assert!(
+            !aia.critical,
+            "RFC 5280 §4.2.2.1 requires authorityInfoAccess to be non-critical"
+        );
+        let ParsedExtension::AuthorityInfoAccess(access) = aia.parsed_extension() else {
+            panic!("authorityInfoAccess could not be parsed");
+        };
+        assert_eq!(access.accessdescs.len(), 1);
+        assert_eq!(
+            access.accessdescs[0].access_method, OID_PKIX_ACCESS_DESCRIPTOR_CA_ISSUERS,
+            "only caIssuers is ever written — this server runs no OCSP responder"
+        );
+        assert!(matches!(
+            access.accessdescs[0].access_location,
+            GeneralName::URI("http://ca.example/ca.crt")
+        ));
+    }
+
+    /// The regression that keeps the default harmless: with neither key
+    /// configured, a leaf is exactly what this CA issued before they existed.
+    #[tokio::test]
+    async fn an_unconfigured_ca_writes_neither_pointer_extension() {
+        use x509_parser::oid_registry::{
+            OID_PKIX_AUTHORITY_INFO_ACCESS, OID_X509_EXT_CRL_DISTRIBUTION_POINTS,
+        };
+
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let chain = issue_chain(
+            &ca,
+            &make_csr_der("example.com"),
+            &[Identifier::dns("example.com")],
+        )
+        .await
+        .unwrap();
+        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let (_, leaf) = x509_parser::parse_x509_certificate(&leaf_der).unwrap();
+
+        assert!(
+            leaf.get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            leaf.get_extension_unique(&OID_PKIX_AUTHORITY_INFO_ACCESS)
+                .unwrap()
+                .is_none(),
+            "an empty ca_issuer_urls must emit no extension, not an empty SEQUENCE"
+        );
     }
 
     /// RFC 8555 §7.4's `notBefore`/`notAfter` narrow this CA's own window and

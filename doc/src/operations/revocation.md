@@ -107,6 +107,30 @@ by `ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
 both files**: losing the sidecar loses the revocation ledger, and the next
 regeneration would publish an empty CRL.
 
+### Telling clients where it is
+
+A certificate does not point at this CRL until you say where to fetch it.
+`signer.local_ca.crl_distribution_points` is that URL: set it, and every leaf
+issued from then on carries a `cRLDistributionPoints` extension naming it (and
+`ca_issuer_urls` does the same for the CA's own certificate). Both are empty by
+default, so out of the box the CRL above is reachable only by somebody who
+already knows this server exists.
+
+Two things follow from a URL being signed into a certificate:
+
+- **Certificates already issued keep the URL they were signed with**, for their
+  whole validity. Changing the key changes nothing that is already out there,
+  which is why the value is yours to choose rather than something derived from
+  `server.base_url`.
+- **The URL above is not automatically a good answer.** `/crl` is served by the
+  profile router, so it sits behind that profile's filter policy; an
+  address-based rule will refuse it to relying parties outside the allowlist.
+  Either add a `path` check permitting `/crl` (see [The `path`
+  check](../filters/path.md)) or publish a copy of `crl_path` somewhere
+  unconditionally reachable and name *that*.
+
+See [Local CA](../signers/local_ca.md#reference) for both keys.
+
 ### Other backends
 
 - **`custom`** — the CRL comes from the script's `crl` hook, and only when

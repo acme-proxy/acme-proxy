@@ -52,6 +52,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Issued leaves can now say where this CA's CRL and certificate live.** Two
+  keys under `[signer.local_ca]`: `crl_distribution_points` writes
+  `cRLDistributionPoints` (RFC 5280 §4.2.1.13) into every leaf, and
+  `ca_issuer_urls` writes `authorityInfoAccess` with the `caIssuers` access
+  method (§4.2.2.1). Both are empty by default, in which case neither extension
+  is emitted and a certificate is byte-for-byte what this CA issued before —
+  which is also the state every existing deployment stays in until it opts in.
+
+  The URLs are the operator's to name, not derived from `server.base_url`. A
+  derived value would be frozen into every certificate signed while it held,
+  and would silently stop resolving the day a `base_url` or a profile name
+  changed. It would also point at `{base_url}/profile/<name>/crl`, which is
+  served *inside* the profile router and therefore behind that profile's filter
+  policy — refused to exactly the relying parties the extension exists for.
+
+  Several `crl_distribution_points` entries mean one CRL reachable in several
+  places, not several CRLs. Credentials in a URL, a non-`http(s)` scheme, and
+  anything the URL parser would normalize (a missing trailing `/`, or the
+  leading space an environment list written `a, b` produces) are each a startup
+  error naming the key and the value — these are signed into certificates that
+  outlive the mistake by `leaf_validity_days`. No OCSP pointer is ever written:
+  this server runs no responder.
+
 - **An `eab` check binds names to a tenant.** An EAB credential is minted
   before any account exists and its label is chosen by the operator, so it is a
   handle configuration can name up front — unlike an account id, which is a
