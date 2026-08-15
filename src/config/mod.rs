@@ -12,10 +12,10 @@ pub use types::*;
 /// The eight sections a profile can carry (`signer`, `filter`, `ipam`,
 /// `challenge`, `eab`, `order`, `notify`, `meta`) are kept here as the **base
 /// every profile inherits**; nothing serves them directly. The rest (`database`, `server`,
-/// `admin`, `nonce`, `audit`, `logging`, `dns`, `proxy`) is process-wide and has no
+/// `admin`, `nonce`, `audit`, `jobs`, `logging`, `dns`, `proxy`) is process-wide and has no
 /// per-profile form — an operator of the web admin manages every endpoint this process
-/// serves, so `admin` in particular has no per-profile meaning, and `audit`
-/// records one trail for the whole CA.
+/// serves, so `admin` in particular has no per-profile meaning, `audit`
+/// records one trail for the whole CA, and `jobs` drains one queue.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -28,6 +28,9 @@ pub struct Config {
     /// Traceability and the CA's audit trail. Process-wide for the reason
     /// [`AuditConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
     pub audit: AuditConfig,
+    /// The durable background-work queue. Process-wide for the reason
+    /// [`JobsConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
+    pub jobs: JobsConfig,
     pub logging: LoggingConfig,
     pub order: OrderConfig,
     pub signer: SignerConfig,
@@ -953,6 +956,15 @@ mod tests {
         assert_eq!(config.server.tls.key_path, "server.key");
         assert_eq!(config.server.tls.handshake_timeout_ms, 10_000);
         assert_eq!(config.nonce.ttl_seconds, 300);
+        assert_eq!(config.jobs.poll_interval_ms, 1_000);
+        assert_eq!(config.jobs.max_concurrent, 8);
+        assert_eq!(config.jobs.max_attempts, 5);
+        assert_eq!(config.jobs.retry_base_seconds, 30);
+        assert_eq!(config.jobs.retry_max_seconds, 3_600);
+        assert_eq!(config.jobs.lease_seconds, 300);
+        // Non-zero unlike `audit.retention_days`: a finished job is a receipt,
+        // not evidence.
+        assert_eq!(config.jobs.retention_days, 7);
         assert_eq!(config.logging.filter, "acme_proxy=info");
         assert!(!config.logging.json_format);
         assert_eq!(config.logging.target, "stdout");
@@ -1133,6 +1145,22 @@ mod tests {
             defaults.audit.reverse_dns_timeout_ms
         );
         assert_eq!(example.audit.retention_days, defaults.audit.retention_days);
+        assert_eq!(
+            example.jobs.poll_interval_ms,
+            defaults.jobs.poll_interval_ms
+        );
+        assert_eq!(example.jobs.max_concurrent, defaults.jobs.max_concurrent);
+        assert_eq!(example.jobs.max_attempts, defaults.jobs.max_attempts);
+        assert_eq!(
+            example.jobs.retry_base_seconds,
+            defaults.jobs.retry_base_seconds
+        );
+        assert_eq!(
+            example.jobs.retry_max_seconds,
+            defaults.jobs.retry_max_seconds
+        );
+        assert_eq!(example.jobs.lease_seconds, defaults.jobs.lease_seconds);
+        assert_eq!(example.jobs.retention_days, defaults.jobs.retention_days);
         assert_eq!(example.logging.filter, defaults.logging.filter);
         assert_eq!(example.logging.json_format, defaults.logging.json_format);
         assert_eq!(example.logging.target, defaults.logging.target);

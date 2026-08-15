@@ -84,6 +84,19 @@ erDiagram
         text identifiers "frozen into the row"
     }
 
+    jobs {
+        text id PK
+        text kind "no CHECK - see below"
+        text dedup_key "partial UNIQUE(kind, dedup_key)"
+        text payload "JSON, the subject's identity"
+        text status "CHECK ready|running|done|failed|cancelled"
+        integer run_at "the durable schedule"
+        integer attempts "incremented at claim"
+        integer deadline "give up after this"
+        integer lease_until "when a dead runner's row is reclaimed"
+        text lease_owner "which runner holds it"
+    }
+
     admin_users {
         text id PK
         text username UK
@@ -111,7 +124,8 @@ edges that are not drawn**:
 - The ACME graph — `accounts → orders → authorizations → challenges`, with
   `upstream_orders` hanging off an order and `eab_keys` and `nonces` standing
   alone.
-- `audit_log`, connected to nothing. That is policy, not an omission.
+- `audit_log` and `jobs`, both connected to nothing. That is policy in each
+  case, not an omission — and for two different reasons, given below.
 - The admin island — `admin_users` and its two children — which never joins to
   `accounts`. An `admin_users` row is an operator of this server; an `accounts`
   row is a client key that asks it for certificates. They are different
@@ -200,6 +214,38 @@ retention sweep. See [Audit Trail](../operations/audit.md).
 `accounts.eab_kid` is a similar deliberate non-key: it records which credential
 was used at registration, but an EAB credential is revocable and the account
 outlives it, so there is no constraint tying the two together.
+
+## The job queue is generic, and its schema says so
+
+`jobs` is the second table with no foreign key, for a different reason than
+`audit_log`'s. A queue is generic: `payload` names whatever `kind` means — a
+local order today, a certificate serial or nothing at all tomorrow — so a typed
+foreign key would either be wrong for every other kind or force one nullable
+column per kind. A job whose subject was deleted is *retired by its handler*
+("the order no longer exists"), which is a terminal outcome recorded in
+`last_error`, not an orphan nothing sweeps.
+
+Three more shapes worth knowing before touching it:
+
+- **`kind` carries no `CHECK`**, unlike every other enum-ish column here. A kind
+  is registered in code by whichever subsystem owns it, and SQLite cannot alter
+  a `CHECK` without a table rebuild, so every future kind would cost one. The
+  runner claims *only* the kinds its registry holds, so an unrecognised one is
+  left alone rather than mis-run — which is also what lets an older binary meet
+  a row a newer one wrote.
+- **The identity index is partial**: `UNIQUE(kind, dedup_key) WHERE status IN
+  ('ready', 'running')`. Only a live job holds an identity. A plain `UNIQUE`
+  would let one finished job block its own key for ever, which is fatal for a
+  periodic kind whose key is a constant and wrong for an order retried after a
+  failure.
+- **`attempts` increments when the row is claimed**, not when it completes, so a
+  job that reliably kills the process still exhausts its budget instead of
+  crash-looping. The same reasoning is why the reclaim sweep leaves the counter
+  alone.
+
+`status = 'cancelled'` is declared and written by nothing — the
+`admin_sessions.state = 'pending_mfa'` treatment, where a `CHECK` was written
+before anything filled it precisely so no rebuild would be needed later.
 
 ## Secrets are stored three different ways, on purpose
 

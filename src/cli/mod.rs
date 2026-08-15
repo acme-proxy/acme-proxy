@@ -317,10 +317,30 @@ pub async fn serve_on_with(
         database_database_url = %config.database.url
     );
 
+    // One `shutdown` future, several consumers: both listeners and the job
+    // runner. Created here rather than beside `axum::serve` below so a signal
+    // arriving *during* startup is not ignored — profile assembly and the
+    // relay's first upstream contact both happen before anything binds. The
+    // relay task is held under `AbortOnDrop` so an error path below does not
+    // leak a task parked on a signal that will never arrive.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let _shutdown_relay = AbortOnDrop(tokio::spawn(async move {
+        shutdown.await;
+        let _ = shutdown_tx.send(true);
+    }));
+
+    // The enqueue side of the durable queue. Built before the profiles because
+    // a signer backend that defers issuance is handed one at construction, and
+    // process-wide for the reason `[audit]` is: one table, one runner, and a
+    // per-endpoint retry budget would make a job's pacing depend on which
+    // profile happened to queue it.
+    let job_queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+
     // Assembly lives in `Profile::build_all`: this function only reports.
-    let profiles = Profile::build_all(&config, database.clone()).inspect_err(|error| {
-        error!(event = "profile_init_failed", outcome = "failure", error = %error);
-    })?;
+    let profiles =
+        Profile::build_all(&config, database.clone(), &job_queue).inspect_err(|error| {
+            error!(event = "profile_init_failed", outcome = "failure", error = %error);
+        })?;
     for profile in &profiles {
         info!(
             event = "profile_mounted",
@@ -343,20 +363,39 @@ pub async fn serve_on_with(
         error!(event = "tls_init_failed", outcome = "failure", error = %error);
     })?;
 
-    // Before serving: hand each backend a chance to pick up issuance a previous
-    // run left in flight. A no-op for `local_ca`, which never defers. Once per
-    // *backend*, not per profile — two profiles sharing one would otherwise
-    // resume the same orders twice. The identity is kept as a `usize` rather
-    // than the pointer itself: a raw pointer held across the `resume().await`
-    // below would make this whole future `!Send`, and it is spawned.
-    let mut resumed: Vec<usize> = Vec::new();
+    // Every subsystem with background work, in one registry. Deduplicated by
+    // `Arc` identity: two profiles can share one signer backend, and its handler
+    // must be registered once — the registry refuses a second handler for one
+    // kind outright, since two would each claim about half the rows. The
+    // identity is kept as a `usize` rather than the pointer itself, so this
+    // future stays `Send`; it is spawned.
+    let mut job_registry = crate::jobs::JobRegistry::new();
+    let mut registered: Vec<usize> = Vec::new();
     for profile in &profiles {
         let identity = Arc::as_ptr(&profile.signer).cast::<()>() as usize;
-        if resumed.contains(&identity) {
+        if registered.contains(&identity) {
             continue;
         }
-        resumed.push(identity);
-        profile.signer.resume().await;
+        registered.push(identity);
+        for handler in profile.signer.jobs() {
+            job_registry.register(handler).inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
+        }
+    }
+    // The queue's own housekeeping, as a job rather than a fourth reaper: it
+    // reschedules itself, which is the mechanism periodic work uses. `0` keeps
+    // everything for ever, and is a handler not registered rather than a sweep
+    // with a cutoff at the epoch.
+    if config.jobs.retention_days > 0 {
+        job_registry
+            .register(Arc::new(crate::jobs::JobRetention::new(
+                database.clone(),
+                config.jobs.retention_days,
+            )))
+            .inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
     }
 
     let ttl = Duration::from_secs(config.nonce.ttl_seconds);
@@ -366,8 +405,7 @@ pub async fn serve_on_with(
     // Held for the life of this function: `serve_on` is `pub` and a caller may
     // run it more than once (its own tests do), and an un-cancelled reaper is
     // an infinite loop holding an `Arc<Database>` — one leaked task, and one
-    // database kept alive, per call. Scoped to the reaper on purpose: the
-    // signer `resume` relays spawned above must *survive* this returning.
+    // database kept alive, per call.
     let _reaper = AbortOnDrop(spawn_nonce_reaper(database.clone(), ttl));
     // Only when a retention is actually configured; `0` is "keep everything",
     // which is a task not spawned rather than a sweep with a cutoff at the
@@ -431,14 +469,20 @@ pub async fn serve_on_with(
 
     let app = build_app(database.clone(), config.clone(), profiles, auditor);
 
-    // One `shutdown` future, two listeners. The relay is held under
-    // `AbortOnDrop` so an error path below does not leak a task parked on a
-    // signal that will never arrive.
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let _shutdown_relay = AbortOnDrop(tokio::spawn(async move {
-        shutdown.await;
-        let _ = shutdown_tx.send(true);
-    }));
+    // The one task that drains the queue. Held under `AbortOnDrop` for the same
+    // reason the reapers are — an un-cancelled loop holding an `Arc<Database>`
+    // per `serve_on` call — and, unlike the relay tasks this replaced, it does
+    // *not* need to outlive this function: the work is durable now, so a job cut
+    // short is re-claimed from its own row rather than lost. It takes the same
+    // shutdown signal as both listeners, so a stop is graceful rather than an
+    // abort: it releases its leases on the way out, and a restart therefore
+    // re-claims its own work immediately instead of waiting one out.
+    let _job_runner = AbortOnDrop(crate::jobs::spawn_runner(
+        job_queue,
+        Arc::new(job_registry),
+        &config.jobs,
+        shutdown_rx.clone(),
+    ));
 
     info!(
         event = "server_listening",

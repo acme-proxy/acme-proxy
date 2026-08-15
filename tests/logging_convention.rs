@@ -48,6 +48,7 @@ const SUBSYSTEMS: &[&str] = &[
     "filter",
     "http_01",
     "ipam",
+    "job",
     "jws",
     "key_change",
     "local_ca",

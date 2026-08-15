@@ -186,18 +186,28 @@ pub trait SignerBackend: Send + Sync {
         Ok(None)
     }
 
-    /// Picks up work a previous run left unfinished. Called once at startup,
-    /// after the backend is built and before the server begins serving.
+    /// The background work this backend needs a durable queue for.
     ///
-    /// Only a backend that resolves issuance asynchronously has anything to do
-    /// here: its in-flight work lives in `tokio` tasks, which do not survive
-    /// the process. A synchronous backend like [`local_ca::LocalCa`] never has
-    /// a half-finished issuance to resume, so the default is to do nothing.
+    /// Only a backend that resolves issuance asynchronously has anything to
+    /// register: its work outlives the request that started it and must survive
+    /// the process. A synchronous backend like [`local_ca::LocalCa`] never has a
+    /// half-finished issuance at all, so the default is an empty list.
     ///
-    /// Failures are logged by the implementation rather than returned:
-    /// recovering old work is best-effort, and must never stop the server from
-    /// starting and serving new requests.
-    async fn resume(&self) {}
+    /// A getter on the trait for the same reason
+    /// [`crl_der`](SignerBackend::crl_der) and
+    /// [`http01_tokens`](SignerBackend::http01_tokens) are: whether a backend has
+    /// something to publish, or to run later, is the backend's own business, and
+    /// the alternative is threading a registry through `build_backends` for the
+    /// two implementations that have nothing to put in it.
+    ///
+    /// This replaced a `resume` hook that took no arguments and returned
+    /// nothing, which each asynchronous backend implemented by re-spawning its
+    /// own tasks at startup. Recovery is now one case of a queue rather than a
+    /// mechanism of its own — see [`crate::jobs::JobHandler::recover`], which is
+    /// where that logic went.
+    fn jobs(&self) -> Vec<Arc<dyn crate::jobs::JobHandler>> {
+        Vec::new()
+    }
 
     /// The `http-01` token store this backend answers the *upstream's* own
     /// challenge from, if it has one.
@@ -256,13 +266,14 @@ pub fn from_config(
     notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
+    jobs: crate::jobs::JobQueue,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
     match cfg.backend.as_str() {
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
         )?)),
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay, profiles, database, notifiers, resolver, proxies,
+            &cfg.relay, profiles, database, notifiers, resolver, proxies, jobs,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -290,7 +301,8 @@ pub fn from_config(
 /// `LocalCa` instances over the same files each keep their own in-memory
 /// revocation ledger and rewrite the CRL from it, so the second one to revoke
 /// silently drops the first one's entries. Two `RelaySigner`s over the same
-/// account key would likewise both resume the same in-flight orders. Hence also
+/// account key would likewise each register a job handler for one kind, which
+/// the registry refuses outright. Hence also
 /// the check below: identical configuration shares one instance, but *different*
 /// configuration touching the same file is refused outright rather than
 /// half-working.
@@ -300,6 +312,7 @@ pub fn build_backends(
     notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
+    jobs: &crate::jobs::JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
     // The identity of a configuration is its `Debug` rendering: every config
     // type derives `Debug`, the output is deterministic for equal values, and
@@ -325,7 +338,7 @@ pub fn build_backends(
     }
 
     // Which profiles each distinct configuration serves — what a relaying
-    // backend needs to know to resume the right orders.
+    // backend needs to know to recover the right orders and only those.
     let mut served: HashMap<String, Vec<String>> = HashMap::new();
     for profile in profiles {
         served
@@ -348,6 +361,7 @@ pub fn build_backends(
                     notifiers.clone(),
                     resolver.clone(),
                     proxies.clone(),
+                    jobs.clone(),
                 )
                 .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 built.insert(key, backend.clone());
@@ -452,6 +466,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            &crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
         assert_eq!(backends.len(), 2);
@@ -473,6 +488,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            &crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
         assert!(
@@ -500,6 +516,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            &crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("two backends over one key file must not both be built"),
@@ -527,6 +544,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            &crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend is a startup error"),
@@ -544,6 +562,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            crate::testutil::idle_job_queue(database().await),
         )
         .expect("local_ca is a known backend");
 
@@ -598,6 +617,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            crate::testutil::idle_job_queue(database().await),
         )
         .expect("custom is a known backend");
 
@@ -626,6 +646,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
         assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
@@ -644,6 +665,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend must not build"),
@@ -669,6 +691,7 @@ mod tests {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("the old backend name must not build"),

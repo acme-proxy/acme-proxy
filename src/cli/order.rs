@@ -137,6 +137,11 @@ pub async fn run_order_command(
             // `[proxy]` section `serve` reads.
             let proxies = crate::proxy::from_config(&config.proxy)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
+            // A queue nothing drains: this command revokes, which every backend
+            // answers inline, so no job is ever enqueued. Handing over a live
+            // queue would be worse than useless — it would let a one-shot CLI
+            // invocation write rows that only the running server can work off.
+            let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
             let signer = signer::from_config(
                 &profile.sections.signer,
                 vec![profile.name.clone()],
@@ -144,6 +149,7 @@ pub async fn run_order_command(
                 Arc::new(std::collections::HashMap::new()),
                 resolver,
                 proxies,
+                jobs,
             )
             .map_err(|error| CliError(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
@@ -263,6 +269,7 @@ mod tests {
             Arc::new(std::collections::HashMap::new()),
             resolver,
             crate::testutil::no_proxies(),
+            crate::jobs::JobQueue::new(database.clone(), &config.jobs),
         )
         .unwrap();
 

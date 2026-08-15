@@ -15,10 +15,11 @@ async fn an_empty_directory_url_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &RelayConfig::default(),
         vec!["default".to_string()],
-        db,
+        db.clone(),
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(db),
     ));
     assert!(error.contains("directory_url"), "{error}");
 }
@@ -40,10 +41,11 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db,
+        db.clone(),
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(db),
     ));
     assert!(
         error.contains("challenge_strategy") && error.contains("tlsalpn01"),
@@ -70,10 +72,11 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db,
+        db.clone(),
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(db),
     ));
     assert!(error.contains("rfc2136.server"), "{error}");
 }
@@ -95,6 +98,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(db.clone()),
     )
     .unwrap();
     let key_file = PathBuf::from(cfg.account_key_path.clone());
@@ -107,10 +111,11 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
     let _second = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db,
+        db.clone(),
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(db),
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(&kid_file).unwrap(), kid);
@@ -138,6 +143,7 @@ async fn the_generated_account_key_is_owner_only() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(database().await),
     )
     .unwrap();
 
@@ -160,6 +166,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -167,8 +174,10 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     // Issuance returns immediately, before the upstream has finished.
@@ -208,13 +217,15 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
 }
 
 /// A local order can be deleted by an operator between `issue` and the
-/// upstream answering — the relay runs in a detached task. There is then
-/// nothing to write the outcome onto, which must be survived quietly.
+/// upstream answering — the job outlives the request by minutes. There is then
+/// nothing to write the outcome onto, and retrying would never find one, so the
+/// job is retired rather than repeated until its budget runs out.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_settle_for_an_order_that_vanished_is_survived() {
+async fn a_settle_for_an_order_that_vanished_is_permanent() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -222,23 +233,30 @@ async fn a_settle_for_an_order_that_vanished_is_survived() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
 
-    settle(&signer.0, "ord-deleted", Ok(real_chain().await)).await;
+    match settle(&signer.0, "ord-deleted", real_chain().await).await {
+        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("no longer exists")),
+        other => panic!("a vanished order must be permanent, got {other:?}"),
+    }
 }
 
 /// The upstream is a foreign server: what it returns at the certificate URL
 /// is not this server's to trust blindly. A body that is not a chain, or a
-/// chain whose leaf will not parse, has to fail the local order rather than
-/// be stored as a certificate no client can use.
+/// chain whose leaf will not parse, has to fail the order **permanently** —
+/// asking the same upstream again returns the same unusable bytes, so spending
+/// the retry budget on it would only delay the client's real answer.
 #[tokio::test(flavor = "multi_thread")]
-async fn an_unusable_upstream_chain_fails_the_order() {
+async fn an_unusable_upstream_chain_fails_the_order_permanently() {
     use base64::prelude::*;
 
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -246,20 +264,17 @@ async fn an_unusable_upstream_chain_fails_the_order() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
 
     // Not a PEM chain at all.
     let order = ready_order(db.clone()).await;
-    settle(&signer.0, &order.id, Ok("not a PEM chain".to_string())).await;
-    assert_eq!(
-        Order::find_by_id(&order.id, &db)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        "invalid"
-    );
+    match settle(&signer.0, &order.id, "not a PEM chain".to_string()).await {
+        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("chain unparsable")),
+        other => panic!("an unparsable chain must be permanent, got {other:?}"),
+    }
 
     // A well-formed PEM CERTIFICATE block whose DER is not a certificate:
     // past `leaf_der_from_chain`, and caught by the X.509 parse after it.
@@ -268,15 +283,10 @@ async fn an_unusable_upstream_chain_fails_the_order() {
         "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
         BASE64_STANDARD.encode(b"not a certificate")
     );
-    settle(&signer.0, &order.id, Ok(chain)).await;
-    assert_eq!(
-        Order::find_by_id(&order.id, &db)
-            .await
-            .unwrap()
-            .unwrap()
-            .status,
-        "invalid"
-    );
+    match settle(&signer.0, &order.id, chain).await {
+        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("leaf unparsable")),
+        other => panic!("an unparsable leaf must be permanent, got {other:?}"),
+    }
 }
 
 /// This is what actually proves the async-completion notification
@@ -307,6 +317,7 @@ async fn settle_notifies_only_the_owning_profile() {
         Arc::new(NotifyDispatcher::new(vec![recorder_b.clone()])),
     );
 
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["a".to_string(), "b".to_string()],
@@ -314,8 +325,10 @@ async fn settle_notifies_only_the_owning_profile() {
         Arc::new(notifiers),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order_for("a", db.clone()).await;
 
     let outcome = signer
@@ -371,6 +384,7 @@ async fn issue_polls_until_the_upstream_settles() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -378,8 +392,10 @@ async fn issue_polls_until_the_upstream_settles() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -411,6 +427,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -418,8 +435,10 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -446,6 +465,119 @@ async fn a_failing_upstream_marks_the_order_invalid() {
     );
 }
 
+/// **The property the durable queue exists for.** A CA that is briefly
+/// unreachable used to invalidate the order on the first failed poll, leaving
+/// the client to place a new one; now the attempt goes back in the queue and the
+/// next one collects the certificate.
+///
+/// The order must never be seen `invalid` along the way — an intermediate
+/// `abandon` would be exactly the old behaviour wearing a retry.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
+    let chain = real_chain().await;
+    let upstream = testsrv::start(Script {
+        chain: chain.clone(),
+        // Two 503s: enough that the first attempt cannot succeed.
+        order_poll_outages: 2,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    // Retries on, unlike the default fixture: this test is about them. The
+    // budget is written onto the job row at enqueue, so the *queue* carries it.
+    let jobs = crate::config::JobsConfig {
+        max_attempts: 5,
+        ..test_jobs_config()
+    };
+    let queue = test_queue_with(db.clone(), &jobs);
+    let signer = RelaySigner::from_config(
+        &config(&upstream, &dir),
+        vec!["default".to_string()],
+        db.clone(),
+        no_notifiers(),
+        test_resolver(),
+        crate::testutil::no_proxies(),
+        queue.clone(),
+    )
+    .unwrap();
+    let _runner = TestRunner::start_with(queue, &signer, jobs);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            &order.id,
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+
+    let settled = await_status(db.clone(), &order.id, "valid").await;
+    assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
+    assert!(
+        upstream.order_polls() > 2,
+        "the outage must really have been survived rather than skipped"
+    );
+}
+
+/// The other half of the taxonomy: a CA that *states a reason* is believed on
+/// the first attempt, so the client hears the real answer without waiting out a
+/// retry budget it could never have exhausted usefully.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upstream_that_refuses_the_order_is_not_retried() {
+    let upstream = testsrv::start(Script {
+        order_fails: true,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    // A generous budget, so reaching `invalid` proves the *classification*
+    // rather than merely the budget running out.
+    let jobs = crate::config::JobsConfig {
+        max_attempts: 20,
+        ..test_jobs_config()
+    };
+    let queue = test_queue_with(db.clone(), &jobs);
+    let signer = RelaySigner::from_config(
+        &config(&upstream, &dir),
+        vec!["default".to_string()],
+        db.clone(),
+        no_notifiers(),
+        test_resolver(),
+        crate::testutil::no_proxies(),
+        queue.clone(),
+    )
+    .unwrap();
+    let _runner = TestRunner::start_with(queue, &signer, jobs);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            &order.id,
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+
+    await_status(db.clone(), &order.id, "invalid").await;
+    let job = crate::sqlite::job::Job::find_live(
+        crate::signer::relay::flow::RELAY_JOB_KIND,
+        &order.id,
+        &db,
+    )
+    .await
+    .unwrap();
+    assert!(
+        job.is_none(),
+        "a permanent refusal retires the job rather than leaving it queued"
+    );
+}
+
 /// A relay that never settles must be cut off by the budget rather than
 /// leaving the order processing indefinitely.
 #[tokio::test(flavor = "multi_thread")]
@@ -460,6 +592,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let db = database().await;
     let mut cfg = config(&upstream, &dir);
     cfg.poll_timeout_secs = 1;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
@@ -467,8 +600,10 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -486,9 +621,18 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         .await
         .unwrap()
         .unwrap();
+    let error = mapping.error.unwrap();
     assert!(
-        mapping.error.unwrap().contains("timed out"),
-        "the timeout must be named, not reported as a generic failure"
+        error.contains("timed out"),
+        "the timeout must be named, not reported as a generic failure: {error}"
+    );
+    // A timeout is *retryable*, so the order only reaches `invalid` once the
+    // attempts run out — which this fixture sets to one. The reason says which
+    // of the two bounds ended it, because "it timed out" and "it timed out and
+    // will not be tried again" are different things to an operator.
+    assert!(
+        error.contains("no attempts left"),
+        "the retirement must say the budget ran out: {error}"
     );
 }
 
@@ -503,6 +647,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -510,8 +655,10 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     let first = signer
@@ -558,6 +705,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -565,8 +713,10 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -587,6 +737,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
 async fn revoke_reaches_the_upstream() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
+    let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -594,8 +745,10 @@ async fn revoke_reaches_the_upstream() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
 
     let chain = real_chain().await;
     let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
@@ -614,6 +767,7 @@ async fn revoke_treats_already_revoked_as_success() {
     })
     .await;
     let dir = TempDir::new("upstream");
+    let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -621,8 +775,10 @@ async fn revoke_treats_already_revoked_as_success() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
 
     let leaf = crate::cert::leaf_der_from_chain(&real_chain().await).unwrap();
     signer
@@ -633,8 +789,12 @@ async fn revoke_treats_already_revoked_as_success() {
 
 /// The restart case: a row left `processing` by a dead process must be
 /// picked up and carried to a certificate, without the original request.
+///
+/// Recovery is now an *enqueue* rather than a spawn, so this additionally pins
+/// that the job row appears — the queue, not a task, is what carries it, which
+/// is also what gives a recovered relay the same retries as a fresh one.
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_finishes_a_relay_left_behind_by_a_restart() {
+async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     let chain = real_chain().await;
     let upstream = testsrv::start(Script {
         chain: chain.clone(),
@@ -658,7 +818,9 @@ async fn resume_finishes_a_relay_left_behind_by_a_restart() {
     .await
     .unwrap();
 
-    // A fresh backend, as a restarted process would build.
+    // A fresh backend and runner, as a restarted process would build. The
+    // runner calls `recover` on every handler before it claims anything.
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -666,9 +828,10 @@ async fn resume_finishes_a_relay_left_behind_by_a_restart() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
-    signer.resume().await;
+    let _runner = TestRunner::start(queue, &signer);
 
     let settled = await_status(db.clone(), &order.id, "valid").await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
@@ -682,7 +845,7 @@ async fn resume_finishes_a_relay_left_behind_by_a_restart() {
 /// Settled rows must be left alone: re-running a finished relay would
 /// finalize an upstream order twice.
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_ignores_rows_that_already_settled() {
+async fn recovery_ignores_rows_that_already_settled() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let db = database().await;
@@ -701,6 +864,7 @@ async fn resume_ignores_rows_that_already_settled() {
         .await
         .unwrap();
 
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -708,9 +872,10 @@ async fn resume_ignores_rows_that_already_settled() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
-    signer.resume().await;
+    let _runner = TestRunner::start(queue, &signer);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
@@ -720,20 +885,212 @@ async fn resume_ignores_rows_that_already_settled() {
     );
 }
 
-/// Nothing to resume is the common case and must be silent and harmless.
+/// Nothing to recover is the common case and must be silent and harmless.
 #[tokio::test(flavor = "multi_thread")]
-async fn resume_with_no_pending_rows_does_nothing() {
+async fn recovery_with_no_pending_rows_does_nothing() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
+    let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
+        db.clone(),
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
-    signer.resume().await;
+    let _runner = TestRunner::start(queue, &signer);
+    tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(upstream.order_polls(), 0);
+}
+
+/// The `RelayJob` handler's own refusals, driven directly rather than through
+/// `issue`.
+///
+/// Each is a state the queue can genuinely present the handler with — a job
+/// outliving its subject, a payload from an older build, a database that has
+/// gone away — and each has to pick `Retry` or `Failed` correctly, because
+/// getting it wrong either burns the budget on work that cannot succeed or
+/// gives up on work that would.
+mod handler {
+    use super::*;
+    use crate::jobs::{JobHandler, JobOutcome};
+    use crate::signer::relay::flow::{RELAY_JOB_KIND, RelayJob};
+    use crate::sqlite::job::Job;
+
+    /// Builds a backend with no runner: these tests call the handler by hand.
+    async fn handler_for(db: Arc<Database>) -> (RelayJob, Upstream, TempDir) {
+        let upstream = testsrv::start(Script::default()).await;
+        let dir = TempDir::new("upstream");
+        let signer = RelaySigner::from_config(
+            &config(&upstream, &dir),
+            vec!["default".to_string()],
+            db.clone(),
+            no_notifiers(),
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            test_queue(db),
+        )
+        .unwrap();
+        (RelayJob(signer.0.clone()), upstream, dir)
+    }
+
+    /// A claimed row, as the runner would hand one over.
+    fn job(payload: serde_json::Value) -> Job {
+        Job {
+            id: "job-1".to_string(),
+            kind: RELAY_JOB_KIND.to_string(),
+            dedup_key: "ord-1".to_string(),
+            payload,
+            status: "running".to_string(),
+            run_at: now_secs(),
+            attempts: 1,
+            max_attempts: 5,
+            deadline: None,
+            lease_until: None,
+            lease_owner: None,
+            last_error: None,
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        }
+    }
+
+    /// A row written by a build that shaped the payload differently. Retrying
+    /// cannot change what it says, so it is permanent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_payload_naming_no_order_is_permanent() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db).await;
+
+        match handler.run(&job(serde_json::json!({}))).await {
+            JobOutcome::Failed(reason) => assert!(reason.contains("names no order")),
+            other => panic!("expected a permanent failure, got {other:?}"),
+        }
+        // And `abandon` survives the same payload rather than panicking on it.
+        handler
+            .abandon(&job(serde_json::json!({})), "whatever")
+            .await;
+    }
+
+    /// The mapping row is what carries the CSR and the upstream URL. Without it
+    /// there is nothing to relay and nothing a later attempt could recover.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_missing_mapping_row_is_permanent() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db).await;
+
+        match handler
+            .run(&job(serde_json::json!({"order_id": "ord-gone"})))
+            .await
+        {
+            JobOutcome::Failed(reason) => assert!(reason.contains("no upstream order")),
+            other => panic!("expected a permanent failure, got {other:?}"),
+        }
+    }
+
+    /// A database that has gone away says nothing about the work, so every
+    /// arm that meets one asks to be tried again rather than giving up.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_database_failure_is_retryable_everywhere_it_is_met() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+        db.pool.close().await;
+
+        match handler
+            .run(&job(serde_json::json!({"order_id": "ord-1"})))
+            .await
+        {
+            JobOutcome::Retry(reason) => assert!(reason.contains("reading the upstream order")),
+            other => panic!("expected a retry, got {other:?}"),
+        }
+
+        // `settle`'s own lookup, on the same closed pool.
+        match settle(&handler.0, "ord-1", "irrelevant".to_string()).await {
+            JobOutcome::Retry(reason) => assert!(reason.contains("reading the local order")),
+            other => panic!("expected a retry, got {other:?}"),
+        }
+
+        // And `abandon` degrades to a log rather than panicking.
+        handler
+            .abandon(&job(serde_json::json!({"order_id": "ord-1"})), "why")
+            .await;
+    }
+
+    /// The deadline is best-effort: an order that cannot be read yields no
+    /// bound rather than refusing to queue the work at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deadline_for_an_unreadable_order_is_absent_rather_than_fatal() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+
+        assert!(
+            crate::signer::relay::flow::order_deadline("ord-missing", &handler.0)
+                .await
+                .is_none(),
+            "a missing order has no expiry to bound anything by"
+        );
+
+        db.pool.close().await;
+        assert!(
+            crate::signer::relay::flow::order_deadline("ord-1", &handler.0)
+                .await
+                .is_none(),
+            "an unreadable order degrades to no deadline, not to a refusal"
+        );
+    }
+
+    /// An order the operator deleted between `issue` and the retirement leaves
+    /// nothing to mark invalid — the audit row and the mapping update are both
+    /// skipped, quietly.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn abandoning_a_vanished_order_is_survived() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db).await;
+        handler
+            .abandon(&job(serde_json::json!({"order_id": "ord-gone"})), "why")
+            .await;
+    }
+
+    /// With no mapping row the audit trail cannot name who asked, and says so:
+    /// `Actor::system` and an empty client context, rather than inventing one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_retirement_with_no_mapping_row_is_attributed_to_the_system() {
+        let db = database().await;
+        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+        let order = ready_order(db.clone()).await;
+
+        handler
+            .abandon(
+                &job(serde_json::json!({"order_id": order.id})),
+                "the upstream went away",
+            )
+            .await;
+
+        assert_eq!(
+            Order::find_by_id(&order.id, &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "invalid"
+        );
+        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
+            &crate::sqlite::audit::AuditQuery {
+                order_id: Some(order.id.clone()),
+                limit: 10,
+                ..Default::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        let row = rows.first().expect("the retirement is audited");
+        assert_eq!(row.event, "certificate_issue_failed");
+        assert_eq!(row.actor_kind, "system");
+        assert!(row.client_ip.is_none());
+        assert_eq!(row.detail.as_deref(), Some("the upstream went away"));
+    }
 }

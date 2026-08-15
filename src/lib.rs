@@ -67,7 +67,7 @@
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
 //! use acme_proxy::{
-//!     Profile, ProfileParts, build_app, challenge, config::Config, filter, ipam, notify,
+//!     Profile, ProfileParts, build_app, challenge, config::Config, filter, ipam, jobs, notify,
 //!     signer, sqlite::db::Database,
 //! };
 //!
@@ -98,6 +98,10 @@
 //!         );
 //!     }
 //!     let notifiers = Arc::new(notifiers);
+//!     // The enqueue side of the durable queue. A backend that defers issuance
+//!     // (`relay`) is handed one at construction and queues into it; the runner
+//!     // that drains it is started separately, below.
+//!     let job_queue = jobs::JobQueue::new(database.clone(), &config.jobs);
 //!
 //!     let mut profiles = Vec::new();
 //!     for profile in &resolved {
@@ -113,6 +117,7 @@
 //!                     notifiers.clone(),
 //!                     resolver.clone(),
 //!                     proxies.clone(),
+//!                     job_queue.clone(),
 //!                 )?,
 //!                 filter: filter::from_config(
 //!                     &sections.filter,
@@ -140,6 +145,18 @@
 //!         database.clone(),
 //!     )?);
 //!     let app = build_app(database.clone(), config.clone(), profiles, audit);
+//!
+//!     // One runner drains the queue for the process. Every handler comes from
+//!     // a subsystem that has background work — `SignerBackend::jobs` today —
+//!     // and the runner calls `recover` on each before it claims anything, which
+//!     // is how work a previous run left in flight is picked back up.
+//!     let (_shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+//!     jobs::spawn_runner(
+//!         job_queue,
+//!         Arc::new(jobs::JobRegistry::new()),
+//!         &config.jobs,
+//!         shutdown_rx,
+//!     );
 //!
 //!     let listener = tokio::net::TcpListener::bind(&config.server.bind_address).await?;
 //!     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -177,6 +194,7 @@ pub mod filter;
 pub mod handlers;
 pub mod http_client;
 pub mod ipam;
+pub mod jobs;
 pub mod key_change;
 pub mod middlewares;
 pub mod notify;
@@ -341,9 +359,14 @@ impl Profile {
     /// warnings they emit at build time (`filter_disabled`,
     /// `challenge_validation_bypassed`) say *which* endpoint is wide open —
     /// with several mounted, an unattributed warning is worse than none.
+    /// `jobs` is the enqueue side of the durable queue, handed in rather than
+    /// built here for the reason the `Auditor` is built in `serve_on_with`:
+    /// `[jobs]` is process-wide, one queue drained by one runner, and a profile
+    /// is not the thing that owns it.
     pub fn build_all(
         config: &Config,
         database: Arc<Database>,
+        jobs: &crate::jobs::JobQueue,
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let resolved = config.resolve_profiles()?;
         // Resolved before anything can dial: a proxy URL that cannot be
@@ -378,6 +401,7 @@ impl Profile {
             notifiers.clone(),
             resolver.clone(),
             proxies.clone(),
+            jobs,
         )?;
 
         let mut profiles = Vec::with_capacity(resolved.len());
@@ -776,7 +800,12 @@ mod tests {
         let dir = crate::testutil::TempDir::new("build");
         let config = two_profiles_config(&dir);
 
-        let profiles = Profile::build_all(&config, database().await).unwrap();
+        let profiles = Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        )
+        .unwrap();
         assert_eq!(profiles.len(), 2);
 
         assert_eq!(profiles[0].name, "a");
@@ -792,7 +821,11 @@ mod tests {
     #[tokio::test]
     async fn build_all_refuses_a_configuration_that_mounts_nothing() {
         let config = config_from("[server]\nbase_url = \"http://acme.test\"\n");
-        let error = match Profile::build_all(&config, database().await) {
+        let error = match Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a server with no endpoint must not start"),
         };
@@ -809,7 +842,11 @@ mod tests {
             challenge.enabled = ["not-a-challenge"]
             "#,
         );
-        let error = match Profile::build_all(&config, database().await) {
+        let error = match Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown challenge type is a startup error"),
         };
@@ -832,7 +869,11 @@ mod tests {
             challenge.timeout_ms = 5000
             "#,
         );
-        let error = match Profile::build_all(&config, database().await) {
+        let error = match Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a deadline below challenge.timeout_ms is a startup error"),
         };
@@ -859,6 +900,13 @@ mod tests {
             challenge.timeout_ms = 1000
             "#,
         );
-        assert!(Profile::build_all(&config, database().await).is_ok());
+        assert!(
+            Profile::build_all(
+                &config,
+                database().await,
+                &crate::testutil::idle_job_queue(database().await)
+            )
+            .is_ok()
+        );
     }
 }

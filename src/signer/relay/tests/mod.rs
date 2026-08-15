@@ -10,16 +10,97 @@
 //! This file holds only what every section needs — the fixtures and the shared
 //! stubs. Each submodule is one concern:
 //!
-//! - [`lifecycle`] — startup, provisioning, `issue`/relay/settle, revoke, resume
+//! - [`lifecycle`] — startup, provisioning, `issue`/relay/settle, revoke, recovery
 //! - [`eab`] — the upstream credential, both ways of supplying it
 //! - [`dns01_strategy`] / [`http01_strategy`] — the two answering strategies
 //! - [`renewal`] — RFC 9773 windows, and the `UpstreamError` mapping
+//!
+//! Since the relay became a [`crate::jobs`] handler, `issue` **enqueues** rather
+//! than spawning, so a test that expects an order to settle must have a runner
+//! in the process. [`TestRunner`] is that, and every test driving `issue` to a
+//! conclusion starts one — which is also the only structural change the
+//! migration forced on this suite.
 
 mod dns01_strategy;
 mod eab;
 mod http01_strategy;
 mod lifecycle;
 mod renewal;
+
+/// The job configuration the tests run under: everything fast, retries off.
+///
+/// `max_attempts: 1` is deliberate for the default fixture. Most of these tests
+/// assert on the *first* outcome, and a retried failure would make them wait out
+/// a backoff before the order reached `invalid` — so retrying is opted into by
+/// the two tests that are about it, not out of by the rest.
+fn test_jobs_config() -> crate::config::JobsConfig {
+    crate::config::JobsConfig {
+        poll_interval_ms: 5,
+        max_attempts: 1,
+        retry_base_seconds: 0,
+        retry_max_seconds: 0,
+        lease_seconds: 5,
+        retention_days: 0,
+        ..crate::config::JobsConfig::default()
+    }
+}
+
+/// The queue a signer under test enqueues into.
+///
+/// Handed to `from_config` and then, for the tests that need the work actually
+/// done, to [`TestRunner::start`] — the *same* instance both times, so an
+/// enqueue wakes the runner directly rather than waiting for its next tick.
+fn test_queue(database: Arc<Database>) -> crate::jobs::JobQueue {
+    crate::jobs::JobQueue::new(database, &test_jobs_config())
+}
+
+/// A queue with a configuration of its own.
+///
+/// Needed because `max_attempts` is **frozen onto the row at enqueue**, not read
+/// by the runner: a test that wants retries has to say so on the queue that
+/// writes the row, and handing only the runner a bigger budget changes nothing.
+fn test_queue_with(
+    database: Arc<Database>,
+    config: &crate::config::JobsConfig,
+) -> crate::jobs::JobQueue {
+    crate::jobs::JobQueue::new(database, config)
+}
+
+/// The runner draining a queue, stopped when the guard drops.
+///
+/// The `watch` sender is held rather than the receiver so `Drop` signals a
+/// *graceful* stop, which is what releases the leases. An abort would leave rows
+/// `running` and a later assertion reading a state no production restart
+/// produces.
+struct TestRunner {
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl TestRunner {
+    fn start(queue: crate::jobs::JobQueue, signer: &RelaySigner) -> Self {
+        Self::start_with(queue, signer, test_jobs_config())
+    }
+
+    fn start_with(
+        queue: crate::jobs::JobQueue,
+        signer: &RelaySigner,
+        config: crate::config::JobsConfig,
+    ) -> Self {
+        let mut registry = crate::jobs::JobRegistry::new();
+        for handler in signer.jobs() {
+            registry.register(handler).unwrap();
+        }
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        crate::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+        Self { shutdown }
+    }
+}
+
+impl Drop for TestRunner {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
+}
 
 /// The shared resolver `Profile::build_all` supplies at startup.
 fn test_resolver() -> Arc<dyn crate::dns::Resolver> {

@@ -43,6 +43,12 @@ pub struct Script {
     pub already_revoked: bool,
     /// Drive the order to `invalid` instead of ever becoming ready.
     pub order_fails: bool,
+    /// Answer the first `n` order polls with a `503`, then behave normally.
+    ///
+    /// A CA that is briefly overloaded or being restarted behind a load
+    /// balancer, which is the failure the relay's retry exists for. Distinct
+    /// from [`Script::order_fails`], where the CA is working and says no.
+    pub order_poll_outages: usize,
     /// Omit `Location` from the `newAccount`/`newOrder` response.
     pub omit_location: bool,
     /// The PEM chain served at the certificate URL.
@@ -480,6 +486,17 @@ async fn route(
         }
         "/order/1" => {
             let polls = counters.order_polls.fetch_add(1, Ordering::SeqCst);
+            if polls < script.order_poll_outages {
+                return json_response(
+                    503,
+                    &json!({
+                        "type": "urn:ietf:params:acme:error:serverInternal",
+                        "detail": "the CA is temporarily unavailable",
+                    }),
+                    None,
+                    counters,
+                );
+            }
             if script.order_fails {
                 return json_response(200, &order_object(base, "invalid", false), None, counters);
             }

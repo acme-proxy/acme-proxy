@@ -150,6 +150,14 @@ The events worth building alerts on:
 | `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. |
 | `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
 | `upstream_relay_succeeded`, `upstream_relay_failed` | info / warn | Outcome of one relayed issuance under the `relay` signer backend. |
+| `job_run_completed` | info | One background job finished. Carries `job_kind`, the attempt it succeeded on, and `duration_ms`. |
+| `job_run_retried` | warn | A job failed in a way that may not recur and went back in the queue. Carries the reason and the next `run_at`. Routine in ones; a steady stream of the same `job_kind` means whatever it talks to is unwell. |
+| `job_run_abandoned` | error | A job was retired permanently — the handler refused it, the attempts ran out, or its deadline passed. For a `signer_relay_issue` job this is the moment the client's order goes `invalid`, so it is the line to alert on. |
+| `job_run_panicked` | error | A job handler panicked. The job is retried straight away rather than holding its lease, but this is always a bug — alert on it. |
+| `db_job_leases_reclaimed` | warn | Rows whose runner died holding the lease were returned to the queue. Expected once after an unclean shutdown; recurring means the runner is being killed mid-job. |
+| `job_lease_lost` | warn | A job finished after its lease had already been reclaimed, so its result was discarded and another runner will repeat the work. Means an attempt is overrunning `jobs.lease_seconds`. |
+| `job_deadline_passed` | warn | A job was claimed after its own deadline and retired without running. For a relay that means the local order had already expired. |
+| `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
 | `notify_delivery_failed` | warn | A notification backend could not deliver. Never affects the ACME response. |
 | `tls_handshake_timeout`, `tls_handshake_failed` | debug | Only with `server.tls.enabled`. Deliberately below the default filter: on a public listener these are scanner background noise, and one `warn` per failed handshake is a flood, not a signal. |

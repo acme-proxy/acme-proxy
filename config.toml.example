@@ -34,6 +34,7 @@
 #   [admin.tls]                         HTTPS on the admin listener
 #   [nonce]                             replay-nonce freshness
 #   [audit]                             reverse lookups and trail retention
+#   [jobs]                              the durable background-work queue
 #   [logging]                           filter, format, target
 #   [order]                    [per-profile]  the order object's lifetime
 #   [signer]                   [per-profile]  how a certificate is obtained
@@ -226,6 +227,44 @@ reverse_dns_timeout_ms = 2000       # ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS
 # set it where a retention policy says otherwise. `acme-proxy audit cleanup
 # --older-than <days>` is the same sweep run by hand.
 retention_days = 0                  # ACME_PROXY_AUDIT__RETENTION_DAYS
+
+[jobs]
+# The durable background-work queue: the `jobs` table plus the one runner that
+# drains it. This is how the server finishes work it has already promised a
+# client — an order answered `processing` is owed a certificate — so there is no
+# `enabled` key. What is tunable is how hard and how long it tries.
+#
+# How often the runner looks for work nobody woke it for. This bounds only
+# *scheduled* work: a backoff coming due, a periodic sweep firing. An enqueue
+# wakes the runner directly, so a relay queued by finalize starts immediately
+# whatever this says.
+poll_interval_ms = 1000             # ACME_PROXY_JOBS__POLL_INTERVAL_MS
+# How many jobs may run at once. A restart after an upstream outage that left a
+# few thousand orders in flight would otherwise become a few thousand concurrent
+# pollers against one CA, which is how a recoverable backlog turns into a
+# rate-limit ban.
+max_concurrent = 8                  # ACME_PROXY_JOBS__MAX_CONCURRENT
+# How many attempts a job gets before it is retired permanently. Counted when
+# the job is claimed, so one that kills the process still exhausts its budget
+# instead of crash-looping. With the base below, five attempts span roughly
+# seven and a half minutes. Unlike the other keys here this one is frozen onto
+# each row as it is queued, so a change applies to new work rather than to a
+# backlog already waiting.
+max_attempts = 5                    # ACME_PROXY_JOBS__MAX_ATTEMPTS
+# The first retry delay; each subsequent one doubles, up to the ceiling below.
+retry_base_seconds = 30             # ACME_PROXY_JOBS__RETRY_BASE_SECONDS
+# Where the doubling stops. An hour sits well under the default order lifetime,
+# which keeps a job's own deadline the binding constraint rather than this.
+retry_max_seconds = 3600            # ACME_PROXY_JOBS__RETRY_MAX_SECONDS
+# The default budget for one attempt, and therefore how long a claim is held
+# before another runner may take the row. A handler needing a different one says
+# so itself; the relay asks for signer.relay.poll_timeout_secs.
+lease_seconds = 300                 # ACME_PROXY_JOBS__LEASE_SECONDS
+# Delete settled job rows older than this many days. Unlike audit.retention_days
+# this defaults to non-zero: a finished job is a receipt, not evidence, and the
+# trail that has to be complete is audit_log's. 0 keeps everything for ever and
+# stops the sweep being scheduled at all.
+retention_days = 7                  # ACME_PROXY_JOBS__RETENTION_DAYS
 
 [logging]
 # Log level filtering (EnvFilter format). Overridden by RUST_LOG environment variable.

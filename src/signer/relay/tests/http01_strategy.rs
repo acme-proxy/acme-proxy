@@ -76,6 +76,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -84,10 +85,12 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         tokens.clone(),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -144,6 +147,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -152,10 +156,12 @@ async fn http01_retracts_after_a_rejected_challenge() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         tokens.clone(),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -192,6 +198,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -200,10 +207,12 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -242,6 +251,7 @@ async fn http01_refuses_a_wildcard_authorization() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -250,10 +260,12 @@ async fn http01_refuses_a_wildcard_authorization() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -296,6 +308,7 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        test_queue(database().await),
     ));
     assert!(error.contains("route53"), "{error}");
 }

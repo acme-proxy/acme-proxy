@@ -136,6 +136,19 @@ pub(crate) fn no_proxies() -> std::sync::Arc<crate::proxy::OutboundProxies> {
     std::sync::Arc::new(crate::proxy::OutboundProxies::direct())
 }
 
+/// A job queue with nothing draining it.
+///
+/// What every test that merely has to *construct* a signer backend wants: the
+/// queue is a constructor argument since the `relay` backend defers issuance
+/// into it, and a test asserting on a startup refusal or a synchronous backend
+/// never enqueues anything. A test that needs the work actually done starts a
+/// runner over its own queue instead — see `signer::relay::tests::TestRunner`.
+pub(crate) fn idle_job_queue(
+    database: std::sync::Arc<crate::sqlite::db::Database>,
+) -> crate::jobs::JobQueue {
+    crate::jobs::JobQueue::new(database, &crate::config::JobsConfig::default())
+}
+
 /// How a [`FakeProxy`] answers the request it is handed.
 #[cfg(test)]
 #[derive(Clone, Copy)]

@@ -301,7 +301,48 @@ migrated configuration before restarting.
   job that builds the book on pull requests — the deploy workflow only ran after
   merge, so a broken `SUMMARY.md` entry was previously found too late.
 
+- **`SignerBackend::resume` is gone, replaced by `SignerBackend::jobs`.** The
+  old hook took no arguments, returned nothing, and each asynchronous backend
+  implemented it by re-spawning its own `tokio` tasks at startup. A backend now
+  *registers job handlers* instead, and recovery is one case of a queue rather
+  than a mechanism of its own — see `JobHandler::recover`, which is where that
+  logic went. This is a Rust API change with no configuration surface; nothing
+  an operator writes down mentions either name.
+
+  `MAX_CONCURRENT_RELAYS`, a constant inside the `relay` backend that capped
+  concurrent upstream polling at 8, is likewise gone. The number and its
+  reasoning moved to `jobs.max_concurrent`, which has the same default and now
+  governs every kind of background work rather than that one backend's.
+
 ### Added
+
+- **A durable job queue, and with it retries for relayed issuance.** The
+  `relay` signer backend used to finish its work in a bare `tokio::spawn` whose
+  state lived on its `upstream_orders` row: a restart destroyed the task, and a
+  startup sweep re-created it from scratch. That bought *recovery* but never
+  *retry* — with nowhere to record that an attempt had failed and should happen
+  again, every failure had to be terminal, so a five-second upstream blip
+  marked the client's order `invalid` and left them to place a new one.
+
+  Background work is now a row in a new `jobs` table, drained by one runner per
+  process (`[jobs]`, `src/jobs/`). The practical differences:
+
+  - **A transient upstream failure is retried** with exponential backoff — a
+    TCP reset mid-poll, a nameserver hiccup, a 503, a rate limit, an attempt
+    that ran out of time. The order stays `processing` throughout and only
+    reaches `invalid` once the attempts or its own `expires` run out.
+  - **A CA that states a reason is still believed on the first attempt.** A
+    rejected challenge, a refused identifier or an unparsable chain fails
+    immediately rather than spending a budget it could never use.
+  - **A crashed process no longer needs a restart to recover.** Each claim
+    takes a lease, and a lease that expires returns the row to the queue.
+  - **A graceful shutdown releases its leases**, so a restart re-claims its own
+    work immediately instead of waiting one out.
+
+  The queue is generic: `jobs.retention_days`'s own sweep is the first
+  non-signer handler, and it is a self-rescheduling job rather than a fourth
+  reaper. Nothing about the ACME wire format changes, and `upstream_orders`
+  keeps every column it had.
 
 - **Issued leaves can now say where this CA's CRL and certificate live.** Two
   keys under `[signer.local_ca]`: `crl_distribution_points` writes

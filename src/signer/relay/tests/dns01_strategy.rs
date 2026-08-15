@@ -58,6 +58,7 @@ async fn bypass_triggers_the_offered_challenge() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     // No `with_updater`: the default strategy is bypass.
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -65,8 +66,10 @@ async fn bypass_triggers_the_offered_challenge() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -101,6 +104,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -108,8 +112,10 @@ async fn bypass_triggers_a_challenge_of_any_type() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -137,6 +143,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
@@ -144,8 +151,10 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
         no_notifiers(),
         test_resolver(),
         crate::testutil::no_proxies(),
+        queue.clone(),
     )
     .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -173,6 +182,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let updater = Arc::new(StubUpdater::default());
+    let queue = test_queue(db.clone());
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -181,10 +191,12 @@ async fn dns01_publishes_triggers_and_cleans_up() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         updater.clone(),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -234,6 +246,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
     let dir = TempDir::new("upstream");
     let db = database().await;
     let updater = Arc::new(StubUpdater::default());
+    let queue = test_queue(db.clone());
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -242,10 +255,12 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         updater.clone(),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -278,6 +293,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -286,10 +302,12 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         Arc::new(StubUpdater::default()),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer
@@ -325,6 +343,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
     .await;
     let dir = TempDir::new("upstream");
     let db = database().await;
+    let queue = test_queue(db.clone());
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
@@ -333,6 +352,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
             no_notifiers(),
             test_resolver(),
             crate::testutil::no_proxies(),
+            queue.clone(),
         )
         .unwrap(),
         Arc::new(StubUpdater {
@@ -340,6 +360,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
             ..StubUpdater::default()
         }),
     );
+    let _runner = TestRunner::start(queue, &signer);
     let order = ready_order(db.clone()).await;
 
     signer

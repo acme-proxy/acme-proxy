@@ -18,12 +18,20 @@
 //!
 //! An upstream validation cycle can take minutes. Holding the client's
 //! `finalize` request open for that long would tie up a connection and a SQLite
-//! handle, so [`RelaySigner::issue`] returns
-//! [`IssueOutcome::Processing`] and finishes in a background task. RFC 8555
-//! §7.4 has the `processing` order status for exactly this, and the client
-//! polls. The task owns the `Order` from then on: it calls `Order::finalize` on
-//! success and `Order::mark_invalid` on failure, which is why this backend
-//! needs an `Arc<Database>` where `local_ca` needs none.
+//! handle, so [`RelaySigner::issue`] returns [`IssueOutcome::Processing`] and
+//! finishes later. RFC 8555 §7.4 has the `processing` order status for exactly
+//! this, and the client polls. Whatever finishes it owns the `Order` from then
+//! on: it calls `Order::finalize` on success and `Order::mark_invalid` on
+//! failure, which is why this backend needs an `Arc<Database>` where `local_ca`
+//! needs none.
+//!
+//! That "later" is a row in the [`crate::jobs`] queue, not a `tokio::spawn`.
+//! `issue` enqueues a [`flow::RelayJob`] and the process-wide runner claims it —
+//! which is what gives a relay an attempt count, a backoff and a lease it did
+//! not have when this backend ran its own task and its own startup sweep. The
+//! practical difference is that a transient upstream failure now retries instead
+//! of invalidating the order, and a crashed process's work is reclaimed by
+//! lease expiry rather than only by a restart.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,9 +40,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use base64::prelude::*;
 use serde_json::json;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::RelayConfig;
+use crate::jobs::{JobHandler, JobQueue};
 use crate::notify::NotifyDispatcher;
 use crate::signer::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
@@ -56,7 +65,7 @@ use client::{AccountKey, AcmeClient, Signer};
 use account::provision;
 pub use account::{register_upstream_account, stored_kid};
 pub(crate) use eab::decode_secret;
-use flow::spawn_relay;
+use flow::{RelayJob, order_deadline, relay_spec};
 use wire::{RenewalInfoView, UpstreamOrderView, parse_rfc3339, upstream_to_signer_error};
 
 /// How this proxy satisfies the *upstream's* domain-control requirement.
@@ -98,8 +107,8 @@ struct Inner {
     strategy: ChallengeStrategy,
     poll: PollConfig,
     /// The profiles this backend answers for — several endpoints may share one
-    /// upstream configuration, and [`RelaySigner::resume`] must pick up
-    /// their in-flight orders and **only** theirs.
+    /// upstream configuration, and [`RelayJob::recover`] must pick up their
+    /// in-flight orders and **only** theirs.
     profiles: Vec<String>,
     /// The whole `profile name -> dispatcher` map, not just the entries in
     /// `profiles` above: a cheap `Arc` clone either way, and it sidesteps
@@ -107,21 +116,18 @@ struct Inner {
     /// one by `Order.profile` once an issuance resolves — the only place this
     /// backend has no `AppState`/`Profile` to reach a notifier through at all.
     notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
-    /// Caps how many relays poll the upstream at once; see
-    /// [`MAX_CONCURRENT_RELAYS`].
-    relay_permits: Arc<tokio::sync::Semaphore>,
+    /// Where an issuance is queued once the upstream order is open.
+    ///
+    /// The backend holds the *enqueue* side only; the runner that drains it is
+    /// process-wide and knows nothing about signers. How many relays poll one
+    /// upstream at once is therefore `jobs.max_concurrent` rather than a
+    /// constant here — this backend used to cap it itself, and the reasoning
+    /// moved with the number: uncapped, a restart after an outage that left a
+    /// few thousand orders in flight becomes a few thousand concurrent pollers
+    /// against one CA, which is how a recoverable backlog turns into a
+    /// rate-limit ban.
+    jobs: JobQueue,
 }
-
-/// How many upstream relays may be in flight at once.
-///
-/// `resume` spawns one task per row left `processing` by a previous run, and
-/// each polls the upstream in a loop for up to `poll_timeout_secs`. Uncapped,
-/// a restart after an upstream outage that left a few thousand orders in flight
-/// becomes a few thousand concurrent pollers against one CA — which is how a
-/// recoverable backlog turns into a rate-limit ban and a mass failure. Eight is
-/// well under any public CA's concurrency expectations and still drains a
-/// backlog steadily.
-const MAX_CONCURRENT_RELAYS: usize = 8;
 
 pub struct RelaySigner(Arc<Inner>);
 
@@ -144,6 +150,7 @@ impl RelaySigner {
         notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
         resolver: Arc<dyn crate::dns::Resolver>,
         proxies: Arc<crate::proxy::OutboundProxies>,
+        jobs: JobQueue,
     ) -> anyhow::Result<Self> {
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
@@ -230,7 +237,7 @@ impl RelaySigner {
             poll,
             profiles,
             notifiers,
-            relay_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_RELAYS)),
+            jobs,
         })))
     }
 }
@@ -238,7 +245,7 @@ impl RelaySigner {
 /// Loads (or creates) the account key, then loads (or registers) the `kid`.
 #[async_trait]
 impl SignerBackend for RelaySigner {
-    /// Opens the upstream order, then hands the rest to a background task.
+    /// Opens the upstream order, then queues the rest as a durable job.
     ///
     /// The `newOrder` itself is deliberately **synchronous**: it costs one
     /// round-trip, but it means an upstream refusal (an identifier it will not
@@ -301,60 +308,29 @@ impl SignerBackend for RelaySigner {
 
         info!(event = "upstream_order_opened", outcome = "success", order_id = %order_id, upstream_url = %order_url);
 
-        spawn_relay(inner, order_id.to_string(), csr_der.to_vec(), order_url);
+        // The order's own `expires` bounds how long this may be retried: past
+        // it the order is refused on read, so a certificate obtained upstream
+        // could never be collected. One extra primary-key read on a path that
+        // has just made an HTTPS round trip, and worth it because the bound then
+        // survives a restart rather than being recomputed from nothing.
+        let deadline = order_deadline(order_id, &inner).await;
+        inner
+            .jobs
+            .enqueue(relay_spec(order_id, deadline))
+            .await
+            .map_err(|error| SignerError::Internal(format!("queueing the relay: {error}")))?;
 
         Ok(IssueOutcome::Processing)
     }
 
-    /// Restarts relays this process lost when it last stopped.
+    /// The relay's one job kind.
     ///
-    /// A relay lives in a `tokio` task, so a restart mid-flight leaves the
-    /// local order `processing` and the upstream order untouched — the client
-    /// would poll forever. Every row still `processing` therefore gets a task
-    /// respawned, which POST-as-GETs the stored upstream order URL to find the
-    /// real state and carries on from there. RFC 8555 lets an order be re-read
-    /// at any time, so nothing has to start over: an upstream that already
-    /// issued simply has its certificate collected.
-    ///
-    /// This is why the CSR is stored — an upstream order still at `ready`
-    /// needs that exact CSR to finalize, and it is gone from memory.
-    async fn resume(&self) {
-        let inner = self.0.clone();
-        let pending = match UpstreamOrder::list_processing(&inner.profiles, &inner.database).await {
-            Ok(pending) => pending,
-            Err(error) => {
-                // Best-effort by contract: log and let the server start.
-                error!(event = "upstream_resume_lookup_failed", outcome = "failure", error = %error);
-                return;
-            }
-        };
-
-        if pending.is_empty() {
-            return;
-        }
-        info!(
-            event = "upstream_relay_resume_started",
-            outcome = "progress",
-            count = pending.len()
-        );
-        if pending.len() >= crate::sqlite::upstream_order::MAX_PROCESSING_BATCH {
-            warn!(
-                event = "upstream_relay_batch_capped",
-                outcome = "advisory",
-                count = pending.len(),
-                "more orders are still processing than one resume picks up; the rest \
-                 are taken by a later restart or by their own retry",
-            );
-        }
-
-        for row in pending {
-            spawn_relay(
-                inner.clone(),
-                row.order_id,
-                row.csr_der,
-                row.upstream_order_url,
-            );
-        }
+    /// A getter on the trait for the same reason `crl_der` and `http01_tokens`
+    /// are: whether a backend has background work is the backend's own business,
+    /// and the alternative is threading a registry through `build_backends` for
+    /// the two implementations that have nothing to register.
+    fn jobs(&self) -> Vec<Arc<dyn JobHandler>> {
+        vec![Arc::new(RelayJob(self.0.clone()))]
     }
 
     #[tracing::instrument(name = "relay_revoke", skip_all)]

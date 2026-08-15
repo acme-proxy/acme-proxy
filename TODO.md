@@ -22,15 +22,6 @@ keeps its corpses stops being read.
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
       own migration set selected by the URL scheme, never edits to these twelve
       files.
-- [ ] **A durable job runner with retries.** The one long-running task today is
-      `signer::relay::flow`: a `tokio::spawn` whose state lives on the
-      `upstream_orders` row and which `SignerBackend::resume` picks back up at
-      startup. That is the right shape, but it is hand-rolled for one backend
-      and retries nothing between restarts. Everything else that wants a queue
-      — expiry notifications, CRL regeneration, an OCSP responder's refresh —
-      wants the same table plus a claim/backoff/attempt-count loop, in one
-      place.
-
 ## Observability
 
 - [ ] **Name the client on the access line.** The server-wide `request` span
@@ -135,11 +126,11 @@ keeps its corpses stops being read.
       backends. The templating half exists already —
       `notify::build_environment` and the `.j2` convention (auto-escaping off,
       deliberately, unlike the web admin's `.html`).
-- [ ] **Expiry reminders**, at most one message per certificate per week. Two
-      pieces are missing: nothing stores the leaf's notAfter (`orders` holds
-      the PEM, and a notAfter column is a **new** migration, never an edit to a
-      frozen one), and there is no periodic task to sweep on — see the job
-      runner above.
+- [ ] **Expiry reminders**, at most one message per certificate per week. One
+      piece is missing: nothing stores the leaf's notAfter (`orders` holds the
+      PEM, and a notAfter column is a **new** migration, never an edit to a
+      frozen one). The sweep itself is now a `JobHandler` returning
+      `Reschedule`, the shape `jobs::retention` already uses.
   - [ ] Address them to the account's own `contact`, not only to the operator.
         Every existing `NotifyEvent` goes wherever the backend is configured to
         send; this would be the first whose recipient comes out of the data.

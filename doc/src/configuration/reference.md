@@ -47,6 +47,7 @@ endpoints it mounts.
 | `[admin.tls]` | HTTPS on the admin listener | no | [below](#admintls) |
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
 | `[audit]` | Reverse lookups and retention for the trail | no | [below](#audit) |
+| `[jobs]` | The durable background-work queue | no | [below](#jobs) |
 | `[dns]` | The resolver every outbound lookup uses | no | [below](#dns) |
 | `[proxy]` | The forward proxy outbound clients dial through | no | [below](#proxy) |
 | `[logging]` | Filter, format, target | no | [below](#logging) |
@@ -333,6 +334,73 @@ Any non-zero value spawns a daily sweep beside the nonce reaper, running the
 same `DELETE` as `acme-proxy audit cleanup --older-than <days>`.
 
 See [Audit Trail](../operations/audit.md).
+
+---
+
+## `[jobs]`
+
+The durable background-work queue: the `jobs` table plus the one runner that
+drains it. **Process-wide, not per-profile** — there is one queue and one
+runner for the process, so this section may not appear under
+`[profiles.<name>]`.
+
+There is deliberately **no `enabled` key**. The queue is how the server finishes
+work it has already promised a client: an order answered `processing` is owed a
+certificate. Switching it off would not disable a feature, it would strand the
+orders. What is tunable is how hard and how long the server tries.
+
+**`poll_interval_ms`** (`Integer`) — *Default: `1000` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL_MS`*
+
+How often the runner looks for work nobody woke it for. This bounds only
+*scheduled* work — a backoff coming due, a periodic sweep firing. Queueing a job
+wakes the runner directly, so a relay queued by `finalize` starts immediately
+whatever this says, which is what keeps a polling ACME client from waiting on a
+tick.
+
+**`max_concurrent`** (`Integer`) — *Default: `8` | Env: `ACME_PROXY_JOBS__MAX_CONCURRENT`*
+
+How many jobs may run at once. A restart after an upstream outage that left a
+few thousand orders in flight would otherwise become a few thousand concurrent
+pollers against one CA, which is how a recoverable backlog turns into a
+rate-limit ban.
+
+**`max_attempts`** (`Integer`) — *Default: `5` | Env: `ACME_PROXY_JOBS__MAX_ATTEMPTS`*
+
+How many attempts a job gets before it is retired permanently. Counted when the
+job is *claimed*, so one that kills the process still exhausts its budget rather
+than crash-looping. With the 30-second base below and doubling, five attempts
+span roughly seven and a half minutes.
+
+Unlike every other key here, this one is **frozen onto each row as it is
+queued** rather than read afresh each attempt, so raising it applies to work
+queued from then on and not to a backlog already waiting.
+
+**`retry_base_seconds`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_JOBS__RETRY_BASE_SECONDS`*
+
+The first retry delay; each subsequent one doubles. Longer than any single
+upstream round trip, so a retry is not simply the same failure again, and short
+enough that a blip clears inside one client poll cycle.
+
+**`retry_max_seconds`** (`Integer`) — *Default: `3600` | Env: `ACME_PROXY_JOBS__RETRY_MAX_SECONDS`*
+
+Where the doubling stops, and a real ceiling — the jitter applied to each delay
+only ever subtracts, so no retry is scheduled past this. An hour sits well under
+the default order lifetime, which keeps a job's own deadline the binding
+constraint rather than this.
+
+**`lease_seconds`** (`Integer`) — *Default: `300` | Env: `ACME_PROXY_JOBS__LEASE_SECONDS`*
+
+The default budget for one attempt, and therefore how long a claim is held
+before another runner may take the row. A handler needing a different one says
+so itself: the `relay` signer asks for its own `signer.relay.poll_timeout_secs`.
+
+**`retention_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_JOBS__RETENTION_DAYS`*
+
+Delete settled job rows older than this many days. Unlike
+[`audit.retention_days`](#audit) this defaults to a **non-zero** value: a
+finished job is a receipt, not evidence, and the trail that has to be complete
+is `audit_log`'s. `0` keeps everything for ever and stops the sweep being
+scheduled at all.
 
 ---
 
