@@ -21,10 +21,14 @@ entry.
 ## Backends
 
 - **[Email](email.md)** — SMTP, via `lettre`.
-- **[Mattermost](mattermost.md)** — incoming webhooks (Slack-compatible).
-- **[Custom Script](custom.md)** — shell out to a local script.
+- **[Webhook](webhook.md)** — any HTTP endpoint, with the URL, method, headers
+  and body all configured. This is how Slack, Mattermost, Teams, Telegram and
+  Matrix are reached: they differ in those four values and nothing else, so
+  each is a configuration entry rather than a backend of its own.
+- **[Custom Script](custom.md)** — shell out to a local script, for a channel
+  that is not an HTTP request at all.
 
-Email and Mattermost render their messages with MiniJinja templates you can
+Email and webhook render their messages with MiniJinja templates you can
 override; see [Customizing Templates](templates.md).
 
 ## Configuration
@@ -32,7 +36,11 @@ override; see [Customizing Templates](templates.md).
 ```toml
 [notify]
 # Which backends are active. Empty (the default) means no notifications at all.
-enabled = ["email", "mattermost"]
+enabled = ["email", "webhook"]
+
+# Which [notify.webhook.<name>] entries to POST to, when "webhook" is listed
+# above.
+webhook_enabled = ["slack"]
 
 # Which [notify.custom.<name>] entries to run, when "custom" is listed above.
 custom_enabled = []
@@ -46,14 +54,20 @@ template_dir = "/etc/acme-proxy/templates"
 
 **`enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__ENABLED`*
 
-Active backends: any of `email`, `mattermost`, `custom`. Empty means the
-subsystem is off.
+Active backends: any of `email`, `webhook`, `custom`. Empty means the
+subsystem is off. `"mattermost"` was removed in favour of `webhook` and is
+refused by name.
+
+**`webhook_enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__WEBHOOK_ENABLED`*
+
+Which entries under `[notify.webhook.<name>]` to POST to, and in what order.
+Listing `"webhook"` in `enabled` while leaving this empty is a startup error,
+as is naming an entry that has no table.
 
 **`custom_enabled`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__CUSTOM_ENABLED`*
 
-Which entries under `[notify.custom.<name>]` to run, and in what order. Listing
-`"custom"` in `enabled` while leaving this empty is a startup error, as is
-naming an entry that has no table.
+Which entries under `[notify.custom.<name>]` to run, and in what order. The
+same two startup errors apply.
 
 **`template_dir`** (`String`) — *Default: `""` | Env: `ACME_PROXY_NOTIFY__TEMPLATE_DIR`*
 
@@ -80,8 +94,8 @@ already succeeded. Two consequences worth planning around:
 - **A failure is retried, unless it never could have worked.** A refused SMTP
   connection, a timeout, a 429 or a 5xx from a webhook goes back in the queue
   under `jobs.max_attempts` and the shared backoff. A template that does not
-  render, a `webhook_url` that does not parse and any other 4xx are refused on
-  the first attempt — retrying would reach the same answer four more times and
+  render, a `url` that does not parse and any other 4xx are refused on the
+  first attempt — retrying would reach the same answer four more times and
   delay the log line saying so.
 
 Every attempt logs `notify_delivered` or `notify_delivery_failed`. When the

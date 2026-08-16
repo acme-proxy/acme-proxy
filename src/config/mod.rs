@@ -89,29 +89,34 @@ pub(crate) fn valid_config_key_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Resolves a `<subsystem>.custom_enabled` list against the
-/// `<subsystem>.custom` table, validating both halves.
+/// Resolves a selection list against the table of named entries it selects
+/// from, validating both halves.
 ///
-/// Two subsystems grew this independently — `notify` factored it into a named
-/// function, `filter` left it inline inside a `match` arm — and they must not
+/// Three tables have this shape now — `notify.custom`, `notify.webhook`, and
+/// `filter` grew it independently before its redesign — and they must not
 /// drift, because the name rule in particular carries reasoning that is not
-/// obvious from the code: a custom entry's name is also an environment-variable
+/// obvious from the code: an entry's name is also an environment-variable
 /// segment, which the `config` crate lowercases, so anything outside the
 /// permitted set could name one entry in a file and a silently different one
 /// through the environment.
 ///
-/// `subsystem` is the configuration prefix (`"filter"` / `"notify"`), used only
-/// to word the errors so an operator is told which key to go and look at.
-pub(crate) fn resolve_custom_entries<'a, T>(
-    subsystem: &str,
+/// `table` is the entries' own path (`"notify.custom"`, `"notify.webhook"`) and
+/// `enabled_key` the key selecting from it; both are used only to word the
+/// errors, so an operator is told which key to go and look at. `backend` is the
+/// value in `<subsystem>.enabled` that turned the table on.
+pub(crate) fn resolve_named_entries<'a, T>(
+    table: &str,
+    enabled_key: &str,
+    backend: &str,
     entries: &'a BTreeMap<String, T>,
     enabled: &'a [String],
 ) -> anyhow::Result<Vec<(&'a str, &'a T)>> {
-    validate_key_names(&format!("{subsystem}.custom"), entries.keys())?;
+    validate_key_names(table, entries.keys())?;
+    let subsystem = table.split('.').next().unwrap_or(table);
     anyhow::ensure!(
         !enabled.is_empty(),
-        "{subsystem}.custom is enabled but {subsystem}.custom_enabled is empty; \
-         list the [{subsystem}.custom.<name>] entries to run, or remove `custom` from \
+        "{table} is enabled but {enabled_key} is empty; \
+         list the [{table}.<name>] entries to use, or remove `{backend}` from \
          {subsystem}.enabled"
     );
 
@@ -120,8 +125,7 @@ pub(crate) fn resolve_custom_entries<'a, T>(
         .map(|name| {
             let entry = entries.get(name).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "{subsystem}.custom_enabled names `{name}`, but no \
-                     [{subsystem}.custom.{name}] is configured"
+                    "{enabled_key} names `{name}`, but no [{table}.{name}] is configured"
                 )
             })?;
             Ok((name.as_str(), entry))
@@ -198,7 +202,7 @@ const LIST_KEYS: &[&str] = &[
     "notify.enabled",
     "notify.email.to",
     "notify.email.events",
-    "notify.mattermost.events",
+    "notify.webhook_enabled",
     "notify.custom_enabled",
     "meta.caa_identities",
     "proxy.no_proxy",
@@ -226,7 +230,7 @@ impl Config {
             "notify.enabled" => &self.notify.enabled,
             "notify.email.to" => &self.notify.email.to,
             "notify.email.events" => &self.notify.email.events,
-            "notify.mattermost.events" => &self.notify.mattermost.events,
+            "notify.webhook_enabled" => &self.notify.webhook_enabled,
             "notify.custom_enabled" => &self.notify.custom_enabled,
             "meta.caa_identities" => &self.meta.caa_identities,
             "proxy.no_proxy" => &self.proxy.no_proxy,
@@ -281,22 +285,32 @@ impl Config {
                 }
             }
         }
-        // Same reasoning, one level deeper: `notify.custom.<name>` is also a
-        // table keyed by a runtime name, and it has two nested list fields.
+        // Same reasoning, one level deeper: `notify.custom.<name>` and
+        // `notify.webhook.<name>` are also tables keyed by a runtime name, with
+        // list fields of their own. (`notify.webhook.<name>.headers` is a map
+        // rather than a list, so it needs no registration — `config` nests it
+        // from `…__HEADERS__<NAME>` without help.)
         for name in names_in_env("ACME_PROXY_NOTIFY__CUSTOM__") {
             environment = environment.with_list_parse_key(&format!("notify.custom.{name}.args"));
             environment = environment.with_list_parse_key(&format!("notify.custom.{name}.events"));
         }
+        for name in names_in_env("ACME_PROXY_NOTIFY__WEBHOOK__") {
+            environment = environment.with_list_parse_key(&format!("notify.webhook.{name}.events"));
+        }
         for profile in &profiles_in_env {
-            let prefix = format!(
-                "ACME_PROXY_PROFILES__{}__NOTIFY__CUSTOM__",
-                profile.to_ascii_uppercase()
-            );
+            let upper = profile.to_ascii_uppercase();
+            let prefix = format!("ACME_PROXY_PROFILES__{upper}__NOTIFY__CUSTOM__");
             for name in names_in_env(&prefix) {
                 environment = environment
                     .with_list_parse_key(&format!("profiles.{profile}.notify.custom.{name}.args"));
                 environment = environment.with_list_parse_key(&format!(
                     "profiles.{profile}.notify.custom.{name}.events"
+                ));
+            }
+            let prefix = format!("ACME_PROXY_PROFILES__{upper}__NOTIFY__WEBHOOK__");
+            for name in names_in_env(&prefix) {
+                environment = environment.with_list_parse_key(&format!(
+                    "profiles.{profile}.notify.webhook.{name}.events"
                 ));
             }
         }
@@ -912,6 +926,50 @@ mod tests {
         assert_eq!(profiles[0].sections.filter.rules, vec!["only"]);
     }
 
+    /// `[notify.webhook.<name>]` is the third table keyed by a runtime name, so
+    /// its `events` needs the same scan-then-register treatment as
+    /// `filter.check` and `notify.custom` — without it the variable is silently
+    /// dropped rather than refused, and the entry quietly reverts to all six
+    /// events. `headers` is the counter-case: a map, which `config` nests from
+    /// `…__HEADERS__<NAME>` with no registration at all.
+    #[test]
+    fn env_configures_a_named_webhook_with_its_list_and_its_header_map() {
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_NOTIFY__ENABLED", "webhook"),
+            ("ACME_PROXY_NOTIFY__WEBHOOK_ENABLED", "slack,matrix"),
+            (
+                "ACME_PROXY_NOTIFY__WEBHOOK__SLACK__URL",
+                "https://hooks.slack.example/services/T/B/x",
+            ),
+            (
+                "ACME_PROXY_NOTIFY__WEBHOOK__SLACK__EVENTS",
+                "certificate_issued,certificate_revoked",
+            ),
+            ("ACME_PROXY_NOTIFY__WEBHOOK__MATRIX__METHOD", "PUT"),
+            (
+                "ACME_PROXY_NOTIFY__WEBHOOK__MATRIX__HEADERS__AUTHORIZATION",
+                "Bearer syt_xxx",
+            ),
+        ]);
+
+        let config = Config::load().expect("load should succeed");
+        assert_eq!(config.notify.webhook_enabled, vec!["slack", "matrix"]);
+        assert_eq!(
+            config.notify.webhook["slack"].events,
+            vec!["certificate_issued", "certificate_revoked"]
+        );
+        assert_eq!(config.notify.webhook["matrix"].method, "PUT");
+        assert_eq!(
+            config.notify.webhook["matrix"].headers["authorization"],
+            "Bearer syt_xxx"
+        );
+        // Untouched keys keep their defaults rather than resetting.
+        assert_eq!(
+            config.notify.webhook["slack"].method,
+            WebhookNotifyConfig::default().method
+        );
+    }
+
     /// The unindexed shape (`ACME_PROXY_FILTER__CHECK__TYPE`, with no name
     /// segment) is a clear load-time error rather than something silently
     /// accepted or ignored: `filter.check` is a table of *named* entries, so
@@ -1017,7 +1075,8 @@ mod tests {
                 "challenge_failed"
             ]
         );
-        assert_eq!(config.notify.mattermost.events, config.notify.email.events);
+        assert!(config.notify.webhook_enabled.is_empty());
+        assert!(config.notify.webhook.is_empty());
         assert!(config.dns.resolver.is_none());
         assert_eq!(config.proxy.http_url, "");
         assert_eq!(config.proxy.https_url, "");
@@ -1314,8 +1373,8 @@ mod tests {
         );
         assert_eq!(example.notify.email.events, defaults.notify.email.events);
         assert_eq!(
-            example.notify.mattermost.events,
-            defaults.notify.mattermost.events
+            example.notify.webhook_enabled,
+            defaults.notify.webhook_enabled
         );
         assert_eq!(example.dns.resolver, defaults.dns.resolver);
         assert_eq!(example.proxy.http_url, defaults.proxy.http_url);

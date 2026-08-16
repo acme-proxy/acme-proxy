@@ -4,7 +4,7 @@
 //! [`challenge::http_01`](crate::challenge::http_01),
 //! [`signer::relay::client`](crate::signer::relay::client),
 //! [`ipam::http`](crate::ipam::http) and
-//! [`notify::mattermost`](crate::notify::mattermost) have in common is
+//! [`notify::webhook`](crate::notify::webhook) have in common is
 //! *plumbing*: pick a URL apart into host, scheme and port; connect through the
 //! shared resolver; wrap in TLS with the right SNI; hand the stream to hyper and
 //! spawn the connection task. That part was written out four times, and

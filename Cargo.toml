@@ -121,10 +121,15 @@ clap = { version = "4", features = ["derive"] }
 # SMTP delivery for the `notify` subsystem's `email` backend. `tokio1-rustls-tls`
 # keeps it on the same TLS stack as the rest of the project (no native-tls/OpenSSL).
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
-# Message templating for the `notify` subsystem (email/Mattermost bodies).
+# Message templating for the `notify` subsystem (email bodies, webhook payloads).
 # A real template engine rather than hand-rolled substitution: operator-editable
 # templates plausibly need loops (multiple SANs) and conditionals (optional IP).
-minijinja = "2"
+# The `json` feature is the `tojson` filter, which the `webhook` backend's body
+# templates need: a `.j2` template has auto-escaping off (deliberately), so an
+# error string carrying a quote or a newline would otherwise render a payload
+# the receiving chat provider answers 400 to. `serde_json` is already a direct
+# dependency, so the feature adds nothing to the graph `cargo deny` audits.
+minijinja = { version = "2", features = ["json"] }
 # PKCS#11 for the `hsm` feature — see [features] above. `cryptoki` rather than
 # the older `pkcs11` crate: it is the parallaxsecond/Parsec binding, actively
 # tracked against the OASIS spec, and wraps sessions and object handles in safe

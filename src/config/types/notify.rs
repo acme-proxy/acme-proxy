@@ -14,14 +14,24 @@ use super::empty_string_is_no_values;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
-    /// Which backends are active: `"email"`, `"mattermost"`, `"custom"`.
+    /// Which backends are active: `"email"`, `"webhook"`, `"custom"`.
     /// Empty (default) means no notifications are sent at all.
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub enabled: Vec<String>,
     pub email: EmailNotifyConfig,
-    pub mattermost: MattermostNotifyConfig,
+    /// Which of `webhook`'s entries to POST to, and in what order, when
+    /// `webhook` is listed in `enabled` — the same shape as `custom_enabled`
+    /// below, and resolved by the same [`resolve_named_entries`].
+    ///
+    /// [`resolve_named_entries`]: crate::config::resolve_named_entries
+    #[serde(deserialize_with = "empty_string_is_no_values")]
+    pub webhook_enabled: Vec<String>,
+    /// Named HTTP webhook targets, selected and ordered by `webhook_enabled`.
+    /// Each name must match `^[a-z0-9-]+$`, same as `custom`'s entries and for
+    /// the same reason.
+    pub webhook: BTreeMap<String, WebhookNotifyConfig>,
     /// Which of `custom`'s entries to run, and in what order, when `custom`
-    /// is listed in `enabled` — the same shape as `filter.custom_enabled`.
+    /// is listed in `enabled` — the same shape as `webhook_enabled`.
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub custom_enabled: Vec<String>,
     /// Named external script/webhook configs, selected and ordered by
@@ -72,26 +82,50 @@ impl Default for EmailNotifyConfig {
         }
     }
 }
-/// Configuration for the `mattermost` notify backend (incoming webhook).
+/// Configuration for one named `webhook` notify target: an HTTP request whose
+/// URL, method, headers and body are all the operator's to state.
+///
+/// This is what makes a chat provider configuration rather than a backend —
+/// Slack, Mattermost, Teams, Telegram and Matrix differ only in these four
+/// values. See [`crate::notify::webhook`].
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct MattermostNotifyConfig {
-    pub webhook_url: String,
-    /// Empty means the webhook's own configured default channel.
-    pub channel: String,
-    /// Empty means the webhook's own configured default username.
-    pub username: String,
+pub struct WebhookNotifyConfig {
+    /// The endpoint to call. Required once the entry is selected; it routinely
+    /// carries the credential in its path (a Slack hook id, a Telegram bot
+    /// token), which is why nothing ever logs more of it than the host.
+    pub url: String,
+    /// `"POST"` (default), `"PUT"` or `"PATCH"`. Matrix's send-message API is
+    /// the reason this is configurable at all.
+    pub method: String,
+    /// Extra request headers, e.g. `Authorization`. Applied after the
+    /// defaults, so an entry may override `content-type`.
+    pub headers: BTreeMap<String, String>,
+    /// The request body, as a MiniJinja template. `message` (the rendered
+    /// `webhook/<event>.j2`), `hook` and every field of the event's own
+    /// payload are in scope.
+    ///
+    /// The default is the shape Slack, Mattermost and Teams all accept. Note
+    /// the `tojson` filter: `.j2` templates have auto-escaping off, so a
+    /// message holding a quote or a newline needs it to stay valid JSON.
+    pub body: String,
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub events: Vec<String>,
     pub timeout_ms: u64,
 }
 
-impl Default for MattermostNotifyConfig {
+/// The default `body`: the `{"text": …}` payload Slack, Mattermost and
+/// Microsoft Teams incoming webhooks all accept, so those three need a `url`
+/// and nothing else.
+pub const DEFAULT_WEBHOOK_BODY: &str = r#"{"text": {{ message | tojson }}}"#;
+
+impl Default for WebhookNotifyConfig {
     fn default() -> Self {
         Self {
-            webhook_url: String::new(),
-            channel: String::new(),
-            username: String::new(),
+            url: String::new(),
+            method: "POST".to_string(),
+            headers: BTreeMap::new(),
+            body: DEFAULT_WEBHOOK_BODY.to_string(),
             events: all_notify_events(),
             timeout_ms: 5000,
         }

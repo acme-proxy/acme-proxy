@@ -3,8 +3,10 @@
 //! The shape mirrors [`filter`](crate::filter)/[`signer`](crate::signer): a
 //! trait, an error type, and a [`from_config`] selector building the
 //! configured set at startup. Three backends exist today —
-//! [`email`], [`mattermost`], and [`custom`] (an external script/webhook,
-//! for any channel this server has no built-in support for).
+//! [`email`], [`webhook`] (any HTTP endpoint, with the URL, method, headers
+//! and body all configured, which is what makes a chat provider configuration
+//! rather than code), and [`custom`] (an external script, for a channel that
+//! is not an HTTP request at all).
 //!
 //! ## Fire-and-forget, always — and now durable
 //!
@@ -37,8 +39,8 @@
 //!
 //! Unlike [`FilterConfig::rules`](crate::config::FilterConfig), where every
 //! filter must agree, notify backends are independent broadcast side-channels
-//! — an operator plausibly wants email only for issuance/revocation and
-//! Mattermost for everything including failures. Each backend's own `events`
+//! — an operator plausibly wants email only for issuance/revocation and a chat
+//! webhook for everything including failures. Each backend's own `events`
 //! list (defaulting to all six kinds) decides what reaches it, and the list
 //! lives on its [`BackendSlot`] so the check happens once, in
 //! [`NotifyDispatcher::dispatch`], rather than in each backend's own delivery
@@ -68,7 +70,7 @@ use crate::jobs::{JobQueue, JobSpec};
 pub mod custom;
 pub mod email;
 pub mod job;
-pub mod mattermost;
+pub mod webhook;
 
 pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 
@@ -365,9 +367,9 @@ impl NotifyEvent {
 /// The id is **not** [`NotifyBackend::name`]: that is a `&'static str` a backend
 /// type answers, so every `custom` entry reports `"custom"` and two of them
 /// would be indistinguishable to a job row. It is built from the configuration
-/// instead — `email`, `mattermost`, `custom:<entry>` — which makes it stable
-/// across a restart, the property a durable payload needs. The same reasoning
-/// gives `filter::custom` its `ACME_FILTER_CHECK_NAME`.
+/// instead — `email`, `webhook:<entry>`, `custom:<entry>` — which makes it
+/// stable across a restart, the property a durable payload needs. The same
+/// reasoning gives `filter::custom` its `ACME_FILTER_CHECK_NAME`.
 pub struct BackendSlot {
     id: String,
     /// The event kinds this backend's own `events` list admits. Filtering here
@@ -564,20 +566,21 @@ pub fn from_config(
                     &cfg.email.events,
                 )]
             }
-            "mattermost" => {
-                validate_events("notify.mattermost.events", &cfg.mattermost.events)?;
-                vec![BackendSlot::new(
-                    "mattermost",
-                    Arc::new(mattermost::MattermostNotifier::from_config(
-                        &cfg.mattermost,
-                        env.clone(),
-                        resolver.clone(),
-                        proxies.clone(),
-                    )?),
-                    &cfg.mattermost.events,
-                )]
-            }
+            "webhook" => build_webhook_slots(cfg, &env, &resolver, &proxies)?,
             "custom" => build_custom_slots(cfg)?,
+            // Refused by name, the `signer.backend = "acme_proxy"` -> `relay`
+            // treatment: the `mattermost` backend was one provider's payload
+            // shape frozen into a copy of the webhook transport, and every
+            // other part of it now lives in `webhook`. An unmigrated
+            // configuration stops the server rather than coming up looking
+            // configured and notifying nobody.
+            "mattermost" => anyhow::bail!(
+                "notify.enabled: `mattermost` was replaced by `webhook`. Use \
+                 notify.enabled = [\"webhook\"] with a [notify.webhook.<name>] entry \
+                 whose `url` is the incoming webhook URL; the default `body` is \
+                 already the payload Mattermost accepts. `channel` and `username` \
+                 move into that `body`"
+            ),
             other => anyhow::bail!("unknown notify backend: {other}"),
         };
         slots.extend(built);
@@ -605,22 +608,68 @@ pub fn from_config(
 /// The entry name is what makes two custom backends tell-apart-able: every
 /// [`custom::CustomScriptNotifier`] answers `"custom"` to
 /// [`NotifyBackend::name`], so a job payload naming that alone could not say
-/// which script it meant. `resolve_custom_entries` has already refused a name
+/// which script it meant. `resolve_named_entries` has already refused a name
 /// that is not a valid environment-variable segment, so the id is safe to build
 /// from it.
 fn build_custom_slots(cfg: &NotifyConfig) -> anyhow::Result<Vec<BackendSlot>> {
-    crate::config::resolve_custom_entries("notify", &cfg.custom, &cfg.custom_enabled)?
-        .into_iter()
-        .map(|(name, script)| -> anyhow::Result<BackendSlot> {
-            validate_events(&format!("notify.custom.{name}.events"), &script.events)?;
-            let backend = custom::CustomScriptNotifier::from_config(script)?;
-            Ok(BackendSlot::new(
-                format!("custom:{name}"),
-                Arc::new(backend),
-                &script.events,
-            ))
-        })
-        .collect()
+    crate::config::resolve_named_entries(
+        "notify.custom",
+        "notify.custom_enabled",
+        "custom",
+        &cfg.custom,
+        &cfg.custom_enabled,
+    )?
+    .into_iter()
+    .map(|(name, script)| -> anyhow::Result<BackendSlot> {
+        validate_events(&format!("notify.custom.{name}.events"), &script.events)?;
+        let backend = custom::CustomScriptNotifier::from_config(script)?;
+        Ok(BackendSlot::new(
+            format!("custom:{name}"),
+            Arc::new(backend),
+            &script.events,
+        ))
+    })
+    .collect()
+}
+
+/// One slot per selected `notify.webhook` entry, addressed `webhook:<entry>`.
+///
+/// Same shape and same reasoning as [`build_custom_slots`] — every
+/// [`webhook::WebhookNotifier`] answers `"webhook"` to
+/// [`NotifyBackend::name`], so the entry name is what tells two of them apart
+/// in a durable job payload. The environment is passed by reference rather than
+/// cloned in: each notifier compiles its own `body` into a clone of it, so a
+/// template that does not parse is a startup error.
+fn build_webhook_slots(
+    cfg: &NotifyConfig,
+    env: &minijinja::Environment<'static>,
+    resolver: &Arc<dyn crate::dns::Resolver>,
+    proxies: &Arc<crate::proxy::OutboundProxies>,
+) -> anyhow::Result<Vec<BackendSlot>> {
+    crate::config::resolve_named_entries(
+        "notify.webhook",
+        "notify.webhook_enabled",
+        "webhook",
+        &cfg.webhook,
+        &cfg.webhook_enabled,
+    )?
+    .into_iter()
+    .map(|(name, entry)| -> anyhow::Result<BackendSlot> {
+        validate_events(&format!("notify.webhook.{name}.events"), &entry.events)?;
+        let backend = webhook::WebhookNotifier::from_config(
+            name,
+            entry,
+            env,
+            resolver.clone(),
+            proxies.clone(),
+        )?;
+        Ok(BackendSlot::new(
+            format!("webhook:{name}"),
+            Arc::new(backend),
+            &entry.events,
+        ))
+    })
+    .collect()
 }
 
 /// Builds one [`NotifyDispatcher`] per resolved profile, keyed by profile
@@ -651,7 +700,7 @@ pub fn build_registry(
 /// Every default template, embedded so the server needs no external
 /// `templates/` directory to run. Keyed the same way [`build_environment`]'s
 /// loader looks them up: `"<backend>/<event>.<subject|body>.j2"` for email,
-/// `"<backend>/<event>.j2"` for Mattermost.
+/// `"<backend>/<event>.j2"` for the webhook message.
 static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
         (
@@ -703,28 +752,28 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
             include_str!("templates/email/challenge_failed.body.j2"),
         ),
         (
-            "mattermost/profile_mounted.j2",
-            include_str!("templates/mattermost/profile_mounted.j2"),
+            "webhook/profile_mounted.j2",
+            include_str!("templates/webhook/profile_mounted.j2"),
         ),
         (
-            "mattermost/account_created.j2",
-            include_str!("templates/mattermost/account_created.j2"),
+            "webhook/account_created.j2",
+            include_str!("templates/webhook/account_created.j2"),
         ),
         (
-            "mattermost/account_deactivated.j2",
-            include_str!("templates/mattermost/account_deactivated.j2"),
+            "webhook/account_deactivated.j2",
+            include_str!("templates/webhook/account_deactivated.j2"),
         ),
         (
-            "mattermost/certificate_issued.j2",
-            include_str!("templates/mattermost/certificate_issued.j2"),
+            "webhook/certificate_issued.j2",
+            include_str!("templates/webhook/certificate_issued.j2"),
         ),
         (
-            "mattermost/certificate_revoked.j2",
-            include_str!("templates/mattermost/certificate_revoked.j2"),
+            "webhook/certificate_revoked.j2",
+            include_str!("templates/webhook/certificate_revoked.j2"),
         ),
         (
-            "mattermost/challenge_failed.j2",
-            include_str!("templates/mattermost/challenge_failed.j2"),
+            "webhook/challenge_failed.j2",
+            include_str!("templates/webhook/challenge_failed.j2"),
         ),
     ])
 });
@@ -771,6 +820,7 @@ pub(crate) mod tests {
     use crate::config::CustomNotifyConfig;
     use crate::sqlite::db::Database;
     use crate::sqlite::job::Job;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     /// The shared resolver `Profile::build_all` supplies at startup.
@@ -1145,12 +1195,12 @@ pub(crate) mod tests {
 
     /// The selector's own arms: each name reaches its constructor and lands in
     /// the dispatcher. Neither backend touches the network at build time —
-    /// `lettre` only assembles a transport and `mattermost` only parses a URL —
-    /// so this is a pure configuration test.
+    /// `lettre` only assembles a transport and `webhook` only parses a URL and
+    /// compiles a template — so this is a pure configuration test.
     #[tokio::test]
     async fn each_backend_name_builds_its_own_backend() {
         let cfg = NotifyConfig {
-            enabled: vec!["email".to_string(), "mattermost".to_string()],
+            enabled: vec!["email".to_string(), "webhook".to_string()],
             email: crate::config::EmailNotifyConfig {
                 smtp_host: "smtp.example.com".to_string(),
                 from: "acme@example.com".to_string(),
@@ -1161,10 +1211,8 @@ pub(crate) mod tests {
                 smtp_password: "pass".to_string(),
                 ..crate::config::EmailNotifyConfig::default()
             },
-            mattermost: crate::config::MattermostNotifyConfig {
-                webhook_url: "https://chat.example.com/hooks/abc".to_string(),
-                ..crate::config::MattermostNotifyConfig::default()
-            },
+            webhook_enabled: vec!["chat".to_string()],
+            webhook: BTreeMap::from([("chat".to_string(), webhook_entry())]),
             ..NotifyConfig::default()
         };
 
@@ -1178,7 +1226,67 @@ pub(crate) mod tests {
         .expect("both backends must build");
         let rendered = format!("{dispatcher:?}");
         assert!(rendered.contains("email"), "{rendered}");
-        assert!(rendered.contains("mattermost"), "{rendered}");
+        assert!(rendered.contains("webhook:chat"), "{rendered}");
+    }
+
+    fn webhook_entry() -> crate::config::WebhookNotifyConfig {
+        crate::config::WebhookNotifyConfig {
+            url: "https://chat.example.com/hooks/abc".to_string(),
+            ..crate::config::WebhookNotifyConfig::default()
+        }
+    }
+
+    /// Two webhook entries are two slots with distinct ids — the `custom`
+    /// property this backend inherits and needs for the same reason: every
+    /// entry answers `"webhook"` to `NotifyBackend::name`, so a job row naming
+    /// that alone could not say which endpoint it meant, and a retry would
+    /// re-send through the one that already succeeded.
+    #[tokio::test]
+    async fn two_webhook_entries_get_distinct_slot_ids() {
+        let cfg = NotifyConfig {
+            enabled: vec!["webhook".to_string()],
+            webhook_enabled: vec!["slack".to_string(), "teams".to_string()],
+            webhook: BTreeMap::from([
+                ("slack".to_string(), webhook_entry()),
+                ("teams".to_string(), webhook_entry()),
+            ]),
+            ..NotifyConfig::default()
+        };
+
+        let dispatcher = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .expect("both entries must build");
+
+        assert!(dispatcher.slot("webhook:slack").is_some());
+        assert!(dispatcher.slot("webhook:teams").is_some());
+        assert!(dispatcher.slot("webhook").is_none());
+    }
+
+    /// The `mattermost` backend is gone and is refused **by name**, so an
+    /// unmigrated configuration stops the server rather than coming up looking
+    /// configured and notifying nobody.
+    #[tokio::test]
+    async fn the_removed_mattermost_backend_is_refused_by_name() {
+        let cfg = NotifyConfig {
+            enabled: vec!["mattermost".to_string()],
+            ..NotifyConfig::default()
+        };
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("mattermost"), "{error}");
+        assert!(error.contains("webhook"), "{error}");
     }
 
     /// The two other `smtp_security` values, which each pick a different
@@ -1241,25 +1349,28 @@ pub(crate) mod tests {
         .to_string();
         assert!(error.contains("notify.email.events"), "{error}");
 
-        let mattermost = NotifyConfig {
-            enabled: vec!["mattermost".to_string()],
-            mattermost: crate::config::MattermostNotifyConfig {
-                webhook_url: "https://chat.example.com/hooks/abc".to_string(),
-                events: vec!["certificate_exploded".to_string()],
-                ..crate::config::MattermostNotifyConfig::default()
-            },
+        let webhook = NotifyConfig {
+            enabled: vec!["webhook".to_string()],
+            webhook_enabled: vec!["chat".to_string()],
+            webhook: BTreeMap::from([(
+                "chat".to_string(),
+                crate::config::WebhookNotifyConfig {
+                    events: vec!["certificate_exploded".to_string()],
+                    ..webhook_entry()
+                },
+            )]),
             ..NotifyConfig::default()
         };
         let error = from_config(
             "le",
-            &mattermost,
+            &webhook,
             test_resolver(),
             crate::testutil::no_proxies(),
             &test_queue().await,
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("notify.mattermost.events"), "{error}");
+        assert!(error.contains("notify.webhook.chat.events"), "{error}");
     }
 
     /// `notify.custom_enabled` names entries in `notify.custom`; a name with no

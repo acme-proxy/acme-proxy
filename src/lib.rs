@@ -42,7 +42,7 @@
 //! Supporting subsystems:
 //! - [`audit`] - The durable record of who asked this CA to sign or revoke
 //! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
-//!   Mattermost, custom)
+//!   webhook, custom)
 //! - [`eab`] - Verification of the External Account Binding inner JWS (§7.3.4)
 //! - [`key_change`] - Verification of account key rollover JWS (§7.3.5)
 //! - [`dns`] - The resolver shared by every subsystem that looks anything up

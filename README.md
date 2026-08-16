@@ -54,8 +54,9 @@ produced.
   allow/deny rules, a NetBox IPAM integration, and custom script hooks.
 - **Extensions** — External Account Binding (§7.3.4), key rollover (§7.3.5),
   Renewal Information / ARI (RFC 9773).
-- **Notifications** — email, Mattermost/Slack webhooks, or a custom script, on
-  issuance, revocation, account and challenge events.
+- **Notifications** — email, an HTTP webhook (Slack, Mattermost, Teams,
+  Telegram and Matrix are configuration, not four backends), or a custom
+  script, on issuance, revocation, account and challenge events.
 - **Audit trail** — one row per issuance *and per refusal*, naming the actor, the
   address it came from, that address's reverse name, the identifiers and the
   request id. Accounts and orders additionally record where they were created

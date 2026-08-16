@@ -10,7 +10,7 @@ In your `config.toml`, define a `template_dir`:
 
 ```toml
 [notify]
-enabled = ["email", "mattermost"]
+enabled = ["email", "webhook"]
 template_dir = "/etc/acme-proxy/templates"
 ```
 
@@ -28,7 +28,7 @@ for the subject line and body.
 │   ├── account_created.body.j2
 │   ├── certificate_issued.subject.j2
 │   └── certificate_issued.body.j2
-└── mattermost/
+└── webhook/
     ├── certificate_issued.j2
     └── challenge_failed.j2
 ```
@@ -36,6 +36,12 @@ for the subject line and body.
 *(Available event names: `profile_mounted`, `account_created`,
 `account_deactivated`, `certificate_issued`, `certificate_revoked`,
 `challenge_failed`).*
+
+A `webhook/<event>.j2` renders the **message**, not the payload: every
+`[notify.webhook.<name>]` entry then wraps it in its own `body` template. So a
+file here restyles the text for every webhook target at once, and an entry's
+`body` restructures one target's request without touching the text. See
+[Webhook](webhook.md#how-a-body-is-rendered).
 
 ## Context variables
 
@@ -53,7 +59,7 @@ Triggered when an order is finalized and the signer mints a certificate.
 - `identifiers` (List of Strings) - The SANs/Domains requested
 - `client_ip` (Option&lt;String&gt;)
 
-**Example (`mattermost/certificate_issued.j2`)**:
+**Example (`webhook/certificate_issued.j2`)**:
 ```jinja
 ✅ **Certificate Issued** on profile `{{ profile }}`
 **Domains:** {{ identifiers | join(", ") }}

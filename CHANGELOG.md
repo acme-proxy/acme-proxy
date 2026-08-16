@@ -314,6 +314,49 @@ migrated configuration before restarting.
   reasoning moved to `jobs.max_concurrent`, which has the same default and now
   governs every kind of background work rather than that one backend's.
 
+- **The `mattermost` notify backend is replaced by a generic `webhook` one.**
+  It was one provider's payload shape (`{"text", "channel", "username"}`)
+  frozen into a copy of the outbound HTTP transport — and every other part of
+  it, the TLS stack, the proxy, the resolver, the timeout and the
+  retryable/permanent status split, had nothing to do with Mattermost. Slack,
+  Microsoft Teams, Google Chat, Telegram and Matrix differ from it in a URL, a
+  verb, a header and a JSON shape, so the way to support them is to make those
+  four configurable, not to write four more backends.
+
+  `[notify.webhook.<name>]` entries are **named**, selected and ordered by
+  `notify.webhook_enabled`, exactly like `[notify.custom]` — so one profile can
+  post to Slack and an on-call room at once, and each is retried independently.
+
+  Migration, key by key:
+
+  | Removed | Replacement |
+  | --- | --- |
+  | `notify.enabled = ["mattermost"]` | `notify.enabled = ["webhook"]` plus `notify.webhook_enabled = ["<name>"]` |
+  | `notify.mattermost.webhook_url` | `notify.webhook.<name>.url` |
+  | `notify.mattermost.channel`, `.username` | members of `notify.webhook.<name>.body` |
+  | `notify.mattermost.events`, `.timeout_ms` | `notify.webhook.<name>.events`, `.timeout_ms` |
+  | `mattermost/<event>.j2` template overrides | `webhook/<event>.j2` |
+
+  `notify.enabled = ["mattermost"]` is **refused by name at startup**, naming
+  `[notify.webhook]` and the default `body`, so an unmigrated configuration
+  stops the server rather than coming up looking configured and notifying
+  nobody. The default `body` is `{"text": {{ message | tojson }}}` — the
+  payload Mattermost, Slack, Teams and Google Chat all accept — so the common
+  case is a `url` and nothing else.
+
+  Two things worth knowing beyond a rename. The embedded message templates that
+  moved to `webhook/` lost their `:lock:`-style emoji shortcodes and Markdown
+  emphasis: they now feed any provider, and those render as literal noise in
+  Telegram, Matrix and Teams. And a `body` template needs `| tojson` around
+  anything holding text — `.j2` auto-escaping is off, deliberately, so an error
+  message carrying a quote would otherwise produce a payload the provider
+  answers `400` to. Both are covered in
+  [Webhook Notifications](doc/src/notifications/webhook.md).
+
+  A `notify_deliver` job queued for `mattermost` before the upgrade needs no
+  migration: an unknown backend id already retires the row rather than retrying
+  it for ever.
+
 ### Added
 
 - **A durable job queue, and with it retries for relayed issuance.** The

@@ -430,7 +430,7 @@ resolver.
 ## `[proxy]`
 
 The forward proxy every outbound HTTP client dials through: the upstream CA the
-`relay` signer talks to, the IPAM inventory, the Mattermost webhook, and the
+`relay` signer talks to, the IPAM inventory, the notification webhooks, and the
 `http-01` and `tls-alpn-01` challenge validators — the last through a `CONNECT`
 tunnel, since it is TLS rather than HTTP.
 
@@ -709,6 +709,6 @@ above](#every-section-and-where-it-is-documented) for the rest.
   [tls-alpn-01](../challenges/tls_alpn_01.md#reference)
 - **`[notify]`** — [Notifications](../notifications/index.md):
   [email](../notifications/email.md),
-  [mattermost](../notifications/mattermost.md),
+  [webhook](../notifications/webhook.md),
   [custom](../notifications/custom.md)
 - **`[eab]`** — [External Account Binding](../features/eab.md)

@@ -1068,9 +1068,13 @@ caa_identities = []                 # ACME_PROXY_META__CAA_IDENTITIES
 # backend can never fail or delay the ACME response that triggered it; any
 # delivery failure is only logged.
 #
-# Which backends are active: "email", "mattermost", "custom". Empty (default)
+# Which backends are active: "email", "webhook", "custom". Empty (default)
 # means no notifications are sent at all.
 enabled = []                        # ACME_PROXY_NOTIFY__ENABLED
+# Which of [notify.webhook]'s entries to POST to, when "webhook" is listed
+# above — same shape as custom_enabled below: "webhook" enabled with this
+# empty, or an entry named here that isn't defined below, is a startup error.
+webhook_enabled = []                # ACME_PROXY_NOTIFY__WEBHOOK_ENABLED
 # Which of [notify.custom]'s entries to run, when "custom" is listed above —
 # same shape as [filter.custom]/[filter]/custom_enabled: "custom" enabled with
 # this empty, or an entry named here that isn't defined below, is a startup
@@ -1105,25 +1109,47 @@ events = ["profile_mounted", "account_created", "account_deactivated",
                                      # ACME_PROXY_NOTIFY__EMAIL__EVENTS
 timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
 
-[notify.mattermost]
-# An incoming webhook. Required once "mattermost" is in notify.enabled:
-# webhook_url.
-webhook_url = ""                    # ACME_PROXY_NOTIFY__MATTERMOST__WEBHOOK_URL
-# Empty means the webhook's own configured default channel/username.
-channel = ""                        # ACME_PROXY_NOTIFY__MATTERMOST__CHANNEL
-username = ""                       # ACME_PROXY_NOTIFY__MATTERMOST__USERNAME
-events = ["profile_mounted", "account_created", "account_deactivated",
-          "certificate_issued", "certificate_revoked", "challenge_failed"]
-                                     # ACME_PROXY_NOTIFY__MATTERMOST__EVENTS
-timeout_ms = 5000                   # ACME_PROXY_NOTIFY__MATTERMOST__TIMEOUT_MS
+# notify.webhook holds NAMED HTTP targets: one request per event, with the
+# URL, the method, the headers and the body all stated here. That is the whole
+# point — Slack, Mattermost, Microsoft Teams, Telegram and Matrix differ in
+# those four values and nothing else, so a chat provider is configuration
+# rather than a backend of its own. Names follow ^[a-z0-9-]+$, the
+# [notify.custom] rule and for the same ACME_PROXY_NOTIFY__WEBHOOK__<NAME>__...
+# reason.
+#
+# The body is a MiniJinja template with `message` (the rendered
+# "webhook/<event>.j2", overridable through notify.template_dir), `hook` and
+# every field of the event in scope. Note the `tojson` filter in the default
+# below: a .j2 template has auto-escaping OFF, so a message holding a quote or
+# a newline needs it to stay valid JSON.
+#
+# The URL and the headers routinely carry the credential (a Slack hook id, a
+# Telegram bot token, a Matrix access token), so nothing is ever logged of
+# either beyond the host and the header names. SENSITIVE, like every other
+# secret here: prefer the environment variable.
+#
+# Example (commented out, so this file still describes the all-defaults
+# configuration, i.e. webhook_enabled = [] and no targets configured). See
+# doc/src/notifications/webhook.md for the recipe of each provider:
+#
+# [notify.webhook.slack]
+# url = "https://hooks.slack.com/services/T00000000/B00000000/XXXX"
+#                                     # ACME_PROXY_NOTIFY__WEBHOOK__SLACK__URL
+# method = "POST"                     # POST (default), PUT or PATCH
+# body = '{"text": {{ message | tojson }}}'
+# events = ["certificate_issued", "certificate_revoked"]
+# timeout_ms = 5000
+#
+# [notify.webhook.matrix.headers]     # ACME_PROXY_NOTIFY__WEBHOOK__MATRIX__HEADERS__AUTHORIZATION
+# Authorization = "Bearer syt_xxxxx"
 
-# notify.custom holds NAMED external scripts/webhook wrappers, the
+# notify.custom holds NAMED external scripts, the
 # notify-side counterpart of filter.custom/signer.custom — the same shape,
 # same "shell out to a script" contract, same restriction on names
 # (^[a-z0-9-]+$, for the same ACME_PROXY_NOTIFY__CUSTOM__<NAME>__... reason).
-# This is what lets an operator wire up a channel this server has no
-# built-in support for (Slack, PagerDuty, an internal paging system) without
-# a code change.
+# This is what lets an operator wire up a channel that is not an HTTP request
+# at all (a paging daemon, a local socket, `wall`) — for anything that IS one,
+# [notify.webhook] above is the answer and needs no script.
 #
 # Context via environment variables:
 #   ACME_NOTIFY_HOOK          - event kind, e.g. "certificate_issued"
