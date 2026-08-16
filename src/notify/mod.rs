@@ -6,16 +6,32 @@
 //! [`email`], [`mattermost`], and [`custom`] (an external script/webhook,
 //! for any channel this server has no built-in support for).
 //!
-//! ## Fire-and-forget, always
+//! ## Fire-and-forget, always — and now durable
 //!
 //! A notification can never affect the ACME response that triggered it.
-//! [`NotifyDispatcher::dispatch`] is not `async`, returns `()`, and cannot be
-//! `?`'d — it spawns the actual delivery and returns immediately. Every
-//! backend failure (a refused SMTP connection, a non-2xx webhook, a
-//! nonzero/timed-out script) is logged and dropped, never retried and never
-//! propagated to the caller. A panicking backend is caught the same way. This
-//! is a deliberate API shape, not a convention callers must remember: there is
-//! no method on this type whose result a handler *could* propagate.
+//! [`NotifyDispatcher::dispatch`] returns `()` and cannot be `?`'d: it writes
+//! the delivery to the [durable queue](crate::jobs) and returns. That is a
+//! deliberate API shape, not a convention callers must remember — there is no
+//! method on this type whose result a handler *could* propagate.
+//!
+//! What changed is what happens *after* it returns. Delivery used to be a bare
+//! `tokio::spawn`, so a refused SMTP connection or a 503 from a webhook was
+//! logged once and the notification was gone, and a restart lost everything in
+//! flight — the operator never heard that a certificate had been issued, and
+//! nothing recorded that they hadn't. Now each delivery is a `notify_deliver`
+//! job row: a transport failure is retried under `jobs.max_attempts` and the
+//! shared backoff, and a row outlives the process that queued it.
+//!
+//! Two consequences worth not rediscovering:
+//!
+//! - **One job per (occurrence × backend)**, never one per event. A retry must
+//!   not re-send to a backend that already succeeded, or one flaky webhook
+//!   produces a duplicate email on every attempt.
+//! - **[`NotifyError`] carries whether it is worth retrying.** A template that
+//!   does not render and a 400 from a webhook will fail identically for ever,
+//!   so they are permanent and refused on the first attempt; a connection
+//!   refused, a timeout and a 503 have decided nothing, so they are retried.
+//!   That is [`crate::jobs`]'s `Retry`/`Failed` split, applied at the source.
 //!
 //! ## Per-backend event filtering
 //!
@@ -23,9 +39,11 @@
 //! filter must agree, notify backends are independent broadcast side-channels
 //! — an operator plausibly wants email only for issuance/revocation and
 //! Mattermost for everything including failures. Each backend's own `events`
-//! list (defaulting to all six kinds) decides what reaches it; [`from_config`]
-//! wraps every configured backend in a [`FilteredBackend`] so this logic lives
-//! in one place rather than in each backend's own delivery code.
+//! list (defaulting to all six kinds) decides what reaches it, and the list
+//! lives on its [`BackendSlot`] so the check happens once, in
+//! [`NotifyDispatcher::dispatch`], rather than in each backend's own delivery
+//! code. Filtering *there* rather than in a wrapper around `send` is what stops
+//! a job being queued for a delivery that would immediately do nothing.
 //!
 //! ## Per-profile, like every other subsystem
 //!
@@ -42,13 +60,17 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::{ALL_NOTIFY_EVENTS, NotifyConfig, ProfileConfig};
+use crate::jobs::{JobQueue, JobSpec};
 
 pub mod custom;
 pub mod email;
+pub mod job;
 pub mod mattermost;
+
+pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 
 /// A pluggable notification channel.
 #[async_trait]
@@ -56,24 +78,56 @@ pub trait NotifyBackend: Send + Sync {
     /// The configuration name this backend runs under, used in logs.
     fn name(&self) -> &'static str;
 
-    /// Delivers `event`. Failure is always non-fatal to the caller — see the
-    /// module docs — logged by [`NotifyDispatcher`] and never retried.
+    /// Delivers `event`. Failure is always non-fatal to the *caller* — see the
+    /// module docs — but it is no longer thrown away: [`NotifyJob`] retries it
+    /// unless the [`NotifyError`] says the attempt could never have worked.
     async fn send(&self, event: &NotifyEvent) -> Result<(), NotifyError>;
 }
 
-/// Why a notify backend failed to deliver.
+/// Why a notify backend failed to deliver, and whether asking again could help.
+///
+/// The `retryable` half is what [`NotifyJob`] turns into
+/// [`JobOutcome::Retry`](crate::jobs::JobOutcome::Retry) or
+/// [`JobOutcome::Failed`](crate::jobs::JobOutcome::Failed), so the distinction
+/// has to be drawn where the failure happens rather than guessed from a string
+/// afterwards. The default — [`NotifyError::new`] — is *retryable*, because
+/// most of these are transport; a backend that knows better says so with
+/// [`NotifyError::permanent`].
 #[derive(Debug)]
-pub struct NotifyError(String);
+pub struct NotifyError {
+    detail: String,
+    retryable: bool,
+}
 
 impl NotifyError {
+    /// A failure that may not recur: a refused connection, a timeout, a 503.
     pub fn new(detail: impl Into<String>) -> Self {
-        Self(detail.into())
+        Self {
+            detail: detail.into(),
+            retryable: true,
+        }
+    }
+
+    /// A failure that will repeat identically however many times it is tried:
+    /// a template that does not render, a URL that does not parse, a webhook
+    /// that answers 400.
+    pub fn permanent(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+            retryable: false,
+        }
+    }
+
+    /// Whether another attempt could plausibly succeed.
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        self.retryable
     }
 }
 
 impl std::fmt::Display for NotifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.detail)
     }
 }
 
@@ -86,7 +140,7 @@ impl std::error::Error for NotifyError {}
 /// all — the `relay` signer backend's asynchronous completion, which
 /// runs in a background task long after any handler returned. Templates must
 /// treat it as optional.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProfileMountedData {
     pub profile: String,
 }
@@ -96,7 +150,7 @@ pub struct ProfileMountedData {
 ///
 /// `contact` is what the client supplied, which may legitimately be empty —
 /// RFC 8555 does not require one.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountCreatedData {
     pub profile: String,
     pub account_id: String,
@@ -108,7 +162,7 @@ pub struct AccountCreatedData {
 /// either by the client (§7.3.6) or by `acme-proxy account deactivate`.
 ///
 /// Deactivation is permanent, so this event has no counterpart.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccountDeactivatedData {
     pub profile: String,
     pub account_id: String,
@@ -120,7 +174,7 @@ pub struct AccountDeactivatedData {
 /// `cert_serial` is the hex serial, the same value `POST /revokeCert` and the
 /// audit trail identify a certificate by. `identifiers` are the names the
 /// certificate covers.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CertificateIssuedData {
     pub profile: String,
     pub order_id: String,
@@ -135,7 +189,7 @@ pub struct CertificateIssuedData {
 /// `reason` is the RFC 5280 §5.3.1 code the caller supplied, and is `None` when
 /// none was given — which is not the same as `Some(0)`. It reaches a `custom`
 /// script only in the JSON on stdin, since it has no environment variable.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CertificateRevokedData {
     pub profile: String,
     pub order_id: String,
@@ -152,7 +206,7 @@ pub struct CertificateRevokedData {
 /// failure of the order: a client may have another enabled type left to try.
 /// `error` is the human-readable detail, the same text the challenge object's
 /// `error` member carries back to the client.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChallengeFailedData {
     pub profile: String,
     pub order_id: String,
@@ -167,7 +221,16 @@ pub struct ChallengeFailedData {
 
 /// One lifecycle event, carrying everything a template or `custom` script
 /// needs to describe it.
-#[derive(Debug, Clone)]
+///
+/// **Internally tagged on `hook`**, which is load-bearing twice over. It is the
+/// `custom` backend's stdin contract — a script reads `.hook` to tell one event
+/// from another — and it is what lets a queued delivery survive a restart, since
+/// a `notify_deliver` job payload is this enum and nothing else. The tag and the
+/// variant renaming reproduce exactly what [`Self::payload`] used to assemble by
+/// hand, so neither the script contract nor a row already in the queue changes
+/// shape; `payload_is_tagged_with_its_own_hook` pins that.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "hook", rename_all = "snake_case")]
 pub enum NotifyEvent {
     ProfileMounted(ProfileMountedData),
     AccountCreated(AccountCreatedData),
@@ -216,25 +279,14 @@ impl NotifyEvent {
     }
 
     /// This event's own data as a JSON object, tagged with `"hook"` — the
-    /// `custom` backend's stdin payload. Not used by the templating backends,
-    /// which render from [`Self::context`] instead.
+    /// `custom` backend's stdin payload, and the body of a queued
+    /// `notify_deliver` job. Not used by the templating backends, which render
+    /// from [`Self::context`] instead.
+    ///
+    /// This is the enum's own `Serialize`: the internal tag *is* the `"hook"`
+    /// member that used to be spliced in here after the fact.
     pub(crate) fn payload(&self) -> serde_json::Value {
-        let mut value = match self {
-            Self::ProfileMounted(data) => serde_json::to_value(data),
-            Self::AccountCreated(data) => serde_json::to_value(data),
-            Self::AccountDeactivated(data) => serde_json::to_value(data),
-            Self::CertificateIssued(data) => serde_json::to_value(data),
-            Self::CertificateRevoked(data) => serde_json::to_value(data),
-            Self::ChallengeFailed(data) => serde_json::to_value(data),
-        }
-        .expect("notify event data always serializes to a JSON object");
-        if let serde_json::Value::Object(map) = &mut value {
-            map.insert(
-                "hook".to_string(),
-                serde_json::Value::String(self.kind().to_string()),
-            );
-        }
-        value
+        serde_json::to_value(self).expect("notify event data always serializes to a JSON object")
     }
 
     /// This event's client address, when a request was in scope — `None` on
@@ -308,157 +360,166 @@ impl NotifyEvent {
     }
 }
 
+/// One configured backend, under the id a queued job addresses it by.
+///
+/// The id is **not** [`NotifyBackend::name`]: that is a `&'static str` a backend
+/// type answers, so every `custom` entry reports `"custom"` and two of them
+/// would be indistinguishable to a job row. It is built from the configuration
+/// instead — `email`, `mattermost`, `custom:<entry>` — which makes it stable
+/// across a restart, the property a durable payload needs. The same reasoning
+/// gives `filter::custom` its `ACME_FILTER_CHECK_NAME`.
+pub struct BackendSlot {
+    id: String,
+    /// The event kinds this backend's own `events` list admits. Filtering here
+    /// rather than inside a wrapper around `send` is what stops a job being
+    /// queued for a delivery that would immediately no-op.
+    events: HashSet<String>,
+    backend: Arc<dyn NotifyBackend>,
+}
+
+impl BackendSlot {
+    /// The id a job payload names this backend by.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Whether this backend's `events` list admits `event`.
+    #[must_use]
+    pub fn wants(&self, event: &NotifyEvent) -> bool {
+        self.events.contains(event.kind())
+    }
+
+    /// Builds a slot directly.
+    ///
+    /// [`from_config`] is how one is normally made — it derives the ids from the
+    /// configuration, which is what keeps them stable across a restart. This is
+    /// for a caller assembling a dispatcher over a backend of its own, which in
+    /// practice means a test.
+    #[must_use]
+    pub fn new(id: impl Into<String>, backend: Arc<dyn NotifyBackend>, events: &[String]) -> Self {
+        Self {
+            id: id.into(),
+            events: events.iter().cloned().collect(),
+            backend,
+        }
+    }
+}
+
 /// The configured notify backends for one profile.
 ///
 /// Cheap to clone behind the `Arc` it is always held in (`Profile::notify`,
 /// and the `profile name -> dispatcher` map handed to the `relay` signer
-/// backend).
-#[derive(Default)]
+/// backend and to [`NotifyJob`]).
 pub struct NotifyDispatcher {
-    backends: Vec<Arc<dyn NotifyBackend>>,
-    /// In-flight `dispatch` tasks, so shutdown can wait for them.
-    ///
-    /// A `std::sync::Mutex` and not a `tokio` one on purpose: it is only ever
-    /// held for a `spawn` or a `try_join_next`, never across an await, and
-    /// `dispatch` has to stay callable from a `&Arc<Self>` in a sync context.
-    tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
+    profile: String,
+    slots: Vec<BackendSlot>,
+    jobs: JobQueue,
 }
 
 impl std::fmt::Debug for NotifyDispatcher {
-    /// `dyn NotifyBackend` is not `Debug`, so show the names — the only part
+    /// `dyn NotifyBackend` is not `Debug`, so show the slot ids — the only part
     /// worth reading anyway. Mirrors `FilterPolicy`'s own `Debug` impl.
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NotifyDispatcher")
+            .field("profile", &self.profile)
             .field(
                 "backends",
-                &self.backends.iter().map(|b| b.name()).collect::<Vec<_>>(),
+                &self.slots.iter().map(BackendSlot::id).collect::<Vec<_>>(),
             )
             .finish()
     }
 }
 
 impl NotifyDispatcher {
-    pub fn new(backends: Vec<Arc<dyn NotifyBackend>>) -> Self {
+    /// Builds a dispatcher over already-constructed slots.
+    #[must_use]
+    pub fn new(profile: impl Into<String>, slots: Vec<BackendSlot>, jobs: JobQueue) -> Self {
         Self {
-            backends,
-            tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            profile: profile.into(),
+            slots,
+            jobs,
         }
     }
 
-    /// Fire-and-forget: spawns delivery and returns immediately. Never `?`'d
-    /// or awaited for its result anywhere in this codebase — see the module
-    /// docs for why that is the point, not an oversight.
-    pub fn dispatch(self: &Arc<Self>, event: NotifyEvent) {
-        let this = self.clone();
-        let Ok(mut tasks) = self.tasks.lock() else {
-            // A poisoned lock means a previous dispatch panicked while holding
-            // it. Losing the ability to notify is not a reason to stop
-            // notifying, so fall back to a detached spawn.
-            tokio::spawn(async move { this.dispatch_now(event).await });
-            return;
-        };
-        // Reap what has already finished, so the set does not grow without
-        // bound over a long-running process.
-        while tasks.try_join_next().is_some() {}
-        tasks.spawn(async move { this.dispatch_now(event).await });
+    /// A dispatcher with no backends — every `dispatch` is a no-op. The shape a
+    /// profile with an empty `notify.enabled` gets, and what tests that do not
+    /// care about notifications want.
+    #[must_use]
+    pub fn disabled(jobs: JobQueue) -> Self {
+        Self::new("default", Vec::new(), jobs)
     }
 
-    /// Waits for in-flight deliveries, up to `budget`.
+    /// The profile whose `[notify]` section this dispatcher was built from.
+    #[must_use]
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    /// The backend registered under `id`, if it is still configured. `None`
+    /// after a configuration change removed a backend a queued job still names.
+    #[must_use]
+    pub fn slot(&self, id: &str) -> Option<&BackendSlot> {
+        self.slots.iter().find(|slot| slot.id == id)
+    }
+
+    /// Queues one delivery per backend that wants this event, and returns.
     ///
-    /// `dispatch` is fire-and-forget by design, and `axum::serve`'s graceful
-    /// shutdown drains HTTP requests but knows nothing about these tasks — so a
-    /// `certificate_issued` notification for a request that completed during
-    /// shutdown was simply lost: the client got its certificate and the
-    /// operator never heard about it. Bounded, because a wedged webhook must
-    /// not hold the process open indefinitely.
-    pub async fn drain(&self, budget: std::time::Duration) {
-        let mut set = match self.tasks.lock() {
-            Ok(mut guard) => std::mem::take(&mut *guard),
-            Err(_) => return,
-        };
-        if set.is_empty() {
+    /// Not `?`-able and with nothing useful to return: a notification can never
+    /// affect the ACME response that triggered it, which is why this goes
+    /// through [`JobQueue::enqueue_or_log`] — a database failure here is logged
+    /// and swallowed exactly like the delivery failure it stands in for.
+    ///
+    /// The `delivery_id` is minted per call, so the queue's identity index never
+    /// refuses a genuine second occurrence of the same event: two dispatches
+    /// mean two notifications, as they always did. It is shared across the
+    /// backends of one call purely so an operator can correlate them in a log.
+    pub async fn dispatch(&self, event: NotifyEvent) {
+        if self.slots.is_empty() {
             return;
         }
 
-        let pending = set.len();
-        info!(
-            event = "notify_drain_started",
-            outcome = "progress",
-            pending
-        );
-        let drained =
-            tokio::time::timeout(budget, async { while set.join_next().await.is_some() {} }).await;
-        if drained.is_err() {
-            warn!(
-                event = "notify_drain_timed_out",
-                outcome = "failure",
-                pending,
-                budget_ms = crate::millis(budget),
-            );
-        }
-    }
-
-    /// The actual fan-out, directly awaitable. `dispatch` always goes through
-    /// this; tests that want deterministic (non-spawned) delivery may call it
-    /// directly instead.
-    pub(crate) async fn dispatch_now(&self, event: NotifyEvent) {
         let kind = event.kind();
-        let mut set = tokio::task::JoinSet::new();
-        for backend in &self.backends {
-            let backend = backend.clone();
-            let event = event.clone();
-            set.spawn(async move { (backend.name(), backend.send(&event).await) });
-        }
-        while let Some(joined) = set.join_next().await {
-            match joined {
-                Ok((name, Ok(()))) => {
-                    info!(
-                        event = "notify_delivered",
-                        outcome = "success",
-                        backend = name,
-                        kind
-                    );
-                }
-                Ok((name, Err(error))) => {
-                    warn!(event = "notify_delivery_failed", outcome = "failure", backend = name, kind, error = %error);
-                }
-                Err(join_error) => {
-                    warn!(event = "notify_task_panicked", outcome = "failure", kind, error = %join_error);
-                }
+        let payload = event.payload();
+        let delivery_id = uuid::Uuid::new_v4().to_string();
+        for slot in &self.slots {
+            if !slot.wants(&event) {
+                continue;
+            }
+            let spec = JobSpec::now(NOTIFY_JOB_KIND, format!("{delivery_id}:{}", slot.id))
+                .with_payload(serde_json::json!({
+                    "profile": self.profile,
+                    "backend": slot.id,
+                    "event": payload,
+                }));
+            if self.jobs.enqueue_or_log(spec).await {
+                info!(
+                    event = "notify_delivery_queued",
+                    outcome = "progress",
+                    profile = %self.profile,
+                    backend = %slot.id,
+                    kind,
+                    delivery_id = %delivery_id,
+                );
             }
         }
     }
-}
 
-/// Wraps a backend so it only sees the events its own `events` list names.
-/// Built once in [`from_config`], keeping this filtering logic out of every
-/// backend's own delivery code.
-struct FilteredBackend {
-    inner: Arc<dyn NotifyBackend>,
-    events: HashSet<String>,
-}
-
-#[async_trait]
-impl NotifyBackend for FilteredBackend {
-    fn name(&self) -> &'static str {
-        self.inner.name()
+    /// Runs one delivery, now, against the backend registered under `id`.
+    ///
+    /// What [`NotifyJob`] calls for each claimed row, and what a test calls when
+    /// it wants delivery without a runner in the way. `Ok(None)` means no such
+    /// backend is configured any more — a decision for the caller, since a
+    /// handler must retire that job rather than retry it for ever.
+    pub(crate) async fn deliver(
+        &self,
+        id: &str,
+        event: &NotifyEvent,
+    ) -> Option<Result<(), NotifyError>> {
+        let slot = self.slot(id)?;
+        Some(slot.backend.send(event).await)
     }
-
-    async fn send(&self, event: &NotifyEvent) -> Result<(), NotifyError> {
-        if self.events.contains(event.kind()) {
-            self.inner.send(event).await
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn filtered(inner: Arc<dyn NotifyBackend>, events: &[String]) -> Arc<dyn NotifyBackend> {
-    Arc::new(FilteredBackend {
-        inner,
-        events: events.iter().cloned().collect(),
-    })
 }
 
 /// An `events` list naming something outside [`ALL_NOTIFY_EVENTS`] is a
@@ -477,29 +538,36 @@ fn validate_events(field: &str, events: &[String]) -> anyhow::Result<()> {
 
 /// Builds the configured notify dispatcher. Called once per profile at
 /// startup (via [`build_registry`]), so it may fail fast.
+///
+/// `jobs` is the enqueue side of the durable queue: every delivery is a row on
+/// it, so a dispatcher cannot be built without one.
 pub fn from_config(
+    profile: &str,
     cfg: &NotifyConfig,
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
+    jobs: &JobQueue,
 ) -> anyhow::Result<Arc<NotifyDispatcher>> {
     // Built once and shared: both templating backends render from the same
     // `template_dir` override, and `Environment` is cheap to clone (it holds
     // an `Arc`-like handle to its loader internally) but not to construct.
     let env = Arc::new(build_environment(&cfg.template_dir));
 
-    let mut backends: Vec<Arc<dyn NotifyBackend>> = Vec::with_capacity(cfg.enabled.len());
+    let mut slots: Vec<BackendSlot> = Vec::with_capacity(cfg.enabled.len());
     for name in &cfg.enabled {
-        let built: Vec<Arc<dyn NotifyBackend>> = match name.as_str() {
+        let built: Vec<BackendSlot> = match name.as_str() {
             "email" => {
                 validate_events("notify.email.events", &cfg.email.events)?;
-                vec![filtered(
+                vec![BackendSlot::new(
+                    "email",
                     Arc::new(email::EmailNotifier::from_config(&cfg.email, env.clone())?),
                     &cfg.email.events,
                 )]
             }
             "mattermost" => {
                 validate_events("notify.mattermost.events", &cfg.mattermost.events)?;
-                vec![filtered(
+                vec![BackendSlot::new(
+                    "mattermost",
                     Arc::new(mattermost::MattermostNotifier::from_config(
                         &cfg.mattermost,
                         env.clone(),
@@ -509,13 +577,13 @@ pub fn from_config(
                     &cfg.mattermost.events,
                 )]
             }
-            "custom" => build_custom_backends(cfg)?,
+            "custom" => build_custom_slots(cfg)?,
             other => anyhow::bail!("unknown notify backend: {other}"),
         };
-        backends.extend(built);
+        slots.extend(built);
     }
 
-    if backends.is_empty() {
+    if slots.is_empty() {
         info!(
             event = "notify_disabled",
             outcome = "success",
@@ -525,16 +593,32 @@ pub fn from_config(
         info!(event = "notify_enabled", outcome = "success", backends = ?cfg.enabled);
     }
 
-    Ok(Arc::new(NotifyDispatcher::new(backends)))
+    Ok(Arc::new(NotifyDispatcher::new(
+        profile,
+        slots,
+        jobs.clone(),
+    )))
 }
 
-fn build_custom_backends(cfg: &NotifyConfig) -> anyhow::Result<Vec<Arc<dyn NotifyBackend>>> {
+/// One slot per `notify.custom` entry, addressed `custom:<entry>`.
+///
+/// The entry name is what makes two custom backends tell-apart-able: every
+/// [`custom::CustomScriptNotifier`] answers `"custom"` to
+/// [`NotifyBackend::name`], so a job payload naming that alone could not say
+/// which script it meant. `resolve_custom_entries` has already refused a name
+/// that is not a valid environment-variable segment, so the id is safe to build
+/// from it.
+fn build_custom_slots(cfg: &NotifyConfig) -> anyhow::Result<Vec<BackendSlot>> {
     crate::config::resolve_custom_entries("notify", &cfg.custom, &cfg.custom_enabled)?
         .into_iter()
-        .map(|(name, script)| -> anyhow::Result<Arc<dyn NotifyBackend>> {
+        .map(|(name, script)| -> anyhow::Result<BackendSlot> {
             validate_events(&format!("notify.custom.{name}.events"), &script.events)?;
             let backend = custom::CustomScriptNotifier::from_config(script)?;
-            Ok(filtered(Arc::new(backend), &script.events))
+            Ok(BackendSlot::new(
+                format!("custom:{name}"),
+                Arc::new(backend),
+                &script.events,
+            ))
         })
         .collect()
 }
@@ -547,11 +631,18 @@ pub fn build_registry(
     profiles: &[ProfileConfig],
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
+    jobs: &JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<NotifyDispatcher>>> {
     let mut registry = HashMap::with_capacity(profiles.len());
     for profile in profiles {
-        let dispatcher = from_config(&profile.sections.notify, resolver.clone(), proxies.clone())
-            .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+        let dispatcher = from_config(
+            &profile.name,
+            &profile.sections.notify,
+            resolver.clone(),
+            proxies.clone(),
+            jobs,
+        )
+        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
         registry.insert(profile.name.clone(), dispatcher);
     }
     Ok(registry)
@@ -657,23 +748,29 @@ pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'s
 }
 
 /// Renders one named template against `event`'s own data.
+///
+/// Both failures are **permanent**: a template that is absent or does not
+/// compile will be just as absent on the fifth attempt, so retrying only delays
+/// the log line that tells the operator to fix it.
 pub(crate) fn render(
     env: &minijinja::Environment<'static>,
     template_name: &str,
     event: &NotifyEvent,
 ) -> Result<String, NotifyError> {
     let template = env.get_template(template_name).map_err(|error| {
-        NotifyError::new(format!("template `{template_name}` not found: {error}"))
+        NotifyError::permanent(format!("template `{template_name}` not found: {error}"))
     })?;
-    template
-        .render(event.context())
-        .map_err(|error| NotifyError::new(format!("template `{template_name}` failed: {error}")))
+    template.render(event.context()).map_err(|error| {
+        NotifyError::permanent(format!("template `{template_name}` failed: {error}"))
+    })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::CustomNotifyConfig;
+    use crate::sqlite::db::Database;
+    use crate::sqlite::job::Job;
     use std::sync::Mutex;
 
     /// The shared resolver `Profile::build_all` supplies at startup.
@@ -681,19 +778,44 @@ mod tests {
         Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
     }
 
+    /// A queue over an in-memory database, for the assertions that read back
+    /// the rows `dispatch` wrote.
+    pub(crate) async fn test_queue() -> JobQueue {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        JobQueue::new(database, &crate::config::JobsConfig::default())
+    }
+
+    /// How a backend failed, when it is configured to.
+    #[derive(Default, Clone, Copy)]
+    enum Failure {
+        #[default]
+        None,
+        Retryable,
+        Permanent,
+    }
+
     /// A backend recording every event it received, for asserting dispatch
     /// behavior without a real SMTP/HTTP/script target.
     #[derive(Default)]
     pub(crate) struct RecordingNotifyBackend {
         pub(crate) events: Mutex<Vec<NotifyEvent>>,
-        fail: bool,
+        fail: Failure,
     }
 
     impl RecordingNotifyBackend {
+        /// Fails the way a refused connection does: worth another attempt.
         pub(crate) fn failing() -> Self {
             Self {
                 events: Mutex::new(Vec::new()),
-                fail: true,
+                fail: Failure::Retryable,
+            }
+        }
+
+        /// Fails the way a missing template does: another attempt is pointless.
+        pub(crate) fn failing_permanently() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+                fail: Failure::Permanent,
             }
         }
     }
@@ -706,10 +828,12 @@ mod tests {
 
         async fn send(&self, event: &NotifyEvent) -> Result<(), NotifyError> {
             self.events.lock().unwrap().push(event.clone());
-            if self.fail {
-                Err(NotifyError::new("recording backend configured to fail"))
-            } else {
-                Ok(())
+            match self.fail {
+                Failure::None => Ok(()),
+                Failure::Retryable => Err(NotifyError::new("recording backend configured to fail")),
+                Failure::Permanent => Err(NotifyError::permanent(
+                    "recording backend configured to fail permanently",
+                )),
             }
         }
     }
@@ -833,16 +957,190 @@ mod tests {
         assert_eq!(events[5].identifiers_joined(), "");
     }
 
-    /// `dyn NotifyBackend` is not `Debug`, so the dispatcher renders the names
-    /// instead — the part a startup log is read for.
-    #[test]
-    fn the_dispatcher_debug_names_its_backends() {
-        let dispatcher = NotifyDispatcher::new(vec![Arc::new(RecordingNotifyBackend::default())]);
+    /// `dyn NotifyBackend` is not `Debug`, so the dispatcher renders the slot
+    /// ids instead — the part a startup log is read for, and now also the part a
+    /// queued job addresses.
+    #[tokio::test]
+    async fn the_dispatcher_debug_names_its_backends() {
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::new(
+            "le",
+            vec![BackendSlot::new(
+                "recording",
+                Arc::new(RecordingNotifyBackend::default()),
+                &every_kind(),
+            )],
+            queue.clone(),
+        );
         let rendered = format!("{dispatcher:?}");
         assert!(rendered.contains("NotifyDispatcher"), "{rendered}");
         assert!(rendered.contains("recording"), "{rendered}");
+        assert!(rendered.contains("le"), "{rendered}");
 
-        assert!(format!("{:?}", NotifyDispatcher::default()).contains("[]"));
+        assert!(format!("{:?}", NotifyDispatcher::disabled(queue)).contains("[]"));
+    }
+
+    /// Every event kind, as a backend's own `events` list would spell them.
+    fn every_kind() -> Vec<String> {
+        ALL_NOTIFY_EVENTS.iter().map(|k| (*k).to_string()).collect()
+    }
+
+    /// A dispatcher over one recording backend, plus the queue its rows land in.
+    async fn recording_dispatcher(
+        events: &[String],
+    ) -> (Arc<NotifyDispatcher>, Arc<RecordingNotifyBackend>, JobQueue) {
+        let queue = test_queue().await;
+        let recorder = Arc::new(RecordingNotifyBackend::default());
+        let dispatcher = Arc::new(NotifyDispatcher::new(
+            "le",
+            vec![BackendSlot::new("recording", recorder.clone(), events)],
+            queue.clone(),
+        ));
+        (dispatcher, recorder, queue)
+    }
+
+    /// The property the whole change turns on: `dispatch` delivers nothing
+    /// itself, it writes a row. Nothing has reached the backend when it returns.
+    #[tokio::test]
+    async fn dispatch_queues_a_row_rather_than_delivering() {
+        let (dispatcher, recorder, queue) = recording_dispatcher(&every_kind()).await;
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+
+        assert!(
+            recorder.events.lock().unwrap().is_empty(),
+            "dispatch must not deliver inline"
+        );
+        let queued = Job::count_live(NOTIFY_JOB_KIND, queue.database())
+            .await
+            .unwrap();
+        assert_eq!(queued, 1, "one backend, one row");
+    }
+
+    /// The `events` list is applied at *enqueue*, so a backend that does not
+    /// want an event costs no row at all — not a row that runs and no-ops.
+    #[tokio::test]
+    async fn a_backend_that_does_not_want_the_event_gets_no_row() {
+        let (dispatcher, _recorder, queue) =
+            recording_dispatcher(&["certificate_issued".to_string()]).await;
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// One row **per backend**, so a retry against a failing one never re-sends
+    /// through a healthy one that already delivered.
+    #[tokio::test]
+    async fn one_dispatch_queues_one_row_per_wanting_backend() {
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::new(
+            "le",
+            vec![
+                BackendSlot::new(
+                    "email",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &every_kind(),
+                ),
+                BackendSlot::new(
+                    "custom:webhook",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &every_kind(),
+                ),
+                BackendSlot::new(
+                    "custom:pager",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &["certificate_revoked".to_string()],
+                ),
+            ],
+            queue.clone(),
+        );
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            2,
+            "the third backend does not want this kind"
+        );
+    }
+
+    /// Two dispatches of the same event are two notifications, as they always
+    /// were: the per-call `delivery_id` keeps the identity index from mistaking
+    /// the second for a duplicate of the first.
+    #[tokio::test]
+    async fn the_same_event_dispatched_twice_queues_twice() {
+        let (dispatcher, _recorder, queue) = recording_dispatcher(&every_kind()).await;
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+        dispatcher.dispatch(profile_mounted("le")).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    /// A dispatcher with nothing configured writes nothing at all — the queue is
+    /// not a place to park work no backend will ever ask for.
+    #[tokio::test]
+    async fn a_disabled_dispatcher_queues_nothing() {
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::disabled(queue.clone());
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    /// A database that cannot take the row must not become a failed ACME
+    /// request: `dispatch` returns `()` and there is nowhere to put the error.
+    #[tokio::test]
+    async fn a_database_failure_is_swallowed_by_dispatch() {
+        let (dispatcher, _recorder, queue) = recording_dispatcher(&every_kind()).await;
+        queue.database().pool.close().await;
+
+        dispatcher.dispatch(profile_mounted("le")).await;
+    }
+
+    /// `deliver` is the seam the job handler runs through, and the answer for an
+    /// id nobody has is `None` rather than an error — the handler has to tell
+    /// "this backend refused" from "this backend is gone".
+    #[tokio::test]
+    async fn deliver_reaches_one_backend_and_reports_an_unknown_id() {
+        let (dispatcher, recorder, _queue) = recording_dispatcher(&every_kind()).await;
+
+        let outcome = dispatcher
+            .deliver("recording", &profile_mounted("le"))
+            .await;
+        assert!(matches!(outcome, Some(Ok(()))));
+        assert_eq!(recorder.events.lock().unwrap().len(), 1);
+
+        assert!(
+            dispatcher
+                .deliver("carrier-pigeon", &profile_mounted("le"))
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            recorder.events.lock().unwrap().len(),
+            1,
+            "an unknown id must reach no backend at all"
+        );
     }
 
     /// The selector's own arms: each name reaches its constructor and lands in
@@ -870,8 +1168,14 @@ mod tests {
             ..NotifyConfig::default()
         };
 
-        let dispatcher = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .expect("both backends must build");
+        let dispatcher = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .expect("both backends must build");
         let rendered = format!("{dispatcher:?}");
         assert!(rendered.contains("email"), "{rendered}");
         assert!(rendered.contains("mattermost"), "{rendered}");
@@ -883,14 +1187,22 @@ mod tests {
     async fn every_smtp_security_mode_is_recognised() {
         for mode in ["starttls", "tls", "none"] {
             let cfg = email_config(mode);
-            from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-                .unwrap_or_else(|error| panic!("`{mode}` must build: {error}"));
+            from_config(
+                "le",
+                &cfg,
+                test_resolver(),
+                crate::testutil::no_proxies(),
+                &test_queue().await,
+            )
+            .unwrap_or_else(|error| panic!("`{mode}` must build: {error}"));
         }
 
         let error = from_config(
+            "le",
             &email_config("carrier-pigeon"),
             test_resolver(),
             crate::testutil::no_proxies(),
+            &test_queue().await,
         )
         .unwrap_err()
         .to_string();
@@ -918,9 +1230,15 @@ mod tests {
     async fn an_unknown_event_name_is_caught_on_each_backend() {
         let mut email = email_config("none");
         email.email.events = vec!["certificate_exploded".to_string()];
-        let error = from_config(&email, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &email,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("notify.email.events"), "{error}");
 
         let mattermost = NotifyConfig {
@@ -932,9 +1250,15 @@ mod tests {
             },
             ..NotifyConfig::default()
         };
-        let error = from_config(&mattermost, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &mattermost,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("notify.mattermost.events"), "{error}");
     }
 
@@ -947,9 +1271,15 @@ mod tests {
             custom_enabled: vec!["webhook".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             error.contains("notify.custom_enabled names `webhook`"),
             "{error}"
@@ -968,9 +1298,15 @@ mod tests {
             custom,
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("invalid name"), "{error}");
     }
 
@@ -980,9 +1316,15 @@ mod tests {
             enabled: vec!["carrier-pigeon".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("unknown notify backend"), "{error}");
     }
 
@@ -992,9 +1334,15 @@ mod tests {
             enabled: vec!["custom".to_string()],
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("notify.custom_enabled is empty"), "{error}");
     }
 
@@ -1009,44 +1357,86 @@ mod tests {
             },
             ..NotifyConfig::default()
         };
-        let error = from_config(&cfg, test_resolver(), crate::testutil::no_proxies())
-            .unwrap_err()
-            .to_string();
+        let error = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("unknown event"), "{error}");
     }
 
+    /// The `events` list decides membership of the *queue*, not of the delivery:
+    /// a backend outside the list never gets a row, so `wants` is asserted on
+    /// both sides rather than on what arrived at a backend afterwards.
     #[tokio::test]
-    async fn a_backend_only_receives_events_it_is_configured_for() {
-        let wide = Arc::new(RecordingNotifyBackend::default());
-        let narrow = Arc::new(RecordingNotifyBackend::default());
-        let dispatcher = NotifyDispatcher::new(vec![
-            filtered(wide.clone(), &ALL_NOTIFY_EVENTS.map(str::to_string)),
-            filtered(narrow.clone(), &["certificate_issued".to_string()]),
-        ]);
+    async fn a_backend_only_accepts_events_it_is_configured_for() {
+        let wide = BackendSlot::new(
+            "wide",
+            Arc::new(RecordingNotifyBackend::default()),
+            &every_kind(),
+        );
+        let narrow = BackendSlot::new(
+            "narrow",
+            Arc::new(RecordingNotifyBackend::default()),
+            &["certificate_issued".to_string()],
+        );
 
-        dispatcher.dispatch_now(profile_mounted("default")).await;
+        assert!(wide.wants(&profile_mounted("default")));
+        assert!(!narrow.wants(&profile_mounted("default")));
 
-        assert_eq!(wide.events.lock().unwrap().len(), 1);
-        assert!(
-            narrow.events.lock().unwrap().is_empty(),
-            "narrow backend must not receive an event outside its list"
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::new("le", vec![wide, narrow], queue.clone());
+        dispatcher.dispatch(profile_mounted("default")).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            1,
+            "only the wide backend is queued for"
         );
     }
 
+    /// One backend's failure is another's business, and the queue is what keeps
+    /// them apart now: two rows, settled independently, so the healthy one is
+    /// `done` while the failing one is still being retried.
     #[tokio::test]
     async fn a_failing_backend_does_not_stop_another_from_receiving_the_event() {
         let failing = Arc::new(RecordingNotifyBackend::failing());
         let healthy = Arc::new(RecordingNotifyBackend::default());
-        let dispatcher = NotifyDispatcher::new(vec![failing.clone(), healthy.clone()]);
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::new(
+            "le",
+            vec![
+                BackendSlot::new("failing", failing.clone(), &every_kind()),
+                BackendSlot::new("healthy", healthy.clone(), &every_kind()),
+            ],
+            queue,
+        );
 
-        dispatcher.dispatch_now(profile_mounted("default")).await;
+        assert!(matches!(
+            dispatcher
+                .deliver("failing", &profile_mounted("default"))
+                .await,
+            Some(Err(_))
+        ));
+        assert!(matches!(
+            dispatcher
+                .deliver("healthy", &profile_mounted("default"))
+                .await,
+            Some(Ok(()))
+        ));
 
         assert_eq!(failing.events.lock().unwrap().len(), 1);
         assert_eq!(healthy.events.lock().unwrap().len(), 1);
     }
 
-    #[test]
-    fn build_registry_builds_one_dispatcher_per_profile() {
+    #[tokio::test]
+    async fn build_registry_builds_one_dispatcher_per_profile() {
         let profiles = vec![
             ProfileConfig {
                 name: "a".to_string(),
@@ -1057,11 +1447,96 @@ mod tests {
                 sections: crate::config::ProfileSections::default(),
             },
         ];
-        let registry =
-            build_registry(&profiles, test_resolver(), crate::testutil::no_proxies()).unwrap();
+        let registry = build_registry(
+            &profiles,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .unwrap();
         assert_eq!(registry.len(), 2);
-        assert!(registry.contains_key("a"));
-        assert!(registry.contains_key("b"));
+        assert_eq!(registry["a"].profile(), "a");
+        assert_eq!(registry["b"].profile(), "b");
+    }
+
+    /// Two `custom` entries are two backends, and a job row has to be able to
+    /// say which one it means. `NotifyBackend::name` answers `"custom"` for
+    /// both, so the slot id is built from the configuration key instead.
+    #[tokio::test]
+    async fn two_custom_entries_get_distinct_slot_ids() {
+        let dir = crate::testutil::TempDir::new("notify-slot");
+        let script = crate::testutil::write_script(&dir, "notify.sh", "#!/bin/sh\nexit 0\n");
+        let entry = || CustomNotifyConfig {
+            script_path: script.display().to_string(),
+            ..CustomNotifyConfig::default()
+        };
+        let mut custom = std::collections::BTreeMap::new();
+        custom.insert("webhook".to_string(), entry());
+        custom.insert("pager".to_string(), entry());
+
+        let cfg = NotifyConfig {
+            enabled: vec!["custom".to_string()],
+            custom_enabled: vec!["webhook".to_string(), "pager".to_string()],
+            custom,
+            ..NotifyConfig::default()
+        };
+
+        let dispatcher = from_config(
+            "le",
+            &cfg,
+            test_resolver(),
+            crate::testutil::no_proxies(),
+            &test_queue().await,
+        )
+        .expect("both custom entries must build");
+
+        assert!(dispatcher.slot("custom:webhook").is_some());
+        assert!(dispatcher.slot("custom:pager").is_some());
+        assert!(dispatcher.slot("custom").is_none());
+    }
+
+    /// The durable payload has to survive a restart, so every variant must come
+    /// back out of JSON as the variant that went in. A wide `match` over an enum
+    /// that grows is exactly where a new variant gets forgotten.
+    #[test]
+    fn every_event_round_trips_through_its_payload() {
+        for event in every_event() {
+            let encoded = event.payload();
+            let decoded: NotifyEvent = serde_json::from_value(encoded.clone())
+                .unwrap_or_else(|error| panic!("{} must decode: {error}", event.kind()));
+            assert_eq!(decoded.kind(), event.kind());
+            assert_eq!(decoded.profile(), event.profile());
+            assert_eq!(decoded.payload(), encoded, "re-encoding must be stable");
+        }
+    }
+
+    /// The `custom` backend's stdin contract: the tag is a `"hook"` member
+    /// carrying the event kind, sitting flat beside the event's own fields. That
+    /// used to be spliced in by hand and is now serde's internal tag — a script
+    /// in the field must not be able to tell the difference.
+    #[test]
+    fn payload_is_tagged_with_its_own_hook() {
+        let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
+            profile: "le".to_string(),
+            order_id: "ord-1".to_string(),
+            account_id: "acct-1".to_string(),
+            cert_serial: "0a0b".to_string(),
+            identifiers: vec!["a.example.com".to_string()],
+            client_ip: Some("203.0.113.5".to_string()),
+        });
+
+        assert_eq!(
+            event.payload(),
+            serde_json::json!({
+                "hook": "certificate_issued",
+                "profile": "le",
+                "order_id": "ord-1",
+                "account_id": "acct-1",
+                "cert_serial": "0a0b",
+                "identifiers": ["a.example.com"],
+                "client_ip": "203.0.113.5",
+            })
+        );
     }
 
     #[test]
@@ -1092,6 +1567,29 @@ mod tests {
         )
         .unwrap();
         assert!(rendered.contains("default"));
+    }
+
+    /// A template that is not there will not be there next time either, so the
+    /// failure must not spend a retry budget getting to the same answer.
+    #[test]
+    fn a_template_failure_is_permanent() {
+        let env = build_environment("");
+
+        let missing = render(&env, "email/no_such_event.body.j2", &profile_mounted("le"))
+            .expect_err("there is no such template");
+        assert!(!missing.retryable(), "{missing}");
+
+        let dir = crate::testutil::TempDir::new("notify-broken");
+        std::fs::create_dir_all(dir.join("email")).unwrap();
+        std::fs::write(dir.join("email/profile_mounted.body.j2"), "{{ unclosed").unwrap();
+        let env = build_environment(dir.path().to_str().unwrap());
+        let broken = render(
+            &env,
+            "email/profile_mounted.body.j2",
+            &profile_mounted("le"),
+        )
+        .expect_err("the template does not compile");
+        assert!(!broken.retryable(), "{broken}");
     }
 
     #[test]

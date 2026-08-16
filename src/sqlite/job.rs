@@ -372,6 +372,22 @@ impl Job {
         row.map(Self::from_row).transpose()
     }
 
+    /// How many live jobs of `kind` are queued or running.
+    ///
+    /// The kind-wide counterpart to [`Self::find_live`], for the callers that
+    /// want "is there work of this sort outstanding?" without naming a
+    /// `dedup_key` — a `notify_deliver` key is a per-occurrence uuid, so there
+    /// is no single key to ask about.
+    pub async fn count_live(kind: &str, database: &Database) -> Result<i64, sqlx::Error> {
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM jobs WHERE status IN ('ready', 'running') AND kind = ?;",
+        )
+        .bind(kind)
+        .fetch_one(&database.pool)
+        .await?;
+        Ok(count)
+    }
+
     /// Deletes terminal rows settled before `cutoff`, returning how many went.
     ///
     /// Only terminal ones: a `ready` job scheduled far in the future is not old,

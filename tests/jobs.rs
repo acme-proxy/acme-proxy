@@ -17,7 +17,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acme_proxy::config::JobsConfig;
-use acme_proxy::jobs::{JobHandler, JobOutcome, JobQueue, JobRegistry, JobSpec, spawn_runner};
+use acme_proxy::jobs::{
+    JobHandler, JobOutcome, JobQueue, JobRegistry, JobSpec, SweepJob, spawn_runner,
+};
+use acme_proxy::notify::{
+    BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
+    ProfileMountedData,
+};
 use acme_proxy::sqlite::db::Database;
 use acme_proxy::sqlite::job::Job;
 use async_trait::async_trait;
@@ -244,4 +250,123 @@ async fn a_kind_this_build_does_not_know_is_left_untouched() {
         .expect("the row survives for a build that knows the kind");
     assert_eq!(job.status, "ready");
     assert_eq!(job.attempts, 0, "it was never claimed");
+}
+
+/// A notification, end to end through the queue: dispatched by one component,
+/// delivered by the runner, settled on its row.
+///
+/// The inline suites cover the two halves — `src/notify/mod.rs` proves
+/// `dispatch` writes a row per wanting backend, `src/notify/job.rs` proves the
+/// handler maps a delivery onto an outcome. What only this file can show is that
+/// they are the same row: that nothing in between has to be woken by hand, and
+/// that a delivered notification leaves no live job behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dispatched_notification_is_delivered_through_the_queue() {
+    let database = database().await;
+    let config = fast_config();
+    let queue = JobQueue::new(database.clone(), &config);
+
+    let delivered = Arc::new(AtomicUsize::new(0));
+    let backend = Arc::new(CountingNotifier(delivered.clone()));
+    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+        .iter()
+        .map(|kind| (*kind).to_string())
+        .collect();
+    let dispatcher = Arc::new(NotifyDispatcher::new(
+        "le",
+        vec![BackendSlot::new("counting", backend, &every)],
+        queue.clone(),
+    ));
+    let mut dispatchers = std::collections::HashMap::new();
+    dispatchers.insert("le".to_string(), dispatcher.clone());
+
+    let _stop = start(
+        &queue,
+        Arc::new(NotifyJob::new(Arc::new(dispatchers))),
+        &config,
+    );
+
+    dispatcher
+        .dispatch(NotifyEvent::ProfileMounted(ProfileMountedData {
+            profile: "le".to_string(),
+        }))
+        .await;
+
+    until(|| delivered.load(Ordering::SeqCst) == 1).await;
+
+    // Delivered exactly once, and nothing is still owed. The settle is a second
+    // write after the delivery, so the row is read after a beat rather than the
+    // instant the counter moved.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(delivered.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        Job::count_live("notify_deliver", &database).await.unwrap(),
+        0,
+        "a delivered notification leaves no live row"
+    );
+}
+
+/// A backend counting its deliveries, so "delivered twice" is observable.
+struct CountingNotifier(Arc<AtomicUsize>);
+
+#[async_trait]
+impl NotifyBackend for CountingNotifier {
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    async fn send(&self, _event: &NotifyEvent) -> Result<(), NotifyError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// The sweeps, through a real runner: `recover` queues the single occurrence,
+/// the runner performs it, and the row goes straight back to `ready` with a
+/// future `run_at` rather than settling.
+///
+/// That last part is what makes a periodic job one row instead of a growing pile
+/// of them, and it is the difference from every other kind in the queue.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sweep_reschedules_itself_rather_than_settling() {
+    let database = database().await;
+    let config = fast_config();
+    let queue = JobQueue::new(database.clone(), &config);
+
+    // A nonce sweep, whose interval is the shortest of the four.
+    let _stop = start(
+        &queue,
+        Arc::new(SweepJob::nonces(database.clone(), Duration::from_secs(300))),
+        &config,
+    );
+
+    // `recover` runs before the loop, so the row appears without an enqueue
+    // here. Waiting for a `run_at` in the future is what proves it has already
+    // run once rather than merely been queued.
+    let mut job = None;
+    for _ in 0..400 {
+        let live = Job::find_live("nonce_sweep", "all", &database)
+            .await
+            .unwrap();
+        if let Some(live) = live
+            && live.run_at > now_secs()
+        {
+            job = Some(live);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let job = job.expect("the sweep never ran and rescheduled itself");
+
+    assert_eq!(job.status, "ready", "still live, not settled");
+    assert_eq!(job.attempts, 0, "`Reschedule` resets the attempt count");
+    assert!(
+        job.run_at >= now_secs() + 100,
+        "the next occurrence is a whole interval away, not immediate"
+    );
+    assert_eq!(
+        Job::count_live("nonce_sweep", &database).await.unwrap(),
+        1,
+        "one row, however many times it has run"
+    );
 }

@@ -20,11 +20,14 @@ use acme_proxy::{Profile, ProfileParts, build_app};
 use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
 };
-use acme_proxy::config::Config;
+use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
 use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, ProxyPolicy, Stage};
-use acme_proxy::notify::{NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent};
+use acme_proxy::jobs::{JobQueue, JobRegistry};
+use acme_proxy::notify::{
+    BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
+};
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::signer::relay::http01::MemoryTokenStore;
 use acme_proxy::signer::{
@@ -194,7 +197,7 @@ pub async fn test_app_with_signer(signer: Arc<dyn SignerBackend>) -> (Router, Ar
         signer,
         Arc::new(FilterPolicy::default()),
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await
 }
@@ -208,7 +211,7 @@ pub async fn test_app_with_filter(filter: Arc<FilterPolicy>) -> (Router, Arc<Dat
         signer,
         filter,
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await
 }
@@ -225,7 +228,7 @@ pub async fn test_app_with_challenges(
         signer,
         Arc::new(FilterPolicy::default()),
         challenges,
-        no_notifications(),
+        no_notifications().await,
     )
     .await
 }
@@ -247,8 +250,118 @@ pub async fn test_app_with_notify(notify: Arc<NotifyDispatcher>) -> (Router, Arc
 
 /// The no-op dispatcher every `test_app_with_*` helper defaults to when a test
 /// isn't asserting on notifications at all.
-pub fn no_notifications() -> Arc<NotifyDispatcher> {
-    Arc::new(NotifyDispatcher::default())
+///
+/// It still carries a queue — every dispatcher does, since a delivery is a job
+/// row — but with no backends configured nothing is ever written to it, so the
+/// throwaway database behind it stays empty.
+pub async fn no_notifications() -> Arc<NotifyDispatcher> {
+    Arc::new(NotifyDispatcher::disabled(test_job_queue().await))
+}
+
+/// A queue over its own in-memory database, for a dispatcher a test builds
+/// directly rather than through `Profile::build_all`.
+pub async fn test_job_queue() -> JobQueue {
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    JobQueue::new(database, &JobsConfig::default())
+}
+
+/// A dispatcher over one [`RecordingNotifyBackend`], plus the runner that
+/// actually performs what it queues.
+///
+/// `dispatch` writes a `notify_deliver` row and returns; without something
+/// draining the queue nothing would ever reach the recorder. So every test
+/// asserting "this handler notified" needs a runner, and this is it — the guard
+/// stops it gracefully when the test ends.
+pub struct NotifyHarness {
+    pub dispatcher: Arc<NotifyDispatcher>,
+    pub recorder: Arc<RecordingNotifyBackend>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl NotifyHarness {
+    /// A harness whose backend always delivers.
+    pub async fn new() -> Self {
+        Self::over(Arc::new(RecordingNotifyBackend::default())).await
+    }
+
+    /// A harness whose backend always fails, retryably.
+    pub async fn failing() -> Self {
+        Self::over(Arc::new(RecordingNotifyBackend::failing())).await
+    }
+
+    async fn over(recorder: Arc<RecordingNotifyBackend>) -> Self {
+        let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+            .iter()
+            .map(|kind| (*kind).to_string())
+            .collect();
+        // Retries off: these tests assert on the *first* delivery, and a backoff
+        // between attempts would only make them wait. The retry behaviour itself
+        // is covered inline, in `src/notify/job.rs`.
+        let config = JobsConfig {
+            poll_interval_ms: 5,
+            max_attempts: 1,
+            retry_base_seconds: 0,
+            ..JobsConfig::default()
+        };
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let queue = JobQueue::new(database, &config);
+
+        let dispatcher = Arc::new(NotifyDispatcher::new(
+            PROFILE,
+            vec![BackendSlot::new("recording", recorder.clone(), &every)],
+            queue.clone(),
+        ));
+
+        let mut registry = JobRegistry::new();
+        let mut dispatchers = std::collections::HashMap::new();
+        dispatchers.insert(PROFILE.to_string(), dispatcher.clone());
+        registry
+            .register(Arc::new(NotifyJob::new(Arc::new(dispatchers))))
+            .unwrap();
+
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        acme_proxy::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+
+        Self {
+            dispatcher,
+            recorder,
+            shutdown,
+        }
+    }
+
+    /// Waits until the recorder has seen at least `count` events, then returns
+    /// them all.
+    ///
+    /// Polling rather than sleeping a fixed span: delivery is two hops now — the
+    /// handler queues, the runner delivers — so a fixed sleep is a flake waiting
+    /// to happen and a longer one is a slow suite.
+    pub async fn recorded(&self, count: usize) -> Vec<NotifyEvent> {
+        for _ in 0..400 {
+            let events = self.recorder.events();
+            if events.len() >= count {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!(
+            "expected at least {count} notification(s), saw {:?}",
+            self.recorder.events()
+        );
+    }
+
+    /// Everything recorded once the queue has gone quiet — for the assertions
+    /// that a *further* event was **not** dispatched, where waiting for a count
+    /// that will never arrive is not an option.
+    pub async fn settled(&self) -> Vec<NotifyEvent> {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.recorder.events()
+    }
+}
+
+impl Drop for NotifyHarness {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
 }
 
 /// The bypassing `http-01`-only registry every other helper uses — the same
@@ -292,7 +405,7 @@ pub struct TestProfile {
     pub challenges: Arc<ChallengeRegistry>,
     pub eab: acme_proxy::config::EabConfig,
     pub meta: acme_proxy::config::MetaConfig,
-    pub notify: Arc<NotifyDispatcher>,
+    pub notify: Option<Arc<NotifyDispatcher>>,
 }
 
 impl TestProfile {
@@ -308,7 +421,10 @@ impl TestProfile {
             challenges: default_challenges(),
             eab: acme_proxy::config::EabConfig::default(),
             meta: acme_proxy::config::MetaConfig::default(),
-            notify: no_notifications(),
+            // Resolved when the app is built: a dispatcher needs a `JobQueue`
+            // and therefore a database, which this synchronous constructor has
+            // no way to open.
+            notify: None,
         }
     }
 
@@ -326,7 +442,7 @@ impl TestProfile {
 
     #[must_use]
     pub fn with_notify(mut self, notify: Arc<NotifyDispatcher>) -> Self {
-        self.notify = notify;
+        self.notify = Some(notify);
         self
     }
 
@@ -350,24 +466,28 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
     init_tracing();
     let config = Config::default();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let built: Vec<_> = profiles
-        .into_iter()
-        .map(|profile| {
-            Arc::new(Profile::new(
-                profile.name,
-                &config.server.base_url,
-                ProfileParts {
-                    signer: profile.signer,
-                    filter: profile.filter,
-                    challenges: profile.challenges,
-                    order: config.order.clone(),
-                    eab: profile.eab,
-                    meta: profile.meta,
-                    notify: profile.notify,
-                },
-            ))
-        })
-        .collect();
+    // A `for` loop rather than `map`: resolving the default dispatcher opens a
+    // database, so the body has to be able to await.
+    let mut built = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let notify = match profile.notify {
+            Some(notify) => notify,
+            None => no_notifications().await,
+        };
+        built.push(Arc::new(Profile::new(
+            profile.name,
+            &config.server.base_url,
+            ProfileParts {
+                signer: profile.signer,
+                filter: profile.filter,
+                challenges: profile.challenges,
+                order: config.order.clone(),
+                eab: profile.eab,
+                meta: profile.meta,
+                notify,
+            },
+        )));
+    }
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -478,7 +598,7 @@ pub async fn test_admin_app_with_signer(
         signer.clone(),
         Arc::new(FilterPolicy::default()),
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     );
     let router = acme_proxy::webadmin::build_admin_app(
         database.clone(),

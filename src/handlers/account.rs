@@ -172,7 +172,8 @@ pub async fn post_new_account(
                 account_id: account.id.clone(),
                 contact: account.contact.clone(),
                 client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
-            }));
+            }))
+            .await;
     }
 
     let status = if created {
@@ -330,7 +331,8 @@ pub async fn post_account(
                 profile: profile.name.clone(),
                 account_id: id.clone(),
                 client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
-            }));
+            }))
+            .await;
     } else if let Some(contact) = payload.contact {
         validate_contacts(&contact)?;
         account

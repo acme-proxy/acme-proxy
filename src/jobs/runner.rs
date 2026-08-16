@@ -34,10 +34,11 @@ const LEASE_SLACK: Duration = Duration::from_secs(30);
 
 /// How long a graceful stop waits for in-flight jobs before releasing leases.
 ///
-/// The same budget and the same shape as `cli::NOTIFY_DRAIN_BUDGET`, and a
-/// `const` rather than a configuration key for the same reason: it is the cost
-/// of a clean exit, not a policy. A job that outlives it is not lost — its lease
-/// is released and the next process claims it.
+/// A `const` rather than a configuration key: it is the cost of a clean exit,
+/// not a policy. A job that outlives it is not lost — its lease is released and
+/// the next process claims it. This is what replaced the notify subsystem's own
+/// bounded shutdown drain, which had the same budget and, unlike this, genuinely
+/// did lose whatever ran past it.
 const DRAIN_BUDGET: Duration = Duration::from_secs(5);
 
 /// Timing derived from `[jobs]` once, so the loop never re-reads the config.

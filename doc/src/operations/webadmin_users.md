@@ -270,9 +270,10 @@ Two deadlines apply, and whichever comes first wins:
 The idle deadline is advanced at most once a minute, so a page polling every few
 seconds is not a stream of database writes.
 
-A reaper sweeps expired and idle rows for the life of the process, and once at
-startup. Unlike nonces, sessions outlive a restart, so a startup-only sweep
-would leak every session an operator never explicitly signed out of.
+An `admin_session_sweep` job removes expired and idle rows for the life of the
+process, starting with one pass at startup. Unlike nonces, sessions outlive a
+restart, so a startup-only sweep would leak every session an operator never
+explicitly signed out of.
 
 `created_ip` and `user_agent` are recorded for forensics and are **never**
 compared against the live request: pinning a session to an address breaks every

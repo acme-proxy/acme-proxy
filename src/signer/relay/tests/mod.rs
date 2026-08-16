@@ -81,14 +81,39 @@ impl TestRunner {
         Self::start_with(queue, signer, test_jobs_config())
     }
 
+    /// The runner, plus the [`NotifyJob`] that actually delivers what `settle`
+    /// queues. Only the notification test needs it: everywhere else the relay's
+    /// dispatcher has no backends, so the rows are never written.
+    fn start_notifying(
+        queue: crate::jobs::JobQueue,
+        signer: &RelaySigner,
+        notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+    ) -> Self {
+        Self::start_inner(queue, signer, test_jobs_config(), Some(notifiers))
+    }
+
     fn start_with(
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
         config: crate::config::JobsConfig,
     ) -> Self {
+        Self::start_inner(queue, signer, config, None)
+    }
+
+    fn start_inner(
+        queue: crate::jobs::JobQueue,
+        signer: &RelaySigner,
+        config: crate::config::JobsConfig,
+        notifiers: Option<Arc<HashMap<String, Arc<NotifyDispatcher>>>>,
+    ) -> Self {
         let mut registry = crate::jobs::JobRegistry::new();
         for handler in signer.jobs() {
             registry.register(handler).unwrap();
+        }
+        if let Some(notifiers) = notifiers {
+            registry
+                .register(Arc::new(crate::notify::NotifyJob::new(notifiers)))
+                .unwrap();
         }
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
         crate::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
@@ -173,6 +198,30 @@ impl crate::notify::NotifyBackend for RecordingNotifyBackend {
         self.events.lock().unwrap().push(event.clone());
         Ok(())
     }
+}
+
+/// Waits for a recorder to receive its first event.
+///
+/// A notification is two hops now — `settle` queues it, the runner delivers it —
+/// so a fixed sleep would be a flake. Bounded, so a genuine regression fails
+/// rather than hangs.
+async fn await_recorded(recorder: &Arc<RecordingNotifyBackend>) {
+    for _ in 0..200 {
+        if !recorder.events.lock().unwrap().is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no notification was delivered within the budget");
+}
+
+/// A recorder as a dispatcher slot, wanting every event kind.
+fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> crate::notify::BackendSlot {
+    let every: Vec<String> = crate::config::ALL_NOTIFY_EVENTS
+        .iter()
+        .map(|kind| (*kind).to_string())
+        .collect();
+    crate::notify::BackendSlot::new("recording", recorder, &every)
 }
 
 /// Persists a `ready` order under `profile`, for the profile-scoped

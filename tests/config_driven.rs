@@ -67,7 +67,7 @@ async fn app_with(config: Config) -> (Router, Arc<Database>) {
         signer,
         Arc::new(FilterPolicy::default()),
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await
 }

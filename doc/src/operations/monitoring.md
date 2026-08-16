@@ -157,14 +157,17 @@ The events worth building alerts on:
 | `db_job_leases_reclaimed` | warn | Rows whose runner died holding the lease were returned to the queue. Expected once after an unclean shutdown; recurring means the runner is being killed mid-job. |
 | `job_lease_lost` | warn | A job finished after its lease had already been reclaimed, so its result was discarded and another runner will repeat the work. Means an attempt is overrunning `jobs.lease_seconds`. |
 | `job_deadline_passed` | warn | A job was claimed after its own deadline and retired without running. For a relay that means the local order had already expired. |
-| `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. |
+| `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. Note the four table sweeps and every notification run through this runner, so a runner that is not started is a server that is not sweeping or notifying either. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
-| `notify_delivery_failed` | warn | A notification backend could not deliver. Never affects the ACME response. |
+| `notify_delivery_failed` | warn | One delivery attempt did not land. Never affects the ACME response, and no longer the end of the story: it carries `retryable`, and a `true` there means the delivery went back in the queue. |
+| `notify_delivery_abandoned` | warn | A notification was given up on — the attempts ran out, or a backend reported a failure that could never succeed. **This is the line that means an operator was not told something.** Alert on it; `notify_delivery_failed` on its own is usually just a bad minute. |
+| `notify_delivered` | info | One delivery landed. Carries the `backend`, the event `kind` and the attempt it succeeded on. |
+| `notify_delivery_queued` | info | A delivery was written to the queue, one line per backend that wanted the event. Carries a `delivery_id` shared by that event's rows, which is how they are correlated. |
 | `tls_handshake_timeout`, `tls_handshake_failed` | debug | Only with `server.tls.enabled`. Deliberately below the default filter: on a public listener these are scanner background noise, and one `warn` per failed handshake is a flood, not a signal. |
-| `nonce_reaper_swept` | debug | The periodic nonce cleanup ran. Its absence over a long window means the reaper task died. |
+| `nonce_reaper_swept` | debug | The periodic nonce cleanup ran. It is a `nonce_sweep` job, so its absence over a long window means the job runner is unwell — check `job_runner_started`. |
 | `audit_write_failed` | warn | An [audit](audit.md) row could not be written. The failure is **swallowed deliberately** — a certificate the CA has already signed must not become a `500` the client retries into a second issuance — so this line is the *only* evidence that the trail has a hole in it. Alert on it. |
 | `audit_reverse_dns_failed`, `audit_reverse_dns_timeout` | debug | A PTR lookup for a client address found nothing in time. Costs a `NULL` in one column, never a refused request. Routine where no reverse zone exists; turn `audit.reverse_dns` off there. |
-| `audit_reaper_swept`, `audit_reaper_failed` | debug / warn | The daily retention sweep, only with a non-zero `audit.retention_days`. `audit_reaper_swept` carries the rows removed and the cutoff. |
+| `audit_reaper_swept`, `audit_reaper_failed` | debug / warn | The daily retention sweep, only with a non-zero `audit.retention_days`. `audit_reaper_swept` carries the rows removed and the cutoff. Runs as the `audit_sweep` job. |
 | `ipam_netbox_tls_verification_disabled` | warn | Emitted on **every** start while `insecure_skip_verify` is set, deliberately not once-only. |
 | `proxy_configured` | info | Emitted once at startup when [`[proxy]`](../configuration/reference.md#proxy) resolves to anything, and not at all otherwise. Carries `source` (`config`, `environment` or both), the two proxy URLs **with any password redacted**, and the `no_proxy` rule count. Worth reading on a first start: an inherited shell `https_proxy` is otherwise an invisible reason for every outbound call to behave differently. |
 
@@ -185,7 +188,7 @@ Only with `[admin]` enabled — see [Web Admin](webadmin.md):
 | `admin_order_revoked`, `admin_order_deleted`, `admin_account_deleted`, `admin_nonces_cleaned` | info | Destructive admin actions, each naming the operator. Each carries `surface = "api"` or `"ui"`, since the JSON API and the HTML panel reach the same operation by different routes. |
 | `admin_revoke_signer_failed` | error | The CA-side revocation failed, so the order is left un-revoked for a retry. Answered as `502` rather than `500`. |
 | `admin_db_error` | error | A database failure on an admin route. The `sqlx` message is here and deliberately *not* in the response body, which says only "internal error". |
-| `admin_session_reaper_swept` | debug | The periodic session sweep ran. |
+| `admin_session_reaper_swept` | debug | The periodic session sweep ran, as the `admin_session_sweep` job. |
 | `admin_session_orphaned` | warn | A session outlived its user despite the FK cascade. Should be impossible; the session is deleted and refused. |
 
 The full set is much broader than this table — around 450 names, of which the

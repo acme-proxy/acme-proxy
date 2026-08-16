@@ -102,8 +102,10 @@ impl NotifyBackend for MattermostNotifier {
         if !self.username.is_empty() {
             payload["username"] = json!(self.username);
         }
+        // Permanent: this payload is two strings and a rendered template, so a
+        // serializer that refuses it will refuse it again.
         let body = Bytes::from(serde_json::to_vec(&payload).map_err(|error| {
-            NotifyError::new(format!("failed to serialize webhook payload: {error}"))
+            NotifyError::permanent(format!("failed to serialize webhook payload: {error}"))
         })?);
 
         let status = tokio::time::timeout(
@@ -121,10 +123,25 @@ impl NotifyBackend for MattermostNotifier {
 
         if status.is_success() {
             Ok(())
-        } else {
+        } else if retryable_status(status) {
             Err(NotifyError::new(format!("webhook returned {status}")))
+        } else {
+            Err(NotifyError::permanent(format!("webhook returned {status}")))
         }
     }
+}
+
+/// Whether a non-2xx from the webhook is worth asking again about.
+///
+/// A 5xx is the server having a bad minute and a 429 is it asking for one, so
+/// both are retried. Every other 4xx is Mattermost stating a reason — a webhook
+/// that has been deleted, a payload it will not accept — and repeating the same
+/// request four more times only delays the log line that says so. 408 is a 4xx
+/// by number and a transport failure by meaning, so it goes with the 5xx.
+fn retryable_status(status: hyper::StatusCode) -> bool {
+    status.is_server_error()
+        || status == hyper::StatusCode::TOO_MANY_REQUESTS
+        || status == hyper::StatusCode::REQUEST_TIMEOUT
 }
 
 async fn post(
@@ -134,8 +151,11 @@ async fn post(
     url: &Url,
     body: Bytes,
 ) -> Result<hyper::StatusCode, NotifyError> {
-    let endpoint = crate::http_client::Endpoint::from_url(url).map_err(NotifyError::new)?;
+    // Permanent: `webhook_url` is configuration, and a URL that does not parse
+    // now will not parse in thirty seconds either.
+    let endpoint = crate::http_client::Endpoint::from_url(url).map_err(NotifyError::permanent)?;
 
+    // Retryable: DNS, the proxy, the handshake and the socket.
     let mut connection = crate::http_client::connect(resolver, proxies, &endpoint, tls)
         .await
         .map_err(NotifyError::new)?;
@@ -149,7 +169,7 @@ async fn post(
         .header(hyper::header::USER_AGENT, "acme-proxy")
         .header(hyper::header::CONTENT_TYPE, "application/json")
         .body(Full::new(body))
-        .map_err(|error| NotifyError::new(format!("failed to build request: {error}")))?;
+        .map_err(|error| NotifyError::permanent(format!("failed to build request: {error}")))?;
 
     let response = connection
         .send_request(request)
@@ -372,6 +392,70 @@ mod tests {
             .await
             .expect_err("403 is not a delivery");
         assert!(error.to_string().contains("403"), "{error}");
+        assert!(
+            !error.retryable(),
+            "a 403 is Mattermost stating a reason, not a bad minute"
+        );
+    }
+
+    /// Which non-2xx answers are worth asking again about. The split decides
+    /// whether a queued delivery spends its whole budget on a webhook that has
+    /// been deleted, or gives up immediately on one that is merely overloaded.
+    #[test]
+    fn only_a_transient_status_is_retried() {
+        use hyper::StatusCode;
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::REQUEST_TIMEOUT,
+        ] {
+            assert!(retryable_status(status), "{status} must be retried");
+        }
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::NOT_FOUND,
+            StatusCode::GONE,
+        ] {
+            assert!(!retryable_status(status), "{status} must not be retried");
+        }
+    }
+
+    /// A URL the transport cannot even parse is configuration, so it must not
+    /// consume a retry budget.
+    #[tokio::test]
+    async fn an_unusable_url_is_permanent_and_an_unreachable_host_is_not() {
+        let tls = Arc::new(crate::http_client::webpki_tls_config());
+
+        let url: Url = "ftp://chat.example.com/hooks/xyz".parse().unwrap();
+        let error = post(
+            &tls,
+            test_resolver().as_ref(),
+            &crate::proxy::OutboundProxies::direct(),
+            &url,
+            Bytes::from_static(b"{}"),
+        )
+        .await
+        .unwrap_err();
+        assert!(!error.retryable(), "{error}");
+
+        let url: Url = "http://127.0.0.1:1/hooks/xyz".parse().unwrap();
+        let error = post(
+            &tls,
+            test_resolver().as_ref(),
+            &crate::proxy::OutboundProxies::direct(),
+            &url,
+            Bytes::from_static(b"{}"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.retryable(),
+            "a host that is down may come back: {error}"
+        );
     }
 
     /// A URL whose scheme is neither `http` nor `https` never reaches the

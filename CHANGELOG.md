@@ -396,6 +396,44 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **Notifications are durable, and a failed delivery is retried.** Delivery used
+  to be a bare `tokio::spawn`: a refused SMTP connection, a 503 from a webhook or
+  a script that exited non-zero was logged once and the notification was gone,
+  and a restart lost everything in flight. The only mitigation was a best-effort
+  five-second drain at shutdown, which still lost anything slower than the
+  budget. Each delivery is now a `notify_deliver` row on the durable queue, so it
+  survives the process that wrote it and comes back under `jobs.max_attempts` and
+  the shared backoff. Three details are worth knowing:
+
+  - **One row per backend per event**, not one per event, so retrying a flaky
+    webhook never re-sends through an email backend that already delivered.
+  - **A failure that could never have worked is not retried.** A template that
+    does not render, a `webhook_url` that does not parse and any webhook 4xx
+    other than 408/429 are refused on the first attempt; transport failures,
+    5xx, 429 and 408 go back in the queue. A `custom` script's exit code carries
+    no way to say "never retry", so its failures are always retryable.
+  - **A lost notification now says so**, once, as `notify_delivery_abandoned` —
+    the line to alert on. `notify_delivery_failed` gained a `retryable` field
+    and, on its own, usually just means a bad minute.
+
+  No configuration changed: the retry budget is `[jobs]`, which already existed.
+  The shutdown drain is gone, along with its five-second bound — there is
+  nothing left to drain.
+
+- **The nonce, audit-retention and admin-session sweeps run on the job queue**,
+  as `nonce_sweep`, `audit_sweep` and `admin_session_sweep`, joining the
+  `job_retention_sweep` that already did. Each was its own `tokio::spawn` +
+  `tokio::time::interval` loop and a near-copy of the other two. Three things
+  follow: a sweep whose task died is now reclaimed by lease expiry rather than
+  being silently gone until the next restart; the schedule survives a restart, so
+  a server restarting more often than once a day no longer skips the daily sweeps
+  for ever; and there is one answer in the process to "run this every N seconds"
+  rather than two. The intervals, the log event names
+  (`nonce_reaper_swept`, `audit_reaper_swept`, `admin_session_reaper_swept` and
+  their `_failed` twins) and the conditions under which each is scheduled are all
+  unchanged. What is new is a dependency: the sweeps stop if the job runner does,
+  so `job_runner_started` is now worth watching for.
+
 - The `relay` signer's upstream client and the Mattermost notifier now send an
   **origin-form** request line (`GET /path`) on a direct connection, where both
   previously sent absolute-form unconditionally. RFC 9112 §3.2.1 reserves

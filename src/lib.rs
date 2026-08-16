@@ -83,25 +83,30 @@
 //!     // One resolver for the whole process: `dns.resolver` governs every
 //!     // outbound connection this server makes, not just challenge lookups.
 //!     let resolver = challenge::build_resolver(acme_proxy::dns::resolver_addr(&config.dns)?)?;
+//!     // The enqueue side of the durable queue, built first because everything
+//!     // below queues into it. A backend that defers issuance (`relay`) is
+//!     // handed one at construction, and so is every notify dispatcher — a
+//!     // notification is a job row too. The runner that drains it is started
+//!     // separately, below.
+//!     let job_queue = jobs::JobQueue::new(database.clone(), &config.jobs);
 //!     // Built once, up front: an asynchronous signer backend (`relay`)
 //!     // has no `Profile` to reach a notifier through from its background
-//!     // completion task, so it is handed this whole map instead.
+//!     // completion task, so it is handed this whole map instead — and so is
+//!     // the `NotifyJob` that performs the deliveries.
 //!     let mut notifiers = std::collections::HashMap::new();
 //!     for profile in &resolved {
 //!         notifiers.insert(
 //!             profile.name.clone(),
 //!             notify::from_config(
+//!                 &profile.name,
 //!                 &profile.sections.notify,
 //!                 resolver.clone(),
 //!                 proxies.clone(),
+//!                 &job_queue,
 //!             )?,
 //!         );
 //!     }
 //!     let notifiers = Arc::new(notifiers);
-//!     // The enqueue side of the durable queue. A backend that defers issuance
-//!     // (`relay`) is handed one at construction and queues into it; the runner
-//!     // that drains it is started separately, below.
-//!     let job_queue = jobs::JobQueue::new(database.clone(), &config.jobs);
 //!
 //!     let mut profiles = Vec::new();
 //!     for profile in &resolved {
@@ -147,16 +152,19 @@
 //!     let app = build_app(database.clone(), config.clone(), profiles, audit);
 //!
 //!     // One runner drains the queue for the process. Every handler comes from
-//!     // a subsystem that has background work — `SignerBackend::jobs` today —
-//!     // and the runner calls `recover` on each before it claims anything, which
-//!     // is how work a previous run left in flight is picked back up.
+//!     // a subsystem that has background work — `SignerBackend::jobs`,
+//!     // notification delivery, and the periodic table sweeps — and the runner
+//!     // calls `recover` on each before it claims anything, which is how work a
+//!     // previous run left in flight is picked back up, and how each sweep's
+//!     // single row gets queued.
+//!     let mut registry = jobs::JobRegistry::new();
+//!     registry.register(Arc::new(notify::NotifyJob::new(notifiers)))?;
+//!     registry.register(Arc::new(jobs::SweepJob::nonces(
+//!         database.clone(),
+//!         std::time::Duration::from_secs(config.nonce.ttl_seconds),
+//!     )))?;
 //!     let (_shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
-//!     jobs::spawn_runner(
-//!         job_queue,
-//!         Arc::new(jobs::JobRegistry::new()),
-//!         &config.jobs,
-//!         shutdown_rx,
-//!     );
+//!     jobs::spawn_runner(job_queue, Arc::new(registry), &config.jobs, shutdown_rx);
 //!
 //!     let listener = tokio::net::TcpListener::bind(&config.server.bind_address).await?;
 //!     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
@@ -394,6 +402,7 @@ impl Profile {
             &resolved,
             resolver.clone(),
             proxies.clone(),
+            jobs,
         )?);
         let backends = signer::build_backends(
             &resolved,

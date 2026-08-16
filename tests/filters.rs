@@ -73,7 +73,7 @@ async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
         signer,
         chain,
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await
     .0
@@ -1417,8 +1417,14 @@ async fn eab_labels_scope_each_tenant_to_its_own_names() {
     let policy = filter::from_config(&tenant_policy(), &DnsConfig::default(), None, true)
         .expect("tenant policy should build");
     let ca = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
-    let (app, db) =
-        test_app_full(config, ca, policy, default_challenges(), no_notifications()).await;
+    let (app, db) = test_app_full(
+        config,
+        ca,
+        policy,
+        default_challenges(),
+        no_notifications().await,
+    )
+    .await;
 
     let key_a = Eab::create(Some("tenant-a".to_string()), None, &db)
         .await

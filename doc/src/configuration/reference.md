@@ -330,8 +330,8 @@ refused request.**
 
 Delete `audit_log` rows older than this many days. `0` keeps everything for
 ever, which is the right default for a trail whose value is that it is complete.
-Any non-zero value spawns a daily sweep beside the nonce reaper, running the
-same `DELETE` as `acme-proxy audit cleanup --older-than <days>`.
+Any non-zero value schedules a daily `audit_sweep` job beside the nonce one,
+running the same `DELETE` as `acme-proxy audit cleanup --older-than <days>`.
 
 See [Audit Trail](../operations/audit.md).
 
@@ -348,6 +348,14 @@ There is deliberately **no `enabled` key**. The queue is how the server finishes
 work it has already promised a client: an order answered `processing` is owed a
 certificate. Switching it off would not disable a feature, it would strand the
 orders. What is tunable is how hard and how long the server tries.
+
+Four kinds of work run here, so this section's reach is wider than the name
+suggests: relayed issuance under the `relay` signer backend, every
+[notification](../notifications/index.md) delivery, and the four periodic table
+sweeps (expired nonces, `audit.retention_days`, expired admin sessions, and this
+queue's own `retention_days`). A runner that is not running is a server that is
+not sweeping or notifying either — `job_runner_started` is the line that says it
+is.
 
 **`poll_interval_ms`** (`Integer`) — *Default: `1000` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL_MS`*
 

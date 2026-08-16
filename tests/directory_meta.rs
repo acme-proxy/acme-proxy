@@ -31,7 +31,7 @@ async fn app_with(config: Config) -> Router {
         Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
         Arc::new(FilterPolicy::default()),
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await
     .0

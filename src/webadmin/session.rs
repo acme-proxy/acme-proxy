@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::extract::FromRequestParts;
@@ -39,13 +39,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use ring::rand::{SecureRandom, SystemRandom};
 use subtle::ConstantTimeEq;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
-use crate::sqlite::db::Database;
 use crate::sqlite::nonce::{fingerprint, now_secs};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
@@ -592,42 +589,6 @@ impl LoginLimiter {
     }
 }
 
-/// Sweeps expired and idle sessions for the life of the process.
-///
-/// Modelled on `cli::spawn_nonce_reaper`, and needed for the same reason with
-/// one difference: sessions **outlive a restart**, so a startup-only sweep
-/// would leak every session an operator never explicitly logged out of.
-pub fn spawn_session_reaper(
-    database: Arc<Database>,
-    idle_timeout: Duration,
-    interval: Duration,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        // A missed tick means the last sweep ran long; running the backlog
-        // immediately would just queue more of the same.
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        // The first tick completes immediately; the startup sweep is the
-        // caller's, so skip it here rather than sweeping twice.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            match AdminSession::cleanup(idle_timeout, &database).await {
-                Ok(removed) => {
-                    debug!(
-                        event = "admin_session_reaper_swept",
-                        outcome = "success",
-                        rows_removed = removed
-                    );
-                }
-                Err(error) => {
-                    error!(event = "admin_session_reaper_failed", outcome = "failure", error = %error);
-                }
-            }
-        }
-    })
-}
-
 /// Logs a completed login attempt. One place, so the events cannot drift.
 pub fn log_login(succeeded: bool, username: &str, client: Option<IpAddr>, reason: &'static str) {
     if succeeded {
@@ -647,7 +608,6 @@ pub fn log_login(succeeded: bool, username: &str, client: Option<IpAddr>, reason
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::admin_session::NewSession;
     use axum::http::HeaderValue;
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
@@ -909,50 +869,6 @@ mod tests {
         assert!(
             limiter.check(None).is_ok(),
             "failing closed here would lock out every request, not every attacker"
-        );
-    }
-
-    /// A real short sleep rather than paused time: `tokio`'s `test-util`
-    /// feature is not enabled here, and the existing `spawn_nonce_reaper` test
-    /// makes the same trade.
-    #[tokio::test]
-    async fn the_reaper_sweeps_on_its_interval() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let user = AdminUser::create("alice", "hash", &database).await.unwrap();
-        AdminSession::create(
-            NewSession {
-                user_id: &user.id,
-                token_hash: "expired",
-                csrf_token: "csrf",
-                created_ip: None,
-                user_agent: None,
-            },
-            Duration::from_secs(1),
-            &database,
-        )
-        .await
-        .unwrap();
-        // Backdate it past its own deadline.
-        sqlx::query("UPDATE admin_sessions SET expires_at = ? WHERE token_hash = 'expired';")
-            .bind(now_secs() - 1)
-            .execute(&database.pool)
-            .await
-            .unwrap();
-
-        let handle = spawn_session_reaper(
-            database.clone(),
-            Duration::from_secs(3_600),
-            Duration::from_millis(10),
-        );
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        handle.abort();
-
-        assert!(
-            AdminSession::find_by_token_hash("expired", &database)
-                .await
-                .unwrap()
-                .is_none(),
-            "the reaper must remove a session past its absolute deadline"
         );
     }
 

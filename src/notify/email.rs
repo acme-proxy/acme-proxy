@@ -115,10 +115,15 @@ impl NotifyBackend for EmailNotifier {
         for to in &self.to {
             builder = builder.to(to.clone());
         }
+        // Permanent: an address or a header the builder refuses is a
+        // configuration or a template, and it will be refused identically on
+        // every attempt.
         let message = builder
             .body(body)
-            .map_err(|error| NotifyError::new(format!("failed to build message: {error}")))?;
+            .map_err(|error| NotifyError::permanent(format!("failed to build message: {error}")))?;
 
+        // Retryable: a relay that is down, refusing connections or greylisting
+        // has decided nothing about this message.
         self.transport
             .send(message)
             .await

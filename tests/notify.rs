@@ -11,10 +11,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acme_proxy::config::Config;
+use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::FilterPolicy;
-use acme_proxy::notify::{NotifyDispatcher, NotifyEvent};
+use acme_proxy::jobs::JobRegistry;
+use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
 use acme_proxy::signer::local_ca::LocalCa;
+use acme_proxy::sqlite::job::Job;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -24,8 +26,8 @@ use serde_json::json;
 
 mod common;
 use common::{
-    EcSigner, RecordingNotifyBackend, StubValidator, TestSigner, body_json, challenges_with,
-    fetch_nonce, first_certificate, make_csr, p, send_from, test_app_full, test_app_with_notify,
+    EcSigner, NotifyHarness, StubValidator, TestSigner, body_json, challenges_with, fetch_nonce,
+    first_certificate, make_csr, p, send_from, test_app_full, test_app_with_notify,
 };
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
@@ -48,15 +50,6 @@ async fn post(app: &Router, path: &str, body: String) -> Response {
         PEER,
     )
     .await
-}
-
-/// Every event the recorder saw, after giving the fire-and-forget
-/// `dispatch()` a moment to actually run — the same technique the unit
-/// suite's `settle_notifies_only_the_owning_profile` test uses for the same
-/// reason.
-async fn recorded(recorder: &Arc<RecordingNotifyBackend>) -> Vec<NotifyEvent> {
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    recorder.events()
 }
 
 /// Registers an account and returns its account URL (used as `kid`).
@@ -148,15 +141,14 @@ async fn issue_certificate(
 
 #[tokio::test]
 async fn account_created_dispatches_with_the_new_account_id() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::new().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
     let account_id = last_segment(&account_url);
 
-    let events = recorded(&recorder).await;
+    let events = notify.recorded(1).await;
     assert_eq!(events.len(), 1, "{events:?}");
     match &events[0] {
         NotifyEvent::AccountCreated(data) => assert_eq!(data.account_id, account_id),
@@ -168,9 +160,8 @@ async fn account_created_dispatches_with_the_new_account_id() {
 /// create (RFC 8555 §7.3) — it must not notify a second time.
 #[tokio::test]
 async fn account_created_does_not_refire_on_an_idempotent_replay() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::new().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     register(&app, &signer).await;
@@ -188,7 +179,7 @@ async fn account_created_does_not_refire_on_an_idempotent_replay() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let events = recorded(&recorder).await;
+    let events = notify.settled().await;
     assert_eq!(
         events.len(),
         1,
@@ -198,9 +189,8 @@ async fn account_created_does_not_refire_on_an_idempotent_replay() {
 
 #[tokio::test]
 async fn account_deactivated_dispatches_with_the_account_id() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::new().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
@@ -213,7 +203,8 @@ async fn account_deactivated_dispatches_with_the_account_id() {
     let res = post(&app, account_path, body).await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let events = recorded(&recorder).await;
+    // Two events: this account's own `AccountCreated`, then the deactivation.
+    let events = notify.recorded(2).await;
     // The first event is this account's own AccountCreated; the deactivation
     // is the last one dispatched.
     match events.last().expect("no event recorded") {
@@ -224,15 +215,14 @@ async fn account_deactivated_dispatches_with_the_account_id() {
 
 #[tokio::test]
 async fn certificate_issued_dispatches_with_the_order_id_and_identifiers() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::new().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
     let (order_id, _chain) = issue_certificate(&app, &signer, &account_url).await;
 
-    let events = recorded(&recorder).await;
+    let events = notify.recorded(2).await;
     let issued = events
         .iter()
         .find_map(|event| match event {
@@ -250,9 +240,8 @@ async fn certificate_issued_dispatches_with_the_order_id_and_identifiers() {
 
 #[tokio::test]
 async fn certificate_revoked_dispatches_with_the_serial_and_reason() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::new().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
@@ -265,7 +254,7 @@ async fn certificate_revoked_dispatches_with_the_serial_and_reason() {
     let res = post(&app, &p("/revokeCert"), body).await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let events = recorded(&recorder).await;
+    let events = notify.recorded(3).await;
     let revoked = events
         .iter()
         .find_map(|event| match event {
@@ -278,8 +267,7 @@ async fn certificate_revoked_dispatches_with_the_serial_and_reason() {
 
 #[tokio::test]
 async fn challenge_failed_dispatches_with_the_error_kind() {
-    let recorder = Arc::new(RecordingNotifyBackend::default());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
+    let notify = NotifyHarness::new().await;
     let signer_backend = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
     let (app, _db) = test_app_full(
         Config::default(),
@@ -292,7 +280,7 @@ async fn challenge_failed_dispatches_with_the_error_kind() {
                 "wrong response",
             ))],
         ),
-        dispatcher,
+        notify.dispatcher.clone(),
     )
     .await;
 
@@ -319,7 +307,7 @@ async fn challenge_failed_dispatches_with_the_error_kind() {
     let res = post(&app, challenge_path, body).await;
     assert_eq!(body_json(res).await["status"], "invalid");
 
-    let events = recorded(&recorder).await;
+    let events = notify.recorded(2).await;
     let failed = events
         .iter()
         .find_map(|event| match event {
@@ -337,9 +325,8 @@ async fn challenge_failed_dispatches_with_the_error_kind() {
 /// something that happens to be true today — this pins it.
 #[tokio::test]
 async fn a_failing_notify_backend_never_affects_the_http_response() {
-    let recorder = Arc::new(RecordingNotifyBackend::failing());
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![recorder.clone()]));
-    let (app, _db) = test_app_with_notify(dispatcher).await;
+    let notify = NotifyHarness::failing().await;
+    let (app, _db) = test_app_with_notify(notify.dispatcher.clone()).await;
 
     let signer = EcSigner::new();
     let nonce = fetch_nonce(&app).await;
@@ -356,7 +343,7 @@ async fn a_failing_notify_backend_never_affects_the_http_response() {
     // backend is invisible to the client.
     assert_eq!(res.status(), StatusCode::CREATED);
 
-    let events = recorded(&recorder).await;
+    let events = notify.recorded(1).await;
     assert_eq!(
         events.len(),
         1,
@@ -364,8 +351,8 @@ async fn a_failing_notify_backend_never_affects_the_http_response() {
     );
 }
 
-/// A backend that takes its time, so a test can observe delivery still being
-/// in flight when shutdown begins.
+/// A backend that takes its time, so a test can watch a delivery still be in
+/// flight — and, more to the point, still be *owed* — when the process stops.
 struct SlowBackend {
     delivered: Arc<std::sync::atomic::AtomicUsize>,
     delay: Duration,
@@ -385,56 +372,78 @@ impl acme_proxy::notify::NotifyBackend for SlowBackend {
     }
 }
 
-/// `dispatch` is fire-and-forget, and `axum::serve`'s graceful shutdown drains
-/// HTTP requests but knows nothing about those tasks — so a notification for a
-/// request that completed during shutdown was simply lost: the client got its
-/// certificate, the operator never heard about it. `drain` closes that.
+/// The property that replaced `drain`.
+///
+/// A notification used to be a spawned task, so a process that stopped before it
+/// ran simply lost it — the client got its certificate and the operator never
+/// heard. A best-effort five-second drain at shutdown was the mitigation, and it
+/// still lost anything slower than the budget. Now `dispatch` writes a row and
+/// returns: nothing has been delivered when it comes back, and the row is
+/// sitting in the queue for whoever runs next. That is the whole change, so it
+/// is asserted directly rather than through a timing window.
 #[tokio::test]
-async fn drain_waits_for_an_in_flight_delivery() {
+async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
     let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![Arc::new(SlowBackend {
-        delivered: delivered.clone(),
-        delay: Duration::from_millis(200),
-    })]));
+    let queue = common::test_job_queue().await;
+    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+        .iter()
+        .map(|kind| (*kind).to_string())
+        .collect();
+    let dispatcher = NotifyDispatcher::new(
+        "default",
+        vec![BackendSlot::new(
+            "slow",
+            Arc::new(SlowBackend {
+                delivered: delivered.clone(),
+                delay: Duration::from_millis(50),
+            }),
+            &every,
+        )],
+        queue.clone(),
+    );
 
-    dispatcher.dispatch(NotifyEvent::ProfileMounted(
-        acme_proxy::notify::ProfileMountedData {
-            profile: "default".to_string(),
-        },
-    ));
+    dispatcher
+        .dispatch(NotifyEvent::ProfileMounted(
+            acme_proxy::notify::ProfileMountedData {
+                profile: "default".to_string(),
+            },
+        ))
+        .await;
 
-    // Not yet delivered — this is the window in which shutdown used to drop it.
+    // Nothing delivered — and, unlike before, nothing lost either.
     assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    dispatcher.drain(Duration::from_secs(5)).await;
     assert_eq!(
-        delivered.load(std::sync::atomic::Ordering::SeqCst),
+        Job::count_live("notify_deliver", queue.database())
+            .await
+            .unwrap(),
         1,
-        "drain must wait for the delivery it started"
+        "the delivery is owed, on a row that outlives this process"
     );
-}
 
-/// A wedged backend must not hold the process open: the drain is bounded.
-#[tokio::test]
-async fn drain_gives_up_on_a_wedged_backend() {
-    let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let dispatcher = Arc::new(NotifyDispatcher::new(vec![Arc::new(SlowBackend {
-        delivered: delivered.clone(),
-        delay: Duration::from_secs(120),
-    })]));
-
-    dispatcher.dispatch(NotifyEvent::ProfileMounted(
-        acme_proxy::notify::ProfileMountedData {
-            profile: "default".to_string(),
+    // A runner started afterwards — as a restart would — picks it up.
+    let mut registry = JobRegistry::new();
+    let mut dispatchers = std::collections::HashMap::new();
+    dispatchers.insert("default".to_string(), Arc::new(dispatcher));
+    registry
+        .register(Arc::new(NotifyJob::new(Arc::new(dispatchers))))
+        .unwrap();
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    acme_proxy::jobs::spawn_runner(
+        queue.clone(),
+        Arc::new(registry),
+        &JobsConfig {
+            poll_interval_ms: 5,
+            ..JobsConfig::default()
         },
-    ));
-
-    let started = std::time::Instant::now();
-    dispatcher.drain(Duration::from_millis(150)).await;
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the drain must be bounded, took {:?}",
-        started.elapsed()
+        receiver,
     );
-    assert_eq!(delivered.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    for _ in 0..400 {
+        if delivered.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+            let _ = shutdown.send(true);
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the queued notification was never delivered");
 }

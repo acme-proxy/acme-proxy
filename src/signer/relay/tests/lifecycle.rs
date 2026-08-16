@@ -305,30 +305,35 @@ async fn settle_notifies_only_the_owning_profile() {
     let dir = TempDir::new("upstream");
     let db = database().await;
 
+    let queue = test_queue(db.clone());
     let recorder_a = Arc::new(RecordingNotifyBackend::new());
     let recorder_b = Arc::new(RecordingNotifyBackend::new());
     let mut notifiers: HashMap<String, Arc<NotifyDispatcher>> = HashMap::new();
-    notifiers.insert(
-        "a".to_string(),
-        Arc::new(NotifyDispatcher::new(vec![recorder_a.clone()])),
-    );
-    notifiers.insert(
-        "b".to_string(),
-        Arc::new(NotifyDispatcher::new(vec![recorder_b.clone()])),
-    );
+    for (profile, recorder) in [("a", &recorder_a), ("b", &recorder_b)] {
+        notifiers.insert(
+            profile.to_string(),
+            Arc::new(NotifyDispatcher::new(
+                profile,
+                vec![recording_slot(recorder.clone())],
+                queue.clone(),
+            )),
+        );
+    }
+    let notifiers = Arc::new(notifiers);
 
-    let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["a".to_string(), "b".to_string()],
         db.clone(),
-        Arc::new(notifiers),
+        notifiers.clone(),
         test_resolver(),
         crate::testutil::no_proxies(),
         queue.clone(),
     )
     .unwrap();
-    let _runner = TestRunner::start(queue, &signer);
+    // The same runner drains both kinds: `settle` queues the notification, and
+    // the `NotifyJob` registered here is what actually delivers it.
+    let _runner = TestRunner::start_notifying(queue, &signer, notifiers);
     let order = ready_order_for("a", db.clone()).await;
 
     let outcome = signer
@@ -344,10 +349,11 @@ async fn settle_notifies_only_the_owning_profile() {
 
     await_status(db.clone(), &order.id, "valid").await;
 
-    // The background task's own `dispatch()` spawns; give it a moment to
-    // actually run before asserting on the recorder, the same technique
-    // this file's other background-task assertions use.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // `settle` queues the notification rather than delivering it, so the row has
+    // to be claimed and run before the recorder sees anything. Waiting on the
+    // recorder itself rather than sleeping a fixed span: the runner is a second
+    // hop now, and a fixed sleep would be a flake waiting to happen.
+    await_recorded(&recorder_a).await;
 
     let events_a = recorder_a.events.lock().unwrap();
     assert_eq!(

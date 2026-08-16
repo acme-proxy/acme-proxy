@@ -282,7 +282,8 @@ pub async fn post_revoke_cert(
             cert_serial: serial_hex.clone(),
             reason: payload.reason,
             client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
-        }));
+        }))
+        .await;
     Ok(StatusCode::OK.into_response())
 }
 

@@ -735,14 +735,16 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     // `Order.profile` rather than being handed one directly. `client_ip` is
     // `None`: no request is in scope on this path at all.
     if let Some(dispatcher) = inner.notifiers.get(&order.profile) {
-        dispatcher.dispatch(NotifyEvent::CertificateIssued(CertificateIssuedData {
-            profile: order.profile.clone(),
-            order_id: order_id.to_string(),
-            account_id: order.account_id.clone(),
-            cert_serial: serial.clone(),
-            identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
-            client_ip: None,
-        }));
+        dispatcher
+            .dispatch(NotifyEvent::CertificateIssued(CertificateIssuedData {
+                profile: order.profile.clone(),
+                order_id: order_id.to_string(),
+                account_id: order.account_id.clone(),
+                cert_serial: serial.clone(),
+                identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
+                client_ip: None,
+            }))
+            .await;
     }
 
     JobOutcome::Done

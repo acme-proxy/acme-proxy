@@ -191,7 +191,7 @@ async fn the_route_is_not_filtered() {
         signer,
         filter,
         default_challenges(),
-        no_notifications(),
+        no_notifications().await,
     )
     .await;
 

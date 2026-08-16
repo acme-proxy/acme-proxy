@@ -124,7 +124,7 @@ impl Default for CustomNotifyConfig {
 /// The six lifecycle events the `notify` subsystem can react to. Kept here
 /// rather than in `src/notify` so each backend's `events` default (below) can
 /// list them without creating a dependency from `config` on `notify`.
-pub(crate) const ALL_NOTIFY_EVENTS: [&str; 6] = [
+pub const ALL_NOTIFY_EVENTS: [&str; 6] = [
     "profile_mounted",
     "account_created",
     "account_deactivated",

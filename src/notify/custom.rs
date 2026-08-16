@@ -41,9 +41,15 @@ impl CustomScriptNotifier {
 
     /// Runs the script; a non-zero exit is a delivery failure.
     ///
-    /// Every failure here is the same kind — `NotifyError` is a newtype, not an
-    /// enum, because notification is fire-and-forget and nothing branches on
-    /// why it did not arrive. It is logged and dropped either way.
+    /// Every failure here is **retryable**, unlike the two built-in backends,
+    /// which can tell a bad configuration from a bad minute. A script has no way
+    /// to say "never try this again": the contract is an exit code, and giving
+    /// one of them that meaning would be a new contract for every operator
+    /// script already written against this hook — the `signer.custom` backend's
+    /// reserved exit `3`, but retrofitted. So a script that keeps failing spends
+    /// its `jobs.max_attempts` and is then abandoned with a log line, which is
+    /// what it did before this queue existed, only later and after four more
+    /// chances.
     async fn run_script(
         &self,
         envs: &[(&str, &str)],

@@ -66,11 +66,26 @@ backend pages.
 
 ## Delivery semantics
 
-Dispatch is **fire-and-forget**: an event is handed to a background task and the
-ACME response proceeds immediately. A notification backend can never delay or
-fail the request that triggered it, and failures are logged (`event =
-"notify_delivery_failed"`) rather than retried.
+Dispatch is **fire-and-forget**: the event is written to the durable job queue
+and the ACME response proceeds immediately. A notification backend can never
+delay or fail the request that triggered it.
 
-The one refinement to "detached": at shutdown the dispatcher makes a bounded
-attempt to drain tasks still in flight, so a notification generated moments
-before a restart is usually still delivered.
+Delivery itself is a `notify_deliver` job, one row **per backend per event**, so
+one flaky webhook is retried without re-sending through an email backend that
+already succeeded. Two consequences worth planning around:
+
+- **A row outlives the process that wrote it.** A notification generated moments
+  before a restart is delivered by whoever starts next, rather than lost. There
+  is no drain at shutdown to configure or wait for.
+- **A failure is retried, unless it never could have worked.** A refused SMTP
+  connection, a timeout, a 429 or a 5xx from a webhook goes back in the queue
+  under `jobs.max_attempts` and the shared backoff. A template that does not
+  render, a `webhook_url` that does not parse and any other 4xx are refused on
+  the first attempt — retrying would reach the same answer four more times and
+  delay the log line saying so.
+
+Every attempt logs `notify_delivered` or `notify_delivery_failed`. When the
+attempts run out, one `notify_delivery_abandoned` says the notification is
+genuinely lost — that is the line to alert on. Because the `custom` backend's
+contract is an exit code with no way to say "never retry", **every** failure of
+a custom script is treated as retryable.

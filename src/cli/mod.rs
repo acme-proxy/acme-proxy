@@ -13,13 +13,15 @@
 //! - [`serve_on`] validates the admin configuration and binds that socket too,
 //!   when `[admin]` is enabled.
 //! - [`serve_on_with`] does everything else — profile resolution, deduplicated
-//!   signer backends, per-profile filters and validators, TLS, the nonce and
-//!   audit reapers, and `axum::serve` with connect info attached.
+//!   signer backends, per-profile filters and validators, TLS, the job registry
+//!   (every signer's handlers, notification delivery and the four table sweeps),
+//!   the runner draining it, and `axum::serve` with connect info attached.
 //!
 //! The logic behind each admin subcommand lives in [`crate::admin`], not here;
 //! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
 //! an installed subscriber, validating every value before installing anything.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::BufRead;
 use std::net::SocketAddr;
@@ -28,7 +30,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 pub mod account;
 pub mod audit;
@@ -51,7 +53,7 @@ pub use webadmin::AdminCommand;
 use crate::cli::filter::FilterCommand;
 use crate::config::Config;
 use crate::sqlite::db::Database;
-use crate::{Profile, build_app, sqlite, tls};
+use crate::{Profile, build_app, tls};
 
 #[derive(Parser)]
 #[command(
@@ -356,7 +358,8 @@ pub async fn serve_on_with(
                 crate::notify::ProfileMountedData {
                     profile: profile.name.clone(),
                 },
-            ));
+            ))
+            .await;
     }
 
     let tls = tls::from_config(&config.server).inspect_err(|error| {
@@ -383,39 +386,58 @@ pub async fn serve_on_with(
             })?;
         }
     }
-    // The queue's own housekeeping, as a job rather than a fourth reaper: it
-    // reschedules itself, which is the mechanism periodic work uses. `0` keeps
-    // everything for ever, and is a handler not registered rather than a sweep
-    // with a cutoff at the epoch.
+    // Notification delivery. **Not** deduplicated by `Arc` identity like the
+    // signer handlers above: there is one handler for every profile, holding the
+    // whole `profile name -> dispatcher` map, and a job row names its own
+    // profile. Registered unconditionally — a profile with no `[notify]`
+    // backends queues nothing, so the handler simply never claims a row, and
+    // making the registration conditional would mean a row queued before a
+    // configuration change had nobody to run it.
+    let notifiers: HashMap<String, Arc<crate::notify::NotifyDispatcher>> = profiles
+        .iter()
+        .map(|profile| (profile.name.clone(), profile.notify.clone()))
+        .collect();
+    job_registry
+        .register(Arc::new(crate::notify::NotifyJob::new(Arc::new(notifiers))))
+        .inspect_err(|error| {
+            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+        })?;
+
+    // The periodic table sweeps. Each is one self-rescheduling row rather than
+    // its own interval loop, so a sweep that dies is reclaimed by lease expiry
+    // and its schedule survives a restart. Their `recover` is also the startup
+    // sweep — it queues at `run_at = now`, so the runner performs the first pass
+    // on its way into the loop and there is nothing to run separately here.
+    let ttl = Duration::from_secs(config.nonce.ttl_seconds);
+    let mut sweeps = vec![crate::jobs::SweepJob::nonces(database.clone(), ttl)];
+    // `0` keeps everything for ever on both of these, and is a handler not
+    // registered rather than a sweep with a cutoff at the epoch.
+    if config.audit.retention_days > 0 {
+        sweeps.push(crate::jobs::SweepJob::audit(
+            database.clone(),
+            config.audit.retention_days,
+        ));
+    }
     if config.jobs.retention_days > 0 {
+        sweeps.push(crate::jobs::SweepJob::jobs(
+            database.clone(),
+            config.jobs.retention_days,
+        ));
+    }
+    if admin_listener.is_some() {
+        sweeps.push(crate::jobs::SweepJob::admin_sessions(
+            database.clone(),
+            Duration::from_secs(config.admin.session_idle_timeout_seconds),
+            config.admin.session_ttl_seconds,
+        ));
+    }
+    for sweep in sweeps {
         job_registry
-            .register(Arc::new(crate::jobs::JobRetention::new(
-                database.clone(),
-                config.jobs.retention_days,
-            )))
+            .register(Arc::new(sweep))
             .inspect_err(|error| {
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
     }
-
-    let ttl = Duration::from_secs(config.nonce.ttl_seconds);
-    if let Err(error) = sqlite::nonce::Nonce::cleanup(&database, ttl).await {
-        error!(event = "nonce_cleanup_failed", outcome = "failure", error = %error);
-    }
-    // Held for the life of this function: `serve_on` is `pub` and a caller may
-    // run it more than once (its own tests do), and an un-cancelled reaper is
-    // an infinite loop holding an `Arc<Database>` — one leaked task, and one
-    // database kept alive, per call.
-    let _reaper = AbortOnDrop(spawn_nonce_reaper(database.clone(), ttl));
-    // Only when a retention is actually configured; `0` is "keep everything",
-    // which is a task not spawned rather than a sweep with a cutoff at the
-    // epoch. Held under `AbortOnDrop` for the same reason as the nonce reaper.
-    let _audit_reaper = (config.audit.retention_days > 0).then(|| {
-        AbortOnDrop(spawn_audit_reaper(
-            database.clone(),
-            config.audit.retention_days,
-        ))
-    });
 
     // The CA's audit trail: one per process, shared by every profile's router
     // and by the web admin listener, because `[audit]` is process-wide. Built
@@ -427,23 +449,6 @@ pub async fn serve_on_with(
                 error!(event = "audit_init_failed", outcome = "failure", error = %error);
             })?,
     );
-
-    // Held so shutdown can drain their in-flight deliveries. Deduplicated by
-    // `Arc` identity, the same way the signer backends are resumed above:
-    // `build_registry` makes one dispatcher per profile, but two profiles can
-    // legitimately share one.
-    let dispatchers: Vec<Arc<crate::notify::NotifyDispatcher>> = {
-        let mut seen: Vec<usize> = Vec::new();
-        let mut unique = Vec::new();
-        for profile in &profiles {
-            let identity = Arc::as_ptr(&profile.notify) as usize;
-            if !seen.contains(&identity) {
-                seen.push(identity);
-                unique.push(profile.notify.clone());
-            }
-        }
-        unique
-    };
 
     // Built **before** `build_app`, which consumes `profiles`. The admin state
     // needs the same profiles (revoking an order resolves that order's own
@@ -457,16 +462,6 @@ pub async fn serve_on_with(
             auditor.clone(),
         )
     });
-    let admin_session_reaper = admin_listener.is_some().then(|| {
-        let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
-        AbortOnDrop(crate::webadmin::session::spawn_session_reaper(
-            database.clone(),
-            idle,
-            session_reaper_interval(config.admin.session_ttl_seconds),
-        ))
-    });
-    let _admin_session_reaper = admin_session_reaper;
-
     let app = build_app(database.clone(), config.clone(), profiles, auditor);
 
     // The one task that drains the queue. Held under `AbortOnDrop` for the same
@@ -528,15 +523,11 @@ pub async fn serve_on_with(
         _ => Box::pin(std::future::ready(Ok(()))),
     };
 
+    // Nothing is drained here any more. A notification in flight at shutdown is
+    // a `notify_deliver` row, not a spawned task: the runner released its lease
+    // on the way out and whoever starts next claims it. That is what replaced a
+    // best-effort five-second drain which still lost anything slower than it.
     tokio::try_join!(acme, admin)?;
-
-    // `axum::serve` has drained the HTTP requests; these are the tasks it knows
-    // nothing about. Without this a `certificate_issued` notification for a
-    // request that completed during shutdown was silently lost — the client got
-    // its certificate, the operator never heard about it.
-    for dispatcher in &dispatchers {
-        dispatcher.drain(NOTIFY_DRAIN_BUDGET).await;
-    }
     Ok(())
 }
 
@@ -643,16 +634,6 @@ async fn serve_admin(
     })
 }
 
-/// How often the session reaper sweeps: often enough that a revoked session's
-/// row does not linger for hours, rarely enough to be invisible.
-fn session_reaper_interval(ttl_seconds: u64) -> Duration {
-    Duration::from_secs((ttl_seconds / 4).max(60))
-}
-
-/// How long shutdown waits for in-flight notifications. Bounded so a wedged
-/// webhook cannot hold the process open.
-const NOTIFY_DRAIN_BUDGET: Duration = Duration::from_secs(5);
-
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -677,82 +658,6 @@ async fn shutdown_signal() {
     }
 }
 
-/// How often the reaper runs, given a nonce lifetime of `ttl`.
-///
-/// Half the TTL rather than the whole of it: sweeping once per TTL means a row
-/// lives up to *twice* its lifetime before anything removes it, so the table
-/// sits at roughly two TTLs' worth of traffic. Halving that costs one extra
-/// query per period. Floored at 30s so a very short `nonce.ttl_seconds` cannot
-/// turn the reaper into a busy loop taking the WAL writer lock.
-fn reaper_interval(ttl: Duration) -> Duration {
-    (ttl / 2).max(Duration::from_secs(30))
-}
-
-/// Purges expired nonces on a timer.
-pub fn spawn_nonce_reaper(database: Arc<Database>, ttl: Duration) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(reaper_interval(ttl));
-        // A sweep that runs long must not be followed by a burst of catch-up
-        // ticks, each taking the writer lock behind the last.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            match sqlite::nonce::Nonce::cleanup(&database, ttl).await {
-                Ok(removed) => debug!(
-                    event = "nonce_reaper_swept",
-                    outcome = "success",
-                    rows_removed = removed
-                ),
-                Err(error) => {
-                    error!(event = "nonce_reaper_failed", outcome = "failure", error = %error)
-                }
-            }
-        }
-    })
-}
-
-/// How often the audit retention sweep runs.
-///
-/// Once a day, and deliberately not derived from `retention_days` the way
-/// [`reaper_interval`] is derived from the nonce TTL: nonces are swept often
-/// because the table is hot and a stale row is dead weight per request, whereas
-/// an audit row a few hours past a 90-day retention is nobody's problem. A
-/// daily `DELETE … WHERE created_at < ?` on an indexed column is the cheapest
-/// thing that honours the policy.
-const AUDIT_SWEEP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// Purges audit rows past `audit.retention_days`, on a timer.
-///
-/// Spawned only when a retention is configured — `0` means "keep everything",
-/// and the sweep that would implement it is no sweep at all rather than a
-/// `DELETE` with a cutoff at the epoch.
-pub fn spawn_audit_reaper(
-    database: Arc<Database>,
-    retention_days: u64,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(AUDIT_SWEEP_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            let cutoff = crate::admin::ops::audit_cutoff(retention_days);
-            match sqlite::audit::AuditEntry::cleanup(cutoff, &database).await {
-                Ok(removed) => info!(
-                    event = "audit_reaper_swept",
-                    outcome = "success",
-                    rows_removed = removed,
-                    cutoff
-                ),
-                Err(error) => {
-                    error!(event = "audit_reaper_failed", outcome = "failure", error = %error)
-                }
-            }
-        }
-    })
-}
-
 /// Aborts a background task when it goes out of scope.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
@@ -765,54 +670,6 @@ impl Drop for AbortOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The reaper is an infinite loop holding an `Arc<Database>`. `serve_on` is
-    /// `pub` and may be called more than once in one process, so without a
-    /// guard each call leaked a task and kept a database alive forever.
-    #[tokio::test]
-    async fn the_reaper_is_cancelled_when_its_guard_drops() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let handle = spawn_nonce_reaper(database, Duration::from_secs(300));
-        let guard = AbortOnDrop(handle);
-
-        drop(guard);
-        // The abort is observable: the task ends rather than running forever.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    #[test]
-    fn the_reaper_sweeps_twice_per_nonce_lifetime_but_never_hotter_than_30s() {
-        // Sweeping once per TTL lets a row live up to two TTLs; halving it
-        // bounds the table at roughly 1.5.
-        assert_eq!(
-            reaper_interval(Duration::from_secs(300)),
-            Duration::from_secs(150)
-        );
-        // …but a very short TTL must not turn the reaper into a busy loop
-        // taking the WAL writer lock.
-        assert_eq!(
-            reaper_interval(Duration::from_secs(10)),
-            Duration::from_secs(30)
-        );
-    }
-
-    /// The nonce reaper's twin, which had no test at all and exactly one
-    /// reference outside its own call site.
-    ///
-    /// A session TTL small enough to make `ttl / 4` zero would otherwise turn
-    /// the sweep into a `tokio::time::interval` with a zero period — a busy
-    /// loop taking the WAL writer lock — and a bad `.max()` would silently mean
-    /// a revoked session's row lingers for hours.
-    #[test]
-    fn the_session_reaper_sweeps_four_times_per_lifetime_but_never_hotter_than_a_minute() {
-        // The default: 12 hours, swept every three.
-        assert_eq!(session_reaper_interval(43_200), Duration::from_secs(10_800));
-        // Short lifetimes hit the floor rather than the quarter.
-        assert_eq!(session_reaper_interval(120), Duration::from_secs(60));
-        // Including the degenerate ones, which must never yield zero.
-        assert_eq!(session_reaper_interval(1), Duration::from_secs(60));
-        assert_eq!(session_reaper_interval(0), Duration::from_secs(60));
-    }
 
     #[test]
     fn parse_cli_subcommands() {
@@ -1152,13 +1009,6 @@ mod tests {
             .is_err(),
             "--user and --all are mutually exclusive"
         );
-    }
-
-    #[tokio::test]
-    async fn nonce_reaper_runs_without_panicking() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        spawn_nonce_reaper(db, Duration::from_millis(10));
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     #[test]

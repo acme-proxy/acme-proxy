@@ -708,7 +708,8 @@ pub async fn post_finalize(
                 identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
                 client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
             },
-        ));
+        ))
+        .await;
     Ok(order_response(&order, base, &authz_ids))
 }
 
