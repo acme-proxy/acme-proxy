@@ -2013,7 +2013,7 @@ pub fn write_script(dir: &TempDir, name: &str, body: &str) -> std::path::PathBuf
 /// With the helper one `use` away, checking the problem type is the cheap
 /// option rather than the thorough one.
 pub mod acme {
-    use super::{BASE, HOST, PREFIX, TestSigner, body_json, fetch_nonce, p};
+    use super::{BASE, HOST, TestSigner, body_json, fetch_nonce, p};
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -2187,7 +2187,7 @@ pub mod acme {
         signer: &impl TestSigner,
         account_url: &str,
         order: &Value,
-    ) -> Value {
+    ) {
         let authorizations: Vec<String> = order["authorizations"]
             .as_array()
             .expect("an order carries its authorizations")
@@ -2203,7 +2203,6 @@ pub mod acme {
             // asserts the transport, not the verdict.
             assert_eq!(response.status(), StatusCode::OK);
         }
-        order.clone()
     }
 
     /// Registers, orders `names` and proves every authorization, returning
@@ -2262,7 +2261,4 @@ pub mod acme {
 
         (account_url, order_url, pem)
     }
-
-    /// `PREFIX`, re-exported so a suite importing this module needs one `use`.
-    pub const PROFILE_PREFIX: &str = PREFIX;
 }
