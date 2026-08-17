@@ -43,7 +43,7 @@ use url::Url;
 
 /// Cap on an inventory response body. An address query returns a handful of
 /// small objects; anything approaching this is not an answer a filter can use.
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 
 /// Why a request to an inventory did not produce a usable document.
 ///
@@ -203,7 +203,7 @@ async fn exchange(
         // this server failing to reach a decision, never a statement about the
         // client. A backend that reads one particular code as an answer says so
         // itself, off `status`.
-        let excerpt: String = String::from_utf8_lossy(&body).chars().take(200).collect();
+        let excerpt = error_excerpt(&body);
         return Err(JsonApiError {
             status: Some(status),
             message: format!("{url} answered {status}: {excerpt}"),

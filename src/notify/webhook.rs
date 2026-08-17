@@ -44,11 +44,7 @@ use url::Url;
 use super::{NotifyBackend, NotifyError, NotifyEvent, render};
 use crate::config::WebhookNotifyConfig;
 
-/// How much of a rejecting webhook's body is quoted back. Slack answers a bad
-/// payload with `invalid_payload` and nothing else, which is the whole
-/// diagnosis; a provider that answers with a page is not owed a log line the
-/// size of one.
-const MAX_ERROR_BODY_CHARS: usize = 200;
+use crate::http_client::MAX_ERROR_BODY_CHARS;
 
 /// The methods a webhook may be called with.
 ///

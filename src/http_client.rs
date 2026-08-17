@@ -35,6 +35,35 @@ use crate::proxy::{OutboundProxies, ProxyTarget};
 /// what an operator needs from it is the first line.
 const MAX_PROXY_ERROR_BYTES: usize = 512;
 
+/// The ceiling on a JSON API response this server will read.
+///
+/// Shared by [`ipam::http`](crate::ipam::http) and
+/// [`signer::relay::client`](crate::signer::relay::client), which had the same
+/// `1024 * 1024` written out separately. `challenge::http_01` keeps its own,
+/// because there it is an operator-facing configuration key
+/// (`challenge.http_01.max_response_bytes`) rather than a constant.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// How much of a rejecting response's body is quoted back into an error.
+///
+/// A provider that answers a bad request with `invalid_payload` has given the
+/// whole diagnosis; one that answers with a page is not owed a log line the
+/// size of one.
+pub(crate) const MAX_ERROR_BODY_CHARS: usize = 200;
+
+/// A rejecting response's body, lossily decoded and capped for an error message.
+///
+/// Three callers had written this out: the body of a non-2xx is the operator's
+/// entire diagnosis, and it is never a value to be parsed, only quoted. Lossy
+/// rather than `from_utf8`, since a body that is not UTF-8 is exactly the case
+/// where an operator most needs to see what did arrive.
+pub(crate) fn error_excerpt(body: &[u8]) -> String {
+    String::from_utf8_lossy(body)
+        .chars()
+        .take(MAX_ERROR_BODY_CHARS)
+        .collect()
+}
+
 /// Where an outbound request is going, once its URL has been picked apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Endpoint {

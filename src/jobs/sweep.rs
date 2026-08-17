@@ -345,15 +345,11 @@ mod tests {
         }
 
         assert!(
-            !Nonce::verify("stale".to_string(), &database, ttl)
-                .await
-                .unwrap(),
+            !Nonce::verify("stale", &database, ttl).await.unwrap(),
             "the expired nonce is gone"
         );
         assert!(
-            Nonce::verify(fresh.value.clone(), &database, ttl)
-                .await
-                .unwrap(),
+            Nonce::verify(&fresh.value, &database, ttl).await.unwrap(),
             "a fresh nonce survives its own sweep"
         );
     }

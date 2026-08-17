@@ -797,7 +797,7 @@ mod tests {
             1
         );
         assert!(
-            !Nonce::verify("stale".to_string(), &db, Duration::from_secs(300))
+            !Nonce::verify("stale", &db, Duration::from_secs(300))
                 .await
                 .unwrap()
         );

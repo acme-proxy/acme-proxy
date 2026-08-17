@@ -641,6 +641,40 @@ fn http01_stores(profiles: &[Arc<Profile>]) -> Vec<Arc<dyn signer::Http01TokenSt
 
 /// Builds the whole HTTP service: the server-level routes at the root, and one
 /// ACME router per profile under `/profile/<name>`.
+/// The three response-hardening headers **both** listeners apply.
+///
+/// A shared constructor rather than two copies: the admin router is not nested
+/// inside [`build_app`] and so inherits none of its layers, but these three are
+/// a security control, and two hand-written copies of one are a control that
+/// drifts. Everything genuinely per-listener — the admin's `Cache-Control`,
+/// `Referrer-Policy` and CSP, this one's admission and nonce layers — stays at
+/// its own call site.
+///
+/// A tuple because `tower` implements [`Layer`](tower::Layer) for one, so the
+/// three still apply as three separate layers rather than being collapsed into
+/// a wrapper type. They set distinct headers, so their order among themselves
+/// carries no meaning.
+pub(crate) fn security_headers() -> (
+    SetResponseHeaderLayer<HeaderValue>,
+    SetResponseHeaderLayer<HeaderValue>,
+    SetResponseHeaderLayer<HeaderValue>,
+) {
+    (
+        SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ),
+        SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ),
+    )
+}
+
 pub fn build_app(
     database: Arc<Database>,
     config: Arc<Config>,
@@ -717,18 +751,7 @@ pub fn build_app(
     // filter and nonce layers are deliberately *not* here: both are ACME
     // concerns and live inside each profile's own router.
     root.merge(acme)
-        .layer(SetResponseHeaderLayer::overriding(
-            header::STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("DENY"),
-        ))
+        .layer(security_headers())
         // Outermost of everything, so the `request` span it opens — and the
         // `x-request-id` it echoes — covers every route, the admission layer
         // and the two hardening layers alike. Nothing below it is allowed to

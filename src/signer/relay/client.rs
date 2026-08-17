@@ -41,7 +41,7 @@ use url::Url;
 /// resource actually is — the largest is a certificate chain, a few kilobytes —
 /// and there purely so a remote CA cannot decide how much memory this process
 /// spends on one reply.
-const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 
 /// Everything that can go wrong talking to the upstream. Mapped to
 /// [`SignerError`](crate::signer::SignerError) at the trait boundary in
@@ -464,10 +464,7 @@ fn problem_from(response: &AcmeResponse) -> UpstreamError {
         Err(_) => UpstreamError::Problem {
             status,
             typ: "about:blank".to_string(),
-            detail: String::from_utf8_lossy(&response.body)
-                .chars()
-                .take(200)
-                .collect(),
+            detail: error_excerpt(&response.body),
         },
     }
 }

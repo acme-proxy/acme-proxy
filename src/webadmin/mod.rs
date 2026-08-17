@@ -244,21 +244,11 @@ pub fn build_admin_app_with_logins(
             header::REFERRER_POLICY,
             HeaderValue::from_static("same-origin"),
         ))
-        // The same three the ACME app applies, repeated rather than shared:
-        // this router is not nested inside `build_app` and gets none of its
-        // layers.
-        .layer(SetResponseHeaderLayer::overriding(
-            header::STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("DENY"),
-        ))
+        // The same three the ACME app applies. This router is not nested
+        // inside `build_app` and inherits none of its layers, so they have to
+        // be applied again here — but from the one constructor, since two
+        // hand-written copies of a security control are a control that drifts.
+        .layer(crate::security_headers())
         // Strict, and affordable only because of how the pages are built:
         // htmx is served from this origin (`script-src 'self'`) and drives
         // everything through `hx-*` attributes rather than inline handlers, so

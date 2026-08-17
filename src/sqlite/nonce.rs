@@ -96,8 +96,13 @@ impl Nonce {
         Ok(())
     }
 
+    /// Consumes `nonce` if it is live: a single `DELETE` whose `rows_affected`
+    /// decides, so two concurrent replays cannot both succeed.
+    ///
+    /// Takes `&str` rather than `String` — it only ever binds a reference, and
+    /// this runs on every signed POST, which is the hottest path in the server.
     pub async fn verify(
-        nonce: String,
+        nonce: &str,
         database: &Database,
         ttl: Duration,
     ) -> Result<bool, sqlx::Error> {
@@ -106,7 +111,7 @@ impl Nonce {
         let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
 
         let result = sqlx::query("DELETE FROM nonces WHERE value = ? AND created_at > ?;")
-            .bind(&nonce)
+            .bind(nonce)
             .bind(cutoff)
             .execute(&database.pool)
             .await?;
@@ -121,7 +126,7 @@ impl Nonce {
             debug!(
                 event = "db_nonce_verified_valid",
                 outcome = "success",
-                nonce_fp = %fingerprint(&nonce),
+                nonce_fp = %fingerprint(nonce),
                 cutoff = cutoff,
                 ttl_seconds = ttl.as_secs(),
             );
@@ -129,7 +134,7 @@ impl Nonce {
             debug!(
                 event = "db_nonce_verified_invalid",
                 outcome = "failure",
-                nonce_fp = %fingerprint(&nonce),
+                nonce_fp = %fingerprint(nonce),
                 cutoff = cutoff,
                 ttl_seconds = ttl.as_secs(),
             );
@@ -192,20 +197,16 @@ mod tests {
         nonce.save(&database).await.unwrap();
 
         // First use succeeds…
-        assert!(Nonce::verify(value.clone(), &database, TTL).await.unwrap());
+        assert!(Nonce::verify(&value, &database, TTL).await.unwrap());
         // …and the nonce is single-use: the row is gone, so a replay fails.
-        assert!(!Nonce::verify(value, &database, TTL).await.unwrap());
+        assert!(!Nonce::verify(&value, &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
     async fn verify_rejects_unknown_nonce() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
 
-        assert!(
-            !Nonce::verify("never-issued".to_string(), &database, TTL)
-                .await
-                .unwrap()
-        );
+        assert!(!Nonce::verify("never-issued", &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
@@ -221,11 +222,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            !Nonce::verify("stale".to_string(), &database, TTL)
-                .await
-                .unwrap()
-        );
+        assert!(!Nonce::verify("stale", &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
@@ -244,11 +241,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            Nonce::verify("edge".to_string(), &database, TTL)
-                .await
-                .unwrap()
-        );
+        assert!(Nonce::verify("edge", &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
@@ -267,11 +260,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
-            !Nonce::verify("boundary".to_string(), &database, TTL)
-                .await
-                .unwrap()
-        );
+        assert!(!Nonce::verify("boundary", &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
@@ -297,7 +286,7 @@ mod tests {
 
         // Only the fresh nonce survives, and it is still usable.
         assert_eq!(nonce_count(&database).await, 1);
-        assert!(Nonce::verify(fresh_value, &database, TTL).await.unwrap());
+        assert!(Nonce::verify(&fresh_value, &database, TTL).await.unwrap());
     }
 
     /// `Default` exists so `Nonce` composes where one is expected; it must

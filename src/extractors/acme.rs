@@ -199,7 +199,7 @@ where
     };
 
     let ttl = Duration::from_secs(app.config.nonce.ttl_seconds);
-    match Nonce::verify(header.nonce.clone(), &app.database, ttl).await {
+    match Nonce::verify(&header.nonce, &app.database, ttl).await {
         Ok(true) => {}
         Ok(false) => {
             // Unknown, already consumed or past `nonce.ttl_seconds` — the three

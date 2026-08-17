@@ -319,16 +319,14 @@ impl HyperFetcher {
     /// Sends the request over an established connection and reads a capped body.
     async fn exchange(
         mut connection: crate::http_client::Connection<Empty<Bytes>>,
+        endpoint: &crate::http_client::Endpoint,
         url: &Url,
         max_bytes: usize,
     ) -> Result<HttpResponse, FetchError> {
-        let authority = url
-            .host_str()
-            .map(|host| match url.port() {
-                Some(port) => format!("{host}:{port}"),
-                None => host.to_string(),
-            })
-            .ok_or_else(|| FetchError::Protocol(format!("{url} has no host")))?;
+        // The endpoint the connection was opened to already knows this, and
+        // elides a default port the same way; deriving it a second time from
+        // the URL was one more place for the two spellings to disagree.
+        let authority = endpoint.authority();
 
         // Origin-form directly, absolute-form when this connection forwards
         // through a proxy — the connection knows which, the caller does not.
@@ -401,7 +399,7 @@ impl HttpFetcher for HyperFetcher {
         .await
         .map_err(FetchError::Connect)?;
 
-        Self::exchange(connection, url, max_bytes).await
+        Self::exchange(connection, &endpoint, url, max_bytes).await
     }
 }
 

@@ -72,19 +72,23 @@ pub async fn run_order_command(
             };
             let (orders, _total) = Order::search(&query, &database).await?;
             if json {
-                let mut rendered = Vec::with_capacity(orders.len());
-                for order in &orders {
-                    let authz_ids: Vec<String> = Authorization::find_by_order(&order.id, &database)
-                        .await?
-                        .into_iter()
-                        .map(|a| a.id)
-                        .collect();
-                    rendered.push(admin::render_order_json(
-                        order,
-                        &config.server.base_url,
-                        &authz_ids,
-                    ));
-                }
+                // One query for the whole listing, not one per row. This is
+                // `limit: i64::MAX` above, so the per-row form cost a query per
+                // order in the entire table — the same N+1 the web admin's
+                // `render_orders` already avoids, and what
+                // `find_ids_by_orders` exists for.
+                let ids: Vec<&str> = orders.iter().map(|o| o.id.as_str()).collect();
+                let mut authz_ids = Authorization::find_ids_by_orders(&ids, &database).await?;
+                let rendered: Vec<_> = orders
+                    .iter()
+                    .map(|order| {
+                        admin::render_order_json(
+                            order,
+                            &config.server.base_url,
+                            &authz_ids.remove(&order.id).unwrap_or_default(),
+                        )
+                    })
+                    .collect();
                 println!("{}", serde_json::Value::Array(rendered));
             } else {
                 for order in &orders {

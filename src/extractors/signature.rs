@@ -122,7 +122,7 @@ pub(crate) fn verify_jwk_signature_and_get_der(
             sec1_pk.extend_from_slice(&y_b);
 
             let ring_algo = &signature::ECDSA_P256_SHA256_FIXED;
-            let peer_public_key = signature::UnparsedPublicKey::new(ring_algo, sec1_pk.clone());
+            let peer_public_key = signature::UnparsedPublicKey::new(ring_algo, &sec1_pk);
             peer_public_key
                 .verify(signing_input.as_bytes(), &sig_bytes)
                 .map_err(|_| SignatureError::BadSignature("ES256 signature validation failed"))?;
@@ -178,7 +178,7 @@ pub(crate) fn verify_jwk_signature_and_get_der(
 
             let ring_algo = &signature::RSA_PKCS1_2048_8192_SHA256;
             let peer_public_key =
-                signature::UnparsedPublicKey::new(ring_algo, raw_rsa_public_key_der.clone());
+                signature::UnparsedPublicKey::new(ring_algo, &raw_rsa_public_key_der);
             peer_public_key
                 .verify(signing_input.as_bytes(), &sig_bytes)
                 .map_err(|_| SignatureError::BadSignature("RS256 signature validation failed"))?;
