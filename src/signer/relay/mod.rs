@@ -33,7 +33,6 @@
 //! of invalidating the order, and a crashed process's work is reclaimed by
 //! lease expiry rather than only by a restart.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +43,6 @@ use tracing::{debug, info, warn};
 
 use crate::config::RelayConfig;
 use crate::jobs::{JobHandler, JobQueue};
-use crate::notify::NotifyDispatcher;
 use crate::signer::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
@@ -111,11 +109,16 @@ struct Inner {
     /// in-flight orders and **only** theirs.
     profiles: Vec<String>,
     /// The whole `profile name -> dispatcher` map, not just the entries in
-    /// `profiles` above: a cheap `Arc` clone either way, and it sidesteps
-    /// keeping a second, filtered copy in sync. `settle()` looks up the right
-    /// one by `Order.profile` once an issuance resolves — the only place this
-    /// backend has no `AppState`/`Profile` to reach a notifier through at all.
-    notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+    /// `profiles` above: a cheap clone either way, and it sidesteps keeping a
+    /// second, filtered copy in sync. `settle()` looks up the right one by
+    /// `Order.profile` once an issuance resolves — the only place this backend
+    /// has no `AppState`/`Profile` to reach a notifier through at all.
+    ///
+    /// A [`Notifiers`] handle rather than the map itself, because this backend
+    /// outlives a configuration generation: it is carried across a reload while
+    /// the dispatchers are rebuilt, so a captured map would keep notifying
+    /// through backends the operator has since removed.
+    notifiers: crate::notify::Notifiers,
     /// Where an issuance is queued once the upstream order is open.
     ///
     /// The backend holds the *enqueue* side only; the runner that drains it is
@@ -147,7 +150,7 @@ impl RelaySigner {
         cfg: &RelayConfig,
         profiles: Vec<String>,
         database: Arc<Database>,
-        notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+        notifiers: crate::notify::Notifiers,
         resolver: Arc<dyn crate::dns::Resolver>,
         proxies: Arc<crate::proxy::OutboundProxies>,
         jobs: JobQueue,

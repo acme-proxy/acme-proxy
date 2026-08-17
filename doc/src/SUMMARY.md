@@ -45,6 +45,7 @@
   - [Renewal Information (ARI)](features/renewal_info.md)
 
 # Operations
+- [Reloading the Configuration](operations/reload.md)
 - [Admin CLI](operations/cli.md)
 - [Web Admin](operations/webadmin.md)
   - [Users & Sessions](operations/webadmin_users.md)

@@ -114,8 +114,10 @@ $ mkdir -p /etc/acme-proxy/admin-templates
 $ cp src/webadmin/templates/layout.html /etc/acme-proxy/admin-templates/
 ```
 
-Then restart. There is no reload signal yet, and the startup compile means a
-mistake stops the process rather than reaching a browser.
+Then send `SIGHUP` — see [Reloading the Configuration](reload.md). Templates
+are compiled up front, so a mistake fails the reload and the panel goes on
+serving the last set that worked; it never reaches a browser. The same compile
+happens at startup, where a mistake stops the process instead.
 
 ## Stylesheet and scripts
 

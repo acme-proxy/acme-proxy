@@ -6,14 +6,11 @@
 //! `signer::relay::flow::RelayJob` does — `jobs` owns the mechanism, a
 //! subsystem owns what its work means.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use super::{NotifyDispatcher, NotifyEvent};
+use super::{Notifiers, NotifyEvent};
 use crate::jobs::{JobHandler, JobOutcome};
 use crate::sqlite::job::Job;
 
@@ -26,12 +23,17 @@ pub const NOTIFY_JOB_KIND: &str = "notify_deliver";
 /// because there is exactly one handler for a kind and a job row names its own
 /// profile. That is also why nothing deduplicates it at registration the way the
 /// signer handlers are deduplicated: there is only ever one of these.
-pub struct NotifyJob(Arc<HashMap<String, Arc<NotifyDispatcher>>>);
+///
+/// The map arrives as a [`Notifiers`] handle rather than a plain `Arc` because
+/// this handler is registered once per generation but must see the *current*
+/// configuration: a row queued by a reloaded router names a slot id only the new
+/// map has, and an unknown one is retired rather than retried.
+pub struct NotifyJob(Notifiers);
 
 impl NotifyJob {
     #[must_use]
-    pub fn new(dispatchers: Arc<HashMap<String, Arc<NotifyDispatcher>>>) -> Self {
-        Self(dispatchers)
+    pub fn new(dispatchers: impl Into<Notifiers>) -> Self {
+        Self(dispatchers.into())
     }
 }
 
@@ -169,9 +171,11 @@ mod tests {
     use crate::config::ALL_NOTIFY_EVENTS;
     use crate::jobs::{JobQueue, JobSpec};
     use crate::notify::tests::RecordingNotifyBackend;
-    use crate::notify::{BackendSlot, NotifyError, ProfileMountedData};
+    use crate::notify::{BackendSlot, NotifyDispatcher, NotifyError, ProfileMountedData};
     use crate::sqlite::db::Database;
     use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     async fn queue() -> JobQueue {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());

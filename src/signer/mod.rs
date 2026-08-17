@@ -38,7 +38,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::config::SignerConfig;
-use crate::notify::NotifyDispatcher;
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
 
@@ -259,11 +258,17 @@ impl std::error::Error for SignerError {}
 /// it is handed the whole `profile name -> dispatcher` map and looks up the
 /// right one by `Order.profile` once it has something to report. Only
 /// `relay` uses it today.
+///
+/// It arrives as [`Notifiers`] rather than a bare `Arc` because a signer backend
+/// is built once and then *carried across* configuration reloads, while the map
+/// is rebuilt per generation — a captured `Arc` would pin the backend to the
+/// dispatchers that existed when the process started. `impl Into<Notifiers>`, so
+/// a caller with a fixed map still passes one.
 pub fn from_config(
     cfg: &SignerConfig,
     profiles: Vec<String>,
     database: Arc<Database>,
-    notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+    notifiers: impl Into<crate::notify::Notifiers>,
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
     jobs: crate::jobs::JobQueue,
@@ -273,7 +278,13 @@ pub fn from_config(
             &cfg.local_ca,
         )?)),
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay, profiles, database, notifiers, resolver, proxies, jobs,
+            &cfg.relay,
+            profiles,
+            database,
+            notifiers.into(),
+            resolver,
+            proxies,
+            jobs,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -309,11 +320,12 @@ pub fn from_config(
 pub fn build_backends(
     profiles: &[crate::config::ProfileConfig],
     database: Arc<Database>,
-    notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+    notifiers: impl Into<crate::notify::Notifiers>,
     resolver: Arc<dyn crate::dns::Resolver>,
     proxies: Arc<crate::proxy::OutboundProxies>,
     jobs: &crate::jobs::JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
+    let notifiers = notifiers.into();
     // The identity of a configuration is its `Debug` rendering: every config
     // type derives `Debug`, the output is deterministic for equal values, and
     // it is only ever compared to another one — never parsed, never shown.
@@ -436,8 +448,8 @@ mod tests {
         Arc::new(Database::connect_in_memory().await.unwrap())
     }
 
-    fn no_notifiers() -> Arc<HashMap<String, Arc<NotifyDispatcher>>> {
-        Arc::new(HashMap::new())
+    fn no_notifiers() -> crate::notify::Notifiers {
+        HashMap::new().into()
     }
 
     fn profile(name: &str, signer: SignerConfig) -> crate::config::ProfileConfig {

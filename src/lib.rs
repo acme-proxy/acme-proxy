@@ -208,6 +208,7 @@ pub mod middlewares;
 pub mod notify;
 pub mod pemfile;
 pub mod proxy;
+pub mod reload;
 pub mod script_hook;
 pub mod signer;
 pub mod sqlite;
@@ -377,44 +378,28 @@ impl Profile {
         jobs: &crate::jobs::JobQueue,
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let resolved = config.resolve_profiles()?;
-        // Resolved before anything can dial: a proxy URL that cannot be
-        // understood must stop the process, and the `relay` backend below makes
-        // a real network call on its very first startup.
-        let proxies = crate::proxy::from_config(&config.proxy)?;
-        // One resolver for the whole process, handed to every subsystem that
-        // makes an outbound connection. `dns.resolver` is documented as "the
-        // nameserver every DNS lookup this server makes goes through", and
-        // three of the four HTTP clients used to bypass it — so an operator on
-        // a split-horizon estate had NetBox and their upstream CA resolving
-        // differently from the challenge validators, with nothing saying so.
-        //
-        // Uncached, for the reason `challenge::build_resolver` explains: a
-        // client publishing a `dns-01` record moments before triggering must
-        // not be defeated by a cached negative answer.
-        let resolver = challenge::build_resolver(crate::dns::resolver_addr(&config.dns)?)?;
-        // Built before the signer backends: the `relay` backend's
-        // background completion task has no `Profile`/`AppState` to reach a
-        // notifier through (it outlives any single request, the same reason
-        // it is handed `database`), so it is instead handed this whole
-        // `profile name -> dispatcher` map and looks up the right one by
-        // `Order.profile` once an issuance settles.
-        let notifiers = Arc::new(notify::build_registry(
-            &resolved,
-            resolver.clone(),
-            proxies.clone(),
-            jobs,
-        )?);
-        let backends = signer::build_backends(
-            &resolved,
-            database,
-            notifiers.clone(),
-            resolver.clone(),
-            proxies.clone(),
-            jobs,
-        )?;
+        let (assembly, dispatchers) = Assembly::new(&resolved, database, jobs.clone(), config)?;
+        Self::build_all_with(config, &resolved, &assembly, &dispatchers)
+    }
+
+    /// One generation of profiles, over an [`Assembly`] that outlives it.
+    ///
+    /// The half of [`build_all`](Self::build_all) a configuration reload runs
+    /// again. Everything it touches is cheap and side-effect-free to rebuild —
+    /// a filter policy, an IPAM client, a challenge registry — which is exactly
+    /// why the expensive and stateful half lives in the `Assembly` instead.
+    pub fn build_all_with(
+        config: &Config,
+        resolved: &[config::ProfileConfig],
+        assembly: &Assembly,
+        dispatchers: &notify::DispatcherMap,
+    ) -> anyhow::Result<Vec<Arc<Profile>>> {
+        let proxies = &assembly.proxies;
+        let resolver = &assembly.resolver;
+        let backends = &assembly.signers;
 
         let mut profiles = Vec::with_capacity(resolved.len());
-        for profile in &resolved {
+        for profile in resolved {
             let sections = &profile.sections;
             let span = tracing::info_span!("profile", profile = %profile.name);
             let (filter, challenges) = span.in_scope(|| {
@@ -447,11 +432,134 @@ impl Profile {
                     order: sections.order.clone(),
                     eab: sections.eab.clone(),
                     meta: sections.meta.clone(),
-                    notify: notifiers[&profile.name].clone(),
+                    notify: dispatchers[&profile.name].clone(),
                 },
             )));
         }
         Ok(profiles)
+    }
+}
+
+/// What survives a configuration reload.
+///
+/// Every generation rebuilds its profiles, its routers and its job registry; the
+/// four things here are built once for the life of the process and handed to
+/// each generation instead. Two different reasons put them on this side of the
+/// line, and both are worth keeping straight:
+///
+/// - `resolver` and `proxies` are frozen configuration (`dns.*`, `proxy.*`).
+///   Rebuilding them would be harmless but pointless, since every outbound
+///   client caches whichever one it was handed at construction — including the
+///   signer backends below, which are never rebuilt.
+/// - `signers` is a **correctness** requirement, not an optimisation. A signer
+///   backend owns in-memory state with no durable home: `LocalCa` rebuilds the
+///   whole CRL from its own ledger, so a second instance over one `crl_path`
+///   would drop the first's entries, and a relay's `http-01` token store would
+///   come back empty under an upstream fetch already in flight. That is the
+///   same hazard [`signer::build_backends`] refuses *within* one build; carrying
+///   the map forward is what refuses it *across* builds. It also means
+///   `JobRegistry::register` never sees a duplicate kind, since a new generation
+///   re-registers handlers over the very same `Arc`.
+///
+/// `notifiers` is the one cell that lives here and still changes: `[notify]` is
+/// reloadable, so the map behind the handle is republished per generation while
+/// the handle the signers captured stays valid.
+pub struct Assembly {
+    pub database: Arc<Database>,
+    pub jobs: crate::jobs::JobQueue,
+    pub resolver: Arc<dyn dns::Resolver>,
+    pub proxies: Arc<proxy::OutboundProxies>,
+    pub signers: std::collections::HashMap<String, Arc<dyn signer::SignerBackend>>,
+    pub notifiers: notify::Notifiers,
+    notifiers_tx: notify::NotifiersSender,
+}
+
+impl Assembly {
+    /// Builds everything that outlives a generation, plus the first generation's
+    /// dispatcher map.
+    ///
+    /// The map comes back rather than being kept here because it is *not*
+    /// long-lived: the caller hands it to [`Profile::build_all_with`] and then
+    /// forgets it, and every later generation gets its own from
+    /// [`build_dispatchers`](Self::build_dispatchers).
+    pub fn new(
+        resolved: &[config::ProfileConfig],
+        database: Arc<Database>,
+        jobs: crate::jobs::JobQueue,
+        config: &Config,
+    ) -> anyhow::Result<(Self, notify::DispatcherMap)> {
+        // Resolved before anything can dial: a proxy URL that cannot be
+        // understood must stop the process, and the `relay` backend below makes
+        // a real network call on its very first startup.
+        let proxies = crate::proxy::from_config(&config.proxy)?;
+        // One resolver for the whole process, handed to every subsystem that
+        // makes an outbound connection. `dns.resolver` is documented as "the
+        // nameserver every DNS lookup this server makes goes through", and
+        // three of the four HTTP clients used to bypass it — so an operator on
+        // a split-horizon estate had NetBox and their upstream CA resolving
+        // differently from the challenge validators, with nothing saying so.
+        //
+        // Uncached, for the reason `challenge::build_resolver` explains: a
+        // client publishing a `dns-01` record moments before triggering must
+        // not be defeated by a cached negative answer.
+        let resolver = challenge::build_resolver(crate::dns::resolver_addr(&config.dns)?)?;
+        // Built before the signer backends: the `relay` backend's
+        // background completion task has no `Profile`/`AppState` to reach a
+        // notifier through (it outlives any single request, the same reason
+        // it is handed `database`), so it is instead handed this whole
+        // `profile name -> dispatcher` map and looks up the right one by
+        // `Order.profile` once an issuance settles.
+        let dispatchers =
+            notify::build_registry(resolved, resolver.clone(), proxies.clone(), &jobs)?;
+        // Opened before `build_backends`, so the handle the signers capture is
+        // the one later generations republish into.
+        let (notifiers_tx, notifiers) = notify::notifiers_channel(dispatchers.clone());
+        let signers = signer::build_backends(
+            resolved,
+            database.clone(),
+            notifiers.clone(),
+            resolver.clone(),
+            proxies.clone(),
+            &jobs,
+        )?;
+
+        Ok((
+            Self {
+                database,
+                jobs,
+                resolver,
+                proxies,
+                signers,
+                notifiers,
+                notifiers_tx,
+            },
+            dispatchers,
+        ))
+    }
+
+    /// A fresh dispatcher map for `resolved`, without publishing it.
+    ///
+    /// Separate from [`publish_notifiers`](Self::publish_notifiers) because a
+    /// reload must be able to fail *after* building this and still leave the
+    /// running generation untouched.
+    pub fn build_dispatchers(
+        &self,
+        resolved: &[config::ProfileConfig],
+    ) -> anyhow::Result<notify::DispatcherMap> {
+        notify::build_registry(
+            resolved,
+            self.resolver.clone(),
+            self.proxies.clone(),
+            &self.jobs,
+        )
+    }
+
+    /// Makes `dispatchers` the generation every long-lived reader sees.
+    ///
+    /// Synchronous, and deliberately: it is one of the sends a reload makes
+    /// back-to-back so no task can observe a half-swapped generation.
+    pub fn publish_notifiers(&self, dispatchers: notify::DispatcherMap) {
+        self.notifiers_tx.send_replace(Arc::new(dispatchers));
     }
 }
 

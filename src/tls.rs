@@ -38,7 +38,7 @@ use axum::serve::{Listener, ListenerExt, TapIo};
 use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
 use time::OffsetDateTime;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use tracing::{debug, error, info, warn};
@@ -269,16 +269,52 @@ pub struct TlsListener {
     local_addr: SocketAddr,
 }
 
+/// Everything one handshake needs, as a single swappable value.
+///
+/// The pair travels together because both halves come from the same `[tls]`
+/// section and both are read at the same moment — the top of a handshake. Making
+/// this the unit the accept loop reads is what lets a renewed certificate and a
+/// changed `handshake_timeout_ms` land without rebinding the socket: a
+/// configuration reload publishes a new `TlsSettings` and the next connection
+/// uses it, while connections already established are untouched.
+#[derive(Clone)]
+pub struct TlsSettings {
+    pub acceptor: TlsAcceptor,
+    pub handshake_timeout: Duration,
+}
+
+impl TlsSettings {
+    #[must_use]
+    pub fn new(acceptor: TlsAcceptor, handshake_timeout: Duration) -> Self {
+        Self {
+            acceptor,
+            handshake_timeout,
+        }
+    }
+
+    /// A fixed setting, for a caller with no reload to serve.
+    ///
+    /// The sender is dropped on the spot; a `watch` receiver keeps answering
+    /// `borrow` for ever afterwards, so this is a constant rather than a channel
+    /// that goes quiet.
+    #[must_use]
+    pub fn fixed(self) -> watch::Receiver<Self> {
+        watch::channel(self).1
+    }
+}
+
 impl TlsListener {
-    /// Starts accepting on `tcp`, handshaking with `acceptor` under
-    /// `handshake_timeout`.
+    /// Starts accepting on `tcp`, handshaking under the current [`TlsSettings`].
+    ///
+    /// The settings are read **per connection**, immediately before the
+    /// handshake, so replacing them takes effect on the next client without
+    /// disturbing the socket or anyone already connected.
     ///
     /// The returned listener is the one to hand to `axum::serve` — see
     /// [`HttpsListener`] for why it is wrapped.
     pub fn spawn(
         tcp: TcpListener,
-        acceptor: TlsAcceptor,
-        handshake_timeout: Duration,
+        settings: watch::Receiver<TlsSettings>,
     ) -> std::io::Result<HttpsListener> {
         let local_addr = tcp.local_addr()?;
         let (sender, incoming) = mpsc::channel(MAX_PENDING_CONNECTIONS);
@@ -302,7 +338,13 @@ impl TlsListener {
                     }
                 };
 
-                let acceptor = acceptor.clone();
+                // Read here rather than captured above: this is the point a
+                // reloaded certificate takes effect. The `Ref` guard is dropped
+                // before the spawn, so nothing holds the lock across an await.
+                let TlsSettings {
+                    acceptor,
+                    handshake_timeout,
+                } = settings.borrow().clone();
                 tokio::spawn(async move {
                     match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
                         Ok(Ok(tls)) => {
@@ -675,7 +717,9 @@ mod tests {
 
             let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = tcp.local_addr().unwrap().port();
-            let listener = TlsListener::spawn(tcp, acceptor, handshake_timeout).unwrap();
+            let listener =
+                TlsListener::spawn(tcp, TlsSettings::new(acceptor, handshake_timeout).fixed())
+                    .unwrap();
 
             let app = Router::new().route(
                 "/peer",
@@ -717,6 +761,68 @@ mod tests {
             let mut response = String::new();
             tls.read_to_string(&mut response).await.unwrap();
             (response, client_addr)
+        }
+
+        /// The certificate the server presented on one fresh connection.
+        async fn peer_certificate(port: u16) -> Vec<u8> {
+            let config =
+                crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
+            let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let tls = TlsConnector::from(config)
+                .connect(ServerName::try_from("localhost").unwrap(), stream)
+                .await
+                .unwrap();
+            tls.get_ref()
+                .1
+                .peer_certificates()
+                .expect("the server presented a certificate")[0]
+                .to_vec()
+        }
+
+        /// A renewed certificate reaches the next client without the socket
+        /// moving — the reason the accept loop reads its settings per
+        /// connection instead of capturing them.
+        ///
+        /// Two whole certificates rather than a renewed one: `from_config`
+        /// generates a fresh key each time, so two directories give two provably
+        /// distinct DERs, which is all the assertion needs.
+        #[tokio::test]
+        async fn a_swapped_certificate_is_served_to_the_next_connection() {
+            let first_dir = TempDir::new("tls-first");
+            let second_dir = TempDir::new("tls-second");
+            let first = from_config(&tls_config(&first_dir, "https://localhost"))
+                .unwrap()
+                .unwrap();
+            let second = from_config(&tls_config(&second_dir, "https://localhost"))
+                .unwrap()
+                .unwrap();
+
+            let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = tcp.local_addr().unwrap().port();
+            let (sender, receiver) =
+                watch::channel(TlsSettings::new(first, Duration::from_secs(5)));
+            let listener = TlsListener::spawn(tcp, receiver).unwrap();
+
+            let app = Router::new().route("/peer", get(|| async { "ok" }));
+            tokio::spawn(async move {
+                serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+
+            let before = peer_certificate(port).await;
+            sender.send_replace(TlsSettings::new(second, Duration::from_secs(5)));
+            let after = peer_certificate(port).await;
+
+            // Both connections went to the same `port`, which is the half that
+            // matters: the certificate changed without the socket being rebound.
+            assert_ne!(
+                before, after,
+                "the connection after the swap must see the new certificate"
+            );
         }
 
         /// The end-to-end proof: a real handshake, a real request, and — the

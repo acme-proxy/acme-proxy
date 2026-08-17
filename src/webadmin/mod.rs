@@ -23,6 +23,7 @@ pub mod session;
 
 pub use error::AdminError;
 pub use pages::PageError;
+pub use session::LoginLimiter;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +41,6 @@ use crate::Profile;
 use crate::config::Config;
 use crate::middlewares;
 use crate::sqlite::db::Database;
-use crate::webadmin::session::LoginLimiter;
 
 /// Shared state for every admin route.
 ///
@@ -80,14 +80,32 @@ impl AdminState {
         profiles: &[Arc<Profile>],
         audit: Arc<crate::audit::Auditor>,
     ) -> Self {
+        Self::with_logins(database, config, profiles, audit, None)
+    }
+
+    /// [`new`](Self::new), carrying the previous generation's login counters.
+    ///
+    /// Only a configuration reload passes `Some`: every other caller is building
+    /// the first generation, where there is nothing to carry. See
+    /// [`LoginLimiter::rebuilt`] for why the counters move but the limits do not.
+    #[must_use]
+    pub fn with_logins(
+        database: Arc<Database>,
+        config: Arc<Config>,
+        profiles: &[Arc<Profile>],
+        audit: Arc<crate::audit::Auditor>,
+        previous_logins: Option<&LoginLimiter>,
+    ) -> Self {
         let by_name = profiles
             .iter()
             .map(|profile| (profile.name.clone(), profile.clone()))
             .collect();
-        let logins = LoginLimiter::new(
-            config.admin.login_max_attempts,
-            config.admin.login_window_seconds,
-        );
+        let max_attempts = config.admin.login_max_attempts;
+        let window = config.admin.login_window_seconds;
+        let logins = match previous_logins {
+            Some(previous) => previous.rebuilt(max_attempts, window),
+            None => LoginLimiter::new(max_attempts, window),
+        };
         let templates = pages::templates::build_environment(&config.admin.template_dir);
         Self {
             database,
@@ -123,7 +141,23 @@ pub fn build_admin_app(
     profiles: &[Arc<Profile>],
     audit: Arc<crate::audit::Auditor>,
 ) -> Router {
-    let state = AdminState::new(database, config.clone(), profiles, audit);
+    build_admin_app_with_logins(database, config, profiles, audit, None).0
+}
+
+/// [`build_admin_app`], carrying login counters across a configuration reload.
+///
+/// Returns the limiter it ended up with as well as the router, because the
+/// generation after this one has to carry it in turn — an `Arc<LoginLimiter>`
+/// that only ever moved forward is the whole point.
+pub fn build_admin_app_with_logins(
+    database: Arc<Database>,
+    config: Arc<Config>,
+    profiles: &[Arc<Profile>],
+    audit: Arc<crate::audit::Auditor>,
+    previous_logins: Option<&LoginLimiter>,
+) -> (Router, Arc<LoginLimiter>) {
+    let state = AdminState::with_logins(database, config.clone(), profiles, audit, previous_logins);
+    let logins = state.logins.clone();
 
     let api = Router::new()
         .route(
@@ -184,7 +218,7 @@ pub fn build_admin_app(
         .route("/nonces/cleanup", post(handlers::cleanup_nonces))
         .route("/profiles", get(handlers::list_profiles));
 
-    Router::new()
+    let router = Router::new()
         // Unauthenticated and touching no database: an orchestrator probing
         // this port should not need a session to learn the process is alive.
         .route("/health", get(crate::handlers::get_health_check))
@@ -247,7 +281,9 @@ pub fn build_admin_app(
         // absent, which is correct — an admin request belongs to no profile.
         .layer(middleware::from_fn(
             middlewares::access::add_access_middleware,
-        ))
+        ));
+
+    (router, logins)
 }
 
 /// Mounts the API at `/api` with fallbacks that answer in the admin error

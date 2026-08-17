@@ -319,7 +319,7 @@ async fn settle_notifies_only_the_owning_profile() {
             )),
         );
     }
-    let notifiers = Arc::new(notifiers);
+    let notifiers: crate::notify::Notifiers = notifiers.into();
 
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),

@@ -87,7 +87,7 @@ impl TestRunner {
     fn start_notifying(
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
-        notifiers: Arc<HashMap<String, Arc<NotifyDispatcher>>>,
+        notifiers: crate::notify::Notifiers,
     ) -> Self {
         Self::start_inner(queue, signer, test_jobs_config(), Some(notifiers))
     }
@@ -104,7 +104,7 @@ impl TestRunner {
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
         config: crate::config::JobsConfig,
-        notifiers: Option<Arc<HashMap<String, Arc<NotifyDispatcher>>>>,
+        notifiers: Option<crate::notify::Notifiers>,
     ) -> Self {
         let mut registry = crate::jobs::JobRegistry::new();
         for handler in signer.jobs() {
@@ -138,12 +138,13 @@ use super::flow::settle;
 use super::http01::TokenStore;
 use super::*;
 use crate::audit::ClientContext;
-use crate::notify::NotifyEvent;
+use crate::notify::{NotifyDispatcher, NotifyEvent};
 use crate::signer::local_ca::LocalCa;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::Order;
 use crate::testutil::TempDir;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use testsrv::{Script, Upstream};
 
@@ -170,8 +171,8 @@ async fn database() -> Arc<Database> {
     Arc::new(Database::connect_in_memory().await.unwrap())
 }
 
-fn no_notifiers() -> Arc<HashMap<String, Arc<NotifyDispatcher>>> {
-    Arc::new(HashMap::new())
+fn no_notifiers() -> crate::notify::Notifiers {
+    HashMap::new().into()
 }
 
 /// Records every event it receives, so a test can assert `settle()`

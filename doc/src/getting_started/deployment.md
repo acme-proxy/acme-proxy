@@ -31,6 +31,7 @@ Below is an example `systemd` service file that runs `acme-proxy` securely.
    User=acme-proxy
    Group=acme-proxy
    ExecStart=/usr/local/bin/acme-proxy serve
+   ExecReload=/bin/kill -HUP $MAINPID
    WorkingDirectory=/var/lib/acme-proxy
 
    # Configuration. The extension may be omitted, in which case the format
@@ -64,6 +65,10 @@ too.
    > `acme-proxy` shuts down gracefully on `SIGTERM` (and on Ctrl+C when run in
    > a terminal), so `systemctl restart` and `systemctl stop` let in-flight
    > requests finish rather than cutting them off. Both listeners stop together.
+   >It also reloads its configuration on `SIGHUP` without moving either socket,
+   >which is what the `ExecReload` line above wires up — see [Reloading the
+   >Configuration](../operations/reload.md) for what a reload may change and
+   >what it refuses.
    >One case still deserves a quiet period: challenge validation and the
    >`custom` signer script run *inside* a request, so a restart during one waits
    >up to `challenge.timeout_ms` or `signer.custom.timeout_ms`. If systemd's

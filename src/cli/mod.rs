@@ -9,7 +9,8 @@
 //! whole path on an ephemeral port with its own shutdown future instead of a
 //! process signal:
 //!
-//! - `serve` binds `server.bind_address` and hands the socket on.
+//! - `serve` binds `server.bind_address`, installs the `SIGHUP` handler, and
+//!   hands the socket on.
 //! - [`serve_on`] validates the admin configuration and binds that socket too,
 //!   when `[admin]` is enabled.
 //! - [`serve_on_with`] does everything else — profile resolution, deduplicated
@@ -17,11 +18,16 @@
 //!   (every signer's handlers, notification delivery and the four table sweeps),
 //!   the runner draining it, and `axum::serve` with connect info attached.
 //!
+//! That assembly is [`build_generation`], and it is called again on every
+//! reload rather than only at startup — so the two cannot drift, and a
+//! subsystem added to one is added to the other by construction. What a reload
+//! may change, and what it refuses by name, is [`crate::reload`]'s to say;
+//! [`serve_on_with_reloads`] is where the two meet.
+//!
 //! The logic behind each admin subcommand lives in [`crate::admin`], not here;
 //! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
 //! an installed subscriber, validating every value before installing anything.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::io::BufRead;
 use std::net::SocketAddr;
@@ -249,12 +255,83 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
             ))
         })?;
 
-    serve_on(config, database, listener, shutdown_signal())
-        .await
-        .map_err(|error| {
-            error!(event = "server_fatal_error", outcome = "failure", error = %error);
-            CliError(error.to_string())
-        })
+    // Installed here, before anything slow: `SIGHUP`'s default disposition is
+    // *terminate*, so until the handler exists a reload signal kills the
+    // process. `serve_on_with_reloads` does profile assembly and the relay's
+    // first upstream contact before it binds anything, which is exactly the
+    // window an operator's `systemctl reload` could land in.
+    let (reload_handle, reloads) = crate::reload::channel();
+    let _hangups = AbortOnDrop(tokio::spawn(watch_for_hangup(reload_handle)));
+
+    let admin_listener = bind_admin(&config).await.map_err(|error| {
+        error!(event = "server_fatal_error", outcome = "failure", error = %error);
+        CliError(error.to_string())
+    })?;
+
+    serve_on_with_reloads(
+        config,
+        database,
+        listener,
+        admin_listener,
+        shutdown_signal(),
+        reloads,
+    )
+    .await
+    .map_err(|error| {
+        error!(event = "server_fatal_error", outcome = "failure", error = %error);
+        CliError(error.to_string())
+    })
+}
+
+/// Turns every `SIGHUP` into a reload request, for the life of the process.
+///
+/// Unlike the shutdown signal, this one does not consume its stream: an operator
+/// reloads repeatedly, and a handler that fired once would leave the second
+/// `SIGHUP` back at its default disposition — killing the server.
+#[cfg(unix)]
+async fn watch_for_hangup(handle: crate::reload::ReloadHandle) {
+    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            error!(event = "server_signal_handler_failed", outcome = "failure", signal = "SIGHUP", error = %error);
+            return;
+        }
+    };
+    while hangups.recv().await.is_some() {
+        handle.trigger();
+    }
+}
+
+/// No `SIGHUP` off Unix, so there is nothing to watch for.
+#[cfg(not(unix))]
+async fn watch_for_hangup(_handle: crate::reload::ReloadHandle) {
+    std::future::pending::<()>().await;
+}
+
+/// Validates the admin configuration and binds its socket when it is enabled.
+///
+/// Shared by [`serve`] and [`serve_on`] rather than living in one of them: both
+/// need it, and the validation must happen **before anything binds**, so a
+/// misconfigured panel cannot take the ACME listener down with it halfway
+/// through startup.
+async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>> {
+    crate::webadmin::check_config(config).inspect_err(|error| {
+        error!(event = "admin_config_invalid", outcome = "failure", error = %error);
+    })?;
+
+    match config.admin.enabled {
+        false => Ok(None),
+        true => Ok(Some(
+            TcpListener::bind(&config.admin.bind_address)
+                .await
+                .inspect_err(|error| {
+                    error!(event = "admin_socket_bind_failed",
+                           outcome = "failure",
+                           bind_address = %config.admin.bind_address,
+                           error = %error);
+                })?,
+        )),
+    }
 }
 
 /// Assembles and serves the application over an already-bound socket.
@@ -274,26 +351,7 @@ pub async fn serve_on(
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    // Before anything binds: a misconfigured panel must not take the ACME
-    // listener down with it halfway through startup.
-    crate::webadmin::check_config(&config).inspect_err(|error| {
-        error!(event = "admin_config_invalid", outcome = "failure", error = %error);
-    })?;
-
-    let admin_listener = match config.admin.enabled {
-        false => None,
-        true => Some(
-            TcpListener::bind(&config.admin.bind_address)
-                .await
-                .inspect_err(|error| {
-                    error!(event = "admin_socket_bind_failed",
-                           outcome = "failure",
-                           bind_address = %config.admin.bind_address,
-                           error = %error);
-                })?,
-        ),
-    };
-
+    let admin_listener = bind_admin(&config).await?;
     serve_on_with(config, database, listener, admin_listener, shutdown).await
 }
 
@@ -309,6 +367,33 @@ pub async fn serve_on_with(
     listener: TcpListener,
     admin_listener: Option<TcpListener>,
     shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
+    serve_on_with_reloads(
+        config,
+        database,
+        listener,
+        admin_listener,
+        shutdown,
+        crate::reload::Reloads::none(),
+    )
+    .await
+}
+
+/// [`serve_on_with`], serving configuration reloads as well as requests.
+///
+/// The variant `serve` uses, so a `SIGHUP` rebuilds both routers, the job
+/// registry, the notifier map and both TLS acceptors behind the sockets that are
+/// already bound. Every other caller goes through [`serve_on_with`] and gets a
+/// source that never fires, which costs one task that ends immediately.
+///
+/// See [`crate::reload`] for what a reload may change and what it refuses.
+pub async fn serve_on_with_reloads(
+    config: Arc<Config>,
+    database: Arc<Database>,
+    listener: TcpListener,
+    admin_listener: Option<TcpListener>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+    reloads: crate::reload::Reloads,
 ) -> anyhow::Result<()> {
     info!(
         event = "server_startup",
@@ -338,12 +423,35 @@ pub async fn serve_on_with(
     // profile happened to queue it.
     let job_queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
 
-    // Assembly lives in `Profile::build_all`: this function only reports.
-    let profiles =
-        Profile::build_all(&config, database.clone(), &job_queue).inspect_err(|error| {
-            error!(event = "profile_init_failed", outcome = "failure", error = %error);
-        })?;
-    for profile in &profiles {
+    let resolved = config.resolve_profiles().inspect_err(|error| {
+        error!(event = "profile_init_failed", outcome = "failure", error = %error);
+    })?;
+    // Everything that outlives a configuration generation — the signer backends
+    // above all, which are carried rather than rebuilt. See `crate::Assembly`.
+    let (assembly, dispatchers) =
+        crate::Assembly::new(&resolved, database.clone(), job_queue.clone(), &config).inspect_err(
+            |error| {
+                error!(event = "profile_init_failed", outcome = "failure", error = %error);
+            },
+        )?;
+
+    let generation = build_generation(
+        &config,
+        &resolved,
+        &assembly,
+        dispatchers,
+        admin_listener.is_some(),
+        None,
+    )
+    .inspect_err(|error| {
+        error!(event = "profile_init_failed", outcome = "failure", error = %error);
+    })?;
+
+    // Startup only, deliberately not re-run on a reload: `profile_mounted` means
+    // "this endpoint came up", and re-firing it on every SIGHUP would make the
+    // notify surface noisiest in exactly the config-managed deployments that
+    // would least want it.
+    for profile in &generation.profiles {
         info!(
             event = "profile_mounted",
             outcome = "success",
@@ -362,16 +470,206 @@ pub async fn serve_on_with(
             .await;
     }
 
-    let tls = tls::from_config(&config.server).inspect_err(|error| {
-        error!(event = "tls_init_failed", outcome = "failure", error = %error);
-    })?;
+    let Generation {
+        profiles: _,
+        acme_app,
+        admin_app,
+        job_registry,
+        tls,
+        admin_tls,
+        logins,
+    } = generation;
+
+    // The one task that drains the queue. Held under `AbortOnDrop` for the same
+    // reason the reapers are — an un-cancelled loop holding an `Arc<Database>`
+    // per `serve_on` call — and, unlike the relay tasks this replaced, it does
+    // *not* need to outlive this function: the work is durable now, so a job cut
+    // short is re-claimed from its own row rather than lost. It takes the same
+    // shutdown signal as both listeners, so a stop is graceful rather than an
+    // abort: it releases its leases on the way out, and a restart therefore
+    // re-claims its own work immediately instead of waiting one out.
+    //
+    // The registry it drains is a cell, not a value: a reload republishes it so
+    // a changed retention or a rebuilt notify map reaches the runner without
+    // restarting it.
+    let (registry_tx, registry_rx) = tokio::sync::watch::channel(Arc::new(job_registry));
+    let _job_runner = AbortOnDrop(crate::jobs::spawn_runner_watching(
+        job_queue,
+        registry_rx,
+        &config.jobs,
+        shutdown_rx.clone(),
+    ));
+
+    info!(
+        event = "server_listening",
+        outcome = "success",
+        bind_address = %config.server.bind_address,
+        protocol = if tls.is_some() { "https" } else { "http" }
+    );
+
+    // Behind a swap cell rather than served directly, so a configuration reload
+    // can replace the whole router without the socket moving. The cell is what
+    // `axum::serve` holds; `acme_app` itself is only ever generation one.
+    let (acme_router_tx, acme_router_rx) = crate::reload::router_channel(acme_app);
+    let app = crate::reload::swappable(acme_router_rx);
+
+    // Boxed rather than four `match` arms: the TLS and cleartext paths produce
+    // different listener types, and each listener has its own.
+    let mut tls_tx = None;
+    let acme: Serving = match tls {
+        Some(settings) => {
+            let (sender, tls_rx) = tokio::sync::watch::channel(settings);
+            tls_tx = Some(sender);
+            let listener = tls::TlsListener::spawn(listener, tls_rx).inspect_err(|error| {
+                error!(event = "tls_listener_start_failed", outcome = "failure", error = %error);
+            })?;
+            Box::pin(
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
+                .into_future(),
+            )
+        }
+        None => Box::pin(
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
+            .into_future(),
+        ),
+    };
+
+    let mut admin_router_tx = None;
+    let mut admin_tls_tx = None;
+    let admin: Serving = match (admin_app, admin_listener) {
+        (Some(app), Some(listener)) => {
+            let (serving, cells) = serve_admin(
+                &config,
+                database.clone(),
+                app,
+                admin_tls,
+                listener,
+                shutdown_rx,
+            )
+            .await?;
+            admin_router_tx = Some(cells.router);
+            admin_tls_tx = cells.tls;
+            serving
+        }
+        // The panel is off: a future that is already done, so `try_join!`
+        // below needs no second shape.
+        _ => Box::pin(std::future::ready(Ok(()))),
+    };
+
+    // The supervisor owns every cell sender from here on, which is what makes it
+    // the only writer: a generation is published by one task or by nobody.
+    // Aborted on drop, so an error return below does not leave it parked on a
+    // channel nothing will ever send to.
+    let _reload_supervisor = AbortOnDrop(tokio::spawn(supervise_reloads(
+        reloads,
+        config.clone(),
+        resolved,
+        assembly,
+        Cells {
+            acme_router: acme_router_tx,
+            admin_router: admin_router_tx,
+            job_registry: registry_tx,
+            tls: tls_tx,
+            admin_tls: admin_tls_tx,
+        },
+        logins,
+    )));
+
+    // Nothing is drained here any more. A notification in flight at shutdown is
+    // a `notify_deliver` row, not a spawned task: the runner released its lease
+    // on the way out and whoever starts next claims it. That is what replaced a
+    // best-effort five-second drain which still lost anything slower than it.
+    tokio::try_join!(acme, admin)?;
+    Ok(())
+}
+
+/// The admin listener's swap cells, handed back so the supervisor owns them.
+struct AdminCells {
+    router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
+    tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
+}
+
+/// Everything one configuration generation contributes, built and validated
+/// before any of it is published.
+///
+/// The unit exists so startup and reload cannot drift: both go through
+/// [`build_generation`], so a subsystem added to one is added to the other by
+/// construction rather than by remembering.
+pub(crate) struct Generation {
+    /// Kept so startup can announce them; a reload drops them on the floor,
+    /// since `profile_mounted` is a lifecycle event and not a heartbeat.
+    profiles: Vec<Arc<Profile>>,
+    acme_app: axum::Router,
+    admin_app: Option<axum::Router>,
+    job_registry: crate::jobs::JobRegistry,
+    tls: Option<tls::TlsSettings>,
+    admin_tls: Option<tls::TlsSettings>,
+    /// The limiter this generation ended up with, for the next one to carry.
+    logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+}
+
+/// Builds one generation: profiles, both routers, the job registry, the audit
+/// trail and both TLS acceptors.
+///
+/// Fallible throughout and side-effect-free on the *serving* state: nothing here
+/// touches a cell, so a failure leaves whatever is already running exactly as it
+/// was. That is what makes an atomic reload possible — everything is built
+/// first, and only a complete success publishes anything.
+///
+/// `dispatchers` is passed in rather than built here because a reload needs to
+/// hold it back: it is published to the long-lived [`crate::notify::Notifiers`]
+/// handle at swap time, *before* the routers, so a request served by the new
+/// generation cannot queue a delivery the job runner's map does not know.
+pub(crate) fn build_generation(
+    config: &Arc<Config>,
+    resolved: &[crate::config::ProfileConfig],
+    assembly: &crate::Assembly,
+    dispatchers: crate::notify::DispatcherMap,
+    admin_enabled: bool,
+    previous_logins: Option<&crate::webadmin::LoginLimiter>,
+) -> anyhow::Result<Generation> {
+    let database = assembly.database.clone();
+    let profiles = Profile::build_all_with(config, resolved, assembly, &dispatchers)?;
+
+    let tls = tls::from_config(&config.server)
+        .inspect_err(|error| {
+            error!(event = "tls_init_failed", outcome = "failure", error = %error);
+        })?
+        .map(|acceptor| {
+            tls::TlsSettings::new(
+                acceptor,
+                Duration::from_millis(config.server.tls.handshake_timeout_ms),
+            )
+        });
+
+    let admin_tls = match admin_enabled {
+        false => None,
+        true => tls::admin_from_config(&config.admin)
+            .inspect_err(|error| {
+                error!(event = "admin_tls_init_failed", outcome = "failure", error = %error);
+            })?
+            .map(|acceptor| {
+                tls::TlsSettings::new(
+                    acceptor,
+                    Duration::from_millis(config.admin.tls.handshake_timeout_ms),
+                )
+            }),
+    };
 
     // Every subsystem with background work, in one registry. Deduplicated by
     // `Arc` identity: two profiles can share one signer backend, and its handler
     // must be registered once — the registry refuses a second handler for one
     // kind outright, since two would each claim about half the rows. The
     // identity is kept as a `usize` rather than the pointer itself, so this
-    // future stays `Send`; it is spawned.
+    // function's caller stays `Send`; it is spawned.
     let mut job_registry = crate::jobs::JobRegistry::new();
     let mut registered: Vec<usize> = Vec::new();
     for profile in &profiles {
@@ -393,12 +691,14 @@ pub async fn serve_on_with(
     // backends queues nothing, so the handler simply never claims a row, and
     // making the registration conditional would mean a row queued before a
     // configuration change had nobody to run it.
-    let notifiers: HashMap<String, Arc<crate::notify::NotifyDispatcher>> = profiles
-        .iter()
-        .map(|profile| (profile.name.clone(), profile.notify.clone()))
-        .collect();
+    //
+    // It takes the *handle*, not this generation's map: the handler is
+    // registered per generation but must read whichever map is current, and a
+    // row queued by a reloaded router names a slot id only the new one has.
     job_registry
-        .register(Arc::new(crate::notify::NotifyJob::new(Arc::new(notifiers))))
+        .register(Arc::new(crate::notify::NotifyJob::new(
+            assembly.notifiers.clone(),
+        )))
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
@@ -424,7 +724,7 @@ pub async fn serve_on_with(
             config.jobs.retention_days,
         ));
     }
-    if admin_listener.is_some() {
+    if admin_enabled {
         sweeps.push(crate::jobs::SweepJob::admin_sessions(
             database.clone(),
             Duration::from_secs(config.admin.session_idle_timeout_seconds),
@@ -454,81 +754,234 @@ pub async fn serve_on_with(
     // needs the same profiles (revoking an order resolves that order's own
     // signer), and `build_admin_app` takes a slice precisely so the ordering
     // is a signature constraint rather than a borrow error to rediscover.
-    let admin_app = admin_listener.is_some().then(|| {
-        crate::webadmin::build_admin_app(
-            database.clone(),
-            config.clone(),
-            &profiles,
-            auditor.clone(),
-        )
-    });
-    let app = build_app(database.clone(), config.clone(), profiles, auditor);
-
-    // The one task that drains the queue. Held under `AbortOnDrop` for the same
-    // reason the reapers are — an un-cancelled loop holding an `Arc<Database>`
-    // per `serve_on` call — and, unlike the relay tasks this replaced, it does
-    // *not* need to outlive this function: the work is durable now, so a job cut
-    // short is re-claimed from its own row rather than lost. It takes the same
-    // shutdown signal as both listeners, so a stop is graceful rather than an
-    // abort: it releases its leases on the way out, and a restart therefore
-    // re-claims its own work immediately instead of waiting one out.
-    let _job_runner = AbortOnDrop(crate::jobs::spawn_runner(
-        job_queue,
-        Arc::new(job_registry),
-        &config.jobs,
-        shutdown_rx.clone(),
-    ));
-
-    info!(
-        event = "server_listening",
-        outcome = "success",
-        bind_address = %config.server.bind_address,
-        protocol = if tls.is_some() { "https" } else { "http" }
-    );
-
-    // Boxed rather than four `match` arms: the TLS and cleartext paths produce
-    // different listener types, and each listener has its own.
-    let acme: Serving = match tls {
-        Some(acceptor) => {
-            let handshake_timeout = Duration::from_millis(config.server.tls.handshake_timeout_ms);
-            let listener = tls::TlsListener::spawn(listener, acceptor, handshake_timeout)
-                .inspect_err(|error| {
-                    error!(event = "tls_listener_start_failed", outcome = "failure", error = %error);
-                })?;
-            Box::pin(
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
-                .into_future(),
-            )
+    let (admin_app, logins) = match admin_enabled {
+        false => (None, None),
+        true => {
+            let (router, logins) = crate::webadmin::build_admin_app_with_logins(
+                database.clone(),
+                config.clone(),
+                &profiles,
+                auditor.clone(),
+                previous_logins,
+            );
+            (Some(router), Some(logins))
         }
-        None => Box::pin(
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
-            .into_future(),
-        ),
     };
+    let acme_app = build_app(database, config.clone(), profiles.clone(), auditor);
 
-    let admin: Serving = match (admin_app, admin_listener) {
-        (Some(app), Some(listener)) => {
-            serve_admin(&config, database.clone(), app, listener, shutdown_rx).await?
+    Ok(Generation {
+        profiles,
+        acme_app,
+        admin_app,
+        job_registry,
+        tls,
+        admin_tls,
+        logins,
+    })
+}
+
+/// The cells one generation is published into.
+///
+/// Held by the supervisor and by nothing else. Every field is a `watch::Sender`,
+/// and `send_replace` is synchronous — so publishing a generation is a run of
+/// sends with no `.await` between them, which no other task can interleave with.
+/// That is what makes a reload atomic without a lock.
+struct Cells {
+    acme_router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
+    admin_router:
+        Option<tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>>,
+    job_registry: tokio::sync::watch::Sender<Arc<crate::jobs::JobRegistry>>,
+    tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
+    admin_tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
+}
+
+/// Serves reload requests for the life of the process.
+///
+/// One task, so reloads are serialised: two overlapping rebuilds could publish
+/// their cells interleaved, and the second-newest generation would win some of
+/// them. Ends when the last [`crate::reload::ReloadHandle`] is dropped, which is
+/// what makes [`crate::reload::Reloads::none`] cost nothing.
+async fn supervise_reloads(
+    mut reloads: crate::reload::Reloads,
+    mut config: Arc<Config>,
+    mut resolved: Vec<crate::config::ProfileConfig>,
+    assembly: crate::Assembly,
+    cells: Cells,
+    mut logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+) {
+    let mut generation: u64 = 1;
+
+    while let Some(request) = reloads.recv().await {
+        let started = std::time::Instant::now();
+        info!(
+            event = "server_config_reload_requested",
+            outcome = "progress",
+            generation = generation,
+        );
+
+        let outcome = apply_reload(
+            &config,
+            &resolved,
+            &assembly,
+            &cells,
+            logins.as_deref(),
+            generation + 1,
+            started,
+        );
+
+        match outcome {
+            Ok((report, next_config, next_resolved, next_logins)) => {
+                config = next_config;
+                resolved = next_resolved;
+                logins = next_logins;
+                generation = report.generation;
+                info!(
+                    event = "server_config_reloaded",
+                    outcome = "success",
+                    generation = report.generation,
+                    profiles = ?report.profiles,
+                    job_kinds = ?report.job_kinds,
+                    tls_reloaded = report.tls_reloaded,
+                    admin_tls_reloaded = report.admin_tls_reloaded,
+                    duration_ms = crate::millis(report.duration),
+                );
+                if let Some(respond) = request.respond {
+                    let _ = respond.send(Ok(report));
+                }
+            }
+            Err(error) => {
+                // Two names, because they are two different things for whoever
+                // is reading: a refusal is a configuration an operator must
+                // change, a failure is one the server could not build.
+                match &error {
+                    crate::reload::ReloadError::Frozen { .. } => warn!(
+                        event = "server_config_reload_refused",
+                        outcome = "failure",
+                        generation = generation,
+                        reason = error.kind(),
+                        error = %error,
+                    ),
+                    _ => error!(
+                        event = "server_config_reload_failed",
+                        outcome = "failure",
+                        generation = generation,
+                        reason = error.kind(),
+                        error = %error,
+                    ),
+                }
+                if let Some(respond) = request.respond {
+                    let _ = respond.send(Err(error));
+                }
+            }
         }
-        // The panel is off: a future that is already done, so `try_join!`
-        // below needs no second shape.
-        _ => Box::pin(std::future::ready(Ok(()))),
-    };
+    }
+}
 
-    // Nothing is drained here any more. A notification in flight at shutdown is
-    // a `notify_deliver` row, not a spawned task: the runner released its lease
-    // on the way out and whoever starts next claims it. That is what replaced a
-    // best-effort five-second drain which still lost anything slower than it.
-    tokio::try_join!(acme, admin)?;
-    Ok(())
+/// One reload attempt: build everything, then publish it.
+///
+/// Every fallible step happens before the first `send_replace`, so a failure
+/// anywhere leaves the running generation untouched — which is the property the
+/// whole "atomic, refuse by name" decision exists for.
+///
+/// Not `async`, and that is load-bearing rather than incidental: the publishing
+/// run at the end cannot be interleaved by another task if there is no await
+/// point in it.
+#[allow(clippy::type_complexity)]
+fn apply_reload(
+    config: &Arc<Config>,
+    resolved: &[crate::config::ProfileConfig],
+    assembly: &crate::Assembly,
+    cells: &Cells,
+    logins: Option<&crate::webadmin::LoginLimiter>,
+    generation: u64,
+    started: std::time::Instant,
+) -> Result<
+    (
+        crate::reload::ReloadReport,
+        Arc<Config>,
+        Vec<crate::config::ProfileConfig>,
+        Option<Arc<crate::webadmin::LoginLimiter>>,
+    ),
+    crate::reload::ReloadError,
+> {
+    use crate::reload::{Applied, ReloadError, ReloadReport, check_frozen};
+
+    // Re-read from scratch: `Config::load` consults the file *and* the
+    // `ACME_PROXY_*` environment, so a reload sees whatever the process would
+    // see if it restarted right now.
+    let next = Arc::new(Config::load().map_err(|error| ReloadError::Load(error.to_string()))?);
+    let next_resolved = next
+        .resolve_profiles()
+        .map_err(|error| ReloadError::Load(error.to_string()))?;
+
+    check_frozen(
+        &Applied {
+            config,
+            profiles: resolved,
+        },
+        &Applied {
+            config: &next,
+            profiles: &next_resolved,
+        },
+    )?;
+
+    // The same validation startup runs before either socket binds, so a panel
+    // that would refuse to start refuses to be reloaded into. It also compiles
+    // every `admin.template_dir` override, which is what keeps a broken one a
+    // failed reload rather than a 500 in a browser.
+    crate::webadmin::check_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;
+
+    let dispatchers = assembly
+        .build_dispatchers(&next_resolved)
+        .map_err(|error| ReloadError::Build(error.to_string()))?;
+    let generation_built = build_generation(
+        &next,
+        &next_resolved,
+        assembly,
+        dispatchers.clone(),
+        cells.admin_router.is_some(),
+        logins,
+    )
+    .map_err(|error| ReloadError::Build(error.to_string()))?;
+
+    let report = ReloadReport {
+        generation,
+        profiles: generation_built
+            .profiles
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect(),
+        job_kinds: generation_built.job_registry.kinds(),
+        tls_reloaded: generation_built.tls.is_some() && cells.tls.is_some(),
+        admin_tls_reloaded: generation_built.admin_tls.is_some() && cells.admin_tls.is_some(),
+        duration: started.elapsed(),
+    };
+    let next_logins = generation_built.logins.clone();
+
+    // Everything below is infallible and synchronous. The order matters in one
+    // place: the notifier map and the job registry go **before** the routers.
+    // A request served by the new generation queues a `notify_deliver` row
+    // naming a slot id from the new configuration, and a `NotifyJob` still
+    // holding the old map would retire it — permanently, since an unknown
+    // backend id is a `Failed`, not a `Retry`.
+    assembly.publish_notifiers(dispatchers);
+    cells
+        .job_registry
+        .send_replace(Arc::new(generation_built.job_registry));
+    if let (Some(cell), Some(settings)) = (&cells.tls, generation_built.tls) {
+        cell.send_replace(settings);
+    }
+    if let (Some(cell), Some(settings)) = (&cells.admin_tls, generation_built.admin_tls) {
+        cell.send_replace(settings);
+    }
+    cells
+        .acme_router
+        .send_replace(generation_built.acme_app.into_service::<axum::body::Body>());
+    if let (Some(cell), Some(router)) = (&cells.admin_router, generation_built.admin_app) {
+        cell.send_replace(router.into_service::<axum::body::Body>());
+    }
+
+    Ok((report, next, next_resolved, next_logins))
 }
 
 /// One listener's `axum::serve` future, boxed so the TLS and cleartext arms —
@@ -549,9 +1002,10 @@ async fn serve_admin(
     config: &Arc<Config>,
     database: Arc<Database>,
     app: axum::Router,
+    tls: Option<tls::TlsSettings>,
     listener: TcpListener,
     shutdown: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<Serving> {
+) -> anyhow::Result<(Serving, AdminCells)> {
     let bind_address = listener.local_addr().map_or_else(
         |_| config.admin.bind_address.clone(),
         |addr| addr.to_string(),
@@ -595,10 +1049,6 @@ async fn serve_admin(
         error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);
     }
 
-    let tls = tls::admin_from_config(&config.admin).inspect_err(|error| {
-        error!(event = "admin_tls_init_failed", outcome = "failure", error = %error);
-    })?;
-
     info!(
         event = "admin_listening",
         outcome = "success",
@@ -607,11 +1057,17 @@ async fn serve_admin(
         base_url = %config.admin.base_url
     );
 
-    Ok(match tls {
-        Some(acceptor) => {
-            let handshake_timeout = Duration::from_millis(config.admin.tls.handshake_timeout_ms);
-            let listener = tls::TlsListener::spawn(listener, acceptor, handshake_timeout)
-                .inspect_err(|error| {
+    // The admin router's own swap cell, for the same reason as the ACME one.
+    let (admin_router_tx, admin_router_rx) = crate::reload::router_channel(app);
+    let app = crate::reload::swappable(admin_router_rx);
+
+    let mut tls_tx = None;
+    let serving: Serving = match tls {
+        Some(settings) => {
+            let (sender, tls_rx) = tokio::sync::watch::channel(settings);
+            tls_tx = Some(sender);
+            let listener =
+                tls::TlsListener::spawn(listener, tls_rx).inspect_err(|error| {
                     error!(event = "admin_tls_listener_start_failed", outcome = "failure", error = %error);
                 })?;
             Box::pin(
@@ -631,7 +1087,15 @@ async fn serve_admin(
             .with_graceful_shutdown(on_shutdown(shutdown))
             .into_future(),
         ),
-    })
+    };
+
+    Ok((
+        serving,
+        AdminCells {
+            router: admin_router_tx,
+            tls: tls_tx,
+        },
+    ))
 }
 
 async fn shutdown_signal() {

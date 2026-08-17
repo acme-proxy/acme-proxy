@@ -672,6 +672,74 @@ fn build_webhook_slots(
     .collect()
 }
 
+/// One generation's `profile name -> dispatcher` map.
+///
+/// Named because it appears in four signatures and clippy is right that the
+/// spelled-out form is unreadable in all of them.
+pub type DispatcherMap = HashMap<String, Arc<NotifyDispatcher>>;
+
+/// The writing half of a [`Notifiers`] handle.
+pub type NotifiersSender = tokio::sync::watch::Sender<Arc<DispatcherMap>>;
+
+/// The `profile name -> dispatcher` map, as a handle that survives a
+/// configuration reload.
+///
+/// The map itself is rebuilt whole on every generation, but two of its readers
+/// outlive a generation: a signer backend captures it at construction (and
+/// signer backends are carried across reloads rather than rebuilt), and
+/// [`NotifyJob`] captures it at registration. Handing those two a plain `Arc`
+/// pinned them to generation zero, which is worse than stale — a request served
+/// by a *new* router writes a `notify_deliver` row naming a slot id from the
+/// *new* configuration, and a `NotifyJob` still holding the old map would answer
+/// [`JobOutcome::Failed`](crate::jobs::JobOutcome::Failed) for it. Permanently:
+/// an unknown backend id is retired rather than retried, by design.
+///
+/// [`tokio::sync::watch::Receiver::borrow`] takes `&self` and does not mark the
+/// value seen, so this stays `Clone + Send + Sync` and [`get`](Self::get) is
+/// callable from any task. A generation is published with a single synchronous
+/// [`tokio::sync::watch::Sender::send_replace`], so no reader can observe a
+/// half-built map.
+#[derive(Clone)]
+pub struct Notifiers(tokio::sync::watch::Receiver<Arc<DispatcherMap>>);
+
+impl Notifiers {
+    /// The dispatcher for `profile` in the current generation, if it is mounted.
+    #[must_use]
+    pub fn get(&self, profile: &str) -> Option<Arc<NotifyDispatcher>> {
+        // The `Ref` guard dies at the semicolon, so nothing holds the lock
+        // across an await — which is the whole reason this returns an owned
+        // `Arc` rather than lending one out.
+        self.0.borrow().get(profile).cloned()
+    }
+}
+
+/// A fixed map, for every caller that has no reload to serve — the tests, and
+/// any construction that predates the first generation being published.
+///
+/// Dropping the sender leaves `borrow` working for ever (only `changed()` ever
+/// errors on a closed channel), so this is a genuine constant, not a channel
+/// that will go quiet. It is also what lets every existing call site pass an
+/// `Arc<HashMap<..>>` unchanged.
+impl From<Arc<DispatcherMap>> for Notifiers {
+    fn from(map: Arc<DispatcherMap>) -> Self {
+        Self(tokio::sync::watch::channel(map).1)
+    }
+}
+
+impl From<DispatcherMap> for Notifiers {
+    fn from(map: DispatcherMap) -> Self {
+        Arc::new(map).into()
+    }
+}
+
+/// One cell the reload path replaces, and every reader sees the new map at the
+/// next `get`.
+#[must_use]
+pub fn notifiers_channel(initial: DispatcherMap) -> (NotifiersSender, Notifiers) {
+    let (sender, receiver) = tokio::sync::watch::channel(Arc::new(initial));
+    (sender, Notifiers(receiver))
+}
+
 /// Builds one [`NotifyDispatcher`] per resolved profile, keyed by profile
 /// name — the map the `relay` signer backend needs to notify the right
 /// profile from its background completion task, where there is no
@@ -1028,6 +1096,56 @@ pub(crate) mod tests {
         assert!(rendered.contains("le"), "{rendered}");
 
         assert!(format!("{:?}", NotifyDispatcher::disabled(queue)).contains("[]"));
+    }
+
+    /// The reload property: a reader that took its handle before the swap sees
+    /// the map that came *after* it.
+    ///
+    /// This is what a signer backend and [`NotifyJob`] rely on — both are built
+    /// once and outlive a configuration generation, so a captured `Arc` would
+    /// pin them to whatever was configured when the process started.
+    #[tokio::test]
+    async fn a_handle_taken_before_a_swap_reads_the_map_after_it() {
+        let queue = test_queue().await;
+        let (sender, notifiers) = notifiers_channel(HashMap::new());
+        assert!(notifiers.get("le").is_none());
+
+        let mut next = HashMap::new();
+        next.insert(
+            "le".to_string(),
+            Arc::new(NotifyDispatcher::disabled(queue.clone())),
+        );
+        sender.send_replace(Arc::new(next));
+
+        assert!(notifiers.get("le").is_some());
+        // A profile the new generation does not mount is absent, not stale.
+        assert!(notifiers.get("staging").is_none());
+
+        // And a swap back is seen too: this is a cell, not a latch.
+        sender.send_replace(Arc::new(HashMap::new()));
+        assert!(notifiers.get("le").is_none());
+    }
+
+    /// A fixed map keeps answering after its sender is gone.
+    ///
+    /// The `From` impl drops the sender on the spot, which is what lets every
+    /// caller with no reload to serve — the tests, and anything built before the
+    /// first generation is published — pass a plain map. If a closed channel
+    /// made `borrow` fail, that conversion would be a trap rather than a
+    /// convenience.
+    #[tokio::test]
+    async fn a_fixed_map_survives_its_sender_being_dropped() {
+        let queue = test_queue().await;
+        let mut map = HashMap::new();
+        map.insert(
+            "le".to_string(),
+            Arc::new(NotifyDispatcher::disabled(queue)),
+        );
+
+        let notifiers: Notifiers = map.into();
+        assert!(notifiers.get("le").is_some());
+        // Cloned handles are the same cell, and equally durable.
+        assert!(notifiers.clone().get("le").is_some());
     }
 
     /// Every event kind, as a backend's own `events` list would spell them.

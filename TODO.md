@@ -6,15 +6,46 @@ keeps its corpses stops being read.
 
 ## Server
 
-- [ ] **Reload the configuration on `SIGHUP`.** `cli::serve_on_with` builds
-      everything exactly once — profiles, deduplicated signer backends, filter
-      chains, challenge registries, both routers — and `AppState` holds an
-      `Arc<Config>`, so a reload is a rebuild-and-swap, not a mutation. What
-      cannot be swapped under a live listener is the bind addresses and TLS (a
-      new socket is a restart) and whatever a signer backend provisioned at
-      startup (`relay`'s upstream account). Decide which keys are
-      reloadable and **refuse the rest by name**, the way startup validation
-      already refuses an unknown `logging.target` instead of falling back.
+- [ ] **Reload `[signer]` and the profile set — carry the state, not the
+      config.** The one thing `SIGHUP` refuses that is worth unfreezing. It is
+      not that construction repeats anything destructive: a CA is generated
+      only when the files are absent, and a relay registers upstream once. It
+      is that a backend owns in-memory state with no durable home — a `LocalCa`
+      rebuilds the whole CRL from its own ledger, and a relay's `http-01` token
+      store would come back empty under a live upstream fetch. So give
+      `SignerBackend` a seam for adopting the previous generation's state (the
+      ledger's `Arc<Mutex<_>>`, the `Arc<dyn Http01TokenStore>`, an open PKCS#11
+      session). Two things fall out of it: **mounting a new profile without a
+      restart**, since the registry and router swaps already handle the rest,
+      and `dns.resolver`/`proxy.*` unfreezing for free — they are frozen only
+      because the signers cache them at construction, while every other
+      consumer is already rebuilt per generation.
+- [ ] **Rebind the listeners on reload** — `server.bind_address`,
+      `admin.bind_address`, `admin.enabled`, and both `tls.enabled` flips. A
+      different mechanism from every other reloadable key: bind the new socket,
+      start serving on it, then drain the old one gracefully. `axum::serve`
+      consumes its listener and `try_join!` assumes exactly two futures for the
+      process's life, so this needs a per-listener supervisor that can be
+      replaced. Same ordering rule the reload path already establishes — bind
+      first, so a bad address refuses the reload instead of having already
+      dropped the live socket. `tls.enabled` is a structural branch on the
+      listener type, so it is this work rather than a separate item.
+- [ ] **Reload the `[jobs]` runner tuning.** The cheapest of the three:
+      `RunnerConfig` is snapshotted in `spawn_runner_watching`, so make it a
+      second `watch` cell read per pass beside the registry one.
+      `max_concurrent` must resize through `Semaphore::add_permits` /
+      `forget_permits` rather than being replaced, or in-flight permit
+      accounting is lost. `jobs.max_attempts` stays frozen *onto each row* at
+      enqueue — that is a property of the queue, not of this freeze.
+- [ ] **Reload `[logging]`.** `tracing_subscriber::reload::Layer` exists for
+      exactly this: `logging.filter` becomes reloadable cheaply, and the other
+      five (which change the layer stack's shape) follow if the format layer is
+      boxed behind the same handle. The cost is honest and belongs in the
+      decision — a `reload::Layer` puts an `RwLock` read on every event.
+      `database.url` is the one key that should stay frozen for good: the pool
+      is held by the runner and every request path, migrations would run
+      mid-flight, and the accounts and orders do not follow it. A different
+      database is a different CA.
 - [ ] **PostgreSQL beside SQLite.** Every query goes through `src/sqlite/` as a
       runtime `sqlx::query`, so most of them port unchanged; what does not is
       `Database::connect`'s two pragmas, the `rows_affected == 1` single-use

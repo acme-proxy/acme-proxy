@@ -128,7 +128,17 @@ impl ServerCertVerifier for AcceptAnyServerCert {
 /// process default: `CryptoProvider::install_default` panics on a second call,
 /// which under `cargo test` is a matter of which tests happen to run together,
 /// and a library has no business claiming a process-global anyway.
-pub(crate) fn accept_any_client_config(alpn: &[&[u8]]) -> anyhow::Result<Arc<ClientConfig>> {
+///
+/// # This is not a general-purpose client configuration
+///
+/// It authenticates **nothing**. It exists for the two ACME challenge types
+/// whose RFC says the responder's certificate is not to be validated, and for
+/// the integration suite, which drives this server's own TLS listener over a
+/// self-signed certificate it just generated. Anywhere a certificate identifies
+/// something — the `relay` backend's upstream, an IPAM inventory, an SMTP
+/// server — use [`crate::http_client::webpki_tls_config`] instead. `pub` only
+/// because `tests/reload.rs` links against this crate from outside it.
+pub fn accept_any_client_config(alpn: &[&[u8]]) -> anyhow::Result<Arc<ClientConfig>> {
     let provider = rustls::crypto::ring::default_provider();
     let schemes = provider
         .signature_verification_algorithms

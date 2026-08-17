@@ -60,7 +60,7 @@ impl RunnerConfig {
     }
 }
 
-/// Starts the runner. The returned handle is aborted on drop by the caller.
+/// Starts the runner over a registry that never changes.
 ///
 /// `shutdown` is the same `watch` both listeners take, so one signal stops
 /// everything. A stop is graceful: the runner takes no new work, waits
@@ -69,6 +69,28 @@ impl RunnerConfig {
 pub fn spawn_runner(
     queue: JobQueue,
     registry: Arc<JobRegistry>,
+    config: &JobsConfig,
+    shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    // A channel whose sender is dropped on the spot: `borrow` keeps answering
+    // for ever and `changed()` simply never fires, which is exactly "this
+    // registry is fixed" without a second code path through the loop.
+    let (_sender, receiver) = watch::channel(registry);
+    spawn_runner_watching(queue, receiver, config, shutdown)
+}
+
+/// Starts the runner over a registry the caller can replace.
+///
+/// The reload path publishes a new [`JobRegistry`] rather than restarting the
+/// runner, and both halves of that matter. Sweep handlers capture their cutoffs
+/// by value (`nonce.ttl_seconds`, `audit.retention_days`, …), so a changed
+/// retention only takes effect through a new registry; and a retention going
+/// `0 → N` registers a handler that did not exist at all, which is why
+/// [`recover`](JobHandler::recover) runs again for kinds the previous generation
+/// did not have.
+pub fn spawn_runner_watching(
+    queue: JobQueue,
+    registry: watch::Receiver<Arc<JobRegistry>>,
     config: &JobsConfig,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
@@ -82,7 +104,7 @@ pub fn spawn_runner(
 
 async fn run_loop(
     queue: JobQueue,
-    registry: Arc<JobRegistry>,
+    mut registry_rx: watch::Receiver<Arc<JobRegistry>>,
     config: RunnerConfig,
     permits: Arc<Semaphore>,
     max_concurrent: usize,
@@ -90,19 +112,20 @@ async fn run_loop(
 ) {
     let runner_id = uuid::Uuid::new_v4().to_string();
     let database = queue.database().clone();
-    let kinds = registry.kinds();
+    let mut registry = registry_rx.borrow_and_update().clone();
 
     info!(
         event = "job_runner_started",
         outcome = "progress",
         runner_id = %runner_id,
-        job_kinds = ?kinds,
+        job_kinds = ?registry.kinds(),
         max_concurrent = max_concurrent,
     );
 
     // Before the loop: every handler gets one chance to re-derive work a
     // previous process left unfinished. An enqueue, not a spawn — and safely
     // repeatable, because the identity index refuses a duplicate.
+    let mut recovered: Vec<&'static str> = registry.kinds();
     for handler in registry.handlers() {
         handler.recover(&queue).await;
     }
@@ -117,10 +140,18 @@ async fn run_loop(
         drain_ready(&queue, &registry, &config, &permits, &runner_id).await;
 
         // Idle: whichever comes first. `notified()` is what keeps a job queued
-        // by a request from waiting on `poll_interval`.
+        // by a request from waiting on `poll_interval`. The registry arm never
+        // fires when the sender was dropped at spawn, which is what makes the
+        // fixed-registry case free rather than a second loop.
         tokio::select! {
             () = queue.notify.notified() => {}
             () = tokio::time::sleep(config.poll_interval) => {}
+            result = registry_rx.changed() => {
+                if result.is_ok() {
+                    registry = registry_rx.borrow_and_update().clone();
+                    recover_new_kinds(&queue, &registry, &mut recovered).await;
+                }
+            }
             _ = shutdown.changed() => break,
         }
         if *shutdown.borrow() {
@@ -129,6 +160,35 @@ async fn run_loop(
     }
 
     stop(&runner_id, &database, &permits, max_concurrent).await;
+}
+
+/// Runs `recover` for handlers this runner has not yet recovered for.
+///
+/// Restricted to *new* kinds rather than the whole registry, because `recover`
+/// is not uniformly cheap: a sweep's is one guarded enqueue, but
+/// `RelayJob::recover` queries the database and logs a line about resuming
+/// in-flight orders — which would be untrue, and noise, on every reload.
+async fn recover_new_kinds(
+    queue: &JobQueue,
+    registry: &JobRegistry,
+    recovered: &mut Vec<&'static str>,
+) {
+    for handler in registry.handlers() {
+        let kind = handler.kind();
+        if recovered.contains(&kind) {
+            continue;
+        }
+        recovered.push(kind);
+        handler.recover(queue).await;
+        // After the pass, not before: `_recovered` claims the work is done, and
+        // `recover` is the one place a new generation's handler re-derives what
+        // it is owed.
+        info!(
+            event = "job_handler_recovered",
+            outcome = "success",
+            job_kind = kind,
+        );
+    }
 }
 
 /// Claims and starts everything currently eligible, up to the permit pool.
@@ -469,6 +529,7 @@ mod tests {
         script: Vec<Script>,
         runs: AtomicUsize,
         abandons: AtomicUsize,
+        recovers: AtomicUsize,
         last_reason: std::sync::Mutex<String>,
         budget: Option<Duration>,
     }
@@ -489,6 +550,7 @@ mod tests {
                 script,
                 runs: AtomicUsize::new(0),
                 abandons: AtomicUsize::new(0),
+                recovers: AtomicUsize::new(0),
                 last_reason: std::sync::Mutex::new(String::new()),
                 budget: None,
             })
@@ -500,6 +562,7 @@ mod tests {
                 script,
                 runs: AtomicUsize::new(0),
                 abandons: AtomicUsize::new(0),
+                recovers: AtomicUsize::new(0),
                 last_reason: std::sync::Mutex::new(String::new()),
                 budget: None,
             };
@@ -517,6 +580,10 @@ mod tests {
 
         fn reason(&self) -> String {
             self.last_reason.lock().unwrap().clone()
+        }
+
+        fn recovers(&self) -> usize {
+            self.recovers.load(Ordering::SeqCst)
         }
     }
 
@@ -548,6 +615,10 @@ mod tests {
         async fn abandon(&self, _job: &Job, reason: &str) {
             self.abandons.fetch_add(1, Ordering::SeqCst);
             *self.last_reason.lock().unwrap() = reason.to_string();
+        }
+
+        async fn recover(&self, _queue: &JobQueue) {
+            self.recovers.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -869,6 +940,58 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(handler.runs(), 1, "the enqueue must have woken the runner");
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    }
+
+    /// A configuration reload publishes a new registry rather than restarting
+    /// the runner, and this is what that has to buy: a kind that did not exist
+    /// in the previous generation is claimed after the swap.
+    ///
+    /// The row is queued *before* the swap on purpose — that is the case a
+    /// retention key going `0 → N` produces, where the sweep handler is new but
+    /// its work may already be waiting.
+    #[tokio::test]
+    async fn a_swapped_registry_claims_a_kind_the_previous_one_did_not_have() {
+        let config = JobsConfig {
+            // Long enough that a poll tick cannot be what noticed the swap.
+            poll_interval_ms: 60_000,
+            ..JobsConfig::default()
+        };
+        let queue = queue_with(&config).await;
+        let old = Scripted::new("old", vec![Script::Done]);
+        let new = Scripted::new("new", vec![Script::Done]);
+
+        let mut first = JobRegistry::new();
+        first.register(old.clone()).unwrap();
+        let (registry_tx, registry_rx) = watch::channel(Arc::new(first));
+
+        let (tx, rx) = watch::channel(false);
+        let runner = spawn_runner_watching(queue.clone(), registry_rx, &config, rx);
+
+        queue.enqueue(JobSpec::now("new", "k")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(new.runs(), 0, "the kind is not registered yet");
+        assert_eq!(old.recovers(), 1, "the startup pass ran once");
+
+        let mut second = JobRegistry::new();
+        second.register(old.clone()).unwrap();
+        second.register(new.clone()).unwrap();
+        registry_tx.send_replace(Arc::new(second));
+
+        for _ in 0..200 {
+            if new.runs() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(new.runs(), 1, "the swapped-in handler must claim its row");
+
+        // `recover` is per kind, not per generation: the newcomer gets its one
+        // pass, and the handler carried across the swap is not asked again.
+        assert_eq!(new.recovers(), 1, "a new kind recovers once");
+        assert_eq!(old.recovers(), 1, "a carried kind must not recover again");
 
         let _ = tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;

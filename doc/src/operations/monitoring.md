@@ -138,6 +138,9 @@ The events worth building alerts on:
 | `request_completed` | info / warn / debug | One per request. See "The access line" above for the level. |
 | `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. |
 | `server_fatal_error`, `server_socket_bind_failed`, `profile_init_failed` | error | The process is not serving. |
+| `server_config_reloaded` | info | A `SIGHUP` applied. Carries `generation`, which counts from 1 and rises by one per reload — the quickest check that one landed. |
+| `server_config_reload_refused` | warn | The new file changes a key that cannot change while the process runs. Nothing was applied; the `error` field names the key. |
+| `server_config_reload_failed` | error | The new file did not load, or what it asks for could not be built. Nothing was applied. |
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |

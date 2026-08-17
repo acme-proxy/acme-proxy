@@ -359,6 +359,45 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Configuration reload on `SIGHUP`, without moving either socket.** Until now
+  every configuration change was a process restart, which dropped in-flight
+  ACME orders and every live connection — for changes that never needed a new
+  socket, like a `[filter]` rule, an `[ipam]` token, a `[notify]` webhook or a
+  renewed certificate.
+
+  A reload rebuilds both routers, every profile's filter chain and challenge
+  registry, the notification backends, the job registry and both TLS acceptors
+  from the file on disk, then publishes them together. Add
+  `ExecReload=/bin/kill -HUP $MAINPID` to the systemd unit and `systemctl
+  reload` works. See `doc/src/operations/reload.md`.
+
+  Two properties are the whole design:
+
+  - **It is all or nothing.** A key a running process cannot change is refused
+    **by name** — naming the key, what the server is running and what the file
+    now says — and the reload is abandoned whole. A configuration that applied
+    the half it understood would leave a running server that no file on disk
+    describes.
+  - **Signer backends are carried across, never rebuilt.** Not because
+    generating a CA or registering with an upstream would repeat — neither
+    does — but because a signer owns in-memory state with no durable home: a
+    local CA rebuilds its whole CRL from its own ledger, so two over one
+    `crl_path` would drop each other's entries, and a relay's `http-01` token
+    store would come back empty while an upstream CA was fetching from it.
+
+  Frozen, and so refused by name: `database.url`, `server.bind_address`,
+  `server.tls.enabled`, `admin.enabled`/`bind_address`/`tls.enabled`, every
+  `[logging]` key, `[dns]` and `[proxy]`, six of the seven `[jobs]` keys
+  (`retention_days` reloads), each profile's `[signer]` section, and the set of
+  enabled profiles. Everything else reloads, including TLS certificate paths
+  and `admin.template_dir` — a template that does not compile now fails the
+  *reload* rather than reaching a browser.
+
+  Every success logs `server_config_reloaded` with a `generation` that counts
+  from 1, which is the quickest way to tell a landed reload from an ignored
+  one; a refusal is `server_config_reload_refused` and a build failure
+  `server_config_reload_failed`.
+
 - **A durable job queue, and with it retries for relayed issuance.** The
   `relay` signer backend used to finish its work in a bare `tokio::spawn` whose
   state lived on its `upstream_orders` row: a restart destroyed the task, and a

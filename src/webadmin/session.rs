@@ -530,6 +530,28 @@ impl LoginLimiter {
         }
     }
 
+    /// The same counters under new limits.
+    ///
+    /// A configuration reload rebuilds the admin router, and with it every value
+    /// `AdminState` derives from `[admin]` — which for this type would mean
+    /// starting from an empty map. That is a security regression, not a cosmetic
+    /// one: a reload in the middle of a brute-force attempt would clear the
+    /// attacker's backoff, and `admin.login_*` is exactly the sort of key an
+    /// operator edits *because* they are being flooded.
+    ///
+    /// Carrying the whole limiter across instead would be the other error,
+    /// leaving `login_max_attempts` and `login_window_seconds` silently stale.
+    /// So the counters move and the limits do not.
+    #[must_use]
+    pub fn rebuilt(&self, max_attempts: u32, window_seconds: u64) -> Self {
+        let buckets = std::mem::take(&mut *self.buckets.lock().unwrap_or_else(|e| e.into_inner()));
+        Self {
+            max_attempts,
+            window: Duration::from_secs(window_seconds),
+            buckets: Mutex::new(buckets),
+        }
+    }
+
     /// Whether this address may attempt a login now. `Err` carries the seconds
     /// left in the window.
     ///

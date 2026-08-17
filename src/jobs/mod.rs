@@ -62,7 +62,7 @@ pub mod runner;
 pub mod sweep;
 
 pub use registry::JobRegistry;
-pub use runner::spawn_runner;
+pub use runner::{spawn_runner, spawn_runner_watching};
 pub use sweep::SweepJob;
 
 /// How one attempt ended.
