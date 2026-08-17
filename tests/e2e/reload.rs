@@ -73,7 +73,8 @@ async fn reloads_reach(lab: &Lab, expected: usize) {
     }
     panic!(
         "only {} reload(s) landed, expected {expected}:\n{}",
-        lab.get_proxy_logs().await
+        lab.get_proxy_logs()
+            .await
             .matches("server_config_reloaded")
             .count(),
         lab.get_proxy_logs().await
