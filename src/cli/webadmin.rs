@@ -156,14 +156,12 @@ async fn run_user_command(
         }
         AdminUserCommand::List { json } => {
             let users = users::list_users(database).await?;
-            if json {
-                let rendered: Vec<_> = users.iter().map(admin::render_admin_user_json).collect();
-                println!("{}", serde_json::Value::Array(rendered));
-            } else {
-                for user in &users {
-                    println!("{}", admin::render_admin_user_line(user));
-                }
-            }
+            admin::print_rows(
+                &users,
+                json,
+                admin::render_admin_user_json,
+                admin::render_admin_user_line,
+            );
         }
         AdminUserCommand::Passwd {
             username,
@@ -306,17 +304,12 @@ async fn run_session_command(
             };
 
             let sessions = AdminSession::list_all(user_id.as_deref(), &database).await?;
-            if json {
-                let rendered: Vec<_> = sessions
-                    .iter()
-                    .map(admin::render_admin_session_json)
-                    .collect();
-                println!("{}", serde_json::Value::Array(rendered));
-            } else {
-                for session in &sessions {
-                    println!("{}", admin::render_admin_session_line(session));
-                }
-            }
+            admin::print_rows(
+                &sessions,
+                json,
+                admin::render_admin_session_json,
+                admin::render_admin_session_line,
+            );
         }
         AdminSessionCommand::Revoke { user, all } => match (user, all) {
             (Some(username), _) => match users::revoke_sessions(&username, database).await? {

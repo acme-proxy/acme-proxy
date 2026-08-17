@@ -204,13 +204,15 @@ impl JobQueue {
     pub async fn enqueue(&self, spec: JobSpec) -> Result<bool, sqlx::Error> {
         let max_attempts = i64::from(spec.max_attempts.unwrap_or(self.default_max_attempts));
         let queued = Job::enqueue(
-            &uuid::Uuid::new_v4().to_string(),
-            spec.kind,
-            &spec.key,
-            &spec.payload,
-            spec.run_at,
-            spec.deadline,
-            max_attempts,
+            crate::sqlite::job::NewJob {
+                id: &uuid::Uuid::new_v4().to_string(),
+                kind: spec.kind,
+                dedup_key: &spec.key,
+                payload: &spec.payload,
+                run_at: spec.run_at,
+                deadline: spec.deadline,
+                max_attempts,
+            },
             &self.database,
         )
         .await?;

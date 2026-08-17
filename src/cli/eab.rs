@@ -51,14 +51,7 @@ pub async fn run_eab_command(command: EabCommand, database: Arc<Database>) -> Re
         }
         EabCommand::List { json } => {
             let keys = Eab::list_all(&database).await?;
-            if json {
-                let rendered: Vec<_> = keys.iter().map(admin::render_eab_json).collect();
-                println!("{}", serde_json::Value::Array(rendered));
-            } else {
-                for key in &keys {
-                    println!("{}", admin::render_eab_line(key));
-                }
-            }
+            admin::print_rows(&keys, json, admin::render_eab_json, admin::render_eab_line);
         }
         EabCommand::Show { kid, json } => match Eab::find_any_by_kid(&kid, &database).await? {
             None => return Err(not_found(&kid)),

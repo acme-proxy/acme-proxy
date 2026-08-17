@@ -830,10 +830,11 @@ async fn supervise_reloads(
         );
 
         match outcome {
-            Ok((report, next_config, next_resolved, next_logins)) => {
-                config = next_config;
-                resolved = next_resolved;
-                logins = next_logins;
+            Ok(reloaded) => {
+                let report = reloaded.report;
+                config = reloaded.config;
+                resolved = reloaded.resolved;
+                logins = reloaded.logins;
                 generation = report.generation;
                 info!(
                     event = "server_config_reloaded",
@@ -877,6 +878,20 @@ async fn supervise_reloads(
     }
 }
 
+/// What one successful reload hands back to the supervisor: the report to log,
+/// and the three pieces of state the *next* reload compares against.
+///
+/// A struct rather than the 4-tuple this used to return — which needed
+/// `#[allow(clippy::type_complexity)]` and left the caller destructuring four
+/// same-shaped values positionally, where swapping two would still compile.
+/// The same move `ProfileParts` made, for the same reason.
+struct Reloaded {
+    report: crate::reload::ReloadReport,
+    config: Arc<Config>,
+    resolved: Vec<crate::config::ProfileConfig>,
+    logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+}
+
 /// One reload attempt: build everything, then publish it.
 ///
 /// Every fallible step happens before the first `send_replace`, so a failure
@@ -886,7 +901,6 @@ async fn supervise_reloads(
 /// Not `async`, and that is load-bearing rather than incidental: the publishing
 /// run at the end cannot be interleaved by another task if there is no await
 /// point in it.
-#[allow(clippy::type_complexity)]
 fn apply_reload(
     config: &Arc<Config>,
     resolved: &[crate::config::ProfileConfig],
@@ -895,15 +909,7 @@ fn apply_reload(
     logins: Option<&crate::webadmin::LoginLimiter>,
     generation: u64,
     started: std::time::Instant,
-) -> Result<
-    (
-        crate::reload::ReloadReport,
-        Arc<Config>,
-        Vec<crate::config::ProfileConfig>,
-        Option<Arc<crate::webadmin::LoginLimiter>>,
-    ),
-    crate::reload::ReloadError,
-> {
+) -> Result<Reloaded, crate::reload::ReloadError> {
     use crate::reload::{Applied, ReloadError, ReloadReport, check_frozen};
 
     // Re-read from scratch: `Config::load` consults the file *and* the
@@ -981,7 +987,12 @@ fn apply_reload(
         cell.send_replace(router.into_service::<axum::body::Body>());
     }
 
-    Ok((report, next, next_resolved, next_logins))
+    Ok(Reloaded {
+        report,
+        config: next,
+        resolved: next_resolved,
+        logins: next_logins,
+    })
 }
 
 /// One listener's `axum::serve` future, boxed so the TLS and cleartext arms —

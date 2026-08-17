@@ -54,6 +54,27 @@ pub struct Job {
 const COLUMNS: &str = "id, kind, dedup_key, payload, status, run_at, attempts, max_attempts, \
                        deadline, lease_until, lease_owner, last_error, created_at, updated_at";
 
+/// The columns [`Job::enqueue`] writes.
+///
+/// A struct rather than eight positional parameters — which needed
+/// `#[allow(clippy::too_many_arguments)]`, and put four `&str`/`i64` values in
+/// a row where transposing two would still compile. `JobSpec` (the
+/// `src/jobs/` half) is the caller-facing shape and this is the row it becomes;
+/// they are deliberately separate, so the storage layer names no `src/jobs/`
+/// type.
+#[derive(Debug)]
+pub struct NewJob<'a> {
+    pub id: &'a str,
+    pub kind: &'a str,
+    pub dedup_key: &'a str,
+    pub payload: &'a Value,
+    pub run_at: i64,
+    pub deadline: Option<i64>,
+    /// Frozen onto the row here rather than read per attempt, so raising
+    /// `jobs.max_attempts` applies to new work and not to a waiting backlog.
+    pub max_attempts: i64,
+}
+
 impl Job {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let payload_json: String = row.try_get("payload")?;
@@ -86,17 +107,7 @@ impl Job {
     /// `failed` releases the identity, so the same key can be queued again —
     /// which is what makes a retried order and a periodic sweep both expressible
     /// without a second table.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn enqueue(
-        id: &str,
-        kind: &str,
-        dedup_key: &str,
-        payload: &Value,
-        run_at: i64,
-        deadline: Option<i64>,
-        max_attempts: i64,
-        database: &Database,
-    ) -> Result<bool, sqlx::Error> {
+    pub async fn enqueue(row: NewJob<'_>, database: &Database) -> Result<bool, sqlx::Error> {
         let now = now_secs();
         let queued = sqlx::query(
             "INSERT OR IGNORE INTO jobs \
@@ -104,13 +115,13 @@ impl Job {
               deadline, created_at, updated_at) \
              VALUES (?, ?, ?, ?, 'ready', ?, 0, ?, ?, ?, ?);",
         )
-        .bind(id)
-        .bind(kind)
-        .bind(dedup_key)
-        .bind(payload.to_string())
-        .bind(run_at)
-        .bind(max_attempts)
-        .bind(deadline)
+        .bind(row.id)
+        .bind(row.kind)
+        .bind(row.dedup_key)
+        .bind(row.payload.to_string())
+        .bind(row.run_at)
+        .bind(row.max_attempts)
+        .bind(row.deadline)
         .bind(now)
         .bind(now)
         .execute(&database.pool)
@@ -122,10 +133,10 @@ impl Job {
             debug!(
                 event = "db_job_enqueued",
                 outcome = "success",
-                job_id = %id,
-                job_kind = %kind,
-                dedup_key = %dedup_key,
-                run_at = run_at,
+                job_id = %row.id,
+                job_kind = %row.kind,
+                dedup_key = %row.dedup_key,
+                run_at = row.run_at,
             );
         }
         Ok(queued)
@@ -423,9 +434,20 @@ mod tests {
 
     /// Queues one job with sensible defaults, returning whether it was queued.
     async fn enqueue(id: &str, key: &str, run_at: i64, database: &Database) -> bool {
-        Job::enqueue(id, "test", key, &json!({"n": 1}), run_at, None, 3, database)
-            .await
-            .unwrap()
+        Job::enqueue(
+            NewJob {
+                id,
+                kind: "test",
+                dedup_key: key,
+                payload: &json!({"n": 1}),
+                run_at,
+                deadline: None,
+                max_attempts: 3,
+            },
+            database,
+        )
+        .await
+        .unwrap()
     }
 
     async fn claim(runner: &str, database: &Database) -> Option<Job> {
@@ -440,13 +462,15 @@ mod tests {
         let deadline = now_secs() + 900;
         assert!(
             Job::enqueue(
-                "job-1",
-                "relay",
-                "ord-1",
-                &json!({"order_id": "ord-1"}),
-                1_234,
-                Some(deadline),
-                7,
+                NewJob {
+                    id: "job-1",
+                    kind: "relay",
+                    dedup_key: "ord-1",
+                    payload: &json!({"order_id": "ord-1"}),
+                    run_at: 1_234,
+                    deadline: Some(deadline),
+                    max_attempts: 7,
+                },
                 &database,
             )
             .await

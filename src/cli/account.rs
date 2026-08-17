@@ -47,17 +47,12 @@ pub async fn run_account_command(
     match command {
         AccountCommand::List { profile, json } => {
             let accounts = Account::list_all(profile.as_deref(), &database).await?;
-            if json {
-                let rendered: Vec<_> = accounts
-                    .iter()
-                    .map(|a| admin::render_account_json(a, &config.server.base_url))
-                    .collect();
-                println!("{}", serde_json::Value::Array(rendered));
-            } else {
-                for account in &accounts {
-                    println!("{}", admin::render_account_line(account));
-                }
-            }
+            admin::print_rows(
+                &accounts,
+                json,
+                |a| admin::render_account_json(a, &config.server.base_url),
+                admin::render_account_line,
+            );
         }
         AccountCommand::Show { id, json } => match Account::find_any_by_id(&id, &database).await? {
             None => return Err(not_found(&id)),

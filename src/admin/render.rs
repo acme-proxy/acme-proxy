@@ -435,6 +435,29 @@ pub fn render_admin_session_json(session: &AdminSession) -> Value {
     session.to_json()
 }
 
+/// Prints a listing the way every `--json`-capable list command prints one:
+/// one JSON array, or one human-readable line per row.
+///
+/// Six commands had written out the same `if json { … map(to_json).collect()
+/// … } else { for row in rows { println!(to_line) } }`. The shape is the
+/// contract — a JSON listing is an *array*, never a stream of objects, so a
+/// caller can pipe it into `jq` — and it should exist once.
+pub fn print_rows<T>(
+    rows: &[T],
+    json: bool,
+    to_json: impl Fn(&T) -> serde_json::Value,
+    to_line: impl Fn(&T) -> String,
+) {
+    if json {
+        let rendered: Vec<_> = rows.iter().map(to_json).collect();
+        println!("{}", serde_json::Value::Array(rendered));
+    } else {
+        for row in rows {
+            println!("{}", to_line(row));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 

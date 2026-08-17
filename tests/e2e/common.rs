@@ -14,11 +14,24 @@ fn container_runtime() -> &'static str {
             return "podman";
         }
     }
-    if std::process::Command::new("docker")
-        .arg("--version")
-        .status()
-        .is_ok()
-    {
+    // `status()` is `Ok` whenever the process *spawned*, whatever it then
+    // exited with — and `podman-docker` installs a `docker` shim, so the old
+    // `.is_ok()` answered "docker" on a rootless-podman host. That skipped the
+    // `podman.socket` check and the `DOCKER_HOST` setup below, and the failure
+    // surfaced as an opaque testcontainers connection error instead of the
+    // message naming `systemctl --user start podman.socket`.
+    //
+    // A shim still reports success here, so the daemon is asked as well: only a
+    // real docker daemon answers `docker info`.
+    let spawned_ok = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if spawned_ok("docker", &["--version"]) && spawned_ok("docker", &["info"]) {
         return "docker";
     }
     "podman"
