@@ -261,57 +261,48 @@ impl Config {
                 environment = environment.with_list_parse_key(&format!("profiles.{name}.{key}"));
             }
         }
-        // One level deeper than the above: `[filter.check.<name>]` is a table
-        // keyed by a name only known at runtime, and it has eight list-valued
-        // fields. Same reasoning as the profile-scoped loop just above (and as
-        // `profiles_in_env` itself) — without this, every one of these is
-        // silently dropped from the environment rather than refused.
-        for name in names_in_env("ACME_PROXY_FILTER__CHECK__") {
-            for key in CHECK_LIST_KEYS {
-                environment =
-                    environment.with_list_parse_key(&format!("filter.check.{name}.{key}"));
-            }
-        }
-        for profile in &profiles_in_env {
-            let prefix = format!(
-                "ACME_PROXY_PROFILES__{}__FILTER__CHECK__",
-                profile.to_ascii_uppercase()
-            );
-            for name in names_in_env(&prefix) {
-                for key in CHECK_LIST_KEYS {
-                    environment = environment.with_list_parse_key(&format!(
-                        "profiles.{profile}.filter.check.{name}.{key}"
-                    ));
+        // One level deeper: three sections are tables keyed by a name only
+        // known at runtime, each with list-valued fields of its own. Same
+        // reasoning as the profile-scoped loop above (and as `profiles_in_env`
+        // itself) — without registration every one of these is silently
+        // *dropped* from the environment rather than refused, which is the one
+        // failure mode a configuration bug should never have.
+        //
+        // Both scopes of each are registered by walking `None` (global) and
+        // then each profile: the two used to be written out separately, four
+        // times over, each copy repeating the same comment.
+        //
+        // (`notify.webhook.<name>.headers` is a map rather than a list, so it
+        // needs no entry — `config` nests it from `…__HEADERS__<NAME>` without
+        // help.)
+        const NAMED_TABLES: &[(&str, &[&str])] = &[
+            ("filter.check", CHECK_LIST_KEYS),
+            ("notify.custom", &["args", "events"]),
+            ("notify.webhook", &["events"]),
+        ];
+        let scopes = std::iter::once(None).chain(profiles_in_env.iter().map(Some));
+        for profile in scopes {
+            for (section, keys) in NAMED_TABLES {
+                let (env_prefix, key_prefix) = match profile {
+                    None => (
+                        format!("ACME_PROXY_{}__", env_segment(section)),
+                        (*section).to_string(),
+                    ),
+                    Some(name) => (
+                        format!(
+                            "ACME_PROXY_PROFILES__{}__{}__",
+                            name.to_ascii_uppercase(),
+                            env_segment(section)
+                        ),
+                        format!("profiles.{name}.{section}"),
+                    ),
+                };
+                for entry in names_in_env(&env_prefix) {
+                    for key in *keys {
+                        environment =
+                            environment.with_list_parse_key(&format!("{key_prefix}.{entry}.{key}"));
+                    }
                 }
-            }
-        }
-        // Same reasoning, one level deeper: `notify.custom.<name>` and
-        // `notify.webhook.<name>` are also tables keyed by a runtime name, with
-        // list fields of their own. (`notify.webhook.<name>.headers` is a map
-        // rather than a list, so it needs no registration — `config` nests it
-        // from `…__HEADERS__<NAME>` without help.)
-        for name in names_in_env("ACME_PROXY_NOTIFY__CUSTOM__") {
-            environment = environment.with_list_parse_key(&format!("notify.custom.{name}.args"));
-            environment = environment.with_list_parse_key(&format!("notify.custom.{name}.events"));
-        }
-        for name in names_in_env("ACME_PROXY_NOTIFY__WEBHOOK__") {
-            environment = environment.with_list_parse_key(&format!("notify.webhook.{name}.events"));
-        }
-        for profile in &profiles_in_env {
-            let upper = profile.to_ascii_uppercase();
-            let prefix = format!("ACME_PROXY_PROFILES__{upper}__NOTIFY__CUSTOM__");
-            for name in names_in_env(&prefix) {
-                environment = environment
-                    .with_list_parse_key(&format!("profiles.{profile}.notify.custom.{name}.args"));
-                environment = environment.with_list_parse_key(&format!(
-                    "profiles.{profile}.notify.custom.{name}.events"
-                ));
-            }
-            let prefix = format!("ACME_PROXY_PROFILES__{upper}__NOTIFY__WEBHOOK__");
-            for name in names_in_env(&prefix) {
-                environment = environment.with_list_parse_key(&format!(
-                    "profiles.{profile}.notify.webhook.{name}.events"
-                ));
             }
         }
 
@@ -413,7 +404,16 @@ impl Config {
     }
 }
 
-/// The first `__`-delimited segment after `prefix`, for every environment
+/// A dotted configuration section as its `ACME_PROXY_*` spelling:
+/// `filter.check` becomes `FILTER__CHECK`.
+///
+/// The two spellings of every section used to be written out by hand at each
+/// registration site, which is exactly where one of them goes stale.
+fn env_segment(section: &str) -> String {
+    section.to_ascii_uppercase().replace('.', "__")
+}
+
+// The first `__`-delimited segment after `prefix`, for every environment
 /// variable that starts with it — lowercased, matching what the `config`
 /// crate does to environment keys, so `…__LE__…` and a `[profiles.le]` table
 /// (or `…__CUSTOM__MAIN__…` and a `[filter.custom.main]` table) name the same
@@ -924,6 +924,60 @@ mod tests {
         assert_eq!(check["main"].script_path, "/path/to/profile.sh");
         assert_eq!(check["main"].args, vec!["a", "b", "c"]);
         assert_eq!(profiles[0].sections.filter.rules, vec!["only"]);
+    }
+
+    /// The two `[notify]` tables, scoped to a profile — the remaining corner of
+    /// the runtime-name scan.
+    ///
+    /// All six scopes (three sections × global/per-profile) go through one loop
+    /// now, where they used to be four blocks written out separately. This is
+    /// the one those blocks covered least, and the failure it guards against is
+    /// silent: an unregistered list variable is *dropped*, so `events` would
+    /// quietly revert to all six rather than being refused.
+    #[test]
+    fn env_configures_profile_scoped_notify_tables() {
+        let file = TempConfig::new("[profiles.le]\n");
+        let path = file.path();
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_CONFIG", &path),
+            (
+                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__SCRIPT_PATH",
+                "/usr/local/bin/page.sh",
+            ),
+            (
+                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__ARGS",
+                "--urgent,--team=netops",
+            ),
+            (
+                "ACME_PROXY_PROFILES__LE__NOTIFY__CUSTOM__PAGER__EVENTS",
+                "certificate_issued,challenge_failed",
+            ),
+            (
+                "ACME_PROXY_PROFILES__LE__NOTIFY__WEBHOOK__SLACK__URL",
+                "https://hooks.example.com/T/B/xyz",
+            ),
+            (
+                "ACME_PROXY_PROFILES__LE__NOTIFY__WEBHOOK__SLACK__EVENTS",
+                "certificate_revoked",
+            ),
+        ]);
+
+        let config = Config::load().unwrap();
+        let profiles = config.resolve_profiles().unwrap();
+        let notify = &profiles[0].sections.notify;
+
+        let pager = &notify.custom["pager"];
+        assert_eq!(pager.script_path, "/usr/local/bin/page.sh");
+        assert_eq!(pager.args, vec!["--urgent", "--team=netops"]);
+        assert_eq!(
+            pager.events,
+            vec!["certificate_issued", "challenge_failed"],
+            "an unregistered list key is dropped, not refused"
+        );
+
+        let slack = &notify.webhook["slack"];
+        assert_eq!(slack.url, "https://hooks.example.com/T/B/xyz");
+        assert_eq!(slack.events, vec!["certificate_revoked"]);
     }
 
     /// `[notify.webhook.<name>]` is the third table keyed by a runtime name, so

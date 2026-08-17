@@ -15,7 +15,6 @@ use serde_json::{Map, Value};
 use crate::admin;
 use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
-use crate::webadmin::error::AdminError;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
@@ -91,18 +90,11 @@ pub async fn create_eab(
     let label = non_empty(&form.label);
     let profile = non_empty(&form.profile);
 
-    // A credential scoped to an endpoint this process does not serve would be
-    // accepted and never usable, so refuse it while the operator is looking at
-    // the form.
-    if let Some(name) = &profile
-        && !state.profiles.contains_key(name)
-    {
-        return Err(AdminError::bad_request(format!(
-            "no profile named `{name}` is mounted; leave it unset for a credential valid at \
-             every endpoint"
-        ))
-        .into());
-    }
+    super::super::handlers::eab::require_mounted_profile(
+        &state,
+        profile.as_deref(),
+        "leave it unset",
+    )?;
 
     let eab = Eab::create(label, profile, &state.database).await?;
     tracing::info!(event = "admin_eab_created",

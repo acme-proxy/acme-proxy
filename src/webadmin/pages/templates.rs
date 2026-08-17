@@ -20,6 +20,15 @@ use axum::response::Html;
 
 use crate::webadmin::pages::error::PageError;
 
+/// One embedded template: the name it is known by *is* the path it lives at.
+///
+/// See `notify::embed!` — the same rule, and the same reason.
+macro_rules! embed {
+    ($name:literal) => {
+        ($name, include_str!(concat!("../templates/", $name)))
+    };
+}
+
 /// Every template, embedded so the server needs no `templates/` directory on
 /// disk to serve a page.
 ///
@@ -27,134 +36,41 @@ use crate::webadmin::pages::error::PageError;
 /// `{% include %}`, since that is what reaches the loader.
 static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
-        ("layout.html", include_str!("../templates/layout.html")),
-        ("login.html", include_str!("../templates/login.html")),
-        (
-            "mfa/challenge.html",
-            include_str!("../templates/mfa/challenge.html"),
-        ),
-        ("index.html", include_str!("../templates/index.html")),
-        (
-            "audit/list.html",
-            include_str!("../templates/audit/list.html"),
-        ),
-        (
-            "audit/_table.html",
-            include_str!("../templates/audit/_table.html"),
-        ),
-        (
-            "audit/detail.html",
-            include_str!("../templates/audit/detail.html"),
-        ),
-        (
-            "audit/_card.html",
-            include_str!("../templates/audit/_card.html"),
-        ),
-        (
-            "mfa/_setup.html",
-            include_str!("../templates/mfa/_setup.html"),
-        ),
-        (
-            "mfa/_codes.html",
-            include_str!("../templates/mfa/_codes.html"),
-        ),
-        (
-            "mfa/enrolled.html",
-            include_str!("../templates/mfa/enrolled.html"),
-        ),
-        (
-            "account/index.html",
-            include_str!("../templates/account/index.html"),
-        ),
-        (
-            "account/_mfa.html",
-            include_str!("../templates/account/_mfa.html"),
-        ),
-        (
-            "account/_card.html",
-            include_str!("../templates/account/_card.html"),
-        ),
-        (
-            "account/_enrol.html",
-            include_str!("../templates/account/_enrol.html"),
-        ),
-        (
-            "account/_codes.html",
-            include_str!("../templates/account/_codes.html"),
-        ),
-        (
-            "partials/_flash.html",
-            include_str!("../templates/partials/_flash.html"),
-        ),
-        (
-            "partials/_pager.html",
-            include_str!("../templates/partials/_pager.html"),
-        ),
-        (
-            "profiles/list.html",
-            include_str!("../templates/profiles/list.html"),
-        ),
-        (
-            "profiles/_table.html",
-            include_str!("../templates/profiles/_table.html"),
-        ),
-        (
-            "accounts/list.html",
-            include_str!("../templates/accounts/list.html"),
-        ),
-        (
-            "accounts/_table.html",
-            include_str!("../templates/accounts/_table.html"),
-        ),
-        (
-            "accounts/detail.html",
-            include_str!("../templates/accounts/detail.html"),
-        ),
-        (
-            "accounts/_card.html",
-            include_str!("../templates/accounts/_card.html"),
-        ),
-        (
-            "orders/list.html",
-            include_str!("../templates/orders/list.html"),
-        ),
-        (
-            "orders/_table.html",
-            include_str!("../templates/orders/_table.html"),
-        ),
-        (
-            "orders/detail.html",
-            include_str!("../templates/orders/detail.html"),
-        ),
-        (
-            "orders/_card.html",
-            include_str!("../templates/orders/_card.html"),
-        ),
-        ("eab/list.html", include_str!("../templates/eab/list.html")),
-        (
-            "eab/_table.html",
-            include_str!("../templates/eab/_table.html"),
-        ),
-        (
-            "eab/detail.html",
-            include_str!("../templates/eab/detail.html"),
-        ),
-        (
-            "eab/_card.html",
-            include_str!("../templates/eab/_card.html"),
-        ),
-        (
-            "eab/_created.html",
-            include_str!("../templates/eab/_created.html"),
-        ),
-        (
-            "nonces/index.html",
-            include_str!("../templates/nonces/index.html"),
-        ),
-        (
-            "nonces/_panel.html",
-            include_str!("../templates/nonces/_panel.html"),
-        ),
+        embed!("layout.html"),
+        embed!("login.html"),
+        embed!("mfa/challenge.html"),
+        embed!("index.html"),
+        embed!("audit/list.html"),
+        embed!("audit/_table.html"),
+        embed!("audit/detail.html"),
+        embed!("audit/_card.html"),
+        embed!("mfa/_setup.html"),
+        embed!("mfa/_codes.html"),
+        embed!("mfa/enrolled.html"),
+        embed!("account/index.html"),
+        embed!("account/_mfa.html"),
+        embed!("account/_card.html"),
+        embed!("account/_enrol.html"),
+        embed!("account/_codes.html"),
+        embed!("partials/_flash.html"),
+        embed!("partials/_pager.html"),
+        embed!("profiles/list.html"),
+        embed!("profiles/_table.html"),
+        embed!("accounts/list.html"),
+        embed!("accounts/_table.html"),
+        embed!("accounts/detail.html"),
+        embed!("accounts/_card.html"),
+        embed!("orders/list.html"),
+        embed!("orders/_table.html"),
+        embed!("orders/detail.html"),
+        embed!("orders/_card.html"),
+        embed!("eab/list.html"),
+        embed!("eab/_table.html"),
+        embed!("eab/detail.html"),
+        embed!("eab/_card.html"),
+        embed!("eab/_created.html"),
+        embed!("nonces/index.html"),
+        embed!("nonces/_panel.html"),
     ])
 });
 
@@ -179,17 +95,7 @@ pub(crate) fn template_names() -> Vec<&'static str> {
 /// `layout.html` changes the chrome of every page and nothing else.
 #[must_use]
 pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'static> {
-    let dir = (!template_dir.is_empty()).then(|| std::path::PathBuf::from(template_dir));
-    let mut env = minijinja::Environment::new();
-    env.set_loader(move |name| {
-        if let Some(dir) = &dir
-            && let Ok(contents) = std::fs::read_to_string(dir.join(name))
-        {
-            return Ok(Some(contents));
-        }
-        Ok(EMBEDDED_TEMPLATES.get(name).map(|body| (*body).to_string()))
-    });
-    env
+    crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
 }
 
 /// Renders one named template against `context`.

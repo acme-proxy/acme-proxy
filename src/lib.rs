@@ -213,6 +213,7 @@ pub mod reload;
 pub mod script_hook;
 pub mod signer;
 pub mod sqlite;
+mod templating;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tls;

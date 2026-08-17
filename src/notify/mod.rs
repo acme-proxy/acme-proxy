@@ -748,84 +748,43 @@ pub fn build_registry(
     Ok(registry)
 }
 
+/// One embedded template: the name it is known by *is* the path it lives at.
+///
+/// Each entry used to spell the filename twice — once as the key and once
+/// inside `include_str!` — across 18 entries here and 35 in
+/// `webadmin::pages::templates`. Two spellings of one name is a mismatch
+/// waiting to happen, and the failure would be a template that renders as
+/// missing at delivery time rather than at build time.
+macro_rules! embed {
+    ($name:literal) => {
+        ($name, include_str!(concat!("templates/", $name)))
+    };
+}
+
 /// Every default template, embedded so the server needs no external
 /// `templates/` directory to run. Keyed the same way [`build_environment`]'s
 /// loader looks them up: `"<backend>/<event>.<subject|body>.j2"` for email,
 /// `"<backend>/<event>.j2"` for the webhook message.
 static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     HashMap::from([
-        (
-            "email/profile_mounted.subject.j2",
-            include_str!("templates/email/profile_mounted.subject.j2"),
-        ),
-        (
-            "email/profile_mounted.body.j2",
-            include_str!("templates/email/profile_mounted.body.j2"),
-        ),
-        (
-            "email/account_created.subject.j2",
-            include_str!("templates/email/account_created.subject.j2"),
-        ),
-        (
-            "email/account_created.body.j2",
-            include_str!("templates/email/account_created.body.j2"),
-        ),
-        (
-            "email/account_deactivated.subject.j2",
-            include_str!("templates/email/account_deactivated.subject.j2"),
-        ),
-        (
-            "email/account_deactivated.body.j2",
-            include_str!("templates/email/account_deactivated.body.j2"),
-        ),
-        (
-            "email/certificate_issued.subject.j2",
-            include_str!("templates/email/certificate_issued.subject.j2"),
-        ),
-        (
-            "email/certificate_issued.body.j2",
-            include_str!("templates/email/certificate_issued.body.j2"),
-        ),
-        (
-            "email/certificate_revoked.subject.j2",
-            include_str!("templates/email/certificate_revoked.subject.j2"),
-        ),
-        (
-            "email/certificate_revoked.body.j2",
-            include_str!("templates/email/certificate_revoked.body.j2"),
-        ),
-        (
-            "email/challenge_failed.subject.j2",
-            include_str!("templates/email/challenge_failed.subject.j2"),
-        ),
-        (
-            "email/challenge_failed.body.j2",
-            include_str!("templates/email/challenge_failed.body.j2"),
-        ),
-        (
-            "webhook/profile_mounted.j2",
-            include_str!("templates/webhook/profile_mounted.j2"),
-        ),
-        (
-            "webhook/account_created.j2",
-            include_str!("templates/webhook/account_created.j2"),
-        ),
-        (
-            "webhook/account_deactivated.j2",
-            include_str!("templates/webhook/account_deactivated.j2"),
-        ),
-        (
-            "webhook/certificate_issued.j2",
-            include_str!("templates/webhook/certificate_issued.j2"),
-        ),
-        (
-            "webhook/certificate_revoked.j2",
-            include_str!("templates/webhook/certificate_revoked.j2"),
-        ),
-        (
-            "webhook/challenge_failed.j2",
-            include_str!("templates/webhook/challenge_failed.j2"),
-        ),
+        embed!("email/profile_mounted.subject.j2"),
+        embed!("email/profile_mounted.body.j2"),
+        embed!("email/account_created.subject.j2"),
+        embed!("email/account_created.body.j2"),
+        embed!("email/account_deactivated.subject.j2"),
+        embed!("email/account_deactivated.body.j2"),
+        embed!("email/certificate_issued.subject.j2"),
+        embed!("email/certificate_issued.body.j2"),
+        embed!("email/certificate_revoked.subject.j2"),
+        embed!("email/certificate_revoked.body.j2"),
+        embed!("email/challenge_failed.subject.j2"),
+        embed!("email/challenge_failed.body.j2"),
+        embed!("webhook/profile_mounted.j2"),
+        embed!("webhook/account_created.j2"),
+        embed!("webhook/account_deactivated.j2"),
+        embed!("webhook/certificate_issued.j2"),
+        embed!("webhook/certificate_revoked.j2"),
+        embed!("webhook/challenge_failed.j2"),
     ])
 });
 
@@ -834,17 +793,7 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
 /// operator can override a single message and leave every other one at its
 /// default.
 pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'static> {
-    let dir = (!template_dir.is_empty()).then(|| std::path::PathBuf::from(template_dir));
-    let mut env = minijinja::Environment::new();
-    env.set_loader(move |name| {
-        if let Some(dir) = &dir
-            && let Ok(contents) = std::fs::read_to_string(dir.join(name))
-        {
-            return Ok(Some(contents));
-        }
-        Ok(EMBEDDED_TEMPLATES.get(name).map(|body| (*body).to_string()))
-    });
-    env
+    crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
 }
 
 /// Renders one named template against `event`'s own data.

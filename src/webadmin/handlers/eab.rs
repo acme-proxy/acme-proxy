@@ -55,14 +55,7 @@ pub async fn create_eab(
 ) -> Result<Response, AdminError> {
     let Json(body) = body.unwrap_or_default();
 
-    if let Some(profile) = &body.profile
-        && !state.profiles.contains_key(profile)
-    {
-        return Err(AdminError::bad_request(format!(
-            "no profile named `{profile}` is mounted; omit `profile` for a credential \
-             valid at every endpoint"
-        )));
-    }
+    require_mounted_profile(&state, body.profile.as_deref(), "omit `profile`")?;
 
     let eab = Eab::create(body.label, body.profile, &state.database).await?;
     tracing::info!(event = "admin_eab_created",
@@ -96,6 +89,29 @@ pub async fn revoke_eab(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Refuses a credential scoped to an endpoint this process does not serve.
+///
+/// Shared by both front ends, because the *condition* is one rule and two
+/// copies of it drift: such a credential would be accepted and then never be
+/// usable, which is worth catching while the operator is still looking at what
+/// they typed. `hint` is the one part that is legitimately per-front-end — a
+/// JSON caller omits a field, someone at a form leaves an input blank.
+pub(crate) fn require_mounted_profile(
+    state: &AdminState,
+    profile: Option<&str>,
+    hint: &str,
+) -> Result<(), AdminError> {
+    if let Some(name) = profile
+        && !state.profiles.contains_key(name)
+    {
+        return Err(AdminError::bad_request(format!(
+            "no profile named `{name}` is mounted; {hint} for a credential valid at \
+             every endpoint"
+        )));
+    }
+    Ok(())
+}
+
 fn not_found(kid: &str) -> AdminError {
-    AdminError::not_found(format!("no such EAB key: {kid}"))
+    AdminError::not_found(format!("no such EAB credential: {kid}"))
 }
