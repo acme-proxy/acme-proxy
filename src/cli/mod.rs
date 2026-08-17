@@ -1,9 +1,11 @@
 //! The command tree, and the startup path itself.
 //!
-//! [`run`] is the **only** place in the crate that prints an error and calls
-//! `std::process::exit`. Every command body returns `Result<(), CliError>` and
-//! `dispatch` routes to it, so each arm is a plain function a test can call and
-//! assert on rather than an unreachable dead end.
+//! **Nothing here prints or exits.** Every command body returns
+//! `Result<(), CliError>` and [`dispatch`] routes to it, so each arm is a plain
+//! function a test can call and assert on rather than an unreachable dead end.
+//! `src/main.rs` is where that `Result` becomes an exit status, and it is the
+//! only place in the project that calls `std::process::exit` — a library whose
+//! failure mode is ending the process is one nothing else can use.
 //!
 //! Startup is split on the socket boundary, which is what lets a test drive the
 //! whole path on an ephemeral port with its own shutdown future instead of a
