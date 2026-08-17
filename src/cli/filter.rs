@@ -113,8 +113,10 @@ fn build(
 
     let inventory = crate::ipam::from_config(
         &sections.ipam,
-        std::sync::Arc::new(resolver),
-        std::sync::Arc::new(proxies),
+        crate::http_client::Outbound::new(
+            std::sync::Arc::new(resolver),
+            std::sync::Arc::new(proxies),
+        ),
     )
     .map_err(|error| CliError(format!("profile `{}`: {error}", profile.name)))?;
 

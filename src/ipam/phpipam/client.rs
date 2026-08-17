@@ -31,7 +31,6 @@
 //! [`search`]: PhpIpamApi::search
 
 use std::net::IpAddr;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use hyper::{StatusCode, header::HeaderName};
@@ -56,8 +55,7 @@ impl PhpIpamClient {
     /// Validates the URL and builds the TLS configuration. No network yet.
     pub fn new(
         cfg: &PhpIpamConfig,
-        resolver: Arc<dyn crate::dns::Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
+        outbound: crate::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.url.trim().is_empty(),
@@ -94,8 +92,7 @@ impl PhpIpamClient {
                     cfg.insecure_skip_verify,
                     "ipam.phpipam.ca_cert_path",
                 )?,
-                resolver,
-                proxies,
+                outbound,
             )?,
             app_id,
         })
@@ -217,8 +214,7 @@ mod tests {
     fn an_empty_url_is_a_startup_error() {
         let error = PhpIpamClient::new(
             &config("  "),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -231,7 +227,7 @@ mod tests {
             token: String::new(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
+        let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.phpipam.token"), "{error}");
@@ -247,7 +243,7 @@ mod tests {
                 app_id: bad.to_string(),
                 ..config("https://ipam.example.com")
             };
-            let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
+            let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
                 .unwrap_err()
                 .to_string();
             assert!(error.contains("ipam.phpipam.app_id"), "{bad}: {error}");
@@ -260,7 +256,7 @@ mod tests {
             ca_cert_path: "/nonexistent/ipam-ca.pem".to_string(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
+        let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.phpipam.ca_cert_path"), "{error}");
@@ -270,8 +266,7 @@ mod tests {
     fn the_debug_impl_never_renders_the_token() {
         let client = PhpIpamClient::new(
             &config("https://ipam.example.com"),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         let rendered = format!("{client:?}");
@@ -302,8 +297,7 @@ mod tests {
         fn client(port: u16) -> PhpIpamClient {
             PhpIpamClient::new(
                 &config(&format!("http://127.0.0.1:{port}")),
-                test_resolver(),
-                crate::testutil::no_proxies(),
+                crate::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
         }
@@ -359,7 +353,7 @@ mod tests {
                 ..config(&format!("http://127.0.0.1:{port}"))
             };
 
-            PhpIpamClient::new(&cfg, test_resolver(), crate::testutil::no_proxies())
+            PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
                 .unwrap()
                 .search("10.0.0.5".parse().unwrap())
                 .await
@@ -533,8 +527,7 @@ mod tests {
 
             let error = PhpIpamClient::new(
                 &https_config(port, false),
-                test_resolver(),
-                crate::testutil::no_proxies(),
+                crate::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .search("10.0.0.5".parse().unwrap())
@@ -552,8 +545,7 @@ mod tests {
 
             let objects = PhpIpamClient::new(
                 &https_config(port, true),
-                test_resolver(),
-                crate::testutil::no_proxies(),
+                crate::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .search("10.0.0.5".parse().unwrap())

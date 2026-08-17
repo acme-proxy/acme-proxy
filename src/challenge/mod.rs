@@ -390,20 +390,21 @@ pub fn from_config(
     }
 
     let resolver = build_resolver(addr)?;
+    // Assembled here rather than passed in: the resolver only exists past the
+    // bypass branch above, since building it is what reads `/etc/resolv.conf`.
+    let outbound = crate::http_client::Outbound::new(resolver.clone(), proxies);
 
     let mut validators: Vec<Arc<dyn ChallengeValidator>> = Vec::with_capacity(cfg.enabled.len());
     for name in &cfg.enabled {
         let validator: Arc<dyn ChallengeValidator> = match name.as_str() {
             HTTP_01 => Arc::new(http_01::Http01Validator::from_config(
                 &cfg.http_01,
-                resolver.clone(),
-                proxies.clone(),
+                outbound.clone(),
             )?),
             DNS_01 => Arc::new(dns_01::Dns01Validator::from_config(resolver.clone())),
             TLS_ALPN_01 => Arc::new(tls_alpn_01::TlsAlpn01Validator::from_config(
                 &cfg.tls_alpn_01,
-                resolver.clone(),
-                proxies.clone(),
+                outbound.clone(),
             )?),
             // Unreachable: the loop above rejected every unknown name.
             other => anyhow::bail!("unknown challenge type: {other}"),

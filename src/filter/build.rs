@@ -633,8 +633,10 @@ mod tests {
         };
         crate::ipam::from_config(
             &cfg,
-            test_resolver(),
-            Arc::new(crate::proxy::OutboundProxies::direct()),
+            crate::http_client::Outbound::new(
+                test_resolver(),
+                std::sync::Arc::new(crate::proxy::OutboundProxies::direct()),
+            ),
         )
         .unwrap()
     }

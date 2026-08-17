@@ -37,7 +37,6 @@ use url::Url;
 
 use super::{ChallengeError, ChallengeValidator, HTTP_01, ValidationContext};
 use crate::config::Http01Config;
-use crate::dns::Resolver;
 
 /// The well-known path RFC 8555 §8.3 reserves for this challenge.
 ///
@@ -115,11 +114,10 @@ impl Http01Validator {
     /// answer for every challenge type rather than `dns-01` alone.
     pub fn from_config(
         cfg: &Http01Config,
-        resolver: Arc<dyn Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
+        outbound: crate::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let fetcher = Arc::new(
-            HyperFetcher::new(resolver, proxies)
+            HyperFetcher::new(outbound)
                 .map_err(|error| anyhow::anyhow!("challenge.http_01: {error}"))?,
         );
         info!(
@@ -297,22 +295,19 @@ fn is_redirect(status: u16) -> bool {
 /// The production fetcher: one HTTP/1.1 request per call, over TCP or TLS.
 pub struct HyperFetcher {
     tls: Arc<rustls::ClientConfig>,
-    resolver: Arc<dyn Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    /// Where every outbound hop resolves and whether it goes through a
+    /// proxy — `dns.resolver` and `[proxy]`, bundled.
+    outbound: crate::http_client::Outbound,
 }
 
 impl HyperFetcher {
-    pub fn new(
-        resolver: Arc<dyn Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(outbound: crate::http_client::Outbound) -> anyhow::Result<Self> {
         // No ALPN: this is an ordinary https request, not a challenge handshake.
         // The certificate is not validated — RFC 8555 §8.3 says so explicitly,
         // and the proof is the body, not the transport.
         Ok(Self {
             tls: super::tls_alpn_01::accept_any_client_config(&[])?,
-            resolver,
-            proxies,
+            outbound,
         })
     }
 
@@ -390,14 +385,11 @@ impl HttpFetcher for HyperFetcher {
         // for itself, and the only reason it cannot share more than transport.
         let endpoint = crate::http_client::Endpoint::from_url(url).map_err(FetchError::Protocol)?;
 
-        let connection = crate::http_client::connect(
-            self.resolver.as_ref(),
-            &self.proxies,
-            &endpoint,
-            &self.tls,
-        )
-        .await
-        .map_err(FetchError::Connect)?;
+        let connection = self
+            .outbound
+            .connect(&endpoint, &self.tls)
+            .await
+            .map_err(FetchError::Connect)?;
 
         Self::exchange(connection, &endpoint, url, max_bytes).await
     }
@@ -406,6 +398,7 @@ impl HttpFetcher for HyperFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dns::Resolver;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -767,7 +760,10 @@ mod tests {
         }
 
         fn fetcher() -> HyperFetcher {
-            HyperFetcher::new(Arc::new(UnreachableResolver), crate::testutil::no_proxies()).unwrap()
+            HyperFetcher::new(crate::testutil::outbound_with(Arc::new(
+                UnreachableResolver,
+            )))
+            .unwrap()
         }
 
         /// Serves one canned response and returns the request it received.

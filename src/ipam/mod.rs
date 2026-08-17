@@ -303,20 +303,14 @@ impl IpamRegistry {
 /// boot.
 pub fn from_config(
     cfg: &IpamConfig,
-    resolver: Arc<dyn crate::dns::Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
 ) -> anyhow::Result<Option<Arc<IpamRegistry>>> {
     let backend: Arc<dyn Ipam> = match cfg.backend.trim() {
         "" => return Ok(None),
-        "netbox" => Arc::new(netbox::NetboxBackend::from_config(
-            &cfg.netbox,
-            resolver,
-            proxies,
-        )?),
+        "netbox" => Arc::new(netbox::NetboxBackend::from_config(&cfg.netbox, outbound)?),
         "phpipam" => Arc::new(phpipam::PhpIpamBackend::from_config(
             &cfg.phpipam,
-            resolver,
-            proxies,
+            outbound,
         )?),
         other => anyhow::bail!("unknown IPAM backend: {other} (expected `netbox` or `phpipam`)"),
     };
@@ -584,7 +578,7 @@ mod tests {
     fn no_backend_builds_nothing() {
         let cfg = IpamConfig::default();
         assert!(
-            from_config(&cfg, resolver(), crate::testutil::no_proxies())
+            from_config(&cfg, crate::testutil::outbound_with(resolver()))
                 .unwrap()
                 .is_none()
         );
@@ -602,8 +596,7 @@ mod tests {
                 },
                 ..IpamConfig::default()
             },
-            resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(resolver()),
         )
         .unwrap()
         .unwrap();
@@ -619,8 +612,7 @@ mod tests {
                 },
                 ..IpamConfig::default()
             },
-            resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(resolver()),
         )
         .unwrap()
         .unwrap();
@@ -633,7 +625,7 @@ mod tests {
             backend: "racktables".to_string(),
             ..IpamConfig::default()
         };
-        let error = from_config(&cfg, resolver(), crate::testutil::no_proxies())
+        let error = from_config(&cfg, crate::testutil::outbound_with(resolver()))
             .unwrap_err()
             .to_string();
         assert!(error.contains("racktables"), "{error}");

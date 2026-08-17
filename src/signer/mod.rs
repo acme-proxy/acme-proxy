@@ -260,8 +260,7 @@ pub fn from_config(
     profiles: Vec<String>,
     database: Arc<Database>,
     notifiers: impl Into<crate::notify::Notifiers>,
-    resolver: Arc<dyn crate::dns::Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
     jobs: crate::jobs::JobQueue,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
     match cfg.backend.as_str() {
@@ -273,8 +272,7 @@ pub fn from_config(
             profiles,
             database,
             notifiers.into(),
-            resolver,
-            proxies,
+            outbound,
             jobs,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
@@ -312,8 +310,7 @@ pub fn build_backends(
     profiles: &[crate::config::ProfileConfig],
     database: Arc<Database>,
     notifiers: impl Into<crate::notify::Notifiers>,
-    resolver: Arc<dyn crate::dns::Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
     jobs: &crate::jobs::JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
     let notifiers = notifiers.into();
@@ -362,8 +359,7 @@ pub fn build_backends(
                     served.get(&key).cloned().unwrap_or_default(),
                     database.clone(),
                     notifiers.clone(),
-                    resolver.clone(),
-                    proxies.clone(),
+                    outbound.clone(),
                     jobs.clone(),
                 )
                 .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
@@ -467,8 +463,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
@@ -489,8 +484,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
@@ -517,8 +511,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
@@ -545,8 +538,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
@@ -563,8 +555,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
         .expect("local_ca is a known backend");
@@ -618,8 +609,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
         .expect("custom is a known backend");
@@ -647,8 +637,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
         .unwrap();
@@ -666,8 +655,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
@@ -692,8 +680,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),

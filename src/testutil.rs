@@ -136,6 +136,16 @@ pub(crate) fn no_proxies() -> std::sync::Arc<crate::proxy::OutboundProxies> {
     std::sync::Arc::new(crate::proxy::OutboundProxies::direct())
 }
 
+/// Outbound transport for a test: the given resolver and no proxy.
+///
+/// The pair used to be passed separately at every one of these call sites, and
+/// `no_proxies()` names what it is for — a test that is not *about* proxying.
+pub(crate) fn outbound_with(
+    resolver: std::sync::Arc<dyn crate::dns::Resolver>,
+) -> crate::http_client::Outbound {
+    crate::http_client::Outbound::new(resolver, no_proxies())
+}
+
 /// A job queue with nothing draining it.
 ///
 /// What every test that merely has to *construct* a signer backend wants: the

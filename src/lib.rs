@@ -83,6 +83,9 @@
 //!     // One resolver for the whole process: `dns.resolver` governs every
 //!     // outbound connection this server makes, not just challenge lookups.
 //!     let resolver = challenge::build_resolver(acme_proxy::dns::resolver_addr(&config.dns)?)?;
+//!     // The two bundled: every outbound HTTP client takes them together, and
+//!     // a caller holding one always holds the other.
+//!     let outbound = acme_proxy::http_client::Outbound::new(resolver.clone(), proxies.clone());
 //!     // The enqueue side of the durable queue, built first because everything
 //!     // below queues into it. A backend that defers issuance (`relay`) is
 //!     // handed one at construction, and so is every notify dispatcher — a
@@ -100,8 +103,7 @@
 //!             notify::from_config(
 //!                 &profile.name,
 //!                 &profile.sections.notify,
-//!                 resolver.clone(),
-//!                 proxies.clone(),
+//!                 outbound.clone(),
 //!                 &job_queue,
 //!             )?,
 //!         );
@@ -120,14 +122,13 @@
 //!                     vec![profile.name.clone()],
 //!                     database.clone(),
 //!                     notifiers.clone(),
-//!                     resolver.clone(),
-//!                     proxies.clone(),
+//!                     outbound.clone(),
 //!                     job_queue.clone(),
 //!                 )?,
 //!                 filter: filter::from_config(
 //!                     &sections.filter,
 //!                     &config.dns,
-//!                     ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())?,
+//!                     ipam::from_config(&sections.ipam, outbound.clone())?,
 //!                     sections.eab.enabled,
 //!                 )?,
 //!                 challenges: challenge::from_config(
@@ -395,7 +396,7 @@ impl Profile {
         dispatchers: &notify::DispatcherMap,
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let proxies = &assembly.proxies;
-        let resolver = &assembly.resolver;
+        let _resolver = &assembly.resolver;
         let backends = &assembly.signers;
 
         let mut profiles = Vec::with_capacity(resolved.len());
@@ -410,7 +411,7 @@ impl Profile {
                 // owns no files and holds no mutable state, so two profiles
                 // naming the same inventory each building one costs nothing
                 // but a `rustls::ClientConfig`.
-                let ipam = ipam::from_config(&sections.ipam, resolver.clone(), proxies.clone())
+                let ipam = ipam::from_config(&sections.ipam, assembly.outbound())
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 let filter =
                     filter::from_config(&sections.filter, &config.dns, ipam, sections.eab.enabled)
@@ -475,6 +476,18 @@ pub struct Assembly {
 }
 
 impl Assembly {
+    /// The resolver and proxy policy as one value, for the subsystems that make
+    /// outbound HTTP requests.
+    ///
+    /// An accessor rather than a stored field: `challenge::from_config` builds
+    /// its *own* resolver past the bypass branch (constructing one is what
+    /// reads `/etc/resolv.conf`, so it must not happen when validation is off),
+    /// and so needs the proxy half on its own.
+    #[must_use]
+    pub fn outbound(&self) -> http_client::Outbound {
+        http_client::Outbound::new(self.resolver.clone(), self.proxies.clone())
+    }
+
     /// Builds everything that outlives a generation, plus the first generation's
     /// dispatcher map.
     ///
@@ -509,8 +522,11 @@ impl Assembly {
         // it is handed `database`), so it is instead handed this whole
         // `profile name -> dispatcher` map and looks up the right one by
         // `Order.profile` once an issuance settles.
-        let dispatchers =
-            notify::build_registry(resolved, resolver.clone(), proxies.clone(), &jobs)?;
+        let dispatchers = notify::build_registry(
+            resolved,
+            http_client::Outbound::new(resolver.clone(), proxies.clone()),
+            &jobs,
+        )?;
         // Opened before `build_backends`, so the handle the signers capture is
         // the one later generations republish into.
         let (notifiers_tx, notifiers) = notify::notifiers_channel(dispatchers.clone());
@@ -518,8 +534,7 @@ impl Assembly {
             resolved,
             database.clone(),
             notifiers.clone(),
-            resolver.clone(),
-            proxies.clone(),
+            http_client::Outbound::new(resolver.clone(), proxies.clone()),
             &jobs,
         )?;
 
@@ -546,12 +561,7 @@ impl Assembly {
         &self,
         resolved: &[config::ProfileConfig],
     ) -> anyhow::Result<notify::DispatcherMap> {
-        notify::build_registry(
-            resolved,
-            self.resolver.clone(),
-            self.proxies.clone(),
-            &self.jobs,
-        )
+        notify::build_registry(resolved, self.outbound(), &self.jobs)
     }
 
     /// Makes `dispatchers` the generation every long-lived reader sees.

@@ -539,8 +539,7 @@ fn validate_events(field: &str, events: &[String]) -> anyhow::Result<()> {
 pub fn from_config(
     profile: &str,
     cfg: &NotifyConfig,
-    resolver: Arc<dyn crate::dns::Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
     jobs: &JobQueue,
 ) -> anyhow::Result<Arc<NotifyDispatcher>> {
     // Built once and shared: both templating backends render from the same
@@ -559,7 +558,7 @@ pub fn from_config(
                     &cfg.email.events,
                 )]
             }
-            "webhook" => build_webhook_slots(cfg, &env, &resolver, &proxies)?,
+            "webhook" => build_webhook_slots(cfg, &env, outbound.clone())?,
             "custom" => build_custom_slots(cfg)?,
             // Refused by name, the `signer.backend = "acme_proxy"` -> `relay`
             // treatment: the `mattermost` backend was one provider's payload
@@ -636,8 +635,7 @@ fn build_custom_slots(cfg: &NotifyConfig) -> anyhow::Result<Vec<BackendSlot>> {
 fn build_webhook_slots(
     cfg: &NotifyConfig,
     env: &minijinja::Environment<'static>,
-    resolver: &Arc<dyn crate::dns::Resolver>,
-    proxies: &Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
 ) -> anyhow::Result<Vec<BackendSlot>> {
     crate::config::resolve_named_entries(
         "notify.webhook",
@@ -649,13 +647,7 @@ fn build_webhook_slots(
     .into_iter()
     .map(|(name, entry)| -> anyhow::Result<BackendSlot> {
         validate_events(&format!("notify.webhook.{name}.events"), &entry.events)?;
-        let backend = webhook::WebhookNotifier::from_config(
-            name,
-            entry,
-            env,
-            resolver.clone(),
-            proxies.clone(),
-        )?;
+        let backend = webhook::WebhookNotifier::from_config(name, entry, env, outbound.clone())?;
         Ok(BackendSlot::new(
             format!("webhook:{name}"),
             Arc::new(backend),
@@ -739,8 +731,7 @@ pub fn notifiers_channel(initial: DispatcherMap) -> (NotifiersSender, Notifiers)
 /// `AppState`/`Profile` to reach through.
 pub fn build_registry(
     profiles: &[ProfileConfig],
-    resolver: Arc<dyn crate::dns::Resolver>,
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    outbound: crate::http_client::Outbound,
     jobs: &JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<NotifyDispatcher>>> {
     let mut registry = HashMap::with_capacity(profiles.len());
@@ -748,8 +739,7 @@ pub fn build_registry(
         let dispatcher = from_config(
             &profile.name,
             &profile.sections.notify,
-            resolver.clone(),
-            proxies.clone(),
+            outbound.clone(),
             jobs,
         )
         .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
@@ -1330,8 +1320,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both backends must build");
@@ -1367,8 +1356,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both entries must build");
@@ -1390,8 +1378,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1409,8 +1396,7 @@ pub(crate) mod tests {
             from_config(
                 "le",
                 &cfg,
-                test_resolver(),
-                crate::testutil::no_proxies(),
+                crate::testutil::outbound_with(test_resolver()),
                 &test_queue().await,
             )
             .unwrap_or_else(|error| panic!("`{mode}` must build: {error}"));
@@ -1419,8 +1405,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &email_config("carrier-pigeon"),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1452,8 +1437,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &email,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1475,8 +1459,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &webhook,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1496,8 +1479,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1523,8 +1505,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1541,8 +1522,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1559,8 +1539,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1582,8 +1561,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1671,8 +1649,7 @@ pub(crate) mod tests {
         ];
         let registry = build_registry(
             &profiles,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap();
@@ -1706,8 +1683,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both custom entries must build");

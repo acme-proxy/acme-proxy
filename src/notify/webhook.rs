@@ -65,11 +65,9 @@ pub struct WebhookNotifier {
     body_template: String,
     timeout: Duration,
     tls: Arc<rustls::ClientConfig>,
-    /// The same resolver every other outbound hop uses, so `dns.resolver`
-    /// governs this webhook too.
-    resolver: Arc<dyn crate::dns::Resolver>,
-    /// The forward proxy, if any, the webhook host is reached through.
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    /// Where every outbound hop resolves and whether it goes through a
+    /// proxy — `dns.resolver` and `[proxy]`, bundled.
+    outbound: crate::http_client::Outbound,
     /// The shared template environment plus this entry's own compiled `body`.
     env: Arc<minijinja::Environment<'static>>,
 }
@@ -109,8 +107,7 @@ impl WebhookNotifier {
         entry: &str,
         cfg: &WebhookNotifyConfig,
         env: &minijinja::Environment<'static>,
-        resolver: Arc<dyn crate::dns::Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
+        outbound: crate::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let key = format!("notify.webhook.{entry}");
 
@@ -168,8 +165,7 @@ impl WebhookNotifier {
             body_template,
             timeout: Duration::from_millis(cfg.timeout_ms),
             tls: Arc::new(crate::http_client::webpki_tls_config()),
-            resolver,
-            proxies,
+            outbound,
             env: Arc::new(env),
         })
     }
@@ -243,8 +239,7 @@ impl NotifyBackend for WebhookNotifier {
             self.timeout,
             send_request(
                 &self.tls,
-                self.resolver.as_ref(),
-                &self.proxies,
+                &self.outbound,
                 &self.method,
                 &self.url,
                 &self.headers,
@@ -287,11 +282,9 @@ fn retryable_status(status: hyper::StatusCode) -> bool {
 
 /// Performs the request, answering with the status and a short excerpt of the
 /// body — which for a refusal is usually the entire diagnosis.
-#[allow(clippy::too_many_arguments)]
 async fn send_request(
     tls: &Arc<rustls::ClientConfig>,
-    resolver: &dyn crate::dns::Resolver,
-    proxies: &crate::proxy::OutboundProxies,
+    outbound: &crate::http_client::Outbound,
     method: &Method,
     url: &Url,
     headers: &HeaderMap,
@@ -302,7 +295,8 @@ async fn send_request(
     let endpoint = crate::http_client::Endpoint::from_url(url).map_err(NotifyError::permanent)?;
 
     // Retryable: DNS, the proxy, the handshake and the socket.
-    let mut connection = crate::http_client::connect(resolver, proxies, &endpoint, tls)
+    let mut connection = outbound
+        .connect(&endpoint, tls)
         .await
         .map_err(NotifyError::new)?;
 
@@ -366,8 +360,7 @@ mod tests {
             "chat",
             cfg,
             &build_environment(""),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
     }
 
@@ -624,8 +617,7 @@ mod tests {
         let url: Url = "ftp://chat.example.com/hooks/xyz".parse().unwrap();
         let error = send_request(
             &tls,
-            test_resolver().as_ref(),
-            &crate::proxy::OutboundProxies::direct(),
+            &crate::testutil::outbound_with(test_resolver()),
             &Method::POST,
             &url,
             &HeaderMap::new(),
@@ -639,8 +631,7 @@ mod tests {
         let url: Url = "http://127.0.0.1:1/hooks/xyz".parse().unwrap();
         let error = send_request(
             &tls,
-            test_resolver().as_ref(),
-            &crate::proxy::OutboundProxies::direct(),
+            &crate::testutil::outbound_with(test_resolver()),
             &Method::POST,
             &url,
             &HeaderMap::new(),

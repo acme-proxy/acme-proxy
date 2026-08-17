@@ -186,10 +186,9 @@ impl NetboxBackend {
     /// turn a retryable 500 into a refusal to boot.
     pub fn from_config(
         cfg: &NetboxConfig,
-        resolver: Arc<dyn crate::dns::Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
+        outbound: crate::http_client::Outbound,
     ) -> anyhow::Result<Self> {
-        let api = Arc::new(client::NetboxClient::new(cfg, resolver, proxies)?);
+        let api = Arc::new(client::NetboxClient::new(cfg, outbound)?);
         let backend = Self::with_api(cfg, api)?;
 
         info!(

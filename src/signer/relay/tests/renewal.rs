@@ -38,8 +38,7 @@ async fn renewal_info_uses_the_upstream_window() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -77,8 +76,7 @@ async fn no_upstream_renewal_info_means_no_opinion() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -106,8 +104,7 @@ async fn a_certificate_without_an_aki_yields_no_opinion() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -138,8 +135,7 @@ async fn an_unparsable_window_is_an_error() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();

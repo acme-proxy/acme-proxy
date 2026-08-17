@@ -72,12 +72,9 @@ pub(crate) struct JsonApi {
     base: String,
     headers: Vec<(HeaderName, String)>,
     tls: Arc<rustls::ClientConfig>,
-    /// The resolver every outbound hop in this server shares, so a split-horizon
-    /// estate does not have the inventory resolving differently from the
-    /// challenge validators.
-    resolver: Arc<dyn crate::dns::Resolver>,
-    /// The forward proxy, if any, this inventory is reached through.
-    proxies: Arc<crate::proxy::OutboundProxies>,
+    /// Where every outbound hop resolves and whether it goes through a
+    /// proxy — `dns.resolver` and `[proxy]`, bundled.
+    outbound: crate::http_client::Outbound,
 }
 
 impl std::fmt::Debug for JsonApi {
@@ -100,8 +97,7 @@ impl JsonApi {
         setting: &str,
         headers: Vec<(HeaderName, String)>,
         tls: Arc<rustls::ClientConfig>,
-        resolver: Arc<dyn crate::dns::Resolver>,
-        proxies: Arc<crate::proxy::OutboundProxies>,
+        outbound: crate::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let parsed = Url::parse(url.trim())
             .map_err(|error| anyhow::anyhow!("{setting}: {url} is not a URL: {error}"))?;
@@ -116,8 +112,7 @@ impl JsonApi {
             base: parsed.as_str().trim_end_matches('/').to_string(),
             headers,
             tls,
-            resolver,
-            proxies,
+            outbound,
         })
     }
 
@@ -137,14 +132,11 @@ impl JsonApi {
             JsonApiError::transport(format!("{target} is not a usable endpoint: {error}"))
         })?;
 
-        let connection = crate::http_client::connect(
-            self.resolver.as_ref(),
-            &self.proxies,
-            &endpoint,
-            &self.tls,
-        )
-        .await
-        .map_err(JsonApiError::transport)?;
+        let connection = self
+            .outbound
+            .connect(&endpoint, &self.tls)
+            .await
+            .map_err(JsonApiError::transport)?;
 
         // Origin-form directly, absolute-form when this connection forwards
         // through a proxy — which is why the connection is opened first.
@@ -410,8 +402,7 @@ mod tests {
             "ipam.test.url",
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "ipam.test.ca_cert_path").unwrap(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap()
     }
@@ -425,8 +416,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -440,8 +430,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -457,8 +446,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         assert_eq!(api.base(), "https://example.com/netbox");
@@ -471,8 +459,7 @@ mod tests {
             "ipam.netbox.url",
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "x").unwrap(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         let rendered = format!("{api:?}");

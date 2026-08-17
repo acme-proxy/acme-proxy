@@ -150,6 +150,7 @@ pub async fn run_order_command(
             // `[proxy]` section `serve` reads.
             let proxies = crate::proxy::from_config(&config.proxy)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
+            let outbound = crate::http_client::Outbound::new(resolver, proxies);
             // A queue nothing drains: this command revokes, which every backend
             // answers inline, so no job is ever enqueued. Handing over a live
             // queue would be worse than useless — it would let a one-shot CLI
@@ -160,8 +161,7 @@ pub async fn run_order_command(
                 vec![profile.name.clone()],
                 database.clone(),
                 Arc::new(std::collections::HashMap::new()),
-                resolver,
-                proxies,
+                outbound,
                 jobs,
             )
             .map_err(|error| CliError(format!("signer error: {error}")))?;
@@ -280,8 +280,7 @@ mod tests {
             vec![profile.name.clone()],
             database.clone(),
             Arc::new(std::collections::HashMap::new()),
-            resolver,
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(resolver),
             crate::jobs::JobQueue::new(database.clone(), &config.jobs),
         )
         .unwrap();
@@ -592,7 +591,9 @@ mod tests {
         assert!(error.0.contains("`readyy`"), "{error}");
         // ...and it names the alternatives, so the operator does not guess.
         assert!(
-            error.0.contains("pending, ready, processing, valid, invalid"),
+            error
+                .0
+                .contains("pending, ready, processing, valid, invalid"),
             "{error}"
         );
     }

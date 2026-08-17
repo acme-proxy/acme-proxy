@@ -98,7 +98,8 @@ pub async fn run_upstream_command(
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
             let proxies = crate::proxy::from_config(&config.proxy)
                 .map_err(|error| CliError(format!("configuration error: {error}")))?;
-            match relay::register_upstream_account(cfg, resolver, proxies, eab).await {
+            let outbound = crate::http_client::Outbound::new(resolver, proxies);
+            match relay::register_upstream_account(cfg, outbound, eab).await {
                 Ok(kid) => println!("Registered. kid = {kid}"),
                 Err(error) => {
                     return Err(CliError(format!("upstream registration failed: {error}")));

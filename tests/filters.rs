@@ -61,8 +61,10 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     let inventory = acme_proxy::ipam::from_config(
         ipam,
-        test_resolver(),
-        std::sync::Arc::new(acme_proxy::proxy::OutboundProxies::direct()),
+        acme_proxy::http_client::Outbound::new(
+            test_resolver(),
+            std::sync::Arc::new(acme_proxy::proxy::OutboundProxies::direct()),
+        ),
     )
     .expect("ipam config should build");
     let chain = filter::from_config(&filter, &DnsConfig::default(), inventory, true)

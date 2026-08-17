@@ -18,8 +18,7 @@ async fn an_empty_directory_url_is_a_startup_error() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(db),
     ));
     assert!(error.contains("directory_url"), "{error}");
@@ -44,8 +43,7 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(db),
     ));
     assert!(
@@ -75,8 +73,7 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(db),
     ));
     assert!(error.contains("rfc2136.server"), "{error}");
@@ -97,8 +94,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(db.clone()),
     )
     .unwrap();
@@ -114,8 +110,7 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(db),
     )
     .unwrap();
@@ -142,8 +137,7 @@ async fn the_generated_account_key_is_owner_only() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     )
     .unwrap();
@@ -173,8 +167,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -232,8 +225,7 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -263,8 +255,7 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -327,8 +318,7 @@ async fn settle_notifies_only_the_owning_profile() {
         vec!["a".to_string(), "b".to_string()],
         db.clone(),
         notifiers.clone(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -397,8 +387,7 @@ async fn issue_polls_until_the_upstream_settles() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -440,8 +429,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -503,8 +491,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -553,8 +540,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -605,8 +591,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -660,8 +645,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -718,8 +702,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -750,8 +733,7 @@ async fn revoke_reaches_the_upstream() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -780,8 +762,7 @@ async fn revoke_treats_already_revoked_as_success() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -833,8 +814,7 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -877,8 +857,7 @@ async fn recovery_ignores_rows_that_already_settled() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -904,8 +883,7 @@ async fn recovery_with_no_pending_rows_does_nothing() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -937,8 +915,7 @@ mod handler {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             test_queue(db),
         )
         .unwrap();

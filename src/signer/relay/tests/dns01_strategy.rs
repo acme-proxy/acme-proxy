@@ -65,8 +65,7 @@ async fn bypass_triggers_the_offered_challenge() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -111,8 +110,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -150,8 +148,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
         vec!["default".to_string()],
         db.clone(),
         no_notifiers(),
-        test_resolver(),
-        crate::testutil::no_proxies(),
+        crate::testutil::outbound_with(test_resolver()),
         queue.clone(),
     )
     .unwrap();
@@ -190,8 +187,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
         .unwrap(),
@@ -254,8 +250,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
         .unwrap(),
@@ -301,8 +296,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
         .unwrap(),
@@ -351,8 +345,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
-            test_resolver(),
-            crate::testutil::no_proxies(),
+            crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
         .unwrap(),

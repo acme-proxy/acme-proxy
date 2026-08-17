@@ -280,6 +280,53 @@ where
     }
 }
 
+/// Where to resolve a name, and whether to go through a proxy.
+///
+/// The two travelled as separate parameters through some forty positions across
+/// `challenge/`, `ipam/`, `notify/webhook.rs` and `signer/relay/`, and they are
+/// never meaningfully apart: a caller holding one holds the other, and both
+/// come from the same `Profile::build_all`. Bundling them is what retires the
+/// crate's last `#[allow(clippy::too_many_arguments)]`
+/// (`notify::webhook::send_request`).
+///
+/// `tls` is deliberately **not** in here. It is the part that genuinely differs
+/// per caller — [`crate::challenge::http_01`] must not validate the responder's
+/// certificate (RFC 8555 §8.3: what it carries is the proof, not an identity)
+/// while the other three verify against `webpki-roots` — and this module's rule
+/// is that policy stays with its caller and only plumbing moves here.
+#[derive(Clone)]
+pub struct Outbound {
+    resolver: Arc<dyn Resolver>,
+    proxies: Arc<OutboundProxies>,
+}
+
+impl Outbound {
+    pub fn new(resolver: Arc<dyn Resolver>, proxies: Arc<OutboundProxies>) -> Self {
+        Self { resolver, proxies }
+    }
+
+    /// Connects to `endpoint` and completes the HTTP/1 handshake under the
+    /// caller's own `tls` — see [`connect`] for what a proxy changes.
+    pub(crate) async fn connect<B>(
+        &self,
+        endpoint: &Endpoint,
+        tls: &Arc<rustls::ClientConfig>,
+    ) -> Result<Connection<B>, String>
+    where
+        B: Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        connect(self.resolver.as_ref(), &self.proxies, endpoint, tls).await
+    }
+
+    /// Opens a byte stream to `endpoint` for a caller layering its own TLS —
+    /// see [`connect_stream`].
+    pub(crate) async fn connect_stream(&self, endpoint: &Endpoint) -> Result<ClientStream, String> {
+        connect_stream(self.resolver.as_ref(), &self.proxies, endpoint).await
+    }
+}
+
 /// Opens a byte stream to `endpoint`, tunnelling when a proxy applies.
 ///
 /// For callers that layer their own TLS — [`crate::challenge::tls_alpn_01`]'s
