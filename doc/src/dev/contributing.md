@@ -47,7 +47,7 @@ Your pull request has to pass all of these:
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-cargo llvm-cov nextest --fail-under-lines 96
+cargo llvm-cov nextest --fail-under-lines 97
 cargo test --doc          # llvm-cov skips doc-tests
 cargo deny check          # supply-chain audit, against deny.toml
 ```

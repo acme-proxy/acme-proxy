@@ -107,14 +107,19 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The ratchet, set just below the current ~96%. A separate step from the
-      # rendering above so the failure names itself on the run page: "Coverage
-      # floor" red is a sentence, a `report` step red is a question.
+      # The ratchet, set just below the current line coverage (~97.3%).
+      #
+      # `--fail-under-lines` reads the **Lines** column, not the `Regions` one
+      # the summary prints first — they differ by more than a point here, and
+      # reading the wrong one makes this look far tighter than it is. A separate
+      # step from the rendering above so the failure names itself on the run
+      # page: "Coverage floor" red is a sentence, a `report` step red is a
+      # question.
       - name: Coverage floor
         run: >
           cargo llvm-cov report --summary-only
           --ignore-filename-regex 'src/main\.rs'
-          --fail-under-lines 96
+          --fail-under-lines 97
 
       # `always()`, because the run where the floor was missed is exactly the
       # run whose report somebody wants to read. Retained for a fortnight
@@ -194,7 +199,7 @@ jobs:
   # or stop compiling and nobody would find out.
   #
   # Deliberately separate rather than folded into `test`: that job enforces
-  # `--fail-under-lines 96`, and a feature-gated file is not compiled at all
+  # `--fail-under-lines 97`, and a feature-gated file is not compiled at all
   # with the feature off, so it stays outside the metric entirely. Folding it in
   # would drag the token error-recovery paths — the ones SoftHSM2 cannot easily
   # provoke — inside the ratchet and make the floor fight the feature.

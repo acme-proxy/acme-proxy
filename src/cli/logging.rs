@@ -90,7 +90,7 @@ fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
 /// the same reasoning as [`build_env_filter`]: a certificate authority running
 /// at a log level or to a destination its operator did not ask for is worse
 /// than one that refuses to start and says why.
-pub(crate) fn init_logging(logging: &crate::config::LoggingConfig) -> Result<(), String> {
+pub fn init_logging(logging: &crate::config::LoggingConfig) -> Result<(), String> {
     let env_filter = build_env_filter(logging)?;
     let writer = parse_target(&logging.target)?;
     let span_events = parse_span_events(&logging.span_events)?;

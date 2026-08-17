@@ -43,6 +43,10 @@ pub mod audit;
 pub mod eab;
 pub mod filter;
 mod logging;
+
+/// Installs the `[logging]` configuration. Re-exported because `main.rs` is
+/// what calls it — see [`dispatch`].
+pub use logging::init_logging;
 pub mod nonce;
 pub mod order;
 pub mod upstream;
@@ -156,7 +160,7 @@ pub(crate) fn resolve_profile(
 /// A command that could not complete, carrying the message to print.
 ///
 /// Every failing branch below returns one of these instead of calling
-/// `std::process::exit` where it stands: [`run`] is the single place that
+/// `std::process::exit` where it stands: `main.rs` is the single place that
 /// prints and exits, so each command body stays a plain function a test can
 /// call and assert on.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -169,40 +173,13 @@ impl From<sqlx::Error> for CliError {
     }
 }
 
-/// Runs the CLI entrypoint.
-pub async fn run() {
-    let cli = Cli::parse();
-
-    let config = Arc::new(Config::load().unwrap_or_else(|error| {
-        eprintln!("configuration error: {error}");
-        std::process::exit(1);
-    }));
-
-    logging::init_logging(&config.logging).unwrap_or_else(|error| {
-        eprintln!("{error}");
-        std::process::exit(1);
-    });
-
-    let database = Arc::new(
-        Database::connect(&config.database.url)
-            .await
-            .unwrap_or_else(|error| {
-                error!(event = "db_connect_failed", outcome = "failure", database_url = %config.database.url, error = %error);
-                std::process::exit(1);
-            }),
-    );
-
-    let stdin = std::io::stdin();
-    let mut reader = stdin.lock();
-
-    if let Err(error) = dispatch(cli.command, cli.yes, &mut reader, &config, database).await {
-        eprintln!("{error}");
-        std::process::exit(1);
-    }
-}
-
-/// Routes a parsed command to its handler. Split out of [`run`] so every arm
-/// but `Serve` is reachable from a test.
+/// Routes a parsed command to its handler.
+///
+/// The library's entry point. Everything above it — parsing argv, loading the
+/// configuration, installing the subscriber, opening the database, printing a
+/// failure and exiting — lives in `src/main.rs`, because those are the
+/// binary's job and not a library's: nothing that links this crate can use a
+/// function whose failure mode is `std::process::exit`.
 pub async fn dispatch(
     command: Option<Command>,
     yes: bool,
@@ -1737,6 +1714,90 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(10), handle)
                 .await
                 .expect("both listeners must stop on one signal")
+                .unwrap()
+                .expect("a clean shutdown is not an error");
+        }
+
+        /// The admin listener's **own** TLS arm.
+        ///
+        /// `[server.tls]` and `[admin.tls]` are separate settings with separate
+        /// certificate paths, on purpose — the two listeners answer to
+        /// different names — and they go through separate `axum::serve` arms in
+        /// `serve_admin`. `a_tls_server_answers_over_a_real_handshake` covers
+        /// the ACME one; this one was the only `TlsListener::spawn` call site
+        /// in the crate with no test at all, which for the listener that
+        /// carries an operator's session cookie is the wrong one to miss.
+        #[tokio::test]
+        async fn the_admin_listener_answers_over_its_own_tls() {
+            use tokio_rustls::TlsConnector;
+            use tokio_rustls::rustls::pki_types::ServerName;
+
+            let dir = temp_dir();
+            let mut config = config_in(&dir, false);
+            config.admin.enabled = true;
+            // A distinct certificate from the ACME listener's, which is the
+            // whole reason these are two settings.
+            config.admin.tls.enabled = true;
+            config.admin.tls.cert_path = dir.as_ref().join("admin.pem").display().to_string();
+            config.admin.tls.key_path = dir.as_ref().join("admin.key").display().to_string();
+            // `check_config` refuses a non-loopback bind without TLS; with TLS
+            // on it is allowed, and this exercises that branch too.
+            config.admin.base_url = "https://localhost:3001".to_string();
+
+            let database = Arc::new(Database::connect_in_memory().await.unwrap());
+            let acme_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let admin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let acme_addr = acme_listener.local_addr().unwrap();
+            let admin_addr = admin_listener.local_addr().unwrap();
+
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let handle = tokio::spawn(serve_on_with(
+                Arc::new(config),
+                database,
+                acme_listener,
+                Some(admin_listener),
+                async {
+                    let _ = rx.await;
+                },
+            ));
+
+            // The ACME socket is still cleartext — the two settings really are
+            // independent, which a shared switch would hide.
+            let acme = get(acme_addr, "/health").await;
+            assert!(acme.starts_with("HTTP/1.1 200 OK"), "{acme}");
+
+            // The admin socket needs a handshake. Self-signed, so the client
+            // verifies nothing: the listener is the subject, not the chain.
+            let client =
+                crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
+            let stream = TcpStream::connect(admin_addr).await.unwrap();
+            let mut tls = TlsConnector::from(client)
+                .connect(ServerName::try_from("localhost").unwrap(), stream)
+                .await
+                .expect("the admin listener must complete a handshake");
+            tls.write_all(
+                b"GET /api/accounts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+            let mut response = String::new();
+            tls.read_to_string(&mut response).await.unwrap();
+            assert!(
+                response.starts_with("HTTP/1.1 401"),
+                "the admin API answers over TLS, unauthenticated: {response}"
+            );
+
+            // The certificate really was written to the admin paths, not the
+            // server's — a shared path would make one listener overwrite the
+            // other's key on every start.
+            assert!(dir.as_ref().join("admin.pem").exists());
+            assert!(dir.as_ref().join("admin.key").exists());
+            assert!(!dir.as_ref().join("server.pem").exists());
+
+            tx.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(10), handle)
+                .await
+                .expect("both listeners must stop")
                 .unwrap()
                 .expect("a clean shutdown is not an error");
         }

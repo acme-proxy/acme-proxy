@@ -65,7 +65,7 @@ feature-gated file sits outside of entirely, does not fight the feature.
 
 ## Code coverage
 
-CI enforces a hard floor with `cargo llvm-cov nextest --fail-under-lines 96`
+CI enforces a hard floor with `cargo llvm-cov nextest --fail-under-lines 97`
 (`main.rs` is excluded — it is pure socket and exit wiring). Locally:
 
 ```bash
