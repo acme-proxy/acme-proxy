@@ -1260,3 +1260,131 @@ async fn concurrent_validations_of_one_order_still_promote_it() {
         "both authorizations are valid, so the order must be ready: {order}"
     );
 }
+
+/// A requested `notAfter` reaches the **issued certificate**, not just the
+/// order object.
+///
+/// `new_order_accepts_and_echoes_requested_validity_bounds` above proves the
+/// echo, and `LocalCa`'s own tests prove the clamp. Neither covers the wiring
+/// between them, and that is precisely where the bug was: `signer/mod.rs`
+/// records that these fields "were stored and echoed in the order object while
+/// being dropped on the way to the signer". Replacing the handler's
+/// `RequestedValidity { .. }` with `::default()` passes every other test in the
+/// repository.
+#[tokio::test]
+async fn a_requested_not_after_reaches_the_issued_certificate() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = common::acme::register(&app, &signer).await;
+
+    // Seven days out — well inside the CA's 90-day default, so the clamp
+    // narrows to this rather than ignoring it.
+    let requested_not_after = time::OffsetDateTime::now_utc() + time::Duration::days(7);
+    let not_after = requested_not_after
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let payload = json!({
+        "identifiers": [{ "type": "dns", "value": "example.com" }],
+        "notAfter": not_after,
+    });
+    let body = signer.sign_kid(&account_url, NEW_ORDER_URL, &nonce, &payload);
+    let res = post(&app, &p("/newOrder"), body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let order_url = res
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+    let order = body_json(res).await;
+
+    common::acme::drive_to_ready(&app, &signer, &account_url, &order).await;
+    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+
+    let res = common::acme::finalize(
+        &app,
+        &signer,
+        &account_url,
+        order["finalize"].as_str().unwrap(),
+        &["example.com"],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+    let certificate_url = order["certificate"].as_str().unwrap().to_string();
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
+    let res = post(&app, &common::acme::path_of(&certificate_url), body).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let chain = common::acme::body_text(res).await;
+
+    let leaf = acme_proxy::cert::leaf_der_from_chain(&chain).unwrap();
+    let (_not_before, cert_not_after) = acme_proxy::cert::cert_validity(&leaf).unwrap();
+
+    // To the second: the clamp narrows to exactly what was asked for when the
+    // request is inside the CA's own window.
+    assert_eq!(
+        cert_not_after,
+        requested_not_after.unix_timestamp(),
+        "the certificate's notAfter must be the one the order asked for, \
+         not the CA's 90-day default"
+    );
+}
+
+/// The converse, so the test above cannot pass by the signer simply honouring
+/// whatever it is handed: a `notAfter` *beyond* the CA's own window is clamped
+/// back to it rather than widening it.
+#[tokio::test]
+async fn a_not_after_beyond_the_ca_window_is_clamped_rather_than_honoured() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = common::acme::register(&app, &signer).await;
+
+    let far_future = time::OffsetDateTime::now_utc() + time::Duration::days(3650);
+    let nonce = fetch_nonce(&app).await;
+    let payload = json!({
+        "identifiers": [{ "type": "dns", "value": "example.com" }],
+        "notAfter": far_future
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    });
+    let body = signer.sign_kid(&account_url, NEW_ORDER_URL, &nonce, &payload);
+    let res = post(&app, &p("/newOrder"), body).await;
+    let order_url = res
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+    let order = body_json(res).await;
+
+    common::acme::drive_to_ready(&app, &signer, &account_url, &order).await;
+    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+    let res = common::acme::finalize(
+        &app,
+        &signer,
+        &account_url,
+        order["finalize"].as_str().unwrap(),
+        &["example.com"],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+    let certificate_url = order["certificate"].as_str().unwrap().to_string();
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
+    let res = post(&app, &common::acme::path_of(&certificate_url), body).await;
+    let chain = common::acme::body_text(res).await;
+
+    let leaf = acme_proxy::cert::leaf_der_from_chain(&chain).unwrap();
+    let (_not_before, cert_not_after) = acme_proxy::cert::cert_validity(&leaf).unwrap();
+
+    assert!(
+        cert_not_after < far_future.unix_timestamp(),
+        "a request may narrow the CA's window, never widen it"
+    );
+}

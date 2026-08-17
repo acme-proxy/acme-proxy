@@ -373,6 +373,24 @@ async fn relay(
     Ok(chain)
 }
 
+/// **This proxy's** account thumbprint at the upstream — never the end client's.
+///
+/// The two are different accounts on different servers: the client proved
+/// control to this server with its own key, and this server proves it again
+/// upstream with the key in `signer.relay.account_key_path`. Both challenge
+/// strategies need it, and both had this block written out.
+///
+/// Permanent rather than retryable: a local account key that cannot produce a
+/// thumbprint is a key problem, not a moment's bad luck, and asking again in
+/// thirty seconds changes nothing.
+fn upstream_thumbprint(inner: &Inner) -> Result<String, RelayFailure> {
+    crate::extractors::acme::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
+        RelayFailure::Permanent(format!(
+            "cannot derive the upstream account thumbprint: {error}"
+        ))
+    })
+}
+
 /// Satisfies every pending `dns-01` authorization the upstream posed.
 ///
 /// The key authorization is built from **this proxy's** thumbprint at the
@@ -387,14 +405,7 @@ async fn answer_dns01(
     updater: &dyn dns01::DnsUpdater,
     authorizations: &[String],
 ) -> Result<(), RelayFailure> {
-    let thumbprint =
-        crate::extractors::acme::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
-            // The local account key cannot produce a thumbprint: a key problem,
-            // not a moment's bad luck.
-            RelayFailure::Permanent(format!(
-                "cannot derive the upstream account thumbprint: {error}"
-            ))
-        })?;
+    let thumbprint = upstream_thumbprint(inner)?;
 
     for authz_url in authorizations {
         let authz = read_authz(inner, authz_url).await?;
@@ -474,12 +485,7 @@ async fn answer_http01(
     tokens: Arc<dyn http01::TokenStore>,
     authorizations: &[String],
 ) -> Result<(), RelayFailure> {
-    let thumbprint =
-        crate::extractors::acme::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
-            RelayFailure::Permanent(format!(
-                "cannot derive the upstream account thumbprint: {error}"
-            ))
-        })?;
+    let thumbprint = upstream_thumbprint(inner)?;
 
     for authz_url in authorizations {
         let authz = read_authz(inner, authz_url).await?;

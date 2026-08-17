@@ -224,7 +224,14 @@ async fn revoke_by_a_different_registered_account_is_unauthorized() {
     let payload = json!({ "certificate": cert_field(&chain) });
     let body = other.sign_kid(&other_account_url, REVOKE_URL, &nonce, &payload);
     let res = revoke(&app, body).await;
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    // The `type` as well as the status: `unauthorized` and `malformed` are both
+    // refusals, but only one of them says "this is not yours".
+    common::acme::assert_problem(
+        res,
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 /// The regression test for the authorization subtlety this endpoint hinges
@@ -247,11 +254,14 @@ async fn revoke_with_someone_elses_certificate_and_an_unrelated_key_is_unauthori
     let payload = json!({ "certificate": cert_field(&chain) });
     let body = attacker.sign(REVOKE_URL, &nonce, &payload);
     let res = revoke(&app, body).await;
-    assert_eq!(
-        res.status(),
+    // This suite's flagship security regression, so it reads the body: a
+    // refusal that kept the status and changed the type would have passed.
+    common::acme::assert_problem(
+        res,
         StatusCode::UNAUTHORIZED,
-        "observing a certificate must not be enough to revoke it"
-    );
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]

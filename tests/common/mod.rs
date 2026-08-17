@@ -1921,3 +1921,270 @@ pub fn write_script(dir: &TempDir, name: &str, body: &str) -> std::path::PathBuf
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
 }
+
+/// The ACME ladder every suite climbs: register, order, prove, finalize, read.
+///
+/// Nineteen suites had each grown their own copy of these — `post` in
+/// twenty-two files, `register` in eighteen, `issue_certificate` in four at
+/// roughly fifty lines apiece. They were byte-identical or differed only in
+/// whitespace, which is the worst kind of duplication: it reads as deliberate.
+///
+/// The cost was not the lines. `assert_problem` existed in **two** of the
+/// nineteen, so most suites asserted a bare status code on a refusal — and a
+/// regression that returned the right status with the wrong `type` passed.
+/// With the helper one `use` away, checking the problem type is the cheap
+/// option rather than the thorough one.
+pub mod acme {
+    use super::{BASE, HOST, PREFIX, TestSigner, body_json, fetch_nonce, p};
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::response::Response;
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    /// The absolute URL of a resource under the test profile — what a JWS
+    /// `url` header must name (RFC 8555 §6.4).
+    #[must_use]
+    pub fn url(path: &str) -> String {
+        format!("{BASE}{path}")
+    }
+
+    /// POSTs a signed body, with the media type §6.2 requires.
+    pub async fn post(app: &Router, path: &str, body: String) -> Response {
+        app.clone()
+            .oneshot(
+                Request::post(path)
+                    .header("content-type", "application/jose+json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// The response body as text, for the assertions that are about wording.
+    pub async fn body_text(response: Response) -> String {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// Asserts an RFC 8555 problem document: the status **and** the `type`.
+    ///
+    /// Both halves matter. A refusal that kept its status and changed its type
+    /// is a different answer to the client — `unauthorized` and
+    /// `rejectedIdentifier` are both `403` and mean opposite things about
+    /// whether retrying could ever work.
+    pub async fn assert_problem(response: Response, status: StatusCode, typ: &str) {
+        assert_eq!(response.status(), status);
+        let problem = body_json(response).await;
+        assert_eq!(problem["type"], typ, "problem type");
+    }
+
+    /// The same, plus a substring the `detail` must carry — for the refusals
+    /// whose wording is the point (an operator's `filter.rule.message`, a name
+    /// the server is meant to quote back).
+    pub async fn assert_problem_detail(
+        response: Response,
+        status: StatusCode,
+        typ: &str,
+        detail: &str,
+    ) {
+        assert_eq!(response.status(), status);
+        let problem = body_json(response).await;
+        assert_eq!(problem["type"], typ, "problem type");
+        let got = problem["detail"].as_str().unwrap_or_default();
+        assert!(
+            got.contains(detail),
+            "detail {got:?} does not contain {detail:?}"
+        );
+    }
+
+    /// Registers an account and returns its URL — the `kid` of every request
+    /// after this one.
+    pub async fn register(app: &Router, signer: &impl TestSigner) -> String {
+        let nonce = fetch_nonce(app).await;
+        let payload = json!({ "termsOfServiceAgreed": true });
+        let response = post(
+            app,
+            &p("/newAccount"),
+            signer.sign(&url("/newAccount"), &nonce, &payload),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        location(&response)
+    }
+
+    /// The `Location` header, which `newAccount` and `newOrder` both set.
+    pub fn location(response: &Response) -> String {
+        response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .expect("this response must set a Location header")
+            .to_string()
+    }
+
+    /// An absolute URL the server handed back, as a request path.
+    ///
+    /// Strips [`HOST`] and not [`BASE`]: the `/profile/<name>` prefix is part
+    /// of the route, so removing it would ask the root router instead.
+    #[must_use]
+    pub fn path_of(absolute: &str) -> String {
+        absolute
+            .strip_prefix(HOST)
+            .unwrap_or_else(|| panic!("{absolute} is not under {HOST}"))
+            .to_string()
+    }
+
+    /// Places an order for `names`, returning `(order_url, order_object)`.
+    pub async fn new_order(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        names: &[&str],
+    ) -> (String, Value) {
+        let identifiers: Vec<Value> = names
+            .iter()
+            .map(|name| json!({ "type": "dns", "value": name }))
+            .collect();
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid(
+            account_url,
+            &url("/newOrder"),
+            &nonce,
+            &json!({ "identifiers": identifiers }),
+        );
+        let response = post(app, &p("/newOrder"), body).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let order_url = location(&response);
+        (order_url, body_json(response).await)
+    }
+
+    /// Reads any resource by signed POST-as-GET (§6.3), asserting a `200`.
+    pub async fn post_as_get(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        absolute_url: &str,
+    ) -> Value {
+        let response = post_as_get_raw(app, signer, account_url, absolute_url).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        body_json(response).await
+    }
+
+    /// The same without the status assertion, for the tests that are *about*
+    /// the refusal.
+    pub async fn post_as_get_raw(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        absolute_url: &str,
+    ) -> Response {
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid_empty(account_url, absolute_url, &nonce);
+        post(app, &path_of(absolute_url), body).await
+    }
+
+    /// Triggers a challenge with the `{}` payload §7.5.1 defines.
+    pub async fn trigger(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        challenge_url: &str,
+    ) -> Response {
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid(account_url, challenge_url, &nonce, &json!({}));
+        post(app, &path_of(challenge_url), body).await
+    }
+
+    /// Drives an order from `pending` to `ready` by proving every
+    /// authorization, and returns the order object.
+    ///
+    /// Assumes the bypassing registry every suite's default app carries, where
+    /// triggering a challenge is what makes it `valid`.
+    pub async fn drive_to_ready(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        order: &Value,
+    ) -> Value {
+        let authorizations: Vec<String> = order["authorizations"]
+            .as_array()
+            .expect("an order carries its authorizations")
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+
+        for authz_url in &authorizations {
+            let authz = post_as_get(app, signer, account_url, authz_url).await;
+            let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
+            let response = trigger(app, signer, account_url, &challenge_url).await;
+            // Both outcomes are `200` + the challenge object (§7.5.1), so this
+            // asserts the transport, not the verdict.
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        order.clone()
+    }
+
+    /// Registers, orders `names` and proves every authorization, returning
+    /// `(account_url, order_url, order)` with the order in `ready`.
+    pub async fn ready_order(
+        app: &Router,
+        signer: &impl TestSigner,
+        names: &[&str],
+    ) -> (String, String, Value) {
+        let account_url = register(app, signer).await;
+        let (order_url, order) = new_order(app, signer, &account_url, names).await;
+        drive_to_ready(app, signer, &account_url, &order).await;
+        let order = post_as_get(app, signer, &account_url, &order_url).await;
+        (account_url, order_url, order)
+    }
+
+    /// Finalizes an order with a CSR for `names`, returning the raw response.
+    pub async fn finalize(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        finalize_url: &str,
+        names: &[&str],
+    ) -> Response {
+        let csr = super::make_csr_for(names);
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid(account_url, finalize_url, &nonce, &json!({ "csr": csr }));
+        post(app, &path_of(finalize_url), body).await
+    }
+
+    /// The whole flow: register, order, prove, finalize, fetch the chain.
+    ///
+    /// Returns `(account_url, order_url, certificate_pem)`.
+    pub async fn issue_certificate(
+        app: &Router,
+        signer: &impl TestSigner,
+        names: &[&str],
+    ) -> (String, String, String) {
+        let (account_url, order_url, order) = ready_order(app, signer, names).await;
+        let finalize_url = order["finalize"].as_str().unwrap().to_string();
+
+        let response = finalize(app, signer, &account_url, &finalize_url, names).await;
+        assert_eq!(response.status(), StatusCode::OK, "finalize");
+
+        let order = post_as_get(app, signer, &account_url, &order_url).await;
+        let certificate_url = order["certificate"]
+            .as_str()
+            .expect("a valid order carries a certificate URL")
+            .to_string();
+
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
+        let response = post(app, &path_of(&certificate_url), body).await;
+        assert_eq!(response.status(), StatusCode::OK, "certificate");
+        let pem = body_text(response).await;
+
+        (account_url, order_url, pem)
+    }
+
+    /// `PREFIX`, re-exported so a suite importing this module needs one `use`.
+    pub const PROFILE_PREFIX: &str = PREFIX;
+}

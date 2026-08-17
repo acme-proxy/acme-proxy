@@ -451,7 +451,15 @@ async fn a_request_with_no_peer_address_is_refused() {
         .oneshot(Request::get(p("/directory")).body(Body::empty()).unwrap())
         .await
         .unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    // The `type` too: `Outcome::Deny` mapping to a different 403 —
+    // `rejectedIdentifier` at the connection stage, say — would pass a bare
+    // status check while meaning something else entirely to the client.
+    assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -491,7 +499,15 @@ async fn every_filter_must_pass() {
         ALLOWED,
     )
     .await;
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    // The `type` too: `Outcome::Deny` mapping to a different 403 —
+    // `rejectedIdentifier` at the connection stage, say — would pass a bare
+    // status check while meaning something else entirely to the client.
+    assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 // -------------------------------------------------------- forwarded headers
@@ -509,7 +525,15 @@ async fn a_spoofed_forwarded_header_does_not_grant_access() {
         BLOCKED,
     )
     .await;
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    // The `type` too: `Outcome::Deny` mapping to a different 403 —
+    // `rejectedIdentifier` at the connection stage, say — would pass a bare
+    // status check while meaning something else entirely to the client.
+    assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1478,4 +1502,362 @@ async fn a_policy_without_an_eab_check_resolves_no_credential() {
     config.rules = strings(&["tenant-a"]);
     let policy = filter::from_config(&config, &DnsConfig::default(), None, true).unwrap();
     assert!(policy.needs_eab());
+}
+
+// ---------------------------------------------------------------- path
+
+/// The `path` check exists for one concrete trap, and this is it: **`/crl` is
+/// served by the profile router**, so an address-based policy without a path
+/// rule silently breaks revocation checking for every relying party outside the
+/// allowlist — the parties the extension exists for.
+///
+/// `src/filter/path.rs` had seven unit tests and nothing above them; `grep
+/// '"path"' tests/` returned nothing at all before this.
+#[tokio::test]
+async fn a_path_rule_lets_a_blocked_relying_party_still_fetch_the_crl() {
+    // `net or crl-path`: an allowed address gets everything, and anyone at all
+    // gets the CRL. Kleene `or`, evaluated at the connection stage where both
+    // checks can decide.
+    let mut rule = BTreeMap::new();
+    rule.insert(
+        "connection".to_string(),
+        RuleConfig {
+            when: "net or crl-path".to_string(),
+            then: "allow".to_string(),
+            ..RuleConfig::default()
+        },
+    );
+    let config = FilterConfig {
+        rules: vec!["connection".to_string()],
+        rule,
+        check: [
+            (
+                "net".to_string(),
+                CheckConfig {
+                    r#type: "allowed_ip".to_string(),
+                    allow: strings(&["192.168.1.0/24"]),
+                    ..CheckConfig::default()
+                },
+            ),
+            (
+                "crl-path".to_string(),
+                CheckConfig {
+                    r#type: "path".to_string(),
+                    allow: strings(&["/crl"]),
+                    ..CheckConfig::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..FilterConfig::default()
+    };
+    let app = app_with_config(config).await;
+
+    // The blocked address may fetch the CRL...
+    let res = send_from(
+        &app,
+        Request::get(p("/crl")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK, "the CRL must stay reachable");
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/pkix-crl"),
+    );
+
+    // ...and nothing else.
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
+
+    // The allowed address is unaffected by the path rule.
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        ALLOWED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// A `path` glob covers **one segment**: one or more characters, none of them
+/// a `/`.
+///
+/// Deliberately unlike the name checks' `*`, which stops at a `.` —
+/// `path.rs` does not share `glob_to_pattern` for exactly this reason. The
+/// documented example is `/renewalInfo/*`, which "covers every certificate id
+/// and nothing deeper", and all three halves of that sentence are load-bearing:
+/// a `*` that crossed `/` would make one entry an accidental allow-list for a
+/// whole subtree, and one that matched empty would admit the bare prefix.
+#[tokio::test]
+async fn a_path_wildcard_covers_one_segment_and_no_more() {
+    let mut rule = BTreeMap::new();
+    rule.insert(
+        "connection".to_string(),
+        RuleConfig {
+            when: "paths".to_string(),
+            then: "allow".to_string(),
+            ..RuleConfig::default()
+        },
+    );
+    let config = FilterConfig {
+        rules: vec!["connection".to_string()],
+        rule,
+        check: [(
+            "paths".to_string(),
+            CheckConfig {
+                r#type: "path".to_string(),
+                allow: strings(&["/renewalInfo/*"]),
+                ..CheckConfig::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..FilterConfig::default()
+    };
+    let app = app_with_config(config).await;
+
+    // One segment: allowed through the filter. What the handler then makes of
+    // an unknown certID is its business — the assertion is only that the
+    // policy did not refuse it.
+    let res = send_from(
+        &app,
+        Request::get(p("/renewalInfo/some-cert-id"))
+            .body(Body::empty())
+            .unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_ne!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a single segment must match"
+    );
+
+    // Deeper: the `*` must not cross the separator.
+    let res = send_from(
+        &app,
+        Request::get(p("/renewalInfo/some-cert-id/extra"))
+            .body(Body::empty())
+            .unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a path wildcard must not cross a slash"
+    );
+
+    // Empty: `*` is one *or more*, so the bare prefix is not covered.
+    let res = send_from(
+        &app,
+        Request::get(p("/renewalInfo/"))
+            .body(Body::empty())
+            .unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::FORBIDDEN,
+        "a path wildcard matches one or more characters, never none"
+    );
+}
+
+/// The path a `path` check sees is the **profile-stripped** one.
+///
+/// A rule written `/directory` has to match a request to
+/// `/profile/default/directory`, or every path rule in a multi-profile
+/// deployment would silently need the prefix baked in — and would then break
+/// the moment the profile were renamed.
+#[tokio::test]
+async fn a_path_rule_matches_the_profile_stripped_path() {
+    let mut rule = BTreeMap::new();
+    rule.insert(
+        "connection".to_string(),
+        RuleConfig {
+            when: "paths".to_string(),
+            then: "allow".to_string(),
+            ..RuleConfig::default()
+        },
+    );
+    let config = FilterConfig {
+        rules: vec!["connection".to_string()],
+        rule,
+        check: [(
+            "paths".to_string(),
+            CheckConfig {
+                r#type: "path".to_string(),
+                // Written without the `/profile/default` prefix.
+                allow: strings(&["/directory"]),
+                ..CheckConfig::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..FilterConfig::default()
+    };
+    let app = app_with_config(config).await;
+
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "a path rule is written against the path inside the profile"
+    );
+
+    let res = send_from(
+        &app,
+        Request::get(p("/newNonce")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+// ------------------------------------------------------- rule message / mode
+
+/// A `[filter]` config with one matching **deny** rule, which is the shape
+/// `message` and `mode` actually apply to: both act on a rule whose condition
+/// came back `Pass`, not on the `filter.default` that catches everything else.
+fn deny_rule_config(message: &str, mode: &str, default: &str) -> FilterConfig {
+    let mut rule = BTreeMap::new();
+    rule.insert(
+        "block".to_string(),
+        RuleConfig {
+            when: "bad".to_string(),
+            then: "deny".to_string(),
+            message: message.to_string(),
+            mode: mode.to_string(),
+        },
+    );
+    FilterConfig {
+        rules: vec!["block".to_string()],
+        rule,
+        default: default.to_string(),
+        check: [(
+            "bad".to_string(),
+            CheckConfig {
+                r#type: "allowed_ip".to_string(),
+                // Passes for exactly the address the rule then denies.
+                allow: strings(&["203.0.113.9/32"]),
+                ..CheckConfig::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..FilterConfig::default()
+    }
+}
+
+/// An operator's `filter.rule.message` reaches the client **verbatim**, in
+/// place of whichever check happened to fail.
+///
+/// This suite deliberately routes policy tests (`or`, `not`, `warn`) to
+/// `src/filter/policy.rs`, but `message` is a wire-format concern: the words
+/// have to survive `Outcome::Deny` → `Problem::access_denied` → the `detail`
+/// member. And the *substitution* is the point — the default wording names the
+/// rule, which is exactly what an operator writing a custom message replaces.
+#[tokio::test]
+async fn an_operator_message_replaces_the_default_refusal_in_the_403() {
+    let app = app_with_config(deny_rule_config(
+        "contact netops@example.com for access",
+        "enforce",
+        "allow",
+    ))
+    .await;
+
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let problem = body_json(res).await;
+    let detail = problem["detail"].as_str().unwrap_or_default();
+
+    assert!(
+        detail.contains("contact netops@example.com for access"),
+        "the operator's own words must reach the client: {detail}"
+    );
+    // ...and the wording it replaced must not also be there, or the
+    // substitution bought nothing.
+    assert!(
+        !detail.contains("refused by policy rule"),
+        "the operator's message replaces the default, it does not join it: {detail}"
+    );
+}
+
+/// With no `message`, the refusal still names the rule that made it — so an
+/// operator reading a client's report can find the line responsible.
+#[tokio::test]
+async fn a_rule_with_no_message_names_itself_in_the_403() {
+    let app = app_with_config(deny_rule_config("", "enforce", "allow")).await;
+
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let detail = body_json(res).await["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("block"), "{detail}");
+}
+
+/// `mode = "warn"` admits the request the same rule would otherwise refuse.
+///
+/// The dry-run lever, and the one an operator reaches for first when rolling a
+/// policy out on a live endpoint — so it is worth proving through the router
+/// and not only in the evaluator. Both halves are needed: a `warn` that
+/// admitted everything would pass the second assertion on its own.
+#[tokio::test]
+async fn a_warn_mode_rule_admits_the_request_it_would_have_refused() {
+    // Enforcing: the rule matches and refuses.
+    let app = app_with_config(deny_rule_config("", "enforce", "allow")).await;
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+    // Warning: the same rule, the same address, admitted — the rule is skipped
+    // and `filter.default` decides instead.
+    let app = app_with_config(deny_rule_config("", "warn", "allow")).await;
+    let res = send_from(
+        &app,
+        Request::get(p("/directory")).body(Body::empty()).unwrap(),
+        BLOCKED,
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "a warn-mode rule must not decide"
+    );
 }
