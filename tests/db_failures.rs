@@ -250,3 +250,85 @@ async fn authorization_deactivation_db_error_returns_500() {
     })
     .await;
 }
+
+// ---------------------------------------------------------------------------
+// The write paths the suite's own docstring claimed and did not cover.
+// ---------------------------------------------------------------------------
+
+/// `keyChange` (§7.3.5): the account key swap.
+///
+/// A rollover that half-happened would be the worst outcome here — an account
+/// whose stored key matches neither the old nor the new one is locked out for
+/// good — so the failure has to be a clean `500` the client can retry.
+#[tokio::test]
+async fn key_change_db_error_returns_500() {
+    assert_500_after_pool_close("keyChange", |app, signer, db| async move {
+        let account_url = register(&app, &signer).await;
+        let new_key = EcSigner::new();
+
+        let key_change_url = format!("{BASE}/keyChange");
+        let inner = new_key.sign(
+            &key_change_url,
+            // The inner JWS carries no nonce (§7.3.5): it proves possession,
+            // it is not itself a request.
+            "",
+            &json!({ "account": account_url, "oldKey": signer.jwk() }),
+        );
+        let inner: serde_json::Value = serde_json::from_str(&inner).unwrap();
+
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid(&account_url, &key_change_url, &nonce, &inner);
+        (app, db, p("/keyChange"), body)
+    })
+    .await;
+}
+
+/// Retrieving an issued certificate by signed POST-as-GET (§7.4.2).
+///
+/// A read rather than a write, but it goes through the same extractor and the
+/// same order lookup, and a client polling for its chain must be told to come
+/// back rather than handed an empty body.
+#[tokio::test]
+async fn certificate_retrieval_db_error_returns_500() {
+    assert_500_after_pool_close("certificate retrieval", |app, signer, db| async move {
+        // One registration: `ready_order` does it, and registering again with
+        // the same key is a find-or-create `200`, not a `201`.
+        let (account_url, order_url, _order) =
+            common::acme::ready_order(&app, &signer, &["example.com"]).await;
+        let order_id = order_url.rsplit('/').next().unwrap().to_string();
+        let certificate_url = format!("{BASE}/certificate/{order_id}");
+
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
+        (app, db, p(&format!("/certificate/{order_id}")), body)
+    })
+    .await;
+}
+
+/// `newOrder` carrying `replaces` (RFC 9773 §5): the "already replaced?" lookup
+/// runs on every such order, and a database failure there must not be read as
+/// "no, nothing replaces it".
+#[tokio::test]
+async fn replaces_lookup_db_error_returns_500() {
+    assert_500_after_pool_close("newOrder replaces lookup", |app, signer, db| async move {
+        let (account_url, _order_url, pem) =
+            common::acme::issue_certificate(&app, &signer, &["example.com"]).await;
+
+        let leaf = acme_proxy::cert::leaf_der_from_chain(&pem).unwrap();
+        let cert_id = acme_proxy::cert::ari_cert_id(&leaf).unwrap();
+
+        let new_order_url = format!("{BASE}/newOrder");
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid(
+            &account_url,
+            &new_order_url,
+            &nonce,
+            &json!({
+                "identifiers": [{ "type": "dns", "value": "example.com" }],
+                "replaces": cert_id,
+            }),
+        );
+        (app, db, p("/newOrder"), body)
+    })
+    .await;
+}

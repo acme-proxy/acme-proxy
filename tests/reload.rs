@@ -412,3 +412,90 @@ async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
 
     server.stop().await;
 }
+
+/// A **keep-alive** connection sees the new router on its next request.
+///
+/// This is the property `src/reload.rs` states as the reason `SwapService` is a
+/// `fallback_service` and not a make-service: *"a make-service is consulted once
+/// per connection, so an HTTP/1.1 keep-alive client would hold the old router
+/// for its lifetime."*
+///
+/// Every other test in this file goes through `get`, which sends
+/// `Connection: close` — a fresh TCP connection per request. The inline tests in
+/// `src/reload.rs` use `tower::oneshot`, which has no connection concept at all.
+/// So a regression back to a make-service passed the entire suite, and would
+/// have shipped as "the reload did nothing" for exactly the long-lived clients
+/// (certbot's session, a monitoring poller) most likely to notice.
+#[tokio::test]
+async fn a_keep_alive_connection_sees_the_new_router_on_its_next_request() {
+    let dir = TempDir::new("reload-keepalive");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    // One socket, held open across the reload.
+    let mut stream = TcpStream::connect(server.acme).await.unwrap();
+
+    let before = read_one_response(&mut stream, "/profile/default/directory").await;
+    assert!(
+        before.contains("https://before.example"),
+        "the first request on this connection: {before}"
+    );
+
+    write_config(&dir, false, "https://after.example", "");
+    server.reload.reload().await.expect("the reload must apply");
+
+    // The *same* socket, not a new one.
+    let after = read_one_response(&mut stream, "/profile/default/directory").await;
+    assert!(
+        after.contains("https://after.example"),
+        "a keep-alive connection must not pin the generation it was opened on: {after}"
+    );
+    assert!(
+        !after.contains("https://before.example"),
+        "and must not still be answering from the old router: {after}"
+    );
+
+    server.stop().await;
+}
+
+/// Writes one keep-alive request and reads exactly its response.
+///
+/// Reads to `Content-Length` rather than to EOF, because the point of the test
+/// is that the connection stays open — `read_to_string` would block for ever.
+async fn read_one_response(stream: &mut TcpStream, path: &str) -> String {
+    stream
+        .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 1024];
+
+    // Headers first, so `Content-Length` can say where the body ends.
+    let headers_end = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "the connection closed mid-response");
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(at) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break at + 4;
+        }
+    };
+
+    let headers = String::from_utf8_lossy(&buffer[..headers_end]).to_string();
+    let length: usize = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .expect("the directory response carries a Content-Length");
+
+    while buffer.len() < headers_end + length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "the connection closed mid-body");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+
+    String::from_utf8_lossy(&buffer).to_string()
+}

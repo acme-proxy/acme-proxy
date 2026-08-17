@@ -1183,6 +1183,84 @@ impl SignerBackend for RevokeFailingSigner {
     }
 }
 
+/// A signer backend whose `revoke` **succeeds** and then closes the database
+/// underneath the caller.
+///
+/// The sibling of [`RevokeFailingSigner`], for the opposite branch: the CA
+/// withdrew trust and this server then failed to record it
+/// (`certificate_revoke_persist_failed`). That branch has its own error event,
+/// its own audit row and a carefully argued comment, and nothing reached it —
+/// `tests/db_failures.rs` closes the pool up front, so those tests land on the
+/// *lookup* long before the signer is called.
+///
+/// Closing the pool from inside `revoke` is what puts the failure between the
+/// two writes, which is the only place this branch lives.
+pub struct RevokePersistFailingSigner {
+    ca: Arc<LocalCa>,
+    /// Set after the app is built, since the builder is what creates the
+    /// database this signer has to close.
+    database: std::sync::OnceLock<Arc<Database>>,
+    /// How many times `revoke` was called, so a retry can be shown to reach the
+    /// signer again — the branch's whole claim is that a retry is expected.
+    pub revocations: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RevokePersistFailingSigner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            ca: Arc::new(
+                LocalCa::generate_in_memory("ecdsa-p256", 90)
+                    .expect("an in-memory CA is always available"),
+            ),
+            database: std::sync::OnceLock::new(),
+            revocations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Hands over the database to close, once the app that owns it exists.
+    pub fn arm(&self, database: Arc<Database>) {
+        let _ = self.database.set(database);
+    }
+}
+
+impl Default for RevokePersistFailingSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SignerBackend for RevokePersistFailingSigner {
+    async fn issue(
+        &self,
+        order_id: &str,
+        csr_der: &[u8],
+        identifiers: &[Identifier],
+        validity: RequestedValidity,
+    ) -> Result<IssueOutcome, SignerError> {
+        self.ca
+            .issue(order_id, csr_der, identifiers, validity)
+            .await
+    }
+
+    async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
+        self.revocations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // The CA-side action really happens...
+        self.ca.revoke(cert_der, reason).await?;
+        // ...and *then* the record of it becomes impossible.
+        if let Some(database) = self.database.get() {
+            database.pool.close().await;
+        }
+        Ok(())
+    }
+
+    async fn crl_der(&self) -> Option<Vec<u8>> {
+        self.ca.crl_der().await
+    }
+}
+
 /// A signer backend carrying nothing but an `http-01` token store.
 ///
 /// The responder route is mounted off `SignerBackend::http01_tokens`, so this

@@ -528,3 +528,66 @@ async fn revoke_cert_answers_500_and_revokes_nothing_when_the_database_is_gone()
         "a database failure must not have reached the signer"
     );
 }
+
+/// The CA took the revocation and this server failed to record it.
+///
+/// `certificate_revoke_persist_failed` sits between the two writes: the signer
+/// already withdrew trust, and `Order::revoke` then failed. It has its own
+/// error event, its own audit row and a carefully argued comment, and nothing
+/// reached it — `tests/db_failures.rs` closes the pool up front, so those tests
+/// land on the *lookup* two hundred lines earlier.
+///
+/// What the branch claims, and what this pins: the client gets a `500` it is
+/// expected to retry, the failure is on the audit trail, and the CA-side action
+/// stands (the serial really is in the CRL) even though the order still reads
+/// un-revoked.
+#[tokio::test]
+async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() {
+    let backend = Arc::new(common::RevokePersistFailingSigner::new());
+    let (app, database) = test_app_with_signer(backend.clone()).await;
+    backend.arm(database.clone());
+
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
+    let leaf_der = first_certificate(&chain);
+    let (serial_hex, _) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+
+    let payload = json!({ "certificate": cert_field(&chain) });
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid(&account_url, REVOKE_URL, &nonce, &payload);
+    let res = revoke(&app, body).await;
+
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:serverInternal",
+        "a failure to record is the server's problem, never the client's"
+    );
+
+    // The signer really was called — this is the branch *past* it, not the one
+    // where the CA refused.
+    assert_eq!(
+        backend
+            .revocations
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+
+    // And the CA-side action stands: the serial is in the CRL even though the
+    // order row never learned about it. That asymmetry is the whole reason the
+    // branch is audited as a failure rather than swallowed.
+    use acme_proxy::signer::SignerBackend;
+    let crl = backend.crl_der().await.expect("the CA serves a CRL");
+    use x509_parser::prelude::FromDer;
+    let (_, parsed) =
+        x509_parser::revocation_list::CertificateRevocationList::from_der(&crl).unwrap();
+    let serials: Vec<String> = parsed
+        .iter_revoked_certificates()
+        .map(|entry| entry.raw_serial_as_string().replace(':', ""))
+        .collect();
+    assert!(
+        serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
+        "the CA withdrew trust, so the CRL must say so: expected {serial_hex} in {serials:?}"
+    );
+}
