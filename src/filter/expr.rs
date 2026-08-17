@@ -52,18 +52,13 @@ pub enum Condition {
 }
 
 /// Why an expression would not parse, and where.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message} at column {column}")]
 pub struct ExprError {
     /// The problem, without the position — [`fmt::Display`] appends that.
     pub message: String,
     /// 1-based character position the parser gave up at.
     pub column: usize,
-}
-
-impl fmt::Display for ExprError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} at column {}", self.message, self.column)
-    }
 }
 
 impl ExprError {

@@ -159,16 +159,9 @@ pub(crate) fn resolve_profile(
 /// `std::process::exit` where it stands: [`run`] is the single place that
 /// prints and exits, so each command body stays a plain function a test can
 /// call and assert on.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct CliError(pub String);
-
-impl std::fmt::Display for CliError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CliError {}
 
 impl From<sqlx::Error> for CliError {
     fn from(error: sqlx::Error) -> Self {

@@ -19,14 +19,17 @@ use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::db::Database;
 
 /// Why creating or re-passwording an operator failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum UserError {
+    #[error("database error: {0}")]
     Database(sqlx::Error),
     /// The password did not satisfy [`password::check_password_policy`]. The
     /// string is the operator-facing reason.
+    #[error("{0}")]
     Policy(String),
     /// A user by that name already exists. Caught before the INSERT so the
     /// operator reads a sentence rather than a UNIQUE violation.
+    #[error("an admin user named `{0}` already exists")]
     DuplicateUsername(String),
 }
 
@@ -35,20 +38,6 @@ impl From<sqlx::Error> for UserError {
         Self::Database(error)
     }
 }
-
-impl std::fmt::Display for UserError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(error) => write!(f, "database error: {error}"),
-            Self::Policy(detail) => write!(f, "{detail}"),
-            Self::DuplicateUsername(username) => {
-                write!(f, "an admin user named `{username}` already exists")
-            }
-        }
-    }
-}
-
-impl std::error::Error for UserError {}
 
 /// The result of checking a username and password.
 ///

@@ -63,6 +63,15 @@ rcgen = { version = "0.14.8", default-features = false, features = ["ring", "pem
 rustls-pki-types = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] } # RFC3339 <-> epoch for order objects
 anyhow = "1"
+# The `Display` + `std::error::Error` half of this crate's sixteen error types.
+# Sixteen hand-written `match`-and-`write!` blocks is ~250 lines whose only
+# content is a format string that has drifted from the variant beside it more
+# than once; `#[error("…")]` puts the two on adjacent lines. Adds one crate to
+# the graph `cargo deny` audits at `all-features = true`: `syn`, `quote` and
+# `proc-macro2` are already there via `serde_derive` and `async-trait`.
+# Deliberately *not* accompanied by `anyhow`'s `.context()` — see the
+# conventions note in CLAUDE.md about `CliError` staying lossless.
+thiserror = "2"
 # Required by the `Filter` (`src/filter`) and `SignerBackend` (`src/signer`)
 # traits: `Arc<dyn Trait>` with `async fn` methods is not dyn-safe without it.
 async-trait = "0.1"

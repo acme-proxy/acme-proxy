@@ -19,7 +19,8 @@ use axum::response::{IntoResponse, Response};
 use tracing::error;
 
 /// A failed admin request.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{code}: {message}")]
 pub struct AdminError {
     pub status: StatusCode,
     /// Stable, machine-readable, snake_case. Never a URN.
@@ -148,14 +149,6 @@ impl From<sqlx::Error> for AdminError {
         AdminError::internal()
     }
 }
-
-impl std::fmt::Display for AdminError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for AdminError {}
 
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {

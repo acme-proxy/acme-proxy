@@ -52,12 +52,28 @@ pub enum RevokeOutcome {
     Revoked(Box<Order>),
 }
 
+/// How a [`SignerError`] reads inside a [`RevokeError`].
+///
+/// `BadCsr` is not a thing `revoke` can legitimately answer — the hook takes a
+/// certificate, not a CSR — so it is reported as the contract violation it is
+/// rather than passed through as if it meant something here.
+fn signer_detail(error: &SignerError) -> String {
+    match error {
+        SignerError::Internal(detail) => detail.clone(),
+        SignerError::BadCsr => "unexpected badCsr from revoke".to_string(),
+    }
+}
+
 /// Why [`revoke_order`] failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RevokeError {
+    #[error("database error: {0}")]
     Database(sqlx::Error),
+    #[error("signer error: {}", signer_detail(.0))]
     Signer(SignerError),
+    #[error("internal error: {0}")]
     Internal(String),
+    #[error("unsupported revocation reason code {0}")]
     BadReason(u32),
 }
 
@@ -70,20 +86,6 @@ impl From<sqlx::Error> for RevokeError {
 impl From<SignerError> for RevokeError {
     fn from(error: SignerError) -> Self {
         Self::Signer(error)
-    }
-}
-
-impl std::fmt::Display for RevokeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Database(error) => write!(f, "database error: {error}"),
-            Self::Signer(SignerError::Internal(detail)) => write!(f, "signer error: {detail}"),
-            Self::Signer(SignerError::BadCsr) => {
-                write!(f, "signer error: unexpected badCsr from revoke")
-            }
-            Self::Internal(detail) => write!(f, "internal error: {detail}"),
-            Self::BadReason(reason) => write!(f, "unsupported revocation reason code {reason}"),
-        }
     }
 }
 

@@ -226,26 +226,17 @@ pub trait SignerBackend: Send + Sync {
 
 /// Why issuance failed, mapped by the handler to the right ACME error:
 /// a client-side CSR problem versus an internal signing failure.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SignerError {
     /// The CSR was unparsable or did not match the order's identifiers.
     /// Maps to `Problem::bad_csr` (400).
+    #[error("Bad CSR")]
     BadCsr,
     /// The backend failed to sign (should not happen in normal operation).
     /// Maps to `Problem::server_internal` (500).
+    #[error("Internal signer error: {0}")]
     Internal(String),
 }
-
-impl std::fmt::Display for SignerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignerError::BadCsr => write!(f, "Bad CSR"),
-            SignerError::Internal(detail) => write!(f, "Internal signer error: {detail}"),
-        }
-    }
-}
-
-impl std::error::Error for SignerError {}
 
 /// Builds the configured signer backend. Called once at startup, so it may fail
 /// fast (the caller exits on error).

@@ -25,7 +25,6 @@
 //! under `admin::` beside the other logic both front ends use rather than
 //! inside `webadmin::`.
 
-use std::fmt;
 use std::num::NonZeroU32;
 
 use base64::Engine as _;
@@ -68,47 +67,21 @@ pub const MAX_PASSWORD_LEN: usize = 1024;
 /// Every variant means the `admin_users` row is corrupt, never that the
 /// password was wrong -- callers must not fold this into "authentication
 /// failed", or a mangled row would read as a bad password forever.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PasswordError {
     /// Not the four `$`-separated fields the format defines.
+    #[error("stored password hash is not in the expected format")]
     Malformed,
     /// A prefix this build does not implement.
+    #[error("unknown password hash algorithm `{0}`")]
     UnknownAlgorithm(String),
     /// The iteration field was not a positive integer.
+    #[error("stored password hash has an invalid iteration count")]
     BadIterations,
     /// Salt or hash was not valid unpadded base64url, or was the wrong length.
+    #[error("stored password hash has an invalid salt or digest")]
     BadEncoding,
 }
-
-impl fmt::Display for PasswordError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PasswordError::Malformed => {
-                write!(
-                    formatter,
-                    "stored password hash is not in the expected format"
-                )
-            }
-            PasswordError::UnknownAlgorithm(algorithm) => {
-                write!(formatter, "unknown password hash algorithm `{algorithm}`")
-            }
-            PasswordError::BadIterations => {
-                write!(
-                    formatter,
-                    "stored password hash has an invalid iteration count"
-                )
-            }
-            PasswordError::BadEncoding => {
-                write!(
-                    formatter,
-                    "stored password hash has an invalid salt or digest"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for PasswordError {}
 
 /// Rejects a password before it is ever hashed.
 ///

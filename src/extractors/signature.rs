@@ -35,10 +35,11 @@ mod oids {
 }
 
 /// Why a JWS signature check failed, so callers can pick the right HTTP status.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SignatureError {
     /// Invalid base64 in the signature or key params, or a key whose shape does
     /// not match its declared type.
+    #[error("Malformed signature: {0}")]
     Malformed(&'static str),
     /// The `alg` (or the `crv` under it) names an algorithm this server does not
     /// implement.
@@ -47,25 +48,15 @@ pub enum SignatureError {
     /// its own error type — `badSignatureAlgorithm`, carrying the list of
     /// algorithms the server *does* support — so a client can retry with one
     /// instead of being told only that its request was bad.
+    #[error("Unsupported algorithm: {0}")]
     BadAlgorithm(&'static str),
     /// The signature did not verify against the public key.
+    #[error("Bad signature: {0}")]
     BadSignature(&'static str),
     /// Re-encoding the verified public key to DER SPKI failed.
+    #[error("Encoding error: {0}")]
     Encoding(&'static str),
 }
-
-impl std::fmt::Display for SignatureError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SignatureError::Malformed(msg) => write!(f, "Malformed signature: {msg}"),
-            SignatureError::BadAlgorithm(msg) => write!(f, "Unsupported algorithm: {msg}"),
-            SignatureError::BadSignature(msg) => write!(f, "Bad signature: {msg}"),
-            SignatureError::Encoding(msg) => write!(f, "Encoding error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for SignatureError {}
 
 /// Length in octets of a single P-256 coordinate (RFC 7518 §6.2.1.2).
 const P256_COORDINATE_LEN: usize = 32;

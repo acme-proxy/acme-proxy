@@ -55,7 +55,8 @@ pub const RELAY_JOB_KIND: &str = "signer_relay_issue";
 /// and choosing between them is the whole of this type's job. Getting it wrong
 /// in one direction wastes the retry budget and delays the client's real answer;
 /// in the other it throws away the retry, which is what the queue exists for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", self.reason())]
 pub(super) enum RelayFailure {
     /// Nobody decided anything: the network, a proxy, a 5xx, a rate limit, a
     /// timeout. Ask again after the backoff.
@@ -70,12 +71,6 @@ impl RelayFailure {
         match self {
             RelayFailure::Retryable(reason) | RelayFailure::Permanent(reason) => reason,
         }
-    }
-}
-
-impl std::fmt::Display for RelayFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.reason())
     }
 }
 

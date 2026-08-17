@@ -95,7 +95,8 @@ pub trait NotifyBackend: Send + Sync {
 /// afterwards. The default — [`NotifyError::new`] — is *retryable*, because
 /// most of these are transport; a backend that knows better says so with
 /// [`NotifyError::permanent`].
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{detail}")]
 pub struct NotifyError {
     detail: String,
     retryable: bool,
@@ -126,14 +127,6 @@ impl NotifyError {
         self.retryable
     }
 }
-
-impl std::fmt::Display for NotifyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.detail)
-    }
-}
-
-impl std::error::Error for NotifyError {}
 
 /// Context common to every event: the profile it happened on and the client
 /// address, when a request was in scope.

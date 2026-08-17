@@ -50,7 +50,8 @@ use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 /// `status` is `Some` only when the server answered at all, which is what lets
 /// a backend read one particular code as an answer rather than a failure. The
 /// message is already worded for an operator and names the URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub(crate) struct JsonApiError {
     pub status: Option<StatusCode>,
     pub message: String,
@@ -62,12 +63,6 @@ impl JsonApiError {
             status: None,
             message,
         }
-    }
-}
-
-impl std::fmt::Display for JsonApiError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
     }
 }
 

@@ -35,6 +35,7 @@ dependencies = [
  "sqlx",
  "subtle",
  "testcontainers",
+ "thiserror",
  "time",
  "tokio",
  "tokio-rustls",

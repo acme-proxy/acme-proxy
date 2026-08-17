@@ -116,16 +116,9 @@ impl AddressNames {
 /// the client's, and the filter is the only place a denial is decided. Keeping
 /// the type unable to express a refusal is what stops a backend author from
 /// accidentally turning an outage into a permanent-looking rejection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct IpamError(pub String);
-
-impl std::fmt::Display for IpamError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for IpamError {}
 
 /// One place a permitted name may come from.
 ///

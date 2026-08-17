@@ -31,12 +31,14 @@ use axum::response::{Html, IntoResponse, Response};
 use crate::webadmin::error::AdminError;
 
 /// A failed page request.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PageError {
     /// Sign-in is needed: `303` + `Location` for a browser, `HX-Redirect` for
     /// htmx.
+    #[error("redirect: {location}")]
     Redirect { location: String, hx: bool },
     /// Anything else: the real status, plus a standalone HTML document.
+    #[error("{code}: {message}")]
     Rendered {
         status: StatusCode,
         /// The same stable snake_case code the JSON API uses, so an operator
@@ -118,17 +120,6 @@ impl From<sqlx::Error> for PageError {
         AdminError::from(error).into()
     }
 }
-
-impl std::fmt::Display for PageError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Redirect { location, .. } => write!(formatter, "redirect: {location}"),
-            Self::Rendered { code, message, .. } => write!(formatter, "{code}: {message}"),
-        }
-    }
-}
-
-impl std::error::Error for PageError {}
 
 impl IntoResponse for PageError {
     fn into_response(self) -> Response {

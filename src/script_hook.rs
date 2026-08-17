@@ -47,27 +47,16 @@ pub(crate) enum ScriptStdin<'a> {
 
 /// Why a script produced no verdict at all — as opposed to producing one this
 /// caller did not like, which is [`ScriptOutcome`]'s business.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum ScriptError {
-    Spawn { path: PathBuf, source: String },
+    #[error("failed to spawn script {}: {detail}", path.display())]
+    Spawn { path: PathBuf, detail: String },
+    #[error("failed to serialize JSON stdin: {0}")]
     Serialize(String),
+    #[error("script failed: {0}")]
     Wait(String),
+    #[error("script timed out after {} ms", .0.as_millis())]
     Timeout(Duration),
-}
-
-impl std::fmt::Display for ScriptError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Spawn { path, source } => {
-                write!(f, "failed to spawn script {}: {source}", path.display())
-            }
-            Self::Serialize(detail) => write!(f, "failed to serialize JSON stdin: {detail}"),
-            Self::Wait(detail) => write!(f, "script failed: {detail}"),
-            Self::Timeout(budget) => {
-                write!(f, "script timed out after {} ms", budget.as_millis())
-            }
-        }
-    }
 }
 
 /// What a script answered, plus whether it ever read the question.
@@ -147,7 +136,7 @@ impl ScriptHook {
 
         let mut child = cmd.spawn().map_err(|error| ScriptError::Spawn {
             path: self.path.clone(),
-            source: error.to_string(),
+            detail: error.to_string(),
         })?;
 
         let mut stdin_error = None;

@@ -47,43 +47,28 @@ use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 /// [`SignerError`](crate::signer::SignerError) at the trait boundary in
 /// [`super`]; kept separate here so this module never mentions `error.rs`,
 /// the same split `challenge` and `filter` draw.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum UpstreamError {
     /// The URL was unusable, or named a scheme/host this client cannot reach.
+    #[error("upstream URL invalid: {0}")]
     Url(String),
     /// TCP/TLS/HTTP transport failure.
+    #[error("upstream transport failed: {0}")]
     Transport(String),
     /// A response body was not the JSON this client expected.
+    #[error("upstream protocol error: {0}")]
     Protocol(String),
     /// The upstream answered with an ACME problem document.
+    #[error("upstream returned {status} {typ}: {detail}")]
     Problem {
         status: u16,
         typ: String,
         detail: String,
     },
     /// Signing the outgoing JWS failed (a local key problem).
+    #[error("outbound JWS signing failed: {0}")]
     Jws(String),
 }
-
-impl std::fmt::Display for UpstreamError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UpstreamError::Url(detail) => write!(f, "upstream URL invalid: {detail}"),
-            UpstreamError::Transport(detail) => write!(f, "upstream transport failed: {detail}"),
-            UpstreamError::Protocol(detail) => write!(f, "upstream protocol error: {detail}"),
-            UpstreamError::Problem {
-                status,
-                typ,
-                detail,
-            } => {
-                write!(f, "upstream returned {status} {typ}: {detail}")
-            }
-            UpstreamError::Jws(detail) => write!(f, "outbound JWS signing failed: {detail}"),
-        }
-    }
-}
-
-impl std::error::Error for UpstreamError {}
 
 impl UpstreamError {
     /// Whether this is the upstream rejecting the relayed CSR itself, as

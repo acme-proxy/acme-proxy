@@ -130,43 +130,29 @@ const FROZEN: &[(&str, Projection)] = &[
 ];
 
 /// Why a reload did not happen.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ReloadError {
     /// A key a running process cannot change was changed. The whole reload is
     /// refused: a generation that applied half a file could not be printed back
     /// faithfully, so "what is this server running?" would stop having an
     /// answer.
+    #[error(
+        "`{key}` cannot be changed while the server is running \
+         (running with `{applied}`, the file now says `{proposed}`): \
+         restart to apply it"
+    )]
     Frozen {
         key: String,
         applied: String,
         proposed: String,
     },
     /// The new configuration could not be read or resolved.
+    #[error("the configuration did not load: {0}")]
     Load(String),
     /// It read, but something it asks for could not be built.
+    #[error("the new configuration did not build: {0}")]
     Build(String),
 }
-
-impl std::fmt::Display for ReloadError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Frozen {
-                key,
-                applied,
-                proposed,
-            } => write!(
-                formatter,
-                "`{key}` cannot be changed while the server is running \
-                 (running with `{applied}`, the file now says `{proposed}`): \
-                 restart to apply it"
-            ),
-            Self::Load(error) => write!(formatter, "the configuration did not load: {error}"),
-            Self::Build(error) => write!(formatter, "the new configuration did not build: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for ReloadError {}
 
 impl ReloadError {
     /// The short tag a log line carries, so an operator can tell a refusal from
