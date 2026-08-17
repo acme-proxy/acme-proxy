@@ -159,6 +159,23 @@ pub(crate) fn rfc3339(secs: i64) -> String {
         .unwrap_or_default()
 }
 
+/// Every column, in one place: each lookup, both listings and the paged search
+/// must select the same set or [`Order::from_row`] fails on whichever forgot
+/// one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*: `sqlx::query` takes `impl SqlSafeStr`, which a runtime `format!`
+/// does not satisfy, so `concat!("SELECT ", columns!(), " FROM …")` is what
+/// keeps a shared column list and a compile-time-checked query in the same
+/// design.
+macro_rules! columns {
+    () => {
+        "id, profile, account_id, status, identifiers, expires, not_before, not_after, \
+         error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, \
+         revocation_reason, created_at, created_ip, created_ptr"
+    };
+}
+
 impl Order {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let identifiers_json: String = row.try_get("identifiers")?;
@@ -310,8 +327,7 @@ impl Order {
 
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
-        let row = sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-             FROM orders WHERE id = ?;")
+        let row = sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE id = ?;"))
             .bind(id)
             .fetch_optional(&database.pool)
             .await?;
@@ -336,12 +352,14 @@ impl Order {
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_account_started", outcome = "progress", account_id = ?account_id);
-        let rows =
-            sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-             FROM orders WHERE account_id = ? ORDER BY created_at DESC;")
-                .bind(account_id)
-                .fetch_all(&database.pool)
-                .await?;
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM orders WHERE account_id = ? ORDER BY created_at DESC;"
+        ))
+        .bind(account_id)
+        .fetch_all(&database.pool)
+        .await?;
 
         rows.into_iter().map(Order::from_row).collect()
     }
@@ -364,9 +382,7 @@ impl Order {
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_active_by_account_started", outcome = "progress", account_id = ?account_id);
         let rows =
-            sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-             FROM orders WHERE account_id = ? AND status != 'invalid' AND (status = 'valid' OR expires > ?) \
-             ORDER BY created_at DESC;")
+            sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE account_id = ? AND status != 'invalid' AND (status = 'valid' OR expires > ?) ORDER BY created_at DESC;"))
                 .bind(account_id)
                 .bind(now_secs())
                 .fetch_all(&database.pool)
@@ -387,15 +403,25 @@ impl Order {
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_list_all_started", outcome = "progress", profile = ?profile);
         let rows = match profile {
-            Some(profile) => sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-                 FROM orders WHERE profile = ? ORDER BY created_at ASC;")
+            Some(profile) => {
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM orders WHERE profile = ? ORDER BY created_at ASC;"
+                ))
                 .bind(profile)
                 .fetch_all(&database.pool)
-                .await?,
-            None => sqlx::query("SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-                 FROM orders ORDER BY created_at ASC;")
+                .await?
+            }
+            None => {
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM orders ORDER BY created_at ASC;"
+                ))
                 .fetch_all(&database.pool)
-                .await?,
+                .await?
+            }
         };
 
         rows.into_iter().map(Order::from_row).collect()
@@ -432,11 +458,7 @@ impl Order {
                limit = query.limit,
                offset = query.offset);
 
-        let mut page = sqlx::QueryBuilder::new(
-            "SELECT id, profile, account_id, status, identifiers, expires, not_before, \
-             not_after, error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, \
-             revocation_reason, created_at, created_ip, created_ptr FROM orders",
-        );
+        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!(), " FROM orders"));
         query.push_predicates(&mut page);
         // Newest first, and `id` breaks the tie: `created_at` is whole seconds,
         // so without it two orders placed in the same second could swap between
@@ -547,11 +569,11 @@ impl Order {
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_cert_serial_started", outcome = "progress", profile = %profile, cert_serial = ?serial);
-        let row = sqlx::query(
-            "SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, \
-             cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-             FROM orders WHERE profile = ? AND cert_serial = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM orders WHERE profile = ? AND cert_serial = ?;"
+        ))
         .bind(profile)
         .bind(serial)
         .fetch_optional(&database.pool)
@@ -580,11 +602,11 @@ impl Order {
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_replaces_started", outcome = "progress", profile = %profile, replaces = %cert_id);
-        let row = sqlx::query(
-            "SELECT id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, \
-             cert_serial, cert_pubkey, revoked_at, revocation_reason, created_at, created_ip, created_ptr \
-             FROM orders WHERE profile = ? AND replaces = ? AND status != 'invalid' LIMIT 1;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM orders WHERE profile = ? AND replaces = ? AND status != 'invalid' LIMIT 1;"
+        ))
         .bind(profile)
         .bind(cert_id)
         .fetch_optional(&database.pool)

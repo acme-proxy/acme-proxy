@@ -93,6 +93,23 @@ pub(crate) fn pubkey_fingerprint(pubkey: &[u8]) -> String {
     hex::encode(&digest.as_ref()[..8])
 }
 
+/// Every column, in one place: each lookup, the listing and the paged search
+/// must select the same set or [`Account::from_row`] fails on whichever forgot
+/// one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*: `sqlx::query` takes `impl SqlSafeStr`, which a runtime `format!`
+/// does not satisfy, so `concat!("SELECT ", columns!(), " FROM …")` is what
+/// keeps a shared column list and a compile-time-checked query in the same
+/// design.
+macro_rules! columns {
+    () => {
+        "id, profile, pubkey, contact, status, created_at, eab_kid, \
+         terms_of_service_agreed, created_ip, created_ptr, last_seen_at, \
+         last_seen_ip, last_seen_ptr"
+    };
+}
+
 impl Account {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let contact_json: String = row.try_get("contact")?;
@@ -123,9 +140,11 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_by_pubkey_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
-        let row = sqlx::query(
-            "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? AND pubkey = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM accounts WHERE profile = ? AND pubkey = ?;"
+        ))
         .bind(profile)
         .bind(pubkey)
         .fetch_optional(&database.pool)
@@ -151,9 +170,11 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_by_id_started", outcome = "progress", profile = %profile, account_id = %id);
-        let row = sqlx::query(
-            "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? AND id = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM accounts WHERE profile = ? AND id = ?;"
+        ))
         .bind(profile)
         .bind(id)
         .fetch_optional(&database.pool)
@@ -412,9 +433,11 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_any_by_id_started", outcome = "progress", account_id = %id);
-        let row = sqlx::query(
-            "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE id = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM accounts WHERE id = ?;"
+        ))
         .bind(id)
         .fetch_optional(&database.pool)
         .await?;
@@ -431,17 +454,25 @@ impl Account {
     ) -> Result<Vec<Account>, sqlx::Error> {
         debug!(event = "db_account_list_all_started", outcome = "progress", profile = ?profile);
         let rows = match profile {
-            Some(profile) => sqlx::query(
-                "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? ORDER BY created_at ASC;",
-            )
-            .bind(profile)
-            .fetch_all(&database.pool)
-            .await?,
-            None => sqlx::query(
-                "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts ORDER BY created_at ASC;",
-            )
-            .fetch_all(&database.pool)
-            .await?,
+            Some(profile) => {
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM accounts WHERE profile = ? ORDER BY created_at ASC;"
+                ))
+                .bind(profile)
+                .fetch_all(&database.pool)
+                .await?
+            }
+            None => {
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM accounts ORDER BY created_at ASC;"
+                ))
+                .fetch_all(&database.pool)
+                .await?
+            }
         };
 
         rows.into_iter().map(Account::from_row).collect()
@@ -470,12 +501,12 @@ impl Account {
         // between pages, and one of them would never be seen.
         let (rows, total) = match profile {
             Some(profile) => {
-                let rows = sqlx::query(
-                    "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, \
-                     terms_of_service_agreed, created_ip, created_ptr, last_seen_at, \
-                     last_seen_ip, last_seen_ptr FROM accounts WHERE profile = ? \
-                     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;",
-                )
+                let rows = sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM accounts WHERE profile = ? \
+                     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;"
+                ))
                 .bind(profile)
                 .bind(limit)
                 .bind(offset)
@@ -489,12 +520,11 @@ impl Account {
                 (rows, total)
             }
             None => {
-                let rows = sqlx::query(
-                    "SELECT id, profile, pubkey, contact, status, created_at, eab_kid, \
-                     terms_of_service_agreed, created_ip, created_ptr, last_seen_at, \
-                     last_seen_ip, last_seen_ptr FROM accounts \
-                     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;",
-                )
+                let rows = sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM accounts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;"
+                ))
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(&database.pool)

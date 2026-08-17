@@ -46,6 +46,18 @@ pub struct AdminUser {
     pub last_login_at: Option<i64>,
 }
 
+/// Every column of `admin_users`, in one place: each read must select the same set
+/// or `from_row` fails on whichever forgot one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*, which is what `sqlx::query`'s `SqlSafeStr` bound requires.
+macro_rules! columns {
+    () => {
+        "id, username, password_hash, status, totp_secret, totp_pending_secret, \
+         totp_last_step, created_at, updated_at, last_login_at"
+    };
+}
+
 impl AdminUser {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(AdminUser {
@@ -113,11 +125,11 @@ impl AdminUser {
         database: &Database,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
         debug!(event = "db_admin_user_find_by_id_started", outcome = "progress", id = ?id);
-        let row = sqlx::query(
-            "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
-             totp_last_step, created_at, updated_at, last_login_at \
-             FROM admin_users WHERE id = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_users WHERE id = ?;"
+        ))
         .bind(id)
         .fetch_optional(&database.pool)
         .await?;
@@ -135,11 +147,11 @@ impl AdminUser {
             event = "db_admin_user_find_by_username_started",
             outcome = "progress"
         );
-        let row = sqlx::query(
-            "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
-             totp_last_step, created_at, updated_at, last_login_at \
-             FROM admin_users WHERE username = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_users WHERE username = ?;"
+        ))
         .bind(username.trim().to_lowercase())
         .fetch_optional(&database.pool)
         .await?;
@@ -153,11 +165,11 @@ impl AdminUser {
             event = "db_admin_user_list_all_started",
             outcome = "progress"
         );
-        let rows = sqlx::query(
-            "SELECT id, username, password_hash, status, totp_secret, totp_pending_secret, \
-             totp_last_step, created_at, updated_at, last_login_at \
-             FROM admin_users ORDER BY created_at ASC, id ASC;",
-        )
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_users ORDER BY created_at ASC, id ASC;"
+        ))
         .fetch_all(&database.pool)
         .await?;
 

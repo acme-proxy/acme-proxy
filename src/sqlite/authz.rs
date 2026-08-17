@@ -78,6 +78,17 @@ fn generate_token() -> String {
     BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Every column of `authorizations`, in one place: each read must select the same set
+/// or `from_row` fails on whichever forgot one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*, which is what `sqlx::query`'s `SqlSafeStr` bound requires.
+macro_rules! authz_columns {
+    () => {
+        "id, order_id, identifier, status, expires, created_at"
+    };
+}
+
 impl Authorization {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let identifier_json: String = row.try_get("identifier")?;
@@ -152,10 +163,11 @@ impl Authorization {
         database: &Database,
     ) -> Result<Option<Authorization>, sqlx::Error> {
         debug!(event = "db_authz_find_by_id_started", outcome = "progress", authz_id = ?id);
-        let row = sqlx::query(
-            "SELECT id, order_id, identifier, status, expires, created_at \
-             FROM authorizations WHERE id = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            authz_columns!(),
+            " FROM authorizations WHERE id = ?;"
+        ))
         .bind(id)
         .fetch_optional(&database.pool)
         .await?;
@@ -241,10 +253,11 @@ impl Authorization {
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
         debug!(event = "db_authz_find_by_order_started", outcome = "progress", order_id = ?order_id);
-        let rows = sqlx::query(
-            "SELECT id, order_id, identifier, status, expires, created_at \
-             FROM authorizations WHERE order_id = ? ORDER BY created_at ASC;",
-        )
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            authz_columns!(),
+            " FROM authorizations WHERE order_id = ? ORDER BY created_at ASC;"
+        ))
         .bind(order_id)
         .fetch_all(executor)
         .await?;
@@ -283,6 +296,15 @@ impl Authorization {
     }
 
     /// The `deactivated` transition as a bare statement; see [`Authorization::set_valid`].
+    ///
+    /// The terminal state a client asks for itself (RFC 8555 §7.5.2). Like
+    /// [`Authorization::mark_invalid`] it does not stamp `validated`: §8 defines
+    /// that as the time of a *successful* validation, and relinquishing an
+    /// authorization is the opposite.
+    ///
+    /// Bare-statement only: §7.5.2's deactivate-and-demote pair is committed in
+    /// one transaction (`handlers::authz`), so there is no persist-and-sync twin
+    /// to go with it.
     pub(crate) async fn set_deactivated<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
@@ -317,21 +339,6 @@ impl Authorization {
 
         self.status = "invalid".to_string();
         info!(event = "db_authz_marked_invalid", outcome = "failure", authz_id = ?self.id);
-        Ok(())
-    }
-
-    /// Moves the authorization to the terminal `deactivated` state, at the
-    /// client's own request (RFC 8555 §7.5.2).
-    ///
-    /// Like [`Authorization::mark_invalid`] this does not stamp `validated`:
-    /// §8 defines that as the time of a *successful* validation, and relinquishing
-    /// an authorization is the opposite.
-    pub async fn mark_deactivated(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        debug!(event = "db_authz_mark_deactivated_started", outcome = "progress", authz_id = ?self.id);
-        Self::set_deactivated(&self.id, &database.pool).await?;
-
-        self.status = "deactivated".to_string();
-        info!(event = "db_authz_marked_deactivated", outcome = "success", authz_id = ?self.id);
         Ok(())
     }
 
@@ -383,6 +390,17 @@ impl Authorization {
         }
         Value::Object(object)
     }
+}
+
+/// Every column of `challenges`, in one place: each read must select the same set
+/// or `from_row` fails on whichever forgot one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*, which is what `sqlx::query`'s `SqlSafeStr` bound requires.
+macro_rules! challenge_columns {
+    () => {
+        "id, authz_id, type, token, status, validated, error, created_at"
+    };
 }
 
 impl Challenge {
@@ -465,10 +483,11 @@ impl Challenge {
         database: &Database,
     ) -> Result<Option<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_id_started", outcome = "progress", challenge_id = ?id);
-        let row = sqlx::query(
-            "SELECT id, authz_id, type, token, status, validated, error, created_at \
-             FROM challenges WHERE id = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            challenge_columns!(),
+            " FROM challenges WHERE id = ?;"
+        ))
         .bind(id)
         .fetch_optional(&database.pool)
         .await?;
@@ -483,10 +502,11 @@ impl Challenge {
         database: &Database,
     ) -> Result<Vec<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_authz_started", outcome = "progress", authz_id = ?authz_id);
-        let rows = sqlx::query(
-            "SELECT id, authz_id, type, token, status, validated, error, created_at \
-             FROM challenges WHERE authz_id = ? ORDER BY created_at ASC;",
-        )
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            challenge_columns!(),
+            " FROM challenges WHERE authz_id = ? ORDER BY created_at ASC;"
+        ))
         .bind(authz_id)
         .fetch_all(&database.pool)
         .await?;

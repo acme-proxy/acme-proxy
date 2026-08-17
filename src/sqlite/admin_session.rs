@@ -72,6 +72,18 @@ pub struct NewSession<'a> {
     pub user_agent: Option<String>,
 }
 
+/// Every column of `admin_sessions`, in one place: each read must select the same set
+/// or `from_row` fails on whichever forgot one.
+///
+/// A `macro_rules!` rather than a `const` so the expansion is a string
+/// *literal*, which is what `sqlx::query`'s `SqlSafeStr` bound requires.
+macro_rules! columns {
+    () => {
+        "token_hash, user_id, csrf_token, state, mfa_attempts, created_at, \
+         expires_at, last_seen_at, created_ip, user_agent"
+    };
+}
+
 impl AdminSession {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(AdminSession {
@@ -196,11 +208,11 @@ impl AdminSession {
     ) -> Result<Option<AdminSession>, sqlx::Error> {
         let mut tx = database.pool.begin().await?;
 
-        let row = sqlx::query(
-            "SELECT token_hash, user_id, csrf_token, state, mfa_attempts, created_at, \
-             expires_at, last_seen_at, created_ip, user_agent \
-             FROM admin_sessions WHERE token_hash = ? AND state = 'pending_mfa';",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_sessions WHERE token_hash = ? AND state = 'pending_mfa';"
+        ))
         .bind(pending_token_hash)
         .fetch_optional(&mut *tx)
         .await?;
@@ -310,11 +322,11 @@ impl AdminSession {
         token_hash: &str,
         database: &Database,
     ) -> Result<Option<AdminSession>, sqlx::Error> {
-        let row = sqlx::query(
-            "SELECT token_hash, user_id, csrf_token, state, mfa_attempts, created_at, \
-             expires_at, last_seen_at, created_ip, user_agent \
-             FROM admin_sessions WHERE token_hash = ?;",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_sessions WHERE token_hash = ?;"
+        ))
         .bind(token_hash)
         .fetch_optional(&database.pool)
         .await?;
@@ -418,23 +430,20 @@ impl AdminSession {
         // only `&'static str`, which is what stops a column list or a
         // predicate ever being interpolated in.
         let rows = match user_id {
-            Some(id) => {
-                sqlx::query(
-                    "SELECT token_hash, user_id, csrf_token, state, mfa_attempts, created_at, \
-                     expires_at, last_seen_at, created_ip, user_agent \
-                     FROM admin_sessions WHERE user_id = ? \
-                     ORDER BY created_at DESC, token_hash ASC;",
-                )
-                .bind(id)
-                .fetch_all(&database.pool)
-                .await?
-            }
+            Some(id) => sqlx::query(concat!(
+                "SELECT ",
+                columns!(),
+                " FROM admin_sessions WHERE user_id = ? ORDER BY created_at DESC, token_hash ASC;"
+            ))
+            .bind(id)
+            .fetch_all(&database.pool)
+            .await?,
             None => {
-                sqlx::query(
-                    "SELECT token_hash, user_id, csrf_token, state, mfa_attempts, created_at, \
-                     expires_at, last_seen_at, created_ip, user_agent \
-                     FROM admin_sessions ORDER BY created_at DESC, token_hash ASC;",
-                )
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM admin_sessions ORDER BY created_at DESC, token_hash ASC;"
+                ))
                 .fetch_all(&database.pool)
                 .await?
             }
