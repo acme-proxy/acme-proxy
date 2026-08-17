@@ -259,11 +259,11 @@ impl std::error::Error for SignerError {}
 /// right one by `Order.profile` once it has something to report. Only
 /// `relay` uses it today.
 ///
-/// It arrives as [`Notifiers`] rather than a bare `Arc` because a signer backend
-/// is built once and then *carried across* configuration reloads, while the map
-/// is rebuilt per generation — a captured `Arc` would pin the backend to the
-/// dispatchers that existed when the process started. `impl Into<Notifiers>`, so
-/// a caller with a fixed map still passes one.
+/// It arrives as [`crate::notify::Notifiers`] rather than a bare `Arc` because a
+/// signer backend is built once and then *carried across* configuration reloads,
+/// while the map is rebuilt per generation — a captured `Arc` would pin the
+/// backend to the dispatchers that existed when the process started. `impl
+/// Into<Notifiers>`, so a caller with a fixed map still passes one.
 pub fn from_config(
     cfg: &SignerConfig,
     profiles: Vec<String>,
