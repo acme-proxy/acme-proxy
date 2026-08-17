@@ -39,3 +39,6 @@ mod relay_signer;
 
 #[path = "e2e/key_change.rs"]
 mod key_change;
+
+#[path = "e2e/reload.rs"]
+mod reload;

@@ -478,6 +478,16 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **An unknown order status filter is refused by name rather than matching
+  nothing.** `acme-proxy order list --status typoo`, `GET /api/orders?status=`
+  and `/ui/orders?status=` all passed the value straight to SQL, so a typo came
+  back as an empty result — indistinguishable from "nothing is in that state",
+  which is a perfectly ordinary answer. All three now refuse it and list the
+  five valid values, the rule `audit list --event` already followed. The three
+  order/authorization/challenge states are Rust enums now rather than string
+  literals compared at thirty-odd sites; the stored strings are byte-identical,
+  so no migration and no wire-format change.
+
 - **Notifications are durable, and a failed delivery is retried.** Delivery used
   to be a bare `tokio::spawn`: a refused SMTP connection, a 503 from a webhook or
   a script that exited non-zero was logged once and the notification was gone,
@@ -532,6 +542,12 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- The e2e lab picked the wrong container runtime on any host with
+  `podman-docker` installed. The probe tested whether the `docker` command
+  *spawned*, not whether it succeeded, so a `docker` shim over rootless podman
+  answered "docker" — skipping the `podman.socket` check and the `DOCKER_HOST`
+  setup, and failing later with an opaque connection error instead of the
+  message naming `systemctl --user start podman.socket`.
 - An `https://[2001:db8::1]/…` URL never connected. `Url::host_str` hands back
   the *bracketed* literal, which `IpAddr::from_str` rejects, so the connect path
   handed it to the resolver as if it were a name. The brackets are now stripped
