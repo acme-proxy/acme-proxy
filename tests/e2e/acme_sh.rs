@@ -105,33 +105,42 @@ async fn test_acme_sh_renew() {
             --server {0} \
             --email test@example.com \
             --home /tmp/acme-sh
+        # `--cert-file` rather than reaching into acme.sh's own store: it
+        # defaults to ECC keys and files those under `<domain>_ecc/`, so the
+        # internal path depends on the key type and the acme.sh version. The
+        # installed copy does not, and `--renew` re-installs to it.
         acme.sh --issue \
             -d example.com \
             --server {0} \
             -w /tmp/acme-sh \
-            --home /tmp/acme-sh
+            --home /tmp/acme-sh \
+            --cert-file /tmp/cert.pem
 
-        CERT=/tmp/acme-sh/example.com/example.com.cer
-        cp "$CERT" /tmp/first.cer
+        cp /tmp/cert.pem /tmp/first.pem
 
         acme.sh --renew \
             -d example.com \
             --server {0} \
             --home /tmp/acme-sh \
+            --ecc \
             --force
 
-        python3 - /tmp/first.cer "$CERT" <<PYEOF
-import sys
-from cryptography import x509
+        # `openssl` rather than Python: this image is Debian-slim with curl,
+        # openssl and acme.sh, and carries no interpreter.
+        FIRST=$(openssl x509 -in /tmp/first.pem -noout -serial)
+        SECOND=$(openssl x509 -in /tmp/cert.pem -noout -serial)
+        echo "renewed: $FIRST -> $SECOND"
 
-def load(path):
-    with open(path, "rb") as handle:
-        return x509.load_pem_x509_certificate(handle.read())
+        # A renewal is a new certificate, not the same one handed back. A CA
+        # returning the cached chain satisfies acme.sh and leaves the deployment
+        # with an expiry that never moves.
+        if [ "$FIRST" = "$SECOND" ]; then
+            echo "FAIL: renewal returned the same serial"
+            exit 1
+        fi
 
-first, second = load(sys.argv[1]), load(sys.argv[2])
-assert first.serial_number != second.serial_number, "renewal returned the same serial"
-print("renewed:", first.serial_number, "->", second.serial_number)
-PYEOF
+        # ...for the same name.
+        openssl x509 -in /tmp/cert.pem -noout -text | grep -q "DNS:example.com"
     "#,
         lab.proxy_url
     );
@@ -161,29 +170,36 @@ async fn test_acme_sh_revoke() {
             -d example.com \
             --server {0} \
             -w /tmp/acme-sh \
-            --home /tmp/acme-sh
+            --home /tmp/acme-sh \
+            --cert-file /tmp/cert.pem
 
+        # `--ecc` because acme.sh defaults to an ECC key and keeps ECC material
+        # in a separate store; without it `--revoke` looks in the RSA one and
+        # finds nothing.
         acme.sh --revoke \
             -d example.com \
             --server {0} \
-            --home /tmp/acme-sh
+            --home /tmp/acme-sh \
+            --ecc
 
-        # The CRL the server publishes must now name it. Fetched from the
-        # profile router, which is where `/crl` lives.
-        python3 - /tmp/acme-sh/example.com/example.com.cer {0}/crl <<PYEOF
-import sys, urllib.request
-from cryptography import x509
+        # The CRL the server publishes must now name it. `{0}` is the
+        # directory URL, and `/crl` is its sibling under the profile router.
+        SERIAL=$(openssl x509 -in /tmp/cert.pem -noout -serial | cut -d= -f2)
+        curl -fsS "$(dirname {0})/crl" -o /tmp/ca.crl
+        openssl crl -inform DER -in /tmp/ca.crl -noout -text > /tmp/crl.txt
 
-with open(sys.argv[1], "rb") as handle:
-    cert = x509.load_pem_x509_certificate(handle.read())
-
-with urllib.request.urlopen(sys.argv[2]) as response:
-    crl = x509.load_der_x509_crl(response.read())
-
-serials = [entry.serial_number for entry in crl]
-assert cert.serial_number in serials, (cert.serial_number, serials)
-print("revoked and on the CRL:", cert.serial_number)
-PYEOF
+        # A DER integer carries a leading zero byte when its high bit is set,
+        # and openssl may print the CRL entry with or without it — so the
+        # comparison tolerates leading zeros on either side rather than
+        # stripping them from one. Getting this wrong is a test that passes
+        # fifteen runs in sixteen.
+        NORMALISED=$(echo "$SERIAL" | sed 's/^0*//')
+        if ! grep -qiE "Serial Number: *0*$NORMALISED\\b" /tmp/crl.txt; then
+            echo "FAIL: $SERIAL is not on the CRL"
+            cat /tmp/crl.txt
+            exit 1
+        fi
+        echo "revoked and on the CRL: $SERIAL"
     "#,
         lab.proxy_url
     );

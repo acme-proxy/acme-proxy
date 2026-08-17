@@ -23,13 +23,17 @@ use crate::common::Lab;
 /// The `acme-proxy` image carries no `curl` and no Python — deliberately, it is
 /// a service image — so the fetch happens from the certbot container, which is
 /// on the same network and already has both.
+///
+/// `Lab::proxy_url` is already the **directory** URL (that is what a client
+/// takes as `--server`), so it is fetched as-is rather than with a path
+/// appended.
 async fn directory(lab: &Lab) -> String {
     let (ok, stdout, stderr) = lab
         .exec_in_with_output(
             &lab.certbot,
             &format!(
                 "python3 -c \"import urllib.request;\
-                 print(urllib.request.urlopen('{}/directory').read().decode())\"",
+                 print(urllib.request.urlopen('{}').read().decode())\"",
                 lab.proxy_url
             ),
         )
@@ -38,26 +42,40 @@ async fn directory(lab: &Lab) -> String {
     stdout
 }
 
-/// Sends `SIGHUP` to the server and waits for it to land.
+/// Sends `SIGHUP` to the server and waits for the Nth reload to land.
 ///
 /// The binary is the container's `ENTRYPOINT`, so it is PID 1. Polls the log
-/// for the generation rather than sleeping a fixed interval: a reload rebuilds
-/// every profile and both TLS acceptors, and how long that takes is not
-/// something a test should be guessing at.
-async fn hangup(lab: &Lab, expect_generation: u64) {
+/// rather than sleeping a fixed interval: a reload rebuilds every profile and
+/// both TLS acceptors, and how long that takes is not something a test should
+/// be guessing at.
+///
+/// **Counts `server_config_reloaded` rather than matching `generation=N`.** The
+/// default human-readable format writes ANSI escapes *between* a field name and
+/// its `=`, so the obvious substring never matches — and the failure is
+/// indistinguishable from the reload not happening. The count says the same
+/// thing (the Nth success is generation N+1) and cannot be broken by
+/// formatting.
+async fn reloads_reach(lab: &Lab, expected: usize) {
     lab.exec_in(&lab.proxy, "kill -HUP 1").await;
 
     for _ in 0..100 {
         let logs = lab.get_proxy_logs().await;
-        if logs.contains(&format!("generation={expect_generation}"))
-            || logs.contains(&format!("\"generation\":{expect_generation}"))
-        {
+        if logs.matches("server_config_reloaded").count() >= expected {
             return;
         }
+        // A refusal is terminal — there is no point waiting out the rest.
+        assert!(
+            !logs.contains("server_config_reload_refused")
+                && !logs.contains("server_config_reload_failed"),
+            "the reload was refused rather than applied:\n{logs}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     panic!(
-        "generation {expect_generation} never appeared:\n{}",
+        "only {} reload(s) landed, expected {expected}:\n{}",
+        lab.get_proxy_logs().await
+            .matches("server_config_reloaded")
+            .count(),
         lab.get_proxy_logs().await
     );
 }
@@ -85,7 +103,7 @@ async fn test_reload_on_sighup_twice() {
         "printf '[meta]\\nwebsite = \"https://first.example\"\\n' > /data/config.toml",
     )
     .await;
-    hangup(&lab, 2).await;
+    reloads_reach(&lab, 1).await;
 
     let after = directory(&lab).await;
     assert!(
@@ -100,7 +118,7 @@ async fn test_reload_on_sighup_twice() {
         "printf '[meta]\\nwebsite = \"https://second.example\"\\n' > /data/config.toml",
     )
     .await;
-    hangup(&lab, 3).await;
+    reloads_reach(&lab, 2).await;
 
     let after = directory(&lab).await;
     assert!(
@@ -108,9 +126,9 @@ async fn test_reload_on_sighup_twice() {
         "a second SIGHUP must reload rather than terminate: {after}"
     );
 
-    // Still the same process, still answering ACME. A restart would have reset
-    // the generation counter, which is why the assertion above is on
-    // generation 3 and not merely "reloaded".
+    // Still the same process. A restart would have reset the reload count, so
+    // "two reloads landed" and "one startup happened" together are what rule
+    // out the failure this test exists for.
     let logs = lab.get_proxy_logs().await;
     assert_eq!(
         logs.matches("server_startup").count(),
@@ -140,7 +158,7 @@ async fn test_a_frozen_key_is_refused_and_the_server_keeps_serving() {
         "printf '[meta]\\nwebsite = \"https://live.example\"\\n' > /data/config.toml",
     )
     .await;
-    hangup(&lab, 2).await;
+    reloads_reach(&lab, 1).await;
     assert!(directory(&lab).await.contains("https://live.example"));
 
     // The profile *set* is frozen: a profile is a URL namespace, a signer and
