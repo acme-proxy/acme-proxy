@@ -72,6 +72,17 @@ impl PageError {
         }
     }
 
+    /// `400` — the request named something that does not exist, and said so
+    /// itself (an unparseable filter, not a missing row).
+    #[must_use]
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::Rendered {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request",
+            message: message.into(),
+        }
+    }
+
     /// `500` — anything the operator can only find in the log.
     #[must_use]
     pub fn internal() -> Self {

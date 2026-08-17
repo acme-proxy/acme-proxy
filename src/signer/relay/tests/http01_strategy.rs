@@ -1,4 +1,5 @@
 use super::*;
+use crate::sqlite::status::OrderStatus;
 
 /// A `TokenStore` that records what it was asked to publish *and* answers
 /// lookups, so one type both drives the real responder route and carries
@@ -102,7 +103,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "valid").await;
+    await_status(db, &order.id, OrderStatus::Valid).await;
 
     assert_eq!(upstream.challenge_triggered(), 1);
 
@@ -173,7 +174,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "invalid").await;
+    await_status(db, &order.id, OrderStatus::Invalid).await;
 
     assert_eq!(
         tokens.retracted.lock().unwrap().len(),
@@ -224,7 +225,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, "invalid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
 
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await
@@ -277,7 +278,7 @@ async fn http01_refuses_a_wildcard_authorization() {
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, "invalid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
 
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await

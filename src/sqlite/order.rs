@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
+use crate::sqlite::status::{self, OrderStatus};
 
 /// An ACME identifier (RFC 8555 §7.1.4). Only `dns` is supported here, but the
 /// type is kept generic so the JSON round-trips whatever a client sent.
@@ -80,7 +81,7 @@ pub struct Order {
     /// for revocation, and ARI) stay scoped to one endpoint.
     pub profile: String,
     pub account_id: String,
-    pub status: String,
+    pub status: OrderStatus,
     pub identifiers: Vec<Identifier>,
     pub expires: i64,
     pub not_before: Option<i64>,
@@ -117,7 +118,7 @@ pub struct Order {
 pub struct OrderQuery {
     pub profile: Option<String>,
     pub account_id: Option<String>,
-    pub status: Option<String>,
+    pub status: Option<OrderStatus>,
     /// Rows per page. The caller clamps this (`admin.page_size_max`); this
     /// layer takes what it is given.
     pub limit: i64,
@@ -132,16 +133,19 @@ impl OrderQuery {
     /// is the kind of bug a page control shows and nothing else does.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
         let mut separator = " WHERE ";
+        // `status` arrives as an `OrderStatus` and the other two as `String`s,
+        // so each contributes its own `&str` and the array stays one type. The
+        // bind is still a parameter, never interpolated SQL.
         for (column, value) in [
-            ("profile = ", self.profile.as_ref()),
-            ("account_id = ", self.account_id.as_ref()),
-            ("status = ", self.status.as_ref()),
+            ("profile = ", self.profile.as_deref()),
+            ("account_id = ", self.account_id.as_deref()),
+            ("status = ", self.status.map(OrderStatus::as_str)),
         ] {
             if let Some(value) = value {
                 builder
                     .push(separator)
                     .push(column)
-                    .push_bind(value.clone());
+                    .push_bind(value.to_string());
                 separator = " AND ";
             }
         }
@@ -194,7 +198,7 @@ impl Order {
             id: row.try_get("id")?,
             profile: row.try_get("profile")?,
             account_id: row.try_get("account_id")?,
-            status: row.try_get("status")?,
+            status: status::from_column(row.try_get::<&str, _>("status")?)?,
             identifiers,
             expires: row.try_get("expires")?,
             not_before: row.try_get("not_before")?,
@@ -226,7 +230,7 @@ impl Order {
             id: Uuid::new_v4().to_string(),
             profile: profile.to_string(),
             account_id: account_id.to_string(),
-            status: "pending".to_string(),
+            status: OrderStatus::Pending,
             identifiers,
             expires,
             not_before,
@@ -286,7 +290,7 @@ impl Order {
         .bind(&self.id)
         .bind(&self.profile)
         .bind(&self.account_id)
-        .bind(&self.status)
+        .bind(self.status.as_str())
         .bind(identifiers_json)
         .bind(self.expires)
         .bind(self.not_before)
@@ -547,7 +551,7 @@ impl Order {
         self.certificate = Some(chain);
         self.cert_serial = Some(cert_serial);
         self.cert_pubkey = Some(cert_pubkey);
-        self.status = "valid".to_string();
+        self.status = OrderStatus::Valid;
         debug!(event = "db_order_finalized", outcome = "success", order_id = ?self.id);
         Ok(())
     }
@@ -700,7 +704,7 @@ impl Order {
         Self::set_invalid(&self.id, &error, &database.pool).await?;
 
         self.error = Some(error);
-        self.status = "invalid".to_string();
+        self.status = OrderStatus::Invalid;
         info!(event = "db_order_marked_invalid", outcome = "failure", order_id = ?self.id);
         Ok(())
     }
@@ -712,7 +716,7 @@ impl Order {
         debug!(event = "db_order_mark_ready_started", outcome = "progress", order_id = ?self.id);
         Self::set_ready(&self.id, &database.pool).await?;
 
-        self.status = "ready".to_string();
+        self.status = OrderStatus::Ready;
         info!(event = "db_order_marked_ready", outcome = "success", order_id = ?self.id);
         Ok(())
     }
@@ -732,7 +736,7 @@ impl Order {
         debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
         Self::set_pending(&self.id, &database.pool).await?;
 
-        self.status = "pending".to_string();
+        self.status = OrderStatus::Pending;
         info!(event = "db_order_marked_pending", outcome = "success", order_id = ?self.id);
         Ok(())
     }
@@ -752,7 +756,7 @@ impl Order {
             .execute(&database.pool)
             .await?;
 
-        self.status = "processing".to_string();
+        self.status = OrderStatus::Processing;
         info!(event = "db_order_marked_processing", outcome = "success", order_id = ?self.id);
         Ok(())
     }
@@ -764,7 +768,10 @@ impl Order {
     #[must_use]
     pub fn to_json(&self, base_url: &str, authz_ids: &[String]) -> Value {
         let mut object = serde_json::Map::new();
-        object.insert("status".to_string(), Value::String(self.status.clone()));
+        object.insert(
+            "status".to_string(),
+            Value::String(self.status.as_str().to_string()),
+        );
         object.insert("expires".to_string(), Value::String(rfc3339(self.expires)));
         object.insert(
             "identifiers".to_string(),
@@ -785,7 +792,7 @@ impl Order {
             "finalize".to_string(),
             Value::String(format!("{base_url}/order/{}/finalize", self.id)),
         );
-        if self.status == "valid" {
+        if self.status == OrderStatus::Valid {
             object.insert(
                 "certificate".to_string(),
                 Value::String(format!("{base_url}/certificate/{}", self.id)),
@@ -883,7 +890,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(created.status, "pending");
+        assert_eq!(created.status, OrderStatus::Pending);
 
         let found = Order::find_by_id(&created.id, &db).await.unwrap().unwrap();
         assert_eq!(found.account_id, acct);
@@ -1019,13 +1026,13 @@ mod tests {
             .unwrap();
 
         // In-memory struct is updated…
-        assert_eq!(order.status, "valid");
+        assert_eq!(order.status, OrderStatus::Valid);
         assert!(order.certificate.is_some());
         assert_eq!(order.cert_serial.as_deref(), Some("aabbcc"));
         assert_eq!(order.cert_pubkey.as_deref(), Some(&[1u8, 2, 3][..]));
         // …and so is the stored row, and to_json now exposes the certificate URL.
         let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
-        assert_eq!(reloaded.status, "valid");
+        assert_eq!(reloaded.status, OrderStatus::Valid);
         assert_eq!(reloaded.cert_serial.as_deref(), Some("aabbcc"));
         assert_eq!(reloaded.cert_pubkey.as_deref(), Some(&[1u8, 2, 3][..]));
         let json = reloaded.to_json("http://localhost:3000", &[]);
@@ -1089,12 +1096,12 @@ mod tests {
         // In-memory struct is updated, and `status` is untouched…
         assert!(order.revoked_at.is_some());
         assert_eq!(order.revocation_reason, Some(1));
-        assert_eq!(order.status, "valid");
+        assert_eq!(order.status, OrderStatus::Valid);
         // …and so is the stored row.
         let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
         assert!(reloaded.revoked_at.is_some());
         assert_eq!(reloaded.revocation_reason, Some(1));
-        assert_eq!(reloaded.status, "valid");
+        assert_eq!(reloaded.status, OrderStatus::Valid);
     }
 
     #[tokio::test]
@@ -1147,11 +1154,11 @@ mod tests {
         order.mark_invalid(error.clone(), &db).await.unwrap();
 
         // In-memory struct is updated…
-        assert_eq!(order.status, "invalid");
+        assert_eq!(order.status, OrderStatus::Invalid);
         assert_eq!(order.error, Some(error.clone()));
         // …and so is the stored row, and to_json now exposes the error object.
         let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
-        assert_eq!(reloaded.status, "invalid");
+        assert_eq!(reloaded.status, OrderStatus::Invalid);
         let json = reloaded.to_json("http://localhost:3000", &[]);
         assert_eq!(json["error"], error);
     }
@@ -1427,7 +1434,7 @@ mod tests {
 
         // By status.
         let by_status = OrderQuery {
-            status: Some("ready".to_string()),
+            status: Some(OrderStatus::Ready),
             ..window(50, 0)
         };
         let (rows, total) = Order::search(&by_status, &db).await.unwrap();
@@ -1438,7 +1445,7 @@ mod tests {
         let combined = OrderQuery {
             profile: Some("default".to_string()),
             account_id: Some(acct.clone()),
-            status: Some("pending".to_string()),
+            status: Some(OrderStatus::Pending),
             limit: 50,
             offset: 0,
         };
@@ -1473,18 +1480,38 @@ mod tests {
     }
 
     /// A value that would be SQL if it were interpolated instead of bound.
+    ///
+    /// `status` used to be the vector here, and is no longer expressible: it is
+    /// an [`OrderStatus`], so a hostile value cannot reach this layer at all —
+    /// `Order::search` never sees one, because `--status` and `?status=` refuse
+    /// it by name first. `profile` and `account_id` are still free strings and
+    /// still go through `push_bind`, so the property is asserted on those.
     #[tokio::test]
     async fn a_filter_value_is_bound_not_interpolated() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
         seed_orders(&db, "default", &acct, 2).await;
 
-        let hostile = OrderQuery {
-            status: Some("' OR 1=1 --".to_string()),
-            ..window(50, 0)
-        };
-        let (rows, total) = Order::search(&hostile, &db).await.unwrap();
-        assert!(rows.is_empty(), "the value must be compared, not executed");
-        assert_eq!(total, 0);
+        for hostile in ["' OR 1=1 --", "default'; DROP TABLE orders; --"] {
+            let by_profile = OrderQuery {
+                profile: Some(hostile.to_string()),
+                ..window(50, 0)
+            };
+            let (rows, total) = Order::search(&by_profile, &db).await.unwrap();
+            assert!(rows.is_empty(), "the value must be compared, not executed");
+            assert_eq!(total, 0);
+
+            let by_account = OrderQuery {
+                account_id: Some(hostile.to_string()),
+                ..window(50, 0)
+            };
+            let (rows, total) = Order::search(&by_account, &db).await.unwrap();
+            assert!(rows.is_empty(), "the value must be compared, not executed");
+            assert_eq!(total, 0);
+        }
+
+        // The table is still there, which is what the second vector is for.
+        let (_, total) = Order::search(&window(50, 0), &db).await.unwrap();
+        assert_eq!(total, 2);
     }
 }

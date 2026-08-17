@@ -143,6 +143,7 @@ use crate::signer::local_ca::LocalCa;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::Order;
+use crate::sqlite::status::OrderStatus;
 use crate::testutil::TempDir;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -350,7 +351,7 @@ fn identifiers() -> Vec<Identifier> {
 
 /// Waits for the background relay to settle the order, so a test asserts
 /// on the finished state rather than racing it.
-async fn await_status(database: Arc<Database>, order_id: &str, wanted: &str) -> Order {
+async fn await_status(database: Arc<Database>, order_id: &str, wanted: OrderStatus) -> Order {
     for _ in 0..200 {
         let order = Order::find_by_id(order_id, &database)
             .await

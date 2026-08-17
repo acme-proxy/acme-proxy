@@ -36,12 +36,16 @@ pub async fn list_orders(
     let profile = params.profile.clone().unwrap_or_default();
     let account_id = params.account_id.clone().unwrap_or_default();
     let status = params.status.clone().unwrap_or_default();
+    // Same refusal the API gives, rendered as a page rather than as JSON.
+    let parsed = params
+        .parsed_status()
+        .map_err(|error| PageError::bad_request(error.to_string()))?;
 
     let (orders, total) = Order::search(
         &OrderQuery {
             profile: params.profile.clone(),
             account_id: params.account_id.clone(),
-            status: params.status.clone(),
+            status: parsed,
             limit: page.limit,
             offset: page.offset,
         },

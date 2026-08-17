@@ -10,6 +10,7 @@ use crate::signer;
 use crate::sqlite::authz::Authorization;
 use crate::sqlite::db::Database;
 use crate::sqlite::order::{Order, OrderQuery};
+use crate::sqlite::status::OrderStatus;
 
 #[derive(Subcommand)]
 pub enum OrderCommand {
@@ -55,6 +56,14 @@ pub async fn run_order_command(
             status,
             json,
         } => {
+            // Refused by name rather than passed through: an unknown status
+            // would match no rows, which reads exactly like "nothing is in
+            // that state". The same rule `audit list --event` follows.
+            let status = status
+                .map(|value| value.parse::<OrderStatus>())
+                .transpose()
+                .map_err(|error| CliError(format!("--status: {error}")))?;
+
             // Filtered in SQL, by the same `Order::search` the web admin uses.
             // It used to load every order in the database and filter the three
             // fields in Rust, which is one policy written twice — and the two
@@ -550,6 +559,69 @@ mod tests {
             )
             .await
             .unwrap();
+        }
+    }
+
+    /// An unknown `--status` is refused **by name**, not passed to SQL.
+    ///
+    /// The distinction is the whole point: a typo handed through to the query
+    /// answers "no rows", which an operator cannot tell from "nothing is in
+    /// that state". The same rule `audit list --event` follows.
+    #[tokio::test]
+    async fn an_unknown_status_is_refused_by_name_rather_than_matching_nothing() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        seed_order(&database, "default").await;
+
+        let mut reader: &[u8] = &[];
+        let error = run_order_command(
+            OrderCommand::List {
+                profile: None,
+                account_id: None,
+                status: Some("readyy".to_string()),
+                json: false,
+            },
+            true,
+            &mut reader,
+            &Config::default(),
+            database.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.0.contains("--status"), "{error}");
+        assert!(error.0.contains("`readyy`"), "{error}");
+        // ...and it names the alternatives, so the operator does not guess.
+        assert!(
+            error.0.contains("pending, ready, processing, valid, invalid"),
+            "{error}"
+        );
+    }
+
+    /// Every status the CLI *does* accept reaches `Order::search`.
+    ///
+    /// Guards the other half: a refusal that also rejected valid input would
+    /// pass the test above and break the command.
+    #[tokio::test]
+    async fn every_order_status_is_accepted_as_a_filter() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        seed_order(&database, "default").await;
+
+        let mut reader: &[u8] = &[];
+        for status in OrderStatus::ALL {
+            run_order_command(
+                OrderCommand::List {
+                    profile: None,
+                    account_id: None,
+                    status: Some(status.as_str().to_string()),
+                    json: false,
+                },
+                true,
+                &mut reader,
+                &Config::default(),
+                database.clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("--status {status} was refused: {error}"));
         }
     }
 }

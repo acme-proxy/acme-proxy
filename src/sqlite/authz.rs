@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::{Identifier, rfc3339};
+use crate::sqlite::status::{self, AuthzStatus, ChallengeStatus};
 
 /// An ACME authorization (RFC 8555 §7.1.4). One authorization is created per
 /// order identifier when the order is created, starting in the `pending` state
@@ -38,7 +39,7 @@ pub struct Authorization {
     pub id: String,
     pub order_id: String,
     pub identifier: Identifier,
-    pub status: String,
+    pub status: AuthzStatus,
     pub expires: i64,
     pub created_at: i64,
 }
@@ -60,7 +61,7 @@ pub struct Challenge {
     pub authz_id: String,
     pub typ: String,
     pub token: String,
-    pub status: String,
+    pub status: ChallengeStatus,
     pub validated: Option<i64>,
     /// The RFC 8555 problem document of a failed validation. `None` until one
     /// fails.
@@ -99,7 +100,7 @@ impl Authorization {
             id: row.try_get("id")?,
             order_id: row.try_get("order_id")?,
             identifier,
-            status: row.try_get("status")?,
+            status: status::from_column(row.try_get::<&str, _>("status")?)?,
             expires: row.try_get("expires")?,
             created_at: row.try_get("created_at")?,
         })
@@ -112,7 +113,7 @@ impl Authorization {
             id: Uuid::new_v4().to_string(),
             order_id: order_id.to_string(),
             identifier,
-            status: "pending".to_string(),
+            status: AuthzStatus::Pending,
             expires,
             created_at: now_secs(),
         }
@@ -136,7 +137,7 @@ impl Authorization {
         .bind(&self.id)
         .bind(&self.order_id)
         .bind(identifier_json)
-        .bind(&self.status)
+        .bind(self.status.as_str())
         .bind(self.expires)
         .bind(self.created_at)
         .execute(executor)
@@ -322,7 +323,7 @@ impl Authorization {
         debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
         Self::set_valid(&self.id, &database.pool).await?;
 
-        self.status = "valid".to_string();
+        self.status = AuthzStatus::Valid;
         info!(event = "db_authz_marked_valid", outcome = "success", authz_id = ?self.id);
         Ok(())
     }
@@ -337,7 +338,7 @@ impl Authorization {
         debug!(event = "db_authz_mark_invalid_started", outcome = "progress", authz_id = ?self.id);
         Self::set_invalid(&self.id, &database.pool).await?;
 
-        self.status = "invalid".to_string();
+        self.status = AuthzStatus::Invalid;
         info!(event = "db_authz_marked_invalid", outcome = "failure", authz_id = ?self.id);
         Ok(())
     }
@@ -381,7 +382,10 @@ impl Authorization {
             ))
             .expect("Identifier is always serializable"),
         );
-        object.insert("status".to_string(), Value::String(self.status.clone()));
+        object.insert(
+            "status".to_string(),
+            Value::String(self.status.as_str().to_string()),
+        );
         object.insert("expires".to_string(), Value::String(rfc3339(self.expires)));
         let challenges: Vec<Value> = challenges.iter().map(|c| c.to_json(base_url)).collect();
         object.insert("challenges".to_string(), Value::Array(challenges));
@@ -416,7 +420,7 @@ impl Challenge {
             authz_id: row.try_get("authz_id")?,
             typ: row.try_get("type")?,
             token: row.try_get("token")?,
-            status: row.try_get("status")?,
+            status: status::from_column(row.try_get::<&str, _>("status")?)?,
             validated: row.try_get("validated")?,
             error,
             created_at: row.try_get("created_at")?,
@@ -435,7 +439,7 @@ impl Challenge {
             authz_id: authz_id.to_string(),
             typ: typ.to_string(),
             token: generate_token(),
-            status: "pending".to_string(),
+            status: ChallengeStatus::Pending,
             validated: None,
             error: None,
             created_at: now_secs(),
@@ -457,7 +461,7 @@ impl Challenge {
         .bind(&self.authz_id)
         .bind(&self.typ)
         .bind(&self.token)
-        .bind(&self.status)
+        .bind(self.status.as_str())
         .bind(self.created_at)
         .execute(executor)
         .await?;
@@ -562,7 +566,7 @@ impl Challenge {
         debug!(event = "db_challenge_mark_valid_started", outcome = "progress", challenge_id = ?self.id);
         Self::set_valid(&self.id, validated, &database.pool).await?;
 
-        self.status = "valid".to_string();
+        self.status = ChallengeStatus::Valid;
         self.validated = Some(validated);
         info!(event = "db_challenge_marked_valid", outcome = "success", challenge_id = ?self.id);
         Ok(())
@@ -582,7 +586,7 @@ impl Challenge {
         debug!(event = "db_challenge_mark_invalid_started", outcome = "progress", challenge_id = ?self.id);
         Self::set_invalid(&self.id, &error, &database.pool).await?;
 
-        self.status = "invalid".to_string();
+        self.status = ChallengeStatus::Invalid;
         self.error = Some(error);
         info!(event = "db_challenge_marked_invalid", outcome = "failure", challenge_id = ?self.id);
         Ok(())
@@ -598,7 +602,10 @@ impl Challenge {
             "url".to_string(),
             Value::String(format!("{base_url}/chall/{}", self.id)),
         );
-        object.insert("status".to_string(), Value::String(self.status.clone()));
+        object.insert(
+            "status".to_string(),
+            Value::String(self.status.as_str().to_string()),
+        );
         object.insert("token".to_string(), Value::String(self.token.clone()));
         if let Some(validated) = self.validated {
             object.insert("validated".to_string(), Value::String(rfc3339(validated)));
@@ -617,6 +624,7 @@ mod tests {
     use crate::audit::ClientContext;
     use crate::sqlite::account::Account;
     use crate::sqlite::order::Order;
+    use crate::sqlite::status::OrderStatus;
     use crate::testutil::account_id;
     use std::sync::Arc;
 
@@ -733,9 +741,9 @@ mod tests {
             .unwrap();
         let reloaded_order = Order::find_by_id(&oid, &db).await.unwrap().unwrap();
 
-        assert_eq!(reloaded_challenge.status, "pending");
-        assert_eq!(reloaded_authz.status, "pending");
-        assert_eq!(reloaded_order.status, "pending");
+        assert_eq!(reloaded_challenge.status, ChallengeStatus::Pending);
+        assert_eq!(reloaded_authz.status, AuthzStatus::Pending);
+        assert_eq!(reloaded_order.status, OrderStatus::Pending);
     }
 
     /// And the same three, committed, do all land — so the test above is about
@@ -764,7 +772,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .status,
-            "valid"
+            ChallengeStatus::Valid
         );
         assert_eq!(
             Authorization::find_by_id(&authz.id, &db)
@@ -772,11 +780,11 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .status,
-            "valid"
+            AuthzStatus::Valid
         );
         assert_eq!(
             Order::find_by_id(&oid, &db).await.unwrap().unwrap().status,
-            "ready"
+            OrderStatus::Ready
         );
     }
 
@@ -789,7 +797,7 @@ mod tests {
             Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
                 .await
                 .unwrap();
-        assert_eq!(authz.status, "pending");
+        assert_eq!(authz.status, AuthzStatus::Pending);
 
         let by_id = Authorization::find_by_id(&authz.id, &db)
             .await
@@ -813,12 +821,12 @@ mod tests {
                 .unwrap();
         authz.mark_valid(&db).await.unwrap();
 
-        assert_eq!(authz.status, "valid");
+        assert_eq!(authz.status, AuthzStatus::Valid);
         let reloaded = Authorization::find_by_id(&authz.id, &db)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reloaded.status, "valid");
+        assert_eq!(reloaded.status, AuthzStatus::Valid);
     }
 
     #[tokio::test]
@@ -854,7 +862,7 @@ mod tests {
 
         let challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
         assert_eq!(challenge.typ, "http-01");
-        assert_eq!(challenge.status, "pending");
+        assert_eq!(challenge.status, ChallengeStatus::Pending);
         assert!(!challenge.token.is_empty());
         assert!(challenge.validated.is_none());
 
@@ -880,14 +888,14 @@ mod tests {
         let mut challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
         challenge.mark_valid(&db).await.unwrap();
 
-        assert_eq!(challenge.status, "valid");
+        assert_eq!(challenge.status, ChallengeStatus::Valid);
         assert!(challenge.validated.is_some());
 
         let reloaded = Challenge::find_by_id(&challenge.id, &db)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reloaded.status, "valid");
+        assert_eq!(reloaded.status, ChallengeStatus::Valid);
         let json = reloaded.to_json("http://localhost:3000");
         assert_eq!(json["status"], "valid");
         assert_eq!(
@@ -914,7 +922,7 @@ mod tests {
         });
         challenge.mark_invalid(problem.clone(), &db).await.unwrap();
 
-        assert_eq!(challenge.status, "invalid");
+        assert_eq!(challenge.status, ChallengeStatus::Invalid);
         assert_eq!(challenge.error.as_ref(), Some(&problem));
         // RFC 8555 §8 stamps `validated` only on success.
         assert!(challenge.validated.is_none());
@@ -923,7 +931,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reloaded.status, "invalid");
+        assert_eq!(reloaded.status, ChallengeStatus::Invalid);
         assert_eq!(reloaded.error.as_ref(), Some(&problem));
         let json = reloaded.to_json("http://localhost:3000");
         assert_eq!(json["error"], problem);
@@ -941,12 +949,12 @@ mod tests {
                 .unwrap();
         authz.mark_invalid(&db).await.unwrap();
 
-        assert_eq!(authz.status, "invalid");
+        assert_eq!(authz.status, AuthzStatus::Invalid);
         let reloaded = Authorization::find_by_id(&authz.id, &db)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reloaded.status, "invalid");
+        assert_eq!(reloaded.status, AuthzStatus::Invalid);
     }
 
     /// `UNIQUE(authz_id, type)` is what lets one authorization offer several

@@ -22,6 +22,7 @@ use crate::sqlite::{
     db::Database,
     nonce::now_secs,
     order::Order,
+    status::{AuthzStatus, ChallengeStatus, OrderStatus},
 };
 use std::sync::Arc;
 
@@ -90,7 +91,7 @@ pub async fn post_authz(
         })?;
 
     let mut response = Json(authz.to_json(base, &challenges)).into_response();
-    add_pending_retry_after(&mut response, &authz.status);
+    add_pending_retry_after(&mut response, authz.status.as_str());
     Ok(response)
 }
 
@@ -129,7 +130,7 @@ async fn deactivate_authz(
     order: &mut Order,
     database: &Arc<Database>,
 ) -> Result<(), Problem> {
-    if authz.status == "deactivated" {
+    if authz.status == AuthzStatus::Deactivated {
         return Ok(());
     }
 
@@ -137,14 +138,14 @@ async fn deactivate_authz(
     // authorization it was issued under would claim something untrue. §7.5.2 is
     // about giving up the *ability* to issue, not about undoing issuance —
     // that is what revocation (§7.6) is for.
-    if order.status == "valid" {
+    if order.status == OrderStatus::Valid {
         warn!(event = "authz_deactivate_refused_order_valid", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
         return Err(Problem::malformed(
             "Cannot deactivate an authorization whose order has already been issued; revoke the certificate instead",
         ));
     }
 
-    if authz.status != "pending" && authz.status != "valid" {
+    if authz.status != AuthzStatus::Pending && authz.status != AuthzStatus::Valid {
         warn!(event = "authz_deactivate_refused_terminal", outcome = "failure", authz_id = %authz.id, status = %authz.status);
         return Err(Problem::malformed(
             "Authorization is in a terminal state and cannot be deactivated",
@@ -159,7 +160,7 @@ async fn deactivate_authz(
     // Both in one transaction. Between them, an order sits `ready` with a
     // deactivated authorization under it: finalizable for a name the client has
     // just given up, which is exactly what §7.5.2 forbids.
-    let demote = order.status == "ready";
+    let demote = order.status == OrderStatus::Ready;
     let outcome = async {
         let mut tx = database.pool.begin().await?;
         Authorization::set_deactivated(&authz.id, &mut *tx).await?;
@@ -177,9 +178,9 @@ async fn deactivate_authz(
 
     // Only once the transaction has committed: a rollback must not leave these
     // objects claiming a status the database never took.
-    authz.status = "deactivated".to_string();
+    authz.status = AuthzStatus::Deactivated;
     if demote {
-        order.status = "pending".to_string();
+        order.status = OrderStatus::Pending;
     }
 
     info!(event = "authz_deactivated", outcome = "success", authz_id = %authz.id, order_id = %order.id);
@@ -221,10 +222,12 @@ async fn commit_validation(
         // already taken the RESERVED lock by the time this reads — so this sees
         // its own write and no other writer can interleave. Putting a read
         // first here would break that.
-        let promote = order.status == "pending" && {
+        let promote = order.status == OrderStatus::Pending && {
             let authzs = Authorization::find_by_order_with(&order.id, &mut *tx).await?;
             authzs.len() == order.identifiers.len()
-                && authzs.iter().all(|authz| authz.status == "valid")
+                && authzs
+                    .iter()
+                    .all(|authz| authz.status == AuthzStatus::Valid)
         };
         if promote {
             Order::set_ready(&order.id, &mut *tx).await?;
@@ -237,11 +240,11 @@ async fn commit_validation(
     match outcome {
         Ok(promoted) => {
             // In-memory sync only after the commit; see `Authorization::set_valid`.
-            challenge.status = "valid".to_string();
+            challenge.status = ChallengeStatus::Valid;
             challenge.validated = Some(validated);
-            authz.status = "valid".to_string();
+            authz.status = AuthzStatus::Valid;
             if promoted {
-                order.status = "ready".to_string();
+                order.status = OrderStatus::Ready;
             }
             Ok(())
         }
@@ -280,10 +283,10 @@ async fn commit_validation_failure(
 
     match outcome {
         Ok(()) => {
-            challenge.status = "invalid".to_string();
+            challenge.status = ChallengeStatus::Invalid;
             challenge.error = Some(problem.clone());
-            authz.status = "invalid".to_string();
-            order.status = "invalid".to_string();
+            authz.status = AuthzStatus::Invalid;
+            order.status = OrderStatus::Invalid;
             order.error = Some(problem.clone());
             Ok(())
         }
@@ -326,7 +329,7 @@ pub async fn post_challenge(
     let (mut challenge, mut authz, mut order) =
         load_owned_challenge(&id, &account, &database).await?;
 
-    if authz.status != "valid" && authz.expires <= now_secs() {
+    if authz.status != AuthzStatus::Valid && authz.expires <= now_secs() {
         warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
         return Err(Problem::malformed("Authorization has expired"));
     }
@@ -334,13 +337,14 @@ pub async fn post_challenge(
     // The client gave this authorization up (RFC 8555 §7.5.2). Validating a
     // challenge under it would walk it straight back to `valid` — which §7.5.2
     // forbids being sufficient for issuance — so refuse before doing any work.
-    if authz.status == "deactivated" {
+    if authz.status == AuthzStatus::Deactivated {
         warn!(event = "authz_already_deactivated", outcome = "failure", authz_id = %authz.id);
         return Err(Problem::malformed("Authorization has been deactivated"));
     }
 
-    let decided =
-        challenge.status == "valid" || challenge.status == "invalid" || authz.status == "valid";
+    let decided = challenge.status == ChallengeStatus::Valid
+        || challenge.status == ChallengeStatus::Invalid
+        || authz.status == AuthzStatus::Valid;
 
     if !decided {
         let thumbprint = jwk_thumbprint(&account.pubkey).map_err(|error| {
@@ -417,6 +421,6 @@ pub async fn post_challenge(
         Json(challenge.to_json(base)),
     )
         .into_response();
-    add_pending_retry_after(&mut response, &challenge.status);
+    add_pending_retry_after(&mut response, challenge.status.as_str());
     Ok(response)
 }

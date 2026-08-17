@@ -30,4 +30,5 @@ pub mod eab;
 pub mod job;
 pub mod nonce;
 pub mod order;
+pub mod status;
 pub mod upstream_order;

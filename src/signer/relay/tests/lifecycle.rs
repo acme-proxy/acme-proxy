@@ -1,4 +1,5 @@
 use super::*;
+use crate::sqlite::status::OrderStatus;
 
 #[test]
 fn the_kid_sidecar_sits_next_to_the_key() {
@@ -192,7 +193,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
         .unwrap();
     assert!(matches!(outcome, IssueOutcome::Processing));
 
-    let settled = await_status(db.clone(), &order.id, "valid").await;
+    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
     assert!(
         settled.cert_serial.is_some(),
@@ -347,7 +348,7 @@ async fn settle_notifies_only_the_owning_profile() {
         .unwrap();
     assert!(matches!(outcome, IssueOutcome::Processing));
 
-    await_status(db.clone(), &order.id, "valid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Valid).await;
 
     // `settle` queues the notification rather than delivering it, so the row has
     // to be claimed and run before the recorder sees anything. Waiting on the
@@ -413,7 +414,7 @@ async fn issue_polls_until_the_upstream_settles() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "valid").await;
+    await_status(db, &order.id, OrderStatus::Valid).await;
     assert!(
         upstream.order_polls() >= 4,
         "expected repeated polling, saw {}",
@@ -457,7 +458,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         .await
         .unwrap();
 
-    let settled = await_status(db.clone(), &order.id, "invalid").await;
+    let settled = await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
     assert!(settled.error.is_some(), "the client must be told why");
 
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
@@ -520,7 +521,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
         .await
         .unwrap();
 
-    let settled = await_status(db.clone(), &order.id, "valid").await;
+    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
     assert!(
         upstream.order_polls() > 2,
@@ -570,7 +571,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
         .await
         .unwrap();
 
-    await_status(db.clone(), &order.id, "invalid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
     let job = crate::sqlite::job::Job::find_live(
         crate::signer::relay::flow::RELAY_JOB_KIND,
         &order.id,
@@ -622,7 +623,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         .await
         .unwrap();
 
-    await_status(db.clone(), &order.id, "invalid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await
         .unwrap()
@@ -688,7 +689,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     assert!(matches!(first, IssueOutcome::Processing));
     assert!(matches!(second, IssueOutcome::Processing));
 
-    await_status(db.clone(), &order.id, "valid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Valid).await;
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await
         .unwrap()
@@ -736,7 +737,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
         .unwrap();
     // The rejection happens at the upstream's finalize, inside the relay,
     // so it lands as an invalid order rather than an inline error.
-    await_status(db, &order.id, "invalid").await;
+    await_status(db, &order.id, OrderStatus::Invalid).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -839,7 +840,7 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
 
-    let settled = await_status(db.clone(), &order.id, "valid").await;
+    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await
@@ -1081,7 +1082,7 @@ mod handler {
                 .unwrap()
                 .unwrap()
                 .status,
-            "invalid"
+            OrderStatus::Invalid
         );
         let (rows, _) = crate::sqlite::audit::AuditEntry::search(
             &crate::sqlite::audit::AuditQuery {

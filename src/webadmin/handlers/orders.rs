@@ -11,6 +11,7 @@ use crate::admin;
 use crate::admin::ops::{RevokeError, RevokeOutcome};
 use crate::sqlite::authz::Authorization;
 use crate::sqlite::order::{Order, OrderQuery};
+use crate::sqlite::status::{OrderStatus, UnknownStatus};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
@@ -28,11 +29,28 @@ pub struct OrderListParams {
     pub offset: Option<i64>,
 }
 
+impl OrderListParams {
+    /// The `status=` filter, parsed.
+    ///
+    /// Refused by name rather than passed to SQL: an unknown status matches no
+    /// rows, which a caller cannot tell from "nothing is in that state". Both
+    /// front ends call this, so `/api/orders?status=typo` and
+    /// `/ui/orders?status=typo` give the same answer.
+    pub fn parsed_status(&self) -> Result<Option<OrderStatus>, UnknownStatus> {
+        self.status.as_deref().map(str::parse).transpose()
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct RevokeRequest {
     /// RFC 5280 §5.3.1 reason code. Absent means "no reason recorded".
     #[serde(default)]
     pub reason: Option<u32>,
+}
+
+/// Turns an unparseable `status=` into a `400`, for either front end.
+fn bad_status(error: UnknownStatus) -> AdminError {
+    AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
 }
 
 /// `GET /api/orders?profile=&accountId=&status=&limit=&offset=`
@@ -42,10 +60,12 @@ pub async fn list_orders(
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
+    // Parsed before the move, since the helper borrows `params`.
+    let status = params.parsed_status().map_err(bad_status)?;
     let query = OrderQuery {
         profile: params.profile,
         account_id: params.account_id,
-        status: params.status,
+        status,
         limit: page.limit,
         offset: page.offset,
     };

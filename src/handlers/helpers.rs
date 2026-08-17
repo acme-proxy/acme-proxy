@@ -16,6 +16,7 @@ use crate::sqlite::{
     db::Database,
     nonce::now_secs,
     order::{Identifier, Order},
+    status::OrderStatus,
 };
 
 /// Runs the policy's identifier stage and maps a refusal to the ACME error the
@@ -522,7 +523,7 @@ pub(crate) async fn load_owned_order(
         ));
     }
 
-    if order.status != "valid" && order.expires <= now_secs() {
+    if order.status != OrderStatus::Valid && order.expires <= now_secs() {
         warn!(event = "order_expired", outcome = "failure", order_id = %id, expires = order.expires);
         return Err(Problem::malformed("Order has expired"));
     }

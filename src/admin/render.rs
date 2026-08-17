@@ -576,9 +576,10 @@ mod tests {
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
     use crate::sqlite::order::Identifier;
+    use crate::sqlite::status::OrderStatus;
     use crate::testutil::account_id;
 
-    fn order_fixture(account_id: &str, status: &str) -> Order {
+    fn order_fixture(account_id: &str, status: OrderStatus) -> Order {
         let mut order = Order::new(
             "default",
             account_id,
@@ -587,7 +588,7 @@ mod tests {
             None,
             None,
         );
-        order.status = status.to_string();
+        order.status = status;
         order
     }
 
@@ -746,7 +747,7 @@ mod tests {
 
     #[test]
     fn render_order_line_includes_expected_fields() {
-        let order = order_fixture("acct", "pending");
+        let order = order_fixture("acct", OrderStatus::Pending);
         let line = render_order_line(&order);
         assert!(line.contains(&order.id));
         assert!(line.contains("pending"));
@@ -755,7 +756,7 @@ mod tests {
 
     #[test]
     fn render_order_json_includes_id_and_authorizations() {
-        let order = order_fixture("acct", "pending");
+        let order = order_fixture("acct", OrderStatus::Pending);
         let authz_ids = vec!["authz-1".to_string()];
         let json = render_order_json(&order, "http://localhost:3000", &authz_ids);
         assert_eq!(json["id"], order.id);
@@ -876,7 +877,7 @@ mod tests {
 
     #[test]
     fn render_order_line_revoked_includes_reason_and_time() {
-        let mut order = order_fixture("acct", "valid");
+        let mut order = order_fixture("acct", OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let line = render_order_line(&order);
@@ -886,7 +887,7 @@ mod tests {
 
     #[test]
     fn render_order_json_revoked_includes_reason_and_time() {
-        let mut order = order_fixture("acct", "valid");
+        let mut order = order_fixture("acct", OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let json = render_order_json(&order, "http://localhost:3000", &[]);

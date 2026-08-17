@@ -1798,6 +1798,36 @@ async fn orders_list_filters_by_account_and_status() {
     assert!(ready["items"].as_array().unwrap().is_empty());
 }
 
+/// An unknown `status=` is a `400`, not an empty page.
+///
+/// The two answers are indistinguishable to a caller — `ready` above really
+/// does match nothing — so a typo'd filter has to say so itself rather than
+/// looking like a true negative. The CLI's `--status` refuses the same way.
+#[tokio::test]
+async fn an_unknown_order_status_filter_is_refused_rather_than_matching_nothing() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    seed(&database, 2).await;
+
+    let response = admin_request(
+        &app,
+        Method::GET,
+        "/api/orders?status=readyy",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "invalid_status");
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("`readyy`"), "{message}");
+    assert!(
+        message.contains("pending, ready, processing, valid, invalid"),
+        "{message}"
+    );
+}
+
 #[tokio::test]
 async fn an_order_detail_carries_its_authorizations() {
     use acme_proxy::sqlite::authz::{Authorization, Challenge};

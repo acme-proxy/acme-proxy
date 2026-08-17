@@ -25,6 +25,7 @@ use crate::sqlite::{
     db::Database,
     nonce::now_secs,
     order::{Identifier, Order},
+    status::OrderStatus,
 };
 
 /// A newOrder payload (RFC 8555 §7.4).
@@ -441,7 +442,7 @@ const PROCESSING_RETRY_AFTER: &str = "5";
 /// status renders exactly as before.
 fn order_response(order: &Order, base: &str, authz_ids: &[String]) -> Response {
     let mut response = Json(order.to_json(base, authz_ids)).into_response();
-    if order.status == "processing" {
+    if order.status == OrderStatus::Processing {
         response.headers_mut().insert(
             header::RETRY_AFTER,
             HeaderValue::from_static(PROCESSING_RETRY_AFTER),
@@ -481,7 +482,7 @@ pub async fn post_finalize(
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
     let mut order = load_owned_order(&id, &account, &database).await?;
 
-    if order.status != "ready" {
+    if order.status != OrderStatus::Ready {
         warn!(event = "order_finalize_not_ready", outcome = "failure", order_id = %id, status = %order.status);
         return Err(Problem::order_not_ready("Order is not ready"));
     }

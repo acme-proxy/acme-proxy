@@ -1,4 +1,5 @@
 use super::*;
+use crate::sqlite::status::OrderStatus;
 
 /// A `DnsUpdater` that records what it was asked to publish, so a test can
 /// assert on the record without a DNS server.
@@ -81,7 +82,7 @@ async fn bypass_triggers_the_offered_challenge() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "valid").await;
+    await_status(db, &order.id, OrderStatus::Valid).await;
 
     assert_eq!(
         upstream.challenge_triggered(),
@@ -127,7 +128,7 @@ async fn bypass_triggers_a_challenge_of_any_type() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "valid").await;
+    await_status(db, &order.id, OrderStatus::Valid).await;
 }
 
 /// A rejected challenge fails the order rather than hanging: under bypass
@@ -166,7 +167,7 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "invalid").await;
+    await_status(db, &order.id, OrderStatus::Invalid).await;
 }
 
 /// The dns-01 path end to end: publish the record the upstream asked for,
@@ -208,7 +209,7 @@ async fn dns01_publishes_triggers_and_cleans_up() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "valid").await;
+    await_status(db, &order.id, OrderStatus::Valid).await;
 
     assert_eq!(
         upstream.challenge_triggered(),
@@ -272,7 +273,7 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "invalid").await;
+    await_status(db, &order.id, OrderStatus::Invalid).await;
 
     assert_eq!(
         updater.deleted.lock().unwrap().len(),
@@ -319,7 +320,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, "invalid").await;
+    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
 
     let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
         .await
@@ -372,7 +373,7 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
         )
         .await
         .unwrap();
-    await_status(db, &order.id, "invalid").await;
+    await_status(db, &order.id, OrderStatus::Invalid).await;
     assert_eq!(
         upstream.challenge_triggered(),
         0,
