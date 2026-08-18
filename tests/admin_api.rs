@@ -927,6 +927,72 @@ async fn enrolment_shows_the_secret_once_and_the_codes_once() {
     }
 }
 
+/// The step-up password is bounded by the same budget sign-in is, and by the
+/// *same bucket* — so guessing it cannot buy a second budget.
+///
+/// The third call site of the login limiter, after the password step and the
+/// code step. Until it ran here, somebody holding a stolen cookie could
+/// brute-force the account password at unlimited rate, and a correct guess
+/// converts that cookie into a factor takeover: enrol their own authenticator,
+/// revoke every other session, void the recovery codes.
+#[tokio::test]
+async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
+    let (app, database) = test_admin_app(admin_config()).await;
+    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
+        .await
+        .unwrap();
+    let secret = enrol_totp(database.clone(), "alice").await;
+    let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
+
+    // A distinct address, so the bucket under test is not the one `admin_login`
+    // already touched.
+    let peer = "203.0.113.9:1234";
+    for _ in 0..5 {
+        let refused = admin_request_from(
+            &app,
+            Method::POST,
+            "/api/mfa/totp",
+            Some(&session),
+            Some(json!({ "password": "not the password" })),
+            peer,
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(refused).await["error"], "invalid_credentials");
+    }
+
+    // Past the budget the **correct** password is refused too — which is what
+    // proves the limiter runs ahead of the KDF rather than behind it.
+    let limited = admin_request_from(
+        &app,
+        Method::POST,
+        "/api/mfa/totp",
+        Some(&session),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+        peer,
+    )
+    .await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(limited.headers().contains_key("retry-after"));
+
+    // And the bucket is shared with sign-in: a second budget here would hand an
+    // attacker twice the guesses against one password.
+    let login = send_from(
+        &app,
+        Request::builder()
+            .method(Method::POST)
+            .uri("/api/session")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "username": "alice", "password": ADMIN_PASSWORD }).to_string(),
+            ))
+            .unwrap(),
+        peer,
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn recovery_codes_can_be_reissued_and_supersede_the_previous_set() {
     let (app, database) = test_admin_app(admin_config()).await;
@@ -2293,6 +2359,13 @@ async fn changing_a_live_factor_requires_the_password_again() {
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database.clone(), "alice", ADMIN_PASSWORD, &secret).await;
 
+    // A fresh address per attempt, because `check_step_up` now spends the login
+    // limiter's budget and six guesses from one address would be refused as
+    // `rate_limited` — a different refusal from the one under test here, which
+    // is that a cookie alone is not authority. Rotating addresses is also
+    // exactly the residual the address-keyed bound does not close, so spelling
+    // it out here keeps that visible rather than incidental.
+    let mut attempt = 0;
     for (method, path) in [
         (Method::POST, "/api/mfa/totp"),
         (Method::POST, "/api/mfa/recovery-codes"),
@@ -2301,8 +2374,16 @@ async fn changing_a_live_factor_requires_the_password_again() {
         // Absent, then wrong: both are the same refusal a wrong password gets
         // at sign-in, so this is not a second oracle for the password.
         for body in [json!({}), json!({ "password": "not-the-password" })] {
-            let refused =
-                admin_request(&app, method.clone(), path, Some(&session), Some(body)).await;
+            attempt += 1;
+            let refused = admin_request_from(
+                &app,
+                method.clone(),
+                path,
+                Some(&session),
+                Some(body),
+                &format!("192.0.2.{attempt}:1234"),
+            )
+            .await;
             assert_eq!(
                 refused.status(),
                 StatusCode::UNAUTHORIZED,

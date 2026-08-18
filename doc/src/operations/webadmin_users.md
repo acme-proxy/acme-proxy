@@ -217,6 +217,18 @@ address), so five wrong codes also lock the password out from that address: one
 address, one budget. A code accepted once cannot be replayed inside its own
 thirty-second window.
 
+The password asked for again when an operator replaces or removes a live
+factor shares that same budget, and is checked before the hash rather than
+after it. So a stolen session cookie cannot be used to grind the account
+password — which matters, because a correct guess there would let the thief
+enrol their own authenticator, end every other session and void the recovery
+codes. Past the budget those routes answer `429` with `Retry-After`, and the
+account card shows it as a banner. What the budget does not bound is an
+attacker with many source addresses: the cookie is deliberately valid from
+anywhere, so each address buys its own `admin.login_max_attempts`. Rotate the
+password and run `acme-proxy admin session revoke --all` if you believe a
+cookie has been taken.
+
 ## Managing operators
 
 ```console

@@ -18,6 +18,7 @@ use crate::webadmin::handlers::mfa::check_step_up;
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond, respond_fragment};
+use crate::webadmin::session::AdminClientIp;
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmForm {
@@ -36,24 +37,36 @@ pub struct StepUpForm {
 ///
 /// The module's rule -- "the row's state is a banner, the server's problem is a
 /// page" -- puts a wrong password on the banner side: the session is live and
-/// the page is the right page, only this one action was refused.
+/// the page is the right page, only this one action was refused. The same now
+/// holds for the rate limit `check_step_up` applies, which is why the status and
+/// the wording are taken from the error rather than hardcoded: a lockout renders
+/// at 429 and says how long to wait, exactly as `post_login` re-renders its own
+/// refusals at their real status.
 async fn refuse_without_password(
     state: &AdminState,
     user: &AdminUser,
     csrf_token: &str,
     password: &str,
+    client: Option<std::net::IpAddr>,
 ) -> Result<Option<Response>, PageError> {
-    if check_step_up(user, password).is_ok() {
+    let Err(error) = check_step_up(user, password, client, &state.logins) else {
         return Ok(None);
-    }
+    };
+    // The wrong-password case keeps this page's own wording: `AdminError`'s is
+    // "invalid username or password", which is a script's answer to a sign-in
+    // and names a field this card does not have. Every other refusal — today
+    // only the rate limit — carries its own message through, because that one
+    // says how long to wait and no fixed string here could.
+    let message = if error.status == StatusCode::UNAUTHORIZED {
+        "That password is not correct.".to_string()
+    } else {
+        error.message.clone()
+    };
     let mut context = card_context(state, user, csrf_token).await?;
-    context.insert(
-        "flash".to_string(),
-        super::flash_error("invalid_credentials", "That password is not correct."),
-    );
+    context.insert("flash".to_string(), super::flash_error(error.code, message));
     Ok(Some(
         (
-            StatusCode::UNAUTHORIZED,
+            error.status,
             respond_fragment(state, "account/_mfa.html", context)?,
         )
             .into_response(),
@@ -93,6 +106,7 @@ pub async fn get_account(
 /// field, pulled in by `hx-include`. See [`check_step_up`].
 pub async fn begin_totp(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     session: PageEnrolWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -102,6 +116,7 @@ pub async fn begin_totp(
         &user,
         &session.enrol.session.csrf_token,
         &body.password,
+        client,
     )
     .await?
     {
@@ -198,6 +213,7 @@ pub async fn confirm_totp(
 /// consequential thing a stolen cookie could do here.
 pub async fn disable_totp(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     session: PageSessionWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -225,6 +241,7 @@ pub async fn disable_totp(
         &user,
         &session.auth.session.csrf_token,
         &body.password,
+        client,
     )
     .await?
     {
@@ -257,6 +274,7 @@ pub async fn disable_totp(
 /// factor itself.
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     session: PageSessionWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -282,6 +300,7 @@ pub async fn regenerate_recovery_codes(
         &session.auth.user,
         &session.auth.session.csrf_token,
         &body.password,
+        client,
     )
     .await?
     {

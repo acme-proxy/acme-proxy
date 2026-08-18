@@ -57,19 +57,67 @@ pub struct StepUpRequest {
 pub(crate) fn check_step_up(
     user: &crate::sqlite::admin_user::AdminUser,
     password: &str,
+    client: Option<std::net::IpAddr>,
+    logins: &crate::webadmin::session::LoginLimiter,
 ) -> Result<(), AdminError> {
     if !user.has_totp() {
         return Ok(());
     }
+
+    // Checked **before** the KDF, which is `sign_in`'s reasoning verbatim: 600 000
+    // PBKDF2 iterations is a denial-of-service lever, and until this ran here an
+    // authenticated caller could pull it as fast as it could send requests.
+    // Guessing was unbounded too, which mattered more — this is the one check
+    // standing between a stolen cookie and the factor takeover the doc comment
+    // above describes.
+    //
+    // **The sign-in bucket, deliberately, not one of its own.** It is literally
+    // the same secret, and the panel already shares one bucket between the
+    // password step and the code step; a second budget here would hand an
+    // attacker `2 × login_max_attempts` guesses per window against one password.
+    // The cost is that a lockout earned on the account card also refuses sign-in
+    // from that address until `login_window_seconds` rolls over — already true
+    // of the code step, and the same remedy.
+    //
+    // What this does *not* bound: an `active` cookie is valid from any address
+    // on purpose (`created_ip` is forensics, never compared), so somebody
+    // rotating source addresses still gets `login_max_attempts` guesses each.
+    // Closing that needs a per-session counter, i.e. a column on
+    // `admin_sessions` — deliberately not done, because unlike a six-digit code
+    // a password behind 85 ms of PBKDF2 per guess is not reachable that way, and
+    // the address bucket already removes the DoS lever.
+    if let Err(retry_after) = logins.check(client) {
+        warn!(
+            event = "admin_mfa_step_up_refused",
+            outcome = "failure",
+            username = %user.username,
+            reason = "rate_limited"
+        );
+        return Err(AdminError::rate_limited(retry_after));
+    }
+
     match crate::admin::password::verify_password(&user.password_hash, password) {
-        Ok(true) => Ok(()),
+        Ok(true) => {
+            // No `record_success`. `sign_in` moved its own to the *promotion*
+            // past the second factor for exactly this reason: clearing the
+            // bucket on a correct password would let whoever holds one reset it
+            // at will and brute-force the six digits behind it. A step-up caller
+            // is in that position by definition.
+            Ok(())
+        }
         Ok(false) => {
-            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username);
+            logins.record_failure(client);
+            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "wrong_password");
             Err(AdminError::invalid_credentials())
         }
         Err(error) => {
             // A stored hash this process cannot parse is a corrupt row, not a
             // wrong password. Refuse rather than let the change through.
+            //
+            // No `record_failure`: `decode` failed before the KDF ran, so
+            // nothing was guessed and no work was spent. Counting it would let
+            // one corrupt row lock its own owner out of sign-in as well — the
+            // one account that most needs to reach an operator.
             //
             // `warn`, matching `admin::users::authenticate`'s report of the
             // same condition: one name emits at one level.
@@ -111,11 +159,17 @@ pub async fn get_mfa(
 /// confirm a secret this route already gated.
 pub async fn begin_totp(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     enrol: EnrolWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
-    check_step_up(&user, &body.unwrap_or_default().password)?;
+    check_step_up(
+        &user,
+        &body.unwrap_or_default().password,
+        client,
+        &state.logins,
+    )?;
     let enrolment = mfa::begin_totp_enrolment(
         &mut user,
         &state.config.admin.base_url,
@@ -185,6 +239,7 @@ pub async fn confirm_totp(
 /// most consequential thing a stolen cookie could do here.
 pub async fn disable_totp(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     AuthenticatedWrite(auth): AuthenticatedWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
@@ -196,7 +251,12 @@ pub async fn disable_totp(
     }
 
     let mut user = auth.user;
-    check_step_up(&user, &body.unwrap_or_default().password)?;
+    check_step_up(
+        &user,
+        &body.unwrap_or_default().password,
+        client,
+        &state.logins,
+    )?;
     mfa::disable_totp(
         &mut user,
         Some(&auth.session.token_hash),
@@ -215,6 +275,7 @@ pub async fn disable_totp(
 /// factor.
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
     AuthenticatedWrite(auth): AuthenticatedWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
@@ -224,7 +285,12 @@ pub async fn regenerate_recovery_codes(
             "there is no second factor for these codes to recover access to",
         ));
     }
-    check_step_up(&auth.user, &body.unwrap_or_default().password)?;
+    check_step_up(
+        &auth.user,
+        &body.unwrap_or_default().password,
+        client,
+        &state.logins,
+    )?;
 
     let codes = mfa::regenerate_recovery_codes(&auth.user, state.database).await?;
     Ok(Json(json!({ "recoveryCodes": codes })))
@@ -250,22 +316,44 @@ mod tests {
         }
     }
 
+    use crate::webadmin::session::LoginLimiter;
+    use std::net::IpAddr;
+
+    const MAX_ATTEMPTS: u32 = 5;
+
+    fn limiter() -> LoginLimiter {
+        LoginLimiter::new(MAX_ATTEMPTS, 300)
+    }
+
+    fn client() -> Option<IpAddr> {
+        Some("198.51.100.7".parse().expect("a literal address"))
+    }
+
+    /// The encoded form is self-describing, so a cheaper cost still exercises
+    /// every branch here at a fraction of the wall clock — which matters,
+    /// because these tests deliberately run the KDF several times over.
+    fn cheap_hash(password: &str) -> String {
+        crate::admin::password::hash_generated_secret(password)
+    }
+
     /// The gate is scoped to operators who *have* something to protect.
     #[test]
     fn a_factorless_operator_passes_without_a_password() {
         let user = user_with("not-even-a-valid-hash", None);
-        assert!(check_step_up(&user, "").is_ok());
-        assert!(check_step_up(&user, "anything").is_ok());
+        let logins = limiter();
+        assert!(check_step_up(&user, "", client(), &logins).is_ok());
+        assert!(check_step_up(&user, "anything", client(), &logins).is_ok());
     }
 
     #[test]
     fn a_live_factor_needs_the_right_password() {
-        let hash = crate::admin::password::hash_password("correct horse battery staple");
+        let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
+        let logins = limiter();
 
-        assert!(check_step_up(&user, "correct horse battery staple").is_ok());
+        assert!(check_step_up(&user, "correct horse battery staple", client(), &logins).is_ok());
         for wrong in ["", "Correct horse battery staple", "wrong"] {
-            let Err(error) = check_step_up(&user, wrong) else {
+            let Err(error) = check_step_up(&user, wrong, client(), &logins) else {
                 panic!("{wrong:?} must be refused");
             };
             // Byte-identical to a wrong password at sign-in, so this is not a
@@ -280,7 +368,87 @@ mod tests {
     #[test]
     fn an_unreadable_stored_hash_refuses_rather_than_admits() {
         let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
-        let error = check_step_up(&user, "anything").expect_err("a corrupt hash must refuse");
+        let logins = limiter();
+        let error = check_step_up(&user, "anything", client(), &logins)
+            .expect_err("a corrupt hash must refuse");
         assert_eq!(error.code, AdminError::invalid_credentials().code);
+    }
+
+    /// Guessing the password here is bounded by the same budget sign-in uses.
+    ///
+    /// The assertion that matters is the *last* one: once the address is locked
+    /// out the **correct** password is refused too, which is the only thing that
+    /// can prove the limiter runs before the KDF rather than after it. Checking
+    /// it afterwards would bound nothing — the expensive work would already be
+    /// done, and that expense is the denial-of-service lever `sign_in` runs its
+    /// own check ahead of.
+    #[test]
+    fn a_wrong_password_counts_against_the_login_limiter() {
+        let hash = cheap_hash("correct horse battery staple");
+        let user = user_with(&hash, Some(b"secret"));
+        let logins = limiter();
+
+        for _ in 0..MAX_ATTEMPTS {
+            let error = check_step_up(&user, "wrong", client(), &logins)
+                .expect_err("a wrong password must refuse");
+            assert_eq!(error.code, AdminError::invalid_credentials().code);
+        }
+
+        let error = check_step_up(&user, "correct horse battery staple", client(), &logins)
+            .expect_err("the budget is spent, so even a correct password waits");
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// A correct password does **not** clear the bucket.
+    ///
+    /// `sign_in` moved its own `record_success` past the second factor for
+    /// exactly this reason: somebody holding a correct password must not be able
+    /// to reset the budget at will and brute-force the six digits behind it. A
+    /// step-up caller holds a session, so they are in that position by
+    /// definition.
+    #[test]
+    fn a_correct_password_does_not_clear_the_bucket() {
+        let hash = cheap_hash("correct horse battery staple");
+        let user = user_with(&hash, Some(b"secret"));
+        let logins = limiter();
+
+        for _ in 0..MAX_ATTEMPTS - 1 {
+            assert!(check_step_up(&user, "wrong", client(), &logins).is_err());
+        }
+        assert!(check_step_up(&user, "correct horse battery staple", client(), &logins).is_ok());
+
+        // One guess left, not a fresh five.
+        assert!(check_step_up(&user, "wrong", client(), &logins).is_err());
+        let error = check_step_up(&user, "wrong", client(), &logins)
+            .expect_err("the budget survives a correct password");
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// An operator with no factor never spends the budget, since the gate
+    /// returns before any KDF runs — there is nothing to bound, and charging
+    /// them would let a factorless account lock its own address out of sign-in.
+    #[test]
+    fn a_factorless_operator_never_touches_the_limiter() {
+        let user = user_with("not-even-a-valid-hash", None);
+        let logins = limiter();
+
+        for _ in 0..MAX_ATTEMPTS + 1 {
+            assert!(check_step_up(&user, "anything", client(), &logins).is_ok());
+        }
+        assert!(logins.check(client()).is_ok());
+    }
+
+    /// A corrupt row refuses, but must not lock its own owner out of sign-in:
+    /// `decode` failed before the KDF ran, so nothing was guessed and no work
+    /// was spent.
+    #[test]
+    fn an_unreadable_stored_hash_does_not_lock_the_address_out() {
+        let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
+        let logins = limiter();
+
+        for _ in 0..MAX_ATTEMPTS + 1 {
+            assert!(check_step_up(&user, "anything", client(), &logins).is_err());
+        }
+        assert!(logins.check(client()).is_ok());
     }
 }

@@ -571,6 +571,19 @@ migrated configuration before restarting.
   the request the login limiter exists to bound. The dummy is now a precomputed
   constant, so both branches cost exactly one verification.
 
+- **The web admin's step-up password check had no rate limit.** Replacing or
+  removing a live second factor takes the account password, but that check ran
+  the KDF with no budget and no counter — so somebody holding a stolen session
+  cookie could brute-force the operator's password at line rate, and a correct
+  guess converts the cookie into a factor takeover (enrol their own
+  authenticator, revoke every other session, void the recovery codes), which is
+  the lockout the check exists to prevent. Any authenticated caller could also
+  pin a core with PBKDF2. It now runs the same `LoginLimiter` sign-in does,
+  before the KDF and against the **same** bucket, so guessing here cannot buy a
+  second budget. `POST /api/mfa/totp`, `DELETE /api/mfa/totp` and
+  `POST /api/mfa/recovery-codes` can now answer `429` with `Retry-After`; the
+  `/ui` twins render it as the account card's own banner.
+
 ### Fixed
 
 - The e2e lab picked the wrong container runtime on any host with

@@ -553,6 +553,57 @@ async fn the_account_page_reports_its_refusals_as_banners() {
     assert!(body.contains(r#"id="account-mfa""#));
 }
 
+/// Guessing the step-up password on the card is bounded, and the lockout is a
+/// banner on the card at its real status — not an error page and not a 401.
+///
+/// The `/ui` half of the limiter's third call site. The status is what a
+/// browser sees, so it has to be the error's own rather than this card's fixed
+/// 401, and the message has to be the error's own too: only it can say how long
+/// the wait is.
+#[tokio::test]
+async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
+    let (app, database) = test_admin_app(admin_config()).await;
+    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
+        .await
+        .unwrap();
+    let secret = enrol_totp(database.clone(), "alice").await;
+    let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
+
+    // The default budget, spent on this card rather than on the sign-in form.
+    for _ in 0..5 {
+        let refused = admin_form_request(
+            &app,
+            Method::POST,
+            "/ui/account/mfa/totp",
+            Some(&session),
+            Some(&[("password", "not-the-password")]),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Past it, the correct password is refused too — the limiter runs ahead of
+    // the KDF, so there is nothing left to spend.
+    let limited = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/mfa/totp",
+        Some(&session),
+        Some(&[("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = html_body(limited).await;
+    assert!(
+        body.contains(r#"id="account-mfa""#),
+        "a lockout is this card's own banner, not an error page"
+    );
+    assert!(
+        body.contains("too many"),
+        "the banner has to say what happened, and how long to wait"
+    );
+}
+
 /// The sign-out button is `hx-post`, so the htmx branch is the one a browser
 /// takes — but the route has to answer a plain client too, and the cookie must
 /// be cleared either way.
