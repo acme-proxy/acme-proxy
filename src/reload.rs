@@ -48,6 +48,35 @@ pub struct Applied<'a> {
     pub profiles: &'a [ProfileConfig],
 }
 
+/// Renders a projection whose *value* must never reach a log.
+///
+/// `[signer]` reaches `relay.eab.hmac_key`, `relay.dns01.rfc2136.tsig_key_secret`
+/// and `local_ca.pkcs11.pin`; `[proxy]`'s URLs legitimately carry
+/// `http://user:password@host`. [`ReloadError::Frozen`] embeds both the applied
+/// and the proposed rendering verbatim and `cli::apply_reload` logs the whole
+/// message, so a `SIGHUP` after an unrelated edit to either section would print
+/// the TSIG key — write access to the very zone this CA validates against — and
+/// the HSM PIN, to journald and every log shipper downstream. That directly
+/// contradicts what `src/proxy.rs` states for itself, that `redacted()` is the
+/// only rendering of a proxy URL that exists.
+///
+/// A digest costs nothing here, because **the projection only ever needs
+/// equality**: `check_frozen` compares the two strings and never reads them.
+/// Redacting `Debug` was the alternative and is not available — `format!("{:?}")`
+/// of a signer section is load-bearing as the *identity key*
+/// `signer::build_backends` dedups backends on, so hiding a field there would
+/// collapse two profiles differing only in their HSM PIN into one backend.
+///
+/// The forward rule, since this will be asked again: **a whole-section
+/// projection is opaque iff any field it reaches can hold a credential.**
+/// `logging`, `dns.resolver` and `database.url` hold none, and naming the old
+/// and the new value is exactly where that message earns its keep, so they stay
+/// readable. Truncated to 8 bytes like [`crate::sqlite::account::pubkey_fingerprint`].
+fn opaque(rendered: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, rendered.as_bytes());
+    format!("sha256:{}", hex::encode(&digest.as_ref()[..8]))
+}
+
 /// The keys a running process cannot change, and how to read each one.
 ///
 /// A projection to `String` rather than `PartialEq` on the config types: nothing
@@ -90,7 +119,8 @@ const FROZEN: &[(&str, Projection)] = &[
     }),
     ("logging", |a| format!("{:?}", a.config.logging)),
     ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
-    ("proxy", |a| format!("{:?}", a.config.proxy)),
+    // Opaque: the URLs carry a proxy password. See `opaque`.
+    ("proxy", |a| opaque(&format!("{:?}", a.config.proxy))),
     // The six the runner and the queue snapshot at spawn. `retention_days` is
     // the seventh and is reloadable, so this cannot be `{:?}` of the section.
     ("jobs.poll_interval_ms", |a| {
@@ -120,10 +150,19 @@ const FROZEN: &[(&str, Projection)] = &[
             .collect::<Vec<_>>()
             .join(",")
     }),
+    // Opaque per profile, but the profile *name* stays readable — it is not a
+    // field of the section, and it is what tells an operator which endpoint's
+    // signer moved. See `opaque`.
     ("profiles.*.signer", |a| {
         a.profiles
             .iter()
-            .map(|profile| format!("{}={:?}", profile.name, profile.sections.signer))
+            .map(|profile| {
+                format!(
+                    "{}={}",
+                    profile.name,
+                    opaque(&format!("{:?}", profile.sections.signer))
+                )
+            })
             .collect::<Vec<_>>()
             .join(";")
     }),
@@ -574,6 +613,88 @@ mod frozen_tests {
     #[test]
     fn an_unchanged_configuration_is_allowed() {
         assert!(refuse(|_, _| {}).is_ok());
+    }
+
+    /// A frozen section that can hold a credential is still refused **by name**,
+    /// and the refusal prints none of it.
+    ///
+    /// [`ReloadError::Frozen`] embeds the applied and the proposed rendering
+    /// verbatim and `cli::apply_reload` logs the whole message, so before
+    /// `opaque` a `SIGHUP` after any `[signer]` or `[proxy]` edit wrote the RFC
+    /// 2136 TSIG key, the upstream EAB secret and the HSM PIN into the log — and
+    /// the TSIG key is write access to the zone this CA validates against.
+    ///
+    /// Asserted on `to_string()` as well as on the two fields, since that is
+    /// what is actually logged.
+    #[test]
+    fn a_frozen_section_holding_a_secret_is_refused_without_printing_it() {
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(
+            &str,
+            &str,
+            Box<dyn Fn(&mut Config, &mut Vec<ProfileConfig>)>,
+        )> = vec![
+            (
+                "proxy",
+                "hunter2",
+                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
+                    c.proxy.https_url = "http://user:hunter2@proxy.example:3128".to_string();
+                }),
+            ),
+            (
+                "profiles.*.signer",
+                "SUPERSECRET",
+                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
+                    p[0].sections.signer.relay.dns01.rfc2136.tsig_key_secret =
+                        "SUPERSECRET".to_string();
+                }),
+            ),
+            (
+                "profiles.*.signer",
+                "1234-PIN",
+                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
+                    p[0].sections.signer.local_ca.pkcs11.pin = "1234-PIN".to_string();
+                }),
+            ),
+        ];
+
+        for (key, secret, mutate) in cases {
+            let Err(error) = refuse(mutate) else {
+                panic!("{key} holding {secret} must still be refused");
+            };
+            let ReloadError::Frozen {
+                key: named,
+                applied,
+                proposed,
+            } = &error
+            else {
+                panic!("expected a frozen-key refusal, got {error}");
+            };
+
+            assert_eq!(named, key);
+            // The change is still *detected* — which is also what proves
+            // `opaque` is not a constant.
+            assert_ne!(applied, proposed);
+            for rendered in [applied.as_str(), proposed.as_str(), &error.to_string()] {
+                assert!(
+                    !rendered.contains(secret),
+                    "{key} printed {secret} in {rendered}"
+                );
+            }
+        }
+    }
+
+    /// The profile *name* is not a credential, and it is what tells an operator
+    /// which endpoint's signer moved — so it survives the digest.
+    #[test]
+    fn an_opaque_signer_refusal_still_names_its_profile() {
+        let Err(ReloadError::Frozen { proposed, .. }) = refuse(|_, p| {
+            p[0].sections.signer.backend = "custom".to_string();
+        }) else {
+            panic!("a resolved signer change must be refused");
+        };
+        assert!(proposed.starts_with("le="), "got {proposed}");
+        assert!(proposed.contains("sha256:"), "got {proposed}");
     }
 
     /// The pair that a naive implementation gets wrong.

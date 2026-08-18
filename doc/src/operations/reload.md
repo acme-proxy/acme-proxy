@@ -83,6 +83,29 @@ one is. Profiles inherit key by key, so a global change that matters shows up
 in some profile's resolved section anyway, and a global change every profile
 overrides is a genuine no-op that would be silly to refuse.
 
+### Sections whose value the refusal will not print
+
+`[proxy]` and each profile's `[signer]` are compared as a whole, and both can
+hold a credential: a proxy URL carries `user:password@`, and a signer section
+reaches the HSM PIN, the RFC 2136 TSIG key and the upstream EAB secret. The
+refusal above is logged, so printing those values would put them in journald
+and every log shipper downstream — and the TSIG key is write access to the very
+zone this CA validates against.
+
+Those two are therefore compared by digest. The refusal still names the key,
+and the signer one still names the profile, but the value reads:
+
+```text
+`profiles.*.signer` cannot be changed while the server is running
+(running with `le=sha256:9f2a1c...`, the file now says `le=sha256:41b0de...`):
+restart to apply it
+```
+
+That is enough to see *which* endpoint's signer moved, which is what the
+message is for. To see what actually changed, diff the file. Sections that
+cannot hold a credential — `[logging]`, `dns.resolver`, `database.url` — still
+name the old and the new value in full.
+
 ## What a reload does change
 
 Everything else, including the things operators reach for most:

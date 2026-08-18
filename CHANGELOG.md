@@ -562,6 +562,18 @@ migrated configuration before restarting.
   `custom`, which answer inline, had no equivalent until now. No schema change:
   `processing` has always been in the `orders.status` `CHECK`.
 
+- **A refused configuration reload printed the HSM PIN, the RFC 2136 TSIG key
+  and the upstream EAB secret to the log.** The frozen-key check compares
+  `[proxy]` and each profile's resolved `[signer]` by rendering the whole
+  section through `Debug`, and the refusal embeds both the running and the
+  proposed rendering in a message `SIGHUP` handling logs at `warn`. So editing
+  any `[signer]` key and reloading wrote the TSIG key — write access to the very
+  DNS zone this CA validates against — into journald and every log shipper
+  downstream. Those two projections are now compared by SHA-256 digest: the
+  comparison is unchanged, the refusal still names the key and the profile, and
+  the value is `sha256:…`. Sections that cannot hold a credential (`[logging]`,
+  `dns.resolver`, `database.url`) still name the old and the new value.
+
 - **Admin login latency enumerated the operator table, in the opposite direction
   from the one the code guarded against.** The unknown-username branch verified
   against a dummy hash that was *generated* on the spot, so it paid two
