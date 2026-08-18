@@ -795,7 +795,7 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
 
     // Stand in for what the previous process left behind: the order is
     // processing and the mapping row exists, but no task is running.
-    order.mark_processing(&db).await.unwrap();
+    assert!(order.claim_for_finalize(&db).await.unwrap());
     UpstreamOrder::create(
         &order.id,
         &format!("{}/order/1", upstream.base),

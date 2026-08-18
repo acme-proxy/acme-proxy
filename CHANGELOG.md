@@ -540,6 +540,28 @@ migrated configuration before restarting.
   `handlers`, `extractors`, `sqlite`, `admin`, `middlewares`, `cli` — have one.
   The `notify` payload structs, a plugin-facing data contract, are documented.
 
+### Security
+
+- **Two concurrent `finalize` requests on one order could each be issued a
+  certificate, and all but one of them were unrevocable.** `post_finalize` read
+  the order, checked `status == "ready"`, signed, and wrote — three steps with
+  nothing holding the order in between, so N requests carrying their own nonce
+  and their own CSR all passed the check and all reached the signer. Only the
+  last write survived. The others were valid, CA-signed certificates whose
+  serial reached no row, so `POST /revokeCert` answered `malformed` ("unknown
+  certificate"), `acme-proxy order revoke` could not see them, and the CRL never
+  learned they existed — there was no interface in the product that could
+  withdraw them.
+
+  `Order::claim_for_finalize` now moves `ready` → `processing` in one guarded
+  `UPDATE` and hands the caller `rows_affected`, the primitive nonce
+  consumption and the TOTP replay guard already rest on. The loser gets RFC 8555
+  §7.4's own answer, `403 orderNotReady`, and sees `processing` then `valid` on
+  its next poll. The `relay` backend was never exposed (its
+  `upstream_orders.order_id` primary key is exactly this guard); `local_ca` and
+  `custom`, which answer inline, had no equivalent until now. No schema change:
+  `processing` has always been in the `orders.status` `CHECK`.
+
 ### Fixed
 
 - The e2e lab picked the wrong container runtime on any host with

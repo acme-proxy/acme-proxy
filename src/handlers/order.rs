@@ -191,6 +191,26 @@ fn is_replaces_conflict(error: &sqlx::Error) -> bool {
         && db.message().contains("orders.replaces"))
 }
 
+/// Gives back the claim [`Order::claim_for_finalize`] took, on the three
+/// `post_finalize` arms that must leave the order finalizable.
+///
+/// A failure here is logged and swallowed rather than replacing the refusal the
+/// caller is already returning: the client is being told its CSR was rejected
+/// (or that this server could not read what it signed), and answering something
+/// else because the *release* also failed would describe the wrong problem. The
+/// order is left `processing` in that case, which the order's own `expires`
+/// eventually retires.
+async fn release_claim(order: &mut Order, database: &Database, id: &str) {
+    if let Err(error) = order.release_finalize_claim(database).await {
+        error!(
+            event = "order_finalize_claim_release_failed",
+            outcome = "failure",
+            order_id = %id,
+            error = %error
+        );
+    }
+}
+
 /// Builds the `certificate_issue_failed` row shared by `post_finalize`'s five
 /// refusal arms.
 ///
@@ -574,6 +594,37 @@ pub async fn post_finalize(
         not_before: order.not_before,
         not_after: order.not_after,
     };
+
+    // Claimed here rather than at the `ready` check above, and the placement is
+    // the design: this narrows the guarded window to the one call that can bring
+    // a certificate into existence, so only the arms below owe a release, where
+    // claiming at the check would have made every refusal above owe one too.
+    //
+    // The loser gets §7.4's own answer — `403 orderNotReady`, on which the
+    // client POST-as-GETs the order and sees `processing`, then `valid`. No
+    // audit row: like the not-ready refusal above, this is protocol bookkeeping
+    // with no CA action attempted.
+    match order.claim_for_finalize(&database).await {
+        Ok(true) => {}
+        Ok(false) => {
+            warn!(
+                event = "order_finalize_claim_refused",
+                outcome = "failure",
+                order_id = %id
+            );
+            return Err(Problem::order_not_ready("Order is already being finalized"));
+        }
+        Err(error) => {
+            error!(
+                event = "order_mark_processing_failed",
+                outcome = "failure",
+                order_id = %id,
+                error = %error
+            );
+            return Err(Problem::server_internal("Order finalize failed"));
+        }
+    }
+
     let issued = signer
         .issue(&order.id, &csr_der, &order.identifiers, validity)
         .await;
@@ -586,16 +637,10 @@ pub async fn post_finalize(
         // here: the certificate isn't issued yet. That notification fires
         // later from `signer::relay::settle`, once the backend's
         // background relay actually completes — not a gap, deliberate.
+        // The claim above already wrote `processing`, which is exactly the
+        // status this arm publishes — so there is nothing left to do to the
+        // order here.
         Ok(IssueOutcome::Processing) => {
-            order.mark_processing(&database).await.map_err(|error| {
-                error!(
-                    event = "order_mark_processing_failed",
-                    outcome = "failure",
-                    order_id = %id,
-                    error = %error
-                );
-                Problem::server_internal("Order finalize failed")
-            })?;
             // No audit row here — nothing has been signed yet. The one row for
             // this issuance is written by `signer::relay::flow::settle`
             // when the upstream actually answers, and this is what lets it
@@ -624,6 +669,11 @@ pub async fn post_finalize(
                 outcome = "failure",
                 order_id = %id
             );
+            // §7.4: a rejected CSR "SHOULD leave the order in the 'ready'
+            // state", so the client can correct it and try again. Without the
+            // release the claim would wedge the order in `processing` for ever
+            // — a retry would then hit the claim's own refusal.
+            release_claim(&mut order, &database, &id).await;
             audit
                 .record(failed(
                     &order,
@@ -656,15 +706,29 @@ pub async fn post_finalize(
         }
     };
 
-    let leaf_der = crate::cert::leaf_der_from_chain(&chain).map_err(|error| {
-        error!(event = "order_finalize_chain_unparsable", outcome = "failure", order_id = %id, error = %error);
-        Problem::server_internal("Issued certificate chain is unparsable")
-    })?;
-    let (cert_serial, cert_pubkey) =
-        crate::cert::cert_serial_and_spki(&leaf_der).map_err(|error| {
+    // These two are `match` rather than `map_err(…)?` because the release has to
+    // be awaited and a closure cannot. Both leave the order `ready`, which is
+    // what `tests/orders.rs` already pins: the CSR was fine and the client can
+    // retry, the fault being this server's inability to read what it just
+    // signed.
+    let leaf_der = match crate::cert::leaf_der_from_chain(&chain) {
+        Ok(der) => der,
+        Err(error) => {
+            error!(event = "order_finalize_chain_unparsable", outcome = "failure", order_id = %id, error = %error);
+            release_claim(&mut order, &database, &id).await;
+            return Err(Problem::server_internal(
+                "Issued certificate chain is unparsable",
+            ));
+        }
+    };
+    let (cert_serial, cert_pubkey) = match crate::cert::cert_serial_and_spki(&leaf_der) {
+        Ok(parts) => parts,
+        Err(error) => {
             error!(event = "order_finalize_leaf_unparsable", outcome = "failure", order_id = %id, error = %error);
-            Problem::server_internal("Issued certificate is unparsable")
-        })?;
+            release_claim(&mut order, &database, &id).await;
+            return Err(Problem::server_internal("Issued certificate is unparsable"));
+        }
+    };
 
     order
         .finalize(chain, cert_serial.clone(), cert_pubkey, &database)

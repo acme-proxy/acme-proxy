@@ -1136,6 +1136,103 @@ impl SignerBackend for FailingSigner {
     }
 }
 
+/// A real [`LocalCa`] whose **first** `issue` parks inside the signing call
+/// until the test lets it go, so two finalize requests can be held in flight at
+/// once.
+///
+/// This is the only way to reproduce the double-issuance race from outside: the
+/// window it exploits is between `post_finalize` reading `status == "ready"` and
+/// writing the certificate back, and nothing else in the suite can hold a
+/// request open inside it. `calls` is what the assertion actually rests on — a
+/// second certificate leaves no row, so counting the signing calls is the only
+/// evidence that one was ever created.
+///
+/// Later calls return **immediately** rather than also waiting, deliberately: on
+/// an unfixed build the second request must run to completion and fail an
+/// assertion, not deadlock the test into a timeout that reads like flake.
+pub struct GatedSigner {
+    ca: Arc<LocalCa>,
+    /// Signing calls that got as far as the CA. The point of the fixture.
+    pub calls: Arc<AtomicUsize>,
+    /// Zero permits until the test releases; only the first caller acquires.
+    /// A semaphore rather than a `Notify` because a release arriving before the
+    /// wait must still count.
+    gate: Arc<tokio::sync::Semaphore>,
+    /// Permits added as each caller enters, so the test can await the first one
+    /// being genuinely inside `issue` rather than sleeping and hoping.
+    entered: Arc<tokio::sync::Semaphore>,
+}
+
+impl GatedSigner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            ca: Arc::new(
+                LocalCa::generate_in_memory("ecdsa-p256", 90)
+                    .expect("an in-memory CA is always available"),
+            ),
+            calls: Arc::new(AtomicUsize::new(0)),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+        }
+    }
+
+    /// Handles for the test to drive the gate with, since the backend itself is
+    /// consumed by `test_app_with_signer`.
+    #[must_use]
+    pub fn handles(
+        &self,
+    ) -> (
+        Arc<AtomicUsize>,
+        Arc<tokio::sync::Semaphore>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        (
+            Arc::clone(&self.calls),
+            Arc::clone(&self.gate),
+            Arc::clone(&self.entered),
+        )
+    }
+}
+
+impl Default for GatedSigner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl SignerBackend for GatedSigner {
+    async fn issue(
+        &self,
+        order_id: &str,
+        csr_der: &[u8],
+        identifiers: &[Identifier],
+        validity: RequestedValidity,
+    ) -> Result<IssueOutcome, SignerError> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        self.entered.add_permits(1);
+        if first {
+            let _permit = self
+                .gate
+                .acquire()
+                .await
+                .expect("the gate is never closed while a test holds it");
+        }
+        self.ca
+            .issue(order_id, csr_der, identifiers, validity)
+            .await
+    }
+
+    async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
+        self.ca.revoke(cert_der, reason).await
+    }
+
+    async fn crl_der(&self) -> Option<Vec<u8>> {
+        self.ca.crl_der().await
+    }
+}
+
 /// Issues for real, then refuses to revoke.
 ///
 /// [`FailingSigner`] cannot reach the revocation path at all -- it fails

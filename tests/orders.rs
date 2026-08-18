@@ -602,6 +602,81 @@ async fn finalize_internal_signer_failure_marks_order_invalid() {
     assert_eq!(order["error"]["status"], 500);
 }
 
+/// Two finalize requests race one `ready` order. Exactly one certificate may
+/// come into existence.
+///
+/// The regression for the double-issuance race: before `Order::claim_for_finalize`
+/// both requests passed the `status == "ready"` check, both were signed, and the
+/// loser's certificate was a valid CA-signed leaf whose serial reached no row —
+/// so `POST /revokeCert` answered "unknown certificate" and the CRL never
+/// learned it existed. `calls` is the assertion that matters: a second
+/// certificate leaves nothing else behind to look for.
+#[tokio::test]
+async fn two_concurrent_finalizes_issue_exactly_one_certificate() {
+    let backend = Arc::new(common::GatedSigner::new());
+    let (calls, gate, entered) = backend.handles();
+    let (app, signer, account_url, order_url) = setup_ready_order_with_signer(backend).await;
+
+    let finalize_url = format!("{order_url}/finalize");
+    let finalize_path = finalize_url.strip_prefix(common::HOST).unwrap().to_string();
+
+    // Both nonces up front: request A parks inside the signer, so fetching B's
+    // afterwards would be fine, but taking them together keeps the race to the
+    // one thing under test.
+    let nonce_a = fetch_nonce(&app).await;
+    let nonce_b = fetch_nonce(&app).await;
+
+    // A goes first and stalls inside `issue`, holding the claim.
+    let body_a = signer.sign_kid(
+        &account_url,
+        &finalize_url,
+        &nonce_a,
+        &json!({ "csr": make_csr("example.com") }),
+    );
+    let app_a = app.clone();
+    let path_a = finalize_path.clone();
+    let task_a = tokio::spawn(async move { post(&app_a, &path_a, body_a).await });
+
+    // Wait for A to be genuinely inside the signing call, not for a duration.
+    let _ = entered.acquire().await.unwrap();
+
+    // B arrives with its own CSR — a different key pair, the same identifiers,
+    // so it passes `check_csr_matches_order` exactly as A did.
+    let body_b = signer.sign_kid(
+        &account_url,
+        &finalize_url,
+        &nonce_b,
+        &json!({ "csr": make_csr("example.com") }),
+    );
+    let res_b = post(&app, &finalize_path, body_b).await;
+    assert_problem(
+        res_b,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:orderNotReady",
+    )
+    .await;
+
+    // Only now let A finish, so the refusal above cannot have been a late loser.
+    gate.add_permits(1);
+    let res_a = task_a.await.unwrap();
+    assert_eq!(res_a.status(), StatusCode::OK);
+
+    // The whole point: B never reached the CA.
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a second certificate was signed"
+    );
+
+    // And the order carries A's certificate, in the terminal state.
+    let order_path = order_url.strip_prefix(common::HOST).unwrap();
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid_empty(&account_url, &order_url, &nonce);
+    let res = post(&app, order_path, body).await;
+    let order = body_json(res).await;
+    assert_eq!(order["status"], "valid");
+}
+
 #[tokio::test]
 async fn post_as_get_unknown_order_is_malformed() {
     let app = test_app().await;
