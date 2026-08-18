@@ -39,6 +39,32 @@ pub struct NewAccountPayload {
     pub external_account_binding: Option<eab::EabJws>,
 }
 
+/// Refuses a request signed by the key of a deactivated account.
+///
+/// RFC 8555 §7.3.6: "If a server receives a POST or POST-as-GET from a
+/// deactivated account, it MUST return an error response with status code 401
+/// (Unauthorized) and type `urn:ietf:params:acme:error:unauthorized`." Every
+/// order-side endpoint and `keyChange` get this through `signer_account`, and
+/// `post_account` checks it directly — `newAccount` was the one path that did
+/// not, on either of its branches, so a deactivated key could still confirm its
+/// account existed and read its own `contact` list back out of the `Location`
+/// response.
+///
+/// The wording matches `signer_account`'s byte for byte, so a deactivated key
+/// gets one answer wherever it knocks.
+fn refuse_deactivated(account: &Account, only_return_existing: bool) -> Result<(), Problem> {
+    if account.status != "deactivated" {
+        return Ok(());
+    }
+    warn!(
+        event = "account_deactivated_registration_refused",
+        outcome = "failure",
+        account_id = %account.id,
+        only_return_existing = only_return_existing
+    );
+    Err(Problem::unauthorized("Account is deactivated"))
+}
+
 /// Handles ACME newAccount requests for creating new certificate accounts.
 #[instrument(name = "post_new_account", skip_all, fields(algorithm = %header.alg))]
 pub async fn post_new_account(
@@ -79,6 +105,8 @@ pub async fn post_new_account(
                 info!(event = "account_only_return_existing_miss", outcome = "failure");
                 Problem::account_does_not_exist("No account for this key")
             })?;
+
+        refuse_deactivated(&account, true)?;
 
         let location = format!("{base}/acct/{}", account.id);
         return Ok((
@@ -150,6 +178,12 @@ pub async fn post_new_account(
                 error!(event = "account_creation_failed", outcome = "failure", error = %error);
                 Problem::server_internal("Account persistence failed")
             })?;
+
+    // Only on the found branch: an account this request just created is never
+    // deactivated, and asking would be reading a column we wrote a line ago.
+    if !created {
+        refuse_deactivated(&account, false)?;
+    }
 
     if created {
         if let Some(kid) = &eab_kid

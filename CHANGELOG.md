@@ -598,6 +598,15 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **`newAccount` did not refuse a deactivated account key.** RFC 8555 §7.3.6
+  requires a `401` + `unauthorized` for any request from a deactivated account,
+  and every other path kept it — `signer_account` for the seven order-side
+  endpoints and `keyChange`, `post_account` directly. `newAccount` checked on
+  neither of its branches, so a deactivated key could confirm its account still
+  existed and read its own `contact` list back, either by asking
+  `onlyReturnExisting` or by simply re-registering. Read-only and limited to
+  that key's own holder, but a hole in a boundary that is otherwise uniform.
+
 - The e2e lab picked the wrong container runtime on any host with
   `podman-docker` installed. The probe tested whether the `docker` command
   *spawned*, not whether it succeeded, so a `docker` shim over rootless podman

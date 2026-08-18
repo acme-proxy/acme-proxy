@@ -186,6 +186,59 @@ async fn a_deactivated_account_cannot_finalize_a_ready_order() {
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// `newAccount` must refuse a deactivated key too — on **both** its branches.
+///
+/// RFC 8555 §7.3.6 makes this a MUST, and every other path already kept it
+/// (`signer_account` for the order side and `keyChange`, `post_account`
+/// directly). `newAccount` did not: a deactivated key got `200` + `Location` +
+/// its own `contact` array back, either by asking `onlyReturnExisting` or by
+/// simply re-registering. Read-only and limited to the key's own holder, but a
+/// hole in a boundary that is otherwise uniform — and it let a key whose account
+/// had been shut down confirm the account still existed.
+#[tokio::test]
+async fn a_deactivated_key_is_refused_by_new_account() {
+    for only_return_existing in [true, false] {
+        let app = test_app().await;
+        let signer = EcSigner::new();
+        let account_url = register(&app, &signer).await;
+        let path = account_url.strip_prefix(common::HOST).unwrap();
+
+        let nonce = fetch_nonce(&app).await;
+        let body = signer.sign_kid(
+            &account_url,
+            &account_url,
+            &nonce,
+            &json!({ "status": "deactivated" }),
+        );
+        assert_eq!(post(&app, path, body).await.status(), StatusCode::OK);
+
+        // Signed with `jwk`, not `kid`: `newAccount` is how a key introduces
+        // itself, so there is no account named in the header to reject on.
+        let nonce = fetch_nonce(&app).await;
+        let payload = if only_return_existing {
+            json!({ "onlyReturnExisting": true })
+        } else {
+            json!({ "termsOfServiceAgreed": true })
+        };
+        let res = post(
+            &app,
+            &p("/newAccount"),
+            signer.sign(NEW_ACCOUNT_URL, &nonce, &payload),
+        )
+        .await;
+
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "onlyReturnExisting={only_return_existing}"
+        );
+        let problem = body_json(res).await;
+        assert_eq!(problem["type"], "urn:ietf:params:acme:error:unauthorized");
+        // And specifically not the account object it used to hand back.
+        assert!(problem.get("contact").is_none());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wildcards
 // ---------------------------------------------------------------------------
