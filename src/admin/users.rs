@@ -200,7 +200,7 @@ pub async fn authenticate(
 ) -> Result<AuthOutcome, sqlx::Error> {
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         // Deliberately discarded: the point is the time it took.
-        let _ = password::verify_password(&password::dummy_hash(), plaintext);
+        let _ = password::verify_password(password::dummy_hash(), plaintext);
         return Ok(AuthOutcome::UnknownUser);
     };
 

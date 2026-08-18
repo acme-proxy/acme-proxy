@@ -562,6 +562,15 @@ migrated configuration before restarting.
   `custom`, which answer inline, had no equivalent until now. No schema change:
   `processing` has always been in the `orders.status` `CHECK`.
 
+- **Admin login latency enumerated the operator table, in the opposite direction
+  from the one the code guarded against.** The unknown-username branch verified
+  against a dummy hash that was *generated* on the spot, so it paid two
+  600 000-round PBKDF2 derivations where a known username paid one — a
+  single-request, pre-authentication oracle on `POST /api/session` and
+  `POST /ui/login`, and double the CPU an unauthenticated caller could force on
+  the request the login limiter exists to bound. The dummy is now a precomputed
+  constant, so both branches cost exactly one verification.
+
 ### Fixed
 
 - The e2e lab picked the wrong container runtime on any host with

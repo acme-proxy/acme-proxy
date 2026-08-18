@@ -26,6 +26,7 @@
 //! inside `webadmin::`.
 
 use std::num::NonZeroU32;
+use std::sync::LazyLock;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
@@ -198,15 +199,31 @@ pub fn needs_rehash(stored: &str) -> bool {
     }
 }
 
-/// A hash of a password nobody has: given to the login path to verify against
-/// when the username does not exist, so an unknown user costs the same
-/// 600 000 iterations as a known one.
+/// A stored hash no password matches: given to the login path to verify against
+/// when the username does not exist, so an unknown user costs the same one
+/// derivation as a known one.
 ///
 /// Without it, login latency enumerates the user table -- a fast rejection
 /// means "no such user", a slow one means "wrong password".
+///
+/// **Encoded, never derived, and that is the whole point.** Calling
+/// [`hash_password`] here costs a full [`ITERATIONS`]-round `pbkdf2::derive`
+/// that the caller's [`verify_password`] then pays *again*, making the unknown
+/// branch twice the known one -- the enumeration oracle inverted rather than
+/// closed, and pointing the expensive direction at the branch an unauthenticated
+/// caller picks. The digest is never matched against anything, so it only has to
+/// be well-formed and carry the current cost; the bytes being zero is not a
+/// weakness, since the value is in the binary either way and `pbkdf2::verify`
+/// costs the same for any salt. [`encode`] is this module's own writer, so the
+/// shape cannot drift from what [`decode`] expects, and reading [`ITERATIONS`]
+/// here means the cost tracks a change to it rather than needing a second
+/// spelling.
+static DUMMY_HASH: LazyLock<String> =
+    LazyLock::new(|| encode(&[0u8; SALT_LEN], &[0u8; HASH_LEN], ITERATIONS));
+
 #[must_use]
-pub fn dummy_hash() -> String {
-    hash_password("this password belongs to no account")
+pub fn dummy_hash() -> &'static str {
+    &DUMMY_HASH
 }
 
 fn derive(password: &str, salt: &[u8], iterations: u32) -> [u8; HASH_LEN] {
@@ -495,17 +512,31 @@ mod tests {
         assert!(check_password_policy("日本語日本語日本語日本").is_err());
     }
 
-    /// One of the two tests that pays the real cost. Its whole point is that
-    /// an unknown username costs the same as a known one, so verifying it at
-    /// a cheaper setting would test the opposite of what matters.
+    /// The dummy must cost the login path exactly **one** derivation -- the same
+    /// as a known username -- and carry the current cost while doing it.
+    ///
+    /// No longer one of the tests that pays the real cost: the assertions below
+    /// are string comparisons, because `dummy_hash` no longer derives anything.
     #[test]
-    fn the_dummy_hash_costs_what_a_real_row_costs_and_matches_no_password() {
-        let dummy = dummy_hash();
-        assert!(
-            !needs_rehash(&dummy),
-            "a dummy cheaper than a real row would make an unknown username \
-             answer faster, which is the enumeration oracle it exists to close"
+    fn the_dummy_hash_is_precomputed_and_matches_no_password() {
+        // The one that catches a `hash_password`-based dummy: that spelling
+        // salts randomly, so it returns a different string every call *and*
+        // makes the unknown-username branch pay a derivation the caller's
+        // `verify_password` then pays again -- twice a known username, i.e. the
+        // enumeration oracle inverted rather than closed.
+        assert_eq!(
+            dummy_hash(),
+            dummy_hash(),
+            "a dummy computed per call costs the unknown-username branch an \
+             extra derivation, which is the enumeration oracle it exists to close"
         );
-        assert_eq!(verify_password(&dummy, "hunter2"), Ok(false));
+
+        // Exact equality, not `!needs_rehash`: that only checks `<`, so it would
+        // accept a dummy at twice the real cost -- the very shape of the bug.
+        let (iterations, _, _) = decode(dummy_hash()).expect("the dummy is well-formed");
+        assert_eq!(iterations.get(), ITERATIONS);
+
+        assert!(!needs_rehash(dummy_hash()));
+        assert_eq!(verify_password(dummy_hash(), "hunter2"), Ok(false));
     }
 }
