@@ -17,6 +17,7 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));
@@ -54,6 +55,7 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     )
@@ -90,6 +92,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));
@@ -107,6 +110,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));
@@ -132,6 +136,7 @@ async fn a_config_credential_with_bad_base64_is_a_startup_error() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));
@@ -162,6 +167,7 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));
@@ -197,6 +203,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     )
@@ -209,6 +216,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     )
@@ -298,6 +306,7 @@ async fn after_registering_startup_needs_no_credential() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     )

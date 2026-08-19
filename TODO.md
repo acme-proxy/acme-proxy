@@ -55,14 +55,16 @@ keeps its corpses stops being read.
       files.
 ## Observability
 
-- [ ] **A Prometheus `/metrics` endpoint**: `requests` (profile, route,
-      status), `cert_delivery`, `cert_failure`,
-      `database_pool_active_connections`. Mount it where `/health` is — the
-      root router, outside admission control and every filter chain — or on the
-      admin listener; inside a profile a scrape would need an allowlist entry.
-      `doc/src/operations/monitoring.md` states the absence today and is the
-      page to update.
-- [ ] A Grafana dashboard over the above.
+- [ ] **A Grafana dashboard** over the four metric families `[metrics]` now
+      exposes. Note the labels it has to work with: `route` is a matched
+      pattern, so a per-route panel is bounded, and `profile` is the dimension
+      a multi-endpoint deployment will actually want to split by.
+- [ ] **Histograms — request latency, and issuance latency.** The one thing a
+      metrics *library* would genuinely earn over the hand-rolled registry in
+      `src/metrics.rs`, since buckets are where the format stops being a
+      `write!` per series. Worth reconsidering the dependency at that point
+      rather than hand-rolling bucket boundaries; until then `latency_ms` on
+      the access line is what there is.
 
 ## Admin CLI
 

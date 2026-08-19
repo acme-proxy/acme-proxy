@@ -48,6 +48,7 @@ endpoints it mounts.
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
 | `[audit]` | Reverse lookups and retention for the trail | no | [below](#audit) |
 | `[jobs]` | The durable background-work queue | no | [below](#jobs) |
+| `[metrics]` | The Prometheus listener | no | [below](#metrics) |
 | `[dns]` | The resolver every outbound lookup uses | no | [below](#dns) |
 | `[proxy]` | The forward proxy outbound clients dial through | no | [below](#proxy) |
 | `[logging]` | Filter, format, target | no | [below](#logging) |
@@ -409,6 +410,61 @@ Delete settled job rows older than this many days. Unlike
 finished job is a receipt, not evidence, and the trail that has to be complete
 is `audit_log`'s. `0` keeps everything for ever and stops the sweep being
 scheduled at all.
+
+---
+
+## `[metrics]`
+
+The Prometheus exposition, served on a **listener of its own** — a third socket
+beside the ACME and admin ones, not a route on either. **Process-wide, not
+per-profile**: there is one counter set for the process, and the endpoint is a
+*dimension* of it rather than something each endpoint configures for itself.
+
+The separate port is what settles the access question. A scrape carries no
+session and needs none, because reaching the port at all is the permission —
+so the control is your firewall, not a credential this server checks. Putting
+it on the ACME listener would have meant an unauthenticated route on a public
+socket; putting it on the admin listener would have meant an auth exemption on
+a listener whose rule is that every route but sign-in needs a session, plus
+coupling metrics to the panel being enabled.
+
+There is deliberately no `path` key — `/metrics` is what every scrape
+configuration already assumes, and this listener serves nothing else. There is
+no `[metrics.tls]` either, unlike [`[server.tls]`](#servertls) and
+[`[admin.tls]`](#admintls): those carry a client's signed requests and an
+operator's session cookie, while a scrape carries no credential and the
+exposition holds no secret.
+
+What is exposed, and how to point Prometheus at it, is in
+[Monitoring](../operations/monitoring.md#metrics).
+
+**`enabled`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_METRICS__ENABLED`*
+
+Bind the metrics listener and serve `GET /metrics`. Off by default, the same
+posture [`[admin]`](#admin) takes: a certificate authority should not open a new
+socket because somebody upgraded it. Off means no socket at all, rather than one
+answering `404`.
+
+**`bind_address`** (`String`) — *Default: `127.0.0.1:3002` | Env: `ACME_PROXY_METRICS__BIND_ADDRESS`*
+
+The socket the exposition is served on — beside the other two, `server` on
+`3000` and `admin` on `3001`.
+
+Unlike [`admin.bind_address`](#admin), a non-loopback value is **neither refused
+nor warned about**. The admin listener refuses one without TLS because its
+cookie is always `Secure`, which a browser silently declines to store over plain
+HTTP, so the symptom would be an unexplained sign-out loop. Nothing here has a
+cookie, and a port reachable from a Prometheus host on another machine is
+exactly the intended deployment.
+
+Startup **refuses** a value equal to `server.bind_address`, or to
+`admin.bind_address` while the panel is enabled, since only one of the three
+could then bind.
+
+Both keys are **frozen against reload**, for the reason every bind address is: a
+socket cannot move under a listener that is already serving. Changing either
+needs a restart, and `SIGHUP` refuses the reload by name rather than applying
+half of it. See [Configuration Reload](../operations/reload.md).
 
 ---
 

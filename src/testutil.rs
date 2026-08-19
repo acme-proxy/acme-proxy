@@ -17,6 +17,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// A Prometheus registry for a test that only needs one to exist.
+///
+/// Every `RelaySigner::from_config` takes one because the backend counts a
+/// deferred issuance through it; almost no test asserts on the counters, so
+/// this keeps the noise to one call.
+pub(crate) fn test_metrics(
+    database: Arc<crate::sqlite::db::Database>,
+) -> Arc<crate::metrics::Metrics> {
+    Arc::new(crate::metrics::Metrics::new(database))
+}
+
 /// Captures the fields of one named tracing span.
 ///
 /// The only way to assert on a *span* field: unlike an event field, nothing in

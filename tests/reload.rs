@@ -141,6 +141,9 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         database,
         acme_listener,
         admin_listener,
+        // No metrics listener: `[metrics]` is frozen, so the reload suite has
+        // nothing to say about it.
+        None,
         async {
             let _ = rx.await;
         },

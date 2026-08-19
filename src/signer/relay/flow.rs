@@ -186,18 +186,21 @@ impl JobHandler for RelayJob {
             }
         };
 
-        crate::audit::write(
-            relay_record(
-                crate::audit::AuditEvent::CertificateIssueFailed,
-                &order,
-                inner,
-            )
-            .await
-            .with_reason("serverInternal")
-            .with_detail(reason),
-            &inner.database,
+        // Counted from the same value that is about to be written, so the
+        // metric and the audit row cannot disagree — the property
+        // `Metrics::record_audit` exists for. Spelled out here rather than
+        // folded into `write` because this path has no `Auditor`, which is the
+        // very reason the free function exists.
+        let record = relay_record(
+            crate::audit::AuditEvent::CertificateIssueFailed,
+            &order,
+            inner,
         )
-        .await;
+        .await
+        .with_reason("serverInternal")
+        .with_detail(reason);
+        inner.metrics.record_audit(&record);
+        crate::audit::write(record, &inner.database).await;
 
         // The client sees a generic problem document; the real reason is
         // operator-only, on the mapping row and in the log above.
@@ -721,13 +724,13 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     // one that request stored on the mapping row — the relay has no request of
     // its own, and a row saying "issued, from nowhere, by nobody" is the shape
     // this trail exists to avoid.
-    crate::audit::write(
-        relay_record(crate::audit::AuditEvent::CertificateIssued, &order, inner)
-            .await
-            .with_serial(serial.clone()),
-        &inner.database,
-    )
-    .await;
+    let record = relay_record(crate::audit::AuditEvent::CertificateIssued, &order, inner)
+        .await
+        .with_serial(serial.clone());
+    // See the failure arm above: no `Auditor` reaches this task, so the counter
+    // is bumped from the record itself rather than from a wrapper.
+    inner.metrics.record_audit(&record);
+    crate::audit::write(record, &inner.database).await;
 
     // The synchronous signer backends (`local_ca`, `custom`) notify from
     // `post_finalize`'s own success tail, which has a `Profile` in scope. This

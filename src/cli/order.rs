@@ -156,11 +156,16 @@ pub async fn run_order_command(
             // queue would be worse than useless — it would let a one-shot CLI
             // invocation write rows that only the running server can work off.
             let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+            // A registry nothing scrapes, for the same reason as the queue
+            // above: this process exits when the command does, and the counters
+            // that matter belong to the server that is serving `/metrics`.
+            let metrics = Arc::new(crate::metrics::Metrics::new(database.clone()));
             let signer = signer::from_config(
                 &profile.sections.signer,
                 vec![profile.name.clone()],
                 database.clone(),
                 Arc::new(std::collections::HashMap::new()),
+                metrics,
                 outbound,
                 jobs,
             )
@@ -280,6 +285,7 @@ mod tests {
             vec![profile.name.clone()],
             database.clone(),
             Arc::new(std::collections::HashMap::new()),
+            crate::testutil::test_metrics(database.clone()),
             crate::testutil::outbound_with(resolver),
             crate::jobs::JobQueue::new(database.clone(), &config.jobs),
         )

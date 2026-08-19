@@ -84,6 +84,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
+            crate::testutil::test_metrics(db.clone()),
             crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
@@ -154,6 +155,7 @@ async fn http01_retracts_after_a_rejected_challenge() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
+            crate::testutil::test_metrics(db.clone()),
             crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
@@ -204,6 +206,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
+            crate::testutil::test_metrics(db.clone()),
             crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
@@ -256,6 +259,7 @@ async fn http01_refuses_a_wildcard_authorization() {
             vec!["default".to_string()],
             db.clone(),
             no_notifiers(),
+            crate::testutil::test_metrics(db.clone()),
             crate::testutil::outbound_with(test_resolver()),
             queue.clone(),
         )
@@ -303,6 +307,7 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
         vec!["default".to_string()],
         database().await,
         no_notifiers(),
+        crate::testutil::test_metrics(database().await),
         crate::testutil::outbound_with(test_resolver()),
         test_queue(database().await),
     ));

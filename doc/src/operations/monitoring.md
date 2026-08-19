@@ -1,13 +1,8 @@
 # Monitoring & Observability
 
 Running an ACME server in production requires visibility into its health,
-request volume, and error rates. Today `acme-proxy` offers that through
-**structured logging** and a **health endpoint**.
-
-> **There is no `/metrics` endpoint.** A Prometheus exporter is on the roadmap
-> (see `TODO.md` in the repository), but the binary does not currently expose
-> one and there is no cargo feature to enable it. Alerting is built on the log
-> stream described below.
+request volume, and error rates. `acme-proxy` offers three surfaces for that: a
+**health endpoint**, **structured logging**, and a **Prometheus exporter**.
 
 ## Health checks
 
@@ -33,6 +28,85 @@ root router, not inside a profile, which means it is deliberately outside:
 - the `Link: rel="index"` middleware.
 
 `GET /` redirects to `/health`.
+
+## Metrics
+
+`GET /metrics` serves the Prometheus text exposition format. It is **off by
+default** and lives on a **listener of its own** — a third socket beside the
+ACME and admin ones, configured by
+[`[metrics]`](../configuration/reference.md#metrics):
+
+```toml
+[metrics]
+enabled      = true
+bind_address = "127.0.0.1:3002"
+```
+
+The separate port *is* the access control. A scrape carries no credential and
+none is checked: reaching the port at all is the permission, so restrict it the
+way you restrict any other internal service — a firewall rule, a network policy,
+or leaving it on loopback and scraping from the same host. The endpoint is
+absent from the ACME and admin sockets entirely, so exposing the ACME listener
+to the internet does not expose this.
+
+```console
+$ curl -s localhost:3002/metrics
+# HELP acme_proxy_requests_total Requests served, by endpoint, matched route and response status.
+# TYPE acme_proxy_requests_total counter
+acme_proxy_requests_total{profile="default",route="/newOrder",status="201"} 42
+acme_proxy_requests_total{profile="none",route="/health",status="200"} 8613
+# HELP acme_proxy_certificates_issued_total Certificates signed, by endpoint.
+# TYPE acme_proxy_certificates_issued_total counter
+acme_proxy_certificates_issued_total{profile="default"} 41
+# HELP acme_proxy_certificate_issue_failures_total Issuance attempts the CA refused, by endpoint and ACME problem type.
+# TYPE acme_proxy_certificate_issue_failures_total counter
+acme_proxy_certificate_issue_failures_total{profile="default",reason="badCSR"} 1
+# HELP acme_proxy_database_pool_connections Connections in the SQLite pool.
+# TYPE acme_proxy_database_pool_connections gauge
+acme_proxy_database_pool_connections{state="idle"} 4
+acme_proxy_database_pool_connections{state="busy"} 1
+```
+
+| Metric | Type | Labels |
+| --- | --- | --- |
+| `acme_proxy_requests_total` | counter | `profile`, `route`, `status` |
+| `acme_proxy_certificates_issued_total` | counter | `profile` |
+| `acme_proxy_certificate_issue_failures_total` | counter | `profile`, `reason` |
+| `acme_proxy_database_pool_connections` | gauge | `state` |
+
+Four things are worth knowing about the numbers.
+
+**`route` is the matched route pattern, not the URI.** A request for
+`/profile/le/order/9f3c…` is counted under `route="/order/{id}"`, and the
+endpoint it reached becomes the `profile` label. Anything that matched no route
+at all — a scanner, a typo — collapses into a single `route="<unmatched>"`
+series rather than one series per path tried. Root-router requests such as
+`/health` carry `profile="none"`.
+
+**`reason` is the ACME problem type the CA refused with** (`badCSR`,
+`serverInternal`), the same vocabulary
+[`acme-proxy audit list --event certificate_issue_failed`](audit.md) prints.
+Both are rendered from one record, so the metric and the trail cannot disagree
+about what happened.
+
+**The counters survive a reload but not a restart.** `SIGHUP` rebuilds the
+routers and keeps the registry, so a configuration change does not read as a
+counter reset; a restart genuinely is a new process and starts from zero, which
+is what `rate()` expects.
+
+**The pool gauge is read from the pool.** `state="idle"` is connections the pool
+holds but has not checked out and `state="busy"` those in use, so
+`busy` is in-flight database work rather than a number this server maintains in
+parallel.
+
+A minimal scrape configuration:
+
+```yaml
+scrape_configs:
+  - job_name: acme-proxy
+    static_configs:
+      - targets: ['ca.internal:3002']
+```
 
 ## Logging
 
@@ -209,9 +283,38 @@ for RFC 9773 correspondence, `event = "db_` for the storage layer.
 
 ### Suggested alerts
 
-Without a metrics endpoint, these are log-derived rates. The first one is the
-general case and subsumes most of the rest; the others are worth splitting out
-because each has a different response:
+Two sources, and they are complementary rather than alternatives. The metrics
+are cheap to alert on and answer "how much"; the log stream answers "which one,
+and why", and covers everything the four metrics do not.
+
+With [`[metrics]`](#metrics) enabled:
+
+```promql
+# Issuance is failing, whatever the reason.
+rate(acme_proxy_certificate_issue_failures_total[15m]) > 0
+
+# Nothing has been issued over a window longer than your shortest renewal
+# interval -- silent breakage, and the one nothing else will tell you.
+increase(acme_proxy_certificates_issued_total[6h]) == 0
+
+# The server is shedding load: undersized, or a client is in a retry loop.
+rate(acme_proxy_requests_total{status="503"}[5m]) > 0
+
+# 5xx as a share of everything: this server failing, not clients being refused.
+sum(rate(acme_proxy_requests_total{status=~"5.."}[5m]))
+  / sum(rate(acme_proxy_requests_total[5m])) > 0.01
+
+# The pool is saturated, so requests are queueing on a connection.
+acme_proxy_database_pool_connections{state="idle"} == 0
+```
+
+The `up` metric Prometheus synthesises per target also gives a liveness alert
+for free, though `/health` remains the better probe for a load balancer since it
+is on the ACME listener itself.
+
+From the log stream, which reaches further. The first is the general case and
+subsumes most of the rest; the others are worth splitting out because each has a
+different response:
 
 - **`outcome = "failure"` above its usual rate** → something broke. This is the
   one query that catches every refusal, whatever the event is called, and it is

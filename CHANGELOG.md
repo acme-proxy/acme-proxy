@@ -359,6 +359,39 @@ migrated configuration before restarting.
 
 ### Added
 
+- **A Prometheus `/metrics` endpoint, on a listener of its own.** Off by
+  default, configured by the new `[metrics]` section (`enabled`,
+  `bind_address`, defaulting to `127.0.0.1:3002`). Until now the only way to
+  alert on issuance failure rates was to parse the log stream.
+
+  A **third socket** rather than a route on either existing listener, and that
+  is what settles the access question: a scrape carries no credential and none
+  is checked, because reaching the port at all is the permission — so the
+  control is a firewall rule rather than something this server verifies. On the
+  ACME listener it would have been an unauthenticated route on a public socket;
+  on the admin listener it would have needed an auth exemption on a listener
+  whose rule is that every route but sign-in requires a session, and would have
+  coupled metrics to the panel being enabled.
+
+  Four families: `acme_proxy_requests_total{profile,route,status}`,
+  `acme_proxy_certificates_issued_total{profile}`,
+  `acme_proxy_certificate_issue_failures_total{profile,reason}` and the
+  `acme_proxy_database_pool_connections{state}` gauge. `route` is the matched
+  route *pattern* (`/order/{id}`), never the URI, and an unmatched path
+  collapses to one `<unmatched>` series — a label taken from the request would
+  be unbounded memory in the scraper. The certificate counters are driven off
+  the same record the audit trail is written from, so the metric and
+  `acme-proxy audit list` cannot disagree.
+
+  Hand-rolled rather than taken from a crate: the exposition format is a
+  `write!` per series, and every façade brings a global recorder, which this
+  tree already refused for `rustls`'s `CryptoProvider::install_default`.
+
+  Both keys are frozen against reload, for the reason every bind address is —
+  `SIGHUP` refuses the reload by name rather than applying half of it. The
+  counters themselves *survive* a reload: a rebuilt registry would zero them,
+  which `rate()` reads as a process restart.
+
 - **`GET /ca.pem` serves the profile's trust anchor**, beside `GET /crl` and
   routed the same way: per-profile, unauthenticated, and deliberately not
   advertised in the directory, since it is CA infrastructure rather than an

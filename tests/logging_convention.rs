@@ -52,6 +52,7 @@ const SUBSYSTEMS: &[&str] = &[
     "jws",
     "key_change",
     "local_ca",
+    "metrics",
     "nonce",
     "notify",
     "order",
@@ -450,9 +451,16 @@ fn every_documented_event_is_still_emitted() {
     let path = repo_root().join("doc/src/operations/monitoring.md");
     let doc = fs::read_to_string(&path).expect("the monitoring page is readable");
 
-    // The event catalogue is the first cell of each row in the page's two
-    // tables: a backticked, snake_case token with no dots (which would make it
-    // a configuration key instead).
+    // The event catalogue is the first cell of each row in the page's tables:
+    // a backticked, snake_case token with no dots (which would make it a
+    // configuration key instead) and no `acme_proxy_` prefix (which makes it a
+    // *metric* name — the same page documents four of those, and they are the
+    // one other thing on it shaped like an event name).
+    //
+    // The prefix is a sound discriminator rather than a convenient one: an
+    // event may not carry it, since `SUBSYSTEMS` has no `acme` entry and
+    // `every_event_name_starts_with_a_known_subsystem` would refuse one that
+    // did. So this cannot quietly excuse a real event from the check.
     let mut documented = BTreeSet::new();
     for line in doc.lines() {
         let Some(rest) = line.strip_prefix("| ") else {
@@ -465,6 +473,7 @@ fn every_documented_event_is_still_emitted() {
             for name in chunk.split(',').map(str::trim) {
                 let snake = name.contains('_')
                     && !name.contains('.')
+                    && !name.starts_with("acme_proxy_")
                     && name
                         .chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');

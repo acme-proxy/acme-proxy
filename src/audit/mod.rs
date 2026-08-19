@@ -371,6 +371,13 @@ pub struct Auditor {
     /// refusing to *construct* the validators.
     resolver: Option<Arc<dyn Resolver>>,
     ptr_timeout: Duration,
+    /// The process's Prometheus counters.
+    ///
+    /// `None` in the tests and the CLI paths that build an auditor without a
+    /// serving process behind it — a counter nothing will ever scrape is not
+    /// worth a constructor argument at every call site. The serving path always
+    /// supplies one.
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl Auditor {
@@ -415,6 +422,9 @@ impl Auditor {
             database,
             resolver,
             ptr_timeout: Duration::from_millis(cfg.reverse_dns_timeout_ms),
+            // Attached by the serving path through `with_metrics`; `[audit]`
+            // and `[metrics]` are independent switches.
+            metrics: None,
         })
     }
 
@@ -430,6 +440,7 @@ impl Auditor {
             database,
             resolver,
             ptr_timeout,
+            metrics: None,
         }
     }
 
@@ -476,10 +487,31 @@ impl Auditor {
         }
     }
 
-    /// Writes one row.
+    /// Attaches the Prometheus registry this auditor counts through.
+    ///
+    /// A builder step rather than a `from_config` argument because `[audit]`
+    /// and `[metrics]` are independent: the trail is written whether or not
+    /// anything is being scraped, and every test that only wants an auditor
+    /// should not have to build a registry to get one.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    /// Writes one row, and counts it.
+    ///
+    /// The counter is driven off the *same* [`AuditRecord`] that is about to be
+    /// stored, which is what makes "how many certificates did we issue" answer
+    /// identically whether it is asked of the metrics endpoint or of
+    /// `acme-proxy audit list`. A second set of call sites incrementing
+    /// counters beside the audit writes would have been free to drift.
     ///
     /// See [`write()`], which this is the stateful spelling of.
     pub async fn record(&self, record: AuditRecord) {
+        if let Some(metrics) = &self.metrics {
+            metrics.record_audit(&record);
+        }
         write(record, &self.database).await;
     }
 }

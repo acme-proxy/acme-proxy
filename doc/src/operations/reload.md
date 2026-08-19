@@ -61,6 +61,7 @@ These are the keys that produce it. Everything not listed here reloads.
 | `server.bind_address` | The socket is bound. |
 | `server.tls.enabled` | Turning TLS on or off replaces the listener, not its settings. |
 | `admin.enabled`, `admin.bind_address`, `admin.tls.enabled` | The same two reasons, for the panel's own socket. |
+| `metrics.enabled`, `metrics.bind_address` | The same, for the metrics socket. There is no `metrics.tls.enabled` beside them — that listener has none. |
 | every `[logging]` key | The tracing subscriber is installed once per process and cannot be replaced. |
 | `[dns]`, `[proxy]` | Every outbound client caches these when it is built, including the signer backends, which are not rebuilt. |
 | six of the seven `[jobs]` keys | The runner snapshotted its pacing when it started. `jobs.retention_days` is the exception and does reload. |

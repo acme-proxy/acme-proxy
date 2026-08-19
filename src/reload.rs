@@ -117,6 +117,13 @@ const FROZEN: &[(&str, Projection)] = &[
     ("admin.tls.enabled", |a| {
         a.config.admin.tls.enabled.to_string()
     }),
+    // The third listener, frozen for the reason both the others are: a bound
+    // socket cannot move under a listener that is already serving. There is no
+    // `metrics.tls.enabled` beside these — that listener has none.
+    ("metrics.enabled", |a| a.config.metrics.enabled.to_string()),
+    ("metrics.bind_address", |a| {
+        a.config.metrics.bind_address.clone()
+    }),
     ("logging", |a| format!("{:?}", a.config.logging)),
     ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
     // Opaque: the URLs carry a proxy password. See `opaque`.
@@ -518,6 +525,18 @@ mod frozen_tests {
                 "admin.tls.enabled",
                 Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
                     c.admin.tls.enabled = !c.admin.tls.enabled;
+                }),
+            ),
+            (
+                "metrics.enabled",
+                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
+                    c.metrics.enabled = !c.metrics.enabled;
+                }),
+            ),
+            (
+                "metrics.bind_address",
+                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
+                    c.metrics.bind_address = "127.0.0.1:9999".to_string();
                 }),
             ),
             (

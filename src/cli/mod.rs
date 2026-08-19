@@ -239,12 +239,17 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
         CliError(error.to_string())
     })?;
+    let metrics_listener = bind_metrics(&config).await.map_err(|error| {
+        error!(event = "server_fatal_error", outcome = "failure", error = %error);
+        CliError(error.to_string())
+    })?;
 
     serve_on_with_reloads(
         config,
         database,
         listener,
         admin_listener,
+        metrics_listener,
         shutdown_signal(),
         reloads,
     )
@@ -306,6 +311,52 @@ async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>>
     }
 }
 
+/// Binds the metrics socket when `[metrics]` is on, refusing a collision first.
+///
+/// The twin of [`bind_admin`], and the same shape for the same reason: a socket
+/// that cannot be bound must stop startup rather than leave the process running
+/// with one of its three listeners silently missing.
+///
+/// Deliberately **no loopback check**. `webadmin::check_config` refuses a
+/// non-loopback admin bind without TLS because that listener's cookie is always
+/// `Secure`, which a browser will not store over plain HTTP, so the failure
+/// would be invisible. Nothing here has a cookie: a metrics port reachable from
+/// a Prometheus host on another machine is the intended deployment, and the
+/// firewall is what bounds it.
+async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>> {
+    if !config.metrics.enabled {
+        return Ok(None);
+    }
+
+    // Three listeners, so the collision check is pairwise. `webadmin` already
+    // refuses admin-versus-server; these are the two pairs it cannot see.
+    // Checked even when `[admin]` is off, since enabling the panel later must
+    // not be what surfaces a latent conflict.
+    let bind = &config.metrics.bind_address;
+    for (name, other) in [
+        ("server.bind_address", &config.server.bind_address),
+        ("admin.bind_address", &config.admin.bind_address),
+    ] {
+        if bind == other && (name != "admin.bind_address" || config.admin.enabled) {
+            error!(event = "metrics_config_invalid",
+                   outcome = "failure",
+                   bind_address = %bind);
+            anyhow::bail!(
+                "metrics.bind_address and {name} are both `{bind}`: the metrics endpoint is a \
+                 separate listener and cannot share a socket (give it its own port)"
+            );
+        }
+    }
+
+    let listener = TcpListener::bind(bind).await.inspect_err(|error| {
+        error!(event = "metrics_socket_bind_failed",
+               outcome = "failure",
+               bind_address = %bind,
+               error = %error);
+    })?;
+    Ok(Some(listener))
+}
+
 /// Assembles and serves the application over an already-bound socket.
 ///
 /// Split from [`serve`] on the socket boundary: a caller supplying its own
@@ -324,20 +375,30 @@ pub async fn serve_on(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let admin_listener = bind_admin(&config).await?;
-    serve_on_with(config, database, listener, admin_listener, shutdown).await
+    let metrics_listener = bind_metrics(&config).await?;
+    serve_on_with(
+        config,
+        database,
+        listener,
+        admin_listener,
+        metrics_listener,
+        shutdown,
+    )
+    .await
 }
 
-/// [`serve_on`] with both sockets supplied.
+/// [`serve_on`] with all three sockets supplied.
 ///
 /// The full version, split on the same boundary and for the same reason: a
-/// caller handing in two ephemeral ports can drive the whole two-listener
-/// startup path — including that one shutdown signal stops both — without
-/// owning a fixed port or a process signal.
+/// caller handing in three ephemeral ports can drive the whole startup path —
+/// including that one shutdown signal stops all of them — without owning a
+/// fixed port or a process signal.
 pub async fn serve_on_with(
     config: Arc<Config>,
     database: Arc<Database>,
     listener: TcpListener,
     admin_listener: Option<TcpListener>,
+    metrics_listener: Option<TcpListener>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     serve_on_with_reloads(
@@ -345,6 +406,7 @@ pub async fn serve_on_with(
         database,
         listener,
         admin_listener,
+        metrics_listener,
         shutdown,
         crate::reload::Reloads::none(),
     )
@@ -364,6 +426,7 @@ pub async fn serve_on_with_reloads(
     database: Arc<Database>,
     listener: TcpListener,
     admin_listener: Option<TcpListener>,
+    metrics_listener: Option<TcpListener>,
     shutdown: impl Future<Output = ()> + Send + 'static,
     reloads: crate::reload::Reloads,
 ) -> anyhow::Result<()> {
@@ -514,6 +577,11 @@ pub async fn serve_on_with_reloads(
         ),
     };
 
+    // Taken before the admin arm consumes `shutdown_rx`, so all three listeners
+    // stop on the one signal — the property `serve_on_with`'s three-port test
+    // exists to pin.
+    let metrics_shutdown_rx = shutdown_rx.clone();
+
     let mut admin_router_tx = None;
     let mut admin_tls_tx = None;
     let admin: Serving = match (admin_app, admin_listener) {
@@ -534,6 +602,34 @@ pub async fn serve_on_with_reloads(
         // The panel is off: a future that is already done, so `try_join!`
         // below needs no second shape.
         _ => Box::pin(std::future::ready(Ok(()))),
+    };
+
+    // The third listener. Served directly rather than through a
+    // `reload::router_channel` like the other two, and the asymmetry is
+    // deliberate: this router has one route whose only state is the registry,
+    // and the registry is carried across generations rather than rebuilt (see
+    // `Assembly`), so a new generation could put nothing new in it. Both
+    // `[metrics]` keys are frozen for the reason every bind address is — the
+    // socket cannot move under a listener that is already serving.
+    let metrics: Serving = match metrics_listener {
+        Some(listener) => {
+            info!(
+                event = "metrics_listening",
+                outcome = "success",
+                bind_address = %config.metrics.bind_address,
+                "unauthenticated by design: the port is the boundary, so firewall it"
+            );
+            let app = crate::metrics_app(assembly.metrics.clone());
+            Box::pin(
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .with_graceful_shutdown(on_shutdown(metrics_shutdown_rx))
+                .into_future(),
+            )
+        }
+        None => Box::pin(std::future::ready(Ok(()))),
     };
 
     // The supervisor owns every cell sender from here on, which is what makes it
@@ -559,7 +655,7 @@ pub async fn serve_on_with_reloads(
     // a `notify_deliver` row, not a spawned task: the runner released its lease
     // on the way out and whoever starts next claims it. That is what replaced a
     // best-effort five-second drain which still lost anything slower than it.
-    tokio::try_join!(acme, admin)?;
+    tokio::try_join!(acme, admin, metrics)?;
     Ok(())
 }
 
@@ -739,7 +835,13 @@ pub(crate) fn build_generation(
             (Some(router), Some(logins))
         }
     };
-    let acme_app = build_app(database, config.clone(), profiles.clone(), auditor);
+    let acme_app = build_app(
+        database,
+        config.clone(),
+        profiles.clone(),
+        auditor,
+        assembly.metrics.clone(),
+    );
 
     Ok(Generation {
         profiles,
@@ -1660,23 +1762,32 @@ mod tests {
                 .expect("a clean shutdown is not an error");
         }
 
-        /// The two-listener path: one shutdown signal, two sockets, and the
-        /// admin API answering on its own port while the ACME one does not.
+        /// The three-listener path: one shutdown signal, three sockets, and
+        /// each one serving only what belongs to it.
         ///
         /// This is the regression test for the `watch` split — before it, the
-        /// `shutdown` future was consumed once and only one listener stopped.
+        /// `shutdown` future was consumed once and only one listener stopped —
+        /// and now also for the metrics listener being genuinely *separate*:
+        /// `/metrics` answering on the ACME port would put issuance volume and
+        /// every profile name on the public socket, which is exactly what
+        /// giving it its own port is for.
         #[tokio::test]
-        async fn both_listeners_serve_and_one_signal_stops_both() {
+        async fn all_three_listeners_serve_and_one_signal_stops_them() {
             let dir = temp_dir();
             let mut config = config_in(&dir, false);
             config.admin.enabled = true;
+            config.metrics.enabled = true;
 
             let database = Arc::new(Database::connect_in_memory().await.unwrap());
             let acme_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let admin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let metrics_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let acme_addr = acme_listener.local_addr().unwrap();
             let admin_addr = admin_listener.local_addr().unwrap();
+            let metrics_addr = metrics_listener.local_addr().unwrap();
             assert_ne!(acme_addr, admin_addr);
+            assert_ne!(acme_addr, metrics_addr);
+            assert_ne!(admin_addr, metrics_addr);
 
             let (tx, rx) = tokio::sync::oneshot::channel::<()>();
             let handle = tokio::spawn(serve_on_with(
@@ -1684,12 +1795,13 @@ mod tests {
                 database,
                 acme_listener,
                 Some(admin_listener),
+                Some(metrics_listener),
                 async {
                     let _ = rx.await;
                 },
             ));
 
-            // `/health` is on both.
+            // `/health` is on both of the two that have it.
             for addr in [acme_addr, admin_addr] {
                 let response = get(addr, "/health").await;
                 assert!(
@@ -1711,13 +1823,86 @@ mod tests {
             let no_directory = get(admin_addr, "/profile/default/directory").await;
             assert!(no_directory.starts_with("HTTP/1.1 404"), "{no_directory}");
 
-            // One signal, both stop.
+            // The exposition is on its own socket...
+            let metrics = get(metrics_addr, "/metrics").await;
+            assert!(metrics.starts_with("HTTP/1.1 200 OK"), "{metrics}");
+            assert!(metrics.contains("acme_proxy_requests_total"), "{metrics}");
+            // ...and on **neither** of the other two. The whole point of the
+            // third listener is that firewalling this port is what controls who
+            // can read it.
+            for addr in [acme_addr, admin_addr] {
+                let leaked = get(addr, "/metrics").await;
+                assert!(leaked.starts_with("HTTP/1.1 404"), "{addr}: {leaked}");
+            }
+
+            // One signal, all three stop.
             tx.send(()).unwrap();
             tokio::time::timeout(Duration::from_secs(10), handle)
                 .await
-                .expect("both listeners must stop on one signal")
+                .expect("every listener must stop on one signal")
                 .unwrap()
                 .expect("a clean shutdown is not an error");
+        }
+
+        /// Three listeners means the collision check is pairwise, and
+        /// `webadmin::check_config` only covers admin-versus-server.
+        #[tokio::test]
+        async fn a_metrics_bind_colliding_with_another_listener_is_refused() {
+            let dir = temp_dir();
+
+            for (other, set) in [
+                (
+                    "server.bind_address",
+                    Box::new(|c: &mut Config| {
+                        c.metrics.bind_address = c.server.bind_address.clone()
+                    }) as Box<dyn Fn(&mut Config)>,
+                ),
+                (
+                    "admin.bind_address",
+                    Box::new(|c: &mut Config| {
+                        c.admin.enabled = true;
+                        c.metrics.bind_address = c.admin.bind_address.clone();
+                    }),
+                ),
+            ] {
+                let mut config = config_in(&dir, false);
+                config.metrics.enabled = true;
+                set(&mut config);
+
+                let error = bind_metrics(&Arc::new(config))
+                    .await
+                    .expect_err("a shared socket must not start");
+                let message = error.to_string();
+                assert!(message.contains(other), "{message}");
+            }
+        }
+
+        /// The admin bind is only a conflict when the panel is actually going
+        /// to bind it. Both default to loopback ports, so refusing on the
+        /// *value* alone would reject a configuration that works.
+        #[tokio::test]
+        async fn a_metrics_bind_matching_a_disabled_admin_is_allowed() {
+            let dir = temp_dir();
+            let mut config = config_in(&dir, false);
+            config.metrics.enabled = true;
+            config.admin.enabled = false;
+            config.metrics.bind_address = config.admin.bind_address.clone();
+
+            let listener = bind_metrics(&Arc::new(config))
+                .await
+                .expect("a disabled panel holds no socket");
+            assert!(listener.is_some());
+        }
+
+        /// Off by default, and off means no socket at all rather than one
+        /// answering 404.
+        #[tokio::test]
+        async fn metrics_disabled_binds_nothing() {
+            let dir = temp_dir();
+            let config = config_in(&dir, false);
+            assert!(!config.metrics.enabled);
+
+            assert!(bind_metrics(&Arc::new(config)).await.unwrap().is_none());
         }
 
         /// The admin listener's **own** TLS arm.
@@ -1758,6 +1943,9 @@ mod tests {
                 database,
                 acme_listener,
                 Some(admin_listener),
+                // This test is about the admin listener's own TLS arm; the
+                // metrics listener has none.
+                None,
                 async {
                     let _ = rx.await;
                 },

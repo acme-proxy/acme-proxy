@@ -10,6 +10,11 @@
 //! than queueing. `/health` is mounted outside it: a health probe is asked for
 //! precisely when the server is saturated.
 //!
+//! [`metrics`] counts one series per (endpoint, matched route, status) and is
+//! mounted only when `metrics.enabled` is on. It sits with the routes rather
+//! than outside them, because unlike [`access`] it needs `MatchedPath`, which
+//! routing is what populates.
+//!
 //! The rest are per profile. [`filter`] runs the configured access-control
 //! chain and inserts the resolved client address. [`nonce`] attaches a
 //! `Replay-Nonce` wherever RFC 8555 asks for one, and [`index_link`] the
@@ -20,4 +25,5 @@ pub mod access;
 pub mod admission;
 pub mod filter;
 pub mod index_link;
+pub mod metrics;
 pub mod nonce;

@@ -31,6 +31,9 @@ pub struct Config {
     /// The durable background-work queue. Process-wide for the reason
     /// [`JobsConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
     pub jobs: JobsConfig,
+    /// The Prometheus exposition endpoint. Process-wide for the reason
+    /// [`MetricsConfig`] gives, so also absent from [`PROFILE_SECTIONS`].
+    pub metrics: MetricsConfig,
     pub logging: LoggingConfig,
     pub order: OrderConfig,
     pub signer: SignerConfig,

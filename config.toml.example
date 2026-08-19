@@ -35,6 +35,7 @@
 #   [nonce]                             replay-nonce freshness
 #   [audit]                             reverse lookups and trail retention
 #   [jobs]                              the durable background-work queue
+#   [metrics]                           the Prometheus listener
 #   [logging]                           filter, format, target
 #   [order]                    [per-profile]  the order object's lifetime
 #   [signer]                   [per-profile]  how a certificate is obtained
@@ -265,6 +266,22 @@ lease_seconds = 300                 # ACME_PROXY_JOBS__LEASE_SECONDS
 # trail that has to be complete is audit_log's. 0 keeps everything for ever and
 # stops the sweep being scheduled at all.
 retention_days = 7                  # ACME_PROXY_JOBS__RETENTION_DAYS
+
+[metrics]
+# The Prometheus exposition, on a listener of its own -- a third socket, not a
+# route on the ACME or admin one. That is what makes the port the access
+# control: a scrape carries no session and needs none, because reaching the port
+# at all is the permission. Firewall it to your Prometheus host.
+#
+# Off by default: a certificate authority should not open a new socket because
+# somebody upgraded it.
+enabled = false                     # ACME_PROXY_METRICS__ENABLED
+# Beside the other two -- server on 3000, admin on 3001, this on 3002. Unlike
+# admin.bind_address, a non-loopback value is neither refused nor warned about:
+# there is no cookie here, and a port reachable from a Prometheus host on
+# another machine is the intended deployment. Startup refuses a value equal to
+# server.bind_address or admin.bind_address, since only one could then bind.
+bind_address = "127.0.0.1:3002"     # ACME_PROXY_METRICS__BIND_ADDRESS
 
 [logging]
 # Log level filtering (EnvFilter format). Overridden by RUST_LOG environment variable.

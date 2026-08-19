@@ -119,6 +119,14 @@ struct Inner {
     /// the dispatchers are rebuilt, so a captured map would keep notifying
     /// through backends the operator has since removed.
     notifiers: crate::notify::Notifiers,
+    /// The process's Prometheus counters, carried for the same reason
+    /// `notifiers` is: this backend records an issuance from a background task
+    /// long after `post_finalize` answered `processing` and returned, so it has
+    /// no `Auditor` to count through. Held directly rather than behind a
+    /// `watch` handle because, unlike the dispatchers, the registry is *not*
+    /// rebuilt per generation — that is the whole point of it living in
+    /// `Assembly`.
+    metrics: Arc<crate::metrics::Metrics>,
     /// Where an issuance is queued once the upstream order is open.
     ///
     /// The backend holds the *enqueue* side only; the runner that drains it is
@@ -151,6 +159,7 @@ impl RelaySigner {
         profiles: Vec<String>,
         database: Arc<Database>,
         notifiers: crate::notify::Notifiers,
+        metrics: Arc<crate::metrics::Metrics>,
         outbound: crate::http_client::Outbound,
         jobs: JobQueue,
     ) -> anyhow::Result<Self> {
@@ -239,6 +248,7 @@ impl RelaySigner {
             poll,
             profiles,
             notifiers,
+            metrics,
             jobs,
         })))
     }

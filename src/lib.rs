@@ -109,6 +109,9 @@
 //!         );
 //!     }
 //!     let notifiers = Arc::new(notifiers);
+//!     // The Prometheus counters. Built here rather than per generation, so a
+//!     // `SIGHUP` does not reset every counter to zero — see `Assembly`.
+//!     let metrics = Arc::new(acme_proxy::metrics::Metrics::new(database.clone()));
 //!
 //!     let mut profiles = Vec::new();
 //!     for profile in &resolved {
@@ -122,6 +125,7 @@
 //!                     vec![profile.name.clone()],
 //!                     database.clone(),
 //!                     notifiers.clone(),
+//!                     metrics.clone(),
 //!                     outbound.clone(),
 //!                     job_queue.clone(),
 //!                 )?,
@@ -145,12 +149,19 @@
 //!     }
 //!     // Process-wide, like `[audit]` itself: one trail for the whole CA,
 //!     // shared by every profile's router and by the web admin listener.
-//!     let audit = Arc::new(acme_proxy::audit::Auditor::from_config(
-//!         &config.audit,
-//!         &config.dns,
+//!     let audit = Arc::new(
+//!         acme_proxy::audit::Auditor::from_config(&config.audit, &config.dns, database.clone())?
+//!             // The counters come off the same `AuditRecord` the trail is
+//!             // written from, so the two can never disagree.
+//!             .with_metrics(metrics.clone()),
+//!     );
+//!     let app = build_app(
 //!         database.clone(),
-//!     )?);
-//!     let app = build_app(database.clone(), config.clone(), profiles, audit);
+//!         config.clone(),
+//!         profiles,
+//!         audit,
+//!         metrics.clone(),
+//!     );
 //!
 //!     // One runner drains the queue for the process. Every handler comes from
 //!     // a subsystem that has background work — `SignerBackend::jobs`,
@@ -205,6 +216,7 @@ pub mod http_client;
 pub mod ipam;
 pub mod jobs;
 pub mod key_change;
+pub mod metrics;
 pub mod middlewares;
 pub mod notify;
 pub mod pemfile;
@@ -476,6 +488,13 @@ pub struct Assembly {
     pub resolver: Arc<dyn dns::Resolver>,
     pub proxies: Arc<proxy::OutboundProxies>,
     pub signers: std::collections::HashMap<String, Arc<dyn signer::SignerBackend>>,
+    /// The Prometheus counters, and the third **correctness** reason this
+    /// struct exists rather than a convenience one. A registry rebuilt per
+    /// generation would reset every counter on `SIGHUP`, and a counter going
+    /// backwards is precisely how Prometheus recognises a process restart — so
+    /// `rate()` would report the whole pre-reload total as a spike on every
+    /// configuration change.
+    pub metrics: Arc<metrics::Metrics>,
     pub notifiers: notify::Notifiers,
     notifiers_tx: notify::NotifiersSender,
 }
@@ -535,10 +554,16 @@ impl Assembly {
         // Opened before `build_backends`, so the handle the signers capture is
         // the one later generations republish into.
         let (notifiers_tx, notifiers) = notify::notifiers_channel(dispatchers.clone());
+        // Likewise built before the signers, and for the same reason the
+        // dispatcher map is: the `relay` backend settles an issuance from a
+        // background task that has no request and no `Auditor`, so it counts
+        // that issuance through a handle it was given at construction.
+        let metrics = Arc::new(metrics::Metrics::new(database.clone()));
         let signers = signer::build_backends(
             resolved,
             database.clone(),
             notifiers.clone(),
+            metrics.clone(),
             http_client::Outbound::new(resolver.clone(), proxies.clone()),
             &jobs,
         )?;
@@ -550,6 +575,7 @@ impl Assembly {
                 resolver,
                 proxies,
                 signers,
+                metrics,
                 notifiers,
                 notifiers_tx,
             },
@@ -695,6 +721,7 @@ pub fn build_app(
     config: Arc<Config>,
     profiles: Vec<Arc<Profile>>,
     audit: Arc<audit::Auditor>,
+    metrics: Arc<metrics::Metrics>,
 ) -> Router {
     // Server-level routes. Deliberately *outside* the admission limit below: a
     // health probe is asked for precisely when the server is saturated, and
@@ -765,12 +792,64 @@ pub fn build_app(
     // Server-wide layers, applied once rather than once per profile. The
     // filter and nonce layers are deliberately *not* here: both are ACME
     // concerns and live inside each profile's own router.
-    root.merge(acme)
-        .layer(security_headers())
+    let app = root.merge(acme);
+
+    // Counting sits here even though the exposition is served on a *different*
+    // socket (see `metrics_app`): this is the only router that sees an ACME
+    // request, and the registry both share is an `Arc`. On the merged router
+    // rather than inside a profile, because `Router::layer` applies per route
+    // *and* to the fallback — so a request that matched nothing is counted too,
+    // under `ROUTE_UNMATCHED`. It also runs after routing, which is what makes
+    // `MatchedPath` present: the label has to be the route *pattern*
+    // (`/order/{id}`), never the URI, or every order ever finalized would be
+    // its own series for as long as the scraper retained it.
+    //
+    // Added only when the listener exists, so an operator who has not asked for
+    // metrics pays neither the lock nor the allocation per request.
+    let app = if config.metrics.enabled {
+        app.layer(middleware::from_fn_with_state(
+            metrics,
+            middlewares::metrics::record_request,
+        ))
+    } else {
+        app
+    };
+
+    app.layer(security_headers())
         // Outermost of everything, so the `request` span it opens — and the
         // `x-request-id` it echoes — covers every route, the admission layer
         // and the two hardening layers alike. Nothing below it is allowed to
         // log without an id.
+        .layer(middleware::from_fn(
+            middlewares::access::add_access_middleware,
+        ))
+}
+
+/// Builds the metrics listener's router: `GET /metrics` and nothing else.
+///
+/// A **third socket**, not a route on either of the other two. The port is the
+/// access control — see [`crate::config::MetricsConfig`] — which is why there
+/// is no session extractor here and no filter chain, and why the exposition can
+/// name every profile without that being a decision about the public listener.
+///
+/// Deliberately none of `build_app`'s layers. There is no admission control (a
+/// scrape is wanted *most* when the server is saturated, the reason `/health`
+/// sits outside it too), no `Replay-Nonce`, no `Link: rel="index"`, no
+/// `DefaultBodyLimit` (a `GET` with no body), and no security headers — those
+/// exist for a browser, and nothing renders this. It keeps only the access
+/// middleware, so a scrape is a `request_completed` line like everything else
+/// and its `x-request-id` correlates with whatever it was measuring.
+///
+/// This router is **not** behind a [`reload`] swap cell, unlike the other two.
+/// It has one route, and its only state is the registry — which by design is
+/// carried across generations rather than rebuilt (see [`Assembly`]), so there
+/// is nothing a reload could put in a new one. `metrics.enabled` and
+/// `metrics.bind_address` are frozen for the reason every bind address is: the
+/// socket cannot move under a running listener.
+pub fn metrics_app(metrics: Arc<metrics::Metrics>) -> Router {
+    Router::new()
+        .route("/metrics", get(handlers::get_metrics))
+        .with_state(handlers::MetricsState(metrics))
         .layer(middleware::from_fn(
             middlewares::access::add_access_middleware,
         ))

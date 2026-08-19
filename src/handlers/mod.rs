@@ -19,6 +19,7 @@ pub mod certificate;
 pub mod challenge_file;
 pub mod directory;
 pub mod helpers;
+pub mod metrics;
 pub mod order;
 pub mod renewal_info;
 
@@ -28,5 +29,6 @@ pub use certificate::*;
 pub use challenge_file::*;
 pub use directory::*;
 pub use helpers::*;
+pub use metrics::*;
 pub use order::*;
 pub use renewal_info::*;

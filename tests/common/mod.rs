@@ -25,6 +25,7 @@ use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
 use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, ProxyPolicy, Stage};
 use acme_proxy::jobs::{JobQueue, JobRegistry};
+pub use acme_proxy::metrics::Metrics;
 use acme_proxy::notify::{
     BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
 };
@@ -493,6 +494,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
         Arc::new(config),
         built,
         test_auditor(database.clone()),
+        Arc::new(Metrics::new(database.clone())),
     );
     (router, database)
 }
@@ -519,8 +521,53 @@ pub async fn test_app_full(
         Arc::new(config),
         vec![profile],
         test_auditor(database.clone()),
+        Arc::new(Metrics::new(database.clone())),
     );
     (router, database)
+}
+
+/// `test_app_full`, plus the registry the app counts into.
+///
+/// Separate rather than widening every helper's return type: one suite asserts
+/// on the counters and nineteen do not. The `Auditor` is given the same
+/// registry, which is what makes an issuance counted here at all — see
+/// `Auditor::with_metrics`.
+pub async fn test_app_with_metrics(
+    mut config: Config,
+    signer: Arc<dyn SignerBackend>,
+) -> (Router, Arc<Database>, Arc<Metrics>) {
+    init_tracing();
+    // Forced on, because `build_app` mounts the counting middleware only when
+    // it is — an operator who has not asked for metrics pays nothing per
+    // request. A caller of *this* helper has asked, and leaving it to each one
+    // to remember would mean a test whose counters silently stay at zero while
+    // every assertion about them reads as a wiring bug.
+    config.metrics.enabled = true;
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    let metrics = Arc::new(Metrics::new(database.clone()));
+    let profile = one_profile(
+        &config,
+        signer,
+        Arc::new(FilterPolicy::default()),
+        Arc::new(ChallengeRegistry::default()),
+        no_notifications().await,
+    );
+    let auditor = Arc::new(
+        Auditor::with_resolver(
+            database.clone(),
+            None,
+            std::time::Duration::from_millis(100),
+        )
+        .with_metrics(metrics.clone()),
+    );
+    let router = build_app(
+        database.clone(),
+        Arc::new(config),
+        vec![profile],
+        auditor,
+        metrics.clone(),
+    );
+    (router, database, metrics)
 }
 
 /// The single `default` profile both app builders mount.

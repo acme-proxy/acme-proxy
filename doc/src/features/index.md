@@ -39,6 +39,13 @@ Two paths sit outside every profile, on the root router:
 | `/health` | Liveness. Outside the filter chain, the admission limiter and the nonce middleware — see [Monitoring](../operations/monitoring.md). |
 | `/.well-known/acme-challenge/{token}` | Mounted **only** when a signer backend has an http-01 token store to publish, i.e. `signer.relay.challenge_strategy = "http01"`. See [Relay](../signers/relay.md). |
 
+Two further paths are not on this listener at all. `GET /metrics` has a
+**socket of its own** (off by default, `[metrics]`), so firewalling that port is
+what controls who can read it — see
+[Monitoring](../operations/monitoring.md#metrics). The web admin's `/ui` and
+`/api` likewise have their own listener; see
+[Web Admin](../operations/webadmin.md).
+
 ## Protocol behaviour worth knowing
 
 **Every signed request is checked the same way.** The media type

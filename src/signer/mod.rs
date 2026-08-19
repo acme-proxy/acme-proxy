@@ -278,6 +278,7 @@ pub fn from_config(
     profiles: Vec<String>,
     database: Arc<Database>,
     notifiers: impl Into<crate::notify::Notifiers>,
+    metrics: Arc<crate::metrics::Metrics>,
     outbound: crate::http_client::Outbound,
     jobs: crate::jobs::JobQueue,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
@@ -285,11 +286,16 @@ pub fn from_config(
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
         )?)),
+        // The one backend handed the metrics registry, because it is the one
+        // that finishes an issuance from a background task: `post_finalize`
+        // answered `processing` and returned, so no `Auditor` — and no request
+        // — is in scope when the certificate actually arrives.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
             &cfg.relay,
             profiles,
             database,
             notifiers.into(),
+            metrics,
             outbound,
             jobs,
         )?)),
@@ -328,6 +334,7 @@ pub fn build_backends(
     profiles: &[crate::config::ProfileConfig],
     database: Arc<Database>,
     notifiers: impl Into<crate::notify::Notifiers>,
+    metrics: Arc<crate::metrics::Metrics>,
     outbound: crate::http_client::Outbound,
     jobs: &crate::jobs::JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
@@ -377,6 +384,7 @@ pub fn build_backends(
                     served.get(&key).cloned().unwrap_or_default(),
                     database.clone(),
                     notifiers.clone(),
+                    metrics.clone(),
                     outbound.clone(),
                     jobs.clone(),
                 )
@@ -481,6 +489,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         )
@@ -502,6 +511,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         )
@@ -529,6 +539,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         ) {
@@ -556,6 +567,7 @@ mod tests {
             &profiles,
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             &crate::testutil::idle_job_queue(database().await),
         ) {
@@ -573,6 +585,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
@@ -627,6 +640,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
@@ -655,6 +669,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         )
@@ -673,6 +688,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         ) {
@@ -698,6 +714,7 @@ mod tests {
             vec!["default".to_string()],
             database().await,
             no_notifiers(),
+            crate::testutil::test_metrics(database().await),
             crate::testutil::outbound_with(test_resolver()),
             crate::testutil::idle_job_queue(database().await),
         ) {
