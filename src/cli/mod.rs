@@ -926,6 +926,7 @@ async fn supervise_reloads(
                     job_kinds = ?report.job_kinds,
                     tls_reloaded = report.tls_reloaded,
                     admin_tls_reloaded = report.admin_tls_reloaded,
+                    logging_reloaded = report.logging_reloaded,
                     duration_ms = crate::millis(report.duration),
                 );
                 if let Some(respond) = request.respond {
@@ -1013,6 +1014,13 @@ fn apply_reload(
         },
     )?;
 
+    // Built here rather than published here: a bad `logging.target` must refuse
+    // the whole reload with the message startup would have printed, not leave a
+    // half-swapped generation behind. The same build-then-publish split
+    // `Assembly::build_dispatchers` makes.
+    let logging = logging::prepare_logging(&next.logging).map_err(ReloadError::Build)?;
+    let logging_filter_from_env = logging.filter_from_env;
+
     // The same validation startup runs before either socket binds, so a panel
     // that would refuse to start refuses to be reloaded into. It also compiles
     // every `admin.template_dir` override, which is what keeps a broken one a
@@ -1032,6 +1040,18 @@ fn apply_reload(
     )
     .map_err(|error| ReloadError::Build(error.to_string()))?;
 
+    let next_logins = generation_built.logins.clone();
+
+    // Everything below is infallible and synchronous. The order matters in two
+    // places. `[logging]` goes **first**, because an operator who raised the
+    // level did it to see what happens next, starting with this reload's own
+    // completion line. And the notifier map and the job registry go **before**
+    // the routers: a request served by the new generation queues a
+    // `notify_deliver` row naming a slot id from the new configuration, and a
+    // `NotifyJob` still holding the old map would retire it — permanently,
+    // since an unknown backend id is a `Failed`, not a `Retry`.
+    let logging_reloaded = logging::publish_logging(logging);
+
     let report = ReloadReport {
         generation,
         profiles: generation_built
@@ -1042,16 +1062,10 @@ fn apply_reload(
         job_kinds: generation_built.job_registry.kinds(),
         tls_reloaded: generation_built.tls.is_some() && cells.tls.is_some(),
         admin_tls_reloaded: generation_built.admin_tls.is_some() && cells.admin_tls.is_some(),
+        logging_reloaded,
         duration: started.elapsed(),
     };
-    let next_logins = generation_built.logins.clone();
 
-    // Everything below is infallible and synchronous. The order matters in one
-    // place: the notifier map and the job registry go **before** the routers.
-    // A request served by the new generation queues a `notify_deliver` row
-    // naming a slot id from the new configuration, and a `NotifyJob` still
-    // holding the old map would retire it — permanently, since an unknown
-    // backend id is a `Failed`, not a `Retry`.
     assembly.publish_notifiers(dispatchers);
     cells
         .job_registry
@@ -1067,6 +1081,19 @@ fn apply_reload(
         .send_replace(generation_built.acme_app.into_service::<axum::body::Body>());
     if let (Some(cell), Some(router)) = (&cells.admin_router, generation_built.admin_app) {
         cell.send_replace(router.into_service::<axum::body::Body>());
+    }
+
+    // `RUST_LOG` outranks `logging.filter` on a reload exactly as it does at
+    // startup — the two disagreeing would be worse — but that makes an edited
+    // `logging.filter` a silent no-op, which is the one outcome an operator
+    // would read as "my reload did not land". Said only when both halves hold:
+    // the environment won, *and* the file's filter actually moved.
+    if logging_filter_from_env && config.logging.filter != next.logging.filter {
+        warn!(
+            event = "server_logging_filter_overridden",
+            outcome = "advisory",
+            configured = %next.logging.filter,
+        );
     }
 
     Ok(Reloaded {

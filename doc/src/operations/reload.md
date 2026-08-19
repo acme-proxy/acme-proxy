@@ -62,7 +62,6 @@ These are the keys that produce it. Everything not listed here reloads.
 | `server.tls.enabled` | Turning TLS on or off replaces the listener, not its settings. |
 | `admin.enabled`, `admin.bind_address`, `admin.tls.enabled` | The same two reasons, for the panel's own socket. |
 | `metrics.enabled`, `metrics.bind_address` | The same, for the metrics socket. There is no `metrics.tls.enabled` beside them — that listener has none. |
-| every `[logging]` key | The tracing subscriber is installed once per process and cannot be replaced. |
 | `[dns]`, `[proxy]` | Every outbound client caches these when it is built, including the signer backends, which are not rebuilt. |
 | six of the seven `[jobs]` keys | The runner snapshotted its pacing when it started. `jobs.retention_days` is the exception and does reload. |
 | any profile's `[signer]` section | See below. |
@@ -104,8 +103,8 @@ restart to apply it
 
 That is enough to see *which* endpoint's signer moved, which is what the
 message is for. To see what actually changed, diff the file. Sections that
-cannot hold a credential — `[logging]`, `dns.resolver`, `database.url` — still
-name the old and the new value in full.
+cannot hold a credential — `dns.resolver`, `database.url` — still name the old
+and the new value in full.
 
 ## What a reload does change
 
@@ -124,6 +123,12 @@ Everything else, including the things operators reach for most:
 - **Retention** — `audit.retention_days` and `jobs.retention_days`. A sweep
   already scheduled keeps its current time and picks the new cutoff up on its
   next run.
+- **Logging** — every `[logging]` key, so raising the level or switching to JSON
+  mid-incident costs nothing. The swap is the first thing a reload publishes, so
+  the `server_config_reloaded` line that confirms it is already under the new
+  settings. One caveat: `RUST_LOG` still outranks `logging.filter`, exactly as
+  it does at startup, so with it set an edited filter changes nothing — the
+  server says so with `server_logging_filter_overridden`.
 
 For what each key means, see the [configuration
 reference](../configuration/reference.md).

@@ -359,6 +359,29 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`[logging]` reloads on `SIGHUP`.** All six keys — the filter, the format,
+  the destination, colour, span events and `flatten_event` — where the whole
+  section used to be refused by name. Raising the log level or switching to JSON
+  for a collector was the one thing an operator most wants mid-incident and the
+  one thing that still cost a restart, taking every live connection and
+  in-flight order with it.
+
+  The subscriber is installed once per process and that has not changed; what
+  changed is that the layer stack now sits behind a
+  `tracing_subscriber::reload::Layer`, so a generation swaps it like everything
+  else. It is the **first** thing a reload publishes, so the
+  `server_config_reloaded` line confirming the reload is already written under
+  the new settings. The cost, stated rather than buried: a `reload::Layer` puts
+  an `RwLock` read on every event.
+
+  `RUST_LOG` still outranks `logging.filter`, on a reload exactly as at startup
+  — the two disagreeing about what the server is running would be worse than the
+  override. But that makes an edited filter a silent no-op, so a reload that
+  hits it now logs `server_logging_filter_overridden` instead of looking like it
+  worked. `server_config_reloaded` also gained `logging_reloaded`, which is
+  `false` when the process installed no subscriber of its own and there was
+  therefore nothing to swap.
+
 - **A Grafana dashboard**, at `dashboards/acme-proxy.json`. Twelve panels over
   the four metric families: issuance and its refusals by ACME problem type,
   request rate by route and status, the 5xx share, shed requests, unmatched
@@ -471,10 +494,11 @@ migrated configuration before restarting.
     store would come back empty while an upstream CA was fetching from it.
 
   Frozen, and so refused by name: `database.url`, `server.bind_address`,
-  `server.tls.enabled`, `admin.enabled`/`bind_address`/`tls.enabled`, every
-  `[logging]` key, `[dns]` and `[proxy]`, six of the seven `[jobs]` keys
-  (`retention_days` reloads), each profile's `[signer]` section, and the set of
-  enabled profiles. Everything else reloads, including TLS certificate paths
+  `server.tls.enabled`, `admin.enabled`/`bind_address`/`tls.enabled`, `[dns]`
+  and `[proxy]`, six of the seven `[jobs]` keys (`retention_days` reloads), each
+  profile's `[signer]` section, and the set of enabled profiles. (`[logging]`
+  was on this list too, and is not any more — see the entry above.) Everything
+  else reloads, including TLS certificate paths
   and `admin.template_dir` — a template that does not compile now fails the
   *reload* rather than reaching a browser.
 
@@ -656,8 +680,8 @@ migrated configuration before restarting.
   DNS zone this CA validates against — into journald and every log shipper
   downstream. Those two projections are now compared by SHA-256 digest: the
   comparison is unchanged, the refusal still names the key and the profile, and
-  the value is `sha256:…`. Sections that cannot hold a credential (`[logging]`,
-  `dns.resolver`, `database.url`) still name the old and the new value.
+  the value is `sha256:…`. Sections that cannot hold a credential
+  (`dns.resolver`, `database.url`) still name the old and the new value.
 
 - **Admin login latency enumerated the operator table, in the opposite direction
   from the one the code guarded against.** The unknown-username branch verified

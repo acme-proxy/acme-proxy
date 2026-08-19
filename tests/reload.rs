@@ -208,6 +208,78 @@ async fn a_reload_changes_what_the_running_socket_answers() {
     server.stop().await;
 }
 
+/// `[logging]` reloads, through the same path a `SIGHUP` takes.
+///
+/// Every one of these keys used to be refused — the tracing subscriber being
+/// installed once per process — so raising the log level mid-incident cost a
+/// restart and every live connection with it. `cli::logging` now installs the
+/// whole stack behind a `reload::Layer` handle.
+///
+/// `LevelFilter::current()` is the assertion that matters: it is the static
+/// maximum `tracing` consults before reaching any subscriber, so it moving is
+/// what proves the swap rebuilt the interest cache rather than parking a new
+/// layer nothing asks. The `website` half rides along to show `[logging]` is
+/// carried by an ordinary generation and not a special case beside it.
+///
+/// This test installs the subscriber itself, which is legal only because
+/// nextest gives it its own process — the same licence the two installers in
+/// `src/cli/logging.rs` take. Without it there would be no handle, and
+/// `logging_reloaded` would honestly report `false`.
+#[tokio::test]
+async fn a_logging_change_reloads_and_moves_the_level() {
+    use tracing::level_filters::LevelFilter;
+
+    // SAFETY: nextest gives this test its own process. `RUST_LOG` outranks
+    // `logging.filter` by design, so leaving an inherited one set would make
+    // every assertion below pass for the wrong reason.
+    unsafe { std::env::remove_var("RUST_LOG") };
+
+    let dir = TempDir::new("reload-logging");
+    write_config(
+        &dir,
+        false,
+        "https://before.example",
+        r#"
+        [logging]
+        filter = "acme_proxy=info"
+        target = "stderr"
+        "#,
+    );
+    let config = load_from(&dir);
+    acme_proxy::cli::init_logging(&config.logging).expect("the subscriber must install");
+    assert_eq!(LevelFilter::current(), LevelFilter::INFO);
+
+    let server = boot(config, false).await;
+
+    write_config(
+        &dir,
+        false,
+        "https://after.example",
+        r#"
+        [logging]
+        filter = "acme_proxy=debug"
+        target = "stderr"
+        json_format = true
+        "#,
+    );
+    let report = server.reload.reload().await.expect("the reload must apply");
+    assert_eq!(report.generation, 2);
+    assert!(
+        report.logging_reloaded,
+        "the handle is installed, so the swap must have taken",
+    );
+    assert_eq!(
+        LevelFilter::current(),
+        LevelFilter::DEBUG,
+        "the raised level must reach callsites that already exist",
+    );
+
+    let after = get(server.acme, "/profile/default/directory").await;
+    assert!(after.contains("https://after.example"), "{after}");
+
+    server.stop().await;
+}
+
 /// The property the whole "atomic, refuse by name" decision exists for: a
 /// frozen key is refused, and the server goes on serving what it already had.
 ///

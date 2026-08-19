@@ -37,15 +37,12 @@ keeps its corpses stops being read.
       `forget_permits` rather than being replaced, or in-flight permit
       accounting is lost. `jobs.max_attempts` stays frozen *onto each row* at
       enqueue — that is a property of the queue, not of this freeze.
-- [ ] **Reload `[logging]`.** `tracing_subscriber::reload::Layer` exists for
-      exactly this: `logging.filter` becomes reloadable cheaply, and the other
-      five (which change the layer stack's shape) follow if the format layer is
-      boxed behind the same handle. The cost is honest and belongs in the
-      decision — a `reload::Layer` puts an `RwLock` read on every event.
-      `database.url` is the one key that should stay frozen for good: the pool
-      is held by the runner and every request path, migrations would run
-      mid-flight, and the accounts and orders do not follow it. A different
-      database is a different CA.
+
+      Once this and the two items above land, `database.url` is what is left in
+      `reload::FROZEN`, and it should stay there for good: the pool is held by
+      the runner and every request path, migrations would run mid-flight, and
+      the accounts and orders do not follow it. A different database is a
+      different CA.
 - [ ] **PostgreSQL beside SQLite.** Every query goes through `src/sqlite/` as a
       runtime `sqlx::query`, so most of them port unchanged; what does not is
       `Database::connect`'s two pragmas, the `rows_affected == 1` single-use

@@ -15,13 +15,19 @@
 //! observed half-applied — no other task can run in the middle of it.
 //!
 //! What a swap cannot honour is refused **by name**, and the whole reload is
-//! refused with it: the sockets are already bound, the tracing subscriber is
-//! installed process-wide, the database pool is connected, the job runner's
-//! tuning was snapshotted at spawn, and a signer backend owns in-memory state
-//! (a `LocalCa` revocation ledger, a relay's `http-01` token store) that two
-//! generations over one set of files would disagree about. Refusing by name is
-//! the posture startup already takes when it rejects an unknown
-//! `logging.target` rather than falling back.
+//! refused with it: the sockets are already bound, the database pool is
+//! connected, the job runner's tuning was snapshotted at spawn, and a signer
+//! backend owns in-memory state (a `LocalCa` revocation ledger, a relay's
+//! `http-01` token store) that two generations over one set of files would
+//! disagree about. Refusing by name is the posture startup already takes when
+//! it rejects an unknown `logging.target` rather than falling back.
+//!
+//! `[logging]` used to be on that list, the tracing subscriber being installed
+//! once per process. It is not any more: `cli::logging` installs the whole
+//! stack behind a `tracing_subscriber::reload::Layer`, so all six keys swap
+//! with everything else. The publishing run does it **first**, since an
+//! operator who raised the level did it to see what happens next — starting
+//! with the reload's own line.
 
 use std::convert::Infallible;
 use std::task::{Context, Poll};
@@ -69,9 +75,9 @@ pub struct Applied<'a> {
 ///
 /// The forward rule, since this will be asked again: **a whole-section
 /// projection is opaque iff any field it reaches can hold a credential.**
-/// `logging`, `dns.resolver` and `database.url` hold none, and naming the old
-/// and the new value is exactly where that message earns its keep, so they stay
-/// readable. Truncated to 8 bytes like [`crate::sqlite::account::pubkey_fingerprint`].
+/// `dns.resolver` and `database.url` hold none, and naming the old and the new
+/// value is exactly where that message earns its keep, so they stay readable.
+/// Truncated to 8 bytes like [`crate::sqlite::account::pubkey_fingerprint`].
 fn opaque(rendered: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, rendered.as_bytes());
     format!("sha256:{}", hex::encode(&digest.as_ref()[..8]))
@@ -87,18 +93,19 @@ fn opaque(rendered: &str) -> String {
 ///
 /// Each entry is one of two kinds, and the distinction is the whole design:
 ///
-/// - *Physically frozen*: the sockets are bound, the tracing subscriber is
-///   installed once per process, the pool is connected, and the job runner
-///   snapshotted its tuning at spawn.
+/// - *Physically frozen*: the sockets are bound, the pool is connected, and the
+///   job runner snapshotted its tuning at spawn.
 /// - *Frozen by ownership*: a signer backend holds in-memory state with no
 ///   durable home, so two generations over one set of files disagree — see
 ///   [`crate::Assembly`]. `dns.*` and `proxy.*` follow from it, because every
 ///   outbound client caches them at construction and the signers are the
 ///   clients that are never rebuilt.
 ///
-/// `jobs.retention_days` is deliberately **absent**: it is read only by
-/// `SweepJob::jobs`, which the registry swap rebuilds. So is the global
-/// `[signer]` section, because `merged_sections` overlays it per key — a global
+/// `[logging]` is deliberately **absent**: the whole layer stack sits behind a
+/// `reload::Layer` handle (see `cli::logging`), so all six keys swap with the
+/// rest of a generation. `jobs.retention_days` is absent for its own reason: it
+/// is read only by `SweepJob::jobs`, which the registry swap rebuilds. So is the
+/// global `[signer]` section, because `merged_sections` overlays it per key — a global
 /// change that matters shows up in some profile's resolved section, and one that
 /// every profile overrides is a genuine no-op that must not be refused.
 type Projection = fn(&Applied<'_>) -> String;
@@ -124,7 +131,6 @@ const FROZEN: &[(&str, Projection)] = &[
     ("metrics.bind_address", |a| {
         a.config.metrics.bind_address.clone()
     }),
-    ("logging", |a| format!("{:?}", a.config.logging)),
     ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
     // Opaque: the URLs carry a proxy password. See `opaque`.
     ("proxy", |a| opaque(&format!("{:?}", a.config.proxy))),
@@ -243,6 +249,12 @@ pub struct ReloadReport {
     pub job_kinds: Vec<&'static str>,
     pub tls_reloaded: bool,
     pub admin_tls_reloaded: bool,
+    /// Whether `[logging]` was swapped, which is **not** the same as whether it
+    /// changed: `false` means this process installed no subscriber of its own,
+    /// so there was no handle to swap and logging stayed whatever its owner set
+    /// it to. Reported rather than assumed, since a silent no-op there is the
+    /// one outcome an operator would misread as success.
+    pub logging_reloaded: bool,
     pub duration: Duration,
 }
 
@@ -540,12 +552,6 @@ mod frozen_tests {
                 }),
             ),
             (
-                "logging",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.logging.json_format = !c.logging.json_format;
-                }),
-            ),
-            (
                 "dns.resolver",
                 Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
                     c.dns.resolver = Some("192.0.2.1:53".to_string());
@@ -772,6 +778,28 @@ mod frozen_tests {
             allowed.is_ok(),
             "jobs.retention_days is rebuilt with the registry, so it must reload",
         );
+    }
+
+    /// Every `[logging]` key reloads, where the whole section used to be
+    /// refused: `cli::logging` installs the stack behind a `reload::Layer`
+    /// handle, so a swap replaces all six at once. Driven through the two that
+    /// change the stack's *shape* as well as the filter, since the filter alone
+    /// reloading was the cheap half of the problem.
+    #[test]
+    fn every_logging_key_is_reloadable() {
+        for mutate in [
+            |c: &mut Config| c.logging.filter = "acme_proxy=debug".to_string(),
+            |c: &mut Config| c.logging.json_format = true,
+            |c: &mut Config| c.logging.flatten_event = true,
+            |c: &mut Config| c.logging.target = "stderr".to_string(),
+            |c: &mut Config| c.logging.ansi = false,
+            |c: &mut Config| c.logging.span_events = "close".to_string(),
+        ] {
+            assert!(
+                refuse(|config, _| mutate(config)).is_ok(),
+                "the layer stack is swapped whole, so no `[logging]` key is frozen",
+            );
+        }
     }
 
     /// A refusal an operator can act on names the key *and* both values — "it

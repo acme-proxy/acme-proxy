@@ -608,6 +608,11 @@ performs no CAA checking.
 All six keys are validated at startup: an unknown value is a refusal to start
 with a message naming the key, never a silent fallback — a CA running at a log
 level or to a destination its operator did not ask for is the worse failure.
+The same validation runs on a reload, where a bad value refuses the whole thing
+rather than half-swapping the log stream.
+
+All six also [reload on `SIGHUP`](../operations/reload.md), so raising the level
+or switching to JSON mid-incident does not cost a restart.
 
 What the resulting records actually contain, and what to alert on, is
 [Monitoring & Observability](../operations/monitoring.md).
@@ -616,7 +621,11 @@ What the resulting records actually contain, and what to alert on, is
 
 `EnvFilter` directive, used **only when `RUST_LOG` is unset**. `RUST_LOG` wins
 whenever it is present, and replaces the whole filter — a bare `RUST_LOG=debug`
-therefore also turns on debug logging for every dependency.
+therefore also turns on debug logging for every dependency. That precedence is
+the same on a reload as at startup, which means editing this key while
+`RUST_LOG` is set changes nothing; the server logs
+`server_logging_filter_overridden` rather than letting the edit pass for
+applied.
 
 **`json_format`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_LOGGING__JSON_FORMAT`*
 
