@@ -55,17 +55,6 @@ keeps its corpses stops being read.
       files.
 ## Observability
 
-- [ ] **Name the client on the access line.** The server-wide `request` span
-      carries method, uri, request id and profile, but **not the address**, so
-      an ordinary request never says who connected — only audit rows and a few
-      targeted lines (`admin_login_*`) do. The `ClientIp` the filter middleware
-      resolves is not reachable from `access.rs`: that layer is per-profile and
-      sits *inside* the span. Read the peer address in `access.rs` itself (the
-      honest fix, since `/health` and the http-01 responder sit outside every
-      profile) and declare `client_ip` as `field::Empty` so the per-profile
-      layer can overwrite it with the `ProxyPolicy`-resolved one — the
-      deferred-record pattern `profile` already uses, and necessary here
-      because `filter.trusted_proxies` is per-profile configuration.
 - [ ] **A Prometheus `/metrics` endpoint**: `requests` (profile, route,
       status), `cert_delivery`, `cert_failure`,
       `database_pool_active_connections`. Mount it where `/health` is — the

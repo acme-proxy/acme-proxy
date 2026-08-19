@@ -359,6 +359,15 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The access line names the client.** The server-wide `request` span gained a
+  `client_ip` field, so an ordinary request finally says who connected —
+  previously only audit rows and a few targeted lines did. It is seeded from
+  the peer address and replaced, where `filter.trusted_proxies` says the peer
+  is a reverse proxy, by the address resolved from `filter.forwarded_header`.
+  Both are per-profile settings, so a request that never reaches a profile
+  (`/health`, the http-01 responder, anything admission control sheds) shows
+  the peer.
+
 - **Configuration reload on `SIGHUP`, without moving either socket.** Until now
   every configuration change was a process restart, which dropped in-flight
   ACME orders and every live connection — for changes that never needed a new

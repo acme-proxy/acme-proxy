@@ -13,7 +13,86 @@
 //! `tests/common/`.
 
 use crate::audit::ClientContext;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Captures the fields of one named tracing span.
+///
+/// The only way to assert on a *span* field: unlike an event field, nothing in
+/// a response or a captured log line says whether it was recorded or what with.
+/// Both halves of the deferred-record pattern are collected — `on_new_span` for
+/// the fields set at creation, `on_record` for the ones a later layer fills in
+/// (`client_ip`, `profile`, `alg`, `account_id`).
+#[derive(Clone)]
+pub(crate) struct SpanFields {
+    name: &'static str,
+    fields: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl SpanFields {
+    pub(crate) fn capturing(name: &'static str) -> Self {
+        Self {
+            name,
+            fields: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// The recorded value of `field`, or `None` when it was never recorded —
+    /// which is what a `field::Empty` nobody filled in looks like.
+    pub(crate) fn get(&self, field: &str) -> Option<String> {
+        self.fields.lock().unwrap().get(field).cloned()
+    }
+}
+
+impl tracing::field::Visit for SpanFields {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.fields
+            .lock()
+            .unwrap()
+            .insert(field.name().to_string(), format!("{value:?}"));
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanFields {
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        _id: &tracing::Id,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if attrs.metadata().name() == self.name {
+            attrs.record(&mut self.clone());
+        }
+    }
+
+    fn on_record(
+        &self,
+        _id: &tracing::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        values.record(&mut self.clone());
+    }
+}
+
+/// Runs `body` under a subscriber capturing the `request` span, and returns
+/// what it recorded.
+///
+/// `#[tokio::test]` is a current-thread runtime, so the thread-local default
+/// this installs covers the whole future including its awaits.
+pub(crate) async fn capture_request_span<F, T>(body: F) -> SpanFields
+where
+    F: std::future::Future<Output = T>,
+{
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let captured = SpanFields::capturing("request");
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+    body.await;
+    captured
+}
 
 /// A scratch directory that removes itself on drop, so a failing assertion
 /// cannot leave files behind.

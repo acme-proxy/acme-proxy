@@ -4,6 +4,14 @@
 //! every other log line of that request is nested under, and emits the one
 //! access line per request (`event = "request_completed"`).
 //!
+//! The span names the client twice over, and both halves are load-bearing. This
+//! layer seeds `client_ip` from the peer address, which is the only source the
+//! routes outside every profile router have — `/health`, the http-01 responder
+//! and the admission-control refusals. The per-profile filter middleware then
+//! overwrites it with the address `ProxyPolicy` resolved, since
+//! `filter.trusted_proxies` is per-profile configuration and a request through
+//! a trusted reverse proxy would otherwise be attributed to the proxy.
+//!
 //! Both halves live in one middleware on purpose. They used to be two — this
 //! `x-request-id` layer plus a `tower_http::trace::TraceLayer` built inside
 //! each profile's router — and the split cost three things:
@@ -24,10 +32,12 @@
 //! request, so it cannot vary its level by path — and a liveness probe once a
 //! second must not drown the info stream.
 
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use axum::{
     body::Body,
+    extract::ConnectInfo,
     http::{HeaderName, HeaderValue, Method, Request},
     middleware::Next,
     response::IntoResponse,
@@ -76,9 +86,25 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
 
     let probe = is_probe(request.method(), request.uri().path());
 
+    // The peer address, canonicalized the way `ProxyPolicy::resolve` does, so
+    // the two sources of this field never disagree on the spelling of a
+    // v4-mapped v6 address (the dual-stack `[::]:3000` bind sees every IPv4
+    // client as `::ffff:…`).
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| crate::filter::canonical(addr.ip()));
+
     // `profile` is filled in by each profile router (see `build_router`): this
     // layer is server-wide and mounted above the `/profile/<name>` nesting, so
     // it is not yet known here.
+    //
+    // `client_ip` is seeded here with the *peer* and overwritten by the filter
+    // middleware with the `ProxyPolicy`-resolved address, because
+    // `filter.trusted_proxies` is per-profile configuration this layer cannot
+    // see. Seeding it is not redundant: `/health`, the http-01 responder and
+    // every admission-control refusal sit outside all profile routers, so
+    // without it the routes that never reach a filter would name nobody.
     let span = info_span!(
         "request",
         method = %request.method(),
@@ -86,7 +112,11 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
         version = ?request.version(),
         request_id = %id_str,
         profile = field::Empty,
+        client_ip = field::Empty,
     );
+    if let Some(peer) = peer {
+        span.record("client_ip", field::display(peer));
+    }
 
     let started = Instant::now();
     let mut response = next.run(request).instrument(span.clone()).await;
@@ -144,6 +174,56 @@ mod tests {
             .route("/health", get(|| async { "ok" }))
             .route("/boom", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
             .layer(middleware::from_fn(add_access_middleware))
+    }
+
+    /// Drives one request under a subscriber capturing the `request` span, and
+    /// returns what it recorded.
+    async fn fields_for(request: Request<Body>) -> crate::testutil::SpanFields {
+        crate::testutil::capture_request_span(app().oneshot(request)).await
+    }
+
+    /// The seeded half: with no filter middleware in front, the peer address is
+    /// the only thing that can name the client — this is what `/health` and the
+    /// http-01 responder get.
+    #[tokio::test]
+    async fn the_peer_address_is_recorded_as_the_client() {
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([192, 0, 2, 7], 4711))));
+
+        let fields = fields_for(req).await;
+
+        assert_eq!(fields.get("client_ip").as_deref(), Some("192.0.2.7"));
+    }
+
+    /// The dual-stack `[::]:3000` bind sees IPv4 clients as `::ffff:…`. The
+    /// access line must spell them the same way `ProxyPolicy::resolve` does, or
+    /// one address reads as two across the two layers that write this field.
+    #[tokio::test]
+    async fn a_v4_mapped_peer_is_canonicalized() {
+        let mapped: std::net::IpAddr = "::ffff:192.0.2.7".parse().unwrap();
+        let mut req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((mapped, 4711))));
+
+        let fields = fields_for(req).await;
+
+        assert_eq!(fields.get("client_ip").as_deref(), Some("192.0.2.7"));
+    }
+
+    /// A router driven through `oneshot` has no socket, so there is no peer to
+    /// name. The field stays empty rather than being recorded as some
+    /// placeholder an operator would read as an address.
+    #[tokio::test]
+    async fn no_connect_info_leaves_the_client_unnamed() {
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+
+        let fields = fields_for(req).await;
+
+        assert_eq!(fields.get("client_ip"), None);
+        // The span was captured at all — otherwise the assertion above passes
+        // for the wrong reason.
+        assert!(fields.get("request_id").is_some());
     }
 
     #[tokio::test]

@@ -83,8 +83,15 @@ rather than replaced. A header whose bytes are not valid ASCII cannot be echoed
 back, so it is replaced by a generated id and a `request_id_header_invalid` line
 at `debug` says so.
 
-The span carries `method`, `uri`, `version`, `request_id` and — for a request
-that reached an ACME endpoint rather than `/health` — `profile`.
+The span carries `method`, `uri`, `version`, `request_id`, `client_ip` and —
+for a request that reached an ACME endpoint rather than `/health` — `profile`.
+
+`client_ip` is the peer address of the connection, replaced by the address
+resolved from `filter.forwarded_header` where `filter.trusted_proxies` says the
+peer is a reverse proxy. Both are per-profile settings, so a request that never
+reaches a profile — `/health`, the `http-01` responder, anything admission
+control sheds — always shows the peer. A request arriving over a socket with no
+peer address at all leaves the field absent rather than reporting a placeholder.
 
 ### The access line
 
