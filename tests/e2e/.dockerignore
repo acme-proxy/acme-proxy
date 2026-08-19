@@ -1,0 +1,20 @@
+# Build context for the six Containerfiles in this directory, all of which are
+# built with `tests/e2e` as their context (see `ensure_images_built` in common.rs).
+#
+# Without this, that context is 128 MB — `netbox-mock/target`, a host-side build
+# directory that is gitignored but that a container build has no reason to know
+# is uninteresting. It was tarred and shipped on six of the seven builds every
+# run, and `netbox_mock.Containerfile`'s two `COPY netbox-mock .` lines copied it
+# *into* the image twice, so a host-side `cargo build` in that crate invalidated
+# the mock's layers and forced a rebuild that had nothing to do with its source.
+#
+# Named `.dockerignore` rather than `.containerignore`: podman reads either
+# (preferring `.containerignore`), docker reads only this one, and the harness
+# supports both runtimes.
+*/target
+
+# The scenario sources and the README live here but are never COPYed by any of
+# these Containerfiles — they are the test binary's own source, compiled on the
+# host.
+*.rs
+*.md

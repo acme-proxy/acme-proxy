@@ -1,7 +1,8 @@
 use std::process::Command;
 use std::sync::Once;
 use testcontainers::{
-    ContainerAsync, CopyTargetOptions, GenericImage, ImageExt, core::WaitFor, runners::AsyncRunner,
+    ContainerAsync, ContainerRequest, CopyTargetOptions, GenericImage, ImageExt, core::WaitFor,
+    runners::AsyncRunner,
 };
 use tokio::process::Command as TokioCommand;
 
@@ -238,38 +239,31 @@ impl Lab {
             proxy_image = proxy_image.with_env_var("ACME_PROXY_CHALLENGE__BYPASS", "true");
         }
 
+        // The two IPAM mocks are wanted by four of the thirty-odd scenarios, and
+        // starting them for the rest was a container plus a `podman inspect`
+        // each, on the critical path of every lab. The need is derived from the
+        // env vector rather than declared by the caller, so there is no second
+        // place to keep in sync: the placeholders below are already how a
+        // scenario asks for a mock's address, and asking for one is the only
+        // reason to have one.
+        let needs_netbox = env.iter().any(|(_, v)| v.contains("NETBOX_IP"));
+        let needs_phpipam = env.iter().any(|(_, v)| v.contains("PHPIPAM_IP"));
+
         let netbox_mock_host = format!("netbox-mock-{}", uuid);
-        let netbox_mock = GenericImage::new("netbox-mock-e2e", "latest")
+        let netbox_request = GenericImage::new("netbox-mock-e2e", "latest")
             .with_network(&network)
             .with_container_name(&netbox_mock_host)
             .with_env_var("CERTBOT_IP", &certbot_ip)
-            .with_env_var("ACMESH_IP", &acmesh_ip)
-            .start()
-            .await
-            .expect("Failed to start netbox-mock");
+            .with_env_var("ACMESH_IP", &acmesh_ip);
 
-        let netbox_ip = Self::get_ip(netbox_mock.id(), &network).await;
-
-        // Started for every lab, exactly as `netbox-mock` is. A second mock per
-        // scenario is a container's worth of startup; if that ever becomes the
-        // problem, both move behind one builder flag together rather than
-        // diverging into two different shapes.
         let phpipam_mock_host = format!("phpipam-mock-{}", uuid);
-        let phpipam_mock = GenericImage::new("phpipam-mock-e2e", "latest")
+        let phpipam_request = GenericImage::new("phpipam-mock-e2e", "latest")
             .with_network(&network)
             .with_container_name(&phpipam_mock_host)
             .with_env_var("CERTBOT_IP", &certbot_ip)
-            .with_env_var("ACMESH_IP", &acmesh_ip)
-            .start()
-            .await
-            .expect("Failed to start phpipam-mock");
+            .with_env_var("ACMESH_IP", &acmesh_ip);
 
-        let phpipam_ip = Self::get_ip(phpipam_mock.id(), &network).await;
-
-        let mut proxy_upstream: Option<ContainerAsync<GenericImage>> = None;
-        let mut proxy_upstream_url: Option<String> = None;
-
-        if let Some(upstream_env) = env_upstream {
+        let upstream_request = env_upstream.map(|upstream_env| {
             let upstream_host = format!("proxy-upstream-{}", uuid);
             let upstream_base_url = format!("http://{}:3000", upstream_host);
             let mut upstream_image = GenericImage::new("acme-proxy-e2e", "latest")
@@ -304,18 +298,27 @@ impl Lab {
                     upstream_image = upstream_image.with_env_var(k, v);
                 }
             }
-            let upstream_container = upstream_image
-                .start()
-                .await
-                .expect("Failed to start proxy upstream");
+            upstream_image
+        });
 
-            let upstream_ip = Self::get_ip(upstream_container.id(), &network).await;
-            let upstream_base_url = format!("http://{}:3000", upstream_ip);
-            let upstream_url = format!("{}/profile/default/directory", upstream_base_url);
+        // None of these three needs another's address — only the four already
+        // started above — so they go up together rather than as three sequential
+        // start/inspect round trips. The proxy is the one container that has to
+        // wait, since its environment names all of them.
+        let (netbox_mock, phpipam_mock, proxy_upstream) = tokio::join!(
+            Self::start_if_wanted(needs_netbox.then_some(netbox_request), "netbox-mock"),
+            Self::start_if_wanted(needs_phpipam.then_some(phpipam_request), "phpipam-mock"),
+            Self::start_if_wanted(upstream_request, "proxy upstream"),
+        );
 
-            proxy_upstream = Some(upstream_container);
-            proxy_upstream_url = Some(upstream_url);
-        }
+        let (netbox_ip, phpipam_ip, upstream_ip) = tokio::join!(
+            Self::get_ip_of(netbox_mock.as_ref(), &network),
+            Self::get_ip_of(phpipam_mock.as_ref(), &network),
+            Self::get_ip_of(proxy_upstream.as_ref(), &network),
+        );
+
+        let proxy_upstream_url =
+            upstream_ip.map(|ip| format!("http://{}:3000/profile/default/directory", ip));
 
         for (k, v) in env {
             if k == "ACME_PROXY_DNS__RESOLVER" && v == "dns:53" {
@@ -329,9 +332,19 @@ impl Lab {
             } else if v.contains("LEGO_IP") {
                 proxy_image = proxy_image.with_env_var(k, v.replace("LEGO_IP", &lego_ip));
             } else if v.contains("NETBOX_IP") {
-                proxy_image = proxy_image.with_env_var(k, v.replace("NETBOX_IP", &netbox_ip));
+                // `needs_netbox` was computed from this same predicate, so the
+                // mock is running. The `expect` is here so that a future change
+                // separating the two fails loudly instead of substituting an
+                // empty host into a URL.
+                let ip = netbox_ip
+                    .as_deref()
+                    .expect("a NETBOX_IP placeholder with no netbox-mock started");
+                proxy_image = proxy_image.with_env_var(k, v.replace("NETBOX_IP", ip));
             } else if v.contains("PHPIPAM_IP") {
-                proxy_image = proxy_image.with_env_var(k, v.replace("PHPIPAM_IP", &phpipam_ip));
+                let ip = phpipam_ip
+                    .as_deref()
+                    .expect("a PHPIPAM_IP placeholder with no phpipam-mock started");
+                proxy_image = proxy_image.with_env_var(k, v.replace("PHPIPAM_IP", ip));
             } else if v.contains("UPSTREAM_URL") {
                 if let Some(ref url) = proxy_upstream_url {
                     proxy_image = proxy_image.with_env_var(k, v.replace("UPSTREAM_URL", url));
@@ -359,11 +372,39 @@ impl Lab {
             certbot,
             acme_sh,
             lego,
-            netbox_mock: Some(netbox_mock),
-            phpipam_mock: Some(phpipam_mock),
+            netbox_mock,
+            phpipam_mock,
             proxy_upstream,
             proxy_url: proxy_url_with_path,
             proxy_upstream_url,
+        }
+    }
+
+    /// Starts `request` when there is one, so that a container a scenario has
+    /// no use for costs nothing rather than a start and an inspect. Returning
+    /// the same `Option` the `Lab` field already holds is what lets the three
+    /// optional containers go up in one `tokio::join!`.
+    async fn start_if_wanted(
+        request: Option<ContainerRequest<GenericImage>>,
+        what: &str,
+    ) -> Option<ContainerAsync<GenericImage>> {
+        let request = request?;
+        Some(
+            request
+                .start()
+                .await
+                .unwrap_or_else(|error| panic!("Failed to start {}: {}", what, error)),
+        )
+    }
+
+    /// [`Lab::get_ip`] for a container that may not exist.
+    async fn get_ip_of(
+        container: Option<&ContainerAsync<GenericImage>>,
+        network: &str,
+    ) -> Option<String> {
+        match container {
+            Some(container) => Some(Self::get_ip(container.id(), network).await),
+            None => None,
         }
     }
 

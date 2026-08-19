@@ -48,9 +48,9 @@ cargo test --test e2e -- --ignored                      # or plain cargo test
 Every test in this suite is `#[ignore]`d, so a plain `cargo nextest run`/
 `cargo test` skips all of them — `-E 'binary(e2e)' --run-ignored all` (or
 `--test e2e -- --ignored` with plain `cargo test`) is required to actually
-run them. Not run by CI (`.github/workflows/ci.yml` runs neither flag) — this
-is a manual check, driven by a real container runtime the CI environment
-doesn't provide.
+run them. CI runs only the three challenge scenarios, and only nightly (the
+`e2e` job in `.github/workflows/ci.yml`, `if: github.event_name == 'schedule'`);
+everything else here is a manual check.
 
 The first run of any test builds seven images (`bind-e2e`, `acme-proxy-e2e`,
 `netbox-mock-e2e`, `phpipam-mock-e2e`, `certbot-e2e`, `acmesh-e2e`,
@@ -64,16 +64,48 @@ down when the test's `Lab` is dropped.
 Because `ensure_images_built`'s skip guard is keyed on `NEXTEST_RUN_ID` (a
 fresh id every run — see its comment), the seven `build` commands are reissued
 on *every* invocation, not just the first ever; whether anything actually
-recompiles is entirely down to the container engine's own layer cache. The
-three images that compile Rust (`acme-proxy-e2e` from the root
-`Containerfile`, `netbox-mock-e2e` and `phpipam-mock-e2e` from their own) use
-a
-[`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) three-stage split
-(`chef` → `planner` → `builder`) so the dependency-compilation layer is keyed
-on `Cargo.toml`/`Cargo.lock` content alone, not the whole source tree — a
-source-only edit leaves that layer cached and only re-runs the fast
-single-crate final build, instead of recompiling every dependency crate from
-scratch on every run. Every stage in every Containerfile under this
+recompiles is entirely down to the container engine's own layer cache. Three
+of the images compile Rust, and they do it two different ways.
+
+`acme-proxy-e2e`, from the root `Containerfile`, is the one on the inner loop —
+it rebuilds whenever the crate changes, which is most of the time — so it is
+the one that got tuned. Three things keep it cheap, and all three are needed:
+
+- **The build context is an allowlist.** The root `.dockerignore` admits
+  `Cargo.toml`, `Cargo.lock`, `src/` and `migrations/`, and nothing else. It
+  used to be a blocklist of nine paths, which let `doc/`, `CHANGELOG.md`,
+  `CLAUDE.md` and `config.toml.example` through — so editing prose invalidated
+  `COPY . .` and forced a full recompile. Adding a file the build genuinely
+  needs means adding a `!` line there.
+- **`RUN --mount=type=cache`** keeps the cargo registry and `target/` across
+  builds. `COPY . .` invalidates its own layer on any source change, so
+  anything living *in* a layer starts from nothing every time; a cache mount
+  does not, which is what makes the rebuild incremental. This replaced a
+  four-stage [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef)
+  split, which cached the *dependency* build and left the crate's own build —
+  the expensive half, at roughly two minutes of fat-LTO relink — uncached.
+  A persistent `target/` subsumes what chef was buying. Note this needs
+  BuildKit if you point `CONTAINER_RUNTIME` at docker with the legacy builder.
+- **`--profile e2e`** (`[profile.e2e]` in the root `Cargo.toml`) is release
+  without fat LTO and with 16 codegen units. `opt-level` stays at 3, because
+  `challenge.timeout_ms` and friends are real budgets these scenarios run
+  against.
+
+Measured on a 20-core host: ~2m10s from a completely cold cache (every
+dependency compiled), ~7s after a source change — the crate is a single
+compilation unit, so that is a full recompile of it, just an incremental,
+non-LTO one — and ~3s, an all-layers-cached no-op, after a documentation
+change. The arrangement this replaced spent ~2m15s on the last of those
+three. End to end, the 34 scenarios run in about 50 seconds against warm
+images; they took roughly seven minutes before this and the `certbot renew`
+sleep below were dealt with.
+
+`netbox-mock-e2e` and `phpipam-mock-e2e` keep the plain cargo-chef split.
+They are two-file crates whose sources change about once a quarter, so the
+inner-loop problem does not apply; what did apply to them was the build
+context, and `tests/e2e/.dockerignore` now keeps `netbox-mock/target`
+(128 MB, and `COPY`ed into the image twice) out of a context that six of the
+seven builds ship. Every stage in every Containerfile under this
 directory (and the root one) is `FROM debian:trixie-slim` on purpose, with no
 upstream language images and no third-party images — keep it that way rather
 than reaching for `rust:*`/`golang:*`/`alpine:*`/`lukemathwalker/cargo-chef:*`
@@ -97,9 +129,17 @@ already uses for `lego` itself (see "key_change.rs" below).
   active rather than starting it itself — and builds all seven images once
   per run behind the flock described above.
 - **`Lab::new(env)`** starts a dedicated bridge network plus `dns`,
-  `acme-proxy`, `certbot`, `acme-sh`, `lego`, `netbox-mock` and
-  `phpipam-mock` containers. Both mocks start for every lab, so a scenario
-  picks its inventory purely through `ipam.backend`.
+  `acme-proxy`, `certbot`, `acme-sh` and `lego` containers, and — only when
+  the scenario asks for one — `netbox-mock` and `phpipam-mock`. "Asks for one"
+  means some value in `env` contains the `NETBOX_IP`/`PHPIPAM_IP` placeholder,
+  which is already the only way a scenario can reach a mock's address; the
+  need is derived from that rather than declared separately, so there is no
+  second list to forget. Four of the scenarios want an inventory and the rest
+  no longer pay a container and a `podman inspect` each for two they never
+  talk to. Whatever is wanted — the mocks and, under `new_with_upstream`, the
+  second `acme-proxy` — starts in a single `tokio::join!`, since none of them
+  needs another's address; the proxy is the one container that has to wait,
+  because its environment names all of them.
   `env` is a list of `ACME_PROXY_*` environment variables passed straight to
   the `acme-proxy` container — every scenario knob (`challenge.enabled`,
   `challenge.bypass`, `eab.enabled`, `dns.resolver`, `server.tls.enabled`,
@@ -133,7 +173,14 @@ already uses for `lego` itself (see "key_change.rs" below).
 ## What each scenario proves
 
 - **`certbot.rs`** — the full account lifecycle through certbot: register,
-  show account, order, revoke, unregister (deactivate).
+  show account, order, revoke, renew, unregister (deactivate). The renew
+  scenario passes **`--no-random-sleep-on-renew`**, which is mandatory rather
+  than tidy: certbot's renew path sleeps `random.uniform(1, 60 * 8)` — one to
+  eight minutes — whenever `sys.stdin.isatty()` is false, and it never is
+  under `podman exec`. That is there to spread real clients across Let's
+  Encrypt and buys nothing against a CA in a container on the same host.
+  Unnoticed, it averaged four minutes and made the suite's total a coin flip;
+  any new `certbot renew` call site needs the same flag.
 - **`acme_sh.rs`** — the same lifecycle through acme.sh: register, order,
   update account contact, deactivate account.
 - **`http_01.rs`** / **`dns_01.rs`** / **`tls_alpn_01.rs`** — real challenge

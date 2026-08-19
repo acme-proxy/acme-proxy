@@ -155,3 +155,20 @@ testcontainers = "0.27.3"
 lto = true
 codegen-units = 1
 strip = true
+
+# The binary the e2e lab (tests/e2e/) runs in a container, built by the root
+# `Containerfile`. The lab needs something that *behaves* like the release build,
+# not one optimised for distribution: fat LTO plus `codegen-units = 1` cost ~2
+# minutes of relink for every source change, inside a container image that a
+# developer rebuilds on every iteration, and bought the lab nothing.
+#
+# `opt-level` stays at release's 3 on purpose. `challenge.timeout_ms` (5 s) and
+# the `request_timeout_ms > challenge.timeout_ms` rule are real budgets the lab
+# runs against, so a debug-speed `ring`/`rustls` would make the scenarios flakier
+# rather than faster. `incremental` is what makes the `Containerfile`'s cache
+# mount over `target/` pay off on the second build.
+[profile.e2e]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

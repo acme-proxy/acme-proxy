@@ -199,10 +199,17 @@ async fn test_certbot_renew() {
         CERT_PATH=/tmp/certbot/config/live/example.com/cert.pem
         cp "$CERT_PATH" /tmp/first.pem
 
+        # `--no-random-sleep-on-renew` is not a nicety. certbot's renew path
+        # applies `random.uniform(1, 60 * 8)` — a one-to-eight-minute sleep —
+        # whenever `sys.stdin.isatty()` is false, which it always is under
+        # `podman exec`. It exists to spread load across Let's Encrypt's real
+        # clients and does nothing for a CA in a container on this host. Left
+        # in, this single line averaged four minutes and made the whole suite's
+        # wall time a coin flip.
         certbot renew \
             --server {0} \
             --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
-            --non-interactive --force-renewal \
+            --non-interactive --force-renewal --no-random-sleep-on-renew \
             --webroot --webroot-path /tmp/webroot
 
         python3 - /tmp/first.pem "$CERT_PATH" <<PYEOF

@@ -1,9 +1,25 @@
-target/
-sqlite.db*
-*.key
-ca.pem
-ca.crl
-server.pem
-config.toml
-tests/e2e/
-.git/
+# Build context for the root `Containerfile` (the e2e lab's acme-proxy image).
+#
+# An allowlist, not a blocklist. The blocklist this replaced named nine paths and
+# was wrong in both directions: it let `doc/` (12 MB), `CHANGELOG.md`, `CLAUDE.md`,
+# `config.toml.example` and `rfc/` into the context, so editing prose invalidated
+# `COPY . .` and forced a full rebuild of the crate; and `*.key`/`ca.pem` match
+# only at the root, so `data/ca.key`, `data/ca.pem` and `data/sqlite.db` were
+# copied into a build layer. A blocklist has to be extended for every directory
+# the repository grows; this does not.
+#
+# What `cargo build` actually reads:
+#   Cargo.toml / Cargo.lock  — the manifest and the pinned graph (`--locked`)
+#   src/                     — including the assets `include_str!`ed from it
+#                              (src/webadmin/static/, src/webadmin/templates/,
+#                              src/notify/templates/)
+#   migrations/              — `sqlx::migrate!()` in src/sqlite/db.rs
+#
+# `tests/` is deliberately absent: the only thing outside `src/` it is reached for
+# is `tests/fixtures/rsa_test_key.pk8`, `include_bytes!`d from the `#[cfg(test)]`
+# module in src/extractors/signature.rs, which a non-test build never compiles.
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!migrations/
