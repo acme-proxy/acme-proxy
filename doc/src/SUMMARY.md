@@ -58,6 +58,7 @@
   - [Custom Script](notifications/custom.md)
 - [Audit Trail](operations/audit.md)
 - [Monitoring & Observability](operations/monitoring.md)
+  - [Grafana Dashboard](operations/grafana.md)
 - [Maintenance & Troubleshooting](operations/troubleshooting.md)
 
 # Security

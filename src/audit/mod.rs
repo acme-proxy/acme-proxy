@@ -373,10 +373,10 @@ pub struct Auditor {
     ptr_timeout: Duration,
     /// The process's Prometheus counters.
     ///
-    /// `None` in the tests and the CLI paths that build an auditor without a
-    /// serving process behind it — a counter nothing will ever scrape is not
-    /// worth a constructor argument at every call site. The serving path always
-    /// supplies one.
+    /// `None` only for an auditor built through [`Auditor::with_resolver`],
+    /// which is test scaffolding. The serving path goes through
+    /// [`Auditor::from_config`], where it is a **required argument** rather
+    /// than a builder step — see that constructor.
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
@@ -396,10 +396,19 @@ impl Auditor {
     /// is per-profile and built only when the filter is enabled, and reaching
     /// across for it would tie the audit trail's completeness to whether an
     /// unrelated filter happens to be switched on.
+    /// `metrics` is a required argument and deliberately not a builder step.
+    /// It was one, briefly, and the omission it invited happened immediately:
+    /// the serving path built its auditor without ever calling the builder, so
+    /// `acme_proxy_certificates_issued_total` stayed at zero in production
+    /// while every test passed — the test harness wired the registry itself, so
+    /// what the tests proved was the harness's wiring and not the server's. A
+    /// parameter cannot be forgotten. Test scaffolding that genuinely has no
+    /// registry uses [`Auditor::with_resolver`] instead.
     pub fn from_config(
         cfg: &AuditConfig,
         dns: &DnsConfig,
         database: Arc<Database>,
+        metrics: Arc<crate::metrics::Metrics>,
     ) -> anyhow::Result<Self> {
         let resolver: Option<Arc<dyn Resolver>> = if cfg.reverse_dns {
             Some(Arc::new(match resolver_addr(dns)? {
@@ -422,9 +431,7 @@ impl Auditor {
             database,
             resolver,
             ptr_timeout: Duration::from_millis(cfg.reverse_dns_timeout_ms),
-            // Attached by the serving path through `with_metrics`; `[audit]`
-            // and `[metrics]` are independent switches.
-            metrics: None,
+            metrics: Some(metrics),
         })
     }
 
@@ -487,12 +494,13 @@ impl Auditor {
         }
     }
 
-    /// Attaches the Prometheus registry this auditor counts through.
+    /// Attaches the Prometheus registry to an auditor built by
+    /// [`Auditor::with_resolver`].
     ///
-    /// A builder step rather than a `from_config` argument because `[audit]`
-    /// and `[metrics]` are independent: the trail is written whether or not
-    /// anything is being scraped, and every test that only wants an auditor
-    /// should not have to build a registry to get one.
+    /// Exists for the test harness, which builds its auditor with a stub
+    /// resolver and still wants the counters. The serving path does **not** use
+    /// this — [`Auditor::from_config`] takes the registry as a parameter, so it
+    /// cannot be left off.
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
         self.metrics = Some(metrics);

@@ -149,12 +149,16 @@
 //!     }
 //!     // Process-wide, like `[audit]` itself: one trail for the whole CA,
 //!     // shared by every profile's router and by the web admin listener.
-//!     let audit = Arc::new(
-//!         acme_proxy::audit::Auditor::from_config(&config.audit, &config.dns, database.clone())?
-//!             // The counters come off the same `AuditRecord` the trail is
-//!             // written from, so the two can never disagree.
-//!             .with_metrics(metrics.clone()),
-//!     );
+//!     // The registry is a parameter rather than a builder step, so a serving
+//!     // process cannot build an auditor that counts into nothing. The counters
+//!     // come off the same `AuditRecord` the trail is written from, so the two
+//!     // can never disagree.
+//!     let audit = Arc::new(acme_proxy::audit::Auditor::from_config(
+//!         &config.audit,
+//!         &config.dns,
+//!         database.clone(),
+//!         metrics.clone(),
+//!     )?);
 //!     let app = build_app(
 //!         database.clone(),
 //!         config.clone(),

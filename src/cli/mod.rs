@@ -812,10 +812,18 @@ pub(crate) fn build_generation(
     // here rather than in `Profile::build_all` for exactly that reason — it is
     // not a per-endpoint subsystem.
     let auditor = Arc::new(
-        crate::audit::Auditor::from_config(&config.audit, &config.dns, database.clone())
-            .inspect_err(|error| {
-                error!(event = "audit_init_failed", outcome = "failure", error = %error);
-            })?,
+        crate::audit::Auditor::from_config(
+            &config.audit,
+            &config.dns,
+            database.clone(),
+            // The registry the certificate counters land in. Carried by
+            // `Assembly`, so it is the same one across every generation and the
+            // same one `metrics_app` serves from.
+            assembly.metrics.clone(),
+        )
+        .inspect_err(|error| {
+            error!(event = "audit_init_failed", outcome = "failure", error = %error);
+        })?,
     );
 
     // Built **before** `build_app`, which consumes `profiles`. The admin state

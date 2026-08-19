@@ -359,6 +359,20 @@ migrated configuration before restarting.
 
 ### Added
 
+- **A Grafana dashboard**, at `dashboards/acme-proxy.json`. Twelve panels over
+  the four metric families: issuance and its refusals by ACME problem type,
+  request rate by route and status, the 5xx share, shed requests, unmatched
+  paths, and the SQLite pool. Import it and adapt it — it is a starting point,
+  not a fixed artifact. See `doc/src/operations/grafana.md`.
+
+  Two properties an operator cannot infer from the exposition alone are encoded
+  in it: `route` is a matched route *pattern*, so grouping by it is bounded,
+  and the pool gauge carries no `profile` label, so the dashboard-wide profile
+  filter must not be applied to it. `tests/grafana_dashboard.rs` fails the build
+  if a queried metric stops being emitted, if an emitted family is missing from
+  the dashboard, or if the pool panels ever grow that filter — with the metric
+  names read from a rendered registry rather than a hand-maintained list.
+
 - **A Prometheus `/metrics` endpoint, on a listener of its own.** Off by
   default, configured by the new `[metrics]` section (`enabled`,
   `bind_address`, defaulting to `127.0.0.1:3002`). Until now the only way to
@@ -391,6 +405,12 @@ migrated configuration before restarting.
   `SIGHUP` refuses the reload by name rather than applying half of it. The
   counters themselves *survive* a reload: a rebuilt registry would zero them,
   which `rate()` reads as a process restart.
+
+  `Auditor::from_config` takes the registry as a **parameter** rather than
+  through a builder, because the builder was forgotten on the serving path the
+  first time round: the certificate counters stayed at zero in production while
+  the suite passed, since the test harness wired the registry itself and so
+  proved its own wiring rather than the server's.
 
 - **`GET /ca.pem` serves the profile's trust anchor**, beside `GET /crl` and
   routed the same way: per-profile, unauthenticated, and deliberately not

@@ -108,6 +108,9 @@ scrape_configs:
       - targets: ['ca.internal:3002']
 ```
 
+A dashboard over all four families ships in the repository — see
+[Grafana Dashboard](grafana.md).
+
 ## Logging
 
 `acme-proxy` uses the `tracing` crate, configured by the six keys in

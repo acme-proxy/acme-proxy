@@ -52,6 +52,10 @@ async fn auditor(resolver: Option<Arc<dyn Resolver>>) -> Auditor {
     Auditor::with_resolver(database, resolver, Duration::from_millis(50))
 }
 
+fn metrics(database: Arc<Database>) -> Arc<crate::metrics::Metrics> {
+    Arc::new(crate::metrics::Metrics::new(database))
+}
+
 fn ip(value: &str) -> IpAddr {
     value.parse().unwrap()
 }
@@ -300,6 +304,7 @@ async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
         },
         &dns,
         database.clone(),
+        metrics(database.clone()),
     )
     .unwrap();
     assert!(format!("{off:?}").contains("reverse_dns: false"));
@@ -318,14 +323,64 @@ async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
             resolver: Some("127.0.0.1:5399".to_string()),
         },
         database.clone(),
+        metrics(database.clone()),
     )
     .unwrap();
     assert!(format!("{on:?}").contains("reverse_dns: true"));
 
     // The default `[dns]` path — the system configuration — is the one a real
     // deployment takes.
-    let system = Auditor::from_config(&AuditConfig::default(), &dns, database).unwrap();
+    let system = Auditor::from_config(
+        &AuditConfig::default(),
+        &dns,
+        database.clone(),
+        metrics(database),
+    )
+    .unwrap();
     assert!(format!("{system:?}").contains("reverse_dns: true"));
+}
+
+/// An auditor built the way the serving path builds one counts into the
+/// registry it was given.
+///
+/// The regression test for a bug that shipped: the registry used to arrive
+/// through a `with_metrics` builder, the serving path never called it, and
+/// `acme_proxy_certificates_issued_total` therefore stayed at zero in
+/// production while the whole suite passed — because the test harness wired
+/// the registry itself, so what was under test was the harness rather than the
+/// server. It is a constructor argument now, which makes the omission a
+/// compile error; this pins the other half, that the argument is actually
+/// used.
+#[tokio::test]
+async fn from_config_counts_into_the_registry_it_was_given() {
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    let registry = metrics(database.clone());
+    let auditor = Auditor::from_config(
+        &AuditConfig {
+            reverse_dns: false,
+            ..AuditConfig::default()
+        },
+        &crate::config::DnsConfig::default(),
+        database,
+        registry.clone(),
+    )
+    .unwrap();
+
+    auditor
+        .record(AuditRecord::new(
+            AuditEvent::CertificateIssued,
+            "default",
+            Actor::acme("acct-1"),
+        ))
+        .await;
+
+    assert!(
+        registry
+            .render()
+            .contains("acme_proxy_certificates_issued_total{profile=\"default\"} 1\n"),
+        "the audit write did not reach the registry:\n{}",
+        registry.render()
+    );
 }
 
 /// A write against a closed pool is logged and swallowed: a certificate this CA
