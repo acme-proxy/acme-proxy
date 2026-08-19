@@ -12,8 +12,28 @@ roots are already trusted everywhere.
 
 ## Getting the root certificate
 
-The CA certificate is the file at `signer.local_ca.cert_path`, `ca.pem` by
-default, in the server's working directory. Copy it from the server:
+Each profile serves its own CA material unauthenticated at
+`{base_url}/profile/<name>/ca.pem`, as `application/x-pem-file`:
+
+```bash
+curl -o internal-root.pem https://acme.internal/profile/default/ca.pem
+```
+
+These are exactly the bytes appended to every certificate that profile issues,
+so a client that fetches them here and one that reads the tail of its own chain
+end up trusting the same anchor.
+
+Two things worth knowing about the route. It is **not advertised in the ACME
+directory** — it is CA infrastructure rather than an ACME resource, so a client
+will not find it on its own and you distribute the URL yourself. And it is
+served *inside* the profile router, which means it sits **behind that profile's
+filter policy**: if you restrict the endpoint by address, the hosts that most
+need the root — the ones that do not have it yet — may be exactly the ones
+refused. Add a [`path` check](../filters/path.md) allowing `/ca.pem` if so.
+
+The same file is on the server's disk at `signer.local_ca.cert_path`, `ca.pem`
+by default in the working directory, which is the way to get it when the server
+is not reachable or is not running:
 
 ```bash
 scp acme-host:/var/lib/acme-proxy/ca.pem ./internal-root.pem
@@ -114,10 +134,12 @@ curl -o internal.crl https://acme.internal/profile/default/crl
 openssl crl -in internal.crl -inform DER -noout -text
 ```
 
-Note the CRL is not advertised in the ACME directory, and issued certificates do
-not currently carry a CRL distribution point extension — so a client will not
-find it automatically. Distribute the URL alongside the root if your validation
-policy needs it. See [Revocation & CRL](../operations/revocation.md).
+Like `/ca.pem`, the CRL is not advertised in the ACME directory and sits behind
+the profile's filter policy. Issued certificates carry a CRL distribution point
+only when you set `signer.local_ca.crl_distribution_points`; leave it unset and
+a client will not find the CRL automatically, so distribute the URL alongside
+the root if your validation policy needs it. See
+[Revocation & CRL](../operations/revocation.md).
 
 ## Planning ahead
 

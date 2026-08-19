@@ -100,13 +100,6 @@ keeps its corpses stops being read.
 
 ## Signers — local CA
 
-- [ ] **Serve the CA material for client bootstrap** — `GET /ca.pem`, and the
-      chain, beside `/crl`, so installing the trust anchor is one `curl`. Same
-      routing answer as `/crl`: per-profile (each profile has its own signer),
-      unauthenticated, and deliberately not advertised in the directory. Note
-      it is still not what `signer.local_ca.ca_issuer_urls` should point at by
-      default, for the reason that key is operator-named at all: the route sits
-      inside the profile router, behind that profile's filter policy.
 - [ ] **Drop expired certificates from the CRL.** The ledger behind
       `local_ca/crl.rs` grows for ever; RFC 5280 §3.3 permits removing an entry
       once the certificate itself has expired. The ledger stores serials only,

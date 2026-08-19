@@ -30,6 +30,7 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/revokeCert` | `POST` | §7.6 | yes | [Revocation & CRL](../operations/revocation.md). |
 | `/renewalInfo/{certID}` | `GET` | RFC 9773 §4.1 | yes | Unauthenticated. Advertised **without** the id — §4.1 has the client append it. |
 | `/crl` | `GET` | RFC 5280 | **no** | Routed but not advertised: a CRL is CA infrastructure, not an ACME resource. |
+| `/ca.pem` | `GET` | — | **no** | The profile's trust anchor, so installing it is one `curl`. `404` unless the backend has one of its own. Not advertised, for the same reason as `/crl`. See [Trusting the CA](../getting_started/trusting_the_ca.md). |
 
 Two paths sit outside every profile, on the root router:
 
@@ -54,8 +55,8 @@ rejected on several names comes back as one `compound` problem with a
 type, unwrapped.
 
 **A `POST` always carries a fresh `Replay-Nonce`**, errors included (§6.5). `GET
-/directory`, `GET /crl` and `GET /renewalInfo` do not mint one — nothing asks
-them to, and each nonce is a committed database write.
+/directory`, `GET /crl`, `GET /ca.pem` and `GET /renewalInfo` do not mint one —
+nothing asks them to, and each nonce is a committed database write.
 
 ## Extensions
 

@@ -72,12 +72,15 @@ async fn directory_lists_only_routed_endpoints() {
     ] {
         assert!(json.get(key).is_some(), "directory is missing `{key}`");
     }
-    // `crl` is deliberately never advertised — it is CA infrastructure, not
-    // an ACME resource (see tests/crl.rs).
-    assert!(
-        json.get("crl").is_none(),
-        "directory should not advertise unrouted `crl`"
-    );
+    // `crl` and `ca.pem` are deliberately never advertised — both are CA
+    // infrastructure, not ACME resources, and §7.1.1 defines no member either
+    // could go under (see tests/crl.rs and tests/ca_chain.rs).
+    for key in ["crl", "ca.pem", "caChain"] {
+        assert!(
+            json.get(key).is_none(),
+            "directory should not advertise unrouted `{key}`"
+        );
+    }
 }
 
 /// Every path the directory advertises is a path the router actually mounts.
@@ -343,7 +346,12 @@ async fn only_the_responses_rfc8555_asks_for_carry_a_replay_nonce() {
     );
 
     // And nothing else does.
-    for path in [p("/directory"), p("/crl"), p("/no-such-resource")] {
+    for path in [
+        p("/directory"),
+        p("/crl"),
+        p("/ca.pem"),
+        p("/no-such-resource"),
+    ] {
         let res = app
             .clone()
             .oneshot(Request::get(&path).body(Body::empty()).unwrap())

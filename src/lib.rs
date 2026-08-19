@@ -253,6 +253,10 @@ pub mod routes {
     /// advertises this bare while the router mounts `{id}` under it.
     pub const RENEWAL_INFO: &str = "/renewalInfo";
     pub const CRL: &str = "/crl";
+    /// The trust anchor a client installs to accept this profile's leaves.
+    /// Routed beside [`CRL`] and, like it, deliberately not advertised in the
+    /// directory — both are CA infrastructure rather than ACME resources.
+    pub const CA_CHAIN: &str = "/ca.pem";
 }
 
 /// The URL namespace every ACME endpoint is mounted under: a profile named
@@ -832,6 +836,7 @@ pub fn build_router(
             get(handlers::get_renewal_info),
         )
         .route(routes::CRL, get(handlers::get_crl))
+        .route(routes::CA_CHAIN, get(handlers::get_ca_chain))
         // §6.3: "if the server receives a GET request, it MUST return an error
         // with status code 405 (Method Not Allowed) and type `malformed`".
         // axum's own default gets the status right but sends an empty body, so

@@ -295,3 +295,25 @@ pub async fn get_crl(State(state): State<AppState>) -> Response {
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
+
+/// Serves the certificates a client must trust to accept what this profile
+/// issues, PEM encoded — the trust anchor, so installing it is one `curl`
+/// rather than finding a file on the server's disk.
+///
+/// Unauthenticated and deliberately **not advertised in the directory**, the
+/// same answer `GET /crl` already settled: this is CA infrastructure, not an
+/// ACME resource, and RFC 8555 §7.1.1 defines no member to advertise it under.
+///
+/// `404` when the backend has no anchor of its own to hand out — a delegating
+/// backend's anchor belongs to the CA it defers to, and inventing one here
+/// would be worse than saying nothing.
+#[instrument(name = "get_ca_chain", skip_all)]
+pub async fn get_ca_chain(State(state): State<AppState>) -> Response {
+    match state.profile.signer.ca_chain_pem().await {
+        // `application/x-pem-file` rather than `application/pem-certificate-chain`
+        // (RFC 8555 §7.4.2): that media type names an *end-entity* chain, leaf
+        // first, which is the opposite of what this is.
+        Some(pem) => ([(header::CONTENT_TYPE, "application/x-pem-file")], pem).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}

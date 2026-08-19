@@ -173,6 +173,24 @@ pub trait SignerBackend: Send + Sync {
         None
     }
 
+    /// The certificates a client needs to trust what this backend issues, PEM
+    /// encoded, anchor last — served unauthenticated at `GET /ca.pem`.
+    ///
+    /// `None` means the backend has no trust anchor of its own to hand out, and
+    /// the route answers `404`. That is the honest answer for both delegating
+    /// backends: [`relay`]'s anchor belongs to the upstream CA and is published
+    /// wherever that CA chooses, and a `custom` script's is wherever its
+    /// operator put it. Only [`local_ca::LocalCa`] overrides this, which is
+    /// also the only backend that generates an anchor nothing else knows about
+    /// — the case where "fetch it over HTTP" is the difference between one
+    /// `curl` and finding a file on the server's disk.
+    ///
+    /// A getter on the trait for the same reason
+    /// [`crl_der`](SignerBackend::crl_der) is one.
+    async fn ca_chain_pem(&self) -> Option<String> {
+        None
+    }
+
     /// The backend's opinion on when `cert_der` should be renewed (ACME
     /// Renewal Information, RFC 9773) — the same
     /// [`RenewalWindow`] [`crate::handlers::calculate_suggested_window`]

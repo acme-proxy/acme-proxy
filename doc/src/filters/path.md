@@ -17,13 +17,16 @@ Connection stage only. By the identifier stage the path is always `/newOrder` or
 `/finalize/{id}`, so a rule combining this with a name check would be asking a
 question with a constant answer.
 
-## The `/crl` trap
+## The `/crl` and `/ca.pem` trap
 
-**`/crl` is served by the profile router**, which means it sits behind the
+**Both are served by the profile router**, which means they sit behind the
 filter policy exactly like `/newOrder` does. Turn on an address-based check
-without accounting for it and every relying party outside your allowlist
-silently loses revocation checking — and relying parties are precisely *not* the
-ACME clients you allowlisted.
+without accounting for them and two things break quietly:
+
+- every relying party outside your allowlist loses revocation checking, and
+  relying parties are precisely *not* the ACME clients you allowlisted;
+- a host that has not installed the root yet cannot fetch it — which is the one
+  moment it needs to, and the refusal looks like the CA being down.
 
 So any address-based policy wants a companion rule:
 
@@ -33,7 +36,7 @@ rules = ["public", "mgmt-only"]
 
 [filter.check.public-paths]
 type  = "path"
-allow = ["/crl"]
+allow = ["/crl", "/ca.pem"]
 
 [filter.check.mgmt-net]
 type  = "allowed_ip"
@@ -48,7 +51,7 @@ when = "mgmt-net"
 then = "allow"
 ```
 
-Because `public` comes first and first match wins, `/crl` is served to anyone
+Because `public` comes first and first match wins, both are served to anyone
 while everything else still requires the management network.
 
 Server-level routes — `GET /health`, `GET /`, and the `http-01` responder — are

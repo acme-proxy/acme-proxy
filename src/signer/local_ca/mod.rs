@@ -619,6 +619,17 @@ impl SignerBackend for LocalCa {
     async fn crl_der(&self) -> Option<Vec<u8>> {
         Some(self.revoked.lock().await.crl_der.clone())
     }
+
+    /// This CA's own certificate — the anchor, and the whole chain, since a
+    /// `LocalCa` is a single self-signed root with `pathLenConstraint: 0` and
+    /// there is nothing between it and a leaf.
+    ///
+    /// The same string `issue` appends to every leaf it signs, so what a client
+    /// installs from `/ca.pem` is byte-identical to what it already received in
+    /// its certificate chain.
+    async fn ca_chain_pem(&self) -> Option<String> {
+        Some(self.ca_pem.clone())
+    }
 }
 
 #[cfg(test)]

@@ -31,10 +31,12 @@ decision from you are marked **decide**.
       client that should be served and one that should not. A policy is easier
       to get subtly wrong than a list.
       → [CLI](../operations/cli.md#access-policy)
-- [ ] **`/crl` is still reachable** if any check is address-based. It is served
-      by the profile router, so an allowlist covers it too, and the relying
-      parties that fetch it are not the ACME clients you allowlisted.
-      → [Path Check](../filters/path.md#the-crl-trap)
+- [ ] **`/crl` and `/ca.pem` are still reachable** if any check is
+      address-based. Both are served by the profile router, so an allowlist
+      covers them too — and neither the relying parties that fetch the CRL nor
+      the hosts that have yet to install the root are the ACME clients you
+      allowlisted.
+      → [Path Check](../filters/path.md#the-crl-and-capem-trap)
 
 ### An `or` is a hole you opened deliberately
 

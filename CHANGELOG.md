@@ -359,6 +359,20 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`GET /ca.pem` serves the profile's trust anchor**, beside `GET /crl` and
+  routed the same way: per-profile, unauthenticated, and deliberately not
+  advertised in the directory, since it is CA infrastructure rather than an
+  ACME resource. Installing the root a `local_ca` profile generated was
+  previously a matter of finding the file on the server's disk; it is now one
+  `curl`, and the bytes served are exactly the ones already appended to every
+  chain that profile issues.
+
+  A backend with no anchor of its own answers `404` — that is both delegating
+  backends, whose anchor belongs to the CA they defer to. Note the route sits
+  inside the profile router and so is subject to that profile's filter policy,
+  which is the trap `doc/src/filters/path.md` already describes for `/crl` and
+  now covers for both.
+
 - **The access line names the client.** The server-wide `request` span gained a
   `client_ip` field, so an ordinary request finally says who connected —
   previously only audit rows and a few targeted lines did. It is seeded from
