@@ -85,13 +85,6 @@ keeps its corpses stops being read.
       resolved origin an RP id would come from. The open choice is that
       dependency versus hand-rolling COSE/CBOR on `ring` + `ciborium`
       (Apache-2.0, already allowed) with attestation `none`.
-- [ ] **Show and offer the issued chain.** `orders/_card.html` renders
-      `order.certificate`, which is the ACME *URL* — reachable only by signed
-      POST-as-GET, so a browser following it gets nothing and the field is a
-      dead string. The PEM is in the `orders.certificate` column already:
-      render it, and add a download route (`/ui/orders/{id}/chain.pem`,
-      `application/pem-certificate-chain` + `Content-Disposition`). A `GET`, so
-      it stays out of `mutating_page_endpoints()`.
 - [ ] **Live view of a pending order** — `hx-trigger="every 5s"` on the order
       fragment, so an operator watches a challenge resolve instead of
       reloading. The fragment route exists already (`HX-Request` picks it);

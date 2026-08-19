@@ -243,13 +243,23 @@ code {
   padding: 0.1em 0.35em;
 }
 
-pre.secret {
+pre.secret,
+pre.pem {
   background: var(--code);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.75rem;
   margin: 0.5rem 0 0;
   overflow-x: auto;
+}
+
+/* A chain is 20-plus lines and is not the point of the page: cap it and let
+   the operator scroll, rather than pushing the danger zone off screen. */
+pre.pem {
+  max-height: 14rem;
+  overflow-y: auto;
+  font-size: 0.85em;
+  margin-bottom: 0.5rem;
 }
 
 a {

@@ -141,7 +141,7 @@ it that needs a session bounces to `/ui/login`.
 |---|---|
 | `/ui/` | Counts for accounts, orders, EAB credentials and nonces, plus the mounted endpoints |
 | `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
-| `/ui/orders` | Every order, filterable by profile, status and account; a detail page shows the authorizations and challenges, and revokes or deletes |
+| `/ui/orders` | Every order, filterable by profile, status and account; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
 | `/ui/eab` | Credentials, minting (the secret is shown **once**) and revocation |
 | `/ui/audit` | The CA's audit trail — every issuance and every refusal, filterable, with a detail page per row. **Read-only**: there is no route here that prunes it |
 | `/ui/nonces` | The table size, and a manual sweep |
@@ -200,7 +200,7 @@ Mounted at `/api`, unversioned. Every response is `application/json` with
 | `POST` | `/api/accounts/{id}/deactivate` | |
 | `DELETE` | `/api/accounts/{id}` | cascades to the account's orders |
 | `GET` | `/api/orders?profile=&accountId=&status=&limit=&offset=` | |
-| `GET` | `/api/orders/{id}` | order + authorizations + challenges |
+| `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
 | `DELETE` | `/api/orders/{id}` | |
 | `GET` | `/api/eab` | never shows a secret |
@@ -234,6 +234,19 @@ a **new** cookie; the pending one is dead by then.
 The two `…/session/mfa` routes are the only mutating endpoints that do not take
 `X-CSRF-Token`. The sign-in page they serve is a plain form with no token to
 send, exactly as `POST /api/session` has none, and the origin check covers both.
+
+### The issued chain
+
+An order's detail carries `certificatePem`, the chain as it was issued, and the
+order page renders it with a **`GET /ui/orders/{id}/chain.pem`** download
+(`application/pem-certificate-chain`). The ACME `certificate` member beside it
+is a *URL*, and one a browser cannot follow — RFC 8555 §7.4.2 serves it by
+signed POST-as-GET only, so it is there for completeness rather than as a link.
+
+`certificatePem` is on the **detail** shape only, never on a listing: a page of
+fifty orders would otherwise carry fifty chains for a column no list shows. An
+order that never reached issuance has neither the field nor the download, and
+the route answers `404` rather than an empty file.
 
 ### Revocation
 

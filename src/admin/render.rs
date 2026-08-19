@@ -285,11 +285,23 @@ pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
         .iter()
         .map(|(a, c)| a.to_json(&profile_base, c))
         .collect();
+    let mut order = render_order_json(&detail.order, base_url, &authz_ids);
+    // The issued chain itself, admin-only and **detail-only**.
+    //
+    // `certificate` beside it is the ACME *URL*, reachable only by signed
+    // POST-as-GET — a browser following it gets nothing, so on its own it is a
+    // dead string on the order card. The PEM is the thing an operator actually
+    // wants, and it is already in the row.
+    //
+    // Deliberately not in `render_order_json`, which also renders every row of
+    // every listing: a page of fifty orders would carry fifty chains for a
+    // field no list can show.
+    if let (Some(object), Some(pem)) = (order.as_object_mut(), detail.order.certificate.as_ref()) {
+        object.insert("certificatePem".to_string(), Value::String(pem.clone()));
+    }
+
     let mut root = serde_json::Map::new();
-    root.insert(
-        "order".to_string(),
-        render_order_json(&detail.order, base_url, &authz_ids),
-    );
+    root.insert("order".to_string(), order);
     root.insert("authorizations".to_string(), Value::Array(authorizations));
     Value::Object(root)
 }

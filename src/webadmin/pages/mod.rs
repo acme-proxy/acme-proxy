@@ -106,6 +106,9 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             get(orders::get_order).delete(orders::delete_order),
         )
         .route("/ui/orders/{id}/revoke", post(orders::revoke_order))
+        // A `GET`, so it is absent from `mutating_page_endpoints()` by right
+        // rather than by omission.
+        .route("/ui/orders/{id}/chain.pem", get(orders::download_chain))
         .route("/ui/eab", get(eab::list_eab).post(eab::create_eab))
         .route("/ui/eab/{kid}", get(eab::get_eab))
         .route("/ui/eab/{kid}/revoke", post(eab::revoke_eab))

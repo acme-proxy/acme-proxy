@@ -373,6 +373,15 @@ migrated configuration before restarting.
   which is the trap `doc/src/filters/path.md` already describes for `/crl` and
   now covers for both.
 
+- **The web admin shows the issued certificate, and offers it as a file.** The
+  order card rendered `order.certificate`, which is the ACME *URL* — served by
+  signed POST-as-GET, so a browser handed it gets nothing and the field was a
+  dead string. It now renders the chain itself, from the column that already
+  held it, with a `GET /ui/orders/{id}/chain.pem` download beside it. The order
+  detail shape (`GET /api/orders/{id}` and `acme-proxy order show --json`)
+  gained `certificatePem` to match; listings are unchanged, since a page of
+  fifty orders should not carry fifty chains.
+
 - **The access line names the client.** The server-wide `request` span gained a
   `client_ip` field, so an ordinary request finally says who connected —
   previously only audit rows and a few targeted lines did. It is seeded from

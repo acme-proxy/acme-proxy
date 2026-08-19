@@ -667,6 +667,9 @@ fn authenticated_pages() -> Vec<&'static str> {
         "/ui/accounts/some-id",
         "/ui/orders",
         "/ui/orders/some-id",
+        // A download, but still a page route behind the session: a certificate
+        // is public once issued, *which orders exist* is not.
+        "/ui/orders/some-id/chain.pem",
         "/ui/audit",
         "/ui/audit/1",
         "/ui/eab",
@@ -1383,6 +1386,175 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     let body = html_body(again).await;
     assert!(body.contains("already_revoked"));
     assert!(body.contains("order-card"));
+}
+
+/// Issues a real certificate against the in-memory CA and returns the order id
+/// with the PEM chain it was finalized with.
+///
+/// The whole `Order::create` → `signer.issue` → `Order::finalize` sequence,
+/// because an order carrying a chain is not something `seed` can produce: the
+/// column is only ever written by finalize.
+async fn issue_into_an_order(
+    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    signer: &std::sync::Arc<dyn acme_proxy::signer::SignerBackend>,
+    name: &str,
+) -> (String, String) {
+    use acme_proxy::signer::RequestedValidity;
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        &[9u8, 9],
+        vec![],
+        &ClientContext::default(),
+        database,
+    )
+    .await
+    .unwrap();
+    let identifier = Identifier::dns(name);
+    let mut order = Order::create(
+        PROFILE,
+        &account.id,
+        vec![identifier.clone()],
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+
+    let csr_der = {
+        use base64::prelude::*;
+        BASE64_URL_SAFE_NO_PAD.decode(make_csr(name)).unwrap()
+    };
+    let issued = signer
+        .issue(
+            &order.id,
+            &csr_der,
+            &[identifier],
+            RequestedValidity::default(),
+        )
+        .await
+        .expect("the in-memory CA must issue");
+    let chain = match issued {
+        acme_proxy::signer::IssueOutcome::Issued(chain) => chain,
+        other => panic!("expected an inline issuance, got {other:?}"),
+    };
+    let (serial, spki) =
+        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    order
+        .finalize(chain.clone(), serial, spki, database)
+        .await
+        .unwrap();
+
+    (order.id, chain)
+}
+
+/// The card shows the certificate itself, not the ACME URL.
+///
+/// That URL is reachable only by signed POST-as-GET, so a browser handed it
+/// gets nothing — it was a dead string on the page, and the PEM it should have
+/// been showing was already in the row.
+#[tokio::test]
+async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
+    let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
+    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
+        .await
+        .unwrap();
+    let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let (order_id, chain) = issue_into_an_order(&database, &signer, "chain.example.com").await;
+
+    let response = admin_page(
+        &app,
+        &format!("/ui/orders/{order_id}"),
+        Some(&session),
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = html_body(response).await;
+
+    assert!(
+        body.contains("-----BEGIN CERTIFICATE-----"),
+        "the card must render the PEM itself"
+    );
+    assert!(
+        body.contains(&format!("/ui/orders/{order_id}/chain.pem")),
+        "and offer the download route"
+    );
+    // The dead string is gone. The ACME certificate URL lives under the
+    // profile prefix, so this is what it would have looked like.
+    assert!(
+        !body.contains("/profile/default/certificate/"),
+        "the ACME certificate URL is unreachable from a browser and must not \
+         be presented as if it were a link"
+    );
+
+    let download = admin_page(
+        &app,
+        &format!("/ui/orders/{order_id}/chain.pem"),
+        Some(&session),
+        false,
+    )
+    .await;
+    assert_eq!(download.status(), StatusCode::OK);
+    assert_eq!(
+        download.headers()[header::CONTENT_TYPE],
+        "application/pem-certificate-chain"
+    );
+    assert_eq!(
+        download.headers()[header::CONTENT_DISPOSITION],
+        format!("attachment; filename=\"{order_id}.pem\"")
+    );
+    assert_eq!(
+        html_body(download).await,
+        chain,
+        "the download must be the stored chain byte for byte"
+    );
+}
+
+/// An order that never reached issuance has no chain, so the route is a `404`
+/// rather than a zero-byte `.pem` — an empty file reads as a broken
+/// certificate, not an absent one.
+#[tokio::test]
+async fn downloading_a_chain_from_an_unissued_order_is_a_404() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let ids = seed(&database, 1).await;
+    let (orders, _) = acme_proxy::sqlite::order::Order::search(
+        &acme_proxy::sqlite::order::OrderQuery {
+            account_id: Some(ids[0].clone()),
+            limit: 10,
+            ..Default::default()
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    let order_id = &orders[0].id;
+
+    let response = admin_page(
+        &app,
+        &format!("/ui/orders/{order_id}/chain.pem"),
+        Some(&session),
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // And an order that does not exist at all is the same answer, so the route
+    // never distinguishes "no certificate" from "no order" to a caller
+    // guessing ids.
+    let missing = admin_page(
+        &app,
+        "/ui/orders/no-such-order/chain.pem",
+        Some(&session),
+        false,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

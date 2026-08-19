@@ -29,9 +29,16 @@
       {% if detail.order.replaces %}
         <dt>Replaces</dt><dd class="wrap-anywhere"><code>{{ detail.order.replaces }}</code></dd>
       {% endif %}
-      {% if detail.order.certificate %}
+      {#- The PEM, not `detail.order.certificate`, which is the ACME URL: that
+          is reachable only by signed POST-as-GET, so a browser handed it gets
+          nothing and printing it was a dead string. -#}
+      {% if detail.order.certificatePem %}
         <dt>Certificate</dt>
-        <dd class="wrap-anywhere"><code>{{ detail.order.certificate }}</code></dd>
+        <dd>
+          <pre class="pem">{{ detail.order.certificatePem }}</pre>
+          <a class="button" href="/ui/orders/{{ detail.order.id }}/chain.pem"
+             download>Download chain</a>
+        </dd>
       {% endif %}
       {% if detail.order.revokedAt %}
         <dt>Revoked</dt>

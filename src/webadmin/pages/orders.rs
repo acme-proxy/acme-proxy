@@ -2,7 +2,7 @@
 //! two things an operator can do to it.
 
 use axum::extract::{Path, Query, State};
-use axum::response::{Html, Response};
+use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -113,6 +113,53 @@ pub async fn get_order(
         "orders/_card.html",
         context,
     )
+}
+
+/// `GET /ui/orders/{id}/chain.pem` — the issued chain as a file.
+///
+/// A `GET`, so it stays out of `mutating_page_endpoints()` deliberately rather
+/// than by omission: it reads, it carries no CSRF token, and `PageSession` is
+/// the read-side extractor. It is still behind a session — a certificate is
+/// public once issued, but *which* orders exist is not.
+///
+/// The browser cannot follow the ACME `certificate` URL the card used to print
+/// (signed POST-as-GET only), which is the whole reason this route exists.
+pub async fn download_chain(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    _session: PageSession,
+) -> Result<Response, PageError> {
+    let order = Order::find_by_id(&id, &state.database)
+        .await?
+        .ok_or_else(|| not_found(&id))?;
+
+    // A `404` rather than an empty file: an order that never reached issuance
+    // has no chain, and handing back zero bytes named `.pem` would look like a
+    // broken certificate rather than an absent one.
+    let filename = format!("{}.pem", order.id);
+    let pem = order.certificate.ok_or_else(|| {
+        PageError::not_found(format!("order {id} has no certificate to download"))
+    })?;
+
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/pem-certificate-chain".to_string(),
+            ),
+            (
+                // Built from the *stored* id rather than the path-supplied one:
+                // this interpolates into a header, and the stored value is a
+                // generated identifier where the path segment is whatever the
+                // client typed. The lookup above would have 404'd on anything
+                // exotic, so this is belt and braces — but the cheap kind.
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        pem,
+    )
+        .into_response())
 }
 
 /// `POST /ui/orders/{id}/revoke`
