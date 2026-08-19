@@ -1,4 +1,4 @@
-//! Replacing a running configuration without moving the sockets.
+//! Replacing a running configuration without restarting the process.
 //!
 //! `serve_on_with` builds everything exactly once — profiles, deduplicated
 //! signer backends, filter chains, challenge registries, both routers — so until
@@ -15,19 +15,29 @@
 //! observed half-applied — no other task can run in the middle of it.
 //!
 //! What a swap cannot honour is refused **by name**, and the whole reload is
-//! refused with it: the sockets are already bound, the database pool is
-//! connected, the job runner's tuning was snapshotted at spawn, and a signer
-//! backend owns in-memory state (a `LocalCa` revocation ledger, a relay's
-//! `http-01` token store) that two generations over one set of files would
-//! disagree about. Refusing by name is the posture startup already takes when
-//! it rejects an unknown `logging.target` rather than falling back.
+//! refused with it: the database pool is connected, the job runner's tuning was
+//! snapshotted at spawn, and a signer backend owns in-memory state (a `LocalCa`
+//! revocation ledger, a relay's `http-01` token store) that two generations
+//! over one set of files would disagree about. Refusing by name is the posture
+//! startup already takes when it rejects an unknown `logging.target` rather
+//! than falling back.
 //!
-//! `[logging]` used to be on that list, the tracing subscriber being installed
-//! once per process. It is not any more: `cli::logging` installs the whole
-//! stack behind a `tracing_subscriber::reload::Layer`, so all six keys swap
-//! with everything else. The publishing run does it **first**, since an
-//! operator who raised the level did it to see what happens next — starting
-//! with the reload's own line.
+//! Two things used to be on that list and are not any more, both for the same
+//! reason — the thing said to be unmovable was made movable rather than argued
+//! with:
+//!
+//! - `[logging]`, the tracing subscriber being installed once per process.
+//!   `cli::logging` now installs the whole stack behind a
+//!   `tracing_subscriber::reload::Layer`, so all six keys swap with everything
+//!   else. The publishing run does it **first**, since an operator who raised
+//!   the level did it to see what happens next — starting with the reload's own
+//!   line.
+//! - **The sockets.** `crate::listener` owns the accept loop, so a role's
+//!   `TcpListener` is replaceable and its TLS mode is read per connection: all
+//!   five of `server.bind_address`, `admin.enabled`, `admin.bind_address` and
+//!   both `tls.enabled` flips reload, as do the two `[metrics]` keys. Binding
+//!   happens while a failure can still refuse the reload, so a bad address is
+//!   answered by a socket that never moved.
 
 use std::convert::Infallible;
 use std::task::{Context, Poll};
@@ -93,15 +103,18 @@ fn opaque(rendered: &str) -> String {
 ///
 /// Each entry is one of two kinds, and the distinction is the whole design:
 ///
-/// - *Physically frozen*: the sockets are bound, the pool is connected, and the
-///   job runner snapshotted its tuning at spawn.
+/// - *Physically frozen*: the pool is connected, and the job runner snapshotted
+///   its tuning at spawn.
 /// - *Frozen by ownership*: a signer backend holds in-memory state with no
 ///   durable home, so two generations over one set of files disagree — see
 ///   [`crate::Assembly`]. `dns.*` and `proxy.*` follow from it, because every
 ///   outbound client caches them at construction and the signers are the
 ///   clients that are never rebuilt.
 ///
-/// `[logging]` is deliberately **absent**: the whole layer stack sits behind a
+/// **Every bind address used to be in the first kind and none is now**, the
+/// listener having stopped being something `axum::serve` consumes — see
+/// [`crate::listener`] and `cli::plan_sockets`. `[logging]` is deliberately
+/// absent for the same shape of reason: the whole layer stack sits behind a
 /// `reload::Layer` handle (see `cli::logging`), so all six keys swap with the
 /// rest of a generation. `jobs.retention_days` is absent for its own reason: it
 /// is read only by `SweepJob::jobs`, which the registry swap rebuilds. So is the
@@ -111,26 +124,6 @@ fn opaque(rendered: &str) -> String {
 type Projection = fn(&Applied<'_>) -> String;
 const FROZEN: &[(&str, Projection)] = &[
     ("database.url", |a| a.config.database.url.clone()),
-    ("server.bind_address", |a| {
-        a.config.server.bind_address.clone()
-    }),
-    ("server.tls.enabled", |a| {
-        a.config.server.tls.enabled.to_string()
-    }),
-    ("admin.enabled", |a| a.config.admin.enabled.to_string()),
-    ("admin.bind_address", |a| {
-        a.config.admin.bind_address.clone()
-    }),
-    ("admin.tls.enabled", |a| {
-        a.config.admin.tls.enabled.to_string()
-    }),
-    // The third listener, frozen for the reason both the others are: a bound
-    // socket cannot move under a listener that is already serving. There is no
-    // `metrics.tls.enabled` beside these — that listener has none.
-    ("metrics.enabled", |a| a.config.metrics.enabled.to_string()),
-    ("metrics.bind_address", |a| {
-        a.config.metrics.bind_address.clone()
-    }),
     ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
     // Opaque: the URLs carry a proxy password. See `opaque`.
     ("proxy", |a| opaque(&format!("{:?}", a.config.proxy))),
@@ -247,8 +240,17 @@ pub struct ReloadReport {
     pub generation: u64,
     pub profiles: Vec<String>,
     pub job_kinds: Vec<&'static str>,
+    /// Whether that listener is speaking TLS **after** this reload — not
+    /// whether its certificate changed. A generation always rebuilds both
+    /// acceptors, so "reloaded" was already the wrong word for it; now that
+    /// `tls.enabled` can flip mid-run it is also the answer an operator is
+    /// actually asking for.
     pub tls_reloaded: bool,
     pub admin_tls_reloaded: bool,
+    /// The listeners whose socket this reload moved — `acme`, `admin`,
+    /// `metrics` — empty when every one of them stayed where it was, which is
+    /// the ordinary case.
+    pub listeners_rebound: Vec<&'static str>,
     /// Whether `[logging]` was swapped, which is **not** the same as whether it
     /// changed: `false` means this process installed no subscriber of its own,
     /// so there was no handle to swap and logging stayed whatever its owner set
@@ -510,48 +512,6 @@ mod frozen_tests {
                 }),
             ),
             (
-                "server.bind_address",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.server.bind_address = "127.0.0.1:9999".to_string();
-                }),
-            ),
-            (
-                "server.tls.enabled",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.server.tls.enabled = !c.server.tls.enabled;
-                }),
-            ),
-            (
-                "admin.enabled",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.admin.enabled = !c.admin.enabled;
-                }),
-            ),
-            (
-                "admin.bind_address",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.admin.bind_address = "127.0.0.1:9998".to_string();
-                }),
-            ),
-            (
-                "admin.tls.enabled",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.admin.tls.enabled = !c.admin.tls.enabled;
-                }),
-            ),
-            (
-                "metrics.enabled",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.metrics.enabled = !c.metrics.enabled;
-                }),
-            ),
-            (
-                "metrics.bind_address",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.metrics.bind_address = "127.0.0.1:9999".to_string();
-                }),
-            ),
-            (
                 "dns.resolver",
                 Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
                     c.dns.resolver = Some("192.0.2.1:53".to_string());
@@ -802,19 +762,46 @@ mod frozen_tests {
         }
     }
 
+    /// Every key that decides where a socket is, or whether there is one,
+    /// reloads — the seven this table used to hold.
+    ///
+    /// The table is what a reload consults *first*, so a key left in here would
+    /// make `cli::plan_sockets` unreachable code and the whole rebinding path
+    /// dead: the refusal happens before anything is built, let alone bound.
+    /// That is why this sits beside the freeze rather than only in the suite
+    /// that drives a real socket.
+    #[test]
+    fn every_listener_key_is_reloadable() {
+        for mutate in [
+            |c: &mut Config| c.server.bind_address = "127.0.0.1:9999".to_string(),
+            |c: &mut Config| c.server.tls.enabled = !c.server.tls.enabled,
+            |c: &mut Config| c.admin.enabled = !c.admin.enabled,
+            |c: &mut Config| c.admin.bind_address = "127.0.0.1:9998".to_string(),
+            |c: &mut Config| c.admin.tls.enabled = !c.admin.tls.enabled,
+            |c: &mut Config| c.metrics.enabled = !c.metrics.enabled,
+            |c: &mut Config| c.metrics.bind_address = "127.0.0.1:9997".to_string(),
+        ] {
+            assert!(
+                refuse(|config, _| mutate(config)).is_ok(),
+                "a socket is replaceable now, so no bind address or listener \
+                 switch is frozen",
+            );
+        }
+    }
+
     /// A refusal an operator can act on names the key *and* both values — "it
     /// says `x` but is running `y`" is the whole diagnosis.
     #[test]
     fn a_refusal_names_the_key_and_both_values() {
         let error = refuse(|config, _| {
-            config.server.bind_address = "127.0.0.1:9999".to_string();
+            config.database.url = "sqlite://elsewhere.db".to_string();
         })
-        .expect_err("a changed bind address is refused");
+        .expect_err("a changed database URL is refused");
 
         let rendered = error.to_string();
-        assert!(rendered.contains("server.bind_address"), "{rendered}");
-        assert!(rendered.contains("[::]:3000"), "{rendered}");
-        assert!(rendered.contains("127.0.0.1:9999"), "{rendered}");
+        assert!(rendered.contains("database.url"), "{rendered}");
+        assert!(rendered.contains("sqlite://sqlite.db"), "{rendered}");
+        assert!(rendered.contains("sqlite://elsewhere.db"), "{rendered}");
         assert_eq!(error.kind(), "frozen_key");
     }
 

@@ -1,7 +1,6 @@
 # Reloading the configuration
 
-`acme-proxy` reloads its configuration on `SIGHUP`, without moving either
-socket:
+`acme-proxy` reloads its configuration on `SIGHUP`, without restarting:
 
 ```bash
 sudo systemctl reload acme-proxy
@@ -10,8 +9,9 @@ kill -HUP "$(pidof acme-proxy)"
 ```
 
 Nothing is dropped. Connections stay open, in-flight ACME orders keep their
-state, queued background work keeps its place, and the ports never change. What
-changes is what the server does with the *next* request.
+state, and queued background work keeps its place. What changes is what the
+server does with the *next* request — and, if you moved a listener, on which
+port it answers it.
 
 A reload is a rebuild and a swap, not a patch. Both routers, every profile's
 filter chain and challenge registry, the notification backends, the job
@@ -49,8 +49,9 @@ A refusal names the key, what the server is running, and what the file now
 says:
 
 ```text
-`server.bind_address` cannot be changed while the server is running
-(running with `[::]:3000`, the file now says `[::]:8443`): restart to apply it
+`database.url` cannot be changed while the server is running
+(running with `sqlite://sqlite.db`, the file now says `sqlite://other.db`):
+restart to apply it
 ```
 
 These are the keys that produce it. Everything not listed here reloads.
@@ -58,10 +59,6 @@ These are the keys that produce it. Everything not listed here reloads.
 | Key | Why a restart is needed |
 | --- | --- |
 | `database.url` | The connection pool is open, and the accounts and orders this CA has issued against do not follow it elsewhere. |
-| `server.bind_address` | The socket is bound. |
-| `server.tls.enabled` | Turning TLS on or off replaces the listener, not its settings. |
-| `admin.enabled`, `admin.bind_address`, `admin.tls.enabled` | The same two reasons, for the panel's own socket. |
-| `metrics.enabled`, `metrics.bind_address` | The same, for the metrics socket. There is no `metrics.tls.enabled` beside them — that listener has none. |
 | `[dns]`, `[proxy]` | Every outbound client caches these when it is built, including the signer backends, which are not rebuilt. |
 | six of the seven `[jobs]` keys | The runner snapshotted its pacing when it started. `jobs.retention_days` is the exception and does reload. |
 | any profile's `[signer]` section | See below. |
@@ -118,6 +115,7 @@ Everything else, including the things operators reach for most:
 - **TLS certificates** — `server.tls.cert_path` and `key_path` (and the admin
   listener's own pair) are re-read, so a renewed certificate is served to the
   next connection while established ones are undisturbed.
+- **The listeners themselves** — see below.
 - **The panel's templates** — `admin.template_dir` is recompiled. A template
   that does not parse fails the *reload*, so a mistake never reaches a browser.
 - **Retention** — `audit.retention_days` and `jobs.retention_days`. A sweep
@@ -132,6 +130,45 @@ Everything else, including the things operators reach for most:
 
 For what each key means, see the [configuration
 reference](../configuration/reference.md).
+
+## Moving a listener
+
+All seven keys that decide where a socket is, or whether there is one, reload:
+`server.bind_address`, `server.tls.enabled`, `admin.enabled`,
+`admin.bind_address`, `admin.tls.enabled`, `metrics.enabled` and
+`metrics.bind_address`. A reload that moved one says which:
+
+```text
+server_config_reloaded generation=2 listeners_rebound=["acme"]
+```
+
+Three things are worth knowing before you use it.
+
+**A bad address refuses the reload; it does not take the socket down.** Every
+new socket is bound *before* anything is published, so a port already in use, a
+name that does not resolve or a privileged port you no longer have the
+capability for is a `server_config_reload_failed` — with the listener that is
+already running still answering on the address it always had. Fix the file and
+signal again.
+
+**Established connections are not disturbed.** A rebind replaces the socket new
+connections arrive on; a request already in flight finishes, and a keep-alive
+connection opened before the move stays usable until its client closes it. The
+old socket stops accepting immediately, so nothing new arrives there.
+
+**Turning TLS on or off does not move the socket at all.** The mode is decided
+per connection, like the certificate: the next client to connect speaks the new
+protocol on the same port, and `listeners_rebound` stays empty. Remember to move
+`server.base_url` with it, or every signed request fails RFC 8555 §6.4's URL
+check — the server warns `tls_base_url_mismatch` when it can see the two
+disagree.
+
+One caveat on the panel. Switching `admin.enabled` off releases the socket and
+empties its router, so nothing answers on it — but it does not sign anybody out:
+sessions live in the database and are waiting when you switch it back on. Use
+`acme-proxy admin session revoke --all` if that is what you meant. Switching it
+off and on again does clear the login-attempt lockout, since the limiter goes
+with the panel.
 
 ## Systemd
 

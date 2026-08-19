@@ -2,9 +2,10 @@
 //!
 //! The inline suites cover the halves — `src/reload.rs` proves the frozen table
 //! refuses by name, `src/jobs/runner.rs` that a swapped registry claims a new
-//! kind, `src/tls.rs` that a swapped certificate reaches the next connection.
-//! Only this file shows them as one thing: a running server whose answers change
-//! while the port it is answering on never moves.
+//! kind, `src/listener.rs` that a socket, a certificate and a TLS mode can each
+//! be replaced under a listener that is already serving. Only this file shows
+//! them as one thing: a running server whose answers change — and, when the file
+//! says so, whose ports change — without the process restarting.
 //!
 //! **Its own binary on purpose.** Every test here writes a `config.toml` and
 //! points `ACME_PROXY_CONFIG` at it, and that variable is process state.
@@ -57,19 +58,56 @@ fn write_config(dir: &TempDir, tls: bool, website: &str, extra: &str) {
 
 /// [`write_config`], with the panel on.
 ///
-/// `admin.enabled` is itself a frozen key, so it has to come from the *file*
-/// rather than be poked into the loaded `Config` — a reload re-reads the file
-/// and would refuse the difference. That is the check doing its job, and it is
-/// why this parameter exists.
+/// The panel has to be enabled in the *file* rather than poked into the loaded
+/// `Config`, because a reload re-reads the file: the two disagreeing would make
+/// the first `SIGHUP` switch the panel off again. Since `admin.enabled` became
+/// reloadable that is a live hazard rather than a refusal.
 fn write_config_with_admin(dir: &TempDir, tls: bool, admin: bool, website: &str, extra: &str) {
+    write_config_on(
+        dir,
+        Sockets {
+            server: "127.0.0.1:0",
+            // A real address, distinct from `server.bind_address`: the reload
+            // path runs `webadmin::check_config`, which refuses two listeners on
+            // one socket. Most tests bind their own ephemeral ports and never
+            // dial this one — but it still has to describe a server that would
+            // start.
+            admin: "127.0.0.1:3001",
+            admin_enabled: admin,
+        },
+        tls,
+        website,
+        extra,
+    );
+}
+
+/// Which address each listener is told to use.
+///
+/// A struct because these are three same-shaped values and a positional triple
+/// would let two of them be swapped silently — which, for a suite whose whole
+/// subject is *which socket answers*, would be the one mistake hardest to spot.
+struct Sockets<'a> {
+    server: &'a str,
+    admin: &'a str,
+    admin_enabled: bool,
+}
+
+/// A single-profile configuration whose CA and TLS material all live under
+/// `dir`, on the sockets the caller names.
+fn write_config_on(dir: &TempDir, sockets: Sockets<'_>, tls: bool, website: &str, extra: &str) {
     let ca = dir.join("ca");
+    let Sockets {
+        server,
+        admin,
+        admin_enabled,
+    } = sockets;
     let body = format!(
         r#"
         [database]
         url = "sqlite://{dir}/reload.db"
 
         [server]
-        bind_address = "127.0.0.1:0"
+        bind_address = "{server}"
         base_url = "http://localhost:3000"
 
         [server.tls]
@@ -77,14 +115,9 @@ fn write_config_with_admin(dir: &TempDir, tls: bool, admin: bool, website: &str,
         cert_path = "{dir}/server.pem"
         key_path = "{dir}/server.key"
 
-        # A real address, distinct from `server.bind_address`: the reload path
-        # runs `webadmin::check_config`, which refuses two listeners on one
-        # socket. The test binds its own ephemeral ports, so these two values
-        # are never dialled — but they still have to describe a server that
-        # would start.
         [admin]
-        enabled = {admin}
-        bind_address = "127.0.0.1:3001"
+        enabled = {admin_enabled}
+        bind_address = "{admin}"
         login_max_attempts = 2
 
         [meta]
@@ -101,6 +134,37 @@ fn write_config_with_admin(dir: &TempDir, tls: bool, admin: bool, website: &str,
         ca = ca.display(),
     );
     std::fs::write(dir.join("config.toml"), body).unwrap();
+}
+
+/// A port nothing is listening on, found by binding one and letting it go.
+///
+/// Racy in principle and not in practice: the suite is the only thing binding
+/// loopback ports in this process, and nextest gives it a process of its own.
+/// There is no alternative — a reload reads its address out of a file, so an
+/// address has to be written down before anything binds it.
+async fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Waits for `port` to stop accepting, which is how a released socket is
+/// observed from outside.
+///
+/// A poll rather than a single attempt: the reload hands the accept loop its new
+/// socket synchronously, but the loop takes it on its next pass, so "the old
+/// port is gone" is true a moment after `reload()` returns rather than at it.
+async fn wait_until_refused(port: u16) -> bool {
+    for _ in 0..100 {
+        match TcpStream::connect(("127.0.0.1", port)).await {
+            Err(_) => return true,
+            Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+    false
 }
 
 /// Points `ACME_PROXY_CONFIG` at `dir` and loads what is there now.
@@ -573,4 +637,220 @@ async fn read_one_response(stream: &mut TcpStream, path: &str) -> String {
     }
 
     String::from_utf8_lossy(&buffer).to_string()
+}
+
+/// The socket moves, and the process does not.
+///
+/// `server.bind_address` was refused by name until the listener stopped being
+/// something `axum::serve` consumes. Three things have to hold together for it
+/// to mean anything: the new port answers, the old one is *released* rather
+/// than merely ignored, and it is the same process — same generation counter,
+/// same profiles, same everything else.
+#[tokio::test]
+async fn a_moved_bind_address_rebinds_the_socket() {
+    let dir = TempDir::new("reload-rebind");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+    let old_port = server.acme.port();
+
+    assert!(
+        get(server.acme, "/health")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+
+    let moved = free_port().await;
+    write_config_on(
+        &dir,
+        Sockets {
+            server: &format!("127.0.0.1:{moved}"),
+            admin: "127.0.0.1:3001",
+            admin_enabled: false,
+        },
+        false,
+        "https://after.example",
+        "",
+    );
+
+    let report = server.reload.reload().await.expect("the reload must apply");
+    assert_eq!(report.generation, 2);
+    assert_eq!(
+        report.listeners_rebound,
+        vec!["acme"],
+        "the ACME socket moved and nothing else did",
+    );
+
+    let new_addr = std::net::SocketAddr::from(([127, 0, 0, 1], moved));
+    let directory = get(new_addr, "/profile/default/directory").await;
+    assert!(
+        directory.contains("https://after.example"),
+        "the new socket serves the new generation: {directory}"
+    );
+    assert!(
+        wait_until_refused(old_port).await,
+        "the old socket must be released, not left accepting"
+    );
+
+    server.stop().await;
+}
+
+/// A bind that cannot succeed refuses the reload, and the socket that is
+/// already serving never moves.
+///
+/// The ordering rule the whole path rests on. Getting it backwards — release
+/// first, bind second — turns one typo in `server.bind_address` into a CA that
+/// is listening on nothing, which is the failure a reload exists to avoid.
+#[tokio::test]
+async fn an_unbindable_address_refuses_the_reload_and_the_socket_keeps_serving() {
+    let dir = TempDir::new("reload-rebind-refused");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    // Held for the length of the test, so the bind below cannot succeed.
+    let taken = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = taken.local_addr().unwrap().port();
+
+    write_config_on(
+        &dir,
+        Sockets {
+            server: &format!("127.0.0.1:{port}"),
+            admin: "127.0.0.1:3001",
+            admin_enabled: false,
+        },
+        false,
+        "https://after.example",
+        "",
+    );
+
+    let error = server
+        .reload
+        .reload()
+        .await
+        .expect_err("a port already in use must refuse the reload");
+    assert_eq!(error.kind(), "build_failed");
+    let rendered = error.to_string();
+    assert!(rendered.contains("server.bind_address"), "{rendered}");
+
+    // And the whole generation is untouched, `meta.website` included: a refusal
+    // that had applied the half it could would leave a running configuration no
+    // file describes.
+    let after = get(server.acme, "/profile/default/directory").await;
+    assert!(
+        after.contains("https://before.example"),
+        "the original socket must still be serving the original generation: {after}"
+    );
+
+    drop(taken);
+    server.stop().await;
+}
+
+/// The panel comes up on a reload, and goes away again on the next one.
+///
+/// `admin.enabled` was frozen, so bootstrapping the web admin on a running CA
+/// meant a restart — and taking it away again meant another. Both directions
+/// matter: switching it off has to *stop answering*, not merely stop being
+/// advertised.
+#[tokio::test]
+async fn the_panel_can_be_switched_on_and_off_by_a_reload() {
+    let dir = TempDir::new("reload-panel");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+    assert!(server.admin.is_none(), "the panel starts switched off");
+
+    let port = free_port().await;
+    let admin = format!("127.0.0.1:{port}");
+    let on = Sockets {
+        server: "127.0.0.1:0",
+        admin: &admin,
+        admin_enabled: true,
+    };
+    write_config_on(&dir, on, false, "https://before.example", "");
+
+    let report = server.reload.reload().await.expect("the reload must apply");
+    assert_eq!(
+        report.listeners_rebound,
+        vec!["admin"],
+        "only the panel's socket appeared; the ACME one never moved",
+    );
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let unauthenticated = get(addr, "/api/accounts").await;
+    assert!(
+        unauthenticated.starts_with("HTTP/1.1 401"),
+        "the panel is up and asking for a session: {unauthenticated}"
+    );
+
+    // Off again. The socket is released *and* the router is emptied, so a
+    // connection that survived the swap cannot keep using the panel either.
+    write_config_on(
+        &dir,
+        Sockets {
+            server: "127.0.0.1:0",
+            admin: &admin,
+            admin_enabled: false,
+        },
+        false,
+        "https://before.example",
+        "",
+    );
+    let report = server.reload.reload().await.expect("the reload must apply");
+    assert!(
+        report.listeners_rebound.is_empty(),
+        "switching a listener off binds nothing",
+    );
+    assert!(
+        wait_until_refused(port).await,
+        "a panel switched off must stop answering"
+    );
+
+    server.stop().await;
+}
+
+/// TLS switched on with the address unchanged: the same port, speaking a
+/// different protocol, on the next connection.
+///
+/// This is the case that decided the design. Binding the new socket before
+/// releasing the old one — the ordering every other rebind uses — is impossible
+/// here, two listeners not being able to hold one port; so the TLS mode is read
+/// per connection instead, exactly as the certificate already was, and nothing
+/// is rebound at all.
+#[tokio::test]
+async fn tls_can_be_switched_on_without_the_socket_moving() {
+    use tokio_rustls::TlsConnector;
+    use tokio_rustls::rustls::pki_types::ServerName;
+
+    let dir = TempDir::new("reload-tls-flip");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    // Cleartext first, which is also what proves the socket did not move.
+    assert!(
+        get(server.acme, "/health")
+            .await
+            .starts_with("HTTP/1.1 200")
+    );
+
+    write_config(&dir, true, "https://before.example", "");
+    let report = server.reload.reload().await.expect("the reload must apply");
+    assert!(report.tls_reloaded, "the ACME listener is speaking TLS now");
+    assert!(
+        report.listeners_rebound.is_empty(),
+        "a protocol flip on an unchanged address rebinds nothing",
+    );
+
+    let client = acme_proxy::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"])
+        .expect("a client config");
+    let stream = TcpStream::connect(server.acme).await.unwrap();
+    let mut tls = TlsConnector::from(client)
+        .connect(ServerName::try_from("localhost").unwrap(), stream)
+        .await
+        .expect("the same port must now complete a TLS handshake");
+    tls.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    tls.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    server.stop().await;
 }

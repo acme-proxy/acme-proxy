@@ -20,17 +20,7 @@ keeps its corpses stops being read.
       and `dns.resolver`/`proxy.*` unfreezing for free — they are frozen only
       because the signers cache them at construction, while every other
       consumer is already rebuilt per generation.
-- [ ] **Rebind the listeners on reload** — `server.bind_address`,
-      `admin.bind_address`, `admin.enabled`, and both `tls.enabled` flips. A
-      different mechanism from every other reloadable key: bind the new socket,
-      start serving on it, then drain the old one gracefully. `axum::serve`
-      consumes its listener and `try_join!` assumes exactly two futures for the
-      process's life, so this needs a per-listener supervisor that can be
-      replaced. Same ordering rule the reload path already establishes — bind
-      first, so a bad address refuses the reload instead of having already
-      dropped the live socket. `tls.enabled` is a structural branch on the
-      listener type, so it is this work rather than a separate item.
-- [ ] **Reload the `[jobs]` runner tuning.** The cheapest of the three:
+- [ ] **Reload the `[jobs]` runner tuning.** The cheapest of the two remaining:
       `RunnerConfig` is snapshotted in `spawn_runner_watching`, so make it a
       second `watch` cell read per pass beside the registry one.
       `max_concurrent` must resize through `Semaphore::add_permits` /
@@ -38,7 +28,7 @@ keeps its corpses stops being read.
       accounting is lost. `jobs.max_attempts` stays frozen *onto each row* at
       enqueue — that is a property of the queue, not of this freeze.
 
-      Once this and the two items above land, `database.url` is what is left in
+      Once this and the item above land, `database.url` is what is left in
       `reload::FROZEN`, and it should stay there for good: the pool is held by
       the runner and every request path, migrations would run mid-flight, and
       the accounts and orders do not follow it. A different database is a

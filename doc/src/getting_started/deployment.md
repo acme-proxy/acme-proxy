@@ -65,8 +65,8 @@ too.
    > `acme-proxy` shuts down gracefully on `SIGTERM` (and on Ctrl+C when run in
    > a terminal), so `systemctl restart` and `systemctl stop` let in-flight
    > requests finish rather than cutting them off. Both listeners stop together.
-   >It also reloads its configuration on `SIGHUP` without moving either socket,
-   >which is what the `ExecReload` line above wires up — see [Reloading the
+   >It also reloads its configuration on `SIGHUP` without restarting, which is
+   >what the `ExecReload` line above wires up — see [Reloading the
    >Configuration](../operations/reload.md) for what a reload may change and
    >what it refuses.
    >One case still deserves a quiet period: challenge validation and the

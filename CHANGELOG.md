@@ -359,6 +359,40 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The listeners rebind on `SIGHUP`.** All seven keys that decide where a
+  socket is, or whether there is one, now reload: `server.bind_address`,
+  `server.tls.enabled`, `admin.enabled`, `admin.bind_address`,
+  `admin.tls.enabled`, `metrics.enabled` and `metrics.bind_address`. Moving the
+  ACME port, bootstrapping the web admin on a running CA, or turning the metrics
+  endpoint on for a new Prometheus each cost a restart — and a restart of a CA
+  drops every live connection and every in-flight order for a change that never
+  touched issuance.
+
+  `reload::FROZEN` is down to `database.url`, `[dns]`, `[proxy]`, six of the
+  seven `[jobs]` keys, each profile's resolved `[signer]` and the profile set.
+
+  What made it possible is that this server now owns its accept loop
+  (`src/listener.rs`) rather than handing each socket to `axum::serve`, which
+  consumes it. One `axum::serve` per listener lives for the process; underneath
+  it the `TcpListener` is replaceable and the TLS mode is an
+  `Option<TlsSettings>` read **per connection**, exactly as the certificate
+  already was. Three consequences worth knowing:
+
+  - **A bad address refuses the reload rather than dropping the live socket.**
+    Every new socket is bound before anything is published, so a port already in
+    use is a `server_config_reload_failed` with the running listener untouched.
+  - **Turning TLS on or off does not move the socket at all**, which is the one
+    case a bind-then-drain scheme could not serve — two listeners cannot hold
+    one port. The next connection speaks the new protocol on the same port.
+  - **Established connections are never disturbed by a rebind.** Only the socket
+    new connections arrive on changes.
+
+  `server_config_reloaded` gained `listeners_rebound`, naming any socket that
+  moved, and `server_listener_stopped` is new for a listener switched off.
+  Switching the panel off releases its socket and empties its router, but does
+  not sign anybody out — sessions are in the database; use `acme-proxy admin
+  session revoke --all` for that.
+
 - **`[logging]` reloads on `SIGHUP`.** All six keys — the filter, the format,
   the destination, colour, span events and `flatten_event` — where the whole
   section used to be refused by name. Raising the log level or switching to JSON

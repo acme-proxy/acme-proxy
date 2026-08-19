@@ -220,9 +220,11 @@ The events worth building alerts on:
 | Event | Level | Meaning |
 | --- | --- | --- |
 | `request_completed` | info / warn / debug | One per request. See "The access line" above for the level. |
-| `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. |
-| `server_fatal_error`, `server_socket_bind_failed`, `profile_init_failed` | error | The process is not serving. |
-| `server_config_reloaded` | info | A `SIGHUP` applied. Carries `generation`, which counts from 1 and rises by one per reload — the quickest check that one landed. |
+| `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. |
+| `server_fatal_error`, `profile_init_failed` | error | The process is not serving. |
+| `server_socket_bind_failed` | error | A socket could not be bound. At startup the process does not serve; on a reload nothing is applied and whatever was already listening keeps listening. |
+| `server_listener_stopped` | info | A listener was switched off by a reload (`admin.enabled` or `metrics.enabled`). The socket is released; established connections finish. |
+| `server_config_reloaded` | info | A `SIGHUP` applied. Carries `generation`, which counts from 1 and rises by one per reload — the quickest check that one landed — and `listeners_rebound`, naming any socket that moved. |
 | `server_config_reload_refused` | warn | The new file changes a key that cannot change while the process runs. Nothing was applied; the `error` field names the key. |
 | `server_config_reload_failed` | error | The new file did not load, or what it asks for could not be built. Nothing was applied. |
 | `server_logging_filter_overridden` | warn | A reload changed `logging.filter` while `RUST_LOG` was set, so the edit had no effect. `RUST_LOG` wins on a reload exactly as it does at startup; unset it and reload again. |

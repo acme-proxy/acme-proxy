@@ -85,7 +85,10 @@ orders, and certificates.
 
 **`bind_address`** (`String`) — *Default: `"[::]:3000"` | Env: `ACME_PROXY_SERVER__BIND_ADDRESS`*
 
-Network address the server binds and listens to.
+Network address the server binds and listens to. `SIGHUP` moves it without
+restarting, and an address that cannot be bound refuses the reload rather than
+taking the running socket down — see [Configuration
+Reload](../operations/reload.md).
 
 **`base_url`** (`String`) — *Default: `"http://localhost:3000"` | Env: `ACME_PROXY_SERVER__BASE_URL`*
 
@@ -457,14 +460,14 @@ HTTP, so the symptom would be an unexplained sign-out loop. Nothing here has a
 cookie, and a port reachable from a Prometheus host on another machine is
 exactly the intended deployment.
 
-Startup **refuses** a value equal to `server.bind_address`, or to
-`admin.bind_address` while the panel is enabled, since only one of the three
-could then bind.
+A value equal to `server.bind_address`, or to `admin.bind_address` while the
+panel is enabled, is **refused** — at startup and on a reload alike — since only
+one of the three could then bind.
 
-Both keys are **frozen against reload**, for the reason every bind address is: a
-socket cannot move under a listener that is already serving. Changing either
-needs a restart, and `SIGHUP` refuses the reload by name rather than applying
-half of it. See [Configuration Reload](../operations/reload.md).
+Both keys **reload**: `SIGHUP` moves this listener, or switches it on and off,
+without restarting. The new socket is bound before anything is published, so an
+address that cannot be bound refuses the reload and leaves the running one
+serving. See [Configuration Reload](../operations/reload.md).
 
 ---
 

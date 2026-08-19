@@ -5,6 +5,12 @@
 //! `server.bind_address` speaks TLS **instead of** cleartext HTTP — one listener,
 //! not two. It is off by default, so an existing deployment is untouched.
 //!
+//! **Provisioning only.** Accepting connections — and handing one of these
+//! acceptors to each handshake — belongs to [`crate::listener`], which owns a
+//! socket that can be replaced and a TLS mode that can be switched off. The line
+//! between the two is the one this module already drew for itself: resolving
+//! configuration at startup on this side, the accept loop on the other.
+//!
 //! Shaped like the other subsystems ([`crate::signer`], [`crate::filter`],
 //! [`crate::challenge`]): [`from_config`] resolves everything at startup — files
 //! read or generated, certificate and key parsed, rustls configuration built — so
@@ -28,20 +34,14 @@
 //!    a `tls-alpn-01` *responder* certificate is exactly what cannot be served
 //!    this way (see `AcceptAnyServerCert` in [`crate::challenge::tls_alpn_01`]).
 
-use std::future::pending;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::serve::{Listener, ListenerExt, TapIo};
 use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose};
 use time::OffsetDateTime;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
-use tokio_rustls::server::TlsStream;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 use url::{Host, Url};
 
 use crate::config::{ServerConfig, TlsConfig};
@@ -57,32 +57,6 @@ const SELF_SIGNED_VALIDITY_DAYS: i64 = 3653;
 /// Backdating applied to `not_before`, to tolerate modest clock skew between
 /// this server and a client — as in [`crate::signer::local_ca`].
 const CLOCK_SKEW_ALLOWANCE: time::Duration = time::Duration::hours(1);
-
-/// How many connections may sit between the TCP accept and `axum` — handshakes
-/// in flight plus finished streams not yet picked up.
-///
-/// This is the accept loop's backpressure: it reserves a slot *before* accepting,
-/// so a flood of half-open TLS connections cannot spawn tasks without bound.
-const MAX_PENDING_CONNECTIONS: usize = 256;
-
-/// Pause after a failed `accept()`, so a listener that is refusing connections
-/// (out of file descriptors, say) does not spin a core. Mirrors what
-/// `axum::serve` does for the same case.
-const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_secs(1);
-
-/// The listener type [`TlsListener::spawn`] hands to `axum::serve`.
-///
-/// The `tap_io` wrapper is **functional, not decorative**.
-/// `into_make_service_with_connect_info::<SocketAddr>()` requires
-/// `SocketAddr: Connected<IncomingStream<'_, L>>`, and axum implements that for
-/// exactly two listeners: the concrete `TcpListener`, and — blanket — any
-/// `TapIo<L, F>` whose `L::Addr` is `Clone + Sync + 'static`. We cannot write the
-/// missing impl ourselves: foreign trait, foreign `Self` type, coherence refuses
-/// it. So the wrapper is what makes the peer address reach the request
-/// extensions, and without it `add_filter_middleware` sees no client address and
-/// the IP filters fail closed. Returning the wrapped type from `spawn` is what
-/// keeps a caller from forgetting.
-pub type HttpsListener = TapIo<TlsListener, fn(&mut TlsStream<TcpStream>)>;
 
 /// Builds the TLS acceptor for the ACME listener, or `None` when HTTPS is
 /// disabled. Called once at startup, so it may fail fast (the caller exits).
@@ -250,33 +224,17 @@ fn generate_self_signed(base_url: &str) -> anyhow::Result<(String, String)> {
     Ok((certificate.pem(), key_pair.serialize_pem()))
 }
 
-/// A listener yielding connections whose TLS handshake has already completed.
-///
-/// Implements `axum::serve::Listener`, so the server keeps being run by
-/// `axum::serve` — including `into_make_service_with_connect_info`, which is what
-/// the IP filters depend on (see [`HttpsListener`]).
-///
-/// **Handshakes happen off the accept path.** A background task accepts TCP
-/// connections and spawns each handshake, so one slow client cannot hold up
-/// every other connection for the length of the timeout; `accept()` only picks
-/// up the results. A handshake that fails or runs out of budget is logged and
-/// dropped — the trait's `accept()` returns no `Result`, which suits this
-/// exactly: a bad connection simply never becomes one.
-pub struct TlsListener {
-    /// Connections whose handshake completed, oldest first.
-    incoming: mpsc::Receiver<(TlsStream<TcpStream>, SocketAddr)>,
-    /// The address the underlying socket is bound to.
-    local_addr: SocketAddr,
-}
-
 /// Everything one handshake needs, as a single swappable value.
 ///
 /// The pair travels together because both halves come from the same `[tls]`
 /// section and both are read at the same moment — the top of a handshake. Making
-/// this the unit the accept loop reads is what lets a renewed certificate and a
-/// changed `handshake_timeout_ms` land without rebinding the socket: a
-/// configuration reload publishes a new `TlsSettings` and the next connection
-/// uses it, while connections already established are untouched.
+/// this the unit [`crate::listener`]'s accept loop reads is what lets a renewed
+/// certificate and a changed `handshake_timeout_ms` land without rebinding the
+/// socket: a configuration reload publishes a new `TlsSettings` and the next
+/// connection uses it, while connections already established are untouched.
+///
+/// That cell is an `Option`, and the absence is `tls.enabled = false` — which is
+/// why turning TLS on or off is not a different listener type either.
 #[derive(Clone)]
 pub struct TlsSettings {
     pub acceptor: TlsAcceptor,
@@ -290,117 +248,6 @@ impl TlsSettings {
             acceptor,
             handshake_timeout,
         }
-    }
-
-    /// A fixed setting, for a caller with no reload to serve.
-    ///
-    /// The sender is dropped on the spot; a `watch` receiver keeps answering
-    /// `borrow` for ever afterwards, so this is a constant rather than a channel
-    /// that goes quiet.
-    #[must_use]
-    pub fn fixed(self) -> watch::Receiver<Self> {
-        watch::channel(self).1
-    }
-}
-
-impl TlsListener {
-    /// Starts accepting on `tcp`, handshaking under the current [`TlsSettings`].
-    ///
-    /// The settings are read **per connection**, immediately before the
-    /// handshake, so replacing them takes effect on the next client without
-    /// disturbing the socket or anyone already connected.
-    ///
-    /// The returned listener is the one to hand to `axum::serve` — see
-    /// [`HttpsListener`] for why it is wrapped.
-    pub fn spawn(
-        tcp: TcpListener,
-        settings: watch::Receiver<TlsSettings>,
-    ) -> std::io::Result<HttpsListener> {
-        let local_addr = tcp.local_addr()?;
-        let (sender, incoming) = mpsc::channel(MAX_PENDING_CONNECTIONS);
-
-        tokio::spawn(async move {
-            loop {
-                // Reserving before accepting is the backpressure: at most
-                // `MAX_PENDING_CONNECTIONS` connections are in flight, and a
-                // dropped listener closes the channel, which ends this task.
-                let Ok(permit) = sender.clone().reserve_owned().await else {
-                    debug!(event = "tls_accept_loop_ended", outcome = "success");
-                    return;
-                };
-
-                let (stream, peer) = match tcp.accept().await {
-                    Ok(connection) => connection,
-                    Err(error) => {
-                        warn!(event = "tls_accept_failed", outcome = "failure", error = %error);
-                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
-                        continue;
-                    }
-                };
-
-                // Read here rather than captured above: this is the point a
-                // reloaded certificate takes effect. The `Ref` guard is dropped
-                // before the spawn, so nothing holds the lock across an await.
-                let TlsSettings {
-                    acceptor,
-                    handshake_timeout,
-                } = settings.borrow().clone();
-                tokio::spawn(async move {
-                    match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
-                        Ok(Ok(tls)) => {
-                            permit.send((tls, peer));
-                        }
-                        // Neither is the server's problem: a port scan, a
-                        // cleartext client, a stalled handshake. Never fatal.
-                        Ok(Err(error)) => {
-                            debug!(event = "tls_handshake_failed", outcome = "failure", peer = %peer, error = %error);
-                        }
-                        Err(_) => {
-                            debug!(event = "tls_handshake_timeout", outcome = "failure", peer = %peer)
-                        }
-                    }
-                });
-            }
-        });
-
-        Ok(Self {
-            incoming,
-            local_addr,
-        }
-        // See `HttpsListener`: this is what carries the peer address into the
-        // request extensions. The closure itself has nothing to do.
-        .tap_io(noop_tap as fn(&mut TlsStream<TcpStream>)))
-    }
-}
-
-/// The `tap_io` callback. Named rather than a closure so [`HttpsListener`] can
-/// spell its type out.
-fn noop_tap(_stream: &mut TlsStream<TcpStream>) {}
-
-impl Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
-    type Addr = SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        match self.incoming.recv().await {
-            Some(connection) => connection,
-            // The accept task only ends when this listener is dropped, so the
-            // channel closing means it died. There is no error to return in this
-            // signature, and returning a connection is impossible; parking is
-            // what is left.
-            None => {
-                error!(
-                    event = "tls_acceptor_stopped",
-                    outcome = "failure",
-                    "the TLS accept task ended: no further connection will be served"
-                );
-                pending().await
-            }
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(self.local_addr)
     }
 }
 
@@ -694,193 +541,5 @@ mod tests {
 
         let error = startup_error(from_config(&cfg));
         assert!(error.contains("no CERTIFICATE block"), "{error}");
-    }
-
-    /// The whole listener, over a real socket: `axum::serve` on top of
-    /// [`TlsListener`], driven by a real TLS client.
-    mod loopback {
-        use super::*;
-        use axum::extract::ConnectInfo;
-        use axum::routing::get;
-        use axum::{Router, serve};
-        use rustls::pki_types::ServerName;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio_rustls::TlsConnector;
-
-        /// Serves `/peer`, which answers with the peer address axum saw — the
-        /// value the IP filters run on.
-        async fn https_server(handshake_timeout: Duration) -> u16 {
-            let dir = TempDir::new("tls");
-            let acceptor = from_config(&tls_config(&dir, "https://localhost"))
-                .unwrap()
-                .unwrap();
-
-            let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = tcp.local_addr().unwrap().port();
-            let listener =
-                TlsListener::spawn(tcp, TlsSettings::new(acceptor, handshake_timeout).fixed())
-                    .unwrap();
-
-            let app = Router::new().route(
-                "/peer",
-                get(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move { peer.to_string() }),
-            );
-
-            tokio::spawn(async move {
-                serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .await
-                .unwrap();
-            });
-
-            // The directory must outlive the server: the acceptor holds the
-            // parsed material, so the files may go, but not before `from_config`
-            // has read them.
-            drop(dir);
-            port
-        }
-
-        /// One `GET /peer` over TLS, returning the raw response and the address
-        /// the client used.
-        async fn get_peer(port: u16) -> (String, SocketAddr) {
-            let config =
-                crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
-            let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-            let client_addr = stream.local_addr().unwrap();
-
-            let mut tls = TlsConnector::from(config)
-                .connect(ServerName::try_from("localhost").unwrap(), stream)
-                .await
-                .unwrap();
-            tls.write_all(b"GET /peer HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-                .await
-                .unwrap();
-
-            let mut response = String::new();
-            tls.read_to_string(&mut response).await.unwrap();
-            (response, client_addr)
-        }
-
-        /// The certificate the server presented on one fresh connection.
-        async fn peer_certificate(port: u16) -> Vec<u8> {
-            let config =
-                crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
-            let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-            let tls = TlsConnector::from(config)
-                .connect(ServerName::try_from("localhost").unwrap(), stream)
-                .await
-                .unwrap();
-            tls.get_ref()
-                .1
-                .peer_certificates()
-                .expect("the server presented a certificate")[0]
-                .to_vec()
-        }
-
-        /// A renewed certificate reaches the next client without the socket
-        /// moving — the reason the accept loop reads its settings per
-        /// connection instead of capturing them.
-        ///
-        /// Two whole certificates rather than a renewed one: `from_config`
-        /// generates a fresh key each time, so two directories give two provably
-        /// distinct DERs, which is all the assertion needs.
-        #[tokio::test]
-        async fn a_swapped_certificate_is_served_to_the_next_connection() {
-            let first_dir = TempDir::new("tls-first");
-            let second_dir = TempDir::new("tls-second");
-            let first = from_config(&tls_config(&first_dir, "https://localhost"))
-                .unwrap()
-                .unwrap();
-            let second = from_config(&tls_config(&second_dir, "https://localhost"))
-                .unwrap()
-                .unwrap();
-
-            let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = tcp.local_addr().unwrap().port();
-            let (sender, receiver) =
-                watch::channel(TlsSettings::new(first, Duration::from_secs(5)));
-            let listener = TlsListener::spawn(tcp, receiver).unwrap();
-
-            let app = Router::new().route("/peer", get(|| async { "ok" }));
-            tokio::spawn(async move {
-                serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .await
-                .unwrap();
-            });
-
-            let before = peer_certificate(port).await;
-            sender.send_replace(TlsSettings::new(second, Duration::from_secs(5)));
-            let after = peer_certificate(port).await;
-
-            // Both connections went to the same `port`, which is the half that
-            // matters: the certificate changed without the socket being rebound.
-            assert_ne!(
-                before, after,
-                "the connection after the swap must see the new certificate"
-            );
-        }
-
-        /// The end-to-end proof: a real handshake, a real request, and — the
-        /// point of the test — `ConnectInfo` surviving the TLS wrapper. Without
-        /// it every IP filter would fail closed.
-        #[tokio::test]
-        async fn a_request_is_served_with_the_peer_address_intact() {
-            let port = https_server(Duration::from_secs(5)).await;
-            let (response, client_addr) = get_peer(port).await;
-
-            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-            assert!(
-                response.ends_with(&client_addr.to_string()),
-                "expected the body to be {client_addr}, got {response}"
-            );
-        }
-
-        /// A cleartext client (or a port scan) fails the handshake without
-        /// taking the listener down with it.
-        #[tokio::test]
-        async fn a_failed_handshake_does_not_stop_the_listener() {
-            let port = https_server(Duration::from_secs(5)).await;
-
-            let mut plain = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-            plain.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
-            // The server answers a TLS alert, not HTTP.
-            let mut ignored = Vec::new();
-            let _ = plain.read_to_end(&mut ignored).await;
-
-            let (response, _) = get_peer(port).await;
-            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-        }
-
-        /// A client that connects and then says nothing is dropped when its
-        /// budget runs out — and, crucially, does not hold up anyone else while
-        /// it stalls. That is the whole reason handshakes are spawned rather
-        /// than run inside `accept()`.
-        #[tokio::test]
-        async fn a_stalled_handshake_times_out_without_blocking_others() {
-            let port = https_server(Duration::from_millis(300)).await;
-
-            let mut stalled = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-
-            // Served while the first connection is still stuck mid-handshake.
-            let (response, _) = tokio::time::timeout(Duration::from_secs(5), get_peer(port))
-                .await
-                .expect("a stalled handshake must not block the accept loop");
-            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
-
-            // And the stalled one is eventually dropped, not held forever.
-            let mut buffer = [0u8; 1];
-            let read = tokio::time::timeout(Duration::from_secs(5), stalled.read(&mut buffer))
-                .await
-                .expect("the handshake timeout must close the connection");
-            assert!(
-                matches!(read, Ok(0) | Err(_)),
-                "expected EOF after the handshake timeout, got {read:?}"
-            );
-        }
     }
 }

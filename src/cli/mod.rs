@@ -311,27 +311,26 @@ async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>>
     }
 }
 
-/// Binds the metrics socket when `[metrics]` is on, refusing a collision first.
+/// Refuses a `[metrics]` bind address that collides with another listener's.
 ///
-/// The twin of [`bind_admin`], and the same shape for the same reason: a socket
-/// that cannot be bound must stop startup rather than leave the process running
-/// with one of its three listeners silently missing.
+/// Pure, so a reload runs the same check before rebinding anything — the twin of
+/// [`crate::webadmin::check_config`], and beside it in `apply_reload` for the
+/// same reason: a listener configuration that would not start must not be one a
+/// running server can be reloaded into.
 ///
-/// Deliberately **no loopback check**. `webadmin::check_config` refuses a
-/// non-loopback admin bind without TLS because that listener's cookie is always
-/// `Secure`, which a browser will not store over plain HTTP, so the failure
-/// would be invisible. Nothing here has a cookie: a metrics port reachable from
-/// a Prometheus host on another machine is the intended deployment, and the
-/// firewall is what bounds it.
-async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>> {
+/// Three listeners, so the check is pairwise. `webadmin` already refuses
+/// admin-versus-server; these are the two pairs it cannot see. Checked even when
+/// `[admin]` is off, since enabling the panel later must not be what surfaces a
+/// latent conflict.
+///
+/// # Errors
+///
+/// Names the other key when the two addresses are equal.
+pub fn check_metrics_config(config: &Config) -> anyhow::Result<()> {
     if !config.metrics.enabled {
-        return Ok(None);
+        return Ok(());
     }
 
-    // Three listeners, so the collision check is pairwise. `webadmin` already
-    // refuses admin-versus-server; these are the two pairs it cannot see.
-    // Checked even when `[admin]` is off, since enabling the panel later must
-    // not be what surfaces a latent conflict.
     let bind = &config.metrics.bind_address;
     for (name, other) in [
         ("server.bind_address", &config.server.bind_address),
@@ -347,7 +346,28 @@ async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener
             );
         }
     }
+    Ok(())
+}
 
+/// Binds the metrics socket when `[metrics]` is on, refusing a collision first.
+///
+/// The twin of [`bind_admin`], and the same shape for the same reason: a socket
+/// that cannot be bound must stop startup rather than leave the process running
+/// with one of its three listeners silently missing.
+///
+/// Deliberately **no loopback check**. `webadmin::check_config` refuses a
+/// non-loopback admin bind without TLS because that listener's cookie is always
+/// `Secure`, which a browser will not store over plain HTTP, so the failure
+/// would be invisible. Nothing here has a cookie: a metrics port reachable from
+/// a Prometheus host on another machine is the intended deployment, and the
+/// firewall is what bounds it.
+async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>> {
+    check_metrics_config(config)?;
+    if !config.metrics.enabled {
+        return Ok(None);
+    }
+
+    let bind = &config.metrics.bind_address;
     let listener = TcpListener::bind(bind).await.inspect_err(|error| {
         error!(event = "metrics_socket_bind_failed",
                outcome = "failure",
@@ -470,17 +490,10 @@ pub async fn serve_on_with_reloads(
             },
         )?;
 
-    let generation = build_generation(
-        &config,
-        &resolved,
-        &assembly,
-        dispatchers,
-        admin_listener.is_some(),
-        None,
-    )
-    .inspect_err(|error| {
-        error!(event = "profile_init_failed", outcome = "failure", error = %error);
-    })?;
+    let generation = build_generation(&config, &resolved, &assembly, dispatchers, None)
+        .inspect_err(|error| {
+            error!(event = "profile_init_failed", outcome = "failure", error = %error);
+        })?;
 
     // Startup only, deliberately not re-run on a reload: `profile_mounted` means
     // "this endpoint came up", and re-firing it on every SIGHUP would make the
@@ -542,95 +555,57 @@ pub async fn serve_on_with_reloads(
         protocol = if tls.is_some() { "https" } else { "http" }
     );
 
+    // One accept loop per role, each owning a socket a reload can replace and a
+    // TLS mode it can switch — see `crate::listener`. `axum::serve` below is
+    // handed one of these instead of a `TcpListener` and therefore outlives
+    // every rebind, which is what removes the listener from the list of things
+    // only a restart can change.
+    let admin_bound = bound_address(admin_listener.as_ref(), &config.admin.bind_address);
+    let metrics_bound = bound_address(metrics_listener.as_ref(), &config.metrics.bind_address);
+    let (acme_socket, acme_handle) = crate::listener::spawn("acme", Some(listener), tls);
+    let (admin_socket, admin_handle) = crate::listener::spawn("admin", admin_listener, admin_tls);
+    let (metrics_socket, metrics_handle) =
+        crate::listener::spawn("metrics", metrics_listener, None);
+
     // Behind a swap cell rather than served directly, so a configuration reload
     // can replace the whole router without the socket moving. The cell is what
     // `axum::serve` holds; `acme_app` itself is only ever generation one.
     let (acme_router_tx, acme_router_rx) = crate::reload::router_channel(acme_app);
-    let app = crate::reload::swappable(acme_router_rx);
+    let acme = serve_role(
+        crate::reload::swappable(acme_router_rx),
+        acme_socket,
+        shutdown_rx.clone(),
+    );
 
-    // Boxed rather than four `match` arms: the TLS and cleartext paths produce
-    // different listener types, and each listener has its own.
-    let mut tls_tx = None;
-    let acme: Serving = match tls {
-        Some(settings) => {
-            let (sender, tls_rx) = tokio::sync::watch::channel(settings);
-            tls_tx = Some(sender);
-            let listener = tls::TlsListener::spawn(listener, tls_rx).inspect_err(|error| {
-                error!(event = "tls_listener_start_failed", outcome = "failure", error = %error);
-            })?;
-            Box::pin(
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
-                .into_future(),
-            )
-        }
-        None => Box::pin(
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(on_shutdown(shutdown_rx.clone()))
-            .into_future(),
-        ),
-    };
-
-    // Taken before the admin arm consumes `shutdown_rx`, so all three listeners
-    // stop on the one signal — the property `serve_on_with`'s three-port test
-    // exists to pin.
-    let metrics_shutdown_rx = shutdown_rx.clone();
-
-    let mut admin_router_tx = None;
-    let mut admin_tls_tx = None;
-    let admin: Serving = match (admin_app, admin_listener) {
-        (Some(app), Some(listener)) => {
-            let (serving, cells) = serve_admin(
-                &config,
-                database.clone(),
-                app,
-                admin_tls,
-                listener,
-                shutdown_rx,
-            )
-            .await?;
-            admin_router_tx = Some(cells.router);
-            admin_tls_tx = cells.tls;
-            serving
-        }
-        // The panel is off: a future that is already done, so `try_join!`
-        // below needs no second shape.
-        _ => Box::pin(std::future::ready(Ok(()))),
-    };
+    // Opened whether or not the panel is on, unlike the app inside it: with
+    // `admin.enabled` reloadable, a cell created only when the panel starts
+    // would be the one thing a reload turning it on could not reach. An empty
+    // `Router` answers `404` to everything, which is also what the panel being
+    // switched off later publishes here.
+    let (admin_router_tx, admin_router_rx) =
+        crate::reload::router_channel(admin_app.unwrap_or_default());
+    let admin = serve_role(
+        crate::reload::swappable(admin_router_rx),
+        admin_socket,
+        shutdown_rx.clone(),
+    );
+    if config.admin.enabled {
+        announce_admin_listener(&config, &database, &admin_bound).await;
+    }
 
     // The third listener. Served directly rather than through a
     // `reload::router_channel` like the other two, and the asymmetry is
     // deliberate: this router has one route whose only state is the registry,
     // and the registry is carried across generations rather than rebuilt (see
-    // `Assembly`), so a new generation could put nothing new in it. Both
-    // `[metrics]` keys are frozen for the reason every bind address is — the
-    // socket cannot move under a listener that is already serving.
-    let metrics: Serving = match metrics_listener {
-        Some(listener) => {
-            info!(
-                event = "metrics_listening",
-                outcome = "success",
-                bind_address = %config.metrics.bind_address,
-                "unauthenticated by design: the port is the boundary, so firewall it"
-            );
-            let app = crate::metrics_app(assembly.metrics.clone());
-            Box::pin(
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(on_shutdown(metrics_shutdown_rx))
-                .into_future(),
-            )
-        }
-        None => Box::pin(std::future::ready(Ok(()))),
-    };
+    // `Assembly`), so a new generation could put nothing new in it.
+    if config.metrics.enabled {
+        announce_metrics_listener(&metrics_bound);
+    }
+    let metrics = serve_role(
+        crate::metrics_app(assembly.metrics.clone()),
+        metrics_socket,
+        shutdown_rx,
+    );
 
     // The supervisor owns every cell sender from here on, which is what makes it
     // the only writer: a generation is published by one task or by nobody.
@@ -645,8 +620,9 @@ pub async fn serve_on_with_reloads(
             acme_router: acme_router_tx,
             admin_router: admin_router_tx,
             job_registry: registry_tx,
-            tls: tls_tx,
-            admin_tls: admin_tls_tx,
+            acme: acme_handle,
+            admin: admin_handle,
+            metrics: metrics_handle,
         },
         logins,
     )));
@@ -659,10 +635,25 @@ pub async fn serve_on_with_reloads(
     Ok(())
 }
 
-/// The admin listener's swap cells, handed back so the supervisor owns them.
-struct AdminCells {
-    router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
-    tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
+/// Serves `app` on one role's socket until the process shuts down.
+///
+/// One shape for all three roles, where there used to be a boxed future per
+/// listener per TLS arm: [`crate::listener::RoleSocket`] is the same type
+/// whether the role is speaking TLS, speaking cleartext or — a socket having
+/// been closed by a reload — not serving at all, so the four cases collapse into
+/// this one call. Its future lives for the process: a rebind replaces what is
+/// underneath it, never the `axum::serve` above.
+fn serve_role(
+    app: axum::Router,
+    socket: crate::listener::RoleSocket,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> impl Future<Output = std::io::Result<()>> + Send {
+    axum::serve(
+        socket,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(on_shutdown(shutdown))
+    .into_future()
 }
 
 /// Everything one configuration generation contributes, built and validated
@@ -696,14 +687,21 @@ pub(crate) struct Generation {
 /// hold it back: it is published to the long-lived [`crate::notify::Notifiers`]
 /// handle at swap time, *before* the routers, so a request served by the new
 /// generation cannot queue a delivery the job runner's map does not know.
+///
+/// Whether the panel is part of this generation is read from `admin.enabled`
+/// rather than from whether a socket exists. It used to be the latter, which
+/// was the same answer while the key was frozen and is the wrong one now that a
+/// reload can turn the panel on: the app, its TLS, its session sweep and its
+/// login limiter all have to appear in the generation *before* there is a
+/// listener to serve them.
 pub(crate) fn build_generation(
     config: &Arc<Config>,
     resolved: &[crate::config::ProfileConfig],
     assembly: &crate::Assembly,
     dispatchers: crate::notify::DispatcherMap,
-    admin_enabled: bool,
     previous_logins: Option<&crate::webadmin::LoginLimiter>,
 ) -> anyhow::Result<Generation> {
+    let admin_enabled = config.admin.enabled;
     let database = assembly.database.clone();
     let profiles = Profile::build_all_with(config, resolved, assembly, &dispatchers)?;
 
@@ -870,11 +868,14 @@ pub(crate) fn build_generation(
 /// That is what makes a reload atomic without a lock.
 struct Cells {
     acme_router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
-    admin_router:
-        Option<tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>>,
+    admin_router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
     job_registry: tokio::sync::watch::Sender<Arc<crate::jobs::JobRegistry>>,
-    tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
-    admin_tls: Option<tokio::sync::watch::Sender<tls::TlsSettings>>,
+    /// The three sockets. Each carries its role's TLS mode as well, since both
+    /// are read by the same accept loop and both are published the same
+    /// synchronous way — see [`crate::listener::ListenerHandle`].
+    acme: crate::listener::ListenerHandle,
+    admin: crate::listener::ListenerHandle,
+    metrics: crate::listener::ListenerHandle,
 }
 
 /// Serves reload requests for the life of the process.
@@ -926,9 +927,29 @@ async fn supervise_reloads(
                     job_kinds = ?report.job_kinds,
                     tls_reloaded = report.tls_reloaded,
                     admin_tls_reloaded = report.admin_tls_reloaded,
+                    listeners_rebound = ?report.listeners_rebound,
                     logging_reloaded = report.logging_reloaded,
                     duration_ms = crate::millis(report.duration),
                 );
+                // After the reload's own line, and under the new configuration,
+                // since that is what these describe. Each is the same
+                // announcement startup makes for a listener that has just come
+                // up — including the panel's two warnings, which is why this is
+                // here rather than inside the synchronous publishing run.
+                for (role, address) in reloaded.opened {
+                    match role {
+                        Role::Acme => info!(
+                            event = "server_listening",
+                            outcome = "success",
+                            bind_address = %address,
+                            protocol = if config.server.tls.enabled { "https" } else { "http" }
+                        ),
+                        Role::Admin => {
+                            announce_admin_listener(&config, &assembly.database, &address).await;
+                        }
+                        Role::Metrics => announce_metrics_listener(&address),
+                    }
+                }
                 if let Some(respond) = request.respond {
                     let _ = respond.send(Ok(report));
                 }
@@ -961,6 +982,187 @@ async fn supervise_reloads(
     }
 }
 
+/// One of the three sockets this process may hold.
+///
+/// An enum rather than the `&'static str` the log field wants, so the reload
+/// path's per-role handling is exhaustive: a fourth listener would be a compile
+/// error at every point that has to decide something about one, which is exactly
+/// how the third arrived with `bind_metrics` and `check_metrics_config` in
+/// place and nothing else remembering it existed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Acme,
+    Admin,
+    Metrics,
+}
+
+impl Role {
+    /// The `listener` field every log line about this socket carries.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Acme => "acme",
+            Self::Admin => "admin",
+            Self::Metrics => "metrics",
+        }
+    }
+
+    /// The key an operator edits to move this socket, for a refusal to name.
+    fn bind_key(self) -> &'static str {
+        match self {
+            Self::Acme => "server.bind_address",
+            Self::Admin => "admin.bind_address",
+            Self::Metrics => "metrics.bind_address",
+        }
+    }
+}
+
+/// What a reload does to one role's socket.
+///
+/// Built while a failure can still refuse the whole reload, applied once nothing
+/// can fail — the same build-then-publish split every other part of a generation
+/// makes, applied to the one resource that cannot simply be constructed twice.
+enum SocketPlan {
+    /// The role's address and enablement are both unchanged. Note this is
+    /// decided from the *configuration*, never from the address actually bound:
+    /// a caller supplying its own socket (every test that binds `127.0.0.1:0`)
+    /// is entitled to one that does not match the file, and rebinding it out
+    /// from under them would be this feature breaking its own callers.
+    Keep,
+    /// Serve this newly bound socket: the role was switched on, or its address
+    /// moved. Connections already established are untouched — hyper owns those,
+    /// and only the socket beneath them changes.
+    Serve(TcpListener),
+    /// Release the socket: the role was switched off.
+    Close,
+}
+
+/// The three roles' socket plans, and what to say about them afterwards.
+struct SocketPlans {
+    acme: SocketPlan,
+    admin: SocketPlan,
+    metrics: SocketPlan,
+    /// The resolved address of each freshly bound socket, so the announcement
+    /// after the swap names where the listener actually landed.
+    bound: Vec<(Role, String)>,
+}
+
+impl SocketPlans {
+    /// The roles whose socket this reload moved, for [`ReloadReport`] — which is
+    /// what a test waits on and what an operator greps.
+    ///
+    /// [`ReloadReport`]: crate::reload::ReloadReport
+    fn rebound(&self) -> Vec<&'static str> {
+        self.bound.iter().map(|(role, _)| role.label()).collect()
+    }
+
+    /// Hands each socket to its accept loop. Synchronous and infallible, so it
+    /// sits inside the publishing run beside the routers.
+    fn publish(self, cells: &Cells) {
+        for (role, plan, handle) in [
+            (Role::Acme, self.acme, &cells.acme),
+            (Role::Admin, self.admin, &cells.admin),
+            (Role::Metrics, self.metrics, &cells.metrics),
+        ] {
+            match plan {
+                SocketPlan::Keep => {}
+                SocketPlan::Serve(listener) => handle.serve(listener),
+                SocketPlan::Close => {
+                    handle.close();
+                    info!(
+                        event = "server_listener_stopped",
+                        outcome = "success",
+                        listener = role.label(),
+                        "switched off by a configuration reload: the socket is released \
+                         and nothing new is accepted on it"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Decides, and performs, every bind this reload needs.
+///
+/// The ordering rule the whole reload path rests on, applied to sockets: bind
+/// first, so a bad address refuses the reload rather than having already
+/// dropped the live one. Two addresses that differ as strings but collide in
+/// the kernel — `[::]:3000` against `0.0.0.0:3000` — make that bind fail with
+/// `EADDRINUSE`, which is the safe direction: the running socket is still
+/// serving and the refusal names the key.
+///
+/// A `tls.enabled` flip does not appear here at all. The mode is read per
+/// connection (see [`crate::listener`]), so turning TLS on or off keeps the
+/// socket exactly where it is — which is what makes the one case a bind-first
+/// scheme could not serve, an unchanged address, not a case.
+fn plan_sockets(
+    applied: &Config,
+    proposed: &Config,
+) -> Result<SocketPlans, crate::reload::ReloadError> {
+    let mut bound = Vec::new();
+    let mut plan = |role: Role,
+                    was: Option<&str>,
+                    now: Option<&str>|
+     -> Result<SocketPlan, crate::reload::ReloadError> {
+        match (was, now) {
+            (None, None) => Ok(SocketPlan::Keep),
+            (Some(_), None) => Ok(SocketPlan::Close),
+            (Some(was), Some(now)) if was == now => Ok(SocketPlan::Keep),
+            (_, Some(now)) => {
+                let listener = crate::listener::bind_blocking(now).map_err(|error| {
+                    error!(event = "server_socket_bind_failed",
+                           outcome = "failure",
+                           listener = role.label(),
+                           bind_address = %now,
+                           error = %error);
+                    crate::reload::ReloadError::Build(format!(
+                        "`{}` is `{now}`, which cannot be bound: {error}",
+                        role.bind_key()
+                    ))
+                })?;
+                bound.push((role, bound_address(Some(&listener), now)));
+                Ok(SocketPlan::Serve(listener))
+            }
+        }
+    };
+
+    // The ACME listener is never switched off — there is no `server.enabled`,
+    // and a CA serving no ACME would be a process with nothing to do.
+    let acme = plan(
+        Role::Acme,
+        Some(&applied.server.bind_address),
+        Some(&proposed.server.bind_address),
+    )?;
+    let admin = plan(
+        Role::Admin,
+        applied
+            .admin
+            .enabled
+            .then_some(applied.admin.bind_address.as_str()),
+        proposed
+            .admin
+            .enabled
+            .then_some(proposed.admin.bind_address.as_str()),
+    )?;
+    let metrics = plan(
+        Role::Metrics,
+        applied
+            .metrics
+            .enabled
+            .then_some(applied.metrics.bind_address.as_str()),
+        proposed
+            .metrics
+            .enabled
+            .then_some(proposed.metrics.bind_address.as_str()),
+    )?;
+
+    Ok(SocketPlans {
+        acme,
+        admin,
+        metrics,
+        bound,
+    })
+}
+
 /// What one successful reload hands back to the supervisor: the report to log,
 /// and the three pieces of state the *next* reload compares against.
 ///
@@ -973,6 +1175,12 @@ struct Reloaded {
     config: Arc<Config>,
     resolved: Vec<crate::config::ProfileConfig>,
     logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+    /// Each socket this reload bound, with the address it landed on. Announced
+    /// by the supervisor rather than here, because saying a listener is up
+    /// reaches the database (the panel's "nobody can sign in yet" warning) and
+    /// this function has no await point to spend on it — deliberately, that
+    /// being what keeps its publishing run uninterruptible.
+    opened: Vec<(Role, String)>,
 }
 
 /// One reload attempt: build everything, then publish it.
@@ -1026,19 +1234,23 @@ fn apply_reload(
     // every `admin.template_dir` override, which is what keeps a broken one a
     // failed reload rather than a 500 in a browser.
     crate::webadmin::check_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;
+    // Its twin for the third listener: `webadmin::check_config` sees the
+    // admin-versus-server pair, this one sees the two it cannot.
+    check_metrics_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;
+
+    // Every socket this reload needs is bound **here**, where a failure is still
+    // a refusal: a port already taken, an address that does not resolve, a
+    // privileged port after a `setcap` was lost. Past this line nothing can
+    // fail, so the running listeners are never dropped for a configuration that
+    // then turns out not to work.
+    let sockets = plan_sockets(config, &next)?;
 
     let dispatchers = assembly
         .build_dispatchers(&next_resolved)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
-    let generation_built = build_generation(
-        &next,
-        &next_resolved,
-        assembly,
-        dispatchers.clone(),
-        cells.admin_router.is_some(),
-        logins,
-    )
-    .map_err(|error| ReloadError::Build(error.to_string()))?;
+    let generation_built =
+        build_generation(&next, &next_resolved, assembly, dispatchers.clone(), logins)
+            .map_err(|error| ReloadError::Build(error.to_string()))?;
 
     let next_logins = generation_built.logins.clone();
 
@@ -1060,8 +1272,9 @@ fn apply_reload(
             .map(|profile| profile.name.clone())
             .collect(),
         job_kinds: generation_built.job_registry.kinds(),
-        tls_reloaded: generation_built.tls.is_some() && cells.tls.is_some(),
-        admin_tls_reloaded: generation_built.admin_tls.is_some() && cells.admin_tls.is_some(),
+        tls_reloaded: generation_built.tls.is_some(),
+        admin_tls_reloaded: generation_built.admin_tls.is_some(),
+        listeners_rebound: sockets.rebound(),
         logging_reloaded,
         duration: started.elapsed(),
     };
@@ -1070,18 +1283,27 @@ fn apply_reload(
     cells
         .job_registry
         .send_replace(Arc::new(generation_built.job_registry));
-    if let (Some(cell), Some(settings)) = (&cells.tls, generation_built.tls) {
-        cell.send_replace(settings);
-    }
-    if let (Some(cell), Some(settings)) = (&cells.admin_tls, generation_built.admin_tls) {
-        cell.send_replace(settings);
-    }
+
+    // The TLS mode before the socket, so a freshly bound listener's very first
+    // connection is already accepted under the settings this generation built
+    // rather than the previous one's.
+    cells.acme.set_tls(generation_built.tls);
+    cells.admin.set_tls(generation_built.admin_tls);
+    let opened = sockets.bound.clone();
+    sockets.publish(cells);
+
     cells
         .acme_router
         .send_replace(generation_built.acme_app.into_service::<axum::body::Body>());
-    if let (Some(cell), Some(router)) = (&cells.admin_router, generation_built.admin_app) {
-        cell.send_replace(router.into_service::<axum::body::Body>());
-    }
+    // An empty router when the panel is off, which is what a request arriving
+    // on a connection established a moment before it was switched off now gets:
+    // closing the socket stops the next client, and this stops that one.
+    cells.admin_router.send_replace(
+        generation_built
+            .admin_app
+            .unwrap_or_default()
+            .into_service::<axum::body::Body>(),
+    );
 
     // `RUST_LOG` outranks `logging.filter` on a reload exactly as it does at
     // startup — the two disagreeing would be worse — but that makes an edited
@@ -1101,12 +1323,9 @@ fn apply_reload(
         config: next,
         resolved: next_resolved,
         logins: next_logins,
+        opened,
     })
 }
-
-/// One listener's `axum::serve` future, boxed so the TLS and cleartext arms —
-/// which have different listener types — can be joined as one shape.
-type Serving = std::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 
 /// A future that completes when the shutdown relay fires.
 async fn on_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
@@ -1116,24 +1335,16 @@ async fn on_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
     let _ = receiver.wait_for(|ready| *ready).await;
 }
 
-/// Starts the admin listener, logging the **resolved** address so a `:0` bind
-/// is discoverable, and warning when nobody can sign in yet.
-async fn serve_admin(
-    config: &Arc<Config>,
-    database: Arc<Database>,
-    app: axum::Router,
-    tls: Option<tls::TlsSettings>,
-    listener: TcpListener,
-    shutdown: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<(Serving, AdminCells)> {
-    let bind_address = listener.local_addr().map_or_else(
-        |_| config.admin.bind_address.clone(),
-        |addr| addr.to_string(),
-    );
-
+/// Says the panel is up, and warns about the two states that make it useless.
+///
+/// Run whenever the admin listener **opens** — at startup, and again on a
+/// reload that turns `admin.enabled` on. Separate from the serving path since
+/// that no longer starts or stops per role: the socket is what comes and goes,
+/// and this is what an operator needs told when it does.
+async fn announce_admin_listener(config: &Arc<Config>, database: &Arc<Database>, bound: &str) {
     // A listener nobody holds an account for is a running service with no way
     // in; say so once, naming the command that fixes it.
-    if crate::sqlite::admin_user::AdminUser::list_all(&database)
+    if crate::sqlite::admin_user::AdminUser::list_all(database)
         .await
         .is_ok_and(|users| users.is_empty())
     {
@@ -1165,57 +1376,39 @@ async fn serve_admin(
     // Swept once now, then on an interval: sessions outlive a restart, so a
     // startup-only sweep would leak every one an operator never signed out of.
     let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
-    if let Err(error) = crate::sqlite::admin_session::AdminSession::cleanup(idle, &database).await {
+    if let Err(error) = crate::sqlite::admin_session::AdminSession::cleanup(idle, database).await {
         error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);
     }
 
+    // The **resolved** address, so a `:0` bind is discoverable.
     info!(
         event = "admin_listening",
         outcome = "success",
-        bind_address = %bind_address,
-        protocol = if tls.is_some() { "https" } else { "http" },
+        bind_address = %bound,
+        protocol = if config.admin.tls.enabled { "https" } else { "http" },
         base_url = %config.admin.base_url
     );
+}
 
-    // The admin router's own swap cell, for the same reason as the ACME one.
-    let (admin_router_tx, admin_router_rx) = crate::reload::router_channel(app);
-    let app = crate::reload::swappable(admin_router_rx);
+/// The metrics listener's own one-line announcement, and its standing warning.
+fn announce_metrics_listener(bound: &str) {
+    info!(
+        event = "metrics_listening",
+        outcome = "success",
+        bind_address = %bound,
+        "unauthenticated by design: the port is the boundary, so firewall it"
+    );
+}
 
-    let mut tls_tx = None;
-    let serving: Serving = match tls {
-        Some(settings) => {
-            let (sender, tls_rx) = tokio::sync::watch::channel(settings);
-            tls_tx = Some(sender);
-            let listener =
-                tls::TlsListener::spawn(listener, tls_rx).inspect_err(|error| {
-                    error!(event = "admin_tls_listener_start_failed", outcome = "failure", error = %error);
-                })?;
-            Box::pin(
-                axum::serve(
-                    listener,
-                    app.into_make_service_with_connect_info::<SocketAddr>(),
-                )
-                .with_graceful_shutdown(on_shutdown(shutdown))
-                .into_future(),
-            )
-        }
-        None => Box::pin(
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(on_shutdown(shutdown))
-            .into_future(),
-        ),
-    };
-
-    Ok((
-        serving,
-        AdminCells {
-            router: admin_router_tx,
-            tls: tls_tx,
-        },
-    ))
+/// The address a socket ended up on, falling back to what was configured.
+///
+/// The two differ for `:0` and for a caller that supplied its own listener; the
+/// resolved one is what an operator needs, and the configured one is all there
+/// is to say when the socket cannot answer.
+fn bound_address(listener: Option<&TcpListener>, configured: &str) -> String {
+    listener
+        .and_then(|listener| listener.local_addr().ok())
+        .map_or_else(|| configured.to_string(), |address| address.to_string())
 }
 
 async fn shutdown_signal() {

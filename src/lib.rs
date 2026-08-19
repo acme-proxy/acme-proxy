@@ -220,6 +220,7 @@ pub mod http_client;
 pub mod ipam;
 pub mod jobs;
 pub mod key_change;
+pub mod listener;
 pub mod metrics;
 pub mod middlewares;
 pub mod notify;
