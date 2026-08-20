@@ -272,6 +272,76 @@ async fn a_reload_changes_what_the_running_socket_answers() {
     server.stop().await;
 }
 
+/// `[jobs]` reloads, through the same path a `SIGHUP` takes.
+///
+/// Six of these seven keys used to be refused — the runner having snapshotted
+/// its pacing at spawn — so slowing a retry storm or widening a lease cost a
+/// restart and every in-flight order with it. The runner now re-derives its
+/// pacing from a cell on each pass and the queue reads `max_attempts` from a
+/// shared atomic, so all seven ride an ordinary generation.
+///
+/// `retention_days` is the half with an observable in the report: it is the one
+/// key carried by a *handler* rather than by the runner's own loop, so turning it
+/// off has to reach `job_kinds` — which is also what proves the section was
+/// applied rather than merely accepted. `src/reload.rs`'s
+/// `every_jobs_key_is_reloadable` covers the other six at the freeze, and
+/// `src/jobs/runner.rs` covers them reaching the loop.
+#[tokio::test]
+async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
+    let dir = TempDir::new("reload-jobs");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    write_config(
+        &dir,
+        false,
+        "https://before.example",
+        "[jobs]\n\
+         poll_interval_ms = 250\n\
+         max_concurrent = 3\n\
+         max_attempts = 9\n\
+         retry_base_seconds = 15\n\
+         retry_max_seconds = 900\n\
+         lease_seconds = 120\n\
+         retention_days = 0\n",
+    );
+
+    let report = server
+        .reload
+        .reload()
+        .await
+        .expect("no `[jobs]` key is frozen any more");
+    assert_eq!(report.generation, 2);
+    assert!(
+        !report.job_kinds.contains(&"job_retention_sweep"),
+        "`retention_days = 0` unregisters the sweep, so the new registry must \
+         not carry it: {:?}",
+        report.job_kinds,
+    );
+
+    // And back on, which is the direction that registers a handler the previous
+    // generation did not have at all.
+    write_config(
+        &dir,
+        false,
+        "https://before.example",
+        "[jobs]\nretention_days = 3\n",
+    );
+    let report = server
+        .reload
+        .reload()
+        .await
+        .expect("and back the other way");
+    assert_eq!(report.generation, 3);
+    assert!(
+        report.job_kinds.contains(&"job_retention_sweep"),
+        "{:?}",
+        report.job_kinds,
+    );
+
+    server.stop().await;
+}
+
 /// `[logging]` reloads, through the same path a `SIGHUP` takes.
 ///
 /// Every one of these keys used to be refused — the tracing subscriber being

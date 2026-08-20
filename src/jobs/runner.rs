@@ -41,12 +41,17 @@ const LEASE_SLACK: Duration = Duration::from_secs(30);
 /// did lose whatever ran past it.
 const DRAIN_BUDGET: Duration = Duration::from_secs(5);
 
-/// Timing derived from `[jobs]` once, so the loop never re-reads the config.
+/// The pacing derived from `[jobs]`, re-derived on every pass of the loop.
+///
+/// Held by value rather than read through the cell at each use, so one pass
+/// cannot claim a job under one lease and settle it under another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RunnerConfig {
     poll_interval: Duration,
     lease: Duration,
     retry_base: Duration,
     retry_max: Duration,
+    max_concurrent: usize,
 }
 
 impl RunnerConfig {
@@ -56,6 +61,53 @@ impl RunnerConfig {
             lease: Duration::from_secs(config.lease_seconds),
             retry_base: Duration::from_secs(config.retry_base_seconds),
             retry_max: Duration::from_secs(config.retry_max_seconds),
+            // Clamped rather than trusted: `Semaphore` panics above its own
+            // ceiling, and this value now arrives from a reload as well as from
+            // startup — a panic taking the runner down mid-flight is a great
+            // deal worse than one at startup, where at least nothing was
+            // running yet.
+            max_concurrent: config.max_concurrent.clamp(1, Semaphore::MAX_PERMITS),
+        }
+    }
+}
+
+/// The concurrency pool, and how large it currently actually is.
+///
+/// A [`Semaphore`] has no `resize`, and the asymmetry between its two halves is
+/// the whole reason this type exists: `add_permits` always lands, but
+/// `forget_permits` can only take back permits that are *free*, and reports how
+/// many it got. So a reload that lowers `jobs.max_concurrent` while every slot
+/// is busy takes what it can now and converges as running jobs return theirs —
+/// in-flight work is never cancelled to reach a number.
+///
+/// [`capacity`](Permits::capacity) is therefore what this pool has really
+/// issued, which may still be above the configured target. That is the number a
+/// graceful stop must wait for: draining against the target would return before
+/// the permits above it came back.
+struct Permits {
+    semaphore: Arc<Semaphore>,
+    capacity: usize,
+}
+
+impl Permits {
+    fn new(capacity: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(capacity)),
+            capacity,
+        }
+    }
+
+    /// Moves the pool towards `target`, as far as it can go right now.
+    fn resize(&mut self, target: usize) {
+        match target.cmp(&self.capacity) {
+            std::cmp::Ordering::Greater => {
+                self.semaphore.add_permits(target - self.capacity);
+                self.capacity = target;
+            }
+            std::cmp::Ordering::Less => {
+                self.capacity -= self.semaphore.forget_permits(self.capacity - target);
+            }
+            std::cmp::Ordering::Equal => {}
         }
     }
 }
@@ -72,54 +124,58 @@ pub fn spawn_runner(
     config: &JobsConfig,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
-    // A channel whose sender is dropped on the spot: `borrow` keeps answering
-    // for ever and `changed()` simply never fires, which is exactly "this
-    // registry is fixed" without a second code path through the loop.
-    let (_sender, receiver) = watch::channel(registry);
-    spawn_runner_watching(queue, receiver, config, shutdown)
+    // Two channels whose senders are dropped on the spot. A dropped sender does
+    // **not** mean `changed()` stops firing — it means it returns `Err` at once
+    // and for ever, which in a `select!` is a permanently ready arm and a loop
+    // that spins. So the loop treats that `Err` as "this cell is fixed" and
+    // disables the arm; these two lines are then exactly "nothing here reloads"
+    // without a second code path through the loop.
+    let (_registry_sender, registry_rx) = watch::channel(registry);
+    let (_config_sender, config_rx) = watch::channel(Arc::new(config.clone()));
+    spawn_runner_watching(queue, registry_rx, config_rx, shutdown)
 }
 
-/// Starts the runner over a registry the caller can replace.
+/// Starts the runner over a registry and a `[jobs]` section the caller can
+/// replace.
 ///
-/// The reload path publishes a new [`JobRegistry`] rather than restarting the
-/// runner, and both halves of that matter. Sweep handlers capture their cutoffs
-/// by value (`nonce.ttl_seconds`, `audit.retention_days`, …), so a changed
-/// retention only takes effect through a new registry; and a retention going
+/// The reload path publishes into both cells rather than restarting the runner,
+/// and they carry different halves of `[jobs]`. The **registry** carries the
+/// values a handler captured: sweep cutoffs (`nonce.ttl_seconds`,
+/// `audit.retention_days`, `jobs.retention_days`) are built into `SweepJob`s, so
+/// a changed retention only takes effect through a new registry — and one going
 /// `0 → N` registers a handler that did not exist at all, which is why
 /// [`recover`](JobHandler::recover) runs again for kinds the previous generation
-/// did not have.
+/// did not have. The **config** cell carries the runner's own pacing, which it
+/// re-derives on each pass; see [`RunnerConfig`] and [`Permits`].
 pub fn spawn_runner_watching(
     queue: JobQueue,
     registry: watch::Receiver<Arc<JobRegistry>>,
-    config: &JobsConfig,
+    config: watch::Receiver<Arc<JobsConfig>>,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
-    let runner = RunnerConfig::from(config);
-    let permits = Arc::new(Semaphore::new(config.max_concurrent.max(1)));
-    let max_concurrent = config.max_concurrent;
     tokio::spawn(async move {
-        run_loop(queue, registry, runner, permits, max_concurrent, shutdown).await;
+        run_loop(queue, registry, config, shutdown).await;
     })
 }
 
 async fn run_loop(
     queue: JobQueue,
     mut registry_rx: watch::Receiver<Arc<JobRegistry>>,
-    config: RunnerConfig,
-    permits: Arc<Semaphore>,
-    max_concurrent: usize,
+    mut config_rx: watch::Receiver<Arc<JobsConfig>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let runner_id = uuid::Uuid::new_v4().to_string();
     let database = queue.database().clone();
     let mut registry = registry_rx.borrow_and_update().clone();
+    let mut config = RunnerConfig::from(&config_rx.borrow_and_update());
+    let mut permits = Permits::new(config.max_concurrent);
 
     info!(
         event = "job_runner_started",
         outcome = "progress",
         runner_id = %runner_id,
         job_kinds = ?registry.kinds(),
-        max_concurrent = max_concurrent,
+        max_concurrent = config.max_concurrent,
     );
 
     // Before the loop: every handler gets one chance to re-derive work a
@@ -130,28 +186,63 @@ async fn run_loop(
         handler.recover(&queue).await;
     }
 
+    // Whether the last pass ran out of slots, which arms the permit arm below.
+    let mut saturated;
+
     loop {
+        // Both cells are read at the **top of the pass**, not in the arms that
+        // wake on them. An arm can only apply what it caught, and a pass can be
+        // entered from five different wake-ups; reading here is what makes "the
+        // loop always runs on the newest generation" true by construction rather
+        // than by every arm remembering to do it.
+        registry = registry_rx.borrow_and_update().clone();
+        recover_new_kinds(&queue, &registry, &mut recovered).await;
+
+        let next = RunnerConfig::from(&config_rx.borrow_and_update());
+        if next != config {
+            config = next;
+            retuned(&runner_id, config);
+        }
+
+        // A cell whose last sender has gone must have its arm **disabled**, not
+        // merely handled: `changed()` on a closed channel returns `Err` at once
+        // and for ever, which in a `select!` is a permanently ready arm and a
+        // loop that spins rather than sleeps. `has_changed` asks without
+        // consuming the marker the `borrow_and_update`s above rely on, and asking
+        // once per pass is what keeps `spawn_runner`'s fixed cells free — see
+        // there for why they are dropped senders in the first place.
+        let watching_registry = registry_rx.has_changed().is_ok();
+        let watching_config = config_rx.has_changed().is_ok();
+
         // Rows whose runner died holding the lease. Runs before claiming so a
         // crashed process's work is eligible on this pass rather than the next.
         if let Err(error) = Job::reclaim_expired(now_secs(), &database).await {
             error!(event = "job_reclaim_failed", outcome = "failure", error = %error);
         }
 
-        drain_ready(&queue, &registry, &config, &permits, &runner_id).await;
+        saturated = drain_ready(&queue, &registry, &config, &mut permits, &runner_id).await;
 
         // Idle: whichever comes first. `notified()` is what keeps a job queued
-        // by a request from waiting on `poll_interval`. The registry arm never
-        // fires when the sender was dropped at spawn, which is what makes the
-        // fixed-registry case free rather than a second loop.
+        // by a request from waiting on `poll_interval`; the two cell arms are
+        // what make a *lowered* `poll_interval_ms` land at once rather than
+        // after one more sleep at the old, longer value; and the permit arm is
+        // how a saturated pool resumes the moment a slot frees.
+        //
+        // That last arm is why `drain_ready` never waits for a permit itself. It
+        // used to, and a full pool therefore parked this loop — so under exactly
+        // the sustained backlog that makes an operator want to raise
+        // `jobs.max_concurrent`, neither the raise nor a shutdown would have been
+        // noticed until the queue went quiet on its own.
         tokio::select! {
             () = queue.notify.notified() => {}
             () = tokio::time::sleep(config.poll_interval) => {}
-            result = registry_rx.changed() => {
-                if result.is_ok() {
-                    registry = registry_rx.borrow_and_update().clone();
-                    recover_new_kinds(&queue, &registry, &mut recovered).await;
-                }
-            }
+            () = permit_available(&permits.semaphore), if saturated => {}
+            // Both are pure wake-ups: what they carry is read at the top of the
+            // next pass, not here. A sender dropped between the check above and
+            // this point costs one spurious pass and is disabled by the next
+            // check, which is as much as a race here can be worth.
+            _ = registry_rx.changed(), if watching_registry => {}
+            _ = config_rx.changed(), if watching_config => {}
             _ = shutdown.changed() => break,
         }
         if *shutdown.borrow() {
@@ -159,7 +250,37 @@ async fn run_loop(
         }
     }
 
-    stop(&runner_id, &database, &permits, max_concurrent).await;
+    stop(&runner_id, &database, &permits).await;
+}
+
+/// Resolves once the pool has a slot free.
+///
+/// The permit is taken and dropped on the spot: this is a readiness signal, not
+/// a claim on a slot — [`drain_ready`] takes the real one on the pass that
+/// follows. Cancel-safe, which it has to be to sit in a `select!`: losing the
+/// place in the queue costs nothing when the thing being waited for is only
+/// "somebody finished".
+async fn permit_available(semaphore: &Semaphore) {
+    let _ = semaphore.acquire().await;
+}
+
+/// Says a reload moved this runner's pacing, and to what.
+///
+/// The one line that tells an operator a `[jobs]` edit actually landed — the
+/// supervisor's `server_config_reloaded` says a generation was published, not
+/// that the runner picked it up. Only emitted when the derived pacing really
+/// moved, so a reload of some unrelated section is silent here.
+fn retuned(runner_id: &str, config: RunnerConfig) {
+    info!(
+        event = "job_runner_retuned",
+        outcome = "success",
+        runner_id = %runner_id,
+        poll_interval_ms = crate::millis(config.poll_interval),
+        lease_seconds = config.lease.as_secs(),
+        retry_base_seconds = config.retry_base.as_secs(),
+        retry_max_seconds = config.retry_max.as_secs(),
+        max_concurrent = config.max_concurrent,
+    );
 }
 
 /// Runs `recover` for handlers this runner has not yet recovered for.
@@ -197,22 +318,37 @@ async fn recover_new_kinds(
 /// naming: claiming first would start every backlogged row's lease ticking while
 /// it sat waiting for a permit, and each would then be reclaimed as "crashed"
 /// having never run.
+///
+/// The pool is resized here rather than once per pass, and that is where a
+/// lowered `jobs.max_concurrent` gets its teeth: the moment before handing out a
+/// slot is the moment to give back the ones this runner owes, so a shrink cannot
+/// be overtaken by the very admissions it was meant to stop.
+///
+/// Returns whether it stopped because the pool was full rather than because the
+/// queue was empty — the caller arms `permit_available` on that, and the reason
+/// it must **never wait for a permit here** is in `run_loop`'s `select!`.
 async fn drain_ready(
     queue: &JobQueue,
     registry: &Arc<JobRegistry>,
     config: &RunnerConfig,
-    permits: &Arc<Semaphore>,
+    permits: &mut Permits,
     runner_id: &str,
-) {
+) -> bool {
     let kinds = registry.kinds();
     if kinds.is_empty() {
-        return;
+        return false;
     }
     let database = queue.database().clone();
 
     loop {
-        let Ok(permit) = Arc::clone(permits).acquire_owned().await else {
-            return; // the semaphore is closed: the runner is going away
+        permits.resize(config.max_concurrent);
+        let permit = match Arc::clone(&permits.semaphore).try_acquire_owned() {
+            Ok(permit) => permit,
+            // Every slot is busy: this pass is over and the caller waits on a
+            // slot rather than on the clock.
+            Err(tokio::sync::TryAcquireError::NoPermits) => return true,
+            // Closed: the runner is going away, and there is nothing to wait for.
+            Err(tokio::sync::TryAcquireError::Closed) => return false,
         };
 
         // The lease is the *longest* any registered handler may take, because
@@ -231,10 +367,10 @@ async fn drain_ready(
 
         let job = match claimed {
             Ok(Some(job)) => job,
-            Ok(None) => return, // nothing eligible; `permit` drops here
+            Ok(None) => return false, // nothing eligible; `permit` drops here
             Err(error) => {
                 error!(event = "job_claim_failed", outcome = "failure", error = %error);
-                return;
+                return false;
             }
         };
 
@@ -455,13 +591,19 @@ fn report_settlement(job: &Job, settled: Result<bool, sqlx::Error>) -> bool {
 }
 
 /// The graceful stop: drain what is running, then release the leases.
-async fn stop(runner_id: &str, database: &Database, permits: &Arc<Semaphore>, capacity: usize) {
+async fn stop(runner_id: &str, database: &Database, permits: &Permits) {
     // Every permit back means every spawned job has finished. A timeout here is
     // not a failure: the lease release below is what makes an unfinished job the
     // next process's rather than a lost one.
+    //
+    // Against the pool's *issued* capacity, not against `jobs.max_concurrent`: a
+    // shrink that has not finished converging leaves the two different, and
+    // waiting on the smaller of them would return while jobs were still running.
     let drained = tokio::time::timeout(
         DRAIN_BUDGET,
-        permits.acquire_many(u32::try_from(capacity.max(1)).unwrap_or(u32::MAX)),
+        permits
+            .semaphore
+            .acquire_many(u32::try_from(permits.capacity.max(1)).unwrap_or(u32::MAX)),
     )
     .await
     .is_ok();
@@ -622,6 +764,48 @@ mod tests {
         }
     }
 
+    /// A handler that records how many of its own attempts ever overlapped.
+    ///
+    /// The peak is the only thing that can answer "did `jobs.max_concurrent`
+    /// reach the pool?" — the *number of jobs run* is the same either way, and
+    /// only how many ran at once is different.
+    struct Concurrent {
+        kind: &'static str,
+        work: Duration,
+        live: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl Concurrent {
+        fn new(kind: &'static str, work: Duration) -> Self {
+            Self {
+                kind,
+                work,
+                live: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+            }
+        }
+
+        fn peak(&self) -> usize {
+            self.peak.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl JobHandler for Concurrent {
+        fn kind(&self) -> &'static str {
+            self.kind
+        }
+
+        async fn run(&self, _job: &Job) -> JobOutcome {
+            let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(live, Ordering::SeqCst);
+            tokio::time::sleep(self.work).await;
+            self.live.fetch_sub(1, Ordering::SeqCst);
+            JobOutcome::Done
+        }
+    }
+
     async fn queue_with(config: &JobsConfig) -> JobQueue {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         JobQueue::new(database, config)
@@ -634,17 +818,19 @@ mod tests {
         registry.register(handler).unwrap();
         let registry = Arc::new(registry);
         let runner = RunnerConfig::from(config);
-        let permits = Arc::new(Semaphore::new(config.max_concurrent.max(1)));
+        let mut permits = Permits::new(runner.max_concurrent);
 
         Job::reclaim_expired(now_secs(), queue.database())
             .await
             .unwrap();
-        drain_ready(queue, &registry, &runner, &permits, "runner-test").await;
+        drain_ready(queue, &registry, &runner, &mut permits, "runner-test").await;
 
         // Every permit back means every spawned job has settled.
         let _ = tokio::time::timeout(
             Duration::from_secs(5),
-            permits.acquire_many(u32::try_from(config.max_concurrent.max(1)).unwrap()),
+            permits
+                .semaphore
+                .acquire_many(u32::try_from(permits.capacity).unwrap()),
         )
         .await;
     }
@@ -968,7 +1154,8 @@ mod tests {
         let (registry_tx, registry_rx) = watch::channel(Arc::new(first));
 
         let (tx, rx) = watch::channel(false);
-        let runner = spawn_runner_watching(queue.clone(), registry_rx, &config, rx);
+        let (_config_tx, config_rx) = watch::channel(Arc::new(config.clone()));
+        let runner = spawn_runner_watching(queue.clone(), registry_rx, config_rx, rx);
 
         queue.enqueue(JobSpec::now("new", "k")).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -992,6 +1179,197 @@ mod tests {
         // pass, and the handler carried across the swap is not asked again.
         assert_eq!(new.recovers(), 1, "a new kind recovers once");
         assert_eq!(old.recovers(), 1, "a carried kind must not recover again");
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    }
+
+    /// The half of a `jobs.max_concurrent` reload that has no waiting to do, and
+    /// the half that does.
+    ///
+    /// Growing is a plain `add_permits` and lands whole. Shrinking can only take
+    /// back slots that are *free*, so the interesting case is the one this pins:
+    /// asking for fewer while every slot is busy takes what it can now, leaves
+    /// `capacity` honest about what is still out there, and converges on a later
+    /// pass as jobs return theirs. Nothing running is ever cancelled to reach the
+    /// number.
+    #[tokio::test]
+    async fn resize_grows_at_once_and_shrinks_as_slots_come_back() {
+        let mut permits = Permits::new(2);
+
+        permits.resize(5);
+        assert_eq!(permits.capacity, 5);
+        assert_eq!(permits.semaphore.available_permits(), 5);
+
+        // Every slot busy: a shrink has nothing to take yet.
+        let mut held: Vec<_> = (0..5)
+            .map(|_| Arc::clone(&permits.semaphore).try_acquire_owned().unwrap())
+            .collect();
+        permits.resize(1);
+        assert_eq!(
+            permits.capacity, 5,
+            "a shrink must not pretend to have taken back a slot somebody is using",
+        );
+
+        // Two jobs finish; the next pass reclaims exactly those two.
+        held.truncate(3);
+        permits.resize(1);
+        assert_eq!(permits.capacity, 3, "it converges by whatever came back");
+        assert_eq!(permits.semaphore.available_permits(), 0);
+
+        // The rest finish: the pool finally reaches the configured size.
+        drop(held);
+        permits.resize(1);
+        assert_eq!(permits.capacity, 1);
+        assert_eq!(permits.semaphore.available_permits(), 1);
+    }
+
+    /// A lowered `jobs.poll_interval_ms` must not have to wait out the old one.
+    ///
+    /// This is the whole reason the config cell has a `select!` arm rather than
+    /// only being read at the top of the pass: an operator who drops the interval
+    /// from a minute to a moment did it because something is waiting *now*, and
+    /// making them wait the old minute to find out would be the reload landing
+    /// too late to be the thing they asked for.
+    ///
+    /// The job is queued with a delay so that its own `notify` is spent before it
+    /// is eligible — leaving the sleep as the only other way the runner could
+    /// have noticed it.
+    #[tokio::test]
+    async fn a_lowered_poll_interval_lands_without_waiting_out_the_old_one() {
+        let config = JobsConfig {
+            poll_interval_ms: 600_000,
+            ..JobsConfig::default()
+        };
+        let queue = queue_with(&config).await;
+        let handler = Scripted::new("test", vec![Script::Done]);
+        let mut registry = JobRegistry::new();
+        registry.register(handler.clone()).unwrap();
+        let (_registry_tx, registry_rx) = watch::channel(Arc::new(registry));
+
+        let (config_tx, config_rx) = watch::channel(Arc::new(config));
+        let (tx, rx) = watch::channel(false);
+        let runner = spawn_runner_watching(queue.clone(), registry_rx, config_rx, rx);
+
+        // Eligible a second from now, so the enqueue's own wake-up is spent on a
+        // pass that finds nothing.
+        queue
+            .enqueue(JobSpec::now("test", "k").with_delay(Duration::from_secs(1)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        assert_eq!(
+            handler.runs(),
+            0,
+            "the runner is asleep on the old interval, which is the premise",
+        );
+
+        config_tx.send_replace(Arc::new(JobsConfig {
+            poll_interval_ms: 5,
+            ..JobsConfig::default()
+        }));
+
+        for _ in 0..200 {
+            if handler.runs() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(handler.runs(), 1, "the swapped config must wake the loop");
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;
+    }
+
+    /// A raised `jobs.max_concurrent` has to reach a pool that is already full,
+    /// which is the only state anybody raises it from.
+    ///
+    /// It is also the state the loop used to be unable to observe anything in:
+    /// `drain_ready` waited for a permit itself, so a saturated pool parked the
+    /// whole loop and neither this reload nor a shutdown was seen until the
+    /// backlog cleared on its own.
+    #[tokio::test]
+    async fn a_raised_max_concurrent_reaches_a_saturated_pool() {
+        let config = JobsConfig {
+            poll_interval_ms: 600_000,
+            max_concurrent: 1,
+            ..JobsConfig::default()
+        };
+        let queue = queue_with(&config).await;
+        let handler = Arc::new(Concurrent::new("test", Duration::from_millis(400)));
+        let mut registry = JobRegistry::new();
+        registry.register(handler.clone()).unwrap();
+        let (_registry_tx, registry_rx) = watch::channel(Arc::new(registry));
+
+        let (config_tx, config_rx) = watch::channel(Arc::new(config));
+        let (tx, rx) = watch::channel(false);
+        let runner = spawn_runner_watching(queue.clone(), registry_rx, config_rx, rx);
+
+        for key in ["a", "b", "c", "d"] {
+            queue.enqueue(JobSpec::now("test", key)).await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(handler.peak(), 1, "one slot means one job at a time");
+
+        config_tx.send_replace(Arc::new(JobsConfig {
+            poll_interval_ms: 600_000,
+            max_concurrent: 4,
+            ..JobsConfig::default()
+        }));
+
+        for _ in 0..200 {
+            if handler.peak() >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            handler.peak() >= 3,
+            "the raise must widen a pool that is already full, not the next one: \
+             peak was {}",
+            handler.peak(),
+        );
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(10), runner).await;
+    }
+
+    /// A runner over cells nobody will ever write to must be *idle*, not merely
+    /// correct.
+    ///
+    /// `spawn_runner` builds both cells and drops their senders on the spot, and
+    /// a dropped `watch` sender does not make `changed()` stop firing — it makes
+    /// it return `Err` immediately and for ever, which in a `select!` is an arm
+    /// that is always ready. The loop would then spin, re-running
+    /// `reclaim_expired` and a claim query as fast as the runtime allowed. So the
+    /// loop disables an arm whose sender has gone, and this counts passes to
+    /// prove it: an always-retrying handler with no backoff runs once per pass,
+    /// and the poll interval here is ten minutes.
+    #[tokio::test]
+    async fn a_runner_over_fixed_cells_does_not_spin() {
+        let config = JobsConfig {
+            poll_interval_ms: 600_000,
+            retry_base_seconds: 0,
+            retry_max_seconds: 0,
+            ..JobsConfig::default()
+        };
+        let queue = queue_with(&config).await;
+        let handler = Scripted::new("test", (0..64).map(|_| Script::Retry).collect());
+        let mut registry = JobRegistry::new();
+        registry.register(handler.clone()).unwrap();
+
+        let (tx, rx) = watch::channel(false);
+        let runner = spawn_runner(queue.clone(), Arc::new(registry), &config, rx);
+
+        queue.enqueue(JobSpec::now("test", "k")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let runs = handler.runs();
+        assert!(
+            runs <= 2,
+            "a spinning loop re-claims every pass; {runs} runs in 300ms means the \
+             dropped senders left their `select!` arms armed",
+        );
 
         let _ = tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;

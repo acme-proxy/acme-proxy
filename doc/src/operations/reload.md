@@ -60,7 +60,6 @@ These are the keys that produce it. Everything not listed here reloads.
 | --- | --- |
 | `database.url` | The connection pool is open, and the accounts and orders this CA has issued against do not follow it elsewhere. |
 | `[dns]`, `[proxy]` | Every outbound client caches these when it is built, including the signer backends, which are not rebuilt. |
-| six of the seven `[jobs]` keys | The runner snapshotted its pacing when it started. `jobs.retention_days` is the exception and does reload. |
 | any profile's `[signer]` section | See below. |
 | the set of enabled profiles | Mounting or unmounting an endpoint needs a signer backend built or dropped, so it follows the signer freeze. |
 
@@ -121,6 +120,8 @@ Everything else, including the things operators reach for most:
 - **Retention** — `audit.retention_days` and `jobs.retention_days`. A sweep
   already scheduled keeps its current time and picks the new cutoff up on its
   next run.
+- **Background work** — every `[jobs]` key, so slowing a retry storm, widening a
+  lease or raising concurrency mid-incident costs nothing. See below.
 - **Logging** — every `[logging]` key, so raising the level or switching to JSON
   mid-incident costs nothing. The swap is the first thing a reload publishes, so
   the `server_config_reloaded` line that confirms it is already under the new
@@ -169,6 +170,43 @@ sessions live in the database and are waiting when you switch it back on. Use
 `acme-proxy admin session revoke --all` if that is what you meant. Switching it
 off and on again does clear the login-attempt lockout, since the limiter goes
 with the panel.
+
+## Retuning the job runner
+
+All seven `[jobs]` keys reload. These are the knobs you reach for while
+something is going wrong — an upstream CA rate-limiting you, a backlog draining
+too slowly — so a restart to apply them would have dropped exactly the in-flight
+orders you were trying to save.
+
+The runner does not restart; it picks the new values up on its next pass and
+says so:
+
+```text
+job_runner_retuned poll_interval_ms=250 lease_seconds=120 max_concurrent=16
+```
+
+That line is the confirmation worth grepping for. `server_config_reloaded` means
+a generation was published; this means the runner is actually running under it.
+It is only emitted when the pacing really moved, so reloads that touch other
+sections stay quiet.
+
+Each key lands at its own grain, and the differences are all in the same
+direction — nothing already in flight is disturbed:
+
+- **`poll_interval_ms`** takes effect immediately, without waiting out the old
+  interval first.
+- **`max_concurrent`** widens at once when raised. Lowered, it takes back the
+  slots that are free and reaches the new figure as running jobs finish; no job
+  is cancelled to get there sooner.
+- **`lease_seconds`, `retry_base_seconds` and `retry_max_seconds`** apply to the
+  next job claimed. One already running keeps the budget and the backoff it
+  started under.
+- **`max_attempts`** is frozen onto each job when it is queued, so a change
+  applies to work queued from then on. Raising it is *not* a way to rescue a
+  backlog that is about to give up — those rows keep the budget they were queued
+  with.
+- **`retention_days`** rebuilds the sweep, including registering it when it goes
+  from `0` to a real value.
 
 ## Systemd
 

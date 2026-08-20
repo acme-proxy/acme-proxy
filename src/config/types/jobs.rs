@@ -15,6 +15,13 @@ use serde::Deserialize;
 /// already promised a client (an order answered `processing` is owed a
 /// certificate), so switching it off would not disable a feature, it would strand
 /// the orders. What an operator can tune is how hard and how long it tries.
+///
+/// **Every key here reloads on `SIGHUP`**, six of the seven having been refused
+/// by name until the runner stopped snapshotting them at spawn. That mattered
+/// more than most: these are the knobs somebody reaches for while an incident is
+/// running, and charging a restart for them dropped the very in-flight orders the
+/// retuning was meant to save. Each takes effect at a different grain, said on
+/// each key below.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct JobsConfig {
@@ -25,6 +32,10 @@ pub struct JobsConfig {
     /// `finalize` starts immediately whatever this says, which is what keeps the
     /// client's own polling from waiting on a tick. Milliseconds rather than
     /// seconds so a test can drive it below one.
+    ///
+    /// A reload of this one takes effect *at once* rather than after one last
+    /// sleep at the old value — lowering it is something an operator does because
+    /// something is waiting now.
     pub poll_interval_ms: u64,
     /// How many jobs may run at once.
     ///
@@ -34,6 +45,10 @@ pub struct JobsConfig {
     /// few thousand concurrent pollers against one CA, which is how a recoverable
     /// backlog turns into a rate-limit ban. Eight is well under any public CA's
     /// concurrency expectations and still drains a backlog steadily.
+    ///
+    /// A reload raising it widens the pool immediately; lowering it takes back
+    /// only the slots that are free and converges as running jobs finish, since
+    /// nothing in flight is ever cancelled to reach a number.
     pub max_concurrent: usize,
     /// How many attempts a job gets before it is retired permanently.
     ///
@@ -44,10 +59,10 @@ pub struct JobsConfig {
     /// bounded by the job's own deadline rather than by this.
     ///
     /// **Frozen onto each row when it is queued**, unlike every other key here,
-    /// which the runner reads afresh each attempt. Raising it therefore applies to
-    /// jobs queued from then on and not to a backlog already waiting — which is
-    /// the safe direction, since the alternative would silently extend the life
-    /// of work an operator had already decided to give up on.
+    /// which the runner re-derives on each pass of its loop. A reload therefore
+    /// reaches jobs queued from then on and not a backlog already waiting — which
+    /// is the safe direction, since the alternative would silently extend the
+    /// life of work an operator had already decided to give up on.
     pub max_attempts: u32,
     /// The first retry delay; each subsequent one doubles.
     ///
@@ -68,6 +83,11 @@ pub struct JobsConfig {
     /// Matches `signer.relay.poll_timeout_secs`'s own default, the longest job
     /// this crate has. A handler needing a different one says so itself, so this
     /// is the floor for everything that does not care.
+    ///
+    /// This and the two retry keys above reach the *next claim*. A job already
+    /// running keeps the budget and the backoff it was claimed under, because
+    /// moving an attempt's deadline out from under it mid-flight is how a job
+    /// gets reclaimed as crashed while it is still working.
     pub lease_seconds: u64,
     /// Delete settled job rows older than this many days.
     ///

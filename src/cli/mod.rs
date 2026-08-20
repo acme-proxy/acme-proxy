@@ -537,14 +537,18 @@ pub async fn serve_on_with_reloads(
     // abort: it releases its leases on the way out, and a restart therefore
     // re-claims its own work immediately instead of waiting one out.
     //
-    // The registry it drains is a cell, not a value: a reload republishes it so
-    // a changed retention or a rebuilt notify map reaches the runner without
-    // restarting it.
+    // Neither the registry it drains nor the `[jobs]` section it paces itself
+    // from is a value: both are cells a reload republishes, so a changed
+    // retention, a rebuilt notify map and a retuned lease or concurrency all
+    // reach the runner without restarting it. `jobs.max_attempts` is the third
+    // piece and does not come through here — it belongs to the enqueue side, so
+    // it is published onto `job_queue` itself.
     let (registry_tx, registry_rx) = tokio::sync::watch::channel(Arc::new(job_registry));
+    let (jobs_tx, jobs_rx) = tokio::sync::watch::channel(Arc::new(config.jobs.clone()));
     let _job_runner = AbortOnDrop(crate::jobs::spawn_runner_watching(
         job_queue,
         registry_rx,
-        &config.jobs,
+        jobs_rx,
         shutdown_rx.clone(),
     ));
 
@@ -620,6 +624,7 @@ pub async fn serve_on_with_reloads(
             acme_router: acme_router_tx,
             admin_router: admin_router_tx,
             job_registry: registry_tx,
+            jobs: jobs_tx,
             acme: acme_handle,
             admin: admin_handle,
             metrics: metrics_handle,
@@ -870,6 +875,10 @@ struct Cells {
     acme_router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
     admin_router: tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
     job_registry: tokio::sync::watch::Sender<Arc<crate::jobs::JobRegistry>>,
+    /// The runner's own pacing. Separate from the registry above because the two
+    /// reach it by different routes: the registry carries what a *handler*
+    /// captured, this carries what the *loop* re-reads each pass.
+    jobs: tokio::sync::watch::Sender<Arc<crate::config::JobsConfig>>,
     /// The three sockets. Each carries its role's TLS mode as well, since both
     /// are read by the same accept loop and both are published the same
     /// synchronous way — see [`crate::listener::ListenerHandle`].
@@ -1283,6 +1292,15 @@ fn apply_reload(
     cells
         .job_registry
         .send_replace(Arc::new(generation_built.job_registry));
+
+    // `[jobs]` in its two halves, both synchronous and neither able to fail —
+    // which is what lets them sit in this run rather than needing a build phase
+    // of their own. The runner re-derives its pacing from the cell on its next
+    // pass; `max_attempts` goes to the queue instead, because it is the enqueue
+    // side that reads it, and it sets the budget for work queued from here on
+    // rather than for the rows already waiting.
+    cells.jobs.send_replace(Arc::new(next.jobs.clone()));
+    assembly.jobs.set_max_attempts(next.jobs.max_attempts);
 
     // The TLS mode before the socket, so a freshly bound listener's very first
     // connection is already accepted under the settings this generation built

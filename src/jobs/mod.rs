@@ -45,6 +45,7 @@
 //! only the wake-up is not.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -182,7 +183,13 @@ pub trait JobHandler: Send + Sync {
 pub struct JobQueue {
     database: Arc<Database>,
     notify: Arc<Notify>,
-    default_max_attempts: u32,
+    /// Shared rather than copied, because a reload has to reach the clones.
+    /// This queue is cloned into [`crate::Assembly`], every `RelaySigner` and
+    /// every `NotifyDispatcher` at startup and none of them is ever rebuilt, so
+    /// a plain `u32` field would leave `jobs.max_attempts` readable only where
+    /// the reload happened to be holding a handle. See
+    /// [`set_max_attempts`](JobQueue::set_max_attempts).
+    default_max_attempts: Arc<AtomicU32>,
 }
 
 impl JobQueue {
@@ -191,8 +198,24 @@ impl JobQueue {
         Self {
             database,
             notify: Arc::new(Notify::new()),
-            default_max_attempts: config.max_attempts,
+            default_max_attempts: Arc::new(AtomicU32::new(config.max_attempts)),
         }
+    }
+
+    /// Republishes `jobs.max_attempts`, for every clone of this queue at once.
+    ///
+    /// Synchronous and infallible, which is what lets a reload call it from
+    /// `cli::apply_reload`'s publishing run beside the `watch` sends.
+    ///
+    /// It sets the budget for work queued from **now on** and does not touch the
+    /// backlog: `max_attempts` is frozen onto each row at enqueue, so a job
+    /// already waiting keeps the budget it was queued under. Raising this to
+    /// rescue rows that are about to give up is therefore not what it does —
+    /// that would be an `UPDATE` over pending rows, and a deliberately different
+    /// promise from the one `crate::sqlite::job` makes.
+    pub fn set_max_attempts(&self, max_attempts: u32) {
+        self.default_max_attempts
+            .store(max_attempts, Ordering::Relaxed);
     }
 
     /// Queues one job.
@@ -202,7 +225,10 @@ impl JobQueue {
     /// reads it the way `RelaySigner::issue` reads `UpstreamOrder::create`'s
     /// `Ok(None)`: somebody else is already on it.
     pub async fn enqueue(&self, spec: JobSpec) -> Result<bool, sqlx::Error> {
-        let max_attempts = i64::from(spec.max_attempts.unwrap_or(self.default_max_attempts));
+        let max_attempts = i64::from(
+            spec.max_attempts
+                .unwrap_or_else(|| self.default_max_attempts.load(Ordering::Relaxed)),
+        );
         let queued = Job::enqueue(
             crate::sqlite::job::NewJob {
                 id: &uuid::Uuid::new_v4().to_string(),
@@ -317,6 +343,47 @@ mod tests {
         assert_eq!(
             job.max_attempts,
             i64::from(JobsConfig::default().max_attempts)
+        );
+    }
+
+    /// A reloaded `jobs.max_attempts` has to reach the clones, because the
+    /// clones are all there is: this queue is handed to `Assembly`, to every
+    /// relay signer and to every notify dispatcher at startup, and none of them
+    /// is ever rebuilt. A copied `u32` would have left the new value visible only
+    /// wherever the reload happened to be holding a handle.
+    ///
+    /// And it reaches *future* work only. A row already waiting keeps the budget
+    /// frozen onto it at enqueue, which is the promise `crate::sqlite::job` makes
+    /// and the reason raising this is not a way to rescue a backlog.
+    #[tokio::test]
+    async fn a_reloaded_max_attempts_reaches_the_clones_but_not_the_backlog() {
+        let queue = queue().await;
+        let held = queue.clone();
+
+        queue.enqueue(JobSpec::now("test", "before")).await.unwrap();
+        queue.set_max_attempts(11);
+        held.enqueue(JobSpec::now("test", "after")).await.unwrap();
+
+        let queued = |key: &'static str| {
+            let database = queue.database().clone();
+            async move {
+                Job::find_live("test", key, &database)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .max_attempts
+            }
+        };
+
+        assert_eq!(
+            queued("before").await,
+            i64::from(JobsConfig::default().max_attempts),
+            "a row already queued keeps what it was queued under",
+        );
+        assert_eq!(
+            queued("after").await,
+            11,
+            "a clone taken before the change still enqueues under the new value",
         );
     }
 

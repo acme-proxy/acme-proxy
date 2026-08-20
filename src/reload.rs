@@ -15,14 +15,13 @@
 //! observed half-applied — no other task can run in the middle of it.
 //!
 //! What a swap cannot honour is refused **by name**, and the whole reload is
-//! refused with it: the database pool is connected, the job runner's tuning was
-//! snapshotted at spawn, and a signer backend owns in-memory state (a `LocalCa`
-//! revocation ledger, a relay's `http-01` token store) that two generations
-//! over one set of files would disagree about. Refusing by name is the posture
-//! startup already takes when it rejects an unknown `logging.target` rather
-//! than falling back.
+//! refused with it: the database pool is connected, and a signer backend owns
+//! in-memory state (a `LocalCa` revocation ledger, a relay's `http-01` token
+//! store) that two generations over one set of files would disagree about.
+//! Refusing by name is the posture startup already takes when it rejects an
+//! unknown `logging.target` rather than falling back.
 //!
-//! Two things used to be on that list and are not any more, both for the same
+//! Three things used to be on that list and are not any more, all for the same
 //! reason — the thing said to be unmovable was made movable rather than argued
 //! with:
 //!
@@ -38,6 +37,14 @@
 //!   both `tls.enabled` flips reload, as do the two `[metrics]` keys. Binding
 //!   happens while a failure can still refuse the reload, so a bad address is
 //!   answered by a socket that never moved.
+//! - **`[jobs]`**, the runner having snapshotted its pacing at spawn. It now
+//!   re-derives that pacing from a `watch` cell on every pass of its loop and
+//!   resizes its own concurrency pool, and the queue reads `max_attempts` from a
+//!   shared atomic — so all seven keys reload, and none of them was ever
+//!   *physically* frozen the way the pool is. These are the knobs an operator
+//!   reaches for mid-incident (slow a retry storm, widen a lease, raise
+//!   concurrency), which made them the worst possible thing to charge a restart
+//!   for. See [`crate::jobs::runner`].
 
 use std::convert::Infallible;
 use std::task::{Context, Poll};
@@ -103,50 +110,35 @@ fn opaque(rendered: &str) -> String {
 ///
 /// Each entry is one of two kinds, and the distinction is the whole design:
 ///
-/// - *Physically frozen*: the pool is connected, and the job runner snapshotted
-///   its tuning at spawn.
+/// - *Physically frozen*: the connection pool is open, and the accounts and
+///   orders issued against it do not follow the URL somewhere else.
 /// - *Frozen by ownership*: a signer backend holds in-memory state with no
 ///   durable home, so two generations over one set of files disagree — see
 ///   [`crate::Assembly`]. `dns.*` and `proxy.*` follow from it, because every
 ///   outbound client caches them at construction and the signers are the
 ///   clients that are never rebuilt.
 ///
-/// **Every bind address used to be in the first kind and none is now**, the
-/// listener having stopped being something `axum::serve` consumes — see
-/// [`crate::listener`] and `cli::plan_sockets`. `[logging]` is deliberately
-/// absent for the same shape of reason: the whole layer stack sits behind a
-/// `reload::Layer` handle (see `cli::logging`), so all six keys swap with the
-/// rest of a generation. `jobs.retention_days` is absent for its own reason: it
-/// is read only by `SweepJob::jobs`, which the registry swap rebuilds. So is the
-/// global `[signer]` section, because `merged_sections` overlays it per key — a global
-/// change that matters shows up in some profile's resolved section, and one that
-/// every profile overrides is a genuine no-op that must not be refused.
+/// What has repeatedly come *off* this list is worth as much as what is on it,
+/// because the pattern is always the same: the thing said to be unmovable was
+/// made movable rather than argued with, and the entry then had no reason left.
+/// **Every bind address used to be here and none is now**, the listener having
+/// stopped being something `axum::serve` consumes — see [`crate::listener`] and
+/// `cli::plan_sockets`. `[logging]` went the same way: the whole layer stack
+/// sits behind a `reload::Layer` handle (see `cli::logging`), so all six keys
+/// swap with the rest of a generation. And so did **all seven `[jobs]` keys** —
+/// the runner re-derives its pacing from a cell on every pass and the queue
+/// reads `max_attempts` from a shared atomic, so nothing about the section is
+/// snapshotted at spawn any more (`crate::jobs::runner`). The global `[signer]`
+/// section is absent for a different reason again: `merged_sections` overlays it
+/// per key, so a global change that matters shows up in some profile's resolved
+/// section, and one that every profile overrides is a genuine no-op that must
+/// not be refused.
 type Projection = fn(&Applied<'_>) -> String;
 const FROZEN: &[(&str, Projection)] = &[
     ("database.url", |a| a.config.database.url.clone()),
     ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
     // Opaque: the URLs carry a proxy password. See `opaque`.
     ("proxy", |a| opaque(&format!("{:?}", a.config.proxy))),
-    // The six the runner and the queue snapshot at spawn. `retention_days` is
-    // the seventh and is reloadable, so this cannot be `{:?}` of the section.
-    ("jobs.poll_interval_ms", |a| {
-        a.config.jobs.poll_interval_ms.to_string()
-    }),
-    ("jobs.max_concurrent", |a| {
-        a.config.jobs.max_concurrent.to_string()
-    }),
-    ("jobs.max_attempts", |a| {
-        a.config.jobs.max_attempts.to_string()
-    }),
-    ("jobs.retry_base_seconds", |a| {
-        a.config.jobs.retry_base_seconds.to_string()
-    }),
-    ("jobs.retry_max_seconds", |a| {
-        a.config.jobs.retry_max_seconds.to_string()
-    }),
-    ("jobs.lease_seconds", |a| {
-        a.config.jobs.lease_seconds.to_string()
-    }),
     // Mounting or unmounting an endpoint needs a signer backend built or
     // dropped, so it follows the signer freeze.
     ("profiles", |a| {
@@ -524,42 +516,6 @@ mod frozen_tests {
                 }),
             ),
             (
-                "jobs.poll_interval_ms",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.poll_interval_ms += 1;
-                }),
-            ),
-            (
-                "jobs.max_concurrent",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.max_concurrent += 1;
-                }),
-            ),
-            (
-                "jobs.max_attempts",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.max_attempts += 1;
-                }),
-            ),
-            (
-                "jobs.retry_base_seconds",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.retry_base_seconds += 1;
-                }),
-            ),
-            (
-                "jobs.retry_max_seconds",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.retry_max_seconds += 1;
-                }),
-            ),
-            (
-                "jobs.lease_seconds",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.jobs.lease_seconds += 1;
-                }),
-            ),
-            (
                 "profiles",
                 Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
                     p.push(profile("staging"));
@@ -727,17 +683,34 @@ mod frozen_tests {
         );
     }
 
-    /// The seventh `[jobs]` key is reloadable, unlike the six above it: it is
-    /// read only by the sweep handler, which the registry swap rebuilds.
+    /// Every `[jobs]` key reloads, where six of the seven used to be refused.
+    ///
+    /// They reach the runner by three different routes and the test drives all
+    /// three deliberately: `retention_days` through a rebuilt `SweepJob` in the
+    /// new registry, `max_attempts` through the atomic on `JobQueue`, and the
+    /// other five through the config cell the loop re-reads each pass.
+    ///
+    /// Beside the freeze rather than only in the suite that drives a real
+    /// runner, for `every_listener_key_is_reloadable`'s reason: this table is
+    /// consulted *first*, so a key left in it would make the whole swap path
+    /// below unreachable — the refusal lands before anything is built.
     #[test]
-    fn jobs_retention_days_is_reloadable() {
-        let allowed = refuse(|config, _| {
-            config.jobs.retention_days += 1;
-        });
-        assert!(
-            allowed.is_ok(),
-            "jobs.retention_days is rebuilt with the registry, so it must reload",
-        );
+    fn every_jobs_key_is_reloadable() {
+        for mutate in [
+            |c: &mut Config| c.jobs.poll_interval_ms += 1,
+            |c: &mut Config| c.jobs.max_concurrent += 1,
+            |c: &mut Config| c.jobs.max_attempts += 1,
+            |c: &mut Config| c.jobs.retry_base_seconds += 1,
+            |c: &mut Config| c.jobs.retry_max_seconds += 1,
+            |c: &mut Config| c.jobs.lease_seconds += 1,
+            |c: &mut Config| c.jobs.retention_days += 1,
+        ] {
+            assert!(
+                refuse(|config, _| mutate(config)).is_ok(),
+                "nothing in `[jobs]` is snapshotted at spawn any more, so no key \
+                 in it is frozen",
+            );
+        }
     }
 
     /// Every `[logging]` key reloads, where the whole section used to be

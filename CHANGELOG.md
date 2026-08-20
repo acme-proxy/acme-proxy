@@ -359,6 +359,42 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`[jobs]` reloads on `SIGHUP`.** All seven keys — the poll interval,
+  concurrency, the attempt budget, both retry bounds, the lease and retention —
+  where six of them used to be refused by name. These are the knobs an operator
+  reaches for while something is already going wrong (an upstream CA
+  rate-limiting you, a backlog draining too slowly), so charging a restart for
+  them dropped exactly the in-flight orders the retuning was meant to save. They
+  were never *physically* frozen the way `database.url` is; the runner had
+  simply snapshotted them when it started.
+
+  It no longer does. The loop re-derives its pacing from a `watch` cell on every
+  pass and resizes its own concurrency pool, and the queue reads `max_attempts`
+  from a shared atomic — so nothing in the section is read once, and the runner
+  never restarts. `reload::FROZEN` is down to `database.url`, `[dns]`,
+  `[proxy]`, each profile's resolved `[signer]` and the profile set, every
+  survivor frozen by ownership rather than by a snapshot.
+
+  Each key lands at its own grain, and nothing already in flight is disturbed:
+
+  - `poll_interval_ms` takes effect at once, without waiting out the old
+    interval first.
+  - `max_concurrent` widens immediately when raised; lowered, it takes back the
+    slots that are free and reaches the new figure as running jobs finish. No
+    job is ever cancelled to get there sooner.
+  - `lease_seconds` and both `retry_*` keys apply to the next job claimed — one
+    already running keeps the budget and backoff it started under.
+  - `max_attempts` stays frozen onto each row at enqueue, so it applies to work
+    queued from then on. Raising it is **not** a way to rescue a backlog that is
+    about to give up.
+  - `retention_days` rebuilds the sweep, including registering it when it goes
+    from `0` to a real value.
+
+  New event `job_runner_retuned`, carrying all five pacing values. It is the
+  line worth grepping for: `server_config_reloaded` says a generation was
+  published, this says the runner is actually running under it. It is silent
+  when a reload leaves `[jobs]` alone.
+
 - **The listeners rebind on `SIGHUP`.** All seven keys that decide where a
   socket is, or whether there is one, now reload: `server.bind_address`,
   `server.tls.enabled`, `admin.enabled`, `admin.bind_address`,
@@ -368,8 +404,8 @@ migrated configuration before restarting.
   drops every live connection and every in-flight order for a change that never
   touched issuance.
 
-  `reload::FROZEN` is down to `database.url`, `[dns]`, `[proxy]`, six of the
-  seven `[jobs]` keys, each profile's resolved `[signer]` and the profile set.
+  `reload::FROZEN` lost every bind address here; the `[jobs]` entry above took
+  the rest.
 
   What made it possible is that this server now owns its accept loop
   (`src/listener.rs`) rather than handing each socket to `axum::serve`, which
