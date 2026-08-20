@@ -24,6 +24,20 @@ pub(super) struct CrlPaths {
     pub(super) revoked_path: PathBuf,
 }
 
+impl CrlPaths {
+    /// The [`CarriedState`](crate::signer::CarriedState) key this CA's ledger
+    /// lives under.
+    ///
+    /// Keyed on `crl_path` and defined once here rather than spelled out at the
+    /// two call sites, because the two spellings agreeing is the entire
+    /// correctness of the handover: a rebuilt CA that looked under a key nobody
+    /// wrote would silently start from the sidecar and lose whatever the
+    /// outgoing instance revoked while the reload was building.
+    pub(super) fn state_key(&self) -> String {
+        format!("local_ca.ledger:{}", self.crl_path.display())
+    }
+}
+
 /// The durable source of truth for what this CA has revoked, plus a cached
 /// copy of the current signed CRL derived from it. `entries` is what gets
 /// persisted/reloaded (see [`init_ledger`]); `crl_der` is rebuilt fresh from

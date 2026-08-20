@@ -359,6 +359,47 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The profile set, each profile's `[signer]`, `dns.resolver` and `[proxy]` all
+  reload on `SIGHUP`, and `reload::FROZEN` is down to `database.url` alone.**
+  Adding an ACME endpoint used to cost a restart, which dropped every in-flight
+  order on the endpoints that were *already* running — for a change that had
+  nothing to do with them.
+
+  The freeze was never about the CA files. A local CA is generated only when the
+  files are absent and a relay registers with its upstream only once, so
+  rebuilding a backend repeats nothing destructive. It was about state with no
+  durable home: a `LocalCa` rebuilds its whole CRL from an in-memory revocation
+  ledger, so two of them over one `crl_path` would drop each other's entries,
+  and a relay serving `http-01` publishes key authorizations into a store a
+  rebuild would empty — while an upstream CA is midway through fetching one.
+
+  `SignerBackend` now has a seam for handing that state on. A backend whose
+  configuration did not move is **reused verbatim** rather than rebuilt (so an
+  ordinary reload does not re-read a CA key, and under
+  `signer.local_ca.key_source = "pkcs11"` does not log in to the token again),
+  and a backend whose configuration *did* move is rebuilt sharing the **same**
+  ledger and the **same** token store as the instance it replaces. Sharing
+  rather than reloading from disk is what closes the window the durable sidecar
+  cannot: a revocation landing while the reload is still building would
+  otherwise be lost.
+
+  Two things fall out of it. Mounting and unmounting an endpoint is now an
+  ordinary reload — a `profile_mounted` fires for an endpoint that was not there
+  before and for no other, and an unmounted one leaves its accounts and orders
+  in the database to come back if it is mounted again. And `dns.resolver` and
+  `[proxy]` unfreeze: they were refused only because the signer backends cached
+  them at construction, which is now a reason to rebuild a backend rather than
+  to refuse the edit.
+
+  One caveat, and it is the only one: unmounting the last profile a `relay`
+  backend serves takes its job handler with it, so an issuance still waiting on
+  the upstream has nothing left to finish it. Drain such an endpoint before
+  removing it.
+
+  `database.url` stays frozen and should stay frozen for good — the pool is
+  open, migrations would run mid-flight, and the accounts and orders do not
+  follow a URL elsewhere. A different database is a different CA.
+
 - **`[jobs]` reloads on `SIGHUP`.** All seven keys — the poll interval,
   concurrency, the attempt budget, both retry bounds, the lease and retention —
   where six of them used to be refused by name. These are the knobs an operator
@@ -371,9 +412,7 @@ migrated configuration before restarting.
   It no longer does. The loop re-derives its pacing from a `watch` cell on every
   pass and resizes its own concurrency pool, and the queue reads `max_attempts`
   from a shared atomic — so nothing in the section is read once, and the runner
-  never restarts. `reload::FROZEN` is down to `database.url`, `[dns]`,
-  `[proxy]`, each profile's resolved `[signer]` and the profile set, every
-  survivor frozen by ownership rather than by a snapshot.
+  never restarts.
 
   Each key lands at its own grain, and nothing already in flight is disturbed:
 

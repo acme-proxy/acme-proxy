@@ -82,11 +82,8 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         tokens.clone(),
@@ -153,11 +150,8 @@ async fn http01_retracts_after_a_rejected_challenge() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         tokens.clone(),
@@ -204,11 +198,8 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -257,11 +248,8 @@ async fn http01_refuses_a_wildcard_authorization() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -305,11 +293,74 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("route53"), "{error}");
+}
+
+/// The key authorizations published for the upstream survive a configuration
+/// reload that rebuilt this backend.
+///
+/// The half of `CarriedState` that has no durable home at all. A multi-
+/// perspective CA may have a fetch in flight for a token published seconds ago,
+/// and an empty store answers it `404` — failing an issuance over a
+/// configuration change that had nothing to do with it.
+// Multi-threaded, like every other test here that really provisions: the first
+// build blocks its thread on `thread::scope` while the scripted upstream needs
+// the runtime to answer it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reload_carries_the_published_key_authorizations_across() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+    let mut cfg = config(&upstream, &dir);
+    cfg.challenge_strategy = "http01".to_string();
+
+    let parts = relay_parts(
+        database().await,
+        no_notifiers(),
+        test_queue(database().await),
+    );
+    let build = |cfg: &RelayConfig, carried: &crate::signer::CarriedState| {
+        RelaySigner::from_config(cfg, vec!["default".to_string()], &parts, carried).unwrap()
+    };
+
+    let running = build(&cfg, &crate::signer::CarriedState::new());
+    running
+        .http01_tokens()
+        .expect("the http01 strategy has a store")
+        .publish("tok", "tok.thumbprint");
+
+    // The operator edits an unrelated key and signals.
+    let mut edited = cfg;
+    edited.poll_interval_ms += 1;
+    let reloaded = build(&edited, &running.carried_state());
+    assert_eq!(
+        reloaded
+            .http01_tokens()
+            .expect("still the http01 strategy")
+            .lookup("tok"),
+        Some("tok.thumbprint".to_string()),
+        "a fetch already in flight must still be answerable after the reload",
+    );
+
+    // A strategy switched *away* from http01 offers nothing on, so switching
+    // back starts empty rather than resurrecting a token nobody is serving.
+    let mut bypassing = edited.clone();
+    bypassing.challenge_strategy = "bypass".to_string();
+    let intermediate = build(&bypassing, &reloaded.carried_state());
+    assert!(intermediate.http01_tokens().is_none());
+
+    let back = build(&edited, &intermediate.carried_state());
+    assert!(
+        back.http01_tokens()
+            .expect("http01 again")
+            .lookup("tok")
+            .is_none(),
+        "nothing was live to carry: the intermediate backend served no tokens",
+    );
 }

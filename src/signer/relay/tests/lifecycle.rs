@@ -16,11 +16,8 @@ async fn an_empty_directory_url_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &RelayConfig::default(),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(db),
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("directory_url"), "{error}");
 }
@@ -42,11 +39,8 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(db),
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(
         error.contains("challenge_strategy") && error.contains("tlsalpn01"),
@@ -73,11 +67,8 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(db),
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("rfc2136.server"), "{error}");
 }
@@ -95,11 +86,8 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
     let _first = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(db.clone()),
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let key_file = PathBuf::from(cfg.account_key_path.clone());
@@ -112,11 +100,8 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
     let _second = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(db),
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     assert_eq!(std::fs::read_to_string(&kid_file).unwrap(), kid);
@@ -140,11 +125,12 @@ async fn the_generated_account_key_is_owner_only() {
     let _signer = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
 
@@ -171,11 +157,8 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -230,11 +213,8 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -261,11 +241,8 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -325,11 +302,8 @@ async fn settle_notifies_only_the_owning_profile() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["a".to_string(), "b".to_string()],
-        db.clone(),
-        notifiers.clone(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), notifiers.clone(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     // The same runner drains both kinds: `settle` queues the notification, and
@@ -395,11 +369,8 @@ async fn issue_polls_until_the_upstream_settles() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -438,11 +409,8 @@ async fn a_failing_upstream_marks_the_order_invalid() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -501,11 +469,8 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start_with(queue, &signer, jobs);
@@ -551,11 +516,8 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start_with(queue, &signer, jobs);
@@ -603,11 +565,8 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let signer = RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -658,11 +617,8 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -716,11 +672,8 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -748,11 +701,8 @@ async fn revoke_reaches_the_upstream() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -778,11 +728,8 @@ async fn revoke_treats_already_revoked_as_success() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -831,11 +778,8 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -875,11 +819,8 @@ async fn recovery_ignores_rows_that_already_settled() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -902,11 +843,8 @@ async fn recovery_with_no_pending_rows_does_nothing() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -935,11 +873,8 @@ mod handler {
         let signer = RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            test_queue(db),
+            &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap();
         (RelayJob(signer.0.clone()), upstream, dir)

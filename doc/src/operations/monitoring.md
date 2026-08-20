@@ -220,7 +220,8 @@ The events worth building alerts on:
 | Event | Level | Meaning |
 | --- | --- | --- |
 | `request_completed` | info / warn / debug | One per request. See "The access line" above for the level. |
-| `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. |
+| `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. A reload emits `profile_mounted` only for an endpoint that was not previously served. |
+| `profile_unmounted` | warn | A reload stopped serving an endpoint. Its accounts and orders stay in the database; an issuance still waiting on an upstream has no handler left to finish it. |
 | `server_fatal_error`, `profile_init_failed` | error | The process is not serving. |
 | `server_socket_bind_failed` | error | A socket could not be bound. At startup the process does not serve; on a reload nothing is applied and whatever was already listening keeps listening. |
 | `server_listener_stopped` | info | A listener was switched off by a reload (`admin.enabled` or `metrics.enabled`). The socket is released; established connections finish. |

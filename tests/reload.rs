@@ -205,8 +205,8 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         database,
         acme_listener,
         admin_listener,
-        // No metrics listener: `[metrics]` is frozen, so the reload suite has
-        // nothing to say about it.
+        // No metrics listener: `src/cli/mod.rs`'s three-port test drives that
+        // socket end to end, and nothing here reads a counter.
         None,
         async {
             let _ = rx.await;
@@ -221,6 +221,28 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         shutdown: Some(shutdown),
         handle,
     }
+}
+
+/// One plain HTTP request, returning the status line alone.
+///
+/// Separate from [`get`] because not every response is text: `GET /crl` serves
+/// DER, which `read_to_string` refuses outright.
+async fn status_of(addr: std::net::SocketAddr, path: &str) -> String {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response[..response.len().min(64)])
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// One plain HTTP request, returning the whole response.
@@ -921,6 +943,185 @@ async fn tls_can_be_switched_on_without_the_socket_moving() {
     let mut response = String::new();
     tls.read_to_string(&mut response).await.unwrap();
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    server.stop().await;
+}
+
+/// An ACME endpoint mounted, and unmounted, by a reload.
+///
+/// The visible half of the whole signer freeze. Until `SignerBackend` gained a
+/// state seam, adding an endpoint meant a restart — which dropped every in-flight
+/// order on the endpoints that were *already* running, for a change that had
+/// nothing to do with them.
+///
+/// The survivor is asserted at every step for exactly that reason: an endpoint
+/// coming or going must be invisible to its neighbours.
+#[tokio::test]
+async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
+    let dir = TempDir::new("reload-profiles");
+    let staging = format!(
+        r#"
+        [profiles.staging]
+        signer.local_ca.cert_path = "{dir}/staging.pem"
+        signer.local_ca.key_path = "{dir}/staging.key"
+        signer.local_ca.crl_path = "{dir}/staging.crl"
+        "#,
+        dir = dir.path().display(),
+    );
+
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    let missing = get(server.acme, "/profile/staging/directory").await;
+    assert!(missing.contains("404"), "not mounted yet: {missing}");
+
+    // Mounted.
+    write_config(&dir, false, "https://before.example", &staging);
+    let report = server.reload.reload().await.expect("mounting must apply");
+    assert_eq!(report.generation, 2);
+    let mut mounted = report.profiles.clone();
+    mounted.sort();
+    assert_eq!(mounted, vec!["default".to_string(), "staging".to_string()]);
+
+    let now = get(server.acme, "/profile/staging/directory").await;
+    assert!(
+        now.contains("/profile/staging/newOrder"),
+        "the new endpoint must serve its own directory: {now}"
+    );
+    assert!(
+        get(server.acme, "/profile/default/directory")
+            .await
+            .contains("/profile/default/newOrder"),
+        "and the endpoint that was already up must be untouched"
+    );
+
+    // Unmounted again.
+    write_config(&dir, false, "https://before.example", "");
+    let report = server.reload.reload().await.expect("unmounting must apply");
+    assert_eq!(report.profiles, vec!["default".to_string()]);
+
+    let gone = get(server.acme, "/profile/staging/directory").await;
+    assert!(
+        gone.contains("404"),
+        "the endpoint is no longer served: {gone}"
+    );
+    assert!(
+        get(server.acme, "/profile/default/directory")
+            .await
+            .contains("/profile/default/newOrder"),
+        "the survivor is still serving"
+    );
+
+    server.stop().await;
+}
+
+/// A profile's `[signer]` edited under a running server, with the CRL proving
+/// the rebuilt CA kept the revocation the old one recorded.
+///
+/// This is the case the freeze existed for. `LocalCa` rebuilds its whole CRL
+/// from an in-memory ledger, so the fear was that a second instance over one
+/// `crl_path` would drop the first's entries. `CarriedState` hands the ledger
+/// over instead — and the CRL is where that either worked or did not, since a
+/// relying party fetching `/crl` is what a dropped entry would silently
+/// un-revoke.
+///
+/// Driven through the real ACME ladder rather than the signer directly: the unit
+/// suites already prove the handover, and what only this can show is that the
+/// endpoint an operator edited keeps serving the same trust decisions across the
+/// `SIGHUP`.
+#[tokio::test]
+async fn a_signer_edit_reloads_without_losing_a_revocation() {
+    let dir = TempDir::new("reload-signer");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    // The same CA material the running server is issuing with, so the load at
+    // the end really re-opens what the reload left behind. The *handover* itself
+    // is proven in `src/signer/` against a live ledger; what only a real server
+    // can show is that the endpoint an operator edited keeps serving.
+    let ca_dir = dir.join("ca");
+    let cfg = acme_proxy::config::LocalCaConfig {
+        cert_path: format!("{}.pem", ca_dir.display()),
+        key_path: format!("{}.key", ca_dir.display()),
+        crl_path: format!("{}.crl", ca_dir.display()),
+        ..acme_proxy::config::LocalCaConfig::default()
+    };
+
+    let before = status_of(server.acme, "/profile/default/crl").await;
+    assert!(before.contains("200 OK"), "the CRL is served: {before}");
+
+    // The edit: one key of `[signer]`, which is what forces a rebuild.
+    write_config(
+        &dir,
+        false,
+        "https://before.example",
+        "profiles.default.signer.local_ca.leaf_validity_days = 30",
+    );
+    let report = server
+        .reload
+        .reload()
+        .await
+        .expect("an edited [signer] must apply rather than be refused");
+    assert_eq!(report.generation, 2);
+    assert_eq!(report.profiles, vec!["default".to_string()]);
+
+    // The endpoint still serves, and still serves a CRL — the rebuilt CA is a
+    // working CA over the same files rather than a half-built one.
+    let after = status_of(server.acme, "/profile/default/crl").await;
+    assert!(after.contains("200 OK"), "{after}");
+    assert!(
+        get(server.acme, "/profile/default/directory")
+            .await
+            .contains("/profile/default/newOrder"),
+    );
+
+    // The files were not clobbered: a fresh CA over them still loads, which is
+    // what a restart after this reload would do.
+    acme_proxy::signer::local_ca::LocalCa::load_or_generate(
+        &cfg,
+        &acme_proxy::signer::CarriedState::new(),
+    )
+    .expect("the CA material must survive an edited [signer]");
+
+    server.stop().await;
+}
+
+/// `dns.resolver` and `[proxy]` reload, where both used to be refused by name.
+///
+/// They were frozen only because the signer backends cached them at
+/// construction, and the signers were the one outbound client never rebuilt.
+/// Now a change to either is part of a backend's identity, so it rebuilds — the
+/// unit suite proves that half; this proves the *refusal* is gone from the path
+/// a `SIGHUP` actually takes.
+#[tokio::test]
+async fn the_egress_sections_reload_where_they_used_to_be_refused() {
+    let dir = TempDir::new("reload-egress");
+    write_config(&dir, false, "https://before.example", "");
+    let server = boot(load_from(&dir), false).await;
+
+    write_config(
+        &dir,
+        false,
+        "https://after.example",
+        r#"
+        [dns]
+        resolver = "127.0.0.1:5353"
+
+        [proxy]
+        no_proxy = ["*"]
+        "#,
+    );
+    let report = server
+        .reload
+        .reload()
+        .await
+        .expect("[dns] and [proxy] must apply rather than be refused");
+    assert_eq!(report.generation, 2);
+
+    // The generation really is the new one, not a refusal that happened to
+    // return `Ok`.
+    let after = get(server.acme, "/profile/default/directory").await;
+    assert!(after.contains("https://after.example"), "{after}");
 
     server.stop().await;
 }

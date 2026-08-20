@@ -45,7 +45,7 @@ journalctl -u acme-proxy | grep server_config_reloaded
 
 ## What a reload cannot change
 
-A refusal names the key, what the server is running, and what the file now
+One key. A refusal names it, what the server is running, and what the file now
 says:
 
 ```text
@@ -54,53 +54,15 @@ says:
 restart to apply it
 ```
 
-These are the keys that produce it. Everything not listed here reloads.
-
 | Key | Why a restart is needed |
 | --- | --- |
-| `database.url` | The connection pool is open, and the accounts and orders this CA has issued against do not follow it elsewhere. |
-| `[dns]`, `[proxy]` | Every outbound client caches these when it is built, including the signer backends, which are not rebuilt. |
-| any profile's `[signer]` section | See below. |
-| the set of enabled profiles | Mounting or unmounting an endpoint needs a signer backend built or dropped, so it follows the signer freeze. |
+| `database.url` | The connection pool is open, and the accounts and orders this CA has issued against it do not follow it elsewhere. A different database is a different CA. |
 
-Two of these are worth spelling out, because the obvious guess is wrong.
-
-**The signer freeze is not about the CA files.** Generating a CA happens only
-when the files are absent, and a relay registers with its upstream only once,
-so rebuilding a signer backend would be idempotent on both counts. The reason
-is state that lives only in memory: a local CA rebuilds its whole CRL from its
-own revocation ledger, so two of them over one `crl_path` would drop each
-other's entries; and a relay serving `http-01` publishes key authorizations to
-an in-memory store that a rebuild would empty — while an upstream CA is midway
-through fetching one.
-
-**The *global* `[signer]` section is not frozen.** Only each profile's resolved
-one is. Profiles inherit key by key, so a global change that matters shows up
-in some profile's resolved section anyway, and a global change every profile
-overrides is a genuine no-op that would be silly to refuse.
-
-### Sections whose value the refusal will not print
-
-`[proxy]` and each profile's `[signer]` are compared as a whole, and both can
-hold a credential: a proxy URL carries `user:password@`, and a signer section
-reaches the HSM PIN, the RFC 2136 TSIG key and the upstream EAB secret. The
-refusal above is logged, so printing those values would put them in journald
-and every log shipper downstream — and the TSIG key is write access to the very
-zone this CA validates against.
-
-Those two are therefore compared by digest. The refusal still names the key,
-and the signer one still names the profile, but the value reads:
-
-```text
-`profiles.*.signer` cannot be changed while the server is running
-(running with `le=sha256:9f2a1c...`, the file now says `le=sha256:41b0de...`):
-restart to apply it
-```
-
-That is enough to see *which* endpoint's signer moved, which is what the
-message is for. To see what actually changed, diff the file. Sections that
-cannot hold a credential — `dns.resolver`, `database.url` — still name the old
-and the new value in full.
+Everything else reloads. That was not always true, and the four keys that came
+off this table most recently are worth knowing about because they are the ones
+an operator is most likely to remember as frozen: the set of enabled profiles,
+each profile's `[signer]` section, `dns.resolver` and `[proxy]`. See
+[Adding and removing endpoints](#adding-and-removing-endpoints) below.
 
 ## What a reload does change
 
@@ -108,6 +70,10 @@ Everything else, including the things operators reach for most:
 
 - **Access policy** — `[filter]` rules and checks, and the `[ipam]` inventory
   they consult. Tightening a rule takes effect on the next request.
+- **The set of endpoints**, and each one's `[signer]` — see below.
+- **Egress** — `dns.resolver` and `[proxy]`. Every outbound client is rebuilt,
+  including the signer backends, which used to be the reason these two were
+  frozen.
 - **Notification backends** — a new webhook, a changed template directory, a
   different `events` list.
 - **Challenge settings**, order and account policy, `[meta]`, `[eab]`.
@@ -131,6 +97,63 @@ Everything else, including the things operators reach for most:
 
 For what each key means, see the [configuration
 reference](../configuration/reference.md).
+
+## Adding and removing endpoints
+
+Add a `[profiles.<name>]` section and signal, and that endpoint starts serving:
+
+```text
+server_config_reloaded generation=2 profiles=["le", "staging"]
+profile_mounted profile=staging directory=https://ca.example/profile/staging/directory
+```
+
+Remove it and signal again, and it stops. Endpoints that were already running
+are not disturbed either way — no connection is dropped and no in-flight order
+loses its state, which is the whole reason this is worth doing without a
+restart.
+
+Three things to know.
+
+**`profile_mounted` fires only for an endpoint that was not there before.** It
+is a lifecycle event, delivered to whichever `[notify]` backends are configured,
+so re-firing it for every endpoint on every `SIGHUP` would make the notification
+surface noisiest in exactly the config-managed deployments that would least want
+it.
+
+**Unmounting keeps the data.** The accounts and orders belonging to that
+endpoint stay in the database and come back exactly as they were if you mount it
+again — the profile name is what they are keyed on. Setting `enabled = false` is
+the same thing as removing the section.
+
+**Drain a `relay` endpoint before removing it.** Unmounting the last profile a
+relaying backend serves takes its job handler with it, so any issuance still
+waiting on the upstream has nothing left to finish it. Those rows sit in the
+queue until the endpoint is mounted again, and the orders behind them expire.
+Nothing else is affected, and no other backend has background work to lose.
+
+## Editing a signer
+
+A profile's `[signer]` section reloads, including the one an endpoint is
+actively issuing with. The obvious worry — that a rebuilt local CA would forget
+what it had revoked — is handled rather than avoided: the running CA hands its
+revocation ledger to its replacement, so a revocation that lands *during* the
+reload is not lost either, and `GET /crl` answers identically across the swap. A
+relay serving `http-01` hands over its published key authorizations the same
+way, so an upstream CA fetching one mid-reload still gets it.
+
+A backend whose section did not move is not rebuilt at all. That matters most
+with `key_source = "pkcs11"`: an ordinary reload does not log in to the token
+again.
+
+Two edges:
+
+- **Changing where the CA material lives is a new CA.** Point `crl_path` at a
+  different file and the endpoint starts from that file's revocation history,
+  not the old one's. That is the intended reading of the key, but it is worth
+  saying, because the certificates already issued do not move with it.
+- **`[dns]` and `[proxy]` rebuild every backend.** They are not `[signer]` keys,
+  but an outbound client caches them, so a change to either has to reach the
+  signers to mean anything. Nothing is lost — the same handover applies.
 
 ## Moving a listener
 

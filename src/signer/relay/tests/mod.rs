@@ -176,6 +176,27 @@ fn no_notifiers() -> crate::notify::Notifiers {
     HashMap::new().into()
 }
 
+/// The dependencies `RelaySigner::from_config` takes, minus the three a test
+/// here actually varies: which database, which notifiers and which queue.
+///
+/// The remaining two are the same at every call site — a registry nothing
+/// scrapes, and a resolver reaching loopback by IP literal (which
+/// `dns::connect` short-circuits). They used to be spelled out at all
+/// forty-eight of them.
+fn relay_parts(
+    database: Arc<Database>,
+    notifiers: crate::notify::Notifiers,
+    jobs: crate::jobs::JobQueue,
+) -> crate::signer::SignerParts {
+    crate::signer::SignerParts {
+        database: database.clone(),
+        notifiers,
+        metrics: crate::testutil::test_metrics(database),
+        egress: crate::testutil::egress_with(test_resolver()),
+        jobs,
+    }
+}
+
 /// Records every event it receives, so a test can assert `settle()`
 /// dispatched to the right profile's dispatcher — and only that one.
 struct RecordingNotifyBackend {

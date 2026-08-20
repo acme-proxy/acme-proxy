@@ -141,16 +141,14 @@ pub async fn run_order_command(
             // No notifiers: this is a one-off admin invocation, not the long-
             // running server — there is no background completion task here
             // for a notifier to ever be reached from.
-            // A throwaway resolver: this is a one-shot admin command, not the
-            // long-running server, so there is no shared one to reuse.
-            let resolver = crate::dns::resolver_addr(&config.dns)
-                .and_then(crate::challenge::build_resolver)
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
-            // …and a throwaway proxy configuration beside it, from the same
-            // `[proxy]` section `serve` reads.
-            let proxies = crate::proxy::from_config(&config.proxy)
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
-            let outbound = crate::http_client::Outbound::new(resolver, proxies);
+            // A throwaway egress: this is a one-shot admin command, not the
+            // long-running server, so there is no shared resolver or proxy
+            // policy to reuse — both come from the same `[dns]`/`[proxy]`
+            // sections `serve` reads.
+            let egress = Arc::new(
+                crate::Egress::from_config(config)
+                    .map_err(|error| CliError(format!("configuration error: {error}")))?,
+            );
             // A queue nothing drains: this command revokes, which every backend
             // answers inline, so no job is ever enqueued. Handing over a live
             // queue would be worse than useless — it would let a one-shot CLI
@@ -163,11 +161,16 @@ pub async fn run_order_command(
             let signer = signer::from_config(
                 &profile.sections.signer,
                 vec![profile.name.clone()],
-                database.clone(),
-                Arc::new(std::collections::HashMap::new()),
-                metrics,
-                outbound,
-                jobs,
+                &signer::SignerParts {
+                    database: database.clone(),
+                    notifiers: std::collections::HashMap::new().into(),
+                    metrics,
+                    egress,
+                    jobs,
+                },
+                // Nothing to adopt: there is no previous generation in a process
+                // that exits when this command does.
+                &signer::CarriedState::new(),
             )
             .map_err(|error| CliError(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
@@ -283,11 +286,8 @@ mod tests {
         let signer: Arc<dyn SignerBackend> = signer::from_config(
             &profile.sections.signer,
             vec![profile.name.clone()],
-            database.clone(),
-            Arc::new(std::collections::HashMap::new()),
-            crate::testutil::test_metrics(database.clone()),
-            crate::testutil::outbound_with(resolver),
-            crate::jobs::JobQueue::new(database.clone(), &config.jobs),
+            &crate::testutil::signer_parts(database.clone(), resolver),
+            &signer::CarriedState::new(),
         )
         .unwrap();
 

@@ -15,11 +15,12 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
     let error = startup_error(RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(
         error.contains("acme-proxy upstream register"),
@@ -53,11 +54,12 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
     RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     )
     .expect("a config-supplied credential the upstream accepts must register");
 
@@ -90,11 +92,12 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &kid_only,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("hmac_key"), "{error}");
 
@@ -108,11 +111,12 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &secret_only,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("kid"), "{error}");
 }
@@ -134,11 +138,12 @@ async fn a_config_credential_with_bad_base64_is_a_startup_error() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("base64"), "{error}");
 }
@@ -165,11 +170,12 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
     let error = startup_error(RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     ));
     assert!(
         error.contains("rejected signer.relay.eab"),
@@ -201,11 +207,12 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
 
@@ -214,11 +221,12 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     )
     .expect("a leftover config credential must not block a registered server");
 }
@@ -304,11 +312,12 @@ async fn after_registering_startup_needs_no_credential() {
     RelaySigner::from_config(
         &cfg,
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        test_queue(database().await),
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+        &crate::signer::CarriedState::new(),
     )
     .expect("a registered server must start with no EAB in reach");
 }

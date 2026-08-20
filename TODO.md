@@ -6,33 +6,6 @@ keeps its corpses stops being read.
 
 ## Server
 
-- [ ] **Reload `[signer]` and the profile set — carry the state, not the
-      config.** The one thing `SIGHUP` refuses that is worth unfreezing. It is
-      not that construction repeats anything destructive: a CA is generated
-      only when the files are absent, and a relay registers upstream once. It
-      is that a backend owns in-memory state with no durable home — a `LocalCa`
-      rebuilds the whole CRL from its own ledger, and a relay's `http-01` token
-      store would come back empty under a live upstream fetch. So give
-      `SignerBackend` a seam for adopting the previous generation's state (the
-      ledger's `Arc<Mutex<_>>`, the `Arc<dyn Http01TokenStore>`, an open PKCS#11
-      session). Two things fall out of it: **mounting a new profile without a
-      restart**, since the registry and router swaps already handle the rest,
-      and `dns.resolver`/`proxy.*` unfreezing for free — they are frozen only
-      because the signers cache them at construction, while every other
-      consumer is already rebuilt per generation.
-- [ ] **Reload the `[jobs]` runner tuning.** The cheapest of the two remaining:
-      `RunnerConfig` is snapshotted in `spawn_runner_watching`, so make it a
-      second `watch` cell read per pass beside the registry one.
-      `max_concurrent` must resize through `Semaphore::add_permits` /
-      `forget_permits` rather than being replaced, or in-flight permit
-      accounting is lost. `jobs.max_attempts` stays frozen *onto each row* at
-      enqueue — that is a property of the queue, not of this freeze.
-
-      Once this and the item above land, `database.url` is what is left in
-      `reload::FROZEN`, and it should stay there for good: the pool is held by
-      the runner and every request path, migrations would run mid-flight, and
-      the accounts and orders do not follow it. A different database is a
-      different CA.
 - [ ] **PostgreSQL beside SQLite.** Every query goes through `src/sqlite/` as a
       runtime `sqlx::query`, so most of them port unchanged; what does not is
       `Database::connect`'s two pragmas, the `rows_affected == 1` single-use
@@ -40,6 +13,7 @@ keeps its corpses stops being read.
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
       own migration set selected by the URL scheme, never edits to these twelve
       files.
+
 ## Observability
 
 - [ ] **Histograms — request latency, and issuance latency.** The one thing a

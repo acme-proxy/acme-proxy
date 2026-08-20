@@ -31,11 +31,25 @@
 //! Leaf validity is decided by the backend, not by the caller or the order — see
 //! [`local_ca::LocalCa`], which uses its own `leaf_validity_days`. A delegating
 //! backend would have no validity knob at all (the upstream CA decides).
+//!
+//! ## A backend outlives the configuration it was built from
+//!
+//! A configuration reload rebuilds nearly everything (see [`crate::reload`]),
+//! but a backend that is still configured exactly as it was is **reused
+//! verbatim** — see [`build_backends`], which keys on the configuration's own
+//! `Debug` rendering. Only a backend whose configuration actually moved is
+//! constructed again, and that one adopts the previous instance's in-memory
+//! state through [`CarriedState`]. Both halves matter: without the reuse every
+//! `SIGHUP` would re-read a CA key and re-open a PKCS#11 session for nothing,
+//! and without the adoption a rebuilt backend would start with an empty
+//! revocation ledger and an empty `http-01` token store.
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tracing::debug;
 
 use crate::config::SignerConfig;
 use crate::sqlite::db::Database;
@@ -126,6 +140,64 @@ impl RequestedValidity {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.not_before.is_none() && self.not_after.is_none()
+    }
+}
+
+/// In-memory state a signer backend owns that has no durable home, carried from
+/// one configuration generation to the next.
+///
+/// Keyed by the **resource** the state describes — a `crl_path`, a relay account
+/// key path — never by profile name and never by configuration identity. That
+/// choice is the whole safety argument: a backend rebuilt over the same files is
+/// the same CA and must not start with an empty ledger, while one rebuilt over
+/// *different* files must never adopt state describing somebody else's. A key
+/// cannot collide, because [`signer_paths`] already refuses two live backends
+/// over one path.
+///
+/// A map of `Arc<dyn Any>` rather than an enum naming each backend's internals,
+/// so `signer/mod.rs` keeps knowing nothing about what a backend holds — the
+/// same line [`SignerBackend::crl_der`] and [`SignerBackend::http01_tokens`]
+/// draw. And a map of *state* rather than a `fn adopt(&self, previous: &dyn
+/// SignerBackend)`, which would need every backend downcast to itself and would
+/// still have to answer "is that previous backend the same thing I am?" — a
+/// question the key already answers, in the open, one resource at a time.
+#[derive(Default)]
+pub struct CarriedState(HashMap<String, Arc<dyn Any + Send + Sync>>);
+
+impl CarriedState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offers `value` to whichever backend is built over `resource` next.
+    pub fn insert<T: Any + Send + Sync>(&mut self, resource: String, value: Arc<T>) {
+        self.0.insert(resource, value);
+    }
+
+    /// Takes the state recorded for `resource`, if the previous generation left
+    /// any *and* it is of the expected type.
+    ///
+    /// A type mismatch answers `None` rather than panicking: it can only mean a
+    /// backend changed kind over one path (a `local_ca` where a `relay` used to
+    /// be), which is a legitimate reload and should start from disk, not abort.
+    #[must_use]
+    pub fn get<T: Any + Send + Sync>(&self, resource: &str) -> Option<Arc<T>> {
+        self.0.get(resource)?.clone().downcast::<T>().ok()
+    }
+
+    /// Folds another backend's contribution in.
+    pub fn absorb(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    /// The resources this state covers, for a caller that wants to log what it
+    /// is carrying.
+    #[must_use]
+    pub fn resources(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.0.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
     }
 }
 
@@ -240,6 +312,25 @@ pub trait SignerBackend: Send + Sync {
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
         None
     }
+
+    /// What this backend hands to whichever backend replaces it on a
+    /// configuration reload, keyed by the resource each piece describes.
+    ///
+    /// A getter on the trait for the third time and for the same reason as
+    /// [`crl_der`](SignerBackend::crl_der) and [`jobs`](SignerBackend::jobs):
+    /// what a backend owns is the backend's own business. The default is empty,
+    /// which is the honest answer for [`custom::CustomScriptSigner`] — it holds
+    /// nothing between calls — and for any state that already has a durable
+    /// home.
+    ///
+    /// **Durability is not the test, though; a race is.** `local_ca`'s ledger
+    /// *is* persisted, and it is still carried, because a revocation landing on
+    /// the outgoing instance between the incoming one's read of the sidecar and
+    /// the swap would otherwise be lost. Sharing the `Arc` means both instances
+    /// see one ledger for the whole window, so there is nothing to diverge.
+    fn carried_state(&self) -> CarriedState {
+        CarriedState::default()
+    }
 }
 
 /// Why issuance failed, mapped by the handler to the right ACME error:
@@ -256,48 +347,63 @@ pub enum SignerError {
     Internal(String),
 }
 
-/// Builds the configured signer backend. Called once at startup, so it may fail
-/// fast (the caller exits on error).
+/// The dependencies every backend is built from, minus its own `[signer]`
+/// section.
 ///
-/// `database` is handed to backends that resolve issuance asynchronously: they
-/// own the `Order` update once the answer arrives, long after the handler that
-/// asked for it returned. `local_ca` ignores it. `notifiers` is the same kind
-/// of dependency, for the same reason: a backend whose completion happens in a
-/// background task has no `Profile`/`AppState` to reach a notifier through, so
-/// it is handed the whole `profile name -> dispatcher` map and looks up the
-/// right one by `Order.profile` once it has something to report. Only
-/// `relay` uses it today.
+/// A struct for [`ProfileParts`](crate::ProfileParts)' reason: [`from_config`]
+/// took seven positional parameters and needed an eighth for [`CarriedState`],
+/// which is where a reader starts counting commas and clippy starts complaining.
+/// Taken by reference and cloned field by field, since [`build_backends`] calls
+/// [`from_config`] in a loop.
 ///
-/// It arrives as [`crate::notify::Notifiers`] rather than a bare `Arc` because a
-/// signer backend is built once and then *carried across* configuration reloads,
-/// while the map is rebuilt per generation — a captured `Arc` would pin the
-/// backend to the dispatchers that existed when the process started. `impl
-/// Into<Notifiers>`, so a caller with a fixed map still passes one.
+/// `database` is for the backends that resolve issuance asynchronously: they own
+/// the `Order` update once the answer arrives, long after the handler that asked
+/// for it returned. `local_ca` ignores it. `notifiers` is the same kind of
+/// dependency for the same reason — a backend whose completion happens in a
+/// background task has no `Profile`/`AppState` to reach a notifier through, so it
+/// is handed the whole `profile name -> dispatcher` map and looks up the right
+/// one by `Order.profile` once it has something to report. It arrives as
+/// [`crate::notify::Notifiers`] rather than a bare `Arc` because a backend
+/// outlives the generation that built it while the map does not: a captured
+/// `Arc` would pin the backend to the dispatchers that existed when it was
+/// constructed.
+#[derive(Clone)]
+pub struct SignerParts {
+    pub database: Arc<Database>,
+    pub notifiers: crate::notify::Notifiers,
+    pub metrics: Arc<crate::metrics::Metrics>,
+    /// This generation's outbound plumbing **and** the configuration identity of
+    /// it, held whole rather than as a bare
+    /// [`Outbound`](crate::http_client::Outbound). The two cannot then disagree,
+    /// and a value that disagreed would make a `dns.resolver` edit a silent
+    /// no-op for every signer — see [`build_backends`].
+    pub egress: Arc<crate::Egress>,
+    pub jobs: crate::jobs::JobQueue,
+}
+
+/// Builds the configured signer backend, adopting whatever the generation before
+/// it left for this backend's own resources.
+///
+/// Called at startup and again for any backend a reload rebuilds; a failure is
+/// fatal to whichever of the two it is (the process exits, or the reload is
+/// refused with the running generation untouched).
 pub fn from_config(
     cfg: &SignerConfig,
     profiles: Vec<String>,
-    database: Arc<Database>,
-    notifiers: impl Into<crate::notify::Notifiers>,
-    metrics: Arc<crate::metrics::Metrics>,
-    outbound: crate::http_client::Outbound,
-    jobs: crate::jobs::JobQueue,
+    parts: &SignerParts,
+    carried: &CarriedState,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
     match cfg.backend.as_str() {
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
+            carried,
         )?)),
         // The one backend handed the metrics registry, because it is the one
         // that finishes an issuance from a background task: `post_finalize`
         // answered `processing` and returned, so no `Auditor` — and no request
         // — is in scope when the certificate actually arrives.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay,
-            profiles,
-            database,
-            notifiers.into(),
-            metrics,
-            outbound,
-            jobs,
+            &cfg.relay, profiles, parts, carried,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -317,9 +423,59 @@ pub fn from_config(
     }
 }
 
+/// The backends one configuration generation runs, in the two views that are
+/// needed of them.
+///
+/// `by_profile` is what a [`Profile`](crate::Profile) is handed and the only
+/// thing that serves a request. `by_identity` exists purely so the **next**
+/// reload can ask "is this one already built?" — see [`build_backends`], where
+/// answering yes is what keeps a `SIGHUP` from re-reading a CA key and
+/// re-opening a PKCS#11 session for a configuration that did not move.
+#[derive(Default, Clone)]
+pub struct SignerSet {
+    by_profile: HashMap<String, Arc<dyn SignerBackend>>,
+    by_identity: HashMap<String, Arc<dyn SignerBackend>>,
+}
+
+impl SignerSet {
+    /// The backend serving `profile`, if that endpoint is mounted.
+    #[must_use]
+    pub fn get(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
+        self.by_profile.get(profile)
+    }
+
+    /// How many distinct backend instances this set holds — one per distinct
+    /// `[signer]` configuration, not one per profile.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.by_identity.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.by_identity.is_empty()
+    }
+
+    /// Everything these backends would hand to their replacements, folded into
+    /// one map.
+    ///
+    /// Folded across *all* of them rather than matched backend to backend,
+    /// because the keys are resources and [`signer_paths`] already refuses two
+    /// live backends over one path — so a rebuilt backend finds its own state by
+    /// naming its own files, and no ownership analysis is needed here.
+    #[must_use]
+    pub fn carried(&self) -> CarriedState {
+        let mut carried = CarriedState::new();
+        for backend in self.by_identity.values() {
+            carried.absorb(backend.carried_state());
+        }
+        carried
+    }
+}
+
 /// Builds one backend per profile, **sharing** the instance between profiles
-/// whose signer configuration is identical, and returns them keyed by profile
-/// name.
+/// whose signer configuration is identical, and **reusing** the instance the
+/// previous generation built for a configuration that has not moved.
 ///
 /// Sharing is not an optimization, it is a correctness requirement. Two
 /// `LocalCa` instances over the same files each keep their own in-memory
@@ -330,19 +486,34 @@ pub fn from_config(
 /// the check below: identical configuration shares one instance, but *different*
 /// configuration touching the same file is refused outright rather than
 /// half-working.
+///
+/// Reuse is the same requirement in the time dimension, and `previous` is what
+/// makes a reload able to touch this at all. Three outcomes per distinct
+/// configuration:
+///
+/// 1. **Already built** — the very same `Arc` comes back. Nothing is adopted
+///    because nothing is constructed; this is the ordinary case, since most
+///    reloads touch `[filter]` or `[notify]` and leave every signer alone.
+/// 2. **New** — built, and handed everything the outgoing generation offered
+///    ([`SignerSet::carried`]). This covers both a profile mounted for the first
+///    time and a live profile whose `[signer]` an operator edited.
+/// 3. **Gone** — no longer named by any profile, so it is simply absent from the
+///    result and dropped once the caller publishes it.
+///
+/// The identity a configuration is keyed by is its `Debug` rendering — every
+/// config type derives `Debug`, the output is deterministic for equal values,
+/// and it is only ever compared to another one, never parsed and never shown —
+/// **plus [`SignerParts::egress`]**. That second half is what lets `[dns]` and
+/// `[proxy]` reload: they are not `[signer]` keys, but every backend that
+/// reaches the network caches them at construction, so a backend reused across a
+/// reload that changed either would keep dialling through the old policy with
+/// nothing saying so.
 pub fn build_backends(
     profiles: &[crate::config::ProfileConfig],
-    database: Arc<Database>,
-    notifiers: impl Into<crate::notify::Notifiers>,
-    metrics: Arc<crate::metrics::Metrics>,
-    outbound: crate::http_client::Outbound,
-    jobs: &crate::jobs::JobQueue,
-) -> anyhow::Result<HashMap<String, Arc<dyn SignerBackend>>> {
-    let notifiers = notifiers.into();
-    // The identity of a configuration is its `Debug` rendering: every config
-    // type derives `Debug`, the output is deterministic for equal values, and
-    // it is only ever compared to another one — never parsed, never shown.
-    let key_of = |cfg: &SignerConfig| format!("{cfg:?}");
+    parts: &SignerParts,
+    previous: &SignerSet,
+) -> anyhow::Result<SignerSet> {
+    let key_of = |cfg: &SignerConfig| format!("{cfg:?}|{}", parts.egress.identity);
 
     let mut owners: HashMap<String, String> = HashMap::new();
     for profile in profiles {
@@ -372,30 +543,44 @@ pub fn build_backends(
             .push(profile.name.clone());
     }
 
-    let mut built: HashMap<String, Arc<dyn SignerBackend>> = HashMap::new();
-    let mut backends: HashMap<String, Arc<dyn SignerBackend>> = HashMap::new();
+    // Gathered once, before anything is built: a backend rebuilt over the same
+    // files must find the live ledger, and the outgoing instances are still
+    // holding it at this point — which is the whole reason the handover is a
+    // shared `Arc` and not a copy.
+    let carried = previous.carried();
+
+    let mut set = SignerSet::default();
     for profile in profiles {
         let key = key_of(&profile.sections.signer);
-        let backend = match built.get(&key) {
-            Some(backend) => backend.clone(),
-            None => {
+        let backend = match (set.by_identity.get(&key), previous.by_identity.get(&key)) {
+            (Some(backend), _) => backend.clone(),
+            (None, Some(backend)) => {
+                debug!(
+                    event = "signer_backend_reused",
+                    outcome = "success",
+                    profile = %profile.name,
+                    "the configuration did not move, so the running backend is carried \
+                     whole rather than rebuilt"
+                );
+                let backend = backend.clone();
+                set.by_identity.insert(key, backend.clone());
+                backend
+            }
+            (None, None) => {
                 let backend = from_config(
                     &profile.sections.signer,
                     served.get(&key).cloned().unwrap_or_default(),
-                    database.clone(),
-                    notifiers.clone(),
-                    metrics.clone(),
-                    outbound.clone(),
-                    jobs.clone(),
+                    parts,
+                    &carried,
                 )
                 .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                built.insert(key, backend.clone());
+                set.by_identity.insert(key, backend.clone());
                 backend
             }
         };
-        backends.insert(profile.name.clone(), backend);
+        set.by_profile.insert(profile.name.clone(), backend);
     }
-    Ok(backends)
+    Ok(set)
 }
 
 /// The files a signer configuration owns — what two profiles must not share
@@ -461,8 +646,23 @@ mod tests {
         Arc::new(Database::connect_in_memory().await.unwrap())
     }
 
-    fn no_notifiers() -> crate::notify::Notifiers {
-        HashMap::new().into()
+    /// The dependencies a backend is built from, none of which these tests are
+    /// about. `egress` carries a fixed identity, so a case that wants to prove
+    /// `[dns]`/`[proxy]` reach the identity key overrides it deliberately.
+    async fn parts() -> SignerParts {
+        crate::testutil::signer_parts(database().await, test_resolver())
+    }
+
+    /// `parts()` with a different egress identity — what a reload that changed
+    /// `dns.resolver` or `[proxy]` hands `build_backends`.
+    async fn parts_with_egress(identity: &str) -> SignerParts {
+        let mut parts = parts().await;
+        parts.egress = Arc::new(crate::Egress {
+            resolver: test_resolver(),
+            proxies: crate::testutil::no_proxies(),
+            identity: identity.to_string(),
+        });
+        parts
     }
 
     fn profile(name: &str, signer: SignerConfig) -> crate::config::ProfileConfig {
@@ -475,6 +675,226 @@ mod tests {
         }
     }
 
+    /// A configuration that did not move is **not rebuilt**: the reload gets the
+    /// very same instance back.
+    ///
+    /// The ordinary case, and the one that matters most for cost — most reloads
+    /// touch `[filter]` or `[notify]` and leave every signer alone, and
+    /// rebuilding one there would re-read a CA key and, under
+    /// `key_source = "pkcs11"`, log in to a token again per `SIGHUP`.
+    ///
+    /// `Arc::ptr_eq` against the *previous* set is the only assertion that can
+    /// tell reuse from a rebuild that happened to adopt everything: both produce
+    /// a backend that behaves identically.
+    #[tokio::test]
+    async fn a_configuration_that_did_not_move_is_reused_rather_than_rebuilt() {
+        let (cfg, _dir) = config("local_ca");
+        let profiles = vec![profile("le", cfg)];
+
+        let parts = parts().await;
+        let first = build_backends(&profiles, &parts, &SignerSet::default()).unwrap();
+        let second = build_backends(&profiles, &parts, &first).unwrap();
+
+        assert!(
+            Arc::ptr_eq(first.get("le").unwrap(), second.get("le").unwrap()),
+            "an unchanged `[signer]` must hand back the running instance"
+        );
+    }
+
+    /// A configuration that *did* move is rebuilt — and the new instance shares
+    /// the old one's revocation ledger.
+    ///
+    /// The whole point of [`CarriedState`]. Proven through the CRL rather than
+    /// by inspecting the ledger: a revocation recorded on the outgoing backend
+    /// is visible in the incoming one's CRL, which is what an operator would
+    /// notice if it were not.
+    #[tokio::test]
+    async fn an_edited_configuration_is_rebuilt_over_the_running_ledger() {
+        let (cfg, _dir) = config("local_ca");
+        let parts = parts().await;
+        let running =
+            build_backends(&[profile("le", cfg.clone())], &parts, &SignerSet::default()).unwrap();
+
+        // Something to lose: a certificate issued and revoked by the instance
+        // that is about to be replaced.
+        let outgoing = running.get("le").unwrap().clone();
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+        let csr = params.serialize_request(&key_pair).unwrap();
+        let chain = match outgoing
+            .issue(
+                "ord-1",
+                csr.der(),
+                &[Identifier::dns("example.com")],
+                RequestedValidity::default(),
+            )
+            .await
+            .unwrap()
+        {
+            IssueOutcome::Issued(chain) => chain,
+            IssueOutcome::Processing => panic!("local_ca issues synchronously"),
+        };
+        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        outgoing.revoke(&leaf, Some(1)).await.unwrap();
+        let before = outgoing.crl_der().await.expect("a local CA has a CRL");
+
+        // The operator edits one key of `[signer]` and signals.
+        let mut edited = cfg;
+        edited.local_ca.leaf_validity_days = 30;
+        let reloaded = build_backends(&[profile("le", edited)], &parts, &running).unwrap();
+
+        let incoming = reloaded.get("le").unwrap();
+        assert!(
+            !Arc::ptr_eq(&outgoing, incoming),
+            "an edited `[signer]` must really be rebuilt, or the edit did nothing"
+        );
+        assert_eq!(
+            incoming.crl_der().await.expect("a local CA has a CRL"),
+            before,
+            "the rebuilt CA must serve the same CRL, ledger and all",
+        );
+
+        // And the sharing is live in both directions, which is what closes the
+        // window between building the replacement and publishing it.
+        let second = params.serialize_request(&key_pair).unwrap();
+        let chain = match outgoing
+            .issue(
+                "ord-2",
+                second.der(),
+                &[Identifier::dns("example.com")],
+                RequestedValidity::default(),
+            )
+            .await
+            .unwrap()
+        {
+            IssueOutcome::Issued(chain) => chain,
+            IssueOutcome::Processing => unreachable!(),
+        };
+        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        outgoing.revoke(&leaf, None).await.unwrap();
+        assert_ne!(
+            incoming.crl_der().await.unwrap(),
+            before,
+            "a revocation landing on the outgoing instance mid-reload must reach \
+             the incoming one — that is the case reading the sidecar back cannot cover",
+        );
+    }
+
+    /// `[dns]` and `[proxy]` are not `[signer]` keys, but a change to either
+    /// still rebuilds every backend.
+    ///
+    /// This is the whole reason those two keys could come off `reload::FROZEN`.
+    /// A backend caches the resolver and proxy policy it was built with, so
+    /// reuse keyed on `[signer]` alone would leave a `dns.resolver` edit
+    /// applying to every subsystem *except* the signers, silently.
+    #[tokio::test]
+    async fn a_changed_egress_rebuilds_a_backend_whose_signer_section_did_not_move() {
+        let (cfg, _dir) = config("local_ca");
+        let profiles = vec![profile("le", cfg)];
+
+        let first = build_backends(
+            &profiles,
+            &parts_with_egress("before").await,
+            &SignerSet::default(),
+        )
+        .unwrap();
+        let second = build_backends(&profiles, &parts_with_egress("after").await, &first).unwrap();
+
+        assert!(
+            !Arc::ptr_eq(first.get("le").unwrap(), second.get("le").unwrap()),
+            "a moved `[dns]`/`[proxy]` must reach the signers, which cache it",
+        );
+    }
+
+    /// A profile mounted by a reload gets a backend; one unmounted leaves its
+    /// backend behind, and it is not carried into the next generation.
+    ///
+    /// Between them these are "mount an endpoint without a restart", which was
+    /// the visible half of the whole freeze.
+    #[tokio::test]
+    async fn mounting_and_unmounting_a_profile_adds_and_drops_its_backend() {
+        let (first_cfg, _first_dir) = config("local_ca");
+        let (second_cfg, _second_dir) = config("local_ca");
+
+        let parts = parts().await;
+        let one = build_backends(
+            &[profile("le", first_cfg.clone())],
+            &parts,
+            &SignerSet::default(),
+        )
+        .unwrap();
+        assert_eq!(one.len(), 1);
+
+        let two = build_backends(
+            &[
+                profile("le", first_cfg),
+                profile("staging", second_cfg.clone()),
+            ],
+            &parts,
+            &one,
+        )
+        .unwrap();
+        assert_eq!(two.len(), 2, "the new endpoint got a backend of its own");
+        assert!(
+            Arc::ptr_eq(one.get("le").unwrap(), two.get("le").unwrap()),
+            "and the endpoint that was already running kept its instance"
+        );
+
+        let back_to_one = build_backends(&[profile("staging", second_cfg)], &parts, &two).unwrap();
+        assert_eq!(back_to_one.len(), 1);
+        assert!(back_to_one.get("le").is_none(), "the endpoint is unmounted");
+        assert!(
+            Arc::ptr_eq(
+                two.get("staging").unwrap(),
+                back_to_one.get("staging").unwrap()
+            ),
+            "the survivor is untouched by its neighbour going away"
+        );
+    }
+
+    /// A rebuild over *different* files starts from those files, never from the
+    /// state describing the old ones.
+    ///
+    /// The safety half of keying [`CarriedState`] on a resource: an operator
+    /// repointing a profile at a second CA must get that CA's revocation
+    /// history, not the first one's.
+    #[tokio::test]
+    async fn a_backend_rebuilt_over_different_files_adopts_nothing() {
+        let (cfg, _dir) = config("local_ca");
+        let parts = parts().await;
+        let running = build_backends(&[profile("le", cfg)], &parts, &SignerSet::default()).unwrap();
+
+        let outgoing = running.get("le").unwrap().clone();
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+        let csr = params.serialize_request(&key_pair).unwrap();
+        let IssueOutcome::Issued(chain) = outgoing
+            .issue(
+                "ord-1",
+                csr.der(),
+                &[Identifier::dns("example.com")],
+                RequestedValidity::default(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("local_ca issues synchronously")
+        };
+        outgoing
+            .revoke(&crate::cert::leaf_der_from_chain(&chain).unwrap(), None)
+            .await
+            .unwrap();
+
+        let (elsewhere, _other_dir) = config("local_ca");
+        let reloaded = build_backends(&[profile("le", elsewhere)], &parts, &running).unwrap();
+
+        assert_ne!(
+            reloaded.get("le").unwrap().crl_der().await.unwrap(),
+            outgoing.crl_der().await.unwrap(),
+            "a different `crl_path` is a different CA and starts from its own sidecar",
+        );
+    }
+
     /// Two endpoints configured identically share **one** backend instance.
     ///
     /// Not an optimization: a second `LocalCa` over the same files would keep
@@ -485,18 +905,10 @@ mod tests {
         let (cfg, _dir) = config("local_ca");
         let profiles = vec![profile("a", cfg.clone()), profile("b", cfg)];
 
-        let backends = build_backends(
-            &profiles,
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            &crate::testutil::idle_job_queue(database().await),
-        )
-        .unwrap();
-        assert_eq!(backends.len(), 2);
+        let backends = build_backends(&profiles, &parts().await, &SignerSet::default()).unwrap();
+        assert_eq!(backends.len(), 1);
         assert!(
-            Arc::ptr_eq(&backends["a"], &backends["b"]),
+            Arc::ptr_eq(backends.get("a").unwrap(), backends.get("b").unwrap()),
             "one configuration must mean one instance"
         );
     }
@@ -507,17 +919,9 @@ mod tests {
         let (second, dir_b) = config("local_ca");
         let profiles = vec![profile("a", first), profile("b", second)];
 
-        let backends = build_backends(
-            &profiles,
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            &crate::testutil::idle_job_queue(database().await),
-        )
-        .unwrap();
+        let backends = build_backends(&profiles, &parts().await, &SignerSet::default()).unwrap();
         assert!(
-            !Arc::ptr_eq(&backends["a"], &backends["b"]),
+            !Arc::ptr_eq(backends.get("a").unwrap(), backends.get("b").unwrap()),
             "different CA material must mean different CAs"
         );
 
@@ -535,14 +939,7 @@ mod tests {
         second.local_ca.leaf_validity_days = 7;
 
         let profiles = vec![profile("a", first), profile("b", second)];
-        let error = match build_backends(
-            &profiles,
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            &crate::testutil::idle_job_queue(database().await),
-        ) {
+        let error = match build_backends(&profiles, &parts().await, &SignerSet::default()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("two backends over one key file must not both be built"),
         };
@@ -563,14 +960,7 @@ mod tests {
             },
         )];
 
-        let error = match build_backends(
-            &profiles,
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            &crate::testutil::idle_job_queue(database().await),
-        ) {
+        let error = match build_backends(&profiles, &parts().await, &SignerSet::default()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend is a startup error"),
         };
@@ -583,11 +973,8 @@ mod tests {
         let signer = from_config(
             &cfg,
             vec!["default".to_string()],
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            crate::testutil::idle_job_queue(database().await),
+            &parts().await,
+            &CarriedState::new(),
         )
         .expect("local_ca is a known backend");
 
@@ -638,11 +1025,8 @@ mod tests {
         let signer = from_config(
             &cfg,
             vec!["default".to_string()],
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            crate::testutil::idle_job_queue(database().await),
+            &parts().await,
+            &CarriedState::new(),
         )
         .expect("custom is a known backend");
 
@@ -667,11 +1051,8 @@ mod tests {
         let signer = from_config(
             &cfg,
             vec!["default".to_string()],
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            crate::testutil::idle_job_queue(database().await),
+            &parts().await,
+            &CarriedState::new(),
         )
         .unwrap();
         assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
@@ -686,11 +1067,8 @@ mod tests {
         let error = match from_config(
             &cfg,
             vec!["default".to_string()],
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            crate::testutil::idle_job_queue(database().await),
+            &parts().await,
+            &CarriedState::new(),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend must not build"),
@@ -712,11 +1090,8 @@ mod tests {
         let error = match from_config(
             &cfg,
             vec!["default".to_string()],
-            database().await,
-            no_notifiers(),
-            crate::testutil::test_metrics(database().await),
-            crate::testutil::outbound_with(test_resolver()),
-            crate::testutil::idle_job_queue(database().await),
+            &parts().await,
+            &CarriedState::new(),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("the old backend name must not build"),

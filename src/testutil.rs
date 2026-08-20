@@ -249,6 +249,41 @@ pub(crate) fn idle_job_queue(
     crate::jobs::JobQueue::new(database, &crate::config::JobsConfig::default())
 }
 
+/// Egress for a test: the given resolver, no proxy, and an identity nothing
+/// compares against.
+///
+/// The identity only matters to `signer::build_backends`, which uses it to
+/// decide whether a reload has to rebuild a backend. A test constructing one
+/// directly has no previous generation, so any value does.
+pub(crate) fn egress_with(
+    resolver: std::sync::Arc<dyn crate::dns::Resolver>,
+) -> std::sync::Arc<crate::Egress> {
+    std::sync::Arc::new(crate::Egress {
+        resolver,
+        proxies: no_proxies(),
+        identity: "test".to_string(),
+    })
+}
+
+/// The dependencies a signer backend is built from, for a test that is not about
+/// any of them.
+///
+/// No notifiers (nothing dispatches), a registry nothing scrapes and a queue
+/// nothing drains — the same three "throwaway" arguments every one of these call
+/// sites used to spell out one by one before `SignerParts` gathered them.
+pub(crate) fn signer_parts(
+    database: std::sync::Arc<crate::sqlite::db::Database>,
+    resolver: std::sync::Arc<dyn crate::dns::Resolver>,
+) -> crate::signer::SignerParts {
+    crate::signer::SignerParts {
+        database: database.clone(),
+        notifiers: std::collections::HashMap::new().into(),
+        metrics: test_metrics(database.clone()),
+        egress: egress_with(resolver),
+        jobs: idle_job_queue(database),
+    }
+}
+
 /// How a [`FakeProxy`] answers the request it is handed.
 #[cfg(test)]
 #[derive(Clone, Copy)]

@@ -36,11 +36,8 @@ async fn renewal_info_uses_the_upstream_window() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -75,11 +72,8 @@ async fn no_upstream_renewal_info_means_no_opinion() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -104,11 +98,8 @@ async fn a_certificate_without_an_aki_yields_no_opinion() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -136,11 +127,8 @@ async fn an_unparsable_window_is_an_error() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        database().await,
-        no_notifiers(),
-        crate::testutil::test_metrics(database().await),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(database().await, no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);

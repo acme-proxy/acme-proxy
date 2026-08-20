@@ -483,39 +483,24 @@ pub async fn serve_on_with_reloads(
     })?;
     // Everything that outlives a configuration generation — the signer backends
     // above all, which are carried rather than rebuilt. See `crate::Assembly`.
-    let (assembly, dispatchers) =
+    let (assembly, parts) =
         crate::Assembly::new(&resolved, database.clone(), job_queue.clone(), &config).inspect_err(
             |error| {
                 error!(event = "profile_init_failed", outcome = "failure", error = %error);
             },
         )?;
+    let assembly = Arc::new(assembly);
 
-    let generation = build_generation(&config, &resolved, &assembly, dispatchers, None)
-        .inspect_err(|error| {
+    let generation =
+        build_generation(&config, &resolved, &assembly, &parts, None).inspect_err(|error| {
             error!(event = "profile_init_failed", outcome = "failure", error = %error);
         })?;
 
-    // Startup only, deliberately not re-run on a reload: `profile_mounted` means
-    // "this endpoint came up", and re-firing it on every SIGHUP would make the
-    // notify surface noisiest in exactly the config-managed deployments that
-    // would least want it.
+    // Every endpoint in the first generation came up, so every one is announced.
+    // A reload announces only the endpoints it *added* — see
+    // `supervise_reloads`, which shares this function for exactly that reason.
     for profile in &generation.profiles {
-        info!(
-            event = "profile_mounted",
-            outcome = "success",
-            profile = %profile.name,
-            directory = %profile.directory_url(),
-            challenge_bypass = profile.challenges.is_bypassed(),
-            eab_enabled = profile.eab.enabled
-        );
-        profile
-            .notify
-            .dispatch(crate::notify::NotifyEvent::ProfileMounted(
-                crate::notify::ProfileMountedData {
-                    profile: profile.name.clone(),
-                },
-            ))
-            .await;
+        announce_profile(profile).await;
     }
 
     let Generation {
@@ -703,12 +688,12 @@ pub(crate) fn build_generation(
     config: &Arc<Config>,
     resolved: &[crate::config::ProfileConfig],
     assembly: &crate::Assembly,
-    dispatchers: crate::notify::DispatcherMap,
+    parts: &crate::GenerationParts,
     previous_logins: Option<&crate::webadmin::LoginLimiter>,
 ) -> anyhow::Result<Generation> {
     let admin_enabled = config.admin.enabled;
     let database = assembly.database.clone();
-    let profiles = Profile::build_all_with(config, resolved, assembly, &dispatchers)?;
+    let profiles = Profile::build_all_with(config, resolved, parts)?;
 
     let tls = tls::from_config(&config.server)
         .inspect_err(|error| {
@@ -897,7 +882,7 @@ async fn supervise_reloads(
     mut reloads: crate::reload::Reloads,
     mut config: Arc<Config>,
     mut resolved: Vec<crate::config::ProfileConfig>,
-    assembly: crate::Assembly,
+    assembly: Arc<crate::Assembly>,
     cells: Cells,
     mut logins: Option<Arc<crate::webadmin::LoginLimiter>>,
 ) {
@@ -911,15 +896,40 @@ async fn supervise_reloads(
             generation = generation,
         );
 
-        let outcome = apply_reload(
-            &config,
-            &resolved,
-            &assembly,
-            &cells,
-            logins.as_deref(),
-            generation + 1,
-            started,
-        );
+        // The build phase runs on a blocking thread, and that is not a
+        // precaution: `RelaySigner::from_config` contacts the upstream the first
+        // time it is built for an account with no `kid` sidecar yet, on a scoped
+        // OS thread it then *joins*. Mounting a relay profile by `SIGHUP` would
+        // otherwise park a runtime worker for as long as
+        // `signer.relay.poll_timeout_secs` allows — five minutes by default —
+        // with every connection that worker was polling parked behind it. The
+        // publish phase stays on this task, where its lack of an await point is
+        // what makes a generation unobservable half-applied.
+        let outcome = {
+            let config = config.clone();
+            let resolved = resolved.clone();
+            let assembly = assembly.clone();
+            let logins = logins.clone();
+            tokio::task::spawn_blocking(move || {
+                prepare_reload(&config, &resolved, &assembly, logins.as_deref())
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(crate::reload::ReloadError::Build(format!(
+                    "the reload build task did not finish: {error}"
+                )))
+            })
+        }
+        .map(|prepared| {
+            publish_reload(
+                prepared,
+                &config,
+                &assembly,
+                &cells,
+                generation + 1,
+                started,
+            )
+        });
 
         match outcome {
             Ok(reloaded) => {
@@ -958,6 +968,17 @@ async fn supervise_reloads(
                         }
                         Role::Metrics => announce_metrics_listener(&address),
                     }
+                }
+                // An endpoint this reload mounted really did come up, so it gets
+                // the same announcement and the same notification startup makes
+                // for one. An endpoint that was *already* mounted stays silent:
+                // `profile_mounted` is a lifecycle event and not a heartbeat,
+                // and re-firing it per `SIGHUP` would make the notify surface
+                // noisiest in exactly the config-managed deployments that would
+                // least want it. Here rather than in the publishing run because
+                // dispatching reaches the database.
+                for profile in reloaded.mounted {
+                    announce_profile(&profile).await;
                 }
                 if let Some(respond) = request.respond {
                     let _ = respond.send(Ok(report));
@@ -1173,9 +1194,9 @@ fn plan_sockets(
 }
 
 /// What one successful reload hands back to the supervisor: the report to log,
-/// and the three pieces of state the *next* reload compares against.
+/// and the pieces of state the *next* reload compares against.
 ///
-/// A struct rather than the 4-tuple this used to return — which needed
+/// A struct rather than the tuple this used to return — which needed
 /// `#[allow(clippy::type_complexity)]` and left the caller destructuring four
 /// same-shaped values positionally, where swapping two would still compile.
 /// The same move `ProfileParts` made, for the same reason.
@@ -1187,30 +1208,57 @@ struct Reloaded {
     /// Each socket this reload bound, with the address it landed on. Announced
     /// by the supervisor rather than here, because saying a listener is up
     /// reaches the database (the panel's "nobody can sign in yet" warning) and
-    /// this function has no await point to spend on it — deliberately, that
+    /// [`publish_reload`] has no await point to spend on it — deliberately, that
     /// being what keeps its publishing run uninterruptible.
     opened: Vec<(Role, String)>,
+    /// The endpoints this reload **added**, for the same reason and announced in
+    /// the same place: `profile_mounted` is dispatched to the `[notify]`
+    /// backends, which queues a job row.
+    mounted: Vec<Arc<Profile>>,
 }
 
-/// One reload attempt: build everything, then publish it.
+/// Everything a reload built and validated, waiting to be published.
 ///
-/// Every fallible step happens before the first `send_replace`, so a failure
-/// anywhere leaves the running generation untouched — which is the property the
-/// whole "atomic, refuse by name" decision exists for.
+/// The build/publish split is the whole shape of a reload, and making it two
+/// values rather than two halves of one function buys the thing the split was
+/// always claiming: [`prepare_reload`] can run wherever it likes — it runs on a
+/// blocking thread, since building a `relay` backend can contact its upstream —
+/// while [`publish_reload`] stays on the supervisor task, where having no await
+/// point is what makes a generation unobservable half-applied.
+struct Prepared {
+    config: Arc<Config>,
+    resolved: Vec<crate::config::ProfileConfig>,
+    parts: crate::GenerationParts,
+    generation: Generation,
+    sockets: SocketPlans,
+    logging: logging::PreparedLogging,
+    /// Whether `RUST_LOG` is what the filter came from, so the publish phase can
+    /// say when an edited `logging.filter` changed nothing.
+    logging_filter_from_env: bool,
+    /// The endpoints in this generation that the previous one did not mount.
+    mounted: Vec<Arc<Profile>>,
+    /// The endpoints the previous generation mounted and this one does not.
+    unmounted: Vec<String>,
+}
+
+/// The build half of one reload: everything that can fail, and everything that
+/// can block.
 ///
-/// Not `async`, and that is load-bearing rather than incidental: the publishing
-/// run at the end cannot be interleaved by another task if there is no await
-/// point in it.
-fn apply_reload(
+/// Nothing here touches a cell, so a failure anywhere leaves the running
+/// generation exactly as it was — which is the property the whole "atomic,
+/// refuse by name" decision exists for. Every socket this reload needs is bound
+/// here too, where a port already in use is still a refusal rather than a
+/// listener already dropped.
+///
+/// Run on a blocking thread by [`supervise_reloads`], because building a `relay`
+/// backend for the first time contacts its upstream synchronously.
+fn prepare_reload(
     config: &Arc<Config>,
     resolved: &[crate::config::ProfileConfig],
     assembly: &crate::Assembly,
-    cells: &Cells,
     logins: Option<&crate::webadmin::LoginLimiter>,
-    generation: u64,
-    started: std::time::Instant,
-) -> Result<Reloaded, crate::reload::ReloadError> {
-    use crate::reload::{Applied, ReloadError, ReloadReport, check_frozen};
+) -> Result<Prepared, crate::reload::ReloadError> {
+    use crate::reload::{Applied, ReloadError, check_frozen};
 
     // Re-read from scratch: `Config::load` consults the file *and* the
     // `ACME_PROXY_*` environment, so a reload sees whatever the process would
@@ -1234,7 +1282,7 @@ fn apply_reload(
     // Built here rather than published here: a bad `logging.target` must refuse
     // the whole reload with the message startup would have printed, not leave a
     // half-swapped generation behind. The same build-then-publish split
-    // `Assembly::build_dispatchers` makes.
+    // `Assembly::build_parts` makes.
     let logging = logging::prepare_logging(&next.logging).map_err(ReloadError::Build)?;
     let logging_filter_from_env = logging.filter_from_env;
 
@@ -1249,49 +1297,123 @@ fn apply_reload(
 
     // Every socket this reload needs is bound **here**, where a failure is still
     // a refusal: a port already taken, an address that does not resolve, a
-    // privileged port after a `setcap` was lost. Past this line nothing can
-    // fail, so the running listeners are never dropped for a configuration that
-    // then turns out not to work.
+    // privileged port after a `setcap` was lost. Past the publish phase nothing
+    // can fail, so the running listeners are never dropped for a configuration
+    // that then turns out not to work.
     let sockets = plan_sockets(config, &next)?;
 
-    let dispatchers = assembly
-        .build_dispatchers(&next_resolved)
+    // The egress clients, the notification dispatchers and the signer backends.
+    // The last is where a newly mounted endpoint gets a backend, a removed one's
+    // is left out, and an edited `[signer]` is rebuilt over the live instance's
+    // in-memory state — see `signer::build_backends`. It is also the one step
+    // that can make a network call, hence this whole function's blocking thread.
+    let parts = assembly
+        .build_parts(&next_resolved, &next)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
-    let generation_built =
-        build_generation(&next, &next_resolved, assembly, dispatchers.clone(), logins)
-            .map_err(|error| ReloadError::Build(error.to_string()))?;
+    let generation = build_generation(&next, &next_resolved, assembly, &parts, logins)
+        .map_err(|error| ReloadError::Build(error.to_string()))?;
 
-    let next_logins = generation_built.logins.clone();
+    // Compared by name against what is running, not against what is written
+    // down: `resolve_profiles` has already dropped every `enabled = false`
+    // entry, so this is the set of endpoints actually served.
+    let running: std::collections::HashSet<&str> = resolved
+        .iter()
+        .map(|profile| profile.name.as_str())
+        .collect();
+    let mounted = generation
+        .profiles
+        .iter()
+        .filter(|profile| !running.contains(profile.name.as_str()))
+        .cloned()
+        .collect();
+    let next_names: std::collections::HashSet<&str> = next_resolved
+        .iter()
+        .map(|profile| profile.name.as_str())
+        .collect();
+    let unmounted = resolved
+        .iter()
+        .map(|profile| profile.name.clone())
+        .filter(|name| !next_names.contains(name.as_str()))
+        .collect();
 
-    // Everything below is infallible and synchronous. The order matters in two
-    // places. `[logging]` goes **first**, because an operator who raised the
-    // level did it to see what happens next, starting with this reload's own
-    // completion line. And the notifier map and the job registry go **before**
-    // the routers: a request served by the new generation queues a
-    // `notify_deliver` row naming a slot id from the new configuration, and a
-    // `NotifyJob` still holding the old map would retire it — permanently,
-    // since an unknown backend id is a `Failed`, not a `Retry`.
+    Ok(Prepared {
+        config: next,
+        resolved: next_resolved,
+        parts,
+        generation,
+        sockets,
+        logging,
+        logging_filter_from_env,
+        mounted,
+        unmounted,
+    })
+}
+
+/// The publish half: infallible, synchronous, and uninterruptible.
+///
+/// There is no `.await` in here, and that is load-bearing rather than
+/// incidental. `watch::Sender::send_replace` and
+/// `mpsc::UnboundedSender::send` are both synchronous, so a run of them with no
+/// await point between cannot be interleaved — no task can observe a generation
+/// half-applied, and no lock is needed to say so.
+///
+/// The order matters in three places. `[logging]` goes **first**, because an
+/// operator who raised the level did it to see what happens next, starting with
+/// this reload's own completion line. The notifier map, the signer set and the
+/// job registry go **before** the routers: a request served by the new
+/// generation queues a `notify_deliver` row naming a slot id from the new
+/// configuration, and a `NotifyJob` still holding the old map would retire it —
+/// permanently, since an unknown backend id is a `Failed`, not a `Retry`. And
+/// the TLS mode goes before the socket, so a freshly bound listener's very first
+/// connection is already accepted under this generation's settings.
+fn publish_reload(
+    prepared: Prepared,
+    applied: &Arc<Config>,
+    assembly: &crate::Assembly,
+    cells: &Cells,
+    generation: u64,
+    started: std::time::Instant,
+) -> Reloaded {
+    use crate::reload::ReloadReport;
+
+    let Prepared {
+        config: next,
+        resolved: next_resolved,
+        parts,
+        generation: built,
+        sockets,
+        logging,
+        logging_filter_from_env,
+        mounted,
+        unmounted,
+    } = prepared;
+
     let logging_reloaded = logging::publish_logging(logging);
 
     let report = ReloadReport {
         generation,
-        profiles: generation_built
+        profiles: built
             .profiles
             .iter()
             .map(|profile| profile.name.clone())
             .collect(),
-        job_kinds: generation_built.job_registry.kinds(),
-        tls_reloaded: generation_built.tls.is_some(),
-        admin_tls_reloaded: generation_built.admin_tls.is_some(),
+        job_kinds: built.job_registry.kinds(),
+        tls_reloaded: built.tls.is_some(),
+        admin_tls_reloaded: built.admin_tls.is_some(),
         listeners_rebound: sockets.rebound(),
         logging_reloaded,
         duration: started.elapsed(),
     };
+    let next_logins = built.logins.clone();
 
-    assembly.publish_notifiers(dispatchers);
+    assembly.publish_notifiers(parts.dispatchers);
+    // The set the *next* reload compares against, and the point at which the
+    // backends this one dropped are finally released — after their replacements
+    // were built and adopted their state, never before.
+    assembly.publish_signers(parts.signers);
     cells
         .job_registry
-        .send_replace(Arc::new(generation_built.job_registry));
+        .send_replace(Arc::new(built.job_registry));
 
     // `[jobs]` in its two halves, both synchronous and neither able to fail —
     // which is what lets them sit in this run rather than needing a build phase
@@ -1302,33 +1424,43 @@ fn apply_reload(
     cells.jobs.send_replace(Arc::new(next.jobs.clone()));
     assembly.jobs.set_max_attempts(next.jobs.max_attempts);
 
-    // The TLS mode before the socket, so a freshly bound listener's very first
-    // connection is already accepted under the settings this generation built
-    // rather than the previous one's.
-    cells.acme.set_tls(generation_built.tls);
-    cells.admin.set_tls(generation_built.admin_tls);
+    cells.acme.set_tls(built.tls);
+    cells.admin.set_tls(built.admin_tls);
     let opened = sockets.bound.clone();
     sockets.publish(cells);
 
     cells
         .acme_router
-        .send_replace(generation_built.acme_app.into_service::<axum::body::Body>());
+        .send_replace(built.acme_app.into_service::<axum::body::Body>());
     // An empty router when the panel is off, which is what a request arriving
     // on a connection established a moment before it was switched off now gets:
     // closing the socket stops the next client, and this stops that one.
     cells.admin_router.send_replace(
-        generation_built
+        built
             .admin_app
             .unwrap_or_default()
             .into_service::<axum::body::Body>(),
     );
+
+    // Said here rather than by the supervisor because it needs nothing but a
+    // name, unlike the mounting half, which dispatches a notification.
+    for profile in unmounted {
+        warn!(
+            event = "profile_unmounted",
+            outcome = "advisory",
+            profile = %profile,
+            "the endpoint is no longer served: its accounts and orders stay in the \
+             database and come back if it is mounted again, but any issuance still in \
+             flight for it has no handler left to finish it"
+        );
+    }
 
     // `RUST_LOG` outranks `logging.filter` on a reload exactly as it does at
     // startup — the two disagreeing would be worse — but that makes an edited
     // `logging.filter` a silent no-op, which is the one outcome an operator
     // would read as "my reload did not land". Said only when both halves hold:
     // the environment won, *and* the file's filter actually moved.
-    if logging_filter_from_env && config.logging.filter != next.logging.filter {
+    if logging_filter_from_env && applied.logging.filter != next.logging.filter {
         warn!(
             event = "server_logging_filter_overridden",
             outcome = "advisory",
@@ -1336,13 +1468,39 @@ fn apply_reload(
         );
     }
 
-    Ok(Reloaded {
+    Reloaded {
         report,
         config: next,
         resolved: next_resolved,
         logins: next_logins,
         opened,
-    })
+        mounted,
+    }
+}
+
+/// The one announcement an endpoint that has just come up makes: a log line and
+/// a `[notify]` lifecycle event.
+///
+/// Shared by startup and by a reload that mounted a new endpoint, so the two
+/// cannot drift — before the profile set could reload there was only one caller
+/// and the sharing was not needed.
+async fn announce_profile(profile: &Arc<Profile>) {
+    info!(
+        event = "profile_mounted",
+        outcome = "success",
+        profile = %profile.name,
+        directory = %profile.directory_url(),
+        challenge_bypass = profile.challenges.is_bypassed(),
+        eab_enabled = profile.eab.enabled
+    );
+    profile
+        .notify
+        .dispatch(crate::notify::NotifyEvent::ProfileMounted(
+            crate::notify::ProfileMountedData {
+                profile: profile.name.clone(),
+            },
+        ))
+        .await;
 }
 
 /// A future that completes when the shutdown relay fires.

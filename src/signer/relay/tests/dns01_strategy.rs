@@ -63,11 +63,8 @@ async fn bypass_triggers_the_offered_challenge() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -109,11 +106,8 @@ async fn bypass_triggers_a_challenge_of_any_type() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -148,11 +142,8 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         vec!["default".to_string()],
-        db.clone(),
-        no_notifiers(),
-        crate::testutil::test_metrics(db.clone()),
-        crate::testutil::outbound_with(test_resolver()),
-        queue.clone(),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -188,11 +179,8 @@ async fn dns01_publishes_triggers_and_cleans_up() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         updater.clone(),
@@ -252,11 +240,8 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         updater.clone(),
@@ -299,11 +284,8 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubUpdater::default()),
@@ -349,11 +331,8 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             vec!["default".to_string()],
-            db.clone(),
-            no_notifiers(),
-            crate::testutil::test_metrics(db.clone()),
-            crate::testutil::outbound_with(test_resolver()),
-            queue.clone(),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubUpdater {

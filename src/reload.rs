@@ -15,15 +15,13 @@
 //! observed half-applied — no other task can run in the middle of it.
 //!
 //! What a swap cannot honour is refused **by name**, and the whole reload is
-//! refused with it: the database pool is connected, and a signer backend owns
-//! in-memory state (a `LocalCa` revocation ledger, a relay's `http-01` token
-//! store) that two generations over one set of files would disagree about.
-//! Refusing by name is the posture startup already takes when it rejects an
-//! unknown `logging.target` rather than falling back.
+//! refused with it. Exactly one key is left in that category — `database.url`,
+//! the pool being open and the accounts and orders issued against it not
+//! following a URL elsewhere. Refusing by name is the posture startup already
+//! takes when it rejects an unknown `logging.target` rather than falling back.
 //!
-//! Three things used to be on that list and are not any more, all for the same
-//! reason — the thing said to be unmovable was made movable rather than argued
-//! with:
+//! Everything else that used to be on that list came off the same way — the
+//! thing said to be unmovable was made movable rather than argued with:
 //!
 //! - `[logging]`, the tracing subscriber being installed once per process.
 //!   `cli::logging` now installs the whole stack behind a
@@ -45,6 +43,20 @@
 //!   reaches for mid-incident (slow a retry storm, widen a lease, raise
 //!   concurrency), which made them the worst possible thing to charge a restart
 //!   for. See [`crate::jobs::runner`].
+//! - **The profile set, each profile's `[signer]`, and `[dns]`/`[proxy]`** — the
+//!   last four and the hardest, because a signer backend really does own state
+//!   with no durable home: a `LocalCa` rebuilds its whole CRL from an in-memory
+//!   ledger, and a relay's `http-01` token store would come back empty under an
+//!   upstream fetch already in flight. [`crate::signer::CarriedState`] is the
+//!   seam. A backend whose configuration did not move is now **reused verbatim**
+//!   rather than rebuilt, and one whose configuration did move is rebuilt
+//!   holding the *same* ledger and the *same* token store — so a revocation
+//!   landing mid-reload is not lost and a challenge fetch in flight is still
+//!   answered. Mounting and unmounting an endpoint fell out of it for free, that
+//!   having been the whole of what made the profile set unmovable, and
+//!   `[dns]`/`[proxy]` fell out too: they were frozen only because the signers
+//!   cached them at construction, which is now a reason to *rebuild* a signer
+//!   (they are part of its identity key) rather than to refuse the edit.
 
 use std::convert::Infallible;
 use std::task::{Context, Poll};
@@ -66,38 +78,15 @@ use crate::config::{Config, ProfileConfig};
 /// from a `Config` without work that can fail: `resolve_profiles` overlays the
 /// global sections onto each profile key by key and returns a `Result`. Pairing
 /// them means a projection below is an infallible read.
+///
+/// `profiles` has no reader in [`FROZEN`] any more — the two entries that used
+/// it both came off when the profile set and each profile's `[signer]` became
+/// reloadable. It stays because the pairing is the *shape* of a resolved
+/// configuration and the next entry to be added may well need it, and because
+/// the alternative is a caller assembling the pair again the moment one does.
 pub struct Applied<'a> {
     pub config: &'a Config,
     pub profiles: &'a [ProfileConfig],
-}
-
-/// Renders a projection whose *value* must never reach a log.
-///
-/// `[signer]` reaches `relay.eab.hmac_key`, `relay.dns01.rfc2136.tsig_key_secret`
-/// and `local_ca.pkcs11.pin`; `[proxy]`'s URLs legitimately carry
-/// `http://user:password@host`. [`ReloadError::Frozen`] embeds both the applied
-/// and the proposed rendering verbatim and `cli::apply_reload` logs the whole
-/// message, so a `SIGHUP` after an unrelated edit to either section would print
-/// the TSIG key — write access to the very zone this CA validates against — and
-/// the HSM PIN, to journald and every log shipper downstream. That directly
-/// contradicts what `src/proxy.rs` states for itself, that `redacted()` is the
-/// only rendering of a proxy URL that exists.
-///
-/// A digest costs nothing here, because **the projection only ever needs
-/// equality**: `check_frozen` compares the two strings and never reads them.
-/// Redacting `Debug` was the alternative and is not available — `format!("{:?}")`
-/// of a signer section is load-bearing as the *identity key*
-/// `signer::build_backends` dedups backends on, so hiding a field there would
-/// collapse two profiles differing only in their HSM PIN into one backend.
-///
-/// The forward rule, since this will be asked again: **a whole-section
-/// projection is opaque iff any field it reaches can hold a credential.**
-/// `dns.resolver` and `database.url` hold none, and naming the old and the new
-/// value is exactly where that message earns its keep, so they stay readable.
-/// Truncated to 8 bytes like [`crate::sqlite::account::pubkey_fingerprint`].
-fn opaque(rendered: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, rendered.as_bytes());
-    format!("sha256:{}", hex::encode(&digest.as_ref()[..8]))
 }
 
 /// The keys a running process cannot change, and how to read each one.
@@ -108,63 +97,43 @@ fn opaque(rendered: &str) -> String {
 /// `format!("{cfg:?}")`). The projection form is what lets a refusal **name the
 /// key** — a whole-section comparison could only say "server changed".
 ///
-/// Each entry is one of two kinds, and the distinction is the whole design:
+/// There is **one entry left**, and it is the only one that was ever *physically*
+/// frozen: the connection pool is open, and the accounts and orders issued
+/// against it do not follow the URL somewhere else. A different database is a
+/// different CA, so this one should stay here for good.
 ///
-/// - *Physically frozen*: the connection pool is open, and the accounts and
-///   orders issued against it do not follow the URL somewhere else.
-/// - *Frozen by ownership*: a signer backend holds in-memory state with no
-///   durable home, so two generations over one set of files disagree — see
-///   [`crate::Assembly`]. `dns.*` and `proxy.*` follow from it, because every
-///   outbound client caches them at construction and the signers are the
-///   clients that are never rebuilt.
+/// What has come *off* this list is now worth more than what is on it, because
+/// the pattern never varied: the thing said to be unmovable was made movable
+/// rather than argued with, and the entry then had no reason left.
 ///
-/// What has repeatedly come *off* this list is worth as much as what is on it,
-/// because the pattern is always the same: the thing said to be unmovable was
-/// made movable rather than argued with, and the entry then had no reason left.
-/// **Every bind address used to be here and none is now**, the listener having
-/// stopped being something `axum::serve` consumes — see [`crate::listener`] and
-/// `cli::plan_sockets`. `[logging]` went the same way: the whole layer stack
-/// sits behind a `reload::Layer` handle (see `cli::logging`), so all six keys
-/// swap with the rest of a generation. And so did **all seven `[jobs]` keys** —
-/// the runner re-derives its pacing from a cell on every pass and the queue
-/// reads `max_attempts` from a shared atomic, so nothing about the section is
-/// snapshotted at spawn any more (`crate::jobs::runner`). The global `[signer]`
-/// section is absent for a different reason again: `merged_sections` overlays it
-/// per key, so a global change that matters shows up in some profile's resolved
-/// section, and one that every profile overrides is a genuine no-op that must
-/// not be refused.
+/// - **Every bind address**, once [`crate::listener`] owned the accept loop and
+///   a socket stopped being something `axum::serve` consumes.
+/// - **`[logging]`**, once the whole layer stack went behind a `reload::Layer`
+///   handle (`cli::logging`).
+/// - **All seven `[jobs]` keys**, once the runner stopped snapshotting its
+///   pacing at spawn ([`crate::jobs::runner`]).
+/// - **`profiles`, `profiles.*.signer`, `dns.resolver` and `proxy`** — the last
+///   four, and the ones this table existed for. They were frozen *by ownership*:
+///   a signer backend holds in-memory state with no durable home, so two
+///   generations over one set of files would disagree, and `[dns]`/`[proxy]`
+///   followed because the signers were the one outbound client never rebuilt.
+///   [`crate::signer::CarriedState`] is the seam that ended it — a backend whose
+///   configuration did not move is reused verbatim, and one whose configuration
+///   did is rebuilt over the *live* ledger and token store rather than over an
+///   empty pair. Mounting and unmounting an endpoint fell out of the same
+///   change, since building or dropping a backend was the whole of what made the
+///   profile set unmovable.
+///
+/// The `[signer]` section is also why this table used to render two of its
+/// entries through a digest: both reached a credential (a proxy URL's
+/// `user:password@`, the HSM PIN, the RFC 2136 TSIG key, the upstream EAB
+/// secret), and [`ReloadError::Frozen`] embeds both renderings in a message
+/// `cli::publish_reload`'s caller logs. Nothing left here can hold one, so the
+/// digest is gone with them. **The rule survives the code**: were an entry ever
+/// added back, a whole-section projection must be opaque iff any field it
+/// reaches can hold a credential.
 type Projection = fn(&Applied<'_>) -> String;
-const FROZEN: &[(&str, Projection)] = &[
-    ("database.url", |a| a.config.database.url.clone()),
-    ("dns.resolver", |a| format!("{:?}", a.config.dns.resolver)),
-    // Opaque: the URLs carry a proxy password. See `opaque`.
-    ("proxy", |a| opaque(&format!("{:?}", a.config.proxy))),
-    // Mounting or unmounting an endpoint needs a signer backend built or
-    // dropped, so it follows the signer freeze.
-    ("profiles", |a| {
-        a.profiles
-            .iter()
-            .map(|profile| profile.name.as_str())
-            .collect::<Vec<_>>()
-            .join(",")
-    }),
-    // Opaque per profile, but the profile *name* stays readable — it is not a
-    // field of the section, and it is what tells an operator which endpoint's
-    // signer moved. See `opaque`.
-    ("profiles.*.signer", |a| {
-        a.profiles
-            .iter()
-            .map(|profile| {
-                format!(
-                    "{}={}",
-                    profile.name,
-                    opaque(&format!("{:?}", profile.sections.signer))
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(";")
-    }),
-];
+const FROZEN: &[(&str, Projection)] = &[("database.url", |a| a.config.database.url.clone())];
 
 /// Why a reload did not happen.
 #[derive(Debug, thiserror::Error)]
@@ -496,38 +465,12 @@ mod frozen_tests {
     #[test]
     fn every_frozen_key_is_refused_by_its_own_name() {
         #[allow(clippy::type_complexity)]
-        let cases: Vec<(&str, Box<dyn Fn(&mut Config, &mut Vec<ProfileConfig>)>)> = vec![
-            (
-                "database.url",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.database.url = "sqlite://other.db".to_string();
-                }),
-            ),
-            (
-                "dns.resolver",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.dns.resolver = Some("192.0.2.1:53".to_string());
-                }),
-            ),
-            (
-                "proxy",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.proxy.https_url = "http://proxy.example:3128".to_string();
-                }),
-            ),
-            (
-                "profiles",
-                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
-                    p.push(profile("staging"));
-                }),
-            ),
-            (
-                "profiles.*.signer",
-                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
-                    p[0].sections.signer.backend = "custom".to_string();
-                }),
-            ),
-        ];
+        let cases: Vec<(&str, Box<dyn Fn(&mut Config, &mut Vec<ProfileConfig>)>)> = vec![(
+            "database.url",
+            Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
+                c.database.url = "sqlite://other.db".to_string();
+            }),
+        )];
 
         for (key, mutate) in &cases {
             let refused = refused_key(refuse(|config, profiles| mutate(config, profiles)));
@@ -556,130 +499,59 @@ mod frozen_tests {
         assert!(refuse(|_, _| {}).is_ok());
     }
 
-    /// A frozen section that can hold a credential is still refused **by name**,
-    /// and the refusal prints none of it.
+    /// The four keys this table used to hold, every one of them now reloadable.
     ///
-    /// [`ReloadError::Frozen`] embeds the applied and the proposed rendering
-    /// verbatim and `cli::apply_reload` logs the whole message, so before
-    /// `opaque` a `SIGHUP` after any `[signer]` or `[proxy]` edit wrote the RFC
-    /// 2136 TSIG key, the upstream EAB secret and the HSM PIN into the log — and
-    /// the TSIG key is write access to the zone this CA validates against.
+    /// Beside the freeze rather than only in `tests/reload.rs`, for
+    /// `every_listener_key_is_reloadable`'s reason and more sharply: the table is
+    /// consulted **first**, so any of these left in it would make the whole
+    /// carried-state path below unreachable — the refusal lands before a single
+    /// backend is built, and the seam that exists to make this safe would never
+    /// run.
     ///
-    /// Asserted on `to_string()` as well as on the two fields, since that is
-    /// what is actually logged.
+    /// What makes each safe is `crate::signer::CarriedState` and the reuse pass
+    /// in `signer::build_backends`; what proves it is that module's own suite,
+    /// which drives a real ledger across a rebuild. This one only proves the
+    /// refusal is gone.
     #[test]
-    fn a_frozen_section_holding_a_secret_is_refused_without_printing_it() {
-        #[allow(clippy::type_complexity)]
-        let cases: Vec<(
-            &str,
-            &str,
-            Box<dyn Fn(&mut Config, &mut Vec<ProfileConfig>)>,
-        )> = vec![
-            (
-                "proxy",
-                "hunter2",
-                Box::new(|c: &mut Config, _: &mut Vec<ProfileConfig>| {
-                    c.proxy.https_url = "http://user:hunter2@proxy.example:3128".to_string();
-                }),
-            ),
-            (
-                "profiles.*.signer",
-                "SUPERSECRET",
-                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
-                    p[0].sections.signer.relay.dns01.rfc2136.tsig_key_secret =
-                        "SUPERSECRET".to_string();
-                }),
-            ),
-            (
-                "profiles.*.signer",
-                "1234-PIN",
-                Box::new(|_: &mut Config, p: &mut Vec<ProfileConfig>| {
-                    p[0].sections.signer.local_ca.pkcs11.pin = "1234-PIN".to_string();
-                }),
-            ),
-        ];
+    fn the_profile_set_its_signers_and_the_egress_all_reload() {
+        // A profile mounted, and a profile renamed at the same count.
+        assert!(refuse(|_, profiles| profiles.push(profile("staging"))).is_ok());
+        assert!(refuse(|_, profiles| profiles[0].name = "staging".to_string()).is_ok());
+        assert!(refuse(|_, profiles| profiles.clear()).is_ok());
 
-        for (key, secret, mutate) in cases {
-            let Err(error) = refuse(mutate) else {
-                panic!("{key} holding {secret} must still be refused");
-            };
-            let ReloadError::Frozen {
-                key: named,
-                applied,
-                proposed,
-            } = &error
-            else {
-                panic!("expected a frozen-key refusal, got {error}");
-            };
-
-            assert_eq!(named, key);
-            // The change is still *detected* — which is also what proves
-            // `opaque` is not a constant.
-            assert_ne!(applied, proposed);
-            for rendered in [applied.as_str(), proposed.as_str(), &error.to_string()] {
-                assert!(
-                    !rendered.contains(secret),
-                    "{key} printed {secret} in {rendered}"
-                );
-            }
-        }
-    }
-
-    /// The profile *name* is not a credential, and it is what tells an operator
-    /// which endpoint's signer moved — so it survives the digest.
-    #[test]
-    fn an_opaque_signer_refusal_still_names_its_profile() {
-        let Err(ReloadError::Frozen { proposed, .. }) = refuse(|_, p| {
-            p[0].sections.signer.backend = "custom".to_string();
-        }) else {
-            panic!("a resolved signer change must be refused");
-        };
-        assert!(proposed.starts_with("le="), "got {proposed}");
-        assert!(proposed.contains("sha256:"), "got {proposed}");
-    }
-
-    /// The pair that a naive implementation gets wrong.
-    ///
-    /// Only the **resolved** per-profile signer is frozen, because
-    /// `merged_sections` overlays the global `[signer]` key by key. A global
-    /// change every profile overrides changes nothing that runs, and refusing it
-    /// would refuse a genuine no-op.
-    #[test]
-    fn the_signer_freeze_follows_the_resolved_section_not_the_global_one() {
-        // The global section moved; the resolved profiles did not.
-        let allowed = refuse(|config, _| {
-            config.signer.backend = "custom".to_string();
-        });
+        // A resolved `[signer]` moved — the change a naive implementation
+        // confused with the global one, and the one the seam exists for.
         assert!(
-            allowed.is_ok(),
-            "a global [signer] change every profile overrides must not be refused",
+            refuse(|_, profiles| profiles[0].sections.signer.backend = "custom".to_string())
+                .is_ok()
+        );
+        assert!(
+            refuse(|_, profiles| profiles[0].sections.signer.local_ca.leaf_validity_days = 30)
+                .is_ok()
         );
 
-        // The converse: the global section is untouched and a profile's
-        // resolved one moved, which is the change that actually matters.
-        assert_eq!(
-            refused_key(refuse(|_, profiles| {
-                profiles[0].sections.signer.local_ca.leaf_validity_days = 30;
-            })),
-            "profiles.*.signer",
-        );
+        // And the two that were frozen only because the signers cached them.
+        assert!(refuse(|c, _| c.dns.resolver = Some("192.0.2.1:53".to_string())).is_ok());
+        assert!(refuse(|c, _| c.proxy.https_url = "http://proxy.example:3128".to_string()).is_ok());
     }
 
-    /// `resolve_profiles` drops a disabled profile, so adding one changes
-    /// nothing that is mounted and must not be refused. The frozen key is the
-    /// set of endpoints actually served, not the set written down.
+    /// The global `[signer]` section was never frozen and still is not — but the
+    /// reason has inverted, and the inversion is worth pinning.
+    ///
+    /// It used to be allowed because `merged_sections` overlays it per key, so a
+    /// change every profile overrides is a genuine no-op that must not be
+    /// refused. It is now allowed because **nothing about `[signer]` is refused
+    /// at all**: a change that does reach a profile's resolved section rebuilds
+    /// that profile's backend instead of stopping the reload.
     #[test]
-    fn a_profile_nobody_mounts_is_not_a_change() {
-        // A disabled profile never reaches the resolved list at all, so the
-        // check sees the same two views.
-        assert!(refuse(|_, _| {}).is_ok());
-
-        // Renaming one *is* a change, even at the same count.
-        assert_eq!(
-            refused_key(refuse(|_, profiles| {
-                profiles[0].name = "staging".to_string();
-            })),
-            "profiles",
+    fn nothing_about_the_signer_sections_is_refused_any_more() {
+        assert!(refuse(|config, _| config.signer.backend = "custom".to_string()).is_ok());
+        assert!(
+            refuse(|config, profiles| {
+                config.signer.backend = "custom".to_string();
+                profiles[0].sections.signer.backend = "custom".to_string();
+            })
+            .is_ok()
         );
     }
 

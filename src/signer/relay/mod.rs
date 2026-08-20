@@ -83,6 +83,18 @@ pub enum ChallengeStrategy {
     Http01(Arc<dyn http01::TokenStore>),
 }
 
+/// The [`crate::signer::CarriedState`] key an upstream's token store lives
+/// under.
+///
+/// Keyed on `account_key_path`, which is what identifies *which upstream* this
+/// backend is a client of — two relays pointed at different CAs have different
+/// accounts and different keys, and must never hand each other tokens. Defined
+/// once here, since the two spellings agreeing is the whole correctness of the
+/// handover.
+fn token_store_key(account_key_path: &str) -> String {
+    format!("relay.http01:{account_key_path}")
+}
+
 /// Timing knobs for the background relay.
 struct PollConfig {
     interval: Duration,
@@ -101,6 +113,20 @@ struct Inner {
     /// The account URL the upstream assigned, used as the `kid` on every
     /// signed request after registration.
     kid: String,
+    /// `signer.relay.account_key_path`, kept only so
+    /// [`SignerBackend::carried_state`] can name the resource its `http-01`
+    /// token store belongs to — the key that decides whether a backend rebuilt
+    /// by a reload is a client of the same upstream this one is.
+    account_key_path: String,
+    /// The same store [`ChallengeStrategy::Http01`] holds, when that is the
+    /// strategy in force, kept *concretely* beside it.
+    ///
+    /// Not redundant: `CarriedState` can only hand back a sized type, so an
+    /// `Arc<dyn TokenStore>` cannot be downcast out of it again. The strategy
+    /// keeps the trait object — [`flow`] is driven against a stub in tests, and
+    /// a future provider slots in there — while this is what a reload passes on.
+    /// `None` under every other strategy, and under the stub a test substitutes.
+    http01_tokens: Option<Arc<http01::MemoryTokenStore>>,
     database: Arc<Database>,
     strategy: ChallengeStrategy,
     poll: PollConfig,
@@ -157,12 +183,10 @@ impl RelaySigner {
     pub fn from_config(
         cfg: &RelayConfig,
         profiles: Vec<String>,
-        database: Arc<Database>,
-        notifiers: crate::notify::Notifiers,
-        metrics: Arc<crate::metrics::Metrics>,
-        outbound: crate::http_client::Outbound,
-        jobs: JobQueue,
+        parts: &crate::signer::SignerParts,
+        carried: &crate::signer::CarriedState,
     ) -> anyhow::Result<Self> {
+        let outbound = parts.egress.outbound();
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
                 "signer.relay.directory_url is empty: the relay backend has no upstream \
@@ -188,19 +212,22 @@ impl RelaySigner {
         // `provision` call: `Rfc2136Updater::from_config` can do a blocking DNS
         // resolution, and that must stay off the caller's tokio worker thread
         // for exactly the same reason the network provisioning below does.
-        let (client, account, kid, strategy) = std::thread::scope(|scope| {
+        let (client, account, kid, strategy, http01_tokens) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {
                     // Validated whether or not it is the selected strategy, for
                     // the reason `challenge::from_config` validates names
                     // before checking `bypass`: a typo must not sit unnoticed
                     // until someone switches strategies.
-                    let strategy = match cfg.challenge_strategy.as_str() {
-                        "bypass" => ChallengeStrategy::Bypass,
+                    let (strategy, http01_tokens) = match cfg.challenge_strategy.as_str() {
+                        "bypass" => (ChallengeStrategy::Bypass, None),
                         "dns01" => match cfg.dns01.provider.as_str() {
-                            "rfc2136" => ChallengeStrategy::Dns01(Arc::new(
-                                dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?,
-                            )),
+                            "rfc2136" => (
+                                ChallengeStrategy::Dns01(Arc::new(
+                                    dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?,
+                                )),
+                                None,
+                            ),
                             other => anyhow::bail!(
                                 "unknown signer.relay.dns01.provider: {other} (supported: rfc2136)"
                             ),
@@ -221,7 +248,28 @@ impl RelaySigner {
                                  reverse proxy must forward or redirect that path to this server \
                                  (RFC 8555 §8.3 permits a redirect, so it need not share the name)"
                             );
-                            ChallengeStrategy::Http01(Arc::new(http01::MemoryTokenStore::new()))
+                            // Adopted from the outgoing backend when a reload
+                            // rebuilt this one, because this store is the piece
+                            // with no durable home at all: an upstream CA may be
+                            // midway through fetching a token published seconds
+                            // ago, and an empty store answers that fetch `404`
+                            // — failing an issuance for a configuration change
+                            // that had nothing to do with it.
+                            let key = token_store_key(&cfg.account_key_path);
+                            let tokens = match carried.get::<http01::MemoryTokenStore>(&key) {
+                                Some(tokens) => {
+                                    info!(
+                                        event = "signer_relay_token_store_adopted",
+                                        outcome = "success",
+                                        account_key_path = %cfg.account_key_path,
+                                        "key authorizations published for the upstream survive \
+                                         the reload that rebuilt this backend"
+                                    );
+                                    tokens
+                                }
+                                None => Arc::new(http01::MemoryTokenStore::new()),
+                            };
+                            (ChallengeStrategy::Http01(tokens.clone()), Some(tokens))
                         }
                         other => anyhow::bail!(
                             "unknown signer.relay.challenge_strategy: {other} \
@@ -233,7 +281,7 @@ impl RelaySigner {
                         .enable_all()
                         .build()?
                         .block_on(provision(cfg, outbound, poll.timeout))?;
-                    Ok((client, account, kid, strategy))
+                    Ok((client, account, kid, strategy, http01_tokens))
                 })
                 .join()
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("upstream provisioning thread panicked")))
@@ -243,13 +291,15 @@ impl RelaySigner {
             client,
             account,
             kid,
-            database,
+            account_key_path: cfg.account_key_path.clone(),
+            http01_tokens,
+            database: parts.database.clone(),
             strategy,
             poll,
             profiles,
-            notifiers,
-            metrics,
-            jobs,
+            notifiers: parts.notifiers.clone(),
+            metrics: parts.metrics.clone(),
+            jobs: parts.jobs.clone(),
         })))
     }
 }
@@ -446,6 +496,24 @@ impl SignerBackend for RelaySigner {
             ChallengeStrategy::Http01(tokens) => Some(tokens.clone()),
             ChallengeStrategy::Bypass | ChallengeStrategy::Dns01(_) => None,
         }
+    }
+
+    /// Hands on the `http-01` token store, keyed by `account_key_path`.
+    ///
+    /// Nothing else, because nothing else here is both live and homeless: the
+    /// account key and the `kid` sidecar are files, and the `AcmeClient` holds
+    /// no state a fresh one would miss. The token store is the one piece whose
+    /// loss is visible from outside the process — as an upstream CA fetching a
+    /// key authorization published moments ago and getting a `404`.
+    ///
+    /// An empty answer under `bypass` and `dns01`, which publish nothing here,
+    /// so a strategy switched *to* `http01` by a reload correctly starts empty.
+    fn carried_state(&self) -> crate::signer::CarriedState {
+        let mut carried = crate::signer::CarriedState::new();
+        if let Some(tokens) = &self.0.http01_tokens {
+            carried.insert(token_store_key(&self.0.account_key_path), tokens.clone());
+        }
+        carried
     }
 }
 

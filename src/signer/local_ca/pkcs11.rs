@@ -1049,7 +1049,8 @@ mod softhsm {
     #[tokio::test]
     async fn a_token_backed_ca_issues_a_verifiable_leaf() {
         let lab = lab_or_skip!();
-        let ca = LocalCa::load_or_generate(&lab.config()).expect("the token-backed CA must load");
+        let ca = LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new())
+            .expect("the token-backed CA must load");
 
         let outcome = ca
             .issue(
@@ -1081,7 +1082,8 @@ mod softhsm {
     #[tokio::test]
     async fn a_token_backed_ca_signs_a_verifiable_crl() {
         let lab = lab_or_skip!();
-        let ca = LocalCa::load_or_generate(&lab.config()).unwrap();
+        let ca =
+            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
 
         let outcome = ca
             .issue(
@@ -1122,7 +1124,7 @@ mod softhsm {
         let mut cfg = lab.config();
         cfg.pkcs11.key_label = "not-the-ca-key".to_string();
 
-        let error = match LocalCa::load_or_generate(&cfg) {
+        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a key label matching nothing must not start the server"),
         };
@@ -1139,7 +1141,7 @@ mod softhsm {
         cfg.cert_path = dir.join("absent.pem").to_string_lossy().into_owned();
         cfg.key_path = dir.join("absent.key").to_string_lossy().into_owned();
 
-        let error = match LocalCa::load_or_generate(&cfg) {
+        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("pkcs11 mode must not generate a CA"),
         };
@@ -1162,7 +1164,7 @@ mod softhsm {
             .to_string_lossy()
             .into_owned();
 
-        let error = match LocalCa::load_or_generate(&cfg) {
+        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a wrong PIN must not start the server"),
         };
@@ -1182,7 +1184,7 @@ mod softhsm {
         };
         assert_eq!(cfg.key_source, "file", "the default must not have moved");
 
-        let ca = LocalCa::load_or_generate(&cfg).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let outcome = ca
             .issue(
                 "ord-file",
@@ -1203,8 +1205,10 @@ mod softhsm {
     #[test]
     fn a_second_backend_over_the_same_module_opens_fine() {
         let lab = lab_or_skip!();
-        let first = LocalCa::load_or_generate(&lab.config()).unwrap();
-        let second = LocalCa::load_or_generate(&lab.config()).unwrap();
+        let first =
+            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
+        let second =
+            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
         drop((first, second));
     }
 }

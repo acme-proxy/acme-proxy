@@ -76,7 +76,14 @@ pub struct LocalCa {
     /// construction — see [`policy`].
     leaf_policy: LeafPolicy,
     /// Revoked-certificate ledger + the current signed CRL derived from it.
-    revoked: Mutex<RevokedLedger>,
+    ///
+    /// Behind an [`Arc`] so a configuration reload that rebuilds this CA can
+    /// hand the *same* ledger to its replacement — see
+    /// [`CarriedState`](crate::signer::CarriedState). The sidecar on disk is the
+    /// durable copy, but reading it back would lose any revocation that landed
+    /// on this instance after the replacement was constructed and before it was
+    /// published. Sharing the cell means there is no such window.
+    revoked: Arc<Mutex<RevokedLedger>>,
     /// Where the ledger/CRL are persisted. `None` for [`LocalCa::generate_in_memory`]
     /// (disk-free, tests): the ledger and CRL still work, just in-memory only.
     paths: Option<CrlPaths>,
@@ -151,10 +158,18 @@ impl LocalCa {
     /// The two sources differ in more than where the bytes come from:
     /// `"file"` loads *or generates* the CA, while `"pkcs11"` only ever loads
     /// one — see [`load_pkcs11`](Self::load_pkcs11).
-    pub fn load_or_generate(cfg: &LocalCaConfig) -> anyhow::Result<Self> {
+    ///
+    /// `carried` is what the previous configuration generation left behind, and
+    /// is empty at startup. Only the revocation ledger is taken from it; the CA
+    /// certificate and its key are read from disk either way, since they are
+    /// exactly the things that have a durable home.
+    pub fn load_or_generate(
+        cfg: &LocalCaConfig,
+        carried: &crate::signer::CarriedState,
+    ) -> anyhow::Result<Self> {
         match KeySource::parse(&cfg.key_source)? {
-            KeySource::File => Self::load_or_generate_from_file(cfg),
-            KeySource::Pkcs11 => Self::load_pkcs11(cfg),
+            KeySource::File => Self::load_or_generate_from_file(cfg, carried),
+            KeySource::Pkcs11 => Self::load_pkcs11(cfg, carried),
         }
     }
 
@@ -162,7 +177,10 @@ impl LocalCa {
     /// generates a new one, **persists both files**, and uses it. Also loads
     /// (or, on first run, eagerly creates) the revocation ledger/CRL at
     /// `crl_path`.
-    fn load_or_generate_from_file(cfg: &LocalCaConfig) -> anyhow::Result<Self> {
+    fn load_or_generate_from_file(
+        cfg: &LocalCaConfig,
+        carried: &crate::signer::CarriedState,
+    ) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
         let key_path = Path::new(&cfg.key_path);
         let paths = CrlPaths {
@@ -186,6 +204,7 @@ impl LocalCa {
                 cfg.leaf_validity_days,
                 leaf_policy,
                 Some(paths),
+                carried,
             );
         }
 
@@ -200,6 +219,7 @@ impl LocalCa {
             cfg.leaf_validity_days,
             leaf_policy,
             Some(paths),
+            carried,
         )
     }
 
@@ -217,7 +237,10 @@ impl LocalCa {
     /// and every certificate it issues fails path validation at the client —
     /// a failure that surfaces days later and nowhere near its cause.
     #[cfg(feature = "hsm")]
-    fn load_pkcs11(cfg: &LocalCaConfig) -> anyhow::Result<Self> {
+    fn load_pkcs11(
+        cfg: &LocalCaConfig,
+        carried: &crate::signer::CarriedState,
+    ) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
         let paths = CrlPaths {
             crl_path: PathBuf::from(&cfg.crl_path),
@@ -287,6 +310,7 @@ impl LocalCa {
             cfg.leaf_validity_days,
             leaf_policy,
             Some(paths),
+            carried,
         )
     }
 
@@ -296,7 +320,10 @@ impl LocalCa {
     /// key: an operator who configured a token and got a software key would
     /// have no indication their CA key is sitting in `ca.key`.
     #[cfg(not(feature = "hsm"))]
-    fn load_pkcs11(_cfg: &LocalCaConfig) -> anyhow::Result<Self> {
+    fn load_pkcs11(
+        _cfg: &LocalCaConfig,
+        _carried: &crate::signer::CarriedState,
+    ) -> anyhow::Result<Self> {
         anyhow::bail!(
             "local_ca key_source = \"pkcs11\" needs PKCS#11 support, which this binary was \
              built without; rebuild with `cargo build --release --features hsm`"
@@ -315,27 +342,51 @@ impl LocalCa {
             leaf_validity_days,
             LeafPolicy::default(),
             None,
+            &crate::signer::CarriedState::new(),
         )
     }
 
-    /// The tail every constructor shares: load or create the revocation
-    /// ledger, then wrap everything up. Extracted because it is now reached
-    /// from four places, and the `Arc` around the issuer has to be created
-    /// after `init_ledger` has borrowed it.
+    /// The tail every constructor shares: adopt or load the revocation ledger,
+    /// then wrap everything up. Extracted because it is now reached from four
+    /// places, and the `Arc` around the issuer has to be created after
+    /// `init_ledger` has borrowed it.
+    ///
+    /// The ledger is **adopted** from `carried` when the previous configuration
+    /// generation ran a CA over this same `crl_path`, and read from the sidecar
+    /// otherwise. Adopting shares the cell rather than copying it, so a
+    /// revocation landing on the outgoing instance while this one is still being
+    /// built is not lost — which is the case reading the sidecar back cannot
+    /// cover, however durable that file is.
     fn assemble(
         issuer: Issuer<'static, CaSigningKey>,
         ca_pem: String,
         leaf_validity_days: u64,
         leaf_policy: LeafPolicy,
         paths: Option<CrlPaths>,
+        carried: &crate::signer::CarriedState,
     ) -> anyhow::Result<Self> {
-        let revoked = init_ledger(paths.as_ref(), &issuer)?;
+        let adopted = paths
+            .as_ref()
+            .and_then(|paths| carried.get::<Mutex<RevokedLedger>>(&paths.state_key()));
+        let revoked = match adopted {
+            Some(ledger) => {
+                info!(
+                    event = "local_ca_ledger_adopted",
+                    outcome = "success",
+                    crl_path = ?paths.as_ref().map(|paths| paths.crl_path.display().to_string()),
+                    "the CA was rebuilt by a configuration reload and shares the running \
+                     instance's revocation ledger, so nothing revoked mid-reload is lost"
+                );
+                ledger
+            }
+            None => Arc::new(Mutex::new(init_ledger(paths.as_ref(), &issuer)?)),
+        };
         Ok(Self {
             issuer: Arc::new(issuer),
             ca_pem,
             leaf_validity_days,
             leaf_policy,
-            revoked: Mutex::new(revoked),
+            revoked,
             paths,
         })
     }
@@ -630,6 +681,24 @@ impl SignerBackend for LocalCa {
     async fn ca_chain_pem(&self) -> Option<String> {
         Some(self.ca_pem.clone())
     }
+
+    /// Hands on the revocation ledger, keyed by `crl_path`.
+    ///
+    /// Nothing else: the CA certificate, its key and the CRL itself are all on
+    /// disk, and `crl_path` is what identifies *this* CA's ledger — a
+    /// replacement pointed at a different one is a different CA and must start
+    /// from that CA's own sidecar.
+    ///
+    /// An in-memory CA ([`LocalCa::generate_in_memory`]) has no `paths` and so
+    /// offers nothing. It is never reached by a reload anyway; the empty answer
+    /// is what makes that true by construction rather than by convention.
+    fn carried_state(&self) -> crate::signer::CarriedState {
+        let mut carried = crate::signer::CarriedState::new();
+        if let Some(paths) = &self.paths {
+            carried.insert(paths.state_key(), self.revoked.clone());
+        }
+        carried
+    }
 }
 
 #[cfg(test)]
@@ -797,7 +866,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let ca = LocalCa::load_or_generate(&cfg).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
         let org = ca_cert
@@ -896,7 +965,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let ca = LocalCa::load_or_generate(&cfg).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -1387,7 +1456,7 @@ mod tests {
         };
 
         // First call generates and writes both files.
-        let first = LocalCa::load_or_generate(&cfg).unwrap();
+        let first = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         assert!(Path::new(&cfg.cert_path).exists());
         assert!(Path::new(&cfg.key_path).exists());
 
@@ -1400,7 +1469,7 @@ mod tests {
         }
 
         // Second call loads the *same* CA (identical certificate PEM).
-        let second = LocalCa::load_or_generate(&cfg).unwrap();
+        let second = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         assert_eq!(first.ca_pem, second.ca_pem);
 
         // The reloaded CA can still issue.
@@ -1519,7 +1588,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let first = LocalCa::load_or_generate(&cfg).unwrap();
+        let first = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let chain = issue_chain(
             &first,
             &make_csr_der("example.com"),
@@ -1534,12 +1603,104 @@ mod tests {
         // A fresh `LocalCa` built from the same paths must still know about
         // the revocation — proving the ledger sidecar file, not just the
         // in-memory ledger, is what makes this durable.
-        let reloaded = LocalCa::load_or_generate(&cfg).unwrap();
+        let reloaded =
+            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let der = reloaded.crl_der().await.unwrap();
         let serials = revoked_serials(&der);
         assert!(
             serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
             "expected {serial_hex} in {serials:?}"
+        );
+    }
+
+    /// A CA rebuilt over an adopted ledger **shares** it, rather than reading
+    /// the sidecar back.
+    ///
+    /// The window the sidecar cannot cover: a reload builds the replacement CA,
+    /// a revocation lands on the one still serving, and only then is the
+    /// replacement published. Reading the file back would have missed that
+    /// revocation entirely; sharing the cell means there is nothing to miss.
+    ///
+    /// Asserted in both directions, because a one-way copy would pass the first
+    /// half.
+    #[tokio::test]
+    async fn an_adopted_ledger_is_shared_with_the_ca_that_handed_it_over() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = LocalCaConfig {
+            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
+            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
+            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+            ..LocalCaConfig::default()
+        };
+
+        let outgoing =
+            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        // Built while the first is still running and still owns the files, which
+        // is exactly the state a reload's build phase is in.
+        let incoming = LocalCa::load_or_generate(&cfg, &outgoing.carried_state()).unwrap();
+
+        for (revoker, reader, direction) in [
+            (&outgoing, &incoming, "outgoing -> incoming"),
+            (&incoming, &outgoing, "incoming -> outgoing"),
+        ] {
+            let chain = issue_chain(
+                revoker,
+                &make_csr_der("example.com"),
+                &[Identifier::dns("example.com")],
+            )
+            .await
+            .unwrap();
+            let leaf = first_certificate(&chain);
+            let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+            revoker.revoke(&leaf, Some(1)).await.unwrap();
+
+            let serials = revoked_serials(&reader.crl_der().await.unwrap());
+            assert!(
+                serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
+                "{direction}: expected {serial_hex} in {serials:?}",
+            );
+        }
+    }
+
+    /// A CA rebuilt over a *different* `crl_path` adopts nothing, however much
+    /// the previous generation offered.
+    ///
+    /// The safety half of keying the handover on a resource: repointing a
+    /// profile at a second CA must give that CA's revocation history, not the
+    /// first one's.
+    #[tokio::test]
+    async fn a_ca_over_a_different_crl_path_ignores_the_offered_ledger() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = LocalCaConfig {
+            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
+            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
+            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+            ..LocalCaConfig::default()
+        };
+        let outgoing =
+            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let chain = issue_chain(
+            &outgoing,
+            &make_csr_der("example.com"),
+            &[Identifier::dns("example.com")],
+        )
+        .await
+        .unwrap();
+        outgoing
+            .revoke(&first_certificate(&chain), None)
+            .await
+            .unwrap();
+
+        let elsewhere = LocalCaConfig {
+            crl_path: dir.join("other.crl").to_string_lossy().into_owned(),
+            ..cfg
+        };
+        let other = LocalCa::load_or_generate(&elsewhere, &outgoing.carried_state()).unwrap();
+
+        let serials = revoked_serials(&other.crl_der().await.unwrap());
+        assert!(
+            serials.is_empty(),
+            "a different crl_path is a different ledger, got {serials:?}",
         );
     }
 
@@ -1565,14 +1726,14 @@ mod tests {
 
         // Build once so the CA material exists, then hand-edit the ledger the
         // way a bad merge or a half-written file would.
-        LocalCa::load_or_generate(&cfg).unwrap();
+        LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         fs::write(
             dir.join("ca.json"),
             r#"[{"serial_hex":"not hex at all","revoked_at":0,"reason":null}]"#,
         )
         .unwrap();
 
-        let error = match LocalCa::load_or_generate(&cfg) {
+        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a non-hex serial must not start the server"),
         };
@@ -1601,7 +1762,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let ca = LocalCa::load_or_generate(&cfg).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
