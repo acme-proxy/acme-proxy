@@ -85,16 +85,6 @@ keeps its corpses stops being read.
 
 ## Notifications
 
-- [x] **A generic webhook backend** (`src/notify/webhook.rs`, beside `email`
-      and `custom`): URL, method, headers and a body template, so Slack,
-      Telegram, Matrix and Teams are configuration rather than four backends.
-      It **replaced** `mattermost` rather than sitting beside it — that backend
-      was this one with a single provider's payload frozen into it. Two things
-      the design turned on: the body is rendered in two stages (a shared
-      `webhook/<event>.j2` message, then the entry's own `body`), so restyling
-      the text and restructuring one provider's payload are independent; and
-      `minijinja`'s `json` feature is now on, because `| tojson` is what keeps
-      a body valid JSON when auto-escaping is off.
 - [ ] **Expiry reminders**, at most one message per certificate per week. One
       piece is missing: nothing stores the leaf's notAfter (`orders` holds the
       PEM, and a notAfter column is a **new** migration, never an edit to a
