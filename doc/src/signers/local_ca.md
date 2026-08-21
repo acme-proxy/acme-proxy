@@ -88,7 +88,9 @@ Where the Certificate Revocation List (RFC 5280) is written and served from `GET
 /crl`. It is regenerated on every revocation and at startup. The durable ledger
 of revoked serials is a **JSON sidecar** beside it — the same path with the
 extension swapped to `.json` (so `ca.crl` → `ca.json`) — not the CRL's own DER
-read back. Back up both.
+read back. Back up both. Entries are dropped once the certificates they name
+have expired, and the sidecar also carries the CRL's ever-increasing number; see
+[Revocation](../operations/revocation.md).
 
 **`crl_distribution_points`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CRL_DISTRIBUTION_POINTS`*
 

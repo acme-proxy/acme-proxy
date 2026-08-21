@@ -754,6 +754,7 @@ pub(crate) fn build_generation(
     // function's caller stays `Send`; it is spawned.
     let mut job_registry = crate::jobs::JobRegistry::new();
     let mut registered: Vec<usize> = Vec::new();
+    let mut pruners: Vec<Arc<dyn crate::signer::CrlPruner>> = Vec::new();
     for profile in &profiles {
         let identity = Arc::as_ptr(&profile.signer).cast::<()>() as usize;
         if registered.contains(&identity) {
@@ -765,6 +766,24 @@ pub(crate) fn build_generation(
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
         }
+        // Collected rather than registered, and that is the whole reason
+        // `crl_pruner` is not simply another entry in `jobs()`: the registry
+        // refuses two handlers for one kind, so two profiles over *different*
+        // local CAs — which the dedup above deliberately does not collapse —
+        // would be a startup error. One handler over every ledger instead.
+        pruners.extend(profile.signer.crl_pruner());
+    }
+    // The periodic CRL prune, over whichever CAs keep a ledger of their own.
+    // Registered only when there is one, the way the audit sweep is registered
+    // only for a non-zero retention.
+    if !pruners.is_empty() {
+        job_registry
+            .register(Arc::new(crate::signer::local_ca::sweep::CrlSweepJob::new(
+                pruners,
+            )))
+            .inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
     }
     // Notification delivery. **Not** deduplicated by `Arc` identity like the
     // signer handlers above: there is one handler for every profile, holding the

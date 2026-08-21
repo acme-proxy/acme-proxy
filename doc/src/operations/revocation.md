@@ -107,6 +107,34 @@ by `ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
 both files**: losing the sidecar loses the revocation ledger, and the next
 regeneration would publish an empty CRL.
 
+### Expired entries are dropped
+
+A revocation entry is not kept for ever. RFC 5280 §3.3 permits removing one once
+the certificate itself has expired — nothing can present it any more — and this
+is what stops the CRL growing for the life of the deployment. The prune runs at
+startup and then daily, and re-signs the CRL only when something actually went.
+
+Two rules are worth knowing:
+
+- An entry is dropped an hour after the certificate's own `notAfter`, not at it.
+  A relying party whose clock is behind yours still considers the certificate
+  valid for a moment, and that moment is exactly when it would otherwise accept
+  one you revoked.
+- An entry whose expiry is **unknown** is never dropped. That is any entry
+  recorded before this server started tracking expiries (see below), and an
+  unknown expiry is not an expired one.
+
+Each CRL carries a `crlNumber` that only ever increases, including across a
+restart and across a prune that shortens the list. That number lives in the
+sidecar, which is a second reason to back it up: a client that meets a lower
+number than it has cached keeps its cached CRL.
+
+Sidecars written by 0.1.0 are a bare JSON array with no expiries and no number.
+They are read as-is and upgraded on the next write, with the number resuming
+above anything the older format could have published — so an upgrade needs no
+action, and entries carried over from it simply stay on the CRL until you
+revoke something else.
+
 ### Telling clients where it is
 
 A certificate does not point at this CRL until you say where to fetch it.

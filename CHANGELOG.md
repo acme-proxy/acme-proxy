@@ -359,6 +359,29 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The local CA drops expired certificates from its CRL** (RFC 5280 §3.3). The
+  revocation ledger grew for the life of the deployment: nothing recorded when a
+  revoked certificate expired, so nothing could ever be removed, and every
+  relying party downloaded the whole history on every check. A revocation now
+  records the leaf's own `notAfter` alongside its serial, and expired entries are
+  pruned at startup and then daily.
+
+  Two rules keep it safe. An entry goes an hour *after* the certificate's
+  `notAfter`, not at it — the same clock-skew allowance issuance grants, and
+  exactly the window in which a relying party whose clock is behind would
+  otherwise accept a certificate this CA revoked. And an entry with **no**
+  recorded expiry is never dropped: that is any entry written by 0.1.0, and an
+  unknown expiry is not an expired one.
+
+  **The `ca.json` sidecar gained an envelope** to carry a durable `crlNumber`.
+  The number used to be derived from the entry count, which pruning would have
+  made go *backwards* — and RFC 5280 §5.2.3 says a client meeting a lower number
+  than it has cached keeps the cached CRL, i.e. keeps trusting what has since
+  been revoked. **No action is needed on upgrade**: the 0.1.0 bare-array form is
+  read as-is and rewritten on the next change, resuming numbering above anything
+  that format could have published. Keep backing the sidecar up beside the CRL —
+  it now holds the number as well as the ledger.
+
 - **The admin CLI colours its human-readable output, under a new global
   `--color auto|always|never`.** A listing is scanned for the row that is not
   what it should be, and until now every column read the same: an `invalid`
@@ -845,6 +868,16 @@ migrated configuration before restarting.
   `/ui` twins render it as the account card's own banner.
 
 ### Fixed
+
+- **Two atomic file writes could rename their bytes over each other.**
+  `write_atomic` derived its scratch name with `with_extension("tmp")`, so the
+  local CA's `ca.crl` and `ca.json` — written back to back on every revocation —
+  both mapped to `ca.tmp`. A CRL rebuild racing a ledger persist could therefore
+  land CRL PEM inside the sidecar, which the next startup refuses to parse:
+  every revocation the CA had ever recorded, unreadable, because two writes
+  shared a scratch name. The suffix is now appended rather than substituted, and
+  carries the pid — two processes truncating and filling one temp file in turn
+  interleave, and then each renames the mixture into place, atomically wrong.
 
 - **`newAccount` did not refuse a deactivated account key.** RFC 8555 §7.3.6
   requires a `401` + `unauthorized` for any request from a deactivated account,

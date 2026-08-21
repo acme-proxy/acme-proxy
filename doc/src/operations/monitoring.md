@@ -240,6 +240,8 @@ The events worth building alerts on:
 | `key_change_rejected` | warn | `POST /keyChange` refused. `reason = bad_signature` means the inner JWS did not verify — somebody attempted a rollover they could not prove possession for. |
 | `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. |
 | `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
+| `local_ca_crl_pruned` | info | Revocation entries whose certificates had expired were dropped from the CRL (RFC 5280 §3.3). Carries `rows_removed` and the `ledger` it swept. Silent when nothing expired, which is most days. |
+| `local_ca_crl_prune_failed` | error | A CRL could not be re-signed or persisted after pruning — almost always the `crl_path` directory. The ledger is left as it was and the sweep tries again tomorrow, so this is not urgent, but a CRL that never shrinks is a CRL that eventually will not be fetched. |
 | `upstream_relay_succeeded`, `upstream_relay_failed` | info / warn | Outcome of one relayed issuance under the `relay` signer backend. |
 | `job_run_completed` | info | One background job finished. Carries `job_kind`, the attempt it succeeded on, and `duration_ms`. |
 | `job_run_retried` | warn | A job failed in a way that may not recur and went back in the queue. Carries the reason and the next `run_at`. Routine in ones; a steady stream of the same `job_kind` means whatever it talks to is unwell. |

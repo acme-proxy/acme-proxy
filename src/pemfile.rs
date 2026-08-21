@@ -12,7 +12,7 @@
 //! it would buy is the label match below.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustls_pki_types::{
     CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
@@ -116,13 +116,35 @@ pub(crate) fn write_private_key(path: &Path, pem: &str) -> anyhow::Result<()> {
 ///
 /// The temporary file sits beside the target, since `rename` is only atomic
 /// within a filesystem.
+///
+/// **The scratch name belongs to one writer and one target.** It used to be
+/// `path.with_extension("tmp")`, shared two ways, and both hurt:
+///
+/// - Across *targets*, the local CA writes `ca.crl` and `ca.json` back to back
+///   and both mapped to `ca.tmp`, so a startup rebuilding the CRL while a
+///   revocation persisted the ledger could rename one file's bytes over the
+///   other's name. The observed symptom was a sidecar full of CRL PEM, which
+///   the next startup refuses to parse — every revocation this CA had ever
+///   recorded, unreadable, because two writes shared a scratch name. Appending
+///   the suffix rather than substituting the extension separates those.
+/// - Across *writers*, two processes truncating and filling one temp file
+///   interleave, and then each renames the mixture into place: atomic, and
+///   atomically wrong. The pid separates those.
+///
+/// The cost is that a crash leaves litter rather than a file the next run
+/// reuses, which is the right way round — a leftover temporary is inert, and
+/// the alternative was a shared mutable one.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
     use std::io::Write;
 
-    let temp = path.with_extension("tmp");
-    // Not `create_new`: a leftover temporary from a previous crash must not
-    // wedge every subsequent write. It is in a directory the server owns and
-    // its name is derived, not attacker-chosen.
+    let temp = {
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(format!(".{}.tmp", std::process::id()));
+        PathBuf::from(temp)
+    };
+    // Not `create_new`: a leftover temporary from this pid's predecessor must
+    // not wedge every subsequent write. It is in a directory the server owns
+    // and its name is derived, not attacker-chosen.
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

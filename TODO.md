@@ -45,11 +45,6 @@ keeps its corpses stops being read.
 
 ## Signers — local CA
 
-- [ ] **Drop expired certificates from the CRL.** The ledger behind
-      `local_ca/crl.rs` grows for ever; RFC 5280 §3.3 permits removing an entry
-      once the certificate itself has expired. The ledger stores serials only,
-      so this needs the notAfter recorded alongside — a change to the JSON
-      sidecar's shape, which must *load* the old one rather than discard it.
 - [ ] **An OCSP responder** — by far the largest item here: a signed response
       per query, a delegated responder certificate (or the CA key doing double
       duty), and a route that is emphatically not an ACME resource. Worth

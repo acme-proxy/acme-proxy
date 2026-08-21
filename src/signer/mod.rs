@@ -313,6 +313,26 @@ pub trait SignerBackend: Send + Sync {
         None
     }
 
+    /// This backend's revocation ledger, if it keeps one that grows and can be
+    /// swept (RFC 5280 §3.3).
+    ///
+    /// A getter rather than an entry in [`jobs`](SignerBackend::jobs), and the
+    /// distinction is not cosmetic: [`crate::jobs::JobRegistry::register`]
+    /// refuses two handlers for one `kind`, and two profiles with *different*
+    /// `[signer.local_ca]` sections are two distinct backends — so a handler
+    /// returned from `jobs()` would make a supported configuration a startup
+    /// error. Handing over the *state* instead lets `cli::build_generation`
+    /// build one handler over every CA in the process, the shape
+    /// [`http01_tokens`](SignerBackend::http01_tokens) already has for the same
+    /// reason.
+    ///
+    /// Only [`local_ca::LocalCa`] overrides it, and only when it has files to
+    /// persist to. The delegating backends have no ledger of their own — the
+    /// upstream or the script keeps it.
+    fn crl_pruner(&self) -> Option<Arc<dyn CrlPruner>> {
+        None
+    }
+
     /// What this backend hands to whichever backend replaces it on a
     /// configuration reload, keyed by the resource each piece describes.
     ///
@@ -331,6 +351,25 @@ pub trait SignerBackend: Send + Sync {
     fn carried_state(&self) -> CarriedState {
         CarriedState::default()
     }
+}
+
+/// One backend's revocation ledger, as the periodic sweep sees it.
+///
+/// Deliberately narrow: the sweep has no business knowing what a `LocalCa` is,
+/// and this is the whole of what it needs — something to name in a log line and
+/// something to call. See [`SignerBackend::crl_pruner`] for why the state
+/// travels rather than a [`JobHandler`](crate::jobs::JobHandler).
+#[async_trait]
+pub trait CrlPruner: Send + Sync {
+    /// Which ledger this is, for logging. The same
+    /// [`CarriedState`] key the reload path files it under, so one CA reads as
+    /// one resource wherever it is named.
+    fn state_key(&self) -> String;
+
+    /// Drops entries whose certificates have expired and re-signs the CRL if
+    /// any went, returning how many. Must be cheap and write nothing when
+    /// there was nothing to drop — it runs daily on every CA in the process.
+    async fn prune_expired(&self) -> Result<usize, SignerError>;
 }
 
 /// Why issuance failed, mapped by the handler to the right ACME error:
