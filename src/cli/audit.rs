@@ -6,6 +6,8 @@ use clap::Subcommand;
 use crate::admin;
 use crate::audit::ALL_AUDIT_EVENTS;
 use crate::cli::CliError;
+use crate::cli::render;
+use crate::cli::style::Palette;
 use crate::sqlite::audit::AuditQuery;
 use crate::sqlite::db::Database;
 
@@ -91,6 +93,7 @@ fn check_filters(event: Option<&str>, outcome: Option<&str>) -> Result<(), CliEr
 pub async fn run_audit_command(
     command: AuditCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
@@ -128,7 +131,7 @@ pub async fn run_audit_command(
                 println!("{}", serde_json::json!({ "total": total, "entries": rows }));
             } else {
                 for entry in &entries {
-                    println!("{}", admin::render_audit_line(entry));
+                    println!("{}", render::render_audit_line(entry, palette));
                 }
                 // Always, not only when the page is short: "42 of 1877" is the
                 // difference between having read the trail and having read a
@@ -143,7 +146,7 @@ pub async fn run_audit_command(
             if json {
                 println!("{}", entry.to_json());
             } else {
-                print!("{}", admin::render_audit_detail_text(&entry));
+                print!("{}", render::render_audit_detail_text(&entry, palette));
             }
         }
         AuditCommand::Cleanup { older_than } => {
@@ -274,16 +277,22 @@ mod tests {
         let db = db_with_rows().await;
         let mut reader: &[u8] = &[];
 
-        run_audit_command(list(false), true, &mut reader, db.clone())
+        run_audit_command(list(false), true, Palette::plain(), &mut reader, db.clone())
             .await
             .unwrap();
-        run_audit_command(list(true), true, &mut reader, db.clone())
+        run_audit_command(list(true), true, Palette::plain(), &mut reader, db.clone())
             .await
             .unwrap();
-        run_audit_command(list_window(0, -5), true, &mut reader, db.clone())
-            .await
-            .unwrap();
-        run_audit_command(list_every_filter(), true, &mut reader, db)
+        run_audit_command(
+            list_window(0, -5),
+            true,
+            Palette::plain(),
+            &mut reader,
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        run_audit_command(list_every_filter(), true, Palette::plain(), &mut reader, db)
             .await
             .unwrap();
     }
@@ -294,7 +303,7 @@ mod tests {
     async fn list_refuses_an_unknown_event_before_querying() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let mut reader: &[u8] = &[];
-        let error = run_audit_command(list_event("nope"), true, &mut reader, db)
+        let error = run_audit_command(list_event("nope"), true, Palette::plain(), &mut reader, db)
             .await
             .unwrap_err();
         assert!(error.0.contains("unknown --event"), "{error}");
@@ -309,6 +318,7 @@ mod tests {
             run_audit_command(
                 AuditCommand::Show { id: 1, json },
                 true,
+                Palette::plain(),
                 &mut reader,
                 db.clone(),
             )
@@ -322,6 +332,7 @@ mod tests {
                 json: false,
             },
             true,
+            Palette::plain(),
             &mut reader,
             db,
         )
@@ -339,6 +350,7 @@ mod tests {
         run_audit_command(
             AuditCommand::Cleanup { older_than: 0 },
             false,
+            Palette::plain(),
             &mut declined,
             db.clone(),
         )
@@ -355,6 +367,7 @@ mod tests {
         run_audit_command(
             AuditCommand::Cleanup { older_than: 365 },
             true,
+            Palette::plain(),
             &mut reader,
             db.clone(),
         )

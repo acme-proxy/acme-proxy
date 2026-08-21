@@ -4,6 +4,8 @@ use clap::Subcommand;
 
 use crate::admin;
 use crate::cli::CliError;
+use crate::cli::render;
+use crate::cli::style::Palette;
 use crate::sqlite::db::Database;
 use crate::sqlite::eab::Eab;
 
@@ -35,7 +37,11 @@ pub enum EabCommand {
     Revoke { kid: String },
 }
 
-pub async fn run_eab_command(command: EabCommand, database: Arc<Database>) -> Result<(), CliError> {
+pub async fn run_eab_command(
+    command: EabCommand,
+    palette: Palette,
+    database: Arc<Database>,
+) -> Result<(), CliError> {
     match command {
         EabCommand::Create {
             label,
@@ -46,17 +52,19 @@ pub async fn run_eab_command(command: EabCommand, database: Arc<Database>) -> Re
             if json {
                 println!("{}", admin::render_eab_created_json(&eab));
             } else {
-                print!("{}", admin::render_eab_created_text(&eab));
+                print!("{}", render::render_eab_created_text(&eab, palette));
             }
         }
         EabCommand::List { json } => {
             let keys = Eab::list_all(&database).await?;
-            admin::print_rows(&keys, json, admin::render_eab_json, admin::render_eab_line);
+            render::print_rows(&keys, json, admin::render_eab_json, |eab| {
+                render::render_eab_line(eab, palette)
+            });
         }
         EabCommand::Show { kid, json } => match Eab::find_any_by_kid(&kid, &database).await? {
             None => return Err(not_found(&kid)),
             Some(eab) if json => println!("{}", admin::render_eab_json(&eab)),
-            Some(eab) => println!("{}", admin::render_eab_line(&eab)),
+            Some(eab) => println!("{}", render::render_eab_line(&eab, palette)),
         },
         EabCommand::Revoke { kid } => {
             if !Eab::revoke(&kid, &database).await? {
@@ -90,7 +98,7 @@ mod tests {
                 kid: "kid-nope".to_string(),
             },
         ] {
-            let error = run_eab_command(command, database.clone())
+            let error = run_eab_command(command, Palette::plain(), database.clone())
                 .await
                 .expect_err("an unknown kid must fail");
             assert_eq!(error, expected);
@@ -125,13 +133,16 @@ mod tests {
                 kid: eab.kid.clone(),
             },
         ] {
-            run_eab_command(command, database.clone()).await.unwrap();
+            run_eab_command(command, Palette::plain(), database.clone())
+                .await
+                .unwrap();
         }
 
         run_eab_command(
             EabCommand::Revoke {
                 kid: eab.kid.clone(),
             },
+            Palette::plain(),
             database.clone(),
         )
         .await

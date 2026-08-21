@@ -23,13 +23,6 @@ keeps its corpses stops being read.
       rather than hand-rolling bucket boundaries; until then `latency_ms` on
       the access line is what there is.
 
-## Admin CLI
-
-- [ ] **Colourise the human output.** One rule to settle first: `src/admin/`
-      is shared with the web front end and its `--json` shapes must stay
-      byte-identical, so colour belongs at the print site in `src/cli/`, gated
-      on a TTY check plus `NO_COLOR` — never woven into `render_*`.
-
 ## Web admin
 
 - [ ] **WebAuthn as a second factor kind** — *investigated and deferred; both

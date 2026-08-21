@@ -451,3 +451,120 @@ pub(crate) async fn account_id(database: &std::sync::Arc<crate::sqlite::db::Data
     .expect("an in-memory database always accepts an account");
     account.id
 }
+
+/// A `ClientContext` carrying nothing but an address and its reverse name.
+///
+/// The three states a renderer has to tell apart (`ip (ptr)`, the address
+/// alone, neither) are exactly the three ways this is called.
+#[cfg(test)]
+pub(crate) fn client_context(ip: Option<&str>, ptr: Option<&str>) -> ClientContext {
+    ClientContext {
+        ip: ip.map(str::to_string),
+        ptr: ptr.map(str::to_string),
+        ..ClientContext::default()
+    }
+}
+
+/// An account created from `client`, whose traceability columns are therefore
+/// whatever that context carried.
+///
+/// `pubkey` is a parameter because `find_or_create` dedupes on it: two calls
+/// sharing one would hand back the *first* account, contexts and all.
+#[cfg(test)]
+pub(crate) async fn account_seen_from(
+    pubkey: &[u8],
+    client: &ClientContext,
+    database: &std::sync::Arc<crate::sqlite::db::Database>,
+) -> crate::sqlite::account::Account {
+    crate::sqlite::account::Account::find_or_create(
+        "default",
+        pubkey,
+        vec!["mailto:a@example.com".to_string()],
+        client,
+        database,
+    )
+    .await
+    .expect("an in-memory database always accepts an account")
+    .0
+}
+
+/// An unsaved order in the `default` profile, in `status`.
+#[cfg(test)]
+pub(crate) fn order_fixture(
+    account_id: &str,
+    status: crate::sqlite::status::OrderStatus,
+) -> crate::sqlite::order::Order {
+    let mut order = crate::sqlite::order::Order::new(
+        "default",
+        account_id,
+        vec![crate::sqlite::order::Identifier::dns("example.com")],
+        0,
+        None,
+        None,
+    );
+    order.status = status;
+    order
+}
+
+/// One `certificate_issued` row with every optional column filled in, so a
+/// renderer test can blank the ones it wants absent.
+#[cfg(test)]
+pub(crate) fn audit_entry() -> crate::sqlite::audit::AuditEntry {
+    crate::sqlite::audit::AuditEntry {
+        id: 41_812,
+        created_at: 1_700_000_000,
+        event: "certificate_issued".to_string(),
+        outcome: "success".to_string(),
+        profile: "le".to_string(),
+        actor_kind: "acme".to_string(),
+        actor_id: Some("acct-1".to_string()),
+        account_id: Some("acct-1".to_string()),
+        order_id: Some("order-1".to_string()),
+        cert_serial: Some("0a0b".to_string()),
+        identifiers: vec!["a.example.com".to_string(), "b.example.com".to_string()],
+        client_ip: Some("203.0.113.7".to_string()),
+        client_ptr: Some("host.example.com".to_string()),
+        user_agent: Some("certbot/2.9.0".to_string()),
+        request_id: Some("req-1".to_string()),
+        reason: None,
+        detail: None,
+    }
+}
+
+/// An `active` operator with no second factor and no login yet.
+///
+/// The `password_hash` is a syntactically valid stored hash rather than a
+/// placeholder, because more than one test asserts `pbkdf2` never reaches a
+/// terminal and a fake would pass that vacuously.
+#[cfg(test)]
+pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
+    crate::sqlite::admin_user::AdminUser {
+        id: "11111111-2222-3333-4444-555555555555".to_string(),
+        username: "alice".to_string(),
+        password_hash: "pbkdf2-sha256$600000$c2FsdA$aGFzaA".to_string(),
+        status: "active".to_string(),
+        totp_secret: None,
+        totp_pending_secret: None,
+        totp_last_step: None,
+        created_at: 1_700_000_000,
+        updated_at: 1_700_000_000,
+        last_login_at: None,
+    }
+}
+
+/// An `active` session for [`admin_user_fixture`].
+#[cfg(test)]
+pub(crate) fn admin_session_fixture() -> crate::sqlite::admin_session::AdminSession {
+    crate::sqlite::admin_session::AdminSession {
+        token_hash: "0123456789abcdef0123456789abcdef".to_string(),
+        user_id: "11111111-2222-3333-4444-555555555555".to_string(),
+        csrf_token: "the-csrf-token".to_string(),
+        state: "active".to_string(),
+        mfa_attempts: 0,
+        created_at: 1_700_000_000,
+        expires_at: 1_700_043_200,
+        last_seen_at: 1_700_000_000,
+        created_ip: Some("192.0.2.1".to_string()),
+        user_agent: Some("curl/8".to_string()),
+    }
+}

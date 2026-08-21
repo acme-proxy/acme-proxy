@@ -359,6 +359,36 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The admin CLI colours its human-readable output, under a new global
+  `--color auto|always|never`.** A listing is scanned for the row that is not
+  what it should be, and until now every column read the same: an `invalid`
+  order, a `revoked` credential and a `certificate_issue_failed` audit row were
+  the same grey as the timestamp beside them.
+
+  The default is `auto` — colour when the stream is a terminal and `NO_COLOR` is
+  unset or empty — so a piped or redirected run is plain without asking.
+  `always` colours regardless of the stream **and of `NO_COLOR`**, which is what
+  makes `| less -R` work and is a deliberate departure from `logging.ansi`,
+  where neither switch can turn colour on against the other: a configuration key
+  is ambient, and a flag was typed by the person reading the output. stdout and
+  stderr are decided separately, since the two are redirected independently.
+
+  Colour is **semantic, never decorative**: statuses, audit events naming a
+  refusal, `filter explain`'s per-check verdicts and its allow/deny/undecided
+  answer, and the standing warnings (`eab create`'s "shown only this once", a
+  policy with no rules configured, a reissued set of recovery codes). Labels,
+  timestamps and identifiers stay plain.
+
+  **Nothing about `--json` changes, at any setting**, and neither does any
+  human-readable line under `--color never` — both are the same bytes as before,
+  verified against the previous build rather than argued. What made that
+  guarantee structural is that the CLI-only text renderers moved out of
+  `src/admin/render.rs` (shared with the web admin, and the JSON one wire format
+  two front ends parse) into `src/cli/render.rs`, where the terminal is the only
+  consumer. `acme_proxy::admin::render_*_line` / `render_*_text` and
+  `print_rows` are therefore now `acme_proxy::cli::render::*` — a library path,
+  not a CLI surface, so no command, flag or output shape is renamed.
+
 - **The profile set, each profile's `[signer]`, `dns.resolver` and `[proxy]` all
   reload on `SIGHUP`, and `reload::FROZEN` is down to `database.url` alone.**
   Adding an ACME endpoint used to cost a restart, which dropped every in-flight

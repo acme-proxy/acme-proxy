@@ -5,6 +5,8 @@ use clap::Subcommand;
 
 use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
+use crate::cli::render;
+use crate::cli::style::Palette;
 use crate::config::Config;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
@@ -40,6 +42,7 @@ pub enum AccountCommand {
 pub async fn run_account_command(
     command: AccountCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     config: &Config,
     database: Arc<Database>,
@@ -47,11 +50,11 @@ pub async fn run_account_command(
     match command {
         AccountCommand::List { profile, json } => {
             let accounts = Account::list_all(profile.as_deref(), &database).await?;
-            admin::print_rows(
+            render::print_rows(
                 &accounts,
                 json,
                 |a| admin::render_account_json(a, &config.server.base_url),
-                admin::render_account_line,
+                |a| render::render_account_line(a, palette),
             );
         }
         AccountCommand::Show { id, json } => match Account::find_any_by_id(&id, &database).await? {
@@ -62,18 +65,18 @@ pub async fn run_account_command(
                     admin::render_account_json(&account, &config.server.base_url)
                 );
             }
-            Some(account) => print!("{}", admin::render_account_detail_text(&account)),
+            Some(account) => print!("{}", render::render_account_detail_text(&account, palette)),
         },
         AccountCommand::UpdateContact { id, contact } => {
             match admin::update_account_contact(&id, contact, database).await? {
                 None => return Err(not_found(&id)),
-                Some(account) => println!("{}", admin::render_account_line(&account)),
+                Some(account) => println!("{}", render::render_account_line(&account, palette)),
             }
         }
         AccountCommand::Deactivate { id } => {
             match admin::deactivate_account(&id, database).await? {
                 None => return Err(not_found(&id)),
-                Some(account) => println!("{}", admin::render_account_line(&account)),
+                Some(account) => println!("{}", render::render_account_line(&account, palette)),
             }
         }
         AccountCommand::Delete { id } => {
@@ -122,9 +125,16 @@ mod tests {
         ];
         for command in commands {
             let mut reader: &[u8] = &[];
-            let error = run_account_command(command, true, &mut reader, &config, database.clone())
-                .await
-                .expect_err("an unknown account must fail");
+            let error = run_account_command(
+                command,
+                true,
+                Palette::plain(),
+                &mut reader,
+                &config,
+                database.clone(),
+            )
+            .await
+            .expect_err("an unknown account must fail");
             assert_eq!(error, expected);
         }
     }
@@ -151,6 +161,7 @@ mod tests {
                 id: account.id.clone(),
             },
             false,
+            Palette::plain(),
             &mut reader,
             &config,
             database.clone(),
@@ -190,6 +201,7 @@ mod tests {
                 json: true,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database.clone(),
@@ -203,6 +215,7 @@ mod tests {
                 json: true,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database,

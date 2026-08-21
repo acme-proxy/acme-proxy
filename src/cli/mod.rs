@@ -29,9 +29,16 @@
 //! The logic behind each admin subcommand lives in [`crate::admin`], not here;
 //! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
 //! an installed subscriber, validating every value before installing anything.
+//!
+//! What a command *prints* is [`render`]'s, and how it is coloured is
+//! [`style`]'s. Those renderings sit here rather than in [`crate::admin`]
+//! because they have exactly one consumer — the terminal — where the JSON ones
+//! beside them are a wire format the web admin parses too. [`dispatch`]
+//! resolves one [`Palette`] and threads it down; `nonce` and `upstream` take
+//! none, printing only fixed text.
 
 use std::future::Future;
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +58,8 @@ mod logging;
 pub use logging::init_logging;
 pub mod nonce;
 pub mod order;
+pub mod render;
+pub mod style;
 pub mod upstream;
 pub mod webadmin;
 
@@ -63,6 +72,7 @@ pub use upstream::UpstreamCommand;
 pub use webadmin::AdminCommand;
 
 use crate::cli::filter::FilterCommand;
+pub use crate::cli::style::{ColorChoice, Palette};
 use crate::config::Config;
 use crate::sqlite::db::Database;
 use crate::{Profile, build_app, tls};
@@ -76,6 +86,10 @@ pub struct Cli {
     /// Skip interactive "Are you sure?" confirmation on destructive commands.
     #[arg(short = 'y', long, global = true)]
     pub yes: bool,
+
+    /// When to colour human-readable output. `--json` output never carries it.
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
+    pub color: ColorChoice,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -182,34 +196,46 @@ impl From<sqlx::Error> for CliError {
 /// failure and exiting — lives in `src/main.rs`, because those are the
 /// binary's job and not a library's: nothing that links this crate can use a
 /// function whose failure mode is `std::process::exit`.
+///
+/// Takes the `--color` *choice* rather than a resolved [`Palette`], and
+/// resolves it here: the answer depends on whether this process's stdout is a
+/// terminal and on `NO_COLOR`, and neither belongs in `main.rs`, which is
+/// excluded from the coverage floor precisely because nothing in it is
+/// reachable from a test.
 pub async fn dispatch(
     command: Option<Command>,
     yes: bool,
+    color: ColorChoice,
     reader: &mut impl BufRead,
     config: &Arc<Config>,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
+    let palette = Palette::resolve(
+        color,
+        std::io::stdout().is_terminal(),
+        std::env::var("NO_COLOR").ok().as_deref(),
+    );
     match command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config.clone(), database).await,
         Command::Account { command } => {
-            account::run_account_command(command, yes, reader, config, database).await
+            account::run_account_command(command, yes, palette, reader, config, database).await
         }
         Command::Order { command } => {
-            order::run_order_command(command, yes, reader, config, database).await
+            order::run_order_command(command, yes, palette, reader, config, database).await
         }
         Command::Audit { command } => {
-            audit::run_audit_command(command, yes, reader, database).await
+            audit::run_audit_command(command, yes, palette, reader, database).await
         }
         Command::Nonce { command } => {
             nonce::run_nonce_command(command, yes, reader, config, database).await
         }
-        Command::Eab { command } => eab::run_eab_command(command, database).await,
-        Command::Filter { command } => filter::run_filter_command(command, config).await,
+        Command::Eab { command } => eab::run_eab_command(command, palette, database).await,
+        Command::Filter { command } => filter::run_filter_command(command, palette, config).await,
         Command::Upstream { command } => {
             upstream::run_upstream_command(command, reader, config).await
         }
         Command::Admin { command } => {
-            webadmin::run_admin_command(command, yes, reader, database).await
+            webadmin::run_admin_command(command, yes, palette, reader, database).await
         }
     }
 }
@@ -1876,6 +1902,31 @@ mod tests {
             );
         }
 
+        // `--color` is global like `--yes`, so it may sit anywhere on the line,
+        // and an unknown value is refused by clap rather than falling back to
+        // `auto` — the same rule `--status`/`--event` follow, for the same
+        // reason: a silently ignored value looks exactly like a working one.
+        let cli = Cli::try_parse_from(["acme-proxy", "account", "list", "--color", "never"])
+            .expect("--color is global and accepts `never`");
+        assert_eq!(cli.color, ColorChoice::Never);
+
+        let cli = Cli::try_parse_from(["acme-proxy", "--color", "always", "account", "list"])
+            .expect("--color is global, so it may precede the subcommand");
+        assert_eq!(cli.color, ColorChoice::Always);
+
+        assert_eq!(
+            Cli::try_parse_from(["acme-proxy", "account", "list"])
+                .unwrap()
+                .color,
+            ColorChoice::Auto,
+            "unset means auto"
+        );
+
+        assert!(
+            Cli::try_parse_from(["acme-proxy", "account", "list", "--color", "sometimes"]).is_err(),
+            "an unknown --color value must be refused, not ignored"
+        );
+
         let cli = Cli::try_parse_from(["acme-proxy", "admin", "user", "totp", "status", "alice"])
             .unwrap();
         assert!(matches!(
@@ -2008,9 +2059,16 @@ mod tests {
             // tests, which supply a configuration with profiles.
         ];
         for command in commands {
-            dispatch(Some(command), true, &mut reader, &config, database.clone())
-                .await
-                .expect("every command must succeed against an empty database");
+            dispatch(
+                Some(command),
+                true,
+                ColorChoice::Never,
+                &mut reader,
+                &config,
+                database.clone(),
+            )
+            .await
+            .expect("every command must succeed against an empty database");
         }
     }
 
@@ -2030,6 +2088,7 @@ mod tests {
                 },
             }),
             true,
+            ColorChoice::Never,
             &mut reader,
             &config,
             database,
@@ -2478,6 +2537,7 @@ mod tests {
             let error = dispatch(
                 Some(Command::Serve),
                 true,
+                ColorChoice::Never,
                 &mut reader,
                 &Arc::new(config),
                 database,

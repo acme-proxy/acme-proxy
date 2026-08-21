@@ -23,6 +23,8 @@ use crate::admin::ops::DeleteOutcome;
 use crate::admin::prompt::confirm;
 use crate::admin::users::{self, UserError};
 use crate::cli::CliError;
+use crate::cli::render;
+use crate::cli::style::Palette;
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::db::Database;
@@ -127,18 +129,22 @@ pub enum AdminSessionCommand {
 pub async fn run_admin_command(
     command: AdminCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
-        AdminCommand::User { command } => run_user_command(command, yes, reader, database).await,
-        AdminCommand::Session { command } => run_session_command(command, database).await,
+        AdminCommand::User { command } => {
+            run_user_command(command, yes, palette, reader, database).await
+        }
+        AdminCommand::Session { command } => run_session_command(command, palette, database).await,
     }
 }
 
 async fn run_user_command(
     command: AdminUserCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
@@ -156,12 +162,9 @@ async fn run_user_command(
         }
         AdminUserCommand::List { json } => {
             let users = users::list_users(database).await?;
-            admin::print_rows(
-                &users,
-                json,
-                admin::render_admin_user_json,
-                admin::render_admin_user_line,
-            );
+            render::print_rows(&users, json, admin::render_admin_user_json, |user| {
+                render::render_admin_user_line(user, palette)
+            });
         }
         AdminUserCommand::Passwd {
             username,
@@ -195,7 +198,7 @@ async fn run_user_command(
             println!("Enabled {username}.");
         }
         AdminUserCommand::Totp { command } => {
-            run_totp_command(command, yes, reader, database).await?;
+            run_totp_command(command, yes, palette, reader, database).await?;
         }
     }
     Ok(())
@@ -204,6 +207,7 @@ async fn run_user_command(
 async fn run_totp_command(
     command: AdminUserTotpCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
@@ -223,7 +227,10 @@ async fn run_totp_command(
                     })
                 );
             } else {
-                println!("{}", admin::render_admin_totp_line(&user, remaining));
+                println!(
+                    "{}",
+                    render::render_admin_totp_line(&user, remaining, palette)
+                );
             }
         }
         AdminUserTotpCommand::Reset { username } => {
@@ -288,6 +295,7 @@ async fn find_user(username: &str, database: Arc<Database>) -> Result<AdminUser,
 
 async fn run_session_command(
     command: AdminSessionCommand,
+    palette: Palette,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
@@ -304,11 +312,11 @@ async fn run_session_command(
             };
 
             let sessions = AdminSession::list_all(user_id.as_deref(), &database).await?;
-            admin::print_rows(
+            render::print_rows(
                 &sessions,
                 json,
                 admin::render_admin_session_json,
-                admin::render_admin_session_line,
+                |session| render::render_admin_session_line(session, palette),
             );
         }
         AdminSessionCommand::Revoke { user, all } => match (user, all) {
@@ -413,7 +421,7 @@ mod tests {
         database: Arc<Database>,
     ) -> Result<(), CliError> {
         let mut reader = input.as_bytes();
-        run_admin_command(command, true, &mut reader, database).await
+        run_admin_command(command, true, Palette::plain(), &mut reader, database).await
     }
 
     fn create(username: &str) -> AdminCommand {
@@ -663,6 +671,7 @@ mod tests {
                 },
             },
             false,
+            Palette::plain(),
             &mut no,
             db.clone(),
         )
@@ -889,13 +898,13 @@ mod tests {
         mfa::begin_totp_enrolment(&mut user, "http://localhost:3001", db.clone())
             .await
             .unwrap();
-        let line = admin::render_admin_totp_line(&user, 0);
+        let line = render::render_admin_totp_line(&user, 0, Palette::plain());
         assert!(line.contains("pending"), "{line}");
         run(status(false), "", db.clone()).await.unwrap();
 
         // Confirmed.
         let user = enrol("alice", db.clone()).await;
-        let line = admin::render_admin_totp_line(&user, 10);
+        let line = render::render_admin_totp_line(&user, 10, Palette::plain());
         assert!(line.contains("totp=enabled"), "{line}");
         assert!(line.contains("recovery-codes=10"), "{line}");
         run(status(true), "", db).await.unwrap();
@@ -933,7 +942,7 @@ mod tests {
         // moves. Removing a security control is confirm-gated, unlike
         // `order revoke`, which only ever tightens trust.
         let mut no = b"n\n".as_slice();
-        run_admin_command(reset(), false, &mut no, db.clone())
+        run_admin_command(reset(), false, Palette::plain(), &mut no, db.clone())
             .await
             .unwrap();
         let unchanged = AdminUser::find_by_username("alice", &db)

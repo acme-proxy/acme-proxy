@@ -8,6 +8,7 @@ use std::net::IpAddr;
 
 use clap::Subcommand;
 
+use super::style::Palette;
 use super::{CliError, resolve_profile};
 use crate::config::Config;
 use crate::filter::explain::{
@@ -48,11 +49,15 @@ pub enum FilterCommand {
     },
 }
 
-pub async fn run_filter_command(command: FilterCommand, config: &Config) -> Result<(), CliError> {
+pub async fn run_filter_command(
+    command: FilterCommand,
+    palette: Palette,
+    config: &Config,
+) -> Result<(), CliError> {
     match command {
         FilterCommand::Show { profile } => {
             let (name, policy) = build(config, profile.as_deref())?;
-            print!("{}", render_policy(&name, &policy));
+            print!("{}", render_policy(&name, &policy, palette));
             Ok(())
         }
         FilterCommand::Explain {
@@ -81,7 +86,10 @@ pub async fn run_filter_command(command: FilterCommand, config: &Config) -> Resu
                         .map_err(|error| CliError(format!("cannot render JSON: {error}")))?
                 );
             } else {
-                print!("{}", render_explanation(&name, &subject, &explanation));
+                print!(
+                    "{}",
+                    render_explanation(&name, &subject, &explanation, palette)
+                );
             }
             Ok(())
         }
@@ -169,7 +177,7 @@ mod tests {
     "#;
 
     async fn run(config: &Config, command: FilterCommand) -> Result<(), CliError> {
-        run_filter_command(command, config).await
+        run_filter_command(command, Palette::plain(), config).await
     }
 
     #[tokio::test]

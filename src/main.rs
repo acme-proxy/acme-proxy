@@ -10,12 +10,13 @@
 //! That is also why this file is excluded from the coverage floor: none of it
 //! is reachable from a test, because all four failure branches end the process.
 
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::Parser;
 use tracing::error;
 
-use acme_proxy::cli::{Cli, dispatch, init_logging};
+use acme_proxy::cli::{Cli, Palette, dispatch, init_logging};
 use acme_proxy::config::Config;
 use acme_proxy::sqlite::db::Database;
 
@@ -23,13 +24,23 @@ use acme_proxy::sqlite::db::Database;
 async fn main() {
     let cli = Cli::parse();
 
+    // Resolved against **stderr**, where these three messages go; `dispatch`
+    // resolves its own against stdout. The two streams are redirected
+    // independently, so one answer for both would colour into a log file
+    // whenever the other half happened to be a terminal.
+    let palette = Palette::resolve(
+        cli.color,
+        std::io::stderr().is_terminal(),
+        std::env::var("NO_COLOR").ok().as_deref(),
+    );
+
     let config = Arc::new(Config::load().unwrap_or_else(|error| {
-        eprintln!("configuration error: {error}");
+        eprintln!("{}", palette.bad(&format!("configuration error: {error}")));
         std::process::exit(1);
     }));
 
     init_logging(&config.logging).unwrap_or_else(|error| {
-        eprintln!("{error}");
+        eprintln!("{}", palette.bad(&error));
         std::process::exit(1);
     });
 
@@ -45,8 +56,17 @@ async fn main() {
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();
 
-    if let Err(error) = dispatch(cli.command, cli.yes, &mut reader, &config, database).await {
-        eprintln!("{error}");
+    if let Err(error) = dispatch(
+        cli.command,
+        cli.yes,
+        cli.color,
+        &mut reader,
+        &config,
+        database,
+    )
+    .await
+    {
+        eprintln!("{}", palette.bad(&error.to_string()));
         std::process::exit(1);
     }
 }

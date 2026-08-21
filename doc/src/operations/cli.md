@@ -33,6 +33,32 @@ totp reset` prompt; nothing else is gated by it.
 format. List commands print a **single JSON array**; single-item commands print
 one JSON object. (It is not newline-delimited JSON.)
 
+**`--color <auto|always|never>`** — when to colour the human-readable output.
+Also global. The default is `auto`: colour when the stream is a terminal and
+`NO_COLOR` is unset or empty, which means a piped or redirected run is plain
+without your having to say so.
+
+- `always` colours regardless of the stream **and regardless of `NO_COLOR`** —
+  it was typed on this command line, so it outranks both. That is what makes
+  `acme-proxy audit list --color always | less -R` work.
+- `never` never colours, whatever the terminal is.
+- An unrecognised value is refused rather than treated as `auto`.
+
+Colour is decided separately for stdout (the output) and stderr (error
+messages), since the two are redirected independently. It is **semantic, never
+decorative**: statuses (`valid`, `pending`, `revoked`…), audit events that name
+a refusal, `filter explain`'s per-check verdicts, and the standing warnings such
+as `eab create`'s "shown only this once". Labels, timestamps and identifiers are
+never coloured.
+
+**`--json` output never carries colour**, at any setting — it is the same bytes
+a script parses today. So is every human-readable line under `--color never`.
+
+Note this is not the same switch as `logging.ansi`, which colours the *server's*
+log stream and is a configuration key rather than a flag; the CLI's colour is
+not configurable, on purpose, since the right answer depends on the terminal in
+front of you rather than on the deployment.
+
 ## Account management
 
 | Command | Flags |

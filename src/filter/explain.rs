@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 
 use super::policy::{Evaluation, FilterPolicy, Outcome, Stage, Verdict};
 use super::{ConnectionContext, EabIdentity, IdentifierContext, IdentifierStage};
+use crate::cli::style::Palette;
 use crate::sqlite::order::Identifier;
 
 /// Which check kinds reach outside this process when they run.
@@ -172,15 +173,18 @@ fn report(
 /// `Display`, which makes every grouping explicit — so an operator who wrote
 /// `a or b and c` sees `a or (b and c)` and has their answer about precedence.
 #[must_use]
-pub fn render_policy(profile: &str, policy: &FilterPolicy) -> String {
+pub fn render_policy(profile: &str, policy: &FilterPolicy, palette: Palette) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "profile: {profile}");
 
     if !policy.is_active() {
         let _ = writeln!(
             out,
-            "\nno rules configured: this endpoint filters nothing, and any client that \
-             can reach it may request a certificate for any name"
+            "\n{}",
+            palette.warn(
+                "no rules configured: this endpoint filters nothing, and any client that \
+                 can reach it may request a certificate for any name"
+            )
         );
         return out;
     }
@@ -188,7 +192,7 @@ pub fn render_policy(profile: &str, policy: &FilterPolicy) -> String {
     let _ = writeln!(
         out,
         "default: {} (when a rule was applicable and none matched)",
-        policy.default_effect().as_str()
+        palette.status(policy.default_effect().as_str())
     );
 
     let _ = writeln!(out, "\nchecks");
@@ -204,14 +208,14 @@ pub fn render_policy(profile: &str, policy: &FilterPolicy) -> String {
     for rule in policy.rules() {
         let mode = match rule.mode {
             super::Mode::Enforce => String::new(),
-            super::Mode::Warn => "  [warn: matches but does not decide]".to_string(),
+            super::Mode::Warn => palette.warn("  [warn: matches but does not decide]"),
         };
         let _ = writeln!(
             out,
             "  {:<20} {} -> {}{}",
             rule.name,
             rule.when,
-            rule.then.as_str(),
+            palette.status(rule.then.as_str()),
             mode
         );
         let _ = writeln!(out, "  {:<20}   evaluated at: {}", "", rule.stages);
@@ -222,7 +226,12 @@ pub fn render_policy(profile: &str, policy: &FilterPolicy) -> String {
 
 /// The human rendering of [`explain`].
 #[must_use]
-pub fn render_explanation(profile: &str, subject: &Subject, explanation: &Explanation) -> String {
+pub fn render_explanation(
+    profile: &str,
+    subject: &Subject,
+    explanation: &Explanation,
+    palette: Palette,
+) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "profile: {profile}");
     let _ = writeln!(
@@ -253,9 +262,9 @@ pub fn render_explanation(profile: &str, subject: &Subject, explanation: &Explan
 
         for outcome in &stage.evaluation.checks {
             let (verdict, reason) = match &outcome.verdict {
-                Verdict::Pass => ("pass", String::new()),
-                Verdict::Fail(detail) => ("fail", format!("  {detail}")),
-                Verdict::Undecided(detail) => ("unknown", format!("  {detail}")),
+                Verdict::Pass => (palette.ok("pass"), String::new()),
+                Verdict::Fail(detail) => (palette.bad("fail"), format!("  {detail}")),
+                Verdict::Undecided(detail) => (palette.unknown("unknown"), format!("  {detail}")),
             };
             let _ = writeln!(
                 out,
@@ -290,29 +299,37 @@ pub fn render_explanation(profile: &str, subject: &Subject, explanation: &Explan
             }
         }
 
-        let detail = match &stage.evaluation.outcome {
-            Outcome::Allow => String::new(),
-            Outcome::Deny(detail) | Outcome::Undecided(detail) => format!("  {detail}"),
+        // Painted off the outcome rather than off `answer`, which is an HTTP
+        // status line (`403 rejectedIdentifier`) and not a status word — and
+        // the Kleene third value has to read apart from a refusal here, since
+        // telling those two apart is the whole reason `explain` exists.
+        let (answer, detail) = match &stage.evaluation.outcome {
+            Outcome::Allow => (palette.ok(stage.answer), String::new()),
+            Outcome::Deny(detail) => (palette.bad(stage.answer), format!("  {detail}")),
+            Outcome::Undecided(detail) => (palette.unknown(stage.answer), format!("  {detail}")),
         };
-        let _ = writeln!(out, "  -> {}{}", stage.answer, detail);
+        let _ = writeln!(out, "  -> {answer}{detail}");
     }
 
     let _ = writeln!(
         out,
         "\nresult: {}",
         if explanation.allowed() {
-            "allowed (every stage must allow, and every stage did)"
+            palette.ok("allowed (every stage must allow, and every stage did)")
         } else {
-            "refused (a request is served only when every stage allows)"
+            palette.bad("refused (a request is served only when every stage allows)")
         }
     );
 
     if !explanation.side_effects.is_empty() {
         let _ = writeln!(
             out,
-            "\nnote: these checks really ran, reaching outside this process exactly as a \
-             request would: {}",
-            explanation.side_effects.join(", ")
+            "\n{}",
+            palette.warn(&format!(
+                "note: these checks really ran, reaching outside this process exactly as a \
+                 request would: {}",
+                explanation.side_effects.join(", ")
+            ))
         );
     }
 
@@ -455,7 +472,7 @@ mod tests {
         let labels: Vec<&str> = explanation.stages.iter().map(|s| s.label).collect();
         assert_eq!(labels, vec!["connection", "newOrder", "CSR"]);
 
-        let rendered = render_explanation("default", &subject, &explanation);
+        let rendered = render_explanation("default", &subject, &explanation, Palette::plain());
         assert!(rendered.contains("rule mgmt matched"), "{rendered}");
         assert!(rendered.contains("-> allowed"), "{rendered}");
         assert!(rendered.contains("every stage must allow"), "{rendered}");
@@ -476,7 +493,7 @@ mod tests {
             vec!["403 access_denied", "403 rejectedIdentifier", "400 badCSR"]
         );
 
-        let rendered = render_explanation("default", &subject, &explanation);
+        let rendered = render_explanation("default", &subject, &explanation, Palette::plain());
         assert!(rendered.contains("no rule matched"), "{rendered}");
         assert!(rendered.contains("refused"), "{rendered}");
     }
@@ -502,7 +519,7 @@ mod tests {
 
         let identifiers = &explanation.stages[1];
         assert_eq!(identifiers.skipped, vec!["names".to_string()]);
-        let rendered = render_explanation("default", &subject, &explanation);
+        let rendered = render_explanation("default", &subject, &explanation, Palette::plain());
         assert!(
             rendered.contains("skipped (an earlier operand"),
             "{rendered}"
@@ -522,7 +539,7 @@ mod tests {
         let explanation = explain(&policy, &subject).await;
         assert!(explanation.allowed());
 
-        let rendered = render_explanation("default", &subject, &explanation);
+        let rendered = render_explanation("default", &subject, &explanation, Palette::plain());
         assert!(
             rendered.contains("matched in warn mode and would have deny"),
             "{rendered}"
@@ -539,7 +556,12 @@ mod tests {
         );
 
         let subject = subject("10.0.0.5", &["web.example.com"]);
-        let rendered = render_explanation("default", &subject, &explain(&policy, &subject).await);
+        let rendered = render_explanation(
+            "default",
+            &subject,
+            &explain(&policy, &subject).await,
+            Palette::plain(),
+        );
         assert!(rendered.contains("no rule applies here"), "{rendered}");
     }
 
@@ -569,7 +591,7 @@ mod tests {
         let explanation = explain(&policy, &subject).await;
         assert_eq!(explanation.side_effects, vec!["hook".to_string()]);
 
-        let rendered = render_explanation("default", &subject, &explanation);
+        let rendered = render_explanation("default", &subject, &explanation, Palette::plain());
         assert!(rendered.contains("these checks really ran"), "{rendered}");
     }
 
@@ -615,7 +637,7 @@ mod tests {
             ProxyPolicy::default(),
         );
 
-        let rendered = render_policy("default", &policy);
+        let rendered = render_policy("default", &policy, Palette::plain());
         assert!(rendered.contains("names or (net and names)"), "{rendered}");
         assert!(rendered.contains("net"), "{rendered}");
         assert!(rendered.contains("allowed_ip"), "{rendered}");
@@ -625,7 +647,7 @@ mod tests {
 
     #[test]
     fn show_says_plainly_when_nothing_is_configured() {
-        let rendered = render_policy("default", &FilterPolicy::default());
+        let rendered = render_policy("default", &FilterPolicy::default(), Palette::plain());
         assert!(rendered.contains("filters nothing"), "{rendered}");
     }
 
@@ -637,6 +659,6 @@ mod tests {
             Effect::Deny,
             ProxyPolicy::default(),
         );
-        assert!(render_policy("default", &policy).contains("does not decide"));
+        assert!(render_policy("default", &policy, Palette::plain()).contains("does not decide"));
     }
 }

@@ -5,6 +5,8 @@ use clap::Subcommand;
 
 use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
+use crate::cli::render;
+use crate::cli::style::Palette;
 use crate::config::Config;
 use crate::signer;
 use crate::sqlite::authz::Authorization;
@@ -45,6 +47,7 @@ pub enum OrderCommand {
 pub async fn run_order_command(
     command: OrderCommand,
     yes: bool,
+    palette: Palette,
     reader: &mut impl BufRead,
     config: &Config,
     database: Arc<Database>,
@@ -101,7 +104,7 @@ pub async fn run_order_command(
                 println!("{}", serde_json::Value::Array(rendered));
             } else {
                 for order in &orders {
-                    println!("{}", admin::render_order_line(order));
+                    println!("{}", render::render_order_line(order, palette));
                 }
             }
         }
@@ -113,7 +116,7 @@ pub async fn run_order_command(
                     admin::render_order_detail_json(&detail, &config.server.base_url)
                 );
             }
-            Some(detail) => print!("{}", admin::render_order_detail_text(&detail)),
+            Some(detail) => print!("{}", render::render_order_detail_text(&detail, palette)),
         },
         OrderCommand::Delete { id } => {
             match admin::confirm_delete_order(&id, yes, reader, database).await? {
@@ -196,7 +199,7 @@ pub async fn run_order_command(
                     )));
                 }
                 admin::RevokeOutcome::Revoked(order) => {
-                    println!("{}", admin::render_order_line(&order));
+                    println!("{}", render::render_order_line(&order, palette));
                 }
             }
         }
@@ -336,9 +339,16 @@ mod tests {
         ];
         for command in commands {
             let mut reader: &[u8] = &[];
-            let error = run_order_command(command, true, &mut reader, &config, database.clone())
-                .await
-                .expect_err("an unknown order must fail");
+            let error = run_order_command(
+                command,
+                true,
+                Palette::plain(),
+                &mut reader,
+                &config,
+                database.clone(),
+            )
+            .await
+            .expect_err("an unknown order must fail");
             assert_eq!(error, expected);
         }
     }
@@ -361,6 +371,7 @@ mod tests {
                 reason: None,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database,
@@ -386,6 +397,7 @@ mod tests {
                 reason: None,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &Config::default(),
             database,
@@ -412,6 +424,7 @@ mod tests {
                 reason: None,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database,
@@ -441,6 +454,7 @@ mod tests {
                 reason: Some(1),
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database.clone(),
@@ -463,6 +477,7 @@ mod tests {
                 reason: None,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database.clone(),
@@ -495,6 +510,7 @@ mod tests {
                 reason: Some(7),
             },
             true,
+            Palette::plain(),
             &mut reader,
             &config,
             database,
@@ -516,6 +532,7 @@ mod tests {
                 id: order.id.clone(),
             },
             false,
+            Palette::plain(),
             &mut reader,
             &Config::default(),
             database.clone(),
@@ -558,6 +575,7 @@ mod tests {
             run_order_command(
                 command,
                 true,
+                Palette::plain(),
                 &mut reader,
                 &Config::default(),
                 database.clone(),
@@ -586,6 +604,7 @@ mod tests {
                 json: false,
             },
             true,
+            Palette::plain(),
             &mut reader,
             &Config::default(),
             database.clone(),
@@ -623,6 +642,7 @@ mod tests {
                     json: false,
                 },
                 true,
+                Palette::plain(),
                 &mut reader,
                 &Config::default(),
                 database.clone(),

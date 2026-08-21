@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use acme_proxy::audit::ClientContext;
+use acme_proxy::cli::Palette;
 use acme_proxy::cli::account::{AccountCommand, run_account_command};
 use acme_proxy::cli::eab::{EabCommand, run_eab_command};
 use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
@@ -31,6 +32,7 @@ async fn account_cli_list_and_show() {
             json: false,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -43,6 +45,7 @@ async fn account_cli_list_and_show() {
             json: true,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -55,6 +58,7 @@ async fn account_cli_list_and_show() {
             json: false,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -67,6 +71,7 @@ async fn account_cli_list_and_show() {
             json: true,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -96,6 +101,7 @@ async fn account_cli_update_deactivate_delete() {
             contact: vec!["mailto:updated@example.com".to_string()],
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -108,6 +114,7 @@ async fn account_cli_update_deactivate_delete() {
             id: account.id.clone(),
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -121,6 +128,7 @@ async fn account_cli_update_deactivate_delete() {
             id: account.id.clone(),
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -134,6 +142,7 @@ async fn account_cli_update_deactivate_delete() {
             id: account.id.clone(),
         },
         true,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -181,6 +190,7 @@ async fn order_cli_list_show_delete() {
             json: false,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -196,6 +206,7 @@ async fn order_cli_list_show_delete() {
             json: true,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -209,6 +220,7 @@ async fn order_cli_list_show_delete() {
             json: false,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -222,6 +234,7 @@ async fn order_cli_list_show_delete() {
             json: true,
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -235,6 +248,7 @@ async fn order_cli_list_show_delete() {
             id: order.id.clone(),
         },
         false,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -248,6 +262,7 @@ async fn order_cli_list_show_delete() {
             id: order.id.clone(),
         },
         true,
+        Palette::plain(),
         &mut reader,
         &config,
         db.clone(),
@@ -296,6 +311,7 @@ async fn eab_cli_create_list_show_revoke() {
             label: Some("test-label".to_string()),
             json: false,
         },
+        Palette::plain(),
         db.clone(),
     )
     .await
@@ -307,17 +323,26 @@ async fn eab_cli_create_list_show_revoke() {
             label: None,
             json: true,
         },
+        Palette::plain(),
         db.clone(),
     )
     .await
     .unwrap();
 
-    run_eab_command(EabCommand::List { json: false }, db.clone())
-        .await
-        .unwrap();
-    run_eab_command(EabCommand::List { json: true }, db.clone())
-        .await
-        .unwrap();
+    run_eab_command(
+        EabCommand::List { json: false },
+        Palette::plain(),
+        db.clone(),
+    )
+    .await
+    .unwrap();
+    run_eab_command(
+        EabCommand::List { json: true },
+        Palette::plain(),
+        db.clone(),
+    )
+    .await
+    .unwrap();
 
     let keys = acme_proxy::sqlite::eab::Eab::list_all(&db).await.unwrap();
     let kid = keys[0].kid.clone();
@@ -327,6 +352,7 @@ async fn eab_cli_create_list_show_revoke() {
             kid: kid.clone(),
             json: false,
         },
+        Palette::plain(),
         db.clone(),
     )
     .await
@@ -337,12 +363,17 @@ async fn eab_cli_create_list_show_revoke() {
             kid: kid.clone(),
             json: true,
         },
+        Palette::plain(),
         db.clone(),
     )
     .await
     .unwrap();
 
-    run_eab_command(EabCommand::Revoke { kid: kid.clone() }, db.clone())
-        .await
-        .unwrap();
+    run_eab_command(
+        EabCommand::Revoke { kid: kid.clone() },
+        Palette::plain(),
+        db.clone(),
+    )
+    .await
+    .unwrap();
 }

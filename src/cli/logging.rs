@@ -145,9 +145,14 @@ fn parse_span_events(span_events: &str) -> Result<FmtSpan, String> {
 /// relies on it. Either switch turns colour off; neither can turn it on against
 /// the other.
 ///
-/// Per the convention, `NO_COLOR` counts only when set to a non-empty value.
+/// Per the convention, `NO_COLOR` counts only when set to a non-empty value —
+/// which is [`super::style::no_color_set`]'s judgement, shared with the admin
+/// CLI's own `--color` so the two answers cannot drift. Note the *precedence*
+/// deliberately does not match: a `--color always` outranks `NO_COLOR` where
+/// this key cannot, because a flag is typed and a configuration file is
+/// ambient. [`super::style`]'s module doc has the argument.
 fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
-    configured && no_color.is_none_or(str::is_empty)
+    configured && !super::style::no_color_set(no_color)
 }
 
 /// A layer stack built from `[logging]` but not yet installed.
