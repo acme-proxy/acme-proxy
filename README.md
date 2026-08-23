@@ -4,7 +4,7 @@
 [![Documentation](https://img.shields.io/badge/docs-mdBook-blue)](https://acme-proxy.github.io/acme-proxy/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![MSRV 1.97](https://img.shields.io/badge/MSRV-1.97-orange)
-![Coverage ≥96%](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
+![Coverage ≥97%](https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen)
 
 An ACME (RFC 8555) server in Rust, built on [axum](https://docs.rs/axum). It sits
 between your internal clients — certbot, acme.sh, lego, Traefik, Caddy — and the
@@ -14,7 +14,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 📖 **[Full documentation](https://acme-proxy.github.io/acme-proxy/)** — start with the
 [Quick Start](https://acme-proxy.github.io/acme-proxy/getting_started/quick_start.html).
 
-> **First release (0.1.0).** Before 1.0.0 the database schema is the *only*
+> **Current release: 0.2.0.** Before 1.0.0 the database schema is the *only*
 > compatibility guarantee: `migrations/` is append-only, so upgrading is a
 > matter of starting the new binary against the existing database. Everything
 > else — configuration keys, profile names, the JSON admin API, log event names,

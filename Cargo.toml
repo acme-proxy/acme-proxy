@@ -1,6 +1,6 @@
 [package]
 name = "acme-proxy"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "An ACME (RFC 8555) server that issues from a local CA, relays to an upstream CA, or delegates to a script"

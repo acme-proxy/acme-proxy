@@ -23,8 +23,8 @@ cargo install cargo-nextest
 cargo nextest run
 ```
 
-**`migrations/` is append-only — and it is the only thing that is.** The twelve
-files there are frozen as of 0.1.0. `sqlx` records each migration's checksum, so
+**`migrations/` is append-only — and it is the only thing that is.** Every file
+there is frozen as of 0.1.0. `sqlx` records each migration's checksum, so
 editing a committed file makes every existing deployment fail at startup with a
 mismatch — it does not silently diverge. A schema change is
 `sqlx migrate add <name>`, always. Two consequences catch people out: a new

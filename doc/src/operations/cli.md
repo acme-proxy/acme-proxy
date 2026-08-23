@@ -59,6 +59,11 @@ log stream and is a configuration key rather than a flag; the CLI's colour is
 not configurable, on purpose, since the right answer depends on the terminal in
 front of you rather than on the deployment.
 
+**`--version`** — print the build's own version and exit. It is the first thing
+a bug report asks for, and the answer a checkout cannot give on a host where the
+binary was copied in. `--help` is its counterpart and works at every level:
+`acme-proxy audit --help` lists that group's subcommands.
+
 ## Account management
 
 | Command | Flags |

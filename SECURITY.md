@@ -8,7 +8,8 @@ a name they do not control. Reports are taken seriously.
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | yes |
+| 0.2.x | yes |
+| 0.1.x | no |
 
 Before 1.0.0 there is no long-term support branch: fixes land on `main` and in
 the next release. The database schema is frozen and append-only, so upgrading is

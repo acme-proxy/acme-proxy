@@ -80,6 +80,7 @@ use crate::{Profile, build_app, tls};
 #[derive(Parser)]
 #[command(
     name = "acme-proxy",
+    version = env!("CARGO_PKG_VERSION"),
     about = "ACME server, plus admin commands for its database"
 )]
 pub struct Cli {
@@ -1668,6 +1669,19 @@ impl Drop for AbortOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--version` exists and reports the crate version. The bug report
+    /// template tells people to run it, and clap generates the flag only
+    /// because `#[command(version = …)]` says so — drop that and the first
+    /// instruction on the form starts erroring out.
+    #[test]
+    fn version_flag_reports_the_crate_version() {
+        let Err(error) = Cli::try_parse_from(["acme-proxy", "--version"]) else {
+            panic!("--version parsed as a command rather than printing a version");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+    }
 
     #[test]
     fn parse_cli_subcommands() {

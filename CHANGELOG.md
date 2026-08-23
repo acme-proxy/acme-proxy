@@ -31,6 +31,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-23
+
 ### Breaking
 
 - **`[filter]` is now a policy of named checks and boolean rules, and every key
@@ -381,6 +383,13 @@ migrated configuration before restarting.
   read as-is and rewritten on the next change, resuming numbering above anything
   that format could have published. Keep backing the sidecar up beside the CRL —
   it now holds the number as well as the ledger.
+
+- **`acme-proxy --version` names the build.** The bug report template has always
+  asked reporters to run it, but the flag did not exist — clap generates one
+  only when the command declares a version, and this one did not, so the first
+  instruction on the form errored out. The binary now reports its own crate
+  version, which is also what makes "which release is this?" answerable on a
+  host where the checkout is long gone.
 
 - **The admin CLI colours its human-readable output, under a new global
   `--color auto|always|never`.** A listing is scanned for the row that is not
@@ -1026,5 +1035,6 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/acme-proxy/acme-proxy/releases/tag/v0.1.0
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/acme-proxy/acme-proxy/compare/0.1.0...0.2.0
+[0.1.0]: https://github.com/acme-proxy/acme-proxy/releases/tag/0.1.0

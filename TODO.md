@@ -11,8 +11,8 @@ keeps its corpses stops being read.
       `Database::connect`'s two pragmas, the `rows_affected == 1` single-use
       idiom the nonces and recovery codes rest on, and `migrations/` — frozen
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
-      own migration set selected by the URL scheme, never edits to these twelve
-      files.
+      own migration set selected by the URL scheme, never edits to the files
+      already there.
 
 ## Observability
 
