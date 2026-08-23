@@ -202,9 +202,9 @@ reaches one validator. Challenge types are always spelled with separators
 
 **`outcome`** is one of four values, and it exists so that "show me everything
 that broke" is an exact match instead of a suffix glob. Failure is spelled a
-dozen ways across the ~450 event names (`_failed`, but also `_invalid`,
-`_mismatch`, `_missing`, `_unauthorized`, `_rejected`), so globbing on the name
-silently misses most of it:
+dozen ways across the several hundred event names (`_failed`, but also
+`_invalid`, `_mismatch`, `_missing`, `_unauthorized`, `_rejected`), so globbing
+on the name silently misses most of it:
 
 | `outcome` | Meaning |
 | --- | --- |
@@ -285,11 +285,12 @@ Only with `[admin]` enabled — see [Web Admin](webadmin.md):
 | `admin_session_reaper_swept` | debug | The periodic session sweep ran, as the `admin_session_sweep` job. |
 | `admin_session_orphaned` | warn | A session outlived its user despite the FK cascade. Should be impossible; the session is deleted and refused. |
 
-The full set is much broader than this table — around 450 names, of which the
-ones above are the curated subset worth an alert. Because the subsystem prefix
-is drawn from a closed list, an ad-hoc investigation can grep a whole family:
-`event = "certificate_revoke` for every revocation refusal, `event = "replaces_`
-for RFC 9773 correspondence, `event = "db_` for the storage layer.
+The full set is much broader than this table — several hundred names, of which
+the ones above are the curated subset worth an alert. Because the subsystem
+prefix is drawn from a closed list, an ad-hoc investigation can grep a whole
+family: `event = "certificate_revoke` for every revocation refusal,
+`event = "replaces_` for RFC 9773 correspondence, `event = "db_` for the
+storage layer.
 
 ### Suggested alerts
 

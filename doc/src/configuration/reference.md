@@ -31,8 +31,10 @@ context.
 
 Six sections are large enough to have a chapter of their own, and their keys
 are documented there rather than restated here. This page stays the complete
-**map**: every table `acme-proxy` reads appears below, whether or not its text
-lives here.
+**map**: every top-level section `acme-proxy` reads appears below, whether or
+not its text lives here. A delegated section's own sub-tables —
+`[signer.local_ca.subject]`, `[ipam.netbox]`, `[filter.check.<name>]` and the
+rest — are listed in the chapter that owns them.
 
 **Overridable** marks the sections a `[profiles.<name>]` block may override.
 Everything else is process-wide — one setting for the whole server, however many
@@ -693,8 +695,9 @@ Load-bearing rules:
   `challenge.bypass` keeps the **global** `challenge.enabled` rather than
   reverting it to the compiled default. Precedence: profile key > global key >
   compiled default.
-- **Arrays replace wholesale, never append.** A profile's `filter.enabled` fully
-  replaces the global one.
+- **Arrays replace wholesale, never append.** A profile's `filter.rules` fully
+  replaces the global one — order *is* the policy, so it is stated once per
+  profile rather than accumulated from two places.
 - **Profiles are a database boundary, not just a URL prefix.** Accounts and
   orders carry a profile column, and accounts are keyed `UNIQUE(profile,
   pubkey)` — one client key used at two endpoints is two independent ACME
@@ -708,17 +711,25 @@ Load-bearing rules:
 backend = "local_ca"
 
 [filter]
-enabled = []
+rules = ["corp-only"]
 
-# Inherits everything above.
+[filter.check.corp-net]
+type  = "allowed_ip"
+allow = ["10.0.0.0/8"]
+
+[filter.rule.corp-only]
+when = "corp-net"
+then = "allow"
+
+# Inherits everything above, but dry-runs the one rule: `[filter.rule.<name>]`
+# is a table, so overriding `mode` keeps `when` and `then` from the global one.
 [profiles.dev]
+filter.rule.corp-only.mode = "warn"
 
-# Overrides two keys; keeps the rest.
+# Overrides two keys; keeps the whole filter policy.
 [profiles.prod]
 signer.backend = "relay"
 signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
-filter.enabled = ["allowed_ip"]
-filter.allowed_ip.allow = ["10.0.0.0/8"]
 ```
 
 See [Profiles & Routing](../core/profiles.md).
@@ -736,7 +747,7 @@ value containing a literal comma cannot be expressed. A regex such as
 environment, `{2,3}` splits into two list entries.
 
 **An array set to the empty string is *present*, not absent.** Shell defaults
-like `ACME_PROXY_FILTER__ENABLED="${FILTERS:-}"` set the variable to `""`, which
+like `ACME_PROXY_FILTER__RULES="${RULES:-}"` set the variable to `""`, which
 the configuration layer cannot distinguish from a deliberate value — and
 `"".split(',')` yields one empty element, not zero. `acme-proxy` collapses this
 back to an empty list for every array key, so it is safe; just do not expect
@@ -759,7 +770,7 @@ see
 
 ## Sections documented elsewhere
 
-The five sections with a chapter of their own, expanded — see [the map
+The six sections with a chapter of their own, expanded — see [the map
 above](#every-section-and-where-it-is-documented) for the rest.
 
 - **`[signer]`** — [Signers](../signers/index.md):
@@ -767,10 +778,12 @@ above](#every-section-and-where-it-is-documented) for the rest.
   [PKCS#11 keys](../signers/local_ca_hsm.md),
 [relay](../signers/relay.md), [custom](../signers/custom.md)
 - **`[filter]`** — [Filters](../filters/index.md):
-  [allowed_ip](../filters/allowed_ip.md),
+  [allowed_ip](../filters/allowed_ip.md), [path](../filters/path.md),
   [reverse_dns](../filters/reverse_dns.md),
-[identifiers](../filters/identifiers.md), [ipam](../ipam/index.md),
+[identifiers](../filters/identifiers.md), [eab](../filters/eab.md),
   [custom](../filters/custom.md)
+- **`[ipam]`** — [IPAM](../ipam/index.md): the inventory the `ipam` check
+  consults — [NetBox](../ipam/netbox.md), [phpIPAM](../ipam/phpipam.md)
 - **`[challenge]`** — [Challenge Validation](../challenges/index.md#reference):
   [http-01](../challenges/http_01.md#reference),
   [dns-01](../challenges/dns_01.md),

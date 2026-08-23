@@ -1,6 +1,12 @@
 # Installation
 
-`acme-proxy` is a Rust application. Currently, it must be compiled from source.
+`acme-proxy` is a Rust application, published on
+[crates.io](https://crates.io/crates/acme-proxy). There are three ways to get
+it — `cargo install`, a source build, or a container image you build yourself —
+and all three compile it locally. No prebuilt binaries are published.
+
+The result is a single binary carrying both the server and the
+[admin CLI](../operations/cli.md), so a deployment never needs a second tool.
 
 ## Prerequisites
 
@@ -18,7 +24,35 @@ You can install Rust via [rustup](https://rustup.rs/):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
+## From crates.io
+
+```bash
+cargo install acme-proxy
+```
+
+This fetches the published crate, compiles it, and puts the binary in
+`~/.cargo/bin` — which needs to be on your `PATH`. Confirm it with:
+
+```bash
+acme-proxy --version
+```
+
+To pin a version, or to move to a specific one later, name it:
+
+```bash
+cargo install acme-proxy --version 0.2.0
+```
+
+Upgrading is `cargo install acme-proxy --force`. Before doing so across a minor
+version, read the `### Breaking` section of the
+[changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
+Before 1.0.0 the database schema is the only compatibility guarantee, so the
+data survives an upgrade but a configuration key may have been renamed.
+
 ## Building from source
+
+Prefer this if you intend to change anything, or want the test suite and the
+book sources alongside the binary.
 
 1. Clone the repository:
    ```bash
@@ -41,6 +75,7 @@ The default build has no optional features. One is available:
 | `hsm` | PKCS#11 support for the Local CA's issuing key, so it can live in a YubiKey or an HSM instead of a file — see [Hardware Keys](../signers/local_ca_hsm.md). |
 
 ```bash
+cargo install acme-proxy --features hsm    # or, from a clone:
 cargo build --release --features hsm
 ```
 

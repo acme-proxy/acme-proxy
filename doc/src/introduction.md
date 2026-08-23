@@ -66,7 +66,9 @@ a local CA at `/profile/dev` and a Let's Encrypt relay at `/profile/prod`.
   challenges on the client's behalf using a single, centrally secured DNS TSIG
   key.
 - **As a Filter**: It inspects the client's IP and requested DNS names against
-  strict policies (like NetBox IPAM) before allowing the request to proceed.
+  strict policies — including asking your [IPAM](ipam/index.md) (NetBox or
+  phpIPAM) whether that address owns those names — before allowing the request
+  to proceed.
 - **As a Local CA**: It can operate entirely offline, issuing from an embedded
   ECDSA CA whose key is a file on disk or a PKCS#11 token.
 - **As a Multi-Tenant Server**: Through its Profile system, a single binary can
@@ -80,3 +82,7 @@ a local CA at `/profile/dev` and a Let's Encrypt relay at `/profile/prod`.
 It is built on `axum`, `tokio` and `sqlx`, and stores everything in one SQLite
 file in WAL mode. There is no second datastore, no message queue and no
 scheduler to operate.
+
+It is published on [crates.io](https://crates.io/crates/acme-proxy), so
+`cargo install acme-proxy` gets you the whole thing — server and admin CLI in
+one binary. See [Installation](getting_started/installation.md).

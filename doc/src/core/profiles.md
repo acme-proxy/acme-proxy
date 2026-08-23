@@ -99,20 +99,43 @@ the subset its own `filter.rules` uses.
 backend = "local_ca"
 
 [filter]
-enabled = [] # By default, no filters
+rules = ["corp-only"] # The base selection; each profile may replace it
 
-# Profile 1: Uses the global local_ca and no filters
+# The library. Both checks and both rules are declared once, globally.
+[filter.check.corp-net]
+type  = "allowed_ip"
+allow = ["10.0.0.0/8"]
+
+[filter.check.corp-names]
+type  = "identifiers"
+allow = ["*.corp.example.com"]
+
+[filter.rule.corp-only]
+when = "corp-net"
+then = "allow"
+
+[filter.rule.named-and-corp]
+when = "corp-net and corp-names"
+then = "allow"
+
+# Profile 1: Uses the global local_ca, and the inherited address-only rule.
+# `corp-names` is named by no rule it selects, so it is never built.
 [profiles.default]
 enabled = true
 
-# Profile 2: Relays to Let's Encrypt and enforces IP filters
+# Profile 2: Relays to Let's Encrypt, and replaces the selection with the
+# stricter rule — which is what pulls `corp-names` into existence here.
 [profiles.le]
 enabled = true
 signer.backend = "relay"
 signer.relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
-filter.enabled = ["allowed_ip"]
-filter.allowed_ip.allow = ["10.0.0.0/8"]
+filter.rules = ["named-and-corp"]
 ```
+
+`acme-proxy filter show --profile <name>` prints the built policy for one
+profile, which is the quickest way to confirm a profile selected what you
+intended. A check that no selected rule names is reported as
+`filter_check_unused` — an advisory, not an error.
 
 At runtime, `acme-proxy` deduplicates the signer backends in memory so that two
 profiles sharing the exact same signer configuration (e.g., two profiles using

@@ -1,3 +1,12 @@
+// Feature badges on docs.rs. Turned on by `--cfg docsrs` from
+// `[package.metadata.docs.rs]`, so a stable `cargo doc`, `cargo build` and
+// clippy never see this nightly-only attribute. `doc_cfg` annotates every
+// `#[cfg(…)]` item on its own, so the `hsm`-gated items need no per-item
+// attribute and a future one is covered for free — the behaviour that used to
+// be a separate `doc_auto_cfg` feature, removed in 1.92 and merged into this
+// one. Do not reintroduce that name; it no longer compiles.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! ACME (RFC 8555) Server Implementation
 //!
 //! This is a server-side implementation of the ACME protocol (RFC 8555) for
@@ -20,8 +29,16 @@
 //!   its own signer, filters, challenge validators and EAB policy
 //! - External Account Binding (§7.3.4), account key rollover (§7.3.5) and
 //!   Renewal Information (RFC 9773)
+//! - Access control behind a policy engine of named checks combined by boolean
+//!   rules, including an IPAM lookup (NetBox or phpIPAM) asking the inventory
+//!   whether the client's own address owns the names it is requesting
 //! - An append-only audit trail of every issuance *and every refusal*
 //! - An optional web admin listener, and admin subcommands in the same binary
+//! - Optional Prometheus metrics on a third listener of their own
+//! - A durable job queue, so work the server owes itself survives a restart and
+//!   an upstream blip is retried rather than invalidating a client's order
+//! - Configuration reload on `SIGHUP` — a rebuild and a swap, with
+//!   `database.url` the only key that still needs a restart
 //! - `SQLite` persistence for accounts, nonces, orders and the audit trail
 //! - Configurable via TOML, environment variables, or defaults
 //!
@@ -43,14 +60,29 @@
 //! - [`audit`] - The durable record of who asked this CA to sign or revoke
 //! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
 //!   webhook, custom)
+//! - [`ipam`] - The inventory [`filter`] asks which names an address owns
+//!   (NetBox, phpIPAM), behind one trait
 //! - [`eab`] - Verification of the External Account Binding inner JWS (§7.3.4)
 //! - [`key_change`] - Verification of account key rollover JWS (§7.3.5)
 //! - [`dns`] - The resolver shared by every subsystem that looks anything up
+//! - [`http_client`] - The transport every outbound HTTP client is built on,
+//!   including the `CONNECT` tunnel
+//! - [`proxy`] - Which forward proxy, if any, that transport dials through
+//! - [`script_hook`] - The hardened contract every `custom` hook runs under
 //! - [`tls`] - Optional HTTPS termination for either listener
 //! - [`cert`] - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
+//! - [`pemfile`] - PEM reading, atomic writing and key-permission warnings
 //! - [`sqlite`] - Database access, one module per table
 //! - [`config`] - Configuration loading from multiple sources
 //! - [`error`] - ACME error types and problem document rendering
+//!
+//! Process lifecycle — what keeps the server running and lets it be retuned
+//! without a restart:
+//! - [`listener`] - The sockets, and replacing one while it serves
+//! - [`reload`] - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
+//! - [`jobs`] - The durable queue and its runner, so work outlives the process
+//!   that queued it
+//! - [`metrics`] - The Prometheus registry and its text exposition
 //!
 //! Administration, which serves no ACME and is a second listener plus a CLI:
 //! - [`admin`] - The operation layer both front ends dispatch to

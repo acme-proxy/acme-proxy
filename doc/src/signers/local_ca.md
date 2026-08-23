@@ -147,6 +147,47 @@ and so is `"pkcs11"` on a binary built without `--features hsm`: there is
 deliberately no silent fallback, since falling back would hand an operator who
 asked for hardware a software key with no indication of it.
 
+### `[signer.local_ca.subject]`
+
+The X.509 Subject (Distinguished Name) of the CA certificate `acme-proxy`
+generates for itself. It is read **only on the startup that generates the CA** —
+supplying your own `cert_path` means supplying your own DN, and editing this
+table afterwards changes nothing, because the certificate already exists. To
+change it, retire the CA and generate a new one.
+
+Every key is optional and `String`-valued. An unset or empty value is **omitted
+from the Subject** rather than written blank; the empty string is treated as
+absent because the environment source cannot distinguish the two. The one
+exception is `common_name`, which falls back to `"acme-proxy local CA"` so the
+CA always carries one. Leaving the whole table out therefore yields a
+CommonName-only Subject — which is exactly what this backend produced before the
+table existed.
+
+This is the CA's own DN, not the leaf's. Issued certificates deliberately carry
+an empty Subject and identify themselves through `subjectAltName`, which is what
+every modern client reads.
+
+**`common_name`** — *Default: `"acme-proxy local CA"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__COMMON_NAME`*
+
+**`organization`** — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__ORGANIZATION`*
+
+**`organizational_unit`** — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__ORGANIZATIONAL_UNIT`*
+
+**`country`** — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__COUNTRY`*
+
+A two-letter ISO 3166-1 country code, e.g. `"US"`.
+
+**`state`** — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__STATE`*
+
+**`locality`** — *Default: unset | Env: `ACME_PROXY_SIGNER__LOCAL_CA__SUBJECT__LOCALITY`*
+
+```toml
+[signer.local_ca.subject]
+common_name  = "Example Corp Internal CA"
+organization = "Example Corp"
+country      = "US"
+```
+
 ## Hardware-backed keys
 
 The CA key described above is a file, and a file can be copied. If the CA is one

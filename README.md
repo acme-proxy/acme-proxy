@@ -1,8 +1,10 @@
 # acme-proxy
 
 [![CI](https://github.com/acme-proxy/acme-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/acme-proxy/acme-proxy/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/acme-proxy.svg)](https://crates.io/crates/acme-proxy)
+[![docs.rs](https://img.shields.io/docsrs/acme-proxy)](https://docs.rs/acme-proxy)
 [![Documentation](https://img.shields.io/badge/docs-mdBook-blue)](https://acme-proxy.github.io/acme-proxy/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/acme-proxy/acme-proxy/blob/main/LICENSE)
 ![MSRV 1.97](https://img.shields.io/badge/MSRV-1.97-orange)
 ![Coverage ≥97%](https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen)
 
@@ -20,7 +22,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 > else — configuration keys, profile names, the JSON admin API, log event names,
 > the CLI — may still be renamed or removed, and every such change is listed
 > under `### Breaking` in
-> [CHANGELOG.md](CHANGELOG.md#compatibility). Read that section before an
+> [CHANGELOG.md](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility). Read that section before an
 > upgrade.
 
 ## Why
@@ -50,8 +52,12 @@ produced.
 - **Profiles** — several independent ACME endpoints in one process, over one
   listener and one database, each with its own signer, filters, challenges and
   EAB policy. Accounts and orders are isolated per profile.
-- **Access control** — IP allowlists, forward-confirmed reverse DNS, identifier
-  allow/deny rules, a NetBox IPAM integration, and custom script hooks.
+- **Access control** — a policy engine of named checks combined by boolean
+  rules: IP allowlists, forward-confirmed reverse DNS, identifier allow/deny
+  rules, request paths, EAB, an IPAM lookup (**NetBox** or **phpIPAM**) asking
+  your inventory whether the client's own address owns the names, and custom
+  script hooks. Checks answer pass/fail/*undecided*, so an inventory outage
+  degrades to a retryable 500 rather than failing open.
 - **Extensions** — External Account Binding (§7.3.4), key rollover (§7.3.5),
   Renewal Information / ARI (RFC 9773).
 - **Notifications** — email, an HTTP webhook (Slack, Mattermost, Teams,
@@ -69,6 +75,18 @@ produced.
   a TOTP second factor with recovery codes, and a session cookie. Loopback by
   default; refuses to bind elsewhere without TLS.
 - **Optional TLS termination**, or run it behind a reverse proxy.
+- **Prometheus metrics** (optional) on a third listener of their own — request,
+  issuance, failure and pool-connection series, plus a
+  [shipped Grafana dashboard](https://github.com/acme-proxy/acme-proxy/blob/main/dashboards/acme-proxy.json).
+  The separate port is
+  the design: reaching it is the permission, so your firewall is the control.
+- **Configuration reload on `SIGHUP`** — a rebuild and a swap, not a mutation.
+  Listeners, TLS certificates, logging, profiles, signers and job pacing all
+  move without dropping a connection; `database.url` is the only key left that
+  needs a restart.
+- **A durable job queue** — one row per unit of work the server owes itself, so
+  a five-second upstream blip is retried rather than terminally invalidating a
+  client's order, and a delivery outlives the process that queued it.
 - **Revocation** — `POST /revokeCert` by either the account key or the
   certificate's own key pair, with an
   [RFC 5280 CRL](https://acme-proxy.github.io/acme-proxy/operations/revocation.html)
@@ -122,6 +140,18 @@ The full tree is in the
 
 ## Installing
 
+From [crates.io](https://crates.io/crates/acme-proxy):
+
+```bash
+cargo install acme-proxy
+```
+
+That builds and installs the `acme-proxy` binary — server and admin CLI in one
+— into `~/.cargo/bin`. It needs the same Rust 1.97 toolchain as a source build,
+since it compiles the crate locally; there are no prebuilt binaries yet.
+
+Or from a clone, which is what you want if you intend to change anything:
+
 ```bash
 cargo build --release      # target/release/acme-proxy
 ```
@@ -144,6 +174,7 @@ token** (a YubiKey, an enterprise HSM, or SoftHSM2 for development) instead of a
 file on disk, so it can be used but never copied.
 
 ```bash
+cargo install acme-proxy --features hsm    # or, from a clone:
 cargo build --release --features hsm
 ```
 
@@ -167,7 +198,7 @@ files they have just written, which fails intermittently with `ETXTBSY` under
 
 ### Coverage
 
-CI enforces a hard floor of **96% of lines**, so a change that adds a branch
+CI enforces a hard floor of **97% of lines**, so a change that adds a branch
 generally has to add the test that covers it. `main.rs` is excluded — it is
 socket and exit wiring, and counting it would move the number without anyone
 being able to act on it. The same command locally:
@@ -198,6 +229,16 @@ cargo nextest run -E 'binary(e2e)' --run-ignored all
 
 ## Documentation
 
+Two surfaces, for two audiences:
+
+- **[The book](https://acme-proxy.github.io/acme-proxy/)** — the operator
+  documentation: configuration, deployment, every signer and filter, the CLI.
+  Start here.
+- **[docs.rs/acme-proxy](https://docs.rs/acme-proxy)** — the Rust API, for
+  embedding the crate or reading the internals. The library exists so the
+  binary and the tests can reach it; it is not a stable published API before
+  1.0.0.
+
 The book under `doc/` is built with [mdBook](https://rust-lang.github.io/mdBook/)
 and published on every push to `main`:
 
@@ -206,12 +247,14 @@ cargo install mdbook mdbook-mermaid
 mdbook serve doc/
 ```
 
-Contributions welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md), which
+Contributions welcome — start with
+[CONTRIBUTING.md](https://github.com/acme-proxy/acme-proxy/blob/main/CONTRIBUTING.md), which
 points at the
 [Contributing](https://acme-proxy.github.io/acme-proxy/dev/contributing.html)
 chapter.
 
-To report a security issue, see [SECURITY.md](SECURITY.md) — please do not open
+To report a security issue, see
+[SECURITY.md](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) — please do not open
 a public issue.
 
 ## License

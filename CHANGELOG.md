@@ -31,6 +31,41 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Packaging
+
+- Published to [crates.io](https://crates.io/crates/acme-proxy), so
+  `cargo install acme-proxy` is now an install path alongside a source build
+  and the container image. README and the Installation chapter lead with it,
+  and the README carries crates.io and docs.rs badges.
+- The published `.crate` no longer carries what only means something inside the
+  repository — the book, the vendored RFC text, `tests/e2e/`, the Grafana
+  dashboard, the client examples and the `CLAUDE.md` files — taking it from 393
+  files to 289. `migrations/` is deliberately still shipped: `sqlx::migrate!()`
+  embeds it at compile time, so excluding it would break every install.
+- docs.rs now renders a feature badge on the `hsm`-gated API instead of
+  presenting it as part of the default build (`--cfg docsrs` plus `doc_cfg`).
+
+### Documentation
+
+- **The `[filter]` examples in the configuration reference and the Profiles
+  chapter still used the 0.1.x shape** that 0.2.0 removed, so copying either
+  produced a server that refused to start (`filter.enabled is no longer a
+  setting`). Both are rewritten in the check/rule shape and verified by
+  building them with `acme-proxy filter show`.
+- The startup-failure table in Troubleshooting described the pre-0.2.0 filter
+  world in three rows, none of whose suggested fixes were possible any more. It
+  now quotes the messages the server actually emits, and gains rows for the two
+  refusals an operator upgrading from 0.1.x is most likely to meet.
+- `[signer.local_ca.subject]`'s six keys and `signer.relay.eab`'s two were
+  documented in `config.toml.example` but nowhere in the book — including no
+  spelling of their environment variables. Both now have reference entries on
+  the chapter that owns them.
+- The README's feature list had not kept up with Prometheus metrics, `SIGHUP`
+  reload, the job queue or the phpIPAM backend; nor had `src/lib.rs`'s, whose
+  architecture map was also missing nine public modules. Both now match the
+  book. The README's stated coverage floor (96%) was one point below what CI
+  enforces.
+
 ## [0.2.0] — 2026-08-23
 
 ### Breaking

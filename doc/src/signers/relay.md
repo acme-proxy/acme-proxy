@@ -251,6 +251,28 @@ Updates are sent over UDP and retried over TCP when the response is truncated �
 a TSIG-signed update readily exceeds 512 bytes, so the TCP path is a normal
 occurrence rather than an edge case.
 
+### `[signer.relay.eab]`
+
+An upstream External Account Binding credential supplied in configuration
+rather than through `acme-proxy upstream register`. Both keys are empty by
+default, which means "no configuration-file credential". Read only by
+`acme-proxy serve`, and only on a startup that finds no `.kid` sidecar beside
+`account_key_path` — see [EAB considerations](#eab-considerations) below for
+which of the two mechanisms to prefer.
+
+**`kid`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__EAB__KID`*
+
+The key id the upstream's operator issued alongside the secret.
+
+**`hmac_key`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY`*
+
+**Sensitive.** The shared secret, in base64 — url-safe, unpadded url-safe or
+standard are all accepted, the same three forms `acme-proxy upstream register`
+takes. A value that decodes as none of them is a **startup error**, as is
+setting either key without the other. Prefer the environment variable to a file
+on disk, and clear it once registration has succeeded: while it stays non-empty
+the server logs a `signer_relay_eab_secret_in_config` warning on every startup.
+
 ## EAB considerations
 An External Account Binding (EAB) credential is a one-time use token that
 authorizes a single `newAccount` request and is useless afterwards —

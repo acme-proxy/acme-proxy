@@ -15,6 +15,27 @@ categories = ["cryptography", "network-programming", "web-programming::http-serv
 # this value and runs `cargo check --locked` on that exact toolchain, so raising
 # it here is what raises it everywhere.
 rust-version = "1.97"
+# Kept out of the published `.crate`: material that only means anything inside
+# the repository. The book is served from GitHub Pages, the vendored RFC text is
+# reference reading, `tests/e2e/` drives containers a `cargo install` will never
+# build, and the `CLAUDE.md` files are contributor notes. `migrations/` is
+# deliberately *not* here — `sqlx::migrate!()` embeds it at compile time, so
+# excluding it would break the build for everyone installing from crates.io.
+exclude = [
+    "/doc/",
+    "/rfc/",
+    "/dashboards/",
+    "/examples-client/",
+    "/tests/e2e/",
+    # The harness root that `#[path]`-includes the directory above; left behind
+    # it would be a test target referring to files the package does not carry.
+    # `cargo package` warns "ignoring test `e2e`" over this — that warning is
+    # the exclusion working, not something to fix by putting the file back.
+    "/tests/e2e.rs",
+    "/.github/",
+    "**/CLAUDE.md",
+    "/TODO.md",
+]
 
 [features]
 default = []
@@ -31,8 +52,16 @@ hsm = ["dep:cryptoki"]
 # docs.rs builds with every feature on, so `signer::local_ca::pkcs11` — which is
 # `#[cfg(feature = "hsm")]` and therefore absent from a default build — is
 # documented rather than silently missing from the published API.
+#
+# `--cfg docsrs` turns on the `doc_auto_cfg` attribute in `src/lib.rs`, which is
+# the other half of that: without it the gated items appear with nothing saying
+# they need a feature, which is worse than absent — a reader would take
+# `pkcs11` for part of the default build. `doc_auto_cfg` is nightly-only and
+# docs.rs builds nightly; the `cfg_attr(docsrs, …)` gate means a stable
+# `cargo doc`, `cargo build` and clippy never see it.
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 axum = "0.8"
