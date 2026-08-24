@@ -511,6 +511,41 @@ impl Order {
         Ok((orders, total))
     }
 
+    /// Deletes this profile's orders that expired before `cutoff`, returning
+    /// how many went. The `authorizations` and `challenges` beneath them go
+    /// with the row, through the schema's `ON DELETE CASCADE`.
+    ///
+    /// **`valid` is excluded, whatever the age.** A valid order's row is how
+    /// `Order::find_by_cert_serial` resolves a certificate for `revokeCert` and
+    /// for the CRL, and what RFC 9773 renewal information is derived from —
+    /// deleting one would make an issued certificate unrevokable and
+    /// unrenewable, which is a far worse outcome than a large table. Everything
+    /// else is an order no client can act on any more: `invalid` is terminal,
+    /// and a `pending`/`ready`/`processing` order past its own `expires` is
+    /// refused on read by every handler that loads one.
+    ///
+    /// Scoped to one profile because `order.retention_days` is a per-profile
+    /// key: two endpoints in one process may reasonably keep their history for
+    /// different lengths of time.
+    pub async fn cleanup(
+        profile: &str,
+        cutoff: i64,
+        database: &Database,
+    ) -> Result<u64, sqlx::Error> {
+        debug!(event = "db_order_cleanup_started", outcome = "progress", profile = %profile, cutoff = cutoff);
+        let removed = sqlx::query(
+            "DELETE FROM orders WHERE profile = ? AND status != 'valid' AND expires < ?;",
+        )
+        .bind(profile)
+        .bind(cutoff)
+        .execute(&database.pool)
+        .await?
+        .rows_affected();
+
+        debug!(event = "db_order_cleanup_completed", outcome = "success", profile = %profile, rows_removed = removed);
+        Ok(removed)
+    }
+
     /// How many orders an account has.
     ///
     /// `COUNT(*)`, not `find_by_account(..).len()`: the only two callers want a

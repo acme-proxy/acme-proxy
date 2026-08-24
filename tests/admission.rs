@@ -13,7 +13,6 @@
 //! validator holds a genuine ACME request open rather than simulating one.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -137,7 +136,7 @@ async fn signed_trigger(
 #[tokio::test]
 async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
     let validator = BlockingValidator::new("http-01");
-    let release = validator.releaser();
+    let (_calls, gate, entered) = validator.handles();
     // One slot, and no willingness to wait for it, so this is deterministic.
     let (app, _db) = test_app_with_challenges(
         admission_config(1, 0, 30_000),
@@ -156,8 +155,9 @@ async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
         let app = app.clone();
         async move { post(&app, &path, body).await }
     });
-    // Let it take the only slot and block inside the validator.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for it to be genuinely inside the validator holding the only slot,
+    // rather than for a duration and a hope.
+    let _ = entered.acquire().await.unwrap();
 
     let shed = get(&app, &p("/directory")).await;
     assert_eq!(shed.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -174,7 +174,7 @@ async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
     let problem = body_json(shed).await;
     assert_eq!(problem["status"], 503);
 
-    release.notify_waiters();
+    gate.add_permits(1);
     assert_eq!(held.await.unwrap().status(), StatusCode::OK);
 }
 
@@ -184,7 +184,7 @@ async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
 #[tokio::test]
 async fn health_answers_while_the_acme_endpoints_are_saturated() {
     let validator = BlockingValidator::new("http-01");
-    let release = validator.releaser();
+    let (_calls, gate, entered) = validator.handles();
     let (app, _db) = test_app_with_challenges(
         admission_config(1, 0, 30_000),
         challenges_with(&["http-01"], vec![Arc::new(validator)]),
@@ -202,7 +202,7 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
         let app = app.clone();
         async move { post(&app, &path, body).await }
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let _ = entered.acquire().await.unwrap();
 
     // The ACME side is full…
     assert_eq!(
@@ -212,7 +212,7 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
     // …and the health probe is unaffected.
     assert_eq!(get(&app, "/health").await.status(), StatusCode::OK);
 
-    release.notify_waiters();
+    gate.add_permits(1);
     held.await.unwrap();
 }
 
@@ -221,7 +221,7 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
 #[tokio::test]
 async fn a_slot_is_released_after_a_request_exceeds_its_deadline() {
     let validator = BlockingValidator::new("http-01");
-    let release = validator.releaser();
+    let (_calls, gate, entered) = validator.handles();
     // One slot; a deadline short enough that the blocked validation trips it.
     let (app, _db) = test_app_with_challenges(
         admission_config(1, 500, 200),
@@ -234,6 +234,14 @@ async fn a_slot_is_released_after_a_request_exceeds_its_deadline() {
 
     let timed_out = trigger(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(timed_out.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // The deadline came from the blocked validation and not from somewhere
+    // else on the way in — otherwise the slot being free below proves nothing
+    // about the case this test is named for.
+    assert_eq!(
+        entered.available_permits(),
+        1,
+        "the request must have reached the validator before its deadline fired"
+    );
     assert_eq!(
         timed_out
             .headers()
@@ -245,7 +253,7 @@ async fn a_slot_is_released_after_a_request_exceeds_its_deadline() {
 
     // The slot is free again: an ordinary request goes straight through.
     assert_eq!(get(&app, &p("/directory")).await.status(), StatusCode::OK);
-    release.notify_waiters();
+    gate.add_permits(1);
 }
 
 /// A body larger than `server.max_body_bytes` is refused before it is parsed.

@@ -919,12 +919,33 @@ mod softhsm {
         .as_ref()
     }
 
-    /// Skips the calling test when SoftHSM2 is not installed.
+    /// Set by the `hsm` CI job to turn a skip into a failure.
+    ///
+    /// A skip is the right answer on a developer machine with no SoftHSM2 — the
+    /// alternative is a suite that cannot be run at all without installing a
+    /// PKCS#11 module. In CI it is the wrong answer entirely: the `hsm` job
+    /// exists *because* SoftHSM2 is installed there, and an apt rename, a moved
+    /// `.so` or a failed install would otherwise turn every test in this module
+    /// green while executing none of them. Nothing else would notice, because
+    /// this file is deliberately outside the coverage floor (a feature-gated
+    /// file is not compiled with the feature off), so it has no coverage number
+    /// that could collapse.
+    const REQUIRE_LAB: &str = "ACME_PROXY_REQUIRE_SOFTHSM";
+
+    /// Skips the calling test when SoftHSM2 is not installed — unless
+    /// [`REQUIRE_LAB`] says a skip is itself the failure.
     macro_rules! lab_or_skip {
         () => {
             match lab() {
                 Some(lab) => lab,
                 None => {
+                    assert!(
+                        std::env::var_os(REQUIRE_LAB).is_none(),
+                        "{REQUIRE_LAB} is set, so skipping is a failure: no SoftHSM2 \
+                         module was found (looked in {MODULE_CANDIDATES:?}). Either the \
+                         module moved or the install did not happen — in both cases \
+                         these tests were about to report green without running."
+                    );
                     eprintln!(
                         "skipping: no SoftHSM2 module found (looked in {MODULE_CANDIDATES:?}); \
                          install softhsm2 to run the PKCS#11 tests"
@@ -933,6 +954,23 @@ mod softhsm {
                 }
             }
         };
+    }
+
+    /// The guard on the guard: with [`REQUIRE_LAB`] set, the lab must be there.
+    ///
+    /// `lab_or_skip!` only fires inside a test that reaches it, so a build where
+    /// the module is missing would fail every PKCS#11 test with the same
+    /// message and bury the cause. This one names it directly.
+    #[test]
+    fn the_pkcs11_lab_is_available_when_it_is_required() {
+        if std::env::var_os(REQUIRE_LAB).is_none() {
+            return;
+        }
+        assert!(
+            module_path().is_some(),
+            "{REQUIRE_LAB} is set but no SoftHSM2 module was found in \
+             {MODULE_CANDIDATES:?}"
+        );
     }
 
     fn build_lab(module_path: &'static str) -> anyhow::Result<Lab> {

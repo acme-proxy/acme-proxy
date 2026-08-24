@@ -306,6 +306,24 @@ flatten_event = false               # ACME_PROXY_LOGGING__FLATTEN_EVENT
 # Validity window for ACME order objects in seconds (RFC 8555 §7.1.3).
 # This defines the order's lifetime, not the resulting certificate's validity.
 validity_seconds = 604800           # ACME_PROXY_ORDER__VALIDITY_SECONDS
+# Most identifiers one newOrder may name. The only other bound is
+# server.max_body_bytes, which at ~30 bytes per identifier admits some four
+# thousand names in one request -- and each becomes an authorization plus a
+# challenge per offered type, inserted in ONE transaction, which SQLite's single
+# writer makes a stall for every other write in the process. 100 is what Let's
+# Encrypt allows and is far above what a real client asks for; a request past it
+# is refused as `malformed`.
+max_identifiers = 100               # ACME_PROXY_ORDER__MAX_IDENTIFIERS
+# Days an order is kept AFTER it expires, before the daily retention sweep
+# deletes it and cascades to its authorizations and challenges. 0 keeps
+# everything for ever.
+#
+# A `valid` order is NEVER swept, whatever its age: its row is how revokeCert
+# and the CRL find a certificate by serial, and what RFC 9773 renewal
+# information is derived from. Only orders that ended some other way -- invalid,
+# or abandoned pending/ready/processing -- are eligible, and only once their own
+# `expires` is this many days behind, by which point no client can act on them.
+retention_days = 30                 # ACME_PROXY_ORDER__RETENTION_DAYS
 
 [signer]   # [per-profile] — a [profiles.<name>] block may override these
 # The issuance backend to use.

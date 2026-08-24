@@ -136,6 +136,43 @@ mod tests {
         }
     }
 
+    /// Every embedded page template is actually named `.html`.
+    ///
+    /// `auto_escaping_is_on_for_pages_and_off_for_notify` below proves what
+    /// minijinja does with the two extensions, using a hand-made pair. This
+    /// proves the thing that makes that relevant: that the **real** table only
+    /// contains names on the escaping side of that line.
+    ///
+    /// Without it the defence is a naming convention nothing checks. A new
+    /// `partials/card.htm`, or a page copied from `src/notify/templates/` with
+    /// its `.j2` intact, would render every account contact, EAB label and
+    /// reverse-DNS name unescaped — and every existing test would stay green,
+    /// including the four stored-XSS regressions in `tests/admin_pages.rs`,
+    /// because none of them names the file that changed.
+    ///
+    /// The mirror assertion over the notify table is the other direction, and
+    /// is not cosmetic either: an `.html` there would silently HTML-escape
+    /// every email body and webhook payload the server sends.
+    #[test]
+    fn every_page_template_is_html_and_every_notify_template_is_not() {
+        for name in template_names() {
+            assert!(
+                name.ends_with(".html"),
+                "`{name}` is a page template, so it must be named `.html` — minijinja \
+                 reads auto-escaping off the extension, and anything else renders \
+                 client-supplied text unescaped"
+            );
+        }
+
+        for name in crate::notify::template_names() {
+            assert!(
+                name.ends_with(".j2"),
+                "`{name}` is a notify template, so it must be named `.j2` — an `.html` \
+                 here would HTML-escape every message body the server sends"
+            );
+        }
+    }
+
     /// The reason every page template is named `.html` and every notify
     /// template is named `.j2`.
     ///

@@ -2000,3 +2000,41 @@ async fn the_audit_page_lists_rows_escapes_them_and_offers_nothing_to_write() {
         );
     }
 }
+
+/// The `/ui` surface fails closed too — and is never mistaken for signed out.
+///
+/// `admin_api.rs`'s twin covers the JSON API. The page layer is the half that
+/// had no DB-failure coverage at all, and it is the more dangerous of the two:
+/// an API route answers a problem document, but a page route's refusal is a
+/// *redirect to the sign-in page*, which is indistinguishable from "your
+/// session ended" — and a session check that read an unreadable table as "no
+/// constraint" would instead render the page. So both are asserted: no `200`,
+/// and no redirect that would tell a browser it merely needs to sign in again.
+#[tokio::test]
+async fn the_page_surface_fails_closed_when_the_database_is_gone() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    database.pool.close().await;
+
+    for path in authenticated_pages() {
+        for hx in [false, true] {
+            let response = common::admin_page(&app, path, Some(&session), hx).await;
+            let status = response.status();
+            assert_ne!(
+                status,
+                StatusCode::OK,
+                "GET {path} (hx={hx}) rendered a page with no database to authorise against"
+            );
+            assert!(
+                !status.is_redirection(),
+                "GET {path} (hx={hx}) answered {status}: a database that cannot be read \
+                 is a server fault, not an expired session, and sending the operator \
+                 back to sign in hides an outage behind a login form"
+            );
+            assert_eq!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "GET {path} (hx={hx}) must say it could not authorise"
+            );
+        }
+    }
+}

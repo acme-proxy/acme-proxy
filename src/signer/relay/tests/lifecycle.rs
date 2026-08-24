@@ -1036,3 +1036,76 @@ mod handler {
         assert_eq!(row.detail.as_deref(), Some("the upstream went away"));
     }
 }
+
+/// Two `issue` calls for one order leave one upstream-order mapping, and the
+/// second is answered `Processing` rather than refused.
+///
+/// The window is two finalize requests for one order arriving together:
+/// `Order::claim_for_finalize` closes it on the ACME side, but a relay backend
+/// is also reachable from the job runner's own retries, so the mapping row's
+/// primary key is the backstop that keeps one order to one relay.
+///
+/// What this pins is that invariant, not one branch: the primary key is what
+/// enforces it, and `UpstreamOrder::create` returning `None` — the
+/// `upstream_relay_already_in_flight` arm — is the fast path that reads it.
+/// Deleting that arm still leaves one row, because the insert is what refuses
+/// the duplicate; what it costs is an `upstream_order_opened` line for an order
+/// this call did not open. The assertion below is deliberately the invariant
+/// rather than the log, so a future rewrite of *how* the duplicate is caught
+/// still has to keep the guarantee.
+///
+/// No runner here: the first relay must stay in flight for the second call to
+/// land inside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let signer = RelaySigner::from_config(
+        &config(&upstream, &dir),
+        vec!["default".to_string()],
+        &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
+        &crate::signer::CarriedState::new(),
+    )
+    .unwrap();
+    let order = ready_order(db.clone()).await;
+
+    let mut outcomes = Vec::with_capacity(2);
+    for _ in 0..2 {
+        outcomes.push(
+            signer
+                .issue(
+                    &order.id,
+                    &csr_der(),
+                    &identifiers(),
+                    RequestedValidity::default(),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+
+    for outcome in &outcomes {
+        assert!(
+            matches!(outcome, IssueOutcome::Processing),
+            "a duplicate relay is answered `processing`, not refused: {outcome:?}"
+        );
+    }
+
+    // One mapping row, and it still points at the order the first call opened.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_orders WHERE order_id = ?;")
+        .bind(&order.id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1, "one order may have only one upstream order");
+
+    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        mapping.status, "processing",
+        "the row belongs to the relay already running, untouched by the second call"
+    );
+}

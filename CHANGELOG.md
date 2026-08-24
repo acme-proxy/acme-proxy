@@ -83,6 +83,61 @@ migrated configuration before restarting.
   times over three backends, and the e2e scenario needs no mock container at
   all.
 
+- **`order.max_identifiers`** (100) and **`order.retention_days`** (30), both
+  per-profile. The first is a ceiling on one `newOrder`; the second is how long
+  an order is kept *after it expires* before a new daily `order_sweep` deletes
+  it, cascading to its authorizations and challenges. See `### Changed` for what
+  each of them changes about a running deployment.
+
+### Changed
+
+- **Two `newAccount` requests carrying the same account key no longer race into
+  a `500`.** `find_or_create` read then inserted, so two renewals starting
+  together — a first boot, or a client retrying a response it thought was slow —
+  both found nothing, both inserted, and the loser tripped
+  `UNIQUE (profile, pubkey)`. RFC 8555 §7.3 makes find-or-create the contract:
+  the loser is now handed the account that won. The same recovery is applied to
+  **`keyChange`**, whose lost race became a `500` where §7.3.5 specifies `409`
+  plus the `Location` of the account holding the key — and the handler was
+  already building exactly that response on the non-racing path.
+
+- **A challenge is claimed before it is validated**, moving `pending` to
+  `processing` in a single guarded `UPDATE` — `Order::claim_for_finalize`'s
+  primitive, one table down. Two triggers for one challenge previously each ran
+  a validation, and validation reaches out to an address the *client* named, so
+  N simultaneous triggers were N probes of that host from this server, bounded
+  only by `server.max_concurrent_requests`. **A challenge being validated now
+  reports `"status": "processing"`** rather than `"pending"`, which is what
+  §7.1.6 asks for, and §8.2's `Retry-After` accompanies it. A client that
+  matches challenge status exactly, rather than waiting for a terminal one, will
+  see the new value.
+
+- **`newOrder` refuses more than `order.max_identifiers` names**, and an account
+  more than 32 `contact` entries. The only bound before was
+  `server.max_body_bytes`, which at roughly thirty bytes per identifier admitted
+  some four thousand names in one request — each an authorization plus a
+  challenge per offered type, inserted in a *single* transaction against
+  SQLite's one writer. Refused as `malformed`, not `rateLimited`: the order is
+  malformed for this server whenever it is sent.
+
+- **Expired orders are deleted after `order.retention_days`.** Nothing pruned
+  `orders` before, so it and the `authorizations` and `challenges` beneath it
+  grew for the life of a deployment. **A `valid` order is never swept, whatever
+  its age** — its row is how `revokeCert` and the CRL resolve a certificate by
+  serial, and what RFC 9773 renewal information is derived from. Only orders
+  that ended some other way are eligible, and only once their own `expires` is
+  that many days behind. Set `order.retention_days = 0` to keep the previous
+  behaviour of keeping everything.
+
+- **`x-request-id` is capped at 128 characters and restricted to
+  `[A-Za-z0-9._:-]`**; anything else is replaced by a generated id rather than
+  truncated, since half of somebody's correlation id correlates with nothing.
+  The header is unauthenticated input that reaches the `request` span (so every
+  log line of the request), the response header and two database columns — the
+  ceiling `User-Agent` already had, for a value that travels further. Under the
+  non-JSON log format the restriction also stops a caller writing fields that
+  were never emitted.
+
 ### Packaging
 
 - Published to [crates.io](https://crates.io/crates/acme-proxy), so

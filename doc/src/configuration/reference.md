@@ -295,6 +295,47 @@ for the order resource, not the issued certificate's validity — that is
 `signer.local_ca.leaf_validity_days`, or whatever the delegating backend
 decides.
 
+**`max_identifiers`** (`Integer`) — *Default: `100` | Env: `ACME_PROXY_ORDER__MAX_IDENTIFIERS`*
+
+Most identifiers a single `newOrder` may name. A request naming more is refused
+with `urn:ietf:params:acme:error:malformed`.
+
+The only bound before this was `server.max_body_bytes` (128 KiB), which at
+roughly thirty bytes per identifier admits some four thousand names in one
+request. Every one of them becomes an authorization plus a challenge per offered
+challenge type, all inserted in a **single** transaction — and SQLite has one
+writer, so that transaction stalls every other write in the process while it
+runs. `100` is what Let's Encrypt allows and is far above what a real client
+asks for; the point is that there is a ceiling.
+
+Refused as `malformed` rather than `rateLimited` deliberately: the order is
+malformed for this server whenever it is sent, so `rateLimited` — which tells a
+client to come back later — would be a lie.
+
+**`retention_days`** (`Integer`) — *Default: `30` | Env: `ACME_PROXY_ORDER__RETENTION_DAYS`*
+
+Days an order is kept **after it expires**, before the daily `order_sweep`
+deletes it. The authorizations and challenges beneath it go with it, through the
+schema's `ON DELETE CASCADE`. `0` keeps everything for ever.
+
+**A `valid` order is never swept, whatever its age.** Its row is how
+`revokeCert` and the CRL resolve a certificate by serial, and what RFC 9773
+renewal information is derived from — deleting one would make an issued
+certificate unrevokable and unrenewable, which is a far worse outcome than a
+large table. Only orders that ended some other way are eligible: `invalid`, or
+an abandoned `pending`/`ready`/`processing` order past its own `expires`, at
+which point no client can act on them either.
+
+Nothing pruned `orders` before this key existed, so the table and its children
+grew for the life of a deployment — one order plus one authorization per
+identifier plus one challenge per offered type, on a default configuration where
+`newAccount` is open to anyone.
+
+Per-profile like the rest of `[order]`. The sweep is a single job handler
+(`JobRegistry` refuses two handlers for one kind) that applies each mounted
+profile's own value to that profile's rows, emitting one `order_reaper_swept`
+line per profile.
+
 ---
 
 ## `[nonce]`

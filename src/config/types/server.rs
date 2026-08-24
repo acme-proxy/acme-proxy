@@ -242,12 +242,49 @@ impl Default for LoggingConfig {
 #[serde(default)]
 pub struct OrderConfig {
     pub validity_seconds: u64,
+    /// Most identifiers one `newOrder` may name.
+    ///
+    /// The only other bound is `server.max_body_bytes` (128 KiB), which at the
+    /// ~30 bytes an identifier costs lets a single request ask for some four
+    /// thousand names — and each one becomes an authorization plus a challenge
+    /// per offered type, all inserted in **one** transaction. SQLite has a
+    /// single writer, so that transaction stalls every other write in the
+    /// process for as long as it runs, and the response is four thousand
+    /// authorization URLs.
+    ///
+    /// 100 is what Let's Encrypt allows, and is far above what a real client
+    /// asks for; the point is a ceiling, not a policy. A refusal is
+    /// `malformed`, not `rateLimited` — the order is malformed for this server
+    /// whenever it is sent, and §6.6's retry-later reading would be a lie.
+    pub max_identifiers: usize,
+    /// Days an order is kept after it expires, before the retention sweep
+    /// deletes it. `0` keeps everything for ever.
+    ///
+    /// Nothing pruned `orders` before this, so the table and the
+    /// `authorizations` and `challenges` that cascade from it grew for the life
+    /// of a deployment — one order plus N authorizations plus N×M challenges
+    /// per `newOrder`, on a default configuration where `newAccount` is open to
+    /// anyone.
+    ///
+    /// **A `valid` order is never swept, whatever its age.** Its row is what
+    /// `revokeCert` and the CRL find a certificate by serial through, and what
+    /// RFC 9773 renewal information is derived from; deleting one would make an
+    /// issued certificate unrevokable. Only orders that ended some other way —
+    /// `invalid`, or abandoned `pending`/`ready`/`processing` — are eligible,
+    /// and only once their own `expires` is `retention_days` behind, at which
+    /// point no client can act on them either.
+    ///
+    /// Per-profile like the rest of `[order]`: the sweep is one handler that
+    /// applies each mounted profile's own value to that profile's rows.
+    pub retention_days: u64,
 }
 
 impl Default for OrderConfig {
     fn default() -> Self {
         Self {
             validity_seconds: 604800,
+            max_identifiers: 100,
+            retention_days: 30,
         }
     }
 }

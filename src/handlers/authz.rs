@@ -104,14 +104,20 @@ pub async fn post_authz(
 /// hint would stall a client that could have finished immediately.
 const PENDING_RETRY_AFTER: &str = "5";
 
-/// Adds `Retry-After` while a resource is still `pending`.
+/// Adds `Retry-After` while a resource is still undecided.
 ///
 /// RFC 8555 §7.5.1: "The server SHOULD provide information about its retry
 /// state to the client via the `Retry-After` HTTP header field" — the same
 /// pacing courtesy `order_response` extends to a `processing` order. Any other
 /// status is decided, so there is nothing to come back for.
+///
+/// `processing` is here because §8.2 says so in as many words: "While the
+/// server is still trying, the status of the challenge remains `processing`",
+/// and the `Retry-After` on requests to the challenge resource is a `MUST` in
+/// that paragraph. Only challenges ever carry it — an authorization has no such
+/// state — so this stays one helper for both.
 fn add_pending_retry_after(response: &mut Response, status: &str) {
-    if status == "pending" {
+    if status == "pending" || status == "processing" {
         response.headers_mut().insert(
             header::RETRY_AFTER,
             HeaderValue::from_static(PENDING_RETRY_AFTER),
@@ -342,11 +348,29 @@ pub async fn post_challenge(
         return Err(Problem::malformed("Authorization has been deactivated"));
     }
 
+    // Already answered, here or by a sibling: §7.5.1's "client requests for
+    // retries do not cause a state change".
     let decided = challenge.status == ChallengeStatus::Valid
         || challenge.status == ChallengeStatus::Invalid
         || authz.status == AuthzStatus::Valid;
 
-    if !decided {
+    // The claim, and the reason it is a claim rather than the status check
+    // above: `challenges.validate` reaches out to an address the *client*
+    // named, so two triggers that both read this row as `pending` become two
+    // probes of that host from this server — bounded only by
+    // `server.max_concurrent_requests`, on a default configuration with no
+    // filter to refuse them. Deciding it in the `UPDATE` makes "one validation
+    // per challenge" a property of the row instead of one of scheduling.
+    //
+    // The loser falls through to the response below, which now reports
+    // `processing` and carries a `Retry-After` — §8.2's answer for a challenge
+    // the server is still working on.
+    let claimed = !decided && challenge.claim_for_validation(&database).await.map_err(|error| {
+        error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %id, error = %error);
+        Problem::server_internal("Challenge could not be claimed for validation")
+    })?;
+
+    if claimed {
         let thumbprint = jwk_thumbprint(&account.pubkey).map_err(|error| {
             error!(event = "authz_thumbprint_failed", outcome = "failure", account_id = %account.id, error = %error);
             Problem::server_internal("Key authorization could not be computed")

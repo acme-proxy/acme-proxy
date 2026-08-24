@@ -438,31 +438,53 @@ pub async fn post_key_change(
         })?;
     if let Some(existing) = conflicting_account {
         warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %existing.id);
-        let location = format!("{base}/acct/{}", existing.id);
-        let problem = Problem::key_change_conflict(
-            "The new key is already associated with a different account",
-        );
-        return Ok((
-            StatusCode::CONFLICT,
-            [
-                (header::CONTENT_TYPE, "application/problem+json".to_string()),
-                (header::LOCATION, location),
-            ],
-            Json(problem.to_value()),
-        )
-            .into_response());
+        return Ok(key_change_conflict(base, &existing.id));
     }
 
-    old_account
-        .update_pubkey(&new_pubkey, &database)
-        .await
-        .map_err(|error| {
-            error!(event = "key_change_persist_failed", outcome = "failure", account_id = %old_account.id, error = %error);
-            Problem::server_internal("Account key update failed")
-        })?;
+    if let Err(error) = old_account.update_pubkey(&new_pubkey, &database).await {
+        // The check above and this write are two statements, and another
+        // rollover onto the same key can land between them — at which point
+        // `UNIQUE (profile, pubkey)` is what says so. §7.3.5 gives that case a
+        // status and a `Location`, so answering `serverInternal` here would
+        // report "something went wrong" for a condition the RFC describes
+        // exactly, and deny the client the one field it needs to recover.
+        //
+        // Re-read rather than reuse `new_pubkey`'s earlier (empty) lookup: the
+        // account that won is by definition committed now.
+        if crate::sqlite::account::is_pubkey_conflict(&error)
+            && let Ok(Some(winner)) =
+                Account::find_by_pubkey(&profile.name, &new_pubkey, &database).await
+        {
+            warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %winner.id);
+            return Ok(key_change_conflict(base, &winner.id));
+        }
+        error!(event = "key_change_persist_failed", outcome = "failure", account_id = %old_account.id, error = %error);
+        return Err(Problem::server_internal("Account key update failed"));
+    }
 
     info!(event = "account_key_changed", outcome = "success", account_id = %old_account.id);
     Ok(Json(old_account.to_json(base)).into_response())
+}
+
+/// RFC 8555 §7.3.5's refusal for a new key that already belongs to somebody:
+/// `409`, the problem document, and the `Location` of the account that holds it.
+///
+/// Shared by the two ways this is discovered — the lookup before the write, and
+/// the unique violation when another rollover lands between the two. Both must
+/// answer identically or a client's recovery would depend on which side of a
+/// race it fell.
+fn key_change_conflict(base: &str, holder_id: &str) -> Response {
+    let problem =
+        Problem::key_change_conflict("The new key is already associated with a different account");
+    (
+        StatusCode::CONFLICT,
+        [
+            (header::CONTENT_TYPE, "application/problem+json".to_string()),
+            (header::LOCATION, format!("{base}/acct/{holder_id}")),
+        ],
+        Json(problem.to_value()),
+    )
+        .into_response()
 }
 
 /// Returns an account's order-list URL object via POST-as-GET.

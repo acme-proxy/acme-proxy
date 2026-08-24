@@ -80,6 +80,178 @@ where
     );
 }
 
+/// Drives one case where the failure must land **after** a successful read.
+///
+/// [`assert_500_after_pool_close`] closes the pool before the request, so only
+/// the *first* database call in a request can fail — which is why every arm it
+/// reaches is an extractor-level one, and why the handlers' own
+/// `map_err(… serverInternal)` arms were unreachable from this file. `sabotage`
+/// is run once the setup is done and breaks exactly one thing:
+///
+/// - `DROP TABLE t` makes the next **read** of `t` fail while the nonce check,
+///   which runs first and needs `nonces`, still succeeds.
+/// - A `BEFORE INSERT`/`BEFORE UPDATE` trigger raising `ABORT` makes the next
+///   **write** to `t` fail while reads of it keep working. `PRAGMA query_only`
+///   cannot serve here: consuming the nonce is itself a `DELETE`, so it would
+///   fail in the extractor and prove nothing about the handler.
+///
+/// Foreign keys do not block the `DROP`, and nothing is restored afterwards —
+/// the database is a throwaway per test.
+async fn assert_500_after_sabotage<F, Fut>(name: &str, sabotage: &[&'static str], prepare: F)
+where
+    F: FnOnce(Router, EcSigner, Arc<Database>) -> Fut,
+    Fut: Future<Output = (Router, Arc<Database>, String, String)>,
+{
+    let (app, db) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let (app, db, path, body) = prepare(app, signer, db).await;
+
+    for statement in sabotage {
+        sqlx::query(*statement)
+            .execute(&db.pool)
+            .await
+            .unwrap_or_else(|error| panic!("{name}: sabotage `{statement}` failed: {error}"));
+    }
+
+    let res = post(&app, &path, body).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{name} should be a 500"
+    );
+    let problem = body_json(res).await;
+    assert_eq!(
+        problem["type"], "urn:ietf:params:acme:error:serverInternal",
+        "{name}"
+    );
+}
+
+/// Triggers that refuse one kind of write to one table, leaving reads of it —
+/// and every other table — working. Literals rather than a formatted helper:
+/// `sqlx::query` takes `&'static str`, which is the point of that signature.
+const REFUSE_ACCOUNT_INSERT: &str = "CREATE TRIGGER refuse_account_insert BEFORE INSERT ON \
+                                     accounts BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+const REFUSE_ACCOUNT_UPDATE: &str = "CREATE TRIGGER refuse_account_update BEFORE UPDATE ON \
+                                     accounts BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+const REFUSE_ORDER_INSERT: &str = "CREATE TRIGGER refuse_order_insert BEFORE INSERT ON orders \
+                                   BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+
+/// `newAccount`'s own `INSERT`, which the pool-close driver cannot reach: the
+/// nonce check fails first there, so nothing ever proved that a failed account
+/// *creation* is a 500 rather than a half-registered account.
+#[tokio::test]
+async fn account_creation_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "newAccount persistence",
+        &[REFUSE_ACCOUNT_INSERT],
+        |app, signer, db| async move {
+            let nonce = fetch_nonce(&app).await;
+            let body = signer.sign(
+                NEW_ACCOUNT_URL,
+                &nonce,
+                &json!({ "termsOfServiceAgreed": true }),
+            );
+            (app, db, p("/newAccount"), body)
+        },
+    )
+    .await;
+}
+
+/// §7.3.1's `onlyReturnExisting` lookup, which is a *read* and happens after
+/// the nonce has already been spent.
+#[tokio::test]
+async fn only_return_existing_lookup_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "newAccount onlyReturnExisting lookup",
+        &["DROP TABLE accounts;"],
+        |app, signer, db| async move {
+            let nonce = fetch_nonce(&app).await;
+            let body = signer.sign(
+                NEW_ACCOUNT_URL,
+                &nonce,
+                &json!({ "onlyReturnExisting": true }),
+            );
+            (app, db, p("/newAccount"), body)
+        },
+    )
+    .await;
+}
+
+/// `newOrder`'s own transaction, which the pool-close driver cannot reach.
+///
+/// `order_persistence_db_error_returns_500` above closes the pool, so its 500
+/// comes from the extractor's nonce check — the first database call of the
+/// request — and says nothing about `post_new_order`. This one lets the whole
+/// request through and refuses only the `INSERT`, so what fails is the order
+/// transaction itself.
+#[tokio::test]
+async fn order_transaction_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "newOrder transaction",
+        &[REFUSE_ORDER_INSERT],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let nonce = fetch_nonce(&app).await;
+            let payload = json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] });
+            let body = signer.sign_kid(&account_url, &format!("{BASE}/newOrder"), &nonce, &payload);
+            (app, db, p("/newOrder"), body)
+        },
+    )
+    .await;
+}
+
+/// `keyChange`'s `UPDATE`, after its conflict check has already read cleanly.
+///
+/// `key_change_db_error_returns_500` covers the extractor-level failure. This
+/// covers `key_change_persist_failed`: the rollover was authorised, the new key
+/// was free, and the write is what went wrong — which must be a 500 and must
+/// **not** be reported as §7.3.5's `409`, since nothing else holds the key.
+#[tokio::test]
+async fn key_change_persist_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "keyChange persistence",
+        &[REFUSE_ACCOUNT_UPDATE],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let new_key = EcSigner::new();
+            let url = format!("{BASE}/keyChange");
+            let inner_payload =
+                json!({ "account": account_url, "oldKey": TestSigner::jwk(&signer) });
+            let inner: serde_json::Value =
+                serde_json::from_str(&new_key.sign_inner(&url, &inner_payload)).unwrap();
+            let nonce = fetch_nonce(&app).await;
+            let body = signer.sign_kid(&account_url, &url, &nonce, &inner);
+            (app, db, p("/keyChange"), body)
+        },
+    )
+    .await;
+}
+
+/// The challenge list an authorization read builds, after the authorization
+/// itself has been loaded.
+///
+/// `challenge_list_failed` is the last read of `post_authz`, so it is only
+/// reachable once every earlier one has succeeded — dropping `challenges`
+/// alone leaves the extractor, the account lookup and the authorization lookup
+/// all working.
+#[tokio::test]
+async fn challenge_list_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "authorization challenge list",
+        &["DROP TABLE challenges;"],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let (authz_url, _challenge_url) =
+                order_with_challenge(&app, &signer, &account_url).await;
+            let nonce = fetch_nonce(&app).await;
+            let path = authz_url.strip_prefix(common::HOST).unwrap().to_string();
+            let body = signer.sign_kid_empty(&account_url, &authz_url, &nonce);
+            (app, db, path, body)
+        },
+    )
+    .await;
+}
+
 /// The extractor's own nonce verification, on the `jwk` path (`newAccount`).
 #[tokio::test]
 async fn nonce_verification_db_error_returns_500() {

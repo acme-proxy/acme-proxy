@@ -370,3 +370,116 @@ async fn a_sweep_reschedules_itself_rather_than_settling() {
         "one row, however many times it has run"
     );
 }
+
+/// A handler that parks inside `run`, then fails permanently — so a test can
+/// take its lease away while it is still working and watch what the runner does
+/// with the settlement it can no longer make.
+///
+/// `abandons` is the assertion that matters: `retire` calls `abandon` only when
+/// the settlement actually took, and that hook is where a handler tells its
+/// subject the work failed. A runner that spoke anyway would be reporting
+/// failure for work another runner is still doing.
+struct Stealable {
+    entered: Arc<tokio::sync::Semaphore>,
+    gate: Arc<tokio::sync::Semaphore>,
+    abandons: AtomicUsize,
+}
+
+impl Stealable {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            abandons: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl JobHandler for Stealable {
+    fn kind(&self) -> &'static str {
+        "stealable"
+    }
+
+    async fn run(&self, _job: &Job) -> JobOutcome {
+        self.entered.add_permits(1);
+        self.gate
+            .acquire()
+            .await
+            .expect("the gate is never closed while a test holds it")
+            .forget();
+        JobOutcome::Failed("permanent".to_string())
+    }
+
+    async fn abandon(&self, _job: &Job, _reason: &str) {
+        self.abandons.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A runner that overran its lease settles nothing and tells nobody.
+///
+/// `sqlite::job`'s own suite proves the `AND lease_owner = ?` guard refuses the
+/// write. This is the half above it: what the *runner* does when that refusal
+/// comes back. `retire` must swallow it — no `abandon` hook, because the job is
+/// now somebody else's to finish and a handler that announced failure here
+/// would be describing work still in progress.
+///
+/// The lease is taken by writing the row directly rather than by expiring it
+/// and starting a second runner: the guard keys on `lease_owner`, so this is
+/// the same condition with none of the timing.
+///
+/// The second claim is what makes the assertion safe rather than a bet on the
+/// runner having got round to it — nothing observable changes when a settlement
+/// is refused, so the proof that the first attempt finished is the runner
+/// picking the job up again once the row is put back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runner_that_lost_its_lease_settles_nothing_and_abandons_nothing() {
+    let database = database().await;
+    let config = fast_config();
+    let queue = JobQueue::new(database.clone(), &config);
+    let handler = Stealable::new();
+    let (entered, gate) = (handler.entered.clone(), handler.gate.clone());
+
+    assert!(queue.enqueue(JobSpec::now("stealable", "k")).await.unwrap());
+    let shutdown = start(&queue, handler.clone(), &config);
+
+    // Wait for the handler to be genuinely inside `run`, holding the lease.
+    let _ = entered.acquire().await.unwrap();
+
+    // Another runner reclaims the row out from under it.
+    let job = Job::find_live("stealable", "k", &database)
+        .await
+        .unwrap()
+        .expect("the job is live while the handler runs");
+    sqlx::query("UPDATE jobs SET lease_owner = 'thief' WHERE id = ?;")
+        .bind(&job.id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    // Let the first attempt finish and try to settle a row it no longer owns.
+    gate.add_permits(1);
+
+    // The row is exactly as the thief left it.
+    let after = Job::find_by_id(&job.id, &database).await.unwrap().unwrap();
+    assert_eq!(after.status, "running", "a lost lease settles nothing");
+    assert_eq!(after.lease_owner.as_deref(), Some("thief"));
+
+    // Hand the row back, and wait for the runner to claim it a second time —
+    // which it can only do once the refused settlement is behind it.
+    sqlx::query("UPDATE jobs SET status = 'ready', lease_owner = NULL WHERE id = ?;")
+        .bind(&job.id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let _ = entered.acquire().await.unwrap();
+
+    assert_eq!(
+        handler.abandons.load(Ordering::SeqCst),
+        0,
+        "a runner that lost its lease must not tell the subject its work failed"
+    );
+
+    gate.add_permits(1);
+    let _ = shutdown.send(true);
+}

@@ -2476,6 +2476,12 @@ async fn a_first_enrolment_asks_for_no_password() {
 /// rather than let a caller through on an unreadable password hash.
 #[tokio::test]
 async fn the_admin_listener_fails_closed_when_the_database_is_gone() {
+    // Asserted as an exact status, not `is_client_error() || is_server_error()`.
+    // That pair accepts a `404`, a `400` and — most importantly — a `403`, which
+    // is precisely the answer a session check that silently treated an
+    // unreadable table as "no constraint" would eventually stop giving. A range
+    // this wide cannot tell "refused because nothing could be read" from "this
+    // route stopped existing", which is the whole thing the test is named for.
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     database.pool.close().await;
 
@@ -2488,10 +2494,11 @@ async fn the_admin_listener_fails_closed_when_the_database_is_gone() {
         (Method::GET, "/api/profiles"),
     ] {
         let response = admin_request(&app, method.clone(), path, Some(&session), None).await;
-        assert!(
-            response.status().is_client_error() || response.status().is_server_error(),
-            "{method} {path} answered {} with no database to authorise against",
-            response.status()
+        assert_eq!(
+            response.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{method} {path} must say it could not authorise, not answer something \
+             that reads like an ordinary refusal"
         );
     }
 

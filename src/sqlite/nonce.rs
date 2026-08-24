@@ -318,4 +318,55 @@ mod tests {
         Nonce::cleanup(&db, TTL).await.unwrap();
         assert_eq!(Nonce::count(&db).await.unwrap(), 3);
     }
+
+    /// Two simultaneous verifications of one nonce: exactly one may succeed.
+    ///
+    /// This is what replay protection *is*, and the surrounding tests cannot
+    /// show it — fresh/unknown/expired/boundary all drive one caller at a time,
+    /// which a `SELECT` followed by a `DELETE` would pass just as happily. The
+    /// property only has teeth under concurrency: the single `DELETE … WHERE`
+    /// is atomic, so `rows_affected` names one winner no matter how the two
+    /// interleave.
+    ///
+    /// A file-backed database, because `connect_in_memory` pins the pool to one
+    /// connection and would serialize the pair out of the race. The barrier
+    /// releases both at the same point.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_verify_of_one_nonce_succeeds_exactly_once() {
+        let file =
+            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::new_v4()));
+        let url = format!("sqlite://{}", file.display());
+        let database = Arc::new(Database::connect(&url).await.unwrap());
+
+        let nonce = Nonce::new();
+        nonce.save(&database).await.unwrap();
+
+        const RACERS: usize = 8;
+        let barrier = Arc::new(tokio::sync::Barrier::new(RACERS));
+        let mut tasks = Vec::with_capacity(RACERS);
+        for _ in 0..RACERS {
+            let database = database.clone();
+            let barrier = barrier.clone();
+            let value = nonce.value.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                Nonce::verify(&value, &database, TTL).await
+            }));
+        }
+
+        let mut accepted = 0;
+        for task in tasks {
+            if task.await.unwrap().unwrap() {
+                accepted += 1;
+            }
+        }
+
+        assert_eq!(accepted, 1, "a nonce may be spent exactly once");
+        assert_eq!(nonce_count(&database).await, 0, "the row is consumed");
+
+        database.pool.close().await;
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
+        }
+    }
 }

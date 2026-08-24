@@ -204,3 +204,47 @@ async fn a_contact_update_is_validated_as_well() {
         json!(["mailto:new@example.com"])
     );
 }
+
+/// An account's `contact` list has a ceiling too.
+///
+/// The same shape as `order.max_identifiers`, on the other unauthenticated list
+/// a client controls: bounded only by `server.max_body_bytes`, stored as one
+/// JSON column, re-rendered on every account read, and walked per message by
+/// `notify`. `invalidContact` rather than `unsupportedContact` — the addresses
+/// may be perfectly good, there are simply too many of them, and only
+/// `unsupportedContact` tells a client to try a different scheme.
+#[tokio::test]
+async fn an_account_carrying_too_many_contacts_is_refused() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+
+    let contacts: Vec<String> = (0..33)
+        .map(|n| format!("mailto:a{n}@example.com"))
+        .collect();
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "contact": contacts }),
+    );
+    let res = post(&app, &p("/newAccount"), body).await;
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:invalidContact");
+
+    // A list of an ordinary size is untouched.
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({
+            "termsOfServiceAgreed": true,
+            "contact": ["mailto:ops@example.com", "mailto:security@example.com"],
+        }),
+    );
+    assert_eq!(
+        post(&app, &p("/newAccount"), body).await.status(),
+        StatusCode::CREATED
+    );
+}

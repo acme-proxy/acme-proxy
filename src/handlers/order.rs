@@ -269,6 +269,21 @@ pub async fn post_new_order(
         warn!(event = "order_no_identifiers", outcome = "failure");
         return Err(Problem::malformed("No identifiers"));
     }
+    // Before anything is normalized or looked at: the cost this refuses is the
+    // work below, and every bit of it scales with the count.
+    if payload.identifiers.len() > profile.order.max_identifiers {
+        warn!(
+            event = "order_too_many_identifiers",
+            outcome = "failure",
+            identifiers_count = payload.identifiers.len(),
+            limit = profile.order.max_identifiers
+        );
+        return Err(Problem::malformed(format!(
+            "An order may name at most {} identifiers; this one names {}",
+            profile.order.max_identifiers,
+            payload.identifiers.len()
+        )));
+    }
     if let Some(bad) = payload.identifiers.iter().find(|id| id.typ != "dns") {
         warn!(event = "order_identifier_type_unsupported", outcome = "failure", typ = %bad.typ);
         return Err(Problem::unsupported_identifier(

@@ -845,6 +845,20 @@ pub(crate) fn build_generation(
             config.jobs.retention_days,
         ));
     }
+    // One handler covering every mounted profile, since the registry refuses a
+    // second handler for one kind. A profile keeping everything (`0`) is left
+    // out of the list rather than swept with a cutoff at the epoch.
+    let order_retention: Vec<(String, u64)> = resolved
+        .iter()
+        .filter(|profile| profile.sections.order.retention_days > 0)
+        .map(|profile| (profile.name.clone(), profile.sections.order.retention_days))
+        .collect();
+    if !order_retention.is_empty() {
+        sweeps.push(crate::jobs::SweepJob::orders(
+            database.clone(),
+            order_retention,
+        ));
+    }
     if admin_enabled {
         sweeps.push(crate::jobs::SweepJob::admin_sessions(
             database.clone(),

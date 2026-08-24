@@ -236,8 +236,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets --features hsm -- -D warnings
 
+      # `ACME_PROXY_REQUIRE_SOFTHSM` turns `lab_or_skip!` from a skip into a
+      # failure. Without it an apt rename, a moved `.so` or a failed install
+      # turns every PKCS#11 test green while running none of them — and nothing
+      # else would notice, since this file is deliberately outside the coverage
+      # floor and so has no number that could collapse.
       - name: Test
         run: cargo nextest run --locked --features hsm
+        env:
+          ACME_PROXY_REQUIRE_SOFTHSM: "1"
 
   # The book is deployed by `mdbook.yml`, which runs only on a push to `main`.
   # Until this job existed, nothing built `doc/` on a pull request — and
@@ -298,12 +305,26 @@ jobs:
   #
   # Nightly rather than per-push: it builds six container images and starts a
   # DNS server plus three client containers per scenario, which is minutes, not
-  # seconds. A subset — the three challenge types, which is where a real client
-  # disagrees with this server if anything does.
+  # seconds.
+  #
+  # A subset, but no longer only the three challenge types. **A scenario CI does
+  # not run rots**, and that is not hypothetical here: `tests/e2e/reload.rs`
+  # asserted the *opposite* of the intended behaviour after the signer freeze
+  # was lifted and stayed green, because nothing ran it (see `tests/CLAUDE.md`).
+  # So the filter now also carries the scenarios that assert behaviour the unit
+  # suite structurally cannot reach — SIGHUP against a live process
+  # (`reload`), a real upstream ACME CA (`relay_signer`), and the filter chain
+  # against real NetBox and phpIPAM containers (`filters`).
+  #
+  # Still a filter rather than `binary(e2e)` only because the runtime of the
+  # remaining scenarios (six `certbot`/`acme_sh` client scenarios, `eab`,
+  # `key_change`, `ari`, `profiles`, `custom_signer`, `admin_cli`) has not been
+  # measured against this job's budget. Widening it further is the right
+  # direction; raise `timeout-minutes` with it.
   e2e:
     name: End-to-end (real ACME clients)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -326,5 +347,5 @@ jobs:
       - name: Run the challenge scenarios
         run: >
           cargo nextest run --locked
-          -E 'binary(e2e) and (test(test_http_01_order) or test(test_dns_01_order) or test(test_tls_alpn_01_order))'
+          -E 'binary(e2e) and test(/^(http_01|dns_01|tls_alpn_01|reload|relay_signer|filters)::/)'
           --run-ignored all

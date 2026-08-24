@@ -237,7 +237,7 @@ impl Account {
         let contact_json = Value::from(account.contact.clone()).to_string();
 
         debug!(event = "db_account_create_started", outcome = "progress", account_id = %account.id);
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, created_ip, \
              created_ptr, last_seen_at, last_seen_ip, last_seen_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
@@ -254,7 +254,30 @@ impl Account {
         .bind(&account.last_seen_ip)
         .bind(&account.last_seen_ptr)
         .execute(&database.pool)
-        .await?;
+        .await;
+
+        // Another request registered this same key between the lookup above and
+        // this insert — two renewals starting together on first boot, or a
+        // client retrying a response it thought was slow. §7.3 makes
+        // find-or-create the contract, so the loser owes its caller the account
+        // that won rather than the constraint it tripped over: surfacing the
+        // violation reaches `post_new_account` as a bare `sqlx::Error` and
+        // leaves the client with a 500 where the RFC promises 200 and a
+        // `Location` — which typically aborts the whole renewal.
+        //
+        // The re-read cannot come back empty (the row the constraint named is
+        // committed by definition), but `find_by_pubkey` is fallible for its own
+        // reasons, and an unexpected `None` must surface as the original
+        // violation rather than as a second, less informative error.
+        if let Err(error) = inserted {
+            if is_pubkey_conflict(&error)
+                && let Some(existing) = Account::find_by_pubkey(profile, pubkey, database).await?
+            {
+                debug!(event = "db_account_create_lost_race", outcome = "advisory", account_id = %existing.id, pubkey_fp = %pubkey_fingerprint(pubkey));
+                return Ok((existing, false));
+            }
+            return Err(error);
+        }
 
         debug!(event = "db_account_created", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
         Ok((account, true))
@@ -587,6 +610,25 @@ impl Account {
     }
 }
 
+/// Whether a failed account INSERT was a concurrent `newAccount` for the same
+/// key winning the race.
+///
+/// Matched on the offending *columns* rather than on "any unique violation", the
+/// `handlers::order::is_replaces_conflict` treatment: `accounts` also carries a
+/// primary key on `id`, and a UUID collision there is a different event
+/// entirely — one that must not be quietly answered with somebody else's
+/// account.
+///
+/// The columns and not an index name: SQLite reports this as `UNIQUE constraint
+/// failed: accounts.profile, accounts.pubkey`, naming the columns of the table
+/// constraint. Pinned by
+/// `tests::concurrent_find_or_create_for_one_key_yields_one_account`, which
+/// reaches this branch by racing eight callers over one key.
+pub(crate) fn is_pubkey_conflict(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()
+        && db.message().contains("accounts.pubkey"))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -910,7 +952,19 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(second.update_pubkey(&[11u8; 8], &db).await.is_err());
+        let error = second
+            .update_pubkey(&[11u8; 8], &db)
+            .await
+            .expect_err("taking another account's key must not succeed");
+        // Not merely "an error": `handlers::account::post_key_change` reads this
+        // exact violation to tell a lost rollover race from a real fault, and
+        // answers §7.3.5's `409` + `Location` on the strength of it. A message
+        // change that slipped past `is_pubkey_conflict` would turn that back
+        // into a `500` with nothing failing.
+        assert!(
+            is_pubkey_conflict(&error),
+            "the unique violation must be recognisable as a pubkey conflict: {error}"
+        );
     }
 
     #[tokio::test]
@@ -1083,5 +1137,71 @@ mod tests {
         let (rows, total) = Account::search(None, 50, 0, &db).await.unwrap();
         assert!(rows.is_empty());
         assert_eq!(total, 0);
+    }
+
+    /// Two `newAccount` requests carrying the same account key must *both* come
+    /// away with an account — RFC 8555 §7.3's find-or-create — even when they
+    /// arrive close enough together that both find nothing and both insert.
+    ///
+    /// A file-backed database rather than `connect_in_memory`, which pins the
+    /// pool to one connection and so serializes the callers out of the very
+    /// interleaving this is about. The barrier is what makes the race
+    /// deterministic rather than likely: every caller is released at the same
+    /// point, and each one's lookup is an `.await`, so all eight `SELECT`s are
+    /// issued before the first `INSERT` commits.
+    ///
+    /// `UNIQUE (profile, pubkey)` is what the losers then hit. Before the
+    /// recovery in `find_or_create` that came back as a bare `sqlx::Error`,
+    /// which `post_new_account` turns into `serverInternal` — a 500 for a
+    /// request the RFC says must answer 200 with the existing account, leaving
+    /// the client with no account at all.
+    #[tokio::test]
+    async fn concurrent_find_or_create_for_one_key_yields_one_account() {
+        let file = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", Uuid::new_v4()));
+        let url = format!("sqlite://{}", file.display());
+        let db = Arc::new(Database::connect(&url).await.unwrap());
+
+        const RACERS: usize = 8;
+        let barrier = Arc::new(tokio::sync::Barrier::new(RACERS));
+        let mut tasks = Vec::with_capacity(RACERS);
+        for _ in 0..RACERS {
+            let db = db.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                Account::find_or_create(
+                    "default",
+                    &[7u8; 32],
+                    vec![],
+                    &ClientContext::default(),
+                    &db,
+                )
+                .await
+            }));
+        }
+
+        let mut ids = Vec::with_capacity(RACERS);
+        let mut created = 0;
+        for task in tasks {
+            let (account, is_new) = task
+                .await
+                .unwrap()
+                .expect("losing the insert race is not an error");
+            if is_new {
+                created += 1;
+            }
+            ids.push(account.id);
+        }
+
+        assert_eq!(created, 1, "exactly one caller may create the account");
+        assert!(
+            ids.windows(2).all(|pair| pair[0] == pair[1]),
+            "every caller must be handed the same account: {ids:?}"
+        );
+
+        db.pool.close().await;
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
+        }
     }
 }

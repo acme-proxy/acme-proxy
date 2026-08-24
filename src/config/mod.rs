@@ -1296,6 +1296,11 @@ mod tests {
             example.order.validity_seconds,
             defaults.order.validity_seconds
         );
+        assert_eq!(
+            example.order.max_identifiers,
+            defaults.order.max_identifiers
+        );
+        assert_eq!(example.order.retention_days, defaults.order.retention_days);
         assert_eq!(example.signer.backend, defaults.signer.backend);
         assert_eq!(
             example.signer.local_ca.cert_path,

@@ -1463,3 +1463,103 @@ async fn a_not_after_beyond_the_ca_window_is_clamped_rather_than_honoured() {
         "a request may narrow the CA's window, never widen it"
     );
 }
+
+/// A CSR whose own signature does not verify is refused as `badCSR`.
+///
+/// This is proof of possession (RFC 8555 §11.1), and it is the check standing
+/// between "I can prove control of a name" and "I can have a certificate for a
+/// key I do not hold". Without it an attacker who completed a challenge —
+/// legitimately, for their own domain — could submit a CSR carrying *somebody
+/// else's* public key and be handed a certificate for it.
+///
+/// The eight other `badCSR` cases in this suite and in `tests/filters.rs` cover
+/// identifiers, SAN types, `CA:TRUE` and unparsable DER; none of them covers a
+/// CSR that parses cleanly and is simply not signed by the key it names. The
+/// check is implicit — it lives inside `rcgen`'s
+/// `CertificateSigningRequestParams::from_der` — so an upgrade that relaxed it
+/// would be invisible here. Hence a test that asserts the behaviour rather than
+/// trusting the dependency.
+///
+/// The last byte of the DER is inside the signature `BIT STRING`, which is what
+/// makes flipping it a signature failure and not a structural one.
+#[tokio::test]
+async fn a_csr_whose_self_signature_does_not_verify_is_bad_csr() {
+    let (app, signer, account_url, order_url) = setup_ready_order().await;
+
+    let (csr_b64, _key) = common::make_csr_and_keypair("example.com");
+    let mut der = BASE64_URL_SAFE_NO_PAD.decode(&csr_b64).unwrap();
+    let last = der.len() - 1;
+    der[last] ^= 0xff;
+    let tampered = BASE64_URL_SAFE_NO_PAD.encode(&der);
+
+    let res = finalize(&app, &signer, &account_url, &order_url, &tampered).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:badCSR"
+    );
+
+    // The order is still finalizable: §7.4 says a rejected CSR leaves it
+    // `ready`, and the untampered CSR for the same key goes straight through.
+    let res = finalize(&app, &signer, &account_url, &order_url, &csr_b64).await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "a refused CSR must not have consumed the order"
+    );
+}
+
+/// The certificate URL is not readable by another account either.
+///
+/// `post_as_get_rejects_different_account` covers the *order*, and this suite
+/// covers the authorization and the challenge the same way. The one route none
+/// of them covers is `/certificate/{id}` — which is the only one that returns
+/// the PEM, and therefore the highest-value target of the four.
+///
+/// The behaviour is almost certainly right by construction (`post_certificate`
+/// goes through the shared `load_owned_order`), and the point of the test is
+/// exactly that: nothing was asserting it, so a future route that resolved the
+/// certificate directly rather than through the order would take the check with
+/// it and nothing would fail.
+///
+/// `unauthorized` specifically, not merely "not 200": a `404` would also be
+/// safe, but it is a different answer to the client and the suite should say
+/// which one this server gives.
+#[tokio::test]
+async fn the_certificate_of_another_account_is_unauthorized() {
+    let (app, owner, owner_url, order_url) = setup_ready_order().await;
+
+    let res = finalize(
+        &app,
+        &owner,
+        &owner_url,
+        &order_url,
+        &make_csr("example.com"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let certificate_url = body_json(res).await["certificate"]
+        .as_str()
+        .expect("a finalized order carries its certificate URL")
+        .to_string();
+    let certificate_path = certificate_url.strip_prefix(common::HOST).unwrap();
+
+    // The owner can read it, so the refusal below is about *who is asking*.
+    let nonce = fetch_nonce(&app).await;
+    let body = owner.sign_kid_empty(&owner_url, &certificate_url, &nonce);
+    assert_eq!(
+        post(&app, certificate_path, body).await.status(),
+        StatusCode::OK
+    );
+
+    let intruder = EcSigner::new();
+    let intruder_url = register(&app, &intruder).await;
+    let nonce = fetch_nonce(&app).await;
+    let body = intruder.sign_kid_empty(&intruder_url, &certificate_url, &nonce);
+    assert_problem(
+        post(&app, certificate_path, body).await,
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
+}

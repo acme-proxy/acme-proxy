@@ -376,6 +376,15 @@ pub(crate) struct ContactRejection {
 /// writing a second one is what keeps `PATCH /api/accounts/{id}` from
 /// accepting a contact `newAccount` would have refused.
 pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejection> {
+    /// Most `contact` entries an account may carry.
+    ///
+    /// `order.max_identifiers`' reasoning on the account side: the list is
+    /// unauthenticated client input bounded only by `server.max_body_bytes`,
+    /// it is stored as one JSON column and re-rendered on every account read,
+    /// and `notify` walks it per message. Well past any real address book —
+    /// the point is that there is a ceiling.
+    const MAX_CONTACTS: usize = 32;
+
     fn unsupported(detail: String) -> Option<ContactRejection> {
         Some(ContactRejection {
             unsupported: true,
@@ -387,6 +396,18 @@ pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejectio
             unsupported: false,
             detail,
         })
+    }
+
+    if contacts.len() > MAX_CONTACTS {
+        warn!(
+            event = "contact_list_too_long",
+            outcome = "failure",
+            contacts_count = contacts.len()
+        );
+        return invalid(format!(
+            "An account may carry at most {MAX_CONTACTS} contacts; this one carries {}",
+            contacts.len()
+        ));
     }
 
     for contact in contacts {

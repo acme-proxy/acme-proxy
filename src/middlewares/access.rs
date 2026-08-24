@@ -60,10 +60,47 @@ fn is_probe(method: &Method, path: &str) -> bool {
     matches!(*method, Method::GET | Method::HEAD) && matches!(path, "/health" | "/")
 }
 
+/// Longest `x-request-id` accepted from a caller.
+///
+/// `crate::audit::USER_AGENT_MAX`'s reasoning, for a header that goes further:
+/// a UUID is 36 characters and the longest correlation id any reverse proxy
+/// generates is well inside this, while the value reaches the `request` span
+/// (so every log line of the request), the response header, and the
+/// `request_id` column of both `audit_log` and `upstream_orders`. Unbounded, an
+/// unauthenticated caller decides how large all four of those get.
+const REQUEST_ID_MAX: usize = 128;
+
+/// Whether `value` is safe to adopt as this request's correlation id.
+///
+/// Deliberately narrower than "printable": the id is interpolated into the
+/// non-JSON `tracing` format as `request_id=<value>`, where a space or an `=`
+/// lets a caller write fields that were never emitted. Restricting to the
+/// characters correlation ids actually use costs nothing real and takes the
+/// question away.
+fn usable_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= REQUEST_ID_MAX
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
 pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> impl IntoResponse {
     let id_str = match request.headers().get(&X_REQUEST_ID) {
         Some(value) => match value.to_str() {
-            Ok(value) => value.trim().to_string(),
+            Ok(value) => {
+                let value = value.trim();
+                if usable_request_id(value) {
+                    value.to_string()
+                } else {
+                    // Too long, empty, or carrying characters that would let
+                    // the caller forge log structure. A fresh id rather than a
+                    // truncation: half of somebody's correlation id correlates
+                    // with nothing and reads like a real one.
+                    debug!(event = "request_id_header_invalid", outcome = "failure");
+                    String::new()
+                }
+            }
             Err(_) => {
                 // Non-ASCII bytes in the header. Falling back to a fresh id is
                 // right — but silently, an operator correlating with the
@@ -282,6 +319,97 @@ mod tests {
 
         let id = res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap();
         assert!(!id.trim().is_empty());
+    }
+
+    /// An oversized id is not truncated but replaced.
+    ///
+    /// The value reaches the `request` span, the response header and two
+    /// database columns, so an unauthenticated caller must not decide how large
+    /// any of them get. Truncating would be worse than replacing: half of
+    /// somebody's correlation id still looks like one and correlates with
+    /// nothing.
+    #[tokio::test]
+    async fn an_oversized_request_id_is_replaced() {
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-request-id", "a".repeat(REQUEST_ID_MAX + 1))
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app().oneshot(req).await.unwrap();
+
+        let id = res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap();
+        assert_eq!(id.len(), Uuid::new_v4().to_string().len());
+
+        // The boundary itself is accepted, so the ceiling is a ceiling and not
+        // an off-by-one.
+        let req = Request::builder()
+            .uri("/test")
+            .header("x-request-id", "b".repeat(REQUEST_ID_MAX))
+            .body(Body::empty())
+            .unwrap();
+        let res = app().oneshot(req).await.unwrap();
+        assert_eq!(
+            res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap(),
+            "b".repeat(REQUEST_ID_MAX)
+        );
+    }
+
+    /// A caller must not be able to write log *structure*.
+    ///
+    /// Under the non-JSON `tracing` format the id is rendered as
+    /// `request_id=<value>`, so a space or an `=` in the value lets the caller
+    /// append fields that were never emitted — and a newline lets it write a
+    /// whole line. Each of these is replaced by a generated id.
+    #[tokio::test]
+    async fn a_request_id_that_could_forge_log_structure_is_replaced() {
+        let generated = Uuid::new_v4().to_string().len();
+        for forged in [
+            "abc outcome=success",
+            "abc=def",
+            "abc\tstatus=200",
+            "abc\"quoted\"",
+        ] {
+            let Ok(header) = HeaderValue::from_str(forged) else {
+                continue;
+            };
+            let req = Request::builder()
+                .uri("/test")
+                .header("x-request-id", header)
+                .body(Body::empty())
+                .unwrap();
+
+            let res = app().oneshot(req).await.unwrap();
+            let id = res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap();
+            assert_eq!(
+                id.len(),
+                generated,
+                "`{forged}` must not be adopted verbatim"
+            );
+        }
+    }
+
+    /// The shapes a real correlation id takes are still adopted unchanged: a
+    /// UUID, a hyphenated token, and the `trace:span` spelling some proxies use.
+    #[tokio::test]
+    async fn ordinary_correlation_ids_are_still_honoured() {
+        for ordinary in [
+            "550e8400-e29b-41d4-a716-446655440000",
+            "custom-req-id-123",
+            "trace.4bf92f:span_1",
+        ] {
+            let req = Request::builder()
+                .uri("/test")
+                .header("x-request-id", ordinary)
+                .body(Body::empty())
+                .unwrap();
+
+            let res = app().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap(),
+                ordinary
+            );
+        }
     }
 
     /// The three access-line levels, driven end to end. Nothing here asserts on

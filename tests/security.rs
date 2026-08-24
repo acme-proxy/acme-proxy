@@ -666,3 +666,56 @@ async fn a_csr_requesting_ca_powers_yields_a_leaf_without_them() {
         "the issued leaf must not be able to sign certificates"
     );
 }
+
+/// One `newOrder` may not name an unbounded number of identifiers.
+///
+/// Before `order.max_identifiers` the only bound was `server.max_body_bytes`
+/// (128 KiB), which at roughly thirty bytes an identifier admits some four
+/// thousand names in one request. Each becomes an authorization plus a
+/// challenge per offered type, inserted in a **single** transaction — and
+/// SQLite has one writer, so that transaction stalls every other write in the
+/// process while it runs. The refusal is `malformed` rather than `rateLimited`:
+/// the order is malformed for this server whenever it is sent, so telling the
+/// client to come back later would be a lie.
+#[tokio::test]
+async fn an_order_naming_more_identifiers_than_the_limit_is_refused() {
+    async fn order_naming(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        names: &[String],
+    ) -> Response {
+        let identifiers: Vec<Value> = names
+            .iter()
+            .map(|name| json!({ "type": "dns", "value": name }))
+            .collect();
+        let nonce = fetch_nonce(app).await;
+        let payload = json!({ "identifiers": identifiers });
+        let body = signer.sign_kid(account_url, NEW_ORDER_URL, &nonce, &payload);
+        post(app, &p("/newOrder"), body).await
+    }
+
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    let limit = acme_proxy::config::Config::default().order.max_identifiers;
+    let names: Vec<String> = (0..=limit).map(|n| format!("h{n}.example.com")).collect();
+
+    let res = order_naming(&app, &signer, &account_url, &names).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&limit.to_string()),
+        "the refusal must say what the limit is: {problem}"
+    );
+
+    // The boundary itself is accepted, so the ceiling is a ceiling and not an
+    // off-by-one that costs a legitimate client its largest order.
+    let res = order_naming(&app, &signer, &account_url, &names[..limit]).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}

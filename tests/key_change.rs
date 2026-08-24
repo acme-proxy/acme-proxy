@@ -373,3 +373,94 @@ async fn key_change_unknown_nonce_is_bad_nonce() {
         "urn:ietf:params:acme:error:badNonce"
     );
 }
+
+/// Two accounts rolling onto the *same* new key at the same time. One must win
+/// with a `200`; the loser owes RFC 8555 §7.3.5's `409` + `Location`, never a
+/// `500`.
+///
+/// `key_change_rejects_conflicting_new_key` above covers the sequential case,
+/// where the conflict check sees the other account and refuses. This is the
+/// interleaving it cannot reach: both requests run that check before either
+/// `UPDATE` lands, both are told the key is free, and the loser then trips
+/// `UNIQUE (profile, pubkey)` inside `update_pubkey`. Until the handler learned
+/// to recognise that violation it became `serverInternal` — the same answer the
+/// server gives when it has no idea what happened, for a case the RFC gives a
+/// status *and* a `Location` for.
+///
+/// A file-backed database, because `connect_in_memory` pins the pool to one
+/// connection and serializes the two requests out of the race entirely. Rounds,
+/// because the window is a few statements wide and one attempt is not reliably
+/// inside it; the assertions hold whichever way a round interleaves, so a round
+/// that misses the window still passes rather than flaking.
+#[tokio::test]
+async fn concurrent_key_changes_onto_one_key_leave_a_winner_and_a_conflict() {
+    const ROUNDS: usize = 12;
+    let (app, _db, _disk) = common::test_app_on_disk().await;
+
+    for round in 0..ROUNDS {
+        let signer_a = EcSigner::new();
+        let signer_b = EcSigner::new();
+        let account_a = register(&app, &signer_a).await;
+        let account_b = register(&app, &signer_b).await;
+
+        // One new key, wanted by both.
+        let new_key = EcSigner::new();
+        let nonce_a = fetch_nonce(&app).await;
+        let nonce_b = fetch_nonce(&app).await;
+        let body_a = key_change_body(&signer_a, &new_key, &account_a, &nonce_a);
+        let body_b = key_change_body(&signer_b, &new_key, &account_b, &nonce_b);
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let mut tasks = Vec::with_capacity(2);
+        for body in [body_a, body_b] {
+            let app = app.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                key_change(&app, body).await
+            }));
+        }
+
+        let mut statuses = Vec::with_capacity(2);
+        for task in tasks {
+            let res = task.await.unwrap();
+            let status = res.status();
+            assert_ne!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "round {round}: a lost rollover race is a 409, not a server error"
+            );
+            if status == StatusCode::CONFLICT {
+                // The loser is told where the key actually lives, which is the
+                // half of §7.3.5 that lets a client recover on its own.
+                let location = res
+                    .headers()
+                    .get("location")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    location == account_a || location == account_b,
+                    "round {round}: 409 must name the account holding the key, got {location:?}"
+                );
+                let problem = body_json(res).await;
+                assert_eq!(problem["status"], 409, "round {round}");
+            }
+            statuses.push(status);
+        }
+
+        assert_eq!(
+            statuses.iter().filter(|s| **s == StatusCode::OK).count(),
+            1,
+            "round {round}: exactly one rollover may take the key, got {statuses:?}"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|s| **s == StatusCode::CONFLICT)
+                .count(),
+            1,
+            "round {round}: the other must be refused with 409, got {statuses:?}"
+        );
+    }
+}

@@ -879,6 +879,19 @@ pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'s
     crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
 }
 
+/// The names of every embedded notify template.
+///
+/// Exists for `webadmin::pages::templates`'s naming guard, which asserts that
+/// every name here ends `.j2` — minijinja reads auto-escaping off the
+/// extension, so an `.html` in this table would HTML-escape every message body
+/// the server sends.
+#[must_use]
+pub fn template_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = EMBEDDED_TEMPLATES.keys().copied().collect();
+    names.sort_unstable();
+    names
+}
+
 /// Renders one named template against `event`'s own data.
 ///
 /// Both failures are **permanent**: a template that is absent or does not

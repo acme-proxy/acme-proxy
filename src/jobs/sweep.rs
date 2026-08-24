@@ -58,6 +58,9 @@ pub const AUDIT_SWEEP_KIND: &str = "audit_sweep";
 /// The `jobs.kind` the admin-session sweep runs under.
 pub const ADMIN_SESSION_SWEEP_KIND: &str = "admin_session_sweep";
 
+/// The order-retention sweep's job kind.
+pub const ORDER_SWEEP_KIND: &str = "order_sweep";
+
 /// How often the daily sweeps run.
 ///
 /// Both settings behind them have a resolution of days, so anything finer is
@@ -66,7 +69,10 @@ pub const ADMIN_SESSION_SWEEP_KIND: &str = "admin_session_sweep";
 const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Which table a sweep deletes from, and what it needs to know to do it.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Clone` but not `Copy`: the order sweep carries one entry per mounted
+/// profile, `order.retention_days` being a per-profile key.
+#[derive(Debug, Clone)]
 enum SweepTarget {
     /// Expired nonces.
     Nonces { ttl: Duration },
@@ -76,6 +82,9 @@ enum SweepTarget {
     AdminSessions { idle_timeout: Duration },
     /// Settled job rows past `jobs.retention_days`.
     Jobs { retention_days: u64 },
+    /// Expired, non-`valid` orders past each profile's `order.retention_days`,
+    /// as `(profile, retention_days)`.
+    Orders { retention: Vec<(String, u64)> },
 }
 
 /// One periodic table sweep.
@@ -132,6 +141,23 @@ impl SweepJob {
         }
     }
 
+    /// The order-retention sweep, one handler covering every mounted profile.
+    ///
+    /// One handler and not one per profile because `JobRegistry::register`
+    /// refuses a second handler for a kind — the same constraint that makes
+    /// `SignerBackend::crl_pruner` hand over state rather than a job. Profiles
+    /// whose `order.retention_days` is `0` are simply absent from `retention`,
+    /// so "keep everything" stays a profile the sweep never touches rather than
+    /// a `DELETE` with a cutoff at the epoch.
+    #[must_use]
+    pub fn orders(database: Arc<Database>, retention: Vec<(String, u64)>) -> Self {
+        Self {
+            target: SweepTarget::Orders { retention },
+            interval: DAILY,
+            database,
+        }
+    }
+
     /// The queue's own sweep. Registered only when `jobs.retention_days` is
     /// non-zero, for the same reason as the audit one.
     #[must_use]
@@ -156,9 +182,9 @@ impl SweepJob {
     /// `doc/src/operations/monitoring.md` name them, and the mechanism changing
     /// underneath is not a reason to make them re-learn the vocabulary.
     async fn sweep(&self) {
-        match self.target {
+        match &self.target {
             SweepTarget::Nonces { ttl } => {
-                match crate::sqlite::nonce::Nonce::cleanup(&self.database, ttl).await {
+                match crate::sqlite::nonce::Nonce::cleanup(&self.database, *ttl).await {
                     Ok(removed) => debug!(
                         event = "nonce_reaper_swept",
                         outcome = "success",
@@ -172,7 +198,7 @@ impl SweepJob {
             SweepTarget::AuditLog { retention_days } => {
                 // The same cutoff arithmetic `audit cleanup --older-than` uses,
                 // so "older than N days" means one thing in the process.
-                let cutoff = crate::admin::ops::audit_cutoff(retention_days);
+                let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
                 match crate::sqlite::audit::AuditEntry::cleanup(cutoff, &self.database).await {
                     Ok(removed) => info!(
                         event = "audit_reaper_swept",
@@ -187,7 +213,7 @@ impl SweepJob {
             }
             SweepTarget::AdminSessions { idle_timeout } => {
                 match crate::sqlite::admin_session::AdminSession::cleanup(
-                    idle_timeout,
+                    *idle_timeout,
                     &self.database,
                 )
                 .await
@@ -203,9 +229,31 @@ impl SweepJob {
                 }
             }
             SweepTarget::Jobs { retention_days } => {
-                let cutoff = crate::admin::ops::audit_cutoff(retention_days);
+                let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
                 if let Err(error) = Job::cleanup(cutoff, &self.database).await {
                     warn!(event = "job_retention_sweep_failed", outcome = "failure", error = %error);
+                }
+            }
+            SweepTarget::Orders { retention } => {
+                // One statement per profile rather than one over all of them:
+                // the retention is per-profile, and a profile whose delete
+                // fails must not stop the others being swept.
+                for (profile, retention_days) in retention {
+                    let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
+                    match crate::sqlite::order::Order::cleanup(profile, cutoff, &self.database)
+                        .await
+                    {
+                        Ok(removed) => info!(
+                            event = "order_reaper_swept",
+                            outcome = "success",
+                            profile = %profile,
+                            rows_removed = removed,
+                            cutoff
+                        ),
+                        Err(error) => {
+                            error!(event = "order_reaper_failed", outcome = "failure", profile = %profile, error = %error);
+                        }
+                    }
                 }
             }
         }
@@ -215,11 +263,12 @@ impl SweepJob {
 #[async_trait]
 impl JobHandler for SweepJob {
     fn kind(&self) -> &'static str {
-        match self.target {
+        match &self.target {
             SweepTarget::Nonces { .. } => NONCE_SWEEP_KIND,
             SweepTarget::AuditLog { .. } => AUDIT_SWEEP_KIND,
             SweepTarget::AdminSessions { .. } => ADMIN_SESSION_SWEEP_KIND,
             SweepTarget::Jobs { .. } => RETENTION_JOB_KIND,
+            SweepTarget::Orders { .. } => ORDER_SWEEP_KIND,
         }
     }
 
@@ -287,7 +336,8 @@ mod tests {
             SweepJob::nonces(database.clone(), Duration::from_secs(300)).kind(),
             SweepJob::audit(database.clone(), 7).kind(),
             SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200).kind(),
-            SweepJob::jobs(database, 7).kind(),
+            SweepJob::jobs(database.clone(), 7).kind(),
+            SweepJob::orders(database, vec![("default".to_string(), 30)]).kind(),
         ];
         let unique: std::collections::BTreeSet<_> = kinds.iter().collect();
         assert_eq!(unique.len(), kinds.len(), "{kinds:?}");
@@ -488,6 +538,7 @@ mod tests {
             SweepJob::audit(database.clone(), 7),
             SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200),
             SweepJob::jobs(database.clone(), 7),
+            SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]),
         ] {
             let kind = handler.kind();
             assert!(
@@ -495,5 +546,137 @@ mod tests {
                 "{kind} must reschedule rather than retire"
             );
         }
+    }
+
+    /// The order sweep takes expired, undecided orders and leaves everything a
+    /// certificate depends on.
+    ///
+    /// The `valid` case is the one that matters. A valid order's row is how
+    /// `Order::find_by_cert_serial` resolves a certificate for `revokeCert` and
+    /// for the CRL — sweeping one would make an issued certificate unrevokable,
+    /// which is a far worse outcome than a large table, and no age makes it
+    /// acceptable. So the row is aged well past the cutoff here on purpose: the
+    /// exclusion has to be about the *status* and not about the clock.
+    #[tokio::test]
+    async fn the_order_sweep_spares_valid_orders_and_takes_expired_ones() {
+        use crate::sqlite::account::Account;
+        use crate::sqlite::order::{Identifier, Order};
+
+        let (database, _queue) = setup().await;
+        let (account, _) = Account::find_or_create(
+            "default",
+            &[3u8; 8],
+            vec![],
+            &crate::audit::ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+
+        let ancient = now_secs() - 400 * 24 * 60 * 60;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let order = Order::create(
+                "default",
+                &account.id,
+                vec![Identifier::dns("example.com")],
+                ancient,
+                None,
+                None,
+                &database,
+            )
+            .await
+            .unwrap();
+            ids.push(order.id);
+        }
+        let (expired_pending, expired_valid, fresh) = (&ids[0], &ids[1], &ids[2]);
+
+        // One long-expired order that nevertheless carries a certificate...
+        sqlx::query("UPDATE orders SET status = 'valid' WHERE id = ?;")
+            .bind(expired_valid)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        // ...and one that has not expired at all.
+        sqlx::query("UPDATE orders SET expires = ? WHERE id = ?;")
+            .bind(now_secs() + 3600)
+            .bind(fresh)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+
+        let removed = Order::cleanup("default", crate::admin::ops::audit_cutoff(30), &database)
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1, "only the expired, undecided order goes");
+        assert!(
+            Order::find_by_id(expired_pending, &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Order::find_by_id(expired_valid, &database)
+                .await
+                .unwrap()
+                .is_some(),
+            "a valid order is never swept: its row is how a certificate is revoked"
+        );
+        assert!(Order::find_by_id(fresh, &database).await.unwrap().is_some());
+    }
+
+    /// A profile keeps its own history: the sweep is one handler, so a second
+    /// profile's rows must not go out with the first's.
+    #[tokio::test]
+    async fn the_order_sweep_is_scoped_to_one_profile() {
+        use crate::sqlite::account::Account;
+        use crate::sqlite::order::{Identifier, Order};
+
+        let (database, _queue) = setup().await;
+        let ancient = now_secs() - 400 * 24 * 60 * 60;
+        let mut ids = Vec::new();
+        for (index, profile) in ["default", "other"].iter().enumerate() {
+            let (account, _) = Account::find_or_create(
+                profile,
+                &[index as u8 + 40; 8],
+                vec![],
+                &crate::audit::ClientContext::default(),
+                &database,
+            )
+            .await
+            .unwrap();
+            let order = Order::create(
+                profile,
+                &account.id,
+                vec![Identifier::dns("example.com")],
+                ancient,
+                None,
+                None,
+                &database,
+            )
+            .await
+            .unwrap();
+            ids.push(order.id);
+        }
+
+        let removed = Order::cleanup("default", crate::admin::ops::audit_cutoff(30), &database)
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(
+            Order::find_by_id(&ids[0], &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Order::find_by_id(&ids[1], &database)
+                .await
+                .unwrap()
+                .is_some(),
+            "another profile's orders are not this profile's to delete"
+        );
     }
 }

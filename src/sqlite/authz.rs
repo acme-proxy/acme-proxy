@@ -518,6 +518,51 @@ impl Challenge {
         rows.into_iter().map(Challenge::from_row).collect()
     }
 
+    /// Takes this challenge for validation, moving `pending` to `processing`.
+    ///
+    /// Returns whether the claim was won. `Order::claim_for_finalize`'s
+    /// primitive, applied one table down and for a sharper reason: the
+    /// validator reaches out to an address the *client* chose, so two triggers
+    /// that both pass a status check in memory become two probes of somebody
+    /// else's host. Deciding it in the `UPDATE` is what makes "exactly one
+    /// validation per challenge" a property of the row rather than of how the
+    /// handler happens to be scheduled.
+    ///
+    /// A losing caller is not an error: its challenge is already being decided,
+    /// and the answer it owes the client is the object as it stands. That
+    /// object now says `processing`, which is exactly what §7.1.6 asks for —
+    /// "they transition to the `processing` state when the client responds to
+    /// the challenge" — and §8.2 pairs it with a `Retry-After`, which
+    /// `handlers::authz::add_pending_retry_after` supplies. A retry request is
+    /// explicitly *not* a state change there, so the loser's answer is a
+    /// conformant one rather than a consolation.
+    ///
+    /// A claim that is never settled (the process dies mid-validation) leaves
+    /// the row `processing`, which is the same trade `claim_for_finalize`
+    /// makes: the authorization's own `expires` retires it, and
+    /// `post_challenge` refuses an expired authorization before looking at the
+    /// challenge at all.
+    pub async fn claim_for_validation(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
+        debug!(event = "db_challenge_claim_started", outcome = "progress", challenge_id = ?self.id);
+        let claimed = sqlx::query(
+            "UPDATE challenges SET status = 'processing' WHERE id = ? AND status = 'pending';",
+        )
+        .bind(&self.id)
+        .execute(&database.pool)
+        .await?
+        .rows_affected()
+            == 1;
+
+        if !claimed {
+            debug!(event = "db_challenge_claim_refused", outcome = "advisory", challenge_id = ?self.id);
+            return Ok(false);
+        }
+
+        self.status = ChallengeStatus::Processing;
+        debug!(event = "db_challenge_claimed", outcome = "success", challenge_id = ?self.id);
+        Ok(true)
+    }
+
     /// Records a successful validation: moves the challenge to `valid`, stamps
     /// `validated`, and keeps `self` in sync.
     /// The `valid` transition as a bare statement, over any executor.

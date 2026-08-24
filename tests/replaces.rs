@@ -451,3 +451,93 @@ async fn a_replaces_with_the_wrong_key_identifier_is_refused() {
             .contains("key identifier")
     );
 }
+
+/// Two renewals naming the same predecessor, sent together. One is created; the
+/// other gets §5's `409 alreadyReplaced`, never a `500`.
+///
+/// `replacing_the_same_certificate_twice_is_409_already_replaced` covers the
+/// sequential case, where the second order's `check_replaces` reads the claim
+/// the first one already committed. This is the interleaving it cannot reach:
+/// both orders pass that check, and the partial unique index on
+/// `(profile, replaces)` is what stops the second claim landing. §5 gives that
+/// collision a status and a problem type, so answering `serverInternal` would
+/// describe a server fault for a condition the RFC defines — and a client that
+/// reads `alreadyReplaced` knows to stop retrying, where one that reads a 500
+/// will come straight back.
+///
+/// A file-backed database: `connect_in_memory` pins the pool to one connection
+/// and serializes the two orders out of the race. Rounds, because the window is
+/// a few statements wide; the assertions hold whichever way a round interleaves,
+/// so one that misses it still passes rather than flaking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_orders_claiming_one_predecessor_yield_one_conflict() {
+    const ROUNDS: usize = 8;
+    let (app, _db, _disk) = common::test_app_on_disk().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    for round in 0..ROUNDS {
+        let name = format!("round{round}.example.com");
+        let chain = issue(&app, &signer, &account_url, &name, None).await;
+        let predecessor = cert_id(&chain);
+
+        // Both bodies up front: signing needs a nonce, which needs a request of
+        // its own, and fetching one inside the race would only add noise.
+        let payload = json!({
+            "identifiers": [{ "type": "dns", "value": name }],
+            "replaces": predecessor,
+        });
+        let mut bodies = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let nonce = fetch_nonce(&app).await;
+            bodies.push(signer.sign_kid(&account_url, NEW_ORDER_URL, &nonce, &payload));
+        }
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let mut tasks = Vec::with_capacity(2);
+        for body in bodies {
+            let app = app.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                post(&app, &p("/newOrder"), body).await
+            }));
+        }
+
+        let mut statuses = Vec::with_capacity(2);
+        for task in tasks {
+            let res = task.await.unwrap();
+            let status = res.status();
+            assert_ne!(
+                status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "round {round}: a lost `replaces` claim is a 409, not a server error"
+            );
+            if status == StatusCode::CONFLICT {
+                assert_eq!(
+                    body_json(res).await["type"],
+                    "urn:ietf:params:acme:error:alreadyReplaced",
+                    "round {round}"
+                );
+            }
+            statuses.push(status);
+        }
+
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|s| **s == StatusCode::CREATED)
+                .count(),
+            1,
+            "round {round}: exactly one order may claim the predecessor, got {statuses:?}"
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|s| **s == StatusCode::CONFLICT)
+                .count(),
+            1,
+            "round {round}: the other must be refused with 409, got {statuses:?}"
+        );
+    }
+}

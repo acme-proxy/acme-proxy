@@ -18,8 +18,9 @@ use tower::ServiceExt;
 
 mod common;
 use common::{
-    EcSigner, RecordingValidator, StubValidator, TestSigner, body_json, bypassing_challenges,
-    challenges_with, fetch_nonce, make_csr, p, test_app, test_app_with_challenges,
+    BlockingValidator, EcSigner, RecordingValidator, StubValidator, TestSigner, body_json,
+    bypassing_challenges, challenges_with, fetch_nonce, make_csr, p, test_app,
+    test_app_with_challenges,
 };
 
 use acme_proxy::config::Config;
@@ -878,4 +879,74 @@ async fn a_malformed_wildcard_is_a_400_even_with_dns_01_enabled() {
             "{value}"
         );
     }
+}
+
+/// Two triggers for one `pending` challenge, overlapping. Validation runs once.
+///
+/// `re_triggering_a_failed_challenge_does_not_revalidate` covers the sequential
+/// case, where the second request sees a challenge that is already `valid` or
+/// `invalid` and does nothing. This is the window that check cannot close: both
+/// requests read the same `pending` row before either has written a result, so
+/// both conclude there is work to do.
+///
+/// What that costs is not just a duplicated notification. The validator reaches
+/// out to an address **the client chose**, so N simultaneous triggers are N
+/// probes to that host from this server — a reflector bounded only by
+/// `server.max_concurrent_requests`, with no filter configured by default. The
+/// fix is the same compare-and-swap `Order::claim_for_finalize` uses: the
+/// `pending → processing` transition is the claim, and only the winner probes.
+#[tokio::test]
+async fn two_overlapping_triggers_validate_once() {
+    let validator = BlockingValidator::gating_the_first("http-01");
+    let (calls, gate, entered) = validator.handles();
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        challenges_with(&["http-01"], vec![Arc::new(validator)]),
+    )
+    .await;
+
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let order = body_json(new_order(&app, &signer, &account_url, &["example.com"]).await).await;
+    let authz = read(
+        &app,
+        &signer,
+        &account_url,
+        order["authorizations"][0].as_str().unwrap(),
+    )
+    .await;
+    let challenge_url = challenge_url_of_type(&authz, "http-01");
+
+    // Both bodies up front: `EcSigner` is not `Clone`, and signing needs a
+    // nonce, which needs a request of its own.
+    let path = challenge_url
+        .strip_prefix(common::HOST)
+        .unwrap()
+        .to_string();
+    let nonce_a = fetch_nonce(&app).await;
+    let body_a = signer.sign_kid(&account_url, &challenge_url, &nonce_a, &json!({}));
+    let nonce_b = fetch_nonce(&app).await;
+    let body_b = signer.sign_kid(&account_url, &challenge_url, &nonce_b, &json!({}));
+
+    let first = tokio::spawn({
+        let (app, path) = (app.clone(), path.clone());
+        async move { post(&app, &path, body_a).await }
+    });
+    // Wait for the first to be genuinely inside the validator — the claim is
+    // taken and the row is `processing` — rather than for a duration.
+    let _ = entered.acquire().await.unwrap();
+
+    // The second arrives squarely inside that window. It must be answered from
+    // the row rather than starting a probe of its own.
+    let second = post(&app, &path, body_b).await;
+    assert_eq!(second.status(), StatusCode::OK);
+
+    gate.add_permits(1);
+    assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "an overlapping trigger must not start a second validation"
+    );
 }

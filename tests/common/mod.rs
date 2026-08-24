@@ -526,6 +526,54 @@ pub async fn test_app_full(
     (router, database)
 }
 
+/// A file-backed database, removed with its WAL sidecars when the test ends.
+///
+/// Hold it for as long as the app that opened it: dropping it deletes the file.
+pub struct DiskDb(std::path::PathBuf);
+
+impl Drop for DiskDb {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
+        }
+    }
+}
+
+/// [`test_app_with_db`] over a **file-backed** database, so the pool opens more
+/// than one connection.
+///
+/// `Database::connect_in_memory` pins `max_connections(1)` — one shared
+/// in-memory database is the whole point of it — which serializes every caller
+/// and makes a genuine write race impossible to reproduce. A suite asserting
+/// what two simultaneous requests do to one row needs this instead; everything
+/// else should keep using the in-memory helper, which is faster and leaves
+/// nothing behind.
+pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
+    init_tracing();
+    let path = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::new_v4()));
+    let database = Arc::new(
+        Database::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap(),
+    );
+    let config = Config::default();
+    let profile = one_profile(
+        &config,
+        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
+        Arc::new(FilterPolicy::default()),
+        default_challenges(),
+        no_notifications().await,
+    );
+    let router = build_app(
+        database.clone(),
+        Arc::new(config),
+        vec![profile],
+        test_auditor(database.clone()),
+        Arc::new(Metrics::new(database.clone())),
+    );
+    (router, database, DiskDb(path))
+}
+
 /// `test_app_full`, plus the registry the app counts into.
 ///
 /// Separate rather than widening every helper's return type: one suite asserts
@@ -1041,28 +1089,78 @@ pub async fn json_body(response: Response) -> serde_json::Value {
     })
 }
 
-/// A challenge validator that blocks until the test lets it go.
+/// A challenge validator that blocks until the test lets it go, and counts the
+/// validations that got as far as it.
 ///
 /// `post_challenge` awaits validation inline, so this is how a test holds an
 /// ACME request open for as long as it needs — which is what the admission
-/// limit has to be observed against. Anything that merely *slept* would make
-/// those tests races against a timer.
+/// limit has to be observed against, and the window in which a second trigger
+/// for the same challenge is still in flight.
+///
+/// Both halves are semaphores, `GatedSigner`'s shape and for its reasons. The
+/// gate is one because **a release arriving before the wait must still count**;
+/// `Notify::notify_waiters` wakes only tasks already parked, so a test whose
+/// spawned request had not yet reached the `.await` would drop the wake-up and
+/// hang until the harness killed it. `entered` is what a test awaits instead of
+/// sleeping: a permit appears the moment a validation is genuinely inside here,
+/// so the assertion is against the state it is about rather than against a
+/// timer, which is what this fixture's own doc comment always asked for.
 pub struct BlockingValidator {
     typ: &'static str,
-    release: Arc<tokio::sync::Notify>,
+    /// Validations that reached this validator. What a "ran exactly once"
+    /// assertion rests on.
+    calls: Arc<AtomicUsize>,
+    /// Zero permits until the test releases; see `first_only` for who waits.
+    gate: Arc<tokio::sync::Semaphore>,
+    /// A permit per caller that has entered, so a test can await arrival.
+    entered: Arc<tokio::sync::Semaphore>,
+    /// Whether only the first caller waits on the gate.
+    first_only: bool,
 }
 
 impl BlockingValidator {
+    /// Every validation blocks until the test releases it — what an
+    /// admission-control test needs, since the point is to occupy slots.
     pub fn new(typ: &'static str) -> Self {
         Self {
             typ,
-            release: Arc::new(tokio::sync::Notify::new()),
+            calls: Arc::new(AtomicUsize::new(0)),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+            first_only: false,
         }
     }
 
-    /// A handle the test keeps, to let every blocked validation finish.
-    pub fn releaser(&self) -> Arc<tokio::sync::Notify> {
-        self.release.clone()
+    /// Only the **first** validation blocks; later ones return immediately.
+    ///
+    /// `GatedSigner`'s reasoning, for the same reason: a test proving a second
+    /// request never reaches the validator has to survive the build where it
+    /// does. If that second call blocked too, an unfixed build would deadlock
+    /// the test into a harness timeout — which reads like flake — instead of
+    /// failing the assertion that names the bug.
+    pub fn gating_the_first(typ: &'static str) -> Self {
+        Self {
+            first_only: true,
+            ..Self::new(typ)
+        }
+    }
+
+    /// Handles for the test to drive the gate with, since the validator itself
+    /// is consumed by `challenges_with`: the call count, the gate to release
+    /// through, and the signal that a validation has arrived.
+    #[must_use]
+    pub fn handles(
+        &self,
+    ) -> (
+        Arc<AtomicUsize>,
+        Arc<tokio::sync::Semaphore>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        (
+            Arc::clone(&self.calls),
+            Arc::clone(&self.gate),
+            Arc::clone(&self.entered),
+        )
     }
 }
 
@@ -1073,7 +1171,17 @@ impl ChallengeValidator for BlockingValidator {
     }
 
     async fn validate(&self, _context: &ValidationContext<'_>) -> Result<(), ChallengeError> {
-        self.release.notified().await;
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        self.entered.add_permits(1);
+        if first || !self.first_only {
+            // `forget`, so releasing N permits lets exactly N validations
+            // through rather than returning one to the gate on drop.
+            self.gate
+                .acquire()
+                .await
+                .expect("the gate is never closed while a test holds it")
+                .forget();
+        }
         Ok(())
     }
 }
