@@ -2303,7 +2303,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     let (serial, spki) =
         acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     order
-        .finalize(chain, serial, spki, &database)
+        .finalize(chain, serial, spki, None, &database)
         .await
         .unwrap();
 

@@ -133,7 +133,7 @@ names arrive lowercased from the environment, which HTTP does not care about.
 The request body, as a template. The default is the payload Slack, Mattermost,
 Teams and Google Chat all accept, so those four need a `url` and nothing else.
 
-**`events`** (`Array`) — *Default: all six | Env: `ACME_PROXY_NOTIFY__WEBHOOK__<NAME>__EVENTS`*
+**`events`** (`Array`) — *Default: every event | Env: `ACME_PROXY_NOTIFY__WEBHOOK__<NAME>__EVENTS`*
 
 Lifecycle events this entry reacts to.
 

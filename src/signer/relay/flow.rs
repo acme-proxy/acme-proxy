@@ -707,8 +707,21 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
         }
     };
 
+    // Best-effort, for the reason `handlers::order` states at its own call
+    // site: an upstream leaf this server cannot read the validity of is still
+    // a certificate the client is owed.
+    let cert_not_after = crate::cert::cert_validity(&leaf)
+        .ok()
+        .map(|(_, not_after)| not_after);
+
     if let Err(error) = order
-        .finalize(chain, serial.clone(), pubkey, &inner.database)
+        .finalize(
+            chain,
+            serial.clone(),
+            pubkey,
+            cert_not_after,
+            &inner.database,
+        )
         .await
     {
         error!(event = "upstream_relay_finalize_failed", outcome = "failure", order_id = %order_id, error = %error);

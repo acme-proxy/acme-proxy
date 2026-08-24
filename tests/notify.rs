@@ -447,3 +447,143 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
     }
     panic!("the queued notification was never delivered");
 }
+
+/// The expiry digest, end to end through a real runner: an expiring
+/// certificate in the database, a registered `ExpiryDigestJob`, and a
+/// `certificates_expiring` event coming out of a backend.
+///
+/// The inline suite in `src/notify/expiry.rs` drives `collect` and `run`
+/// directly, which proves the query and the annotation but never that the
+/// event *reaches* anybody — the handler only dispatches, which queues a
+/// second job that a runner then delivers. This is the only test that puts
+/// both hops together, and so the only one that would catch the digest being
+/// registered but never wired to a dispatcher.
+#[tokio::test]
+async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
+    use acme_proxy::config::{ExpiryNotifyConfig, NotifyConfig, ProfileConfig, ProfileSections};
+    use acme_proxy::notify::expiry::ExpiryDigestJob;
+    use acme_proxy::sqlite::db::Database;
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let config = JobsConfig {
+        poll_interval_ms: 5,
+        max_attempts: 1,
+        retry_base_seconds: 0,
+        ..JobsConfig::default()
+    };
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config);
+
+    // An account with a certificate lapsing inside the window.
+    let (account, _created) = acme_proxy::sqlite::account::Account::find_or_create(
+        "default",
+        b"a-key",
+        Vec::new(),
+        &acme_proxy::audit::ClientContext::default(),
+        &database,
+    )
+    .await
+    .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut order = Order::create(
+        "default",
+        &account.id,
+        vec![Identifier::dns("lapsing.example.com")],
+        now + 3600,
+        None,
+        None,
+        &database,
+    )
+    .await
+    .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\n...".to_string(),
+            "0a0b".to_string(),
+            vec![1],
+            Some(now + 3 * 24 * 60 * 60),
+            &database,
+        )
+        .await
+        .unwrap();
+
+    let recorder = Arc::new(common::RecordingNotifyBackend::default());
+    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+        .iter()
+        .map(|kind| (*kind).to_string())
+        .collect();
+    let dispatcher = Arc::new(NotifyDispatcher::new(
+        "default",
+        vec![BackendSlot::new("recording", recorder.clone(), &every)],
+        queue.clone(),
+    ));
+    let dispatchers: std::collections::HashMap<String, Arc<NotifyDispatcher>> =
+        std::collections::HashMap::from([("default".to_string(), dispatcher)]);
+    let (_notifiers_tx, notifiers) = acme_proxy::notify::notifiers_channel(dispatchers.clone());
+
+    let profile = ProfileConfig {
+        name: "default".to_string(),
+        sections: ProfileSections {
+            notify: NotifyConfig {
+                expiry: ExpiryNotifyConfig {
+                    lead_days: 14,
+                    ..ExpiryNotifyConfig::default()
+                },
+                ..NotifyConfig::default()
+            },
+            ..ProfileSections::default()
+        },
+    };
+
+    let mut registry = JobRegistry::new();
+    registry
+        .register(Arc::new(NotifyJob::new(Arc::new(dispatchers))))
+        .unwrap();
+    registry
+        .register(Arc::new(
+            ExpiryDigestJob::from_profiles(
+                std::slice::from_ref(&profile),
+                notifiers,
+                database.clone(),
+                queue.clone(),
+            )
+            .expect("lead_days is set, so a digest is configured"),
+        ))
+        .unwrap();
+
+    // `recover` runs on the way into the loop and queues the profile's row at
+    // `run_at = now`, so the first pass produces the digest with nothing else
+    // to trigger it.
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    acme_proxy::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+
+    let mut recorded = Vec::new();
+    for _ in 0..400 {
+        recorded = recorder.events();
+        if !recorded.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let _ = shutdown.send(true);
+
+    assert_eq!(
+        recorded.len(),
+        1,
+        "one digest, not one message per certificate"
+    );
+    match &recorded[0] {
+        NotifyEvent::CertificatesExpiring(data) => {
+            assert_eq!(data.profile, "default");
+            assert_eq!(data.total, 1);
+            assert_eq!(
+                data.certificates[0].identifiers,
+                vec!["lapsing.example.com".to_string()]
+            );
+        }
+        other => panic!("expected a digest, got {other:?}"),
+    }
+}

@@ -63,7 +63,8 @@
 #   [meta]                     [per-profile]  directory `meta` members
 #   [notify]                   [per-profile]  outbound notifications
 #     [notify.email]
-#     [notify.mattermost]
+#     [notify.expiry]                   the periodic expiry digest
+#     [notify.webhook.<name>]           one table per named HTTP target
 #     [notify.custom.<name>]            one table per named script hook
 #   [dns]                               the resolver every lookup goes through
 #   [proxy]                             the forward proxy outbound clients use
@@ -1159,14 +1160,38 @@ smtp_password = ""                  # ACME_PROXY_NOTIFY__EMAIL__SMTP_PASSWORD
 smtp_security = "starttls"          # ACME_PROXY_NOTIFY__EMAIL__SMTP_SECURITY
 from = ""                           # ACME_PROXY_NOTIFY__EMAIL__FROM
 to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
-# Which of the six lifecycle events this backend reacts to. Defaults to all
-# six, listed explicitly rather than relying on "empty means all" — every
-# other list field in this file treats empty as OFF, so reusing that
-# convention here would silently mean "no events" the moment this is set to [].
+# Which lifecycle events this backend reacts to. Defaults to all of them,
+# listed explicitly rather than relying on "empty means all" — every other
+# list field in this file treats empty as OFF, so reusing that convention
+# here would silently mean "no events" the moment this is set to [].
+# "certificates_expiring" is the periodic digest below, which sends nothing
+# until notify.expiry.lead_days is set, so leaving it listed costs nothing.
 events = ["profile_mounted", "account_created", "account_deactivated",
-          "certificate_issued", "certificate_revoked", "challenge_failed"]
+          "certificate_issued", "certificate_revoked", "challenge_failed",
+          "certificates_expiring"]
                                      # ACME_PROXY_NOTIFY__EMAIL__EVENTS
 timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
+
+[notify.expiry]
+# The periodic digest of certificates approaching their expiry: ONE message
+# per profile per interval_days, listing what lapses inside lead_days.
+#
+# Deliberately not one message per certificate. A renewal is a new order, so
+# the certificate it replaced still expires on schedule — a per-certificate
+# reminder therefore fires for every certificate this CA has ever issued, on
+# its way out, in exactly the deployments where the automation is working.
+# The digest lists the already-replaced ones too, annotated, so the entries
+# nobody has renewed are the ones that stand out.
+#
+# 0 (the default) is OFF — the job is never scheduled at all, the same shape
+# as audit.retention_days and jobs.retention_days.
+lead_days = 0                       # ACME_PROXY_NOTIFY__EXPIRY__LEAD_DAYS
+# How often the digest is sent. There is deliberately no per-certificate rate
+# limit beside it: the digest is the rate limit.
+interval_days = 7                   # ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS
+# The most certificates one message lists. The number that matched is carried
+# whole regardless, so a truncated digest still says how many it did not name.
+max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
 
 # notify.webhook holds NAMED HTTP targets: one request per event, with the
 # URL, the method, the headers and the body all stated here. That is the whole

@@ -90,7 +90,7 @@ Sender email address.
 
 List of recipient email addresses.
 
-**`events`** (`Array`) — *Default: `["profile_mounted", "account_created", "account_deactivated", "certificate_issued", "certificate_revoked", "challenge_failed"]` | Env: `ACME_PROXY_NOTIFY__EMAIL__EVENTS`*
+**`events`** (`Array`) — *Default: every event | Env: `ACME_PROXY_NOTIFY__EMAIL__EVENTS`*
 
 Lifecycle events this backend reacts to.
 

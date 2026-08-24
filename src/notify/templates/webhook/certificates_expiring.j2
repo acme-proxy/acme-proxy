@@ -1,0 +1,1 @@
+{{ total }} certificate{{ "" if total == 1 else "s" }} expiring on {{ profile }} within {{ lead_days }} days{% for cert in certificates %}; {{ cert.identifiers | join(", ") }} in {{ cert.days_remaining }}d{{ " (already replaced)" if cert.superseded_by }}{% endfor %}{% if total > certificates | length %}; and {{ total - certificates | length }} more{% endif %}

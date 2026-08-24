@@ -19,6 +19,8 @@ pub struct NotifyConfig {
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub enabled: Vec<String>,
     pub email: EmailNotifyConfig,
+    /// The periodic expiry digest — off until `lead_days` is non-zero.
+    pub expiry: ExpiryNotifyConfig,
     /// Which of `webhook`'s entries to POST to, and in what order, when
     /// `webhook` is listed in `enabled` — the same shape as `custom_enabled`
     /// below, and resolved by the same [`resolve_named_entries`].
@@ -57,8 +59,8 @@ pub struct EmailNotifyConfig {
     pub from: String,
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub to: Vec<String>,
-    /// Which lifecycle events this backend reacts to. Defaults to all six,
-    /// listed explicitly rather than relying on "empty means all": every
+    /// Which lifecycle events this backend reacts to. Defaults to all of
+    /// them, listed explicitly rather than relying on "empty means all": every
     /// other list field in this codebase treats empty as *off*, so reusing
     /// that convention here would silently mean "no events" the moment an
     /// operator writes `events = []` expecting "all".
@@ -79,6 +81,44 @@ impl Default for EmailNotifyConfig {
             to: Vec::new(),
             events: all_notify_events(),
             timeout_ms: 5000,
+        }
+    }
+}
+/// `[notify.expiry]` — the periodic digest of certificates approaching expiry
+/// (see [`crate::notify::expiry`]).
+///
+/// One message per profile per `interval_days`, listing what lapses inside
+/// `lead_days`, and **not** one message per certificate: a renewal is a new
+/// order, so the certificate it replaced still expires on schedule and a
+/// per-certificate reminder would tell an operator about every certificate the
+/// CA has ever issued. The digest carries the superseded ones annotated
+/// instead, so the un-renewed rows are what stands out.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExpiryNotifyConfig {
+    /// How far ahead to look, in days. **`0` (the default) is off** — the job
+    /// is never registered at all, the shape `audit.retention_days` and
+    /// `jobs.retention_days` already use for "do not schedule this sweep".
+    pub lead_days: u64,
+    /// How often the digest is sent, in days. There is deliberately no
+    /// per-certificate rate limit beside it: the digest *is* the rate limit,
+    /// which is what the per-certificate shape needed a stored "last reminded"
+    /// timestamp for.
+    pub interval_days: u64,
+    /// The most certificates one message lists. The count of matches is
+    /// carried whole regardless, so a truncated digest still says how many it
+    /// did not name — a per-certificate message was self-limiting and this is
+    /// not, and ten thousand expiring at once is an unreadable mail and a
+    /// webhook body a provider refuses.
+    pub max_entries: usize,
+}
+
+impl Default for ExpiryNotifyConfig {
+    fn default() -> Self {
+        Self {
+            lead_days: 0,
+            interval_days: 7,
+            max_entries: 50,
         }
     }
 }
@@ -155,16 +195,24 @@ impl Default for CustomNotifyConfig {
     }
 }
 
-/// The six lifecycle events the `notify` subsystem can react to. Kept here
-/// rather than in `src/notify` so each backend's `events` default (below) can
-/// list them without creating a dependency from `config` on `notify`.
-pub const ALL_NOTIFY_EVENTS: [&str; 6] = [
+/// The lifecycle events the `notify` subsystem can react to. Kept here rather
+/// than in `src/notify` so each backend's `events` default (below) can list
+/// them without creating a dependency from `config` on `notify`.
+///
+/// `certificates_expiring` is the odd one and worth recognising as such: the
+/// other six are things that just happened to one account, order or
+/// certificate, where it is a periodic digest about however many certificates
+/// are approaching expiry. It reaches a backend only once
+/// `notify.expiry.lead_days` is non-zero, so listing it here does not start
+/// sending anything on its own.
+pub const ALL_NOTIFY_EVENTS: [&str; 7] = [
     "profile_mounted",
     "account_created",
     "account_deactivated",
     "certificate_issued",
     "certificate_revoked",
     "challenge_failed",
+    "certificates_expiring",
 ];
 
 fn all_notify_events() -> Vec<String> {

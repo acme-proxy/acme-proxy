@@ -33,6 +33,33 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Expiry reminders** (`[notify.expiry]`, off by default) — a periodic digest
+  of the certificates approaching their notAfter, as a seventh notify event
+  (`certificates_expiring`). `lead_days` is the window and `0` means the sweep
+  is never scheduled; `interval_days` (7) is how often a profile's digest is
+  sent, and one with nothing to report is not sent at all, so the absence of a
+  message is what "everything is renewed" looks like.
+
+  **One message per profile, not one per certificate**, which is the whole
+  design rather than a formatting choice: a renewal is a *new* order, so the
+  certificate it replaced still reaches its own expiry on schedule, and a
+  per-certificate reminder would fire for every certificate the CA has ever
+  issued — most loudly in the deployments where the automation is working. Each
+  entry instead carries whether something has already taken its place, drawn
+  from the successor's `replaces` field (RFC 9773 §5) or from a later,
+  unrevoked certificate of the same account covering all the same names, and
+  saying which. Both rules are deliberately narrow: a certificate wrongly
+  marked as renewed is one an operator skips past while it lapses, where one
+  wrongly left unmarked is a line of noise.
+
+  Two consequences worth knowing. `orders` gains a **`cert_not_after`** column
+  (a new migration — `not_after` was already taken by the *requested* §7.4
+  window, which is a different question with a confusingly similar name);
+  orders finalized before it are backfilled by the sweep itself. And a backend
+  with an explicit `events` list does not receive the digest until
+  `certificates_expiring` is added to it — the default list gains it
+  automatically, and sends nothing while `lead_days` is `0`.
+
 - **A `custom` IPAM backend** (`ipam.backend = "custom"`,
   `[ipam.custom]`) — the inventory is an operator script, for an estate whose
   record of truth is a CMDB, a `hosts` file, an LDAP tree or a vendor API this

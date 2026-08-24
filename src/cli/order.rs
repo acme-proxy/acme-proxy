@@ -312,8 +312,9 @@ mod tests {
         };
         let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
         let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+        let not_after = crate::cert::cert_validity(&leaf).ok().map(|(_, na)| na);
         order
-            .finalize(chain, serial, pubkey, &database)
+            .finalize(chain, serial, pubkey, not_after, &database)
             .await
             .unwrap();
     }

@@ -13,10 +13,18 @@ server.
 | `certificate_issued` | An order is finalized and a certificate is minted. |
 | `certificate_revoked` | A certificate is revoked, via the ACME API or the admin CLI. |
 | `challenge_failed` | A domain-control validation attempt fails. |
+| `certificates_expiring` | The periodic expiry digest, one per profile. |
 
-These six names are the only valid values wherever a backend's `events` list is
-configured. An unrecognised name is a **startup error**, not a silently ignored
-entry.
+These seven names are the only valid values wherever a backend's `events` list
+is configured. An unrecognised name is a **startup error**, not a silently
+ignored entry.
+
+`certificates_expiring` is the one that is not a thing that just happened. The
+first six describe a single account, order or certificate, at the moment it
+changed; this one is a digest sent on a schedule, listing the certificates on
+one profile that expire inside a configured window. It sends nothing until
+[`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
+`events` list costs nothing.
 
 ## Backends
 
@@ -77,6 +85,49 @@ at its compiled-in default. Empty means defaults only.
 
 Each backend additionally takes its own `events` list and `timeout_ms`; see the
 backend pages.
+
+### Expiry digest
+
+A certificate approaching its notAfter is the one thing the events above cannot
+report: nothing *happens* when a certificate is a fortnight from expiring. The
+`[notify.expiry]` table adds a periodic sweep that looks, and sends **one
+message per profile** listing what it found.
+
+Deliberately not one message per certificate. A renewal is a *new* order, so
+the certificate it replaced still reaches its own expiry on schedule — a
+per-certificate reminder therefore fires for every certificate the CA has ever
+issued, on its way out, in exactly the deployments where the automation is
+working. Instead, each entry in the digest says whether something has already
+taken its place, and the entries where nothing has are the ones worth acting
+on.
+
+That annotation is drawn from two signals, and the message says which was used:
+the successor order's own `replaces` field (RFC 9773 §5 — exact, but only from
+clients that send one), or a later, unrevoked certificate of the **same
+account** covering **all** of the same names. Both are deliberately narrow. A
+certificate wrongly marked as already renewed is one an operator skips over
+while it lapses; one wrongly left unmarked is a line of noise.
+
+**`expiry.lead_days`** (`Integer`) — *Default: `0` | Env: `ACME_PROXY_NOTIFY__EXPIRY__LEAD_DAYS`*
+
+How far ahead to look. **`0` is off** — the sweep is never scheduled at all,
+the same shape `audit.retention_days` and `jobs.retention_days` use.
+
+**`expiry.interval_days`** (`Integer`) — *Default: `7` | Env: `ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS`*
+
+How often the digest is sent. There is deliberately no per-certificate rate
+limit beside it: the digest is the rate limit. A digest with nothing to report
+is not sent, so the absence of a message is what "everything is renewed" looks
+like.
+
+**`expiry.max_entries`** (`Integer`) — *Default: `50` | Env: `ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES`*
+
+The most certificates one message lists. The number that matched is carried
+whole regardless, so a truncated digest still says how many it did not name.
+
+The schedule is a row in the durable job queue rather than a timer, so it
+survives a restart: a server restarting more often than `interval_days` still
+sends its digest on time instead of resetting the clock each start.
 
 ## Delivery semantics
 

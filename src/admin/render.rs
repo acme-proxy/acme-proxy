@@ -102,6 +102,19 @@ pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[String]) ->
         "createdAt".to_string(),
         Value::String(rfc3339(order.created_at)),
     );
+    // The leaf's own expiry, and admin-only for `accountId`'s reason: RFC 8555
+    // gives the order object no member for it, and the `notAfter` already in
+    // there from `to_json` is the *requested* §7.4 window, which is a different
+    // question with a confusingly similar name. Omitted rather than nulled,
+    // like every other member here — a row issued before the column existed has
+    // nothing to say yet, and the negative sentinel means the chain would not
+    // parse, which is not a date to render.
+    if let Some(not_after) = order.cert_not_after.filter(|value| *value >= 0) {
+        object.insert(
+            "certNotAfter".to_string(),
+            Value::String(rfc3339(not_after)),
+        );
+    }
     if let Some(revoked_at) = order.revoked_at {
         object.insert("revokedAt".to_string(), Value::String(rfc3339(revoked_at)));
         if let Some(reason) = order.revocation_reason {

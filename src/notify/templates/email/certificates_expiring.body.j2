@@ -1,0 +1,15 @@
+{{ total }} certificate{{ "" if total == 1 else "s" }} issued on profile "{{ profile }}" expire within the next {{ lead_days }} day{{ "" if lead_days == 1 else "s" }}.
+{% for cert in certificates %}
+{{ cert.identifiers | join(", ") }}
+  Expires in {{ cert.days_remaining }} day{{ "" if cert.days_remaining == 1 else "s" }}
+  Serial: {{ cert.cert_serial }}
+  Order: {{ cert.order_id }}
+  Account: {{ cert.account_id }}
+{%- if cert.superseded_by %}
+  Already replaced by order {{ cert.superseded_by.order_id }} (serial {{ cert.superseded_by.cert_serial }}){{ ", which the client said itself" if cert.superseded_by.via == "replaces" else ", which covers the same names" }}
+{%- endif %}
+{% endfor %}
+{%- if total > certificates | length %}
+...and {{ total - certificates | length }} more, not listed.
+{% endif %}
+Entries with no "already replaced" line are the ones nobody has renewed.

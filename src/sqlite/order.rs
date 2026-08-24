@@ -63,6 +63,12 @@ impl Identifier {
 ///   key — the former is how a `POST /revokeCert` request is looked up
 ///   ([`Order::find_by_cert_serial`]), the latter is how it can be authorized
 ///   by the certificate's own key pair (RFC 8555 §7.6's accountless case).
+/// - `cert_not_after` is populated the same way and from the same leaf, and is
+///   **not** `not_after`: that one is the validity the client *asked* for
+///   (§7.4), usually absent and clamped by the signer when it is not, where
+///   this is what the certificate says. `NULL` means the row predates the
+///   column and nothing has parsed its chain yet; a negative value means the
+///   sweep parsed it and could not (see the migration).
 /// - `revoked_at`/`revocation_reason` are this order's own revocation
 ///   bookkeeping ([`Order::revoke`]), orthogonal to `status`: RFC 8555 defines
 ///   no "revoked" order status, so a revoked order's `status` stays `valid`.
@@ -96,6 +102,7 @@ pub struct Order {
     pub replaces: Option<String>,
     pub cert_serial: Option<String>,
     pub cert_pubkey: Option<Vec<u8>>,
+    pub cert_not_after: Option<i64>,
     pub revoked_at: Option<i64>,
     pub revocation_reason: Option<i64>,
     pub created_at: i64,
@@ -175,8 +182,21 @@ pub(crate) fn rfc3339(secs: i64) -> String {
 macro_rules! columns {
     () => {
         "id, profile, account_id, status, identifiers, expires, not_before, not_after, \
-         error, certificate, replaces, cert_serial, cert_pubkey, revoked_at, \
-         revocation_reason, created_at, created_ip, created_ptr"
+         error, certificate, replaces, cert_serial, cert_pubkey, cert_not_after, \
+         revoked_at, revocation_reason, created_at, created_ip, created_ptr"
+    };
+}
+
+/// The digest's `FROM`/`WHERE`, shared by [`Order::find_expiring`]'s page and
+/// its count for the reason [`OrderQuery::push_predicates`] is one function: a
+/// predicate applied to only one of them reports a total the rows do not match,
+/// which a page control shows and nothing else does.
+///
+/// A `macro_rules!` for `columns!`'s reason — `concat!` needs a literal.
+macro_rules! expiring {
+    () => {
+        " FROM orders WHERE profile = ? AND certificate IS NOT NULL \
+          AND revoked_at IS NULL AND cert_not_after >= 0 AND cert_not_after <= ?"
     };
 }
 
@@ -208,6 +228,7 @@ impl Order {
             replaces: row.try_get("replaces")?,
             cert_serial: row.try_get("cert_serial")?,
             cert_pubkey: row.try_get("cert_pubkey")?,
+            cert_not_after: row.try_get("cert_not_after")?,
             revoked_at: row.try_get("revoked_at")?,
             revocation_reason: row.try_get("revocation_reason")?,
             created_at: row.try_get("created_at")?,
@@ -242,6 +263,7 @@ impl Order {
             replaces: None,
             cert_serial: None,
             cert_pubkey: None,
+            cert_not_after: None,
             revoked_at: None,
             revocation_reason: None,
             created_at: now_secs(),
@@ -524,26 +546,39 @@ impl Order {
     }
 
     /// Records a successful issuance: stores the PEM `chain` plus the leaf's
-    /// `cert_serial` (hex) and `cert_pubkey` (DER SPKI) — populated by the
-    /// caller from that same chain via [`crate::cert::cert_serial_and_spki`],
+    /// `cert_serial` (hex), `cert_pubkey` (DER SPKI) and `cert_not_after` —
+    /// all three populated by the caller from that same chain via
+    /// [`crate::cert::cert_serial_and_spki`] and [`crate::cert::cert_validity`],
     /// since parsing needs error handling the DB layer doesn't otherwise deal
     /// in — moves the order to the terminal `valid` state, and keeps `self`
     /// in sync so a following [`Order::to_json`] reflects the change without
     /// a re-read.
+    ///
+    /// `cert_not_after` is `Option` where the other two are not, and the
+    /// asymmetry is deliberate: the serial and the public key are what make a
+    /// certificate revocable, so a chain they cannot be read from is a failed
+    /// issuance, while the expiry is housekeeping for the digest and a leaf
+    /// this server cannot read the validity of must still be recorded as
+    /// issued. Callers pass `None` rather than refusing — the rule
+    /// `LocalCa::revoke` already follows when it records a revoked leaf's
+    /// expiry, and the sweep will try the chain again later.
     pub async fn finalize(
         &mut self,
         chain: String,
         cert_serial: String,
         cert_pubkey: Vec<u8>,
+        cert_not_after: Option<i64>,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_order_finalize_started", outcome = "progress", order_id = ?self.id);
         sqlx::query(
-            "UPDATE orders SET certificate = ?, cert_serial = ?, cert_pubkey = ?, status = 'valid' WHERE id = ?;",
+            "UPDATE orders SET certificate = ?, cert_serial = ?, cert_pubkey = ?, \
+             cert_not_after = ?, status = 'valid' WHERE id = ?;",
         )
         .bind(&chain)
         .bind(&cert_serial)
         .bind(&cert_pubkey)
+        .bind(cert_not_after)
         .bind(&self.id)
         .execute(&database.pool)
         .await?;
@@ -551,8 +586,112 @@ impl Order {
         self.certificate = Some(chain);
         self.cert_serial = Some(cert_serial);
         self.cert_pubkey = Some(cert_pubkey);
+        self.cert_not_after = cert_not_after;
         self.status = OrderStatus::Valid;
         debug!(event = "db_order_finalized", outcome = "success", order_id = ?self.id);
+        Ok(())
+    }
+
+    /// The certificates on `profile` that expire at or before `before`, soonest
+    /// first, with the unpaged total beside the page — the digest's whole query
+    /// (`[notify.expiry]`, [`crate::notify::expiry`]).
+    ///
+    /// Three predicates, each carrying its own reason. `certificate IS NOT
+    /// NULL` because an order that never issued has nothing to expire;
+    /// `revoked_at IS NULL` because a withdrawn certificate is not something to
+    /// go and renew; and `cert_not_after >= 0` because a negative value is the
+    /// sweep's sentinel for a chain it could not parse, which is a row to leave
+    /// alone rather than to report as expiring in 1970. They are exactly the
+    /// partial index's own predicate, so this is an index range scan.
+    ///
+    /// The total is counted rather than derived from the page, so "…and N more"
+    /// can be honest without loading a tail nobody will read. `id` breaks the
+    /// ordering tie for [`Order::search`]'s reason: two certificates can share
+    /// a whole-second expiry, and a stable order is what stops one of them
+    /// being dropped between the page and the count.
+    pub async fn find_expiring(
+        profile: &str,
+        before: i64,
+        limit: i64,
+        database: &Database,
+    ) -> Result<(Vec<Order>, i64), sqlx::Error> {
+        debug!(
+            event = "db_order_find_expiring_started",
+            outcome = "progress",
+            profile = %profile,
+            before,
+            limit
+        );
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            expiring!(),
+            " ORDER BY cert_not_after ASC, id ASC LIMIT ?;"
+        ))
+        .bind(profile)
+        .bind(before)
+        .bind(limit)
+        .fetch_all(&database.pool)
+        .await?;
+        let orders: Vec<Order> = rows
+            .into_iter()
+            .map(Order::from_row)
+            .collect::<Result<_, _>>()?;
+
+        let total: i64 = sqlx::query(concat!("SELECT COUNT(*)", expiring!(), ";"))
+            .bind(profile)
+            .bind(before)
+            .fetch_one(&database.pool)
+            .await?
+            .try_get(0)?;
+
+        Ok((orders, total))
+    }
+
+    /// The issued orders on `profile` whose `cert_not_after` has never been
+    /// derived — rows finalized before the column existed. At most `limit` per
+    /// call, since this parses an X.509 chain per row and the digest that calls
+    /// it is not the only thing the runner has to do.
+    ///
+    /// Returns `(id, chain)` pairs rather than whole orders: the caller wants
+    /// the PEM and nothing else, and a digest running against a long-lived
+    /// deployment would otherwise inflate every row it is about to discard.
+    pub async fn find_unstamped(
+        profile: &str,
+        limit: i64,
+        database: &Database,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, certificate FROM orders WHERE profile = ? \
+             AND certificate IS NOT NULL AND cert_not_after IS NULL LIMIT ?;",
+        )
+        .bind(profile)
+        .bind(limit)
+        .fetch_all(&database.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok((row.try_get("id")?, row.try_get("certificate")?)))
+            .collect()
+    }
+
+    /// Writes a `cert_not_after` derived after the fact by the sweep.
+    ///
+    /// Separate from [`Order::finalize`] because it is a backfill and not an
+    /// issuance: it touches one column, never `status`, and it is the one
+    /// caller that legitimately writes the negative sentinel — a chain that
+    /// will not parse has to be *recorded* as unparsable, or every pass parses
+    /// it again for the life of the deployment.
+    pub async fn set_cert_not_after(
+        id: &str,
+        cert_not_after: i64,
+        database: &Database,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE orders SET cert_not_after = ? WHERE id = ?;")
+            .bind(cert_not_after)
+            .bind(id)
+            .execute(&database.pool)
+            .await?;
         Ok(())
     }
 
@@ -1074,6 +1213,7 @@ mod tests {
                 "-----BEGIN CERTIFICATE-----\n...".to_string(),
                 "aabbcc".to_string(),
                 vec![1, 2, 3],
+                Some(now_secs() + 90 * 24 * 60 * 60),
                 &db,
             )
             .await
@@ -1089,6 +1229,7 @@ mod tests {
         assert_eq!(reloaded.status, OrderStatus::Valid);
         assert_eq!(reloaded.cert_serial.as_deref(), Some("aabbcc"));
         assert_eq!(reloaded.cert_pubkey.as_deref(), Some(&[1u8, 2, 3][..]));
+        assert!(reloaded.cert_not_after.is_some());
         let json = reloaded.to_json("http://localhost:3000", &[]);
         assert_eq!(
             json["certificate"],
@@ -1159,7 +1300,7 @@ mod tests {
             match prepare {
                 None => {}
                 Some(OrderStatus::Valid) => order
-                    .finalize("chain".to_string(), "aa".to_string(), vec![1], &db)
+                    .finalize("chain".to_string(), "aa".to_string(), vec![1], None, &db)
                     .await
                     .unwrap(),
                 Some(_) => order
@@ -1232,6 +1373,7 @@ mod tests {
                 "-----BEGIN CERTIFICATE-----\n...".to_string(),
                 serial.to_string(),
                 vec![9, 9, 9],
+                None,
                 &db,
             )
             .await
@@ -1685,5 +1827,172 @@ mod tests {
         // The table is still there, which is what the second vector is for.
         let (_, total) = Order::search(&window(50, 0), &db).await.unwrap();
         assert_eq!(total, 2);
+    }
+
+    /// A helper for the expiry suite: an issued order whose leaf expires at
+    /// `not_after`, written through `finalize` so the row's shape is the
+    /// production one and only the date is a fixture.
+    async fn expiring_order(
+        db: &Database,
+        account: &str,
+        names: &[&str],
+        not_after: Option<i64>,
+    ) -> Order {
+        let mut order = Order::create(
+            "default",
+            account,
+            names.iter().map(|name| Identifier::dns(*name)).collect(),
+            now_secs() + 3600,
+            None,
+            None,
+            db,
+        )
+        .await
+        .unwrap();
+        order
+            .finalize(
+                "-----BEGIN CERTIFICATE-----\n...".to_string(),
+                format!("serial-{}", &order.id[..8]),
+                vec![1],
+                not_after,
+                db,
+            )
+            .await
+            .unwrap();
+        order
+    }
+
+    const DAY: i64 = 24 * 60 * 60;
+
+    /// The window and the ordering: soonest first, and nothing past the
+    /// horizon.
+    #[tokio::test]
+    async fn find_expiring_returns_the_window_soonest_first() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+
+        let far = expiring_order(&db, &acct, &["far.example.com"], Some(now + 60 * DAY)).await;
+        let soon = expiring_order(&db, &acct, &["soon.example.com"], Some(now + 2 * DAY)).await;
+        let mid = expiring_order(&db, &acct, &["mid.example.com"], Some(now + 9 * DAY)).await;
+
+        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 10, &db)
+            .await
+            .unwrap();
+
+        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
+        assert_eq!(ids, vec![soon.id.as_str(), mid.id.as_str()]);
+        assert_eq!(total, 2);
+        assert!(
+            !ids.contains(&far.id.as_str()),
+            "a certificate outside the window is not expiring yet"
+        );
+    }
+
+    /// The three rows the digest must never report, each for its own reason.
+    #[tokio::test]
+    async fn find_expiring_skips_revoked_unstamped_and_unparsable_rows() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+
+        let live = expiring_order(&db, &acct, &["live.example.com"], Some(now + DAY)).await;
+
+        // Revoked: withdrawn, so not something to go and renew.
+        let mut revoked =
+            expiring_order(&db, &acct, &["revoked.example.com"], Some(now + DAY)).await;
+        revoked.revoke(Some(1), &db).await.unwrap();
+
+        // Never stamped: issued before the column existed. The backfill has to
+        // reach it before the digest can, or a NULL would sort as "expiring".
+        expiring_order(&db, &acct, &["old.example.com"], None).await;
+
+        // Stamped unparsable: the sweep looked and could not read the chain.
+        // A negative value must not read as "expired in 1970".
+        let broken = expiring_order(&db, &acct, &["broken.example.com"], None).await;
+        Order::set_cert_not_after(&broken.id, -1, &db)
+            .await
+            .unwrap();
+
+        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 10, &db)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
+        assert_eq!(ids, vec![live.id.as_str()]);
+        assert_eq!(total, 1);
+    }
+
+    /// The total is counted, not derived from the page — which is the whole
+    /// reason `max_entries` can truncate a digest and it can still say how many
+    /// it did not name.
+    #[tokio::test]
+    async fn find_expiring_reports_the_unpaged_total() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+        for index in 0..5 {
+            let name = format!("host-{index}.example.com");
+            expiring_order(&db, &acct, &[name.as_str()], Some(now + DAY)).await;
+        }
+
+        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 2, &db)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(total, 5);
+    }
+
+    /// One endpoint never reports another's certificates — `find_by_cert_serial`'s
+    /// rule, and for the same reason.
+    #[tokio::test]
+    async fn find_expiring_scopes_by_profile() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+        expiring_order(&db, &acct, &["a.example.com"], Some(now + DAY)).await;
+
+        let (page, total) = Order::find_expiring("other", now + 14 * DAY, 10, &db)
+            .await
+            .unwrap();
+        assert!(page.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    /// The backfill's input: rows with a chain and no stamp, and nothing else.
+    #[tokio::test]
+    async fn find_unstamped_finds_only_issued_rows_with_no_stamp() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+
+        let unstamped = expiring_order(&db, &acct, &["old.example.com"], None).await;
+        expiring_order(&db, &acct, &["new.example.com"], Some(now_secs())).await;
+        // Never issued: no certificate, so nothing to parse.
+        Order::create(
+            "default",
+            &acct,
+            vec![Identifier::dns("pending.example.com")],
+            now_secs() + 3600,
+            None,
+            None,
+            &db,
+        )
+        .await
+        .unwrap();
+
+        let rows = Order::find_unstamped("default", 10, &db).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, unstamped.id);
+
+        // And once stamped it stops being returned, which is what stops the
+        // sweep re-parsing the same row for ever.
+        Order::set_cert_not_after(&unstamped.id, -1, &db)
+            .await
+            .unwrap();
+        assert!(
+            Order::find_unstamped("default", 10, &db)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

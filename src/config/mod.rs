@@ -1121,6 +1121,9 @@ mod tests {
         assert!(config.notify.custom_enabled.is_empty());
         assert!(config.notify.custom.is_empty());
         assert_eq!(config.notify.template_dir, "");
+        assert_eq!(config.notify.expiry.lead_days, 0);
+        assert_eq!(config.notify.expiry.interval_days, 7);
+        assert_eq!(config.notify.expiry.max_entries, 50);
         assert_eq!(config.notify.email.smtp_port, 587);
         assert_eq!(config.notify.email.smtp_security, "starttls");
         assert_eq!(
@@ -1131,7 +1134,8 @@ mod tests {
                 "account_deactivated",
                 "certificate_issued",
                 "certificate_revoked",
-                "challenge_failed"
+                "challenge_failed",
+                "certificates_expiring"
             ]
         );
         assert!(config.notify.webhook_enabled.is_empty());

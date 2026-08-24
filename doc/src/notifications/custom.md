@@ -48,12 +48,12 @@ Maximum execution time. A script still running when this expires is killed.
 
 Static arguments passed to the script on every invocation.
 
-**`events`** (`Array`) — *Default: all six events | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__EVENTS`*
+**`events`** (`Array`) — *Default: every event | Env: `ACME_PROXY_NOTIFY__CUSTOM__<NAME>__EVENTS`*
 
 Which events this script reacts to. Valid names are `profile_mounted`,
 `account_created`, `account_deactivated`, `certificate_issued`,
-`certificate_revoked`, `challenge_failed`. An unrecognised name is a startup
-error.
+`certificate_revoked`, `challenge_failed`, `certificates_expiring`. An
+unrecognised name is a startup error.
 
 ## Execution model and security
 
@@ -88,6 +88,12 @@ empty string rather than omitted, so a script can read them unconditionally.
 | `ACME_NOTIFY_ORDER_ID` | The order, when the event has one. |
 | `ACME_NOTIFY_CERT_SERIAL` | The certificate serial, on `certificate_issued` / `certificate_revoked`. |
 | `ACME_NOTIFY_IDENTIFIERS` | Comma-joined identifier values. Only populated for `certificate_issued`. |
+
+On `certificates_expiring` every variable but `ACME_NOTIFY_HOOK` and
+`ACME_NOTIFY_PROFILE` is **empty**, and that is not an omission: a digest is
+about a list of certificates spanning however many accounts, so there is no one
+account, order or serial for a variable to hold. Read the list from the JSON on
+stdin, which is the channel that carries structure.
 
 > There is no `ACME_NOTIFY_EVENT`; the event name is `ACME_NOTIFY_HOOK`.
 

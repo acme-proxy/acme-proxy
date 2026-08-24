@@ -730,8 +730,23 @@ pub async fn post_finalize(
         }
     };
 
+    // Best-effort, unlike the two above: the serial and the public key are
+    // what make this certificate revocable, so a chain they cannot be read
+    // from is the failure handled above, while the expiry is housekeeping for
+    // the expiry digest. A leaf whose validity will not parse is still an
+    // issued certificate, and the digest's own sweep will try again later.
+    let cert_not_after = crate::cert::cert_validity(&leaf_der)
+        .ok()
+        .map(|(_, not_after)| not_after);
+
     order
-        .finalize(chain, cert_serial.clone(), cert_pubkey, &database)
+        .finalize(
+            chain,
+            cert_serial.clone(),
+            cert_pubkey,
+            cert_not_after,
+            &database,
+        )
         .await
         .map_err(|error| {
             error!(

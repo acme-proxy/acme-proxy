@@ -1346,7 +1346,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     let (serial, spki) =
         acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     order
-        .finalize(chain, serial, spki, &database)
+        .finalize(chain, serial, spki, None, &database)
         .await
         .unwrap();
 
@@ -1445,7 +1445,7 @@ async fn issue_into_an_order(
     let (serial, spki) =
         acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     order
-        .finalize(chain.clone(), serial, spki, database)
+        .finalize(chain.clone(), serial, spki, None, database)
         .await
         .unwrap();
 

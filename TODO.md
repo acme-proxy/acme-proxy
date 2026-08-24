@@ -67,11 +67,30 @@ keeps its corpses stops being read.
 
 ## Notifications
 
-- [ ] **Expiry reminders**, at most one message per certificate per week. One
-      piece is missing: nothing stores the leaf's notAfter (`orders` holds the
-      PEM, and a notAfter column is a **new** migration, never an edit to a
-      frozen one). The sweep itself is now a `JobHandler` returning
-      `Reschedule`, the shape `jobs::retention` already uses.
-  - [ ] Address them to the account's own `contact`, not only to the operator.
-        Every existing `NotifyEvent` goes wherever the backend is configured to
-        send; this would be the first whose recipient comes out of the data.
+- [ ] **An admin surface for the expiry list.** The digest
+      (`[notify.expiry]`) answers "what lapses soon, and has anything replaced
+      it?" once per interval, into a mailbox. The same question asked from the
+      panel wants `GET /api/expiring`, `/ui/expiring` (list plus the
+      `HX-Request` fragment, a nav entry in `layout.html`) and `order list
+      --expiring-in <days>`. **Read-only**, so it belongs in neither
+      `mutating_endpoints()` nor `mutating_page_endpoints()` — the audit
+      surface's standing, and for its reason: there is no route to list.
+      `Order::find_expiring` already is the query, ordering included, and
+      `notify::expiry`'s `superseded_by` already is the annotation; what needs
+      deciding is whether that annotation moves down to `admin::ops` so the
+      digest and the page cannot drift, and whether superseded rows are shown
+      by default or behind a filter — the digest wants them visible and
+      annotated, where a page has room for a control the digest does not.
+      `render_expiring_json` in `src/admin/render.rs`, the human renderings in
+      `src/cli/render.rs`, the split that keeps a `Palette` structurally out of
+      reach of a `--json` shape.
+- [ ] **Address expiry reminders to the account's own `contact`**, not only to
+      the operator. Every existing `NotifyEvent` goes wherever the backend is
+      configured to send; this would be the first whose recipient comes out of
+      the data, and `EmailNotifier` holds a fixed `to` with no per-event path.
+      Two things come with it: a contact is unverified text a client typed, so
+      an opt-in default and a domain allowlist are the price of turning it on;
+      and the digest shape means one mail **per account** listing that
+      account's own names, which is a different grouping from the
+      whole-profile digest an operator gets — not the same message resent to
+      everybody named in it.

@@ -805,6 +805,25 @@ pub(crate) fn build_generation(
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
 
+    // The expiry digest, registered only when some profile asked for one
+    // (`notify.expiry.lead_days`), the way `CrlSweepJob` is registered only
+    // when there is a ledger to prune. It takes the `Notifiers` handle rather
+    // than the profiles' own dispatchers for `NotifyJob`'s reason above, and
+    // the queue because its per-profile rows are something it maintains on
+    // every pass rather than only at `recover`.
+    if let Some(digest) = crate::notify::expiry::ExpiryDigestJob::from_profiles(
+        resolved,
+        assembly.notifiers.clone(),
+        database.clone(),
+        assembly.jobs.clone(),
+    ) {
+        job_registry
+            .register(Arc::new(digest))
+            .inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
+    }
+
     // The periodic table sweeps. Each is one self-rescheduling row rather than
     // its own interval loop, so a sweep that dies is reclaimed by lease expiry
     // and its schedule survives a restart. Their `recover` is also the startup
