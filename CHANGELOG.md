@@ -31,6 +31,31 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Added
+
+- **A `custom` IPAM backend** (`ipam.backend = "custom"`,
+  `[ipam.custom]`) — the inventory is an operator script, for an estate whose
+  record of truth is a CMDB, a `hosts` file, an LDAP tree or a vendor API this
+  server carries no client for. It runs under the same hardening as the
+  `custom` filter, signer and notifier (cleared environment, minimal `PATH`,
+  `kill_on_drop`): `ACME_IPAM_HOOK`/`ACME_IPAM_CLIENT_IP` plus the same address
+  again as JSON on stdin, and one permitted name per line on stdout. Exit `0`
+  is "these are its names" (empty stdout being "recorded, and entitled to
+  nothing"), exit **`3`** is reserved for "no record of this address at all",
+  and every other non-zero exit — like a missing script or a timeout — is a
+  retryable `500` rather than a denial, the guarantee an unreachable NetBox
+  already had. Two keys, `script_path` and `args`; there is deliberately no
+  `sources` (the script is the source) and no `timeout_ms` of its own
+  (`ipam.timeout_ms` is the budget, and is what kills the child).
+
+  It exists as much to prove the `Ipam` seam as to be useful: NetBox and
+  phpIPAM share a `sources` vocabulary, a transport and a wire status code, so
+  between them they never showed whether the trait generalised. This backend
+  has none of the three and needed no change to `Ipam`, `AddressNames` or
+  `IpamRegistry`. `tests/filters.rs` now runs the same `ipam` assertions three
+  times over three backends, and the e2e scenario needs no mock container at
+  all.
+
 ### Packaging
 
 - Published to [crates.io](https://crates.io/crates/acme-proxy), so

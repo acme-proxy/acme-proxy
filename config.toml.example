@@ -58,6 +58,7 @@
 #   [ipam]                     [per-profile]  the inventory `ipam` consults
 #     [ipam.netbox]
 #     [ipam.phpipam]
+#     [ipam.custom]
 #   [eab]                      [per-profile]  External Account Binding
 #   [meta]                     [per-profile]  directory `meta` members
 #   [notify]                   [per-profile]  outbound notifications
@@ -932,9 +933,9 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # out is NOT a denial: it is reported as a server error (500) the client can
 # retry, so an outage stops issuance rather than permitting everything.
 #
-# Which product to ask: "netbox", "phpipam", or empty for none. Anything else
-# is a startup error rather than a silent fallback. Enabling the `ipam` filter
-# with this empty is also a startup error.
+# Which product to ask: "netbox", "phpipam", "custom" (an operator script), or
+# empty for none. Anything else is a startup error rather than a silent
+# fallback. Enabling the `ipam` filter with this empty is also a startup error.
 backend = ""                        # ACME_PROXY_IPAM__BACKEND
 # Budget for one whole lookup, however many requests the backend makes to
 # answer it — the address query plus, depending on sources, up to four more.
@@ -1034,6 +1035,47 @@ ca_cert_path = ""                   # ACME_PROXY_IPAM__PHPIPAM__CA_CERT_PATH
 # [ipam.netbox].insecure_skip_verify, and warned about at startup in the same
 # way for as long as it is set.
 insecure_skip_verify = false        # ACME_PROXY_IPAM__PHPIPAM__INSECURE_SKIP_VERIFY
+
+[ipam.custom]
+# Only read when backend = "custom" (above). The inventory is an operator
+# script, so this section has no url, no credential and no `sources`: the
+# script decides for itself where its answer comes from — a CMDB, a hosts
+# file, an LDAP tree, a vendor API this server carries no client for.
+#
+# The script is told the address twice, so neither a one-line shell script nor
+# a Python one has to reach for the channel it finds awkward:
+#
+#   ACME_IPAM_HOOK=names_for        the only hook there is
+#   ACME_IPAM_CLIENT_IP=<address>   the resolved, canonicalized client address
+#   stdin                           {"hook":"names_for","client_ip":"..."}
+#
+# It answers with stdout plus an exit code:
+#
+#   exit 0    stdout is the permitted names, ONE PER LINE. Blank lines are
+#             ignored, and each name is lowercased and stripped of a trailing
+#             dot, so the script may print whatever form its inventory holds.
+#             Empty stdout means "recorded, and entitled to nothing".
+#   exit 3    RESERVED: this inventory holds no record of that address at all.
+#             A different refusal from the one above, worded its own way, so
+#             an operator reading a 403 can tell the two apart. stdout is
+#             ignored.
+#   anything  the script failed, which is the SERVER failing to decide: a
+#   else      retryable 500, never a denial. Same for a script that cannot be
+#             spawned or that runs past timeout_ms. The first non-empty line of
+#             stdout (else stderr) is the reason logged.
+#
+# An empty script_path is a startup error, the same as [signer.custom] and
+# [filter.check.<name>] of type "custom".
+#
+# NOTE `acme-proxy filter explain` really runs the policy, so it executes this
+# script — as it does the `custom` filter's.
+script_path = ""                    # ACME_PROXY_IPAM__CUSTOM__SCRIPT_PATH
+# Fixed arguments passed before the script is told anything about the request.
+# One script can serve several deployments by branching on them.
+args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
+#
+# There is deliberately NO timeout_ms here: ipam.timeout_ms above is the budget
+# the whole lookup runs under, and it is what kills the child at the deadline.
 
 [eab]   # [per-profile] — a [profiles.<name>] block may override these
 # Require External Account Binding (RFC 8555 §7.3.4) on every newAccount that

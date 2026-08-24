@@ -30,8 +30,8 @@
 //! - External Account Binding (§7.3.4), account key rollover (§7.3.5) and
 //!   Renewal Information (RFC 9773)
 //! - Access control behind a policy engine of named checks combined by boolean
-//!   rules, including an IPAM lookup (NetBox or phpIPAM) asking the inventory
-//!   whether the client's own address owns the names it is requesting
+//!   rules, including an IPAM lookup (NetBox, phpIPAM or a script) asking the
+//!   inventory whether the client's own address owns the names it is requesting
 //! - An append-only audit trail of every issuance *and every refusal*
 //! - An optional web admin listener, and admin subcommands in the same binary
 //! - Optional Prometheus metrics on a third listener of their own
@@ -61,7 +61,7 @@
 //! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
 //!   webhook, custom)
 //! - [`ipam`] - The inventory [`filter`] asks which names an address owns
-//!   (NetBox, phpIPAM), behind one trait
+//!   (NetBox, phpIPAM, a custom script), behind one trait
 //! - [`eab`] - Verification of the External Account Binding inner JWS (§7.3.4)
 //! - [`key_change`] - Verification of account key rollover JWS (§7.3.5)
 //! - [`dns`] - The resolver shared by every subsystem that looks anything up

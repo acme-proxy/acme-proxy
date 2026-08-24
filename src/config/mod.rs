@@ -198,6 +198,7 @@ const LIST_KEYS: &[&str] = &[
     "ipam.netbox.sources",
     "ipam.netbox.vip_roles",
     "ipam.phpipam.sources",
+    "ipam.custom.args",
     "signer.relay.contact",
     "signer.custom.args",
     "signer.local_ca.crl_distribution_points",
@@ -224,6 +225,7 @@ impl Config {
             "ipam.netbox.sources" => &self.ipam.netbox.sources,
             "ipam.netbox.vip_roles" => &self.ipam.netbox.vip_roles,
             "ipam.phpipam.sources" => &self.ipam.phpipam.sources,
+            "ipam.custom.args" => &self.ipam.custom.args,
             "signer.relay.contact" => &self.signer.relay.contact,
             "signer.custom.args" => &self.signer.custom.args,
             "signer.local_ca.crl_distribution_points" => {
@@ -1413,6 +1415,11 @@ mod tests {
             example.ipam.phpipam.insecure_skip_verify,
             defaults.ipam.phpipam.insecure_skip_verify
         );
+        assert_eq!(
+            example.ipam.custom.script_path,
+            defaults.ipam.custom.script_path
+        );
+        assert_eq!(example.ipam.custom.args, defaults.ipam.custom.args);
         assert_eq!(example.eab.enabled, defaults.eab.enabled);
         assert_eq!(example.notify.enabled, defaults.notify.enabled);
         assert_eq!(
@@ -1560,7 +1567,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            20,
+            21,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );

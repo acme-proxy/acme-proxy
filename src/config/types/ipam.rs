@@ -16,8 +16,8 @@ use super::empty_string_is_no_values;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct IpamConfig {
-    /// `netbox`, `phpipam`, or empty for no inventory at all. Anything else is
-    /// a startup error rather than a silent fallback.
+    /// `netbox`, `phpipam`, `custom`, or empty for no inventory at all.
+    /// Anything else is a startup error rather than a silent fallback.
     pub backend: String,
     /// Budget for one whole lookup, however many requests the backend makes to
     /// answer it. Applied by the registry rather than by each backend, so a
@@ -26,6 +26,7 @@ pub struct IpamConfig {
     pub timeout_ms: u64,
     pub netbox: NetboxConfig,
     pub phpipam: PhpIpamConfig,
+    pub custom: CustomIpamConfig,
 }
 
 impl Default for IpamConfig {
@@ -35,6 +36,7 @@ impl Default for IpamConfig {
             timeout_ms: 5000,
             netbox: NetboxConfig::default(),
             phpipam: PhpIpamConfig::default(),
+            custom: CustomIpamConfig::default(),
         }
     }
 }
@@ -162,4 +164,23 @@ impl Default for PhpIpamConfig {
             insecure_skip_verify: false,
         }
     }
+}
+
+/// Configuration for the `custom` IPAM backend.
+///
+/// The one backend with no URL, no credential and no `sources`: the script is
+/// the inventory, and it decides for itself where its answer comes from. It
+/// also takes no `timeout_ms` of its own — [`IpamConfig::timeout_ms`] is the
+/// budget the whole lookup runs under, and a second one here would contradict
+/// the "one budget however many requests it takes" rule the other two follow.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CustomIpamConfig {
+    /// Path to the executable answering "which names does this address own?".
+    /// Empty while `backend = "custom"` is a startup error.
+    pub script_path: String,
+    /// Fixed arguments passed to the script before it is told anything about
+    /// the request, which travels in the environment and on stdin.
+    #[serde(deserialize_with = "empty_string_is_no_values")]
+    pub args: Vec<String>,
 }

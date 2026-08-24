@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::collections::BTreeMap;
 
 use acme_proxy::config::{
-    CheckConfig, Config, DnsConfig, FilterConfig, IpamConfig, NetboxConfig, PhpIpamConfig,
-    RuleConfig,
+    CheckConfig, Config, CustomIpamConfig, DnsConfig, FilterConfig, IpamConfig, NetboxConfig,
+    PhpIpamConfig, RuleConfig,
 };
 use acme_proxy::filter::policy::{Check, StageSet, Verdict};
 use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
@@ -29,9 +29,9 @@ use serde_json::{Value, json};
 
 mod common;
 use common::{
-    EcSigner, RejectingCheck, TestSigner, body_json, build_eab, default_challenges,
+    EcSigner, RejectingCheck, TempDir, TestSigner, body_json, build_eab, default_challenges,
     fetch_nonce_from, make_csr, make_csr_with_sans, no_notifications, p, policy_of, policy_with,
-    post_from, send_from, test_app_full, test_app_with_filter,
+    post_from, send_from, test_app_full, test_app_with_filter, write_script,
 };
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
@@ -1359,6 +1359,175 @@ async fn a_refused_phpipam_token_is_a_server_error_not_a_denial() {
         "urn:ietf:params:acme:error:serverInternal",
     )
     .await;
+}
+
+// -------------------------------------------- the same, an operator script
+
+// The third run, and the one that settles what the other two could not: those
+// share a `sources` vocabulary, a transport and a wire status code, so between
+// them they never showed whether `Ipam` is a seam or a description of two REST
+// clients. This backend has none of the three — its lookup is a forked process
+// — and the assertions below are still the same assertions.
+
+/// An `[ipam]` config pointing the `custom` backend at `script_path`.
+fn custom_ipam_config(script_path: &str) -> IpamConfig {
+    IpamConfig {
+        backend: "custom".to_string(),
+        custom: CustomIpamConfig {
+            script_path: script_path.to_string(),
+            ..CustomIpamConfig::default()
+        },
+        ..IpamConfig::default()
+    }
+}
+
+/// The whole app for a script that answers for `192.168.1.5` — the address
+/// `ALLOWED` connects from — and knows nothing about any other.
+async fn custom_ipam_app(dir: &TempDir, name: &str, body: &str) -> Router {
+    let script = write_script(dir, name, body);
+    app_with_ipam(
+        ipam_filter_config(),
+        &custom_ipam_config(script.to_str().unwrap()),
+    )
+    .await
+}
+
+/// The inventory an operator would write in four lines of shell.
+const OWNS_ALLOWED: &str = r#"#!/bin/sh
+if [ "$ACME_IPAM_CLIENT_IP" = "192.168.1.5" ]; then
+    echo allowed.example.com
+    exit 0
+fi
+exit 3
+"#;
+
+#[tokio::test]
+async fn a_name_the_script_lists_is_ordered() {
+    let dir = TempDir::new("ipam-custom-it");
+    let app = custom_ipam_app(&dir, "owns.sh", OWNS_ALLOWED).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}
+
+/// The refusal names the script rather than either product, which is the whole
+/// reason the message interpolates `backend_name()`.
+#[tokio::test]
+async fn a_name_the_script_does_not_list_is_rejected() {
+    let dir = TempDir::new("ipam-custom-it");
+    let app = custom_ipam_app(&dir, "owns.sh", OWNS_ALLOWED).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "other.example.com").await;
+    let problem = assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:rejectedIdentifier",
+    )
+    .await;
+    let detail = problem["detail"].as_str().unwrap();
+    assert!(detail.contains("other.example.com"), "{problem}");
+    assert!(detail.contains("192.168.1.5"), "{problem}");
+    assert!(detail.contains("the custom IPAM script"), "{problem}");
+    assert!(!detail.contains("NetBox"), "{problem}");
+    assert!(!detail.contains("phpIPAM"), "{problem}");
+}
+
+/// The reserved exit code through the whole stack: "no record of this address"
+/// is a denial worded its own way, not a 500 — the same answer phpIPAM's `404`
+/// reaches by a completely different route.
+#[tokio::test]
+async fn an_address_the_script_exits_three_for_is_denied_not_a_server_error() {
+    let dir = TempDir::new("ipam-custom-it");
+    let app = custom_ipam_app(&dir, "nothing.sh", "#!/bin/sh\nexit 3\n").await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    let problem = assert_problem(
+        res,
+        StatusCode::FORBIDDEN,
+        "urn:ietf:params:acme:error:rejectedIdentifier",
+    )
+    .await;
+    let detail = problem["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("holds no record of 192.168.1.5"),
+        "{problem}"
+    );
+}
+
+/// …while every other non-zero exit is still an outage, so a script that broke
+/// stops issuance rather than reading as "this address owns no names". The
+/// twin of `an_unreachable_netbox_is_a_server_error_not_a_denial`, and the
+/// property the whole subsystem rests on.
+#[tokio::test]
+async fn a_script_that_fails_is_a_server_error_not_a_denial() {
+    let dir = TempDir::new("ipam-custom-it");
+    let app = custom_ipam_app(
+        &dir,
+        "broken.sh",
+        "#!/bin/sh\necho 'cmdb unreachable'\nexit 1\n",
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    assert_problem(
+        res,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "urn:ietf:params:acme:error:serverInternal",
+    )
+    .await;
+}
+
+/// A script that is simply not there is the same answer: an operator typo in
+/// `script_path` must not silently permit or silently refuse.
+#[tokio::test]
+async fn a_missing_script_is_a_server_error_not_a_denial() {
+    let app = app_with_ipam(
+        ipam_filter_config(),
+        &custom_ipam_config("/nonexistent/ipam.sh"),
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer, ALLOWED).await;
+
+    let res = new_order(&app, &signer, &account_url, "allowed.example.com").await;
+    assert_problem(
+        res,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "urn:ietf:params:acme:error:serverInternal",
+    )
+    .await;
+}
+
+/// The hook runs at finalize too, and a CSR whose common name the script never
+/// listed still issues — a `cn` is subject metadata, and `rcgen`'s own default
+/// puts a human label there. The `custom` half of
+/// `a_common_name_is_not_held_to_the_netbox_list`, and what shows the script is
+/// asked at both stages rather than only at `newOrder`.
+#[tokio::test]
+async fn a_common_name_is_not_held_to_the_scripts_list() {
+    let dir = TempDir::new("ipam-custom-it");
+    let app = custom_ipam_app(&dir, "owns.sh", OWNS_ALLOWED).await;
+    let signer = EcSigner::new();
+
+    let (account_url, finalize_url) = ready_order(&app, &signer, "allowed.example.com").await;
+
+    let res = finalize(
+        &app,
+        &signer,
+        &account_url,
+        &finalize_url,
+        make_csr("allowed.example.com"),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 // ------------------------------------------------------------ the eab check

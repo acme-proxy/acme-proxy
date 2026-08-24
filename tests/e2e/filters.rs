@@ -570,6 +570,144 @@ async fn test_phpipam_unknown_address() {
     );
 }
 
+/// The third IPAM backend, and the one that needs **no mock container at all**:
+/// the inventory is a script inside the proxy container. `Lab` starts a mock
+/// only when some value in the scenario's `env` carries the `NETBOX_IP` /
+/// `PHPIPAM_IP` placeholder, and nothing here does — so this is a five-container
+/// lab where `test_netbox` and `test_phpipam` are six.
+///
+/// That is the finding rather than an incidental saving: the two REST backends
+/// share a transport, a `sources` vocabulary and a wire status code, and this
+/// one has none of the three. The assertions are still the same assertions.
+#[tokio::test]
+#[ignore]
+async fn test_ipam_custom_script() {
+    let lab = Lab::new(vec![
+        ("ACME_PROXY_FILTER__RULES", "owned"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__WHEN", "inventory"),
+        ("ACME_PROXY_FILTER__RULE__OWNED__THEN", "allow"),
+        ("ACME_PROXY_FILTER__CHECK__INVENTORY__TYPE", "ipam"),
+        ("ACME_PROXY_IPAM__BACKEND", "custom"),
+        (
+            "ACME_PROXY_IPAM__CUSTOM__SCRIPT_PATH",
+            "/tmp/ipam_script.sh",
+        ),
+    ])
+    .await;
+
+    // Installed after start rather than through `new_with_files`: unlike
+    // `signer.custom`, this backend touches the path only per lookup, so
+    // nothing has to exist by the time the server binds.
+    let certbot_ip = Lab::get_ip(lab.certbot.id(), &lab.network).await;
+    let script = format!(
+        r#"#!/bin/sh
+case "$ACME_IPAM_CLIENT_IP" in
+  {certbot_ip})
+    echo allowed.example.com
+    exit 0
+    ;;
+esac
+exit 3
+"#
+    );
+
+    lab.exec_in(
+        &lab.proxy,
+        &format!(
+            "cat > /tmp/ipam_script.sh <<'IPAM_SCRIPT_EOF'\n{}\nIPAM_SCRIPT_EOF\nchmod +x /tmp/ipam_script.sh",
+            script
+        ),
+    )
+    .await;
+
+    let certbot_allowed_script = format!(
+        r#"
+        set -e
+        mkdir -p /tmp/webroot
+        certbot register \
+            --agree-tos --email test@example.com \
+            --server {0} \
+            --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
+            --non-interactive
+        certbot certonly \
+            --domains allowed.example.com \
+            --server {0} \
+            --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
+            --non-interactive \
+            --webroot --webroot-path /tmp/webroot
+    "#,
+        lab.proxy_url
+    );
+
+    lab.exec_in(&lab.certbot, &certbot_allowed_script).await;
+
+    // A name the script never printed: refused, and the refusal names the
+    // script rather than either product — the message interpolates the backend.
+    let certbot_denied_script = format!(
+        r#"
+        set +e
+        mkdir -p /tmp/webroot
+        certbot certonly \
+            --domains other.example.com \
+            --server {0} \
+            --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
+            --non-interactive \
+            --webroot --webroot-path /tmp/webroot 2>&1
+        if [ $? -eq 0 ]; then
+            exit 1
+        fi
+    "#,
+        lab.proxy_url
+    );
+
+    let (success, stdout, _stderr) = lab
+        .exec_in_with_output(&lab.certbot, &certbot_denied_script)
+        .await;
+    assert!(
+        success,
+        "a name the script does not list should have been refused"
+    );
+    let output = stdout.to_lowercase();
+    assert!(
+        output.contains("the custom ipam script"),
+        "Expected the refusal to name the script, got: {stdout}"
+    );
+
+    // The reserved exit code, from a client the script has no case for: an
+    // address it holds no record of is a *denial* worded its own way, which is
+    // the same answer phpIPAM's `404` reaches by a completely different route.
+    let acmesh_unknown_script = format!(
+        r#"
+        set +e
+        mkdir -p /tmp/webroot
+        acme.sh --register-account \
+            --server {0} \
+            --accountemail test@example.com
+        acme.sh --issue \
+            --server {0} \
+            --domain allowed.example.com \
+            --webroot /tmp/webroot 2>&1
+        if [ $? -eq 0 ]; then
+            exit 1
+        fi
+    "#,
+        lab.proxy_url
+    );
+
+    let (success, stdout, stderr) = lab
+        .exec_in_with_output(&lab.acme_sh, &acmesh_unknown_script)
+        .await;
+    assert!(
+        success,
+        "acme.sh's address is one the script exits 3 for and should have been refused"
+    );
+    let output = format!("{stdout}\n{stderr}").to_lowercase();
+    assert!(
+        output.contains("holds no record"),
+        "Expected exit 3 to read as \"no such address\", got: {stdout}\n{stderr}"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_reverse_dns() {

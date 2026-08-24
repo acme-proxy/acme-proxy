@@ -33,6 +33,7 @@
 - [IPAM](ipam/index.md)
   - [NetBox](ipam/netbox.md)
   - [phpIPAM](ipam/phpipam.md)
+  - [Custom Script](ipam/custom.md)
 
 # Configuration
 - [Configuration Reference](configuration/reference.md)

@@ -783,7 +783,8 @@ above](#every-section-and-where-it-is-documented) for the rest.
 [identifiers](../filters/identifiers.md), [eab](../filters/eab.md),
   [custom](../filters/custom.md)
 - **`[ipam]`** — [IPAM](../ipam/index.md): the inventory the `ipam` check
-  consults — [NetBox](../ipam/netbox.md), [phpIPAM](../ipam/phpipam.md)
+  consults — [NetBox](../ipam/netbox.md), [phpIPAM](../ipam/phpipam.md),
+  [a custom script](../ipam/custom.md)
 - **`[challenge]`** — [Challenge Validation](../challenges/index.md#reference):
   [http-01](../challenges/http_01.md#reference),
   [dns-01](../challenges/dns_01.md),

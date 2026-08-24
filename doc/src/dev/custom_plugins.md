@@ -87,6 +87,46 @@ fi
 exit 0
 ```
 
+## Custom IPAM script
+
+A custom IPAM backend that reads the permitted names for an address out of a
+CSV the estate already maintains, one `address,name,name,...` row per machine.
+
+```bash
+#!/bin/bash
+# /etc/acme-proxy/ipam/lookup.sh
+set -u
+
+INVENTORY="/etc/acme-proxy/ipam/inventory.csv"
+
+# The address arrives twice — in the environment and in the JSON on stdin.
+# This script uses the environment, so it never has to read stdin at all; a
+# script that exits without reading it is fine and is not an error.
+ROW=$(grep -m1 "^${ACME_IPAM_CLIENT_IP}," "$INVENTORY")
+
+if [ -z "$ROW" ]; then
+    # 3 is RESERVED: "this inventory holds no record of that address". The
+    # `ipam` check words its own refusal for it, distinct from the one below.
+    exit 3
+fi
+
+# Exit 0 with the permitted names, one per line. They are lowercased and
+# stripped of a trailing dot for you, so print whatever form the file holds.
+# Printing nothing here would mean "recorded, and entitled to nothing" — a
+# different answer from exit 3, and also a refusal.
+echo "$ROW" | cut -d, -f2- | tr ',' '\n'
+exit 0
+```
+
+> Every **other** non-zero exit — a missing inventory file, a `grep` that could
+> not run, a timeout — is reported as a retryable `500`, never as a denial. That
+> is deliberate: an inventory this server cannot reach has decided nothing, so
+> issuance stops rather than failing open. Do not use a non-zero exit to refuse
+> a client; refuse by not printing the name.
+
+> `acme-proxy filter explain` really runs the policy, so it executes this
+> script too.
+
 ## Custom notification script
 
 A custom notification script that sends a Slack message when a certificate is

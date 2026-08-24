@@ -31,7 +31,9 @@
 //! [`ChallengeRegistry`](crate::challenge::ChallengeRegistry) wraps every
 //! validation attempt. A backend may make four requests to answer one question;
 //! one budget covers all of them, and a backend added later cannot forget to
-//! apply it.
+//! apply it. [`custom`] is the proof of that last clause: its lookup is a
+//! forked process rather than a request at all, and it is covered without
+//! having been written to be.
 //!
 //! ## Matching is exact
 //!
@@ -43,6 +45,7 @@
 //! regex-based filters, for the same reason — a rule that quietly covers more
 //! than it says is the bypass an allowlist exists to prevent.
 
+pub mod custom;
 pub mod http;
 pub mod netbox;
 pub mod phpipam;
@@ -312,7 +315,15 @@ pub fn from_config(
             &cfg.phpipam,
             outbound,
         )?),
-        other => anyhow::bail!("unknown IPAM backend: {other} (expected `netbox` or `phpipam`)"),
+        // The one backend that reaches nothing over HTTP, so `outbound` is not
+        // threaded into it — the script decides for itself where it looks.
+        "custom" => Arc::new(custom::CustomIpamBackend::from_config(
+            &cfg.custom,
+            cfg.timeout_ms,
+        )?),
+        other => anyhow::bail!(
+            "unknown IPAM backend: {other} (expected `netbox`, `phpipam` or `custom`)"
+        ),
     };
 
     info!(
@@ -617,10 +628,42 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(phpipam.backend_name(), "phpIPAM");
+
+        let dir = crate::testutil::TempDir::new("ipam-from-config");
+        let script = crate::testutil::write_script(&dir, "ipam.sh", "#!/bin/sh\nexit 3\n");
+        let custom = from_config(
+            &IpamConfig {
+                backend: "custom".to_string(),
+                custom: crate::config::CustomIpamConfig {
+                    script_path: script.display().to_string(),
+                    ..crate::config::CustomIpamConfig::default()
+                },
+                ..IpamConfig::default()
+            },
+            crate::testutil::outbound_with(resolver()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(custom.backend_name(), "the custom IPAM script");
+    }
+
+    /// The `custom` backend's own required field, refused here the way each
+    /// other backend's `url`/`token` is — the selector and the section it
+    /// selects have to agree before anything serves.
+    #[test]
+    fn a_custom_backend_with_no_script_is_a_startup_error() {
+        let cfg = IpamConfig {
+            backend: "custom".to_string(),
+            ..IpamConfig::default()
+        };
+        let error = from_config(&cfg, crate::testutil::outbound_with(resolver()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ipam.custom.script_path"), "{error}");
     }
 
     #[test]
-    fn an_unknown_backend_is_a_startup_error_naming_both_valid_ones() {
+    fn an_unknown_backend_is_a_startup_error_naming_the_valid_ones() {
         let cfg = IpamConfig {
             backend: "racktables".to_string(),
             ..IpamConfig::default()
@@ -631,6 +674,7 @@ mod tests {
         assert!(error.contains("racktables"), "{error}");
         assert!(error.contains("netbox"), "{error}");
         assert!(error.contains("phpipam"), "{error}");
+        assert!(error.contains("custom"), "{error}");
     }
 
     // ------------------------------------------------------------ registry

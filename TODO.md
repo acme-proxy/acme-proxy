@@ -64,12 +64,6 @@ keeps its corpses stops being read.
       The other scheme exchanges user credentials for a six-hour token, so it
       needs a refresh loop and somewhere to keep the token — worth having only
       if an estate's phpIPAM cannot be given an app code at all.
-- [ ] **A third backend to test the `Ipam` trait properly.** NetBox and
-      phpIPAM between them already forced `sources` to be per-backend, the
-      transport to be shared, and a status to survive on the error type (a
-      phpIPAM `404` is an answer). A third — NIPAP, Infoblox, or a plain
-      HTTP/script hook mirroring `filter.custom` — is what would show whether
-      the seam generalises or merely spans those two.
 
 ## Notifications
 

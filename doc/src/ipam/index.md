@@ -20,22 +20,25 @@ that, and it decides the same way whichever product answered.
 | --- | --- | --- |
 | `netbox` | [NetBox](https://netbox.dev) | [NetBox](netbox.md) |
 | `phpipam` | [phpIPAM](https://phpipam.net) | [phpIPAM](phpipam.md) |
+| `custom` | an operator script | [Custom Script](custom.md) |
 
 One backend per profile. `[ipam]` is a per-profile section, so two endpoints
 served by the same process may consult different inventories.
 
 ## Sources
 
-Each backend takes a `sources` list naming the places a permitted name may come
-from. It is validated at startup against that backend's own vocabulary.
+Each backend that reads an inventory itself takes a `sources` list naming the
+places a permitted name may come from. It is validated at startup against that
+backend's own vocabulary. `custom` has no such list at all — the script reads
+whatever it reads, so there is nothing to declare and no key to set.
 
-| Source | What it reads | `netbox` | `phpipam` |
-| --- | --- | --- | --- |
-| `dns_name` | the address object's own name | ✓ | ✓ |
-| `custom_field` | the custom field on the address | ✓ | ✓ |
-| `device` | the same field on the assigned device or VM | ✓ | ✓ |
-| `vip` | role-tagged service addresses on the same device | ✓ | — |
-| `fhrp` | addresses of an FHRP group the client's interface is in | ✓ | — |
+| Source | What it reads | `netbox` | `phpipam` | `custom` |
+| --- | --- | --- | --- | --- |
+| `dns_name` | the address object's own name | ✓ | ✓ | — |
+| `custom_field` | the custom field on the address | ✓ | ✓ | — |
+| `device` | the same field on the assigned device or VM | ✓ | ✓ | — |
+| `vip` | role-tagged service addresses on the same device | ✓ | — | — |
+| `fhrp` | addresses of an FHRP group the client's interface is in | ✓ | — | — |
 
 Two things the list does **not** say, and both matter:
 
@@ -148,12 +151,13 @@ enabled = ["ipam"]
 
 **`backend`** (`String`) — *Default: `""` | Env: `ACME_PROXY_IPAM__BACKEND`*
 
-Which inventory to consult: `netbox`, `phpipam`, or empty for none. Anything
-else is a startup error rather than a silent fallback. Enabling the `ipam`
-filter while this is empty is also a startup error.
+Which inventory to consult: `netbox`, `phpipam`, `custom`, or empty for none.
+Anything else is a startup error rather than a silent fallback. Enabling the
+`ipam` filter while this is empty is also a startup error.
 
 **`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_IPAM__TIMEOUT_MS`*
 
 Budget for one whole lookup, however many requests the backend makes to answer
-it. Applied once around all of them, so a wedged inventory cannot pin a request
-open. Exceeding it is reported as a server error, not a denial.
+it — or, for `custom`, however long its script takes. Applied once around all
+of them, so a wedged inventory cannot pin a request open. Exceeding it is
+reported as a server error, not a denial.

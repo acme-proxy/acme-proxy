@@ -327,7 +327,7 @@ fn build_check(
             let registry = inventory.ok_or_else(|| {
                 anyhow::anyhow!(
                     "filter.check.{name} is type = \"ipam\" but ipam.backend is empty; set \
-                     ipam.backend (`netbox` or `phpipam`) and configure the matching \
+                     ipam.backend (`netbox`, `phpipam` or `custom`) and configure the matching \
                      [ipam.<backend>] section, or drop the check"
                 )
             })?;
