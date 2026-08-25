@@ -306,6 +306,21 @@ a {
   color: var(--danger);
 }
 
+/* Time left on an expiring certificate, and deliberately *not* the status
+   words above: "expires in five days" is not an order status, and borrowing
+   `.invalid`'s red for it would make one class mean two unrelated things. The
+   thresholds live in `expiring/_table.html`; these are only the colours they
+   pick from. */
+.badge.urgent {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.badge.soon {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
 /* Forms and buttons
    ------------------------------------------------------------------------ */
 

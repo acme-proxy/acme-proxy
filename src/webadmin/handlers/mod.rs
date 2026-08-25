@@ -10,6 +10,7 @@
 pub mod accounts;
 pub mod audit;
 pub mod eab;
+pub mod expiring;
 pub mod mfa;
 pub mod misc;
 pub mod orders;
@@ -19,6 +20,7 @@ pub mod session;
 pub use accounts::*;
 pub use audit::*;
 pub use eab::*;
+pub use expiring::*;
 pub use mfa::*;
 pub use misc::*;
 pub use orders::*;

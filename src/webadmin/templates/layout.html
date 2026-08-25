@@ -40,13 +40,14 @@
         <a href="/ui/" {% if nav == "index" %}class="active"{% endif %}>Overview</a>
         <a href="/ui/accounts" {% if nav == "accounts" %}class="active"{% endif %}>Accounts</a>
         <a href="/ui/orders" {% if nav == "orders" %}class="active"{% endif %}>Orders</a>
+        <a href="/ui/expiring" {% if nav == "expiring" %}class="active"{% endif %}>Expiring</a>
         <a href="/ui/audit" {% if nav == "audit" %}class="active"{% endif %}>Audit</a>
         <a href="/ui/eab" {% if nav == "eab" %}class="active"{% endif %}>EAB</a>
         <a href="/ui/nonces" {% if nav == "nonces" %}class="active"{% endif %}>Nonces</a>
         <a href="/ui/profiles" {% if nav == "profiles" %}class="active"{% endif %}>Profiles</a>
       </nav>
       <span class="whoami">
-        {#- Not a seventh entry in the nav above: that lists resources of the
+        {#- Not one more entry in the nav above: that lists resources of the
             server, and "my second factor" is not one. -#}
         <a href="/ui/account" {% if nav == "account" %}class="active"{% endif %}>{{ user.username }}</a>
         <button hx-post="/ui/logout" hx-swap="none">Sign out</button>

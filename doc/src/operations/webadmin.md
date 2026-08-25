@@ -143,6 +143,7 @@ it that needs a session bounces to `/ui/login`.
 | `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
 | `/ui/orders` | Every order, filterable by profile, status and account; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
 | `/ui/eab` | Credentials, minting (the secret is shown **once**) and revocation |
+| `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by profile and window, with a control to hide the replaced ones. **Read-only** |
 | `/ui/audit` | The CA's audit trail — every issuance and every refusal, filterable, with a detail page per row. **Read-only**: there is no route here that prunes it |
 | `/ui/nonces` | The table size, and a manual sweep |
 | `/ui/profiles` | The endpoints this process serves, and a warning for any that bypass validation |
@@ -207,6 +208,7 @@ Mounted at `/api`, unversioned. Every response is `application/json` with
 | `POST` | `/api/eab` | `{label, profile}` — **returns the secret, once** |
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |
+| `GET` | `/api/expiring?profile=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
 | `GET` | `/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
 | `GET` | `/api/audit/{id}` | one row |
 | `GET` | `/api/nonces` | `{count, ttlSeconds}` |
@@ -273,6 +275,30 @@ watched thing can erase proves nothing. Pruning happens on the host with
 This is also why `/api/audit` contributes no entry to the CSRF test table — with
 no mutating verb, there is nothing to protect. Every other verb on those paths
 is unroutable. See [Audit Trail](audit.md).
+
+### The expiry list is read-only too, for a different reason
+
+`/api/expiring` and `/ui/expiring` answer the digest's question on demand:
+what lapses soon, and has anything replaced it? They share the query, the
+ordering and the supersession rule with `[notify.expiry]` and with `order list
+--expiring-in`, so a page and a mail never disagree about what is about to
+expire.
+
+Neither has a mutating route, and the reason is not the audit trail's: renewal
+is the **client's** action, driven by its own ACME flow against a key this
+server does not hold. There is simply nothing here for a button to do. Both
+therefore contribute no entry to the CSRF test table.
+
+Two members of the answer need reading together. `total` counts the rows the
+*window* matches; `hidden` counts the ones this page dropped as already
+replaced. They are separate because supersession is computed per row rather
+than in SQL, so the count beside the page cannot follow the filter down — and a
+pager whose arithmetic quietly disagrees with the rows under it would be worse
+than saying so. The page says it in a line above the table.
+
+The default window is `[notify.expiry] lead_days` wherever the digest is on,
+and 30 days where it is off: an operator who has chosen a lead time gets that
+one back.
 
 ### Errors
 

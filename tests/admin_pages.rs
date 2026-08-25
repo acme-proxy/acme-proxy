@@ -670,6 +670,7 @@ fn authenticated_pages() -> Vec<&'static str> {
         // A download, but still a page route behind the session: a certificate
         // is public once issued, *which orders exist* is not.
         "/ui/orders/some-id/chain.pem",
+        "/ui/expiring",
         "/ui/audit",
         "/ui/audit/1",
         "/ui/eab",
@@ -964,6 +965,7 @@ async fn a_list_route_serves_a_document_or_a_bare_fragment() {
     for (path, marker) in [
         ("/ui/accounts", "accounts-table"),
         ("/ui/orders", "orders-table"),
+        ("/ui/expiring", "expiring-table"),
         ("/ui/eab", "eab-table"),
         ("/ui/nonces", "nonces-panel"),
     ] {
@@ -2036,5 +2038,180 @@ async fn the_page_surface_fails_closed_when_the_database_is_gone() {
                 "GET {path} (hx={hx}) must say it could not authorise"
             );
         }
+    }
+}
+
+/// One issued order whose leaf expires at `not_after`, with a placeholder
+/// chain — `tests/admin_api.rs`'s `expiring` and for its reason.
+async fn expiring_row(
+    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    account: &str,
+    names: &[&str],
+    not_after: i64,
+) -> String {
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let mut order = Order::create(
+        PROFILE,
+        account,
+        names.iter().map(|name| Identifier::dns(*name)).collect(),
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
+            format!("serial-{}", &order.id[..8]),
+            vec![1],
+            Some(not_after),
+            database,
+        )
+        .await
+        .unwrap();
+    order.id
+}
+
+/// The `/ui` twin of
+/// `the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writing_to_it`.
+///
+/// Read-only, so it adds nothing to `mutating_page_endpoints()` — there is no
+/// control in the table and no route behind one, because renewal is the
+/// client's own ACME flow. What is asserted here instead is the rendering an
+/// operator actually reads: the annotation's presence and *absence*, the
+/// urgency class, the hidden-count line that keeps the pager honest, and the
+/// escaping of an identifier, which is text a client chose.
+#[tokio::test]
+async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_write() {
+    use acme_proxy::sqlite::account::Account;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        b"expiry-key",
+        vec![],
+        &ClientContext::default(),
+        &database,
+    )
+    .await
+    .unwrap();
+
+    const DAY: i64 = 24 * 60 * 60;
+    let now = now_unix();
+    let soon = expiring_row(&database, &account.id, &["soon.example.com"], now + 3 * DAY).await;
+    let mid = expiring_row(&database, &account.id, &["mid.example.com"], now + 20 * DAY).await;
+    let renewal = expiring_row(
+        &database,
+        &account.id,
+        &["soon.example.com"],
+        now + 300 * DAY,
+    )
+    .await;
+    // An identifier is text a client typed: the same stored-XSS shape as an
+    // EAB label, on a page that renders it into a table cell.
+    expiring_row(
+        &database,
+        &account.id,
+        &["<script>alert(1)</script>"],
+        now + 5 * DAY,
+    )
+    .await;
+
+    let body = html_body(admin_page(&app, "/ui/expiring", Some(&session), false).await).await;
+    assert!(body.contains("soon.example.com"), "{body}");
+    assert!(
+        body.contains(&format!(r#"href="/ui/orders/{mid}""#)),
+        "{body}"
+    );
+    // The annotation links to the successor, and says which signal produced it.
+    assert!(
+        body.contains(&format!(r#"href="/ui/orders/{renewal}""#)),
+        "{body}"
+    );
+    assert!(body.contains("identifiers"), "{body}");
+    // And a row nothing has replaced renders the dash, not a blank cell.
+    assert!(body.contains('—'), "{body}");
+    // Urgency is a class, never an inline `style` — `style-src 'self'` blocks
+    // the attribute outright.
+    assert!(body.contains("badge urgent"), "{body}");
+    assert!(body.contains("badge soon"), "{body}");
+    assert!(!body.contains("style="), "{body}");
+    // Both rows link through to the order and the account behind them.
+    assert!(
+        body.contains(&format!(r#"href="/ui/orders/{soon}""#)),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(r#"href="/ui/accounts/{}""#, account.id)),
+        "{body}"
+    );
+    // The attacker-controlled identifier is escaped.
+    assert!(!body.contains("<script>alert(1)</script>"), "{body}");
+    assert!(body.contains("&lt;script&gt;"), "{body}");
+    // The filter form is an `hx-get`, which is a read.
+    assert!(body.contains(r#"hx-get="/ui/expiring""#), "{body}");
+    // Nothing is hidden by default, so the count line is absent.
+    assert!(!body.contains("hidden as already replaced"), "{body}");
+
+    // Hiding the replaced rows drops them and says how many, leaving `total`
+    // counting the window — the limit documented on `admin::list_expiring`,
+    // and the reason the page says it out loud.
+    let hidden =
+        html_body(admin_page(&app, "/ui/expiring?superseded=hide", Some(&session), false).await)
+            .await;
+    assert!(!hidden.contains("soon.example.com"), "{hidden}");
+    assert!(hidden.contains("mid.example.com"), "{hidden}");
+    assert!(hidden.contains("1 row on this page"), "{hidden}");
+    assert!(hidden.contains("hidden as already replaced"), "{hidden}");
+
+    // The window narrows, and the pager's links carry it forward.
+    let narrow =
+        html_body(admin_page(&app, "/ui/expiring?days=4", Some(&session), false).await).await;
+    assert!(narrow.contains("soon.example.com"), "{narrow}");
+    assert!(!narrow.contains("mid.example.com"), "{narrow}");
+
+    // An empty window says so rather than rendering a bare table.
+    let empty =
+        html_body(admin_page(&app, "/ui/expiring?days=1", Some(&session), false).await).await;
+    assert!(
+        empty.contains("Nothing is expiring in this window."),
+        "{empty}"
+    );
+
+    // The fragment form, chosen off `HX-Request` like every other list route,
+    // and carrying no control of its own.
+    let fragment = html_body(admin_page(&app, "/ui/expiring", Some(&session), true).await).await;
+    assert!(
+        fragment
+            .trim_start()
+            .starts_with("<div id=\"expiring-table\""),
+        "{fragment}"
+    );
+    assert!(!fragment.contains("hx-post"), "{fragment}");
+    assert!(!fragment.contains("hx-delete"), "{fragment}");
+
+    // The nav entry is on every page, not only this one.
+    let elsewhere = html_body(admin_page(&app, "/ui/", Some(&session), false).await).await;
+    assert!(elsewhere.contains(r#"href="/ui/expiring""#), "{elsewhere}");
+
+    // Nothing writes: every other verb on the path is unroutable.
+    for method in [Method::POST, Method::DELETE, Method::PATCH] {
+        let response = admin_form_request(
+            &app,
+            method.clone(),
+            "/ui/expiring",
+            Some(&session),
+            Some(&[]),
+        )
+        .await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} /ui/expiring answered {}",
+            response.status()
+        );
     }
 }

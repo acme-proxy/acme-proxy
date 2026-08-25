@@ -187,6 +187,8 @@ async fn order_cli_list_show_delete() {
             profile: None,
             account_id: Some(account.id.clone()),
             status: Some("pending".to_string()),
+            expiring_in: None,
+            hide_superseded: false,
             json: false,
         },
         false,
@@ -203,6 +205,8 @@ async fn order_cli_list_show_delete() {
             profile: None,
             account_id: None,
             status: None,
+            expiring_in: None,
+            hide_superseded: false,
             json: true,
         },
         false,
@@ -373,6 +377,103 @@ async fn eab_cli_create_list_show_revoke() {
         EabCommand::Revoke { kid: kid.clone() },
         Palette::plain(),
         db.clone(),
+    )
+    .await
+    .unwrap();
+}
+
+/// `order list --expiring-in <days>`, both output branches, over a listing
+/// where one row has a successor and one does not.
+///
+/// The annotation itself is tested in `src/admin/ops.rs` over really-signed
+/// rows; what this pins is that the CLI arm reaches it, that `--json` and the
+/// human rendering are both driven, and that `--hide-superseded` narrows the
+/// answer rather than erroring.
+#[tokio::test]
+async fn order_cli_lists_what_is_expiring() {
+    const DAY: i64 = 24 * 60 * 60;
+
+    let db = Arc::new(Database::connect_in_memory().await.unwrap());
+    let config = Config::default();
+    let (account, _) = Account::find_or_create(
+        "default",
+        &[9, 9, 9],
+        vec![],
+        &ClientContext::default(),
+        &db,
+    )
+    .await
+    .unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    for (name, days) in [
+        ("soon.example.com", 3),
+        ("mid.example.com", 20),
+        // Renews the first: one row carries the annotation, one does not.
+        ("soon.example.com", 300),
+    ] {
+        let mut order = Order::create(
+            "default",
+            &account.id,
+            vec![Identifier::dns(name)],
+            now + 3600,
+            None,
+            None,
+            &db,
+        )
+        .await
+        .unwrap();
+        order
+            .finalize(
+                "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
+                format!("serial-{}", &order.id[..8]),
+                vec![1],
+                Some(now + days * DAY),
+                &db,
+            )
+            .await
+            .unwrap();
+    }
+
+    let mut reader: &[u8] = &[];
+    for (hide_superseded, json) in [(false, false), (false, true), (true, false), (true, true)] {
+        run_order_command(
+            OrderCommand::List {
+                profile: None,
+                account_id: None,
+                status: None,
+                expiring_in: Some(30),
+                hide_superseded,
+                json,
+            },
+            false,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            db.clone(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // The window is a filter, and an empty one is not an error.
+    run_order_command(
+        OrderCommand::List {
+            profile: Some("default".to_string()),
+            account_id: None,
+            status: None,
+            expiring_in: Some(1),
+            hide_superseded: false,
+            json: true,
+        },
+        false,
+        Palette::plain(),
+        &mut reader,
+        &config,
+        db,
     )
     .await
     .unwrap();

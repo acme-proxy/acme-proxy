@@ -1810,9 +1810,34 @@ mod tests {
                     profile: None,
                     account_id: Some(a),
                     status: Some(s),
+                    expiring_in: None,
+                    hide_superseded: false,
                     json: true
                 }
             }) if a == "acct-1" && s == "pending"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "acme-proxy",
+            "order",
+            "list",
+            "--expiring-in",
+            "30",
+            "--hide-superseded",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Order {
+                command: OrderCommand::List {
+                    expiring_in: Some(30),
+                    hide_superseded: true,
+                    status: None,
+                    account_id: None,
+                    profile: None,
+                    json: false
+                }
+            })
         ));
 
         let cli = Cli::try_parse_from(["acme-proxy", "order", "show", "ord-1"]).unwrap();
@@ -2123,6 +2148,8 @@ mod tests {
                     profile: None,
                     account_id: None,
                     status: None,
+                    expiring_in: None,
+                    hide_superseded: false,
                     json: false,
                 },
             },

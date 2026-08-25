@@ -55,19 +55,20 @@
 //! *always reschedule*: an unmounted profile has nothing left to report, and
 //! retiring its row is how it stops.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tracing::{debug, error, info};
 
-use super::{CertificatesExpiringData, ExpiringCertificate, Notifiers, NotifyEvent, SupersededBy};
+use super::{CertificatesExpiringData, ExpiringCertificate, Notifiers, NotifyEvent};
+use crate::admin;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::Order;
+use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
 
 /// The `jobs.kind` the digest runs under.
 pub const EXPIRY_JOB_KIND: &str = "notify_expiry_digest";
@@ -79,12 +80,6 @@ pub const EXPIRY_JOB_KIND: &str = "notify_expiry_digest";
 /// historical orders converges over a few passes instead of holding a worker
 /// for minutes on the first one.
 const BACKFILL_BATCH: i64 = 500;
-
-/// What a chain that will not parse is recorded as, so it is never parsed
-/// again. Any negative value would do; the column is documented as "negative
-/// means unparsable" rather than as this constant, and every reader tests the
-/// sign.
-const UNPARSABLE: i64 = -1;
 
 /// One profile's digest settings, snapshotted from its resolved `[notify]`.
 #[derive(Debug, Clone, Copy)]
@@ -180,7 +175,7 @@ impl ExpiryDigestJob {
         let mut unparsable = 0_u64;
         for (id, chain) in rows {
             let not_after = leaf_not_after(&chain);
-            if not_after == UNPARSABLE {
+            if not_after == UNPARSABLE_NOT_AFTER {
                 unparsable += 1;
             } else {
                 stamped += 1;
@@ -210,32 +205,42 @@ impl ExpiryDigestJob {
         settings: ExpirySettings,
     ) -> Result<Option<CertificatesExpiringData>, sqlx::Error> {
         let now = now_secs();
-        let horizon = now.saturating_add(i64::try_from(settings.lead.as_secs()).unwrap_or(0));
-        let (orders, total) =
-            Order::find_expiring(profile, horizon, settings.max_entries, &self.database).await?;
-        if orders.is_empty() {
+        // The window, the annotation and the ordering all come from
+        // `crate::admin` — the digest is one of three consumers of that listing
+        // (the panel and `order list --expiring-in` are the others), and it
+        // asks for the same thing they do so the three cannot come to disagree
+        // about what "expiring" or "already replaced" means. `include_superseded`
+        // is always `true` here: supersession is an annotation and never a
+        // filter, for the reason in this module's docs.
+        let query = admin::ExpiringQuery {
+            profile: Some(profile.to_string()),
+            before: now.saturating_add(i64::try_from(settings.lead.as_secs()).unwrap_or(0)),
+            include_superseded: true,
+            limit: settings.max_entries,
+            offset: 0,
+        };
+        let (entries, total, _hidden) = admin::list_expiring(&query, self.database.clone()).await?;
+        if entries.is_empty() {
             return Ok(None);
         }
 
-        let mut certificates = Vec::with_capacity(orders.len());
-        for order in &orders {
-            certificates.push(ExpiringCertificate {
-                order_id: order.id.clone(),
-                account_id: order.account_id.clone(),
-                cert_serial: order.cert_serial.clone().unwrap_or_default(),
-                identifiers: order
+        let certificates = entries
+            .into_iter()
+            .map(|entry| ExpiringCertificate {
+                order_id: entry.order.id,
+                account_id: entry.order.account_id,
+                cert_serial: entry.order.cert_serial.unwrap_or_default(),
+                identifiers: entry
+                    .order
                     .identifiers
-                    .iter()
-                    .map(|identifier| identifier.value.clone())
+                    .into_iter()
+                    .map(|identifier| identifier.value)
                     .collect(),
-                not_after: order.cert_not_after.unwrap_or_default(),
-                // Floored, and never negative: a certificate that expired
-                // between the query and here is "0 days", not "-1 days".
-                days_remaining: (order.cert_not_after.unwrap_or_default() - now).max(0)
-                    / (24 * 60 * 60),
-                superseded_by: self.superseded_by(order).await?,
-            });
-        }
+                not_after: entry.order.cert_not_after.unwrap_or_default(),
+                days_remaining: entry.days_remaining,
+                superseded_by: entry.superseded_by,
+            })
+            .collect();
 
         Ok(Some(CertificatesExpiringData {
             profile: profile.to_string(),
@@ -244,74 +249,6 @@ impl ExpiryDigestJob {
             total,
             certificates,
         }))
-    }
-
-    /// Whether something has taken `order`'s certificate's place, and how that
-    /// was established.
-    ///
-    /// Two signals, tried strongest first, and both deliberately narrow — see
-    /// the module docs on why this errs towards `None`.
-    async fn superseded_by(&self, order: &Order) -> Result<Option<SupersededBy>, sqlx::Error> {
-        // 1. The client said so (RFC 9773 §5). Exact when it is there at all,
-        //    but only clients that send `replaces` produce it.
-        //
-        //    `find_by_replaces` excludes only `invalid`, because its own
-        //    question is "has this predecessor been claimed" — a *pending*
-        //    claim still holds the claim. That is the wrong answer here: an
-        //    order that has not issued anything has replaced nothing, and
-        //    reporting its predecessor as renewed would silence the one
-        //    certificate still doing the work.
-        if let Some(chain) = order.certificate.as_deref()
-            && let Some(cert_id) = ari_cert_id(chain)
-            && let Some(successor) =
-                Order::find_by_replaces(&order.profile, &cert_id, &self.database).await?
-            && successor.certificate.is_some()
-            && successor.revoked_at.is_none()
-        {
-            return Ok(Some(SupersededBy {
-                order_id: successor.id,
-                cert_serial: successor.cert_serial.unwrap_or_default(),
-                not_after: successor.cert_not_after.unwrap_or_default(),
-                via: "replaces".to_string(),
-            }));
-        }
-
-        // 2. This server noticed a later certificate covering the same names.
-        //    Scoped to the *same account*, and requiring a superset rather than
-        //    an intersection: a certificate held by somebody else is not this
-        //    subscriber's renewal, and one covering only some of these names
-        //    leaves the rest uncovered.
-        let names: BTreeSet<&str> = order
-            .identifiers
-            .iter()
-            .map(|identifier| identifier.value.as_str())
-            .collect();
-        let expires = order.cert_not_after.unwrap_or_default();
-        let candidates = Order::find_by_account(&order.account_id, &self.database).await?;
-        for candidate in candidates {
-            if candidate.id == order.id
-                || candidate.certificate.is_none()
-                || candidate.revoked_at.is_some()
-                || candidate.cert_not_after.unwrap_or(UNPARSABLE) <= expires
-            {
-                continue;
-            }
-            let covered: BTreeSet<&str> = candidate
-                .identifiers
-                .iter()
-                .map(|identifier| identifier.value.as_str())
-                .collect();
-            if names.is_subset(&covered) {
-                return Ok(Some(SupersededBy {
-                    order_id: candidate.id.clone(),
-                    cert_serial: candidate.cert_serial.clone().unwrap_or_default(),
-                    not_after: candidate.cert_not_after.unwrap_or_default(),
-                    via: "identifiers".to_string(),
-                }));
-            }
-        }
-
-        Ok(None)
     }
 
     /// Enqueues a row for every profile that wants one.
@@ -328,19 +265,12 @@ impl ExpiryDigestJob {
     }
 }
 
-/// The leaf's notAfter out of a stored PEM chain, or [`UNPARSABLE`].
+/// The leaf's notAfter out of a stored PEM chain, or [`UNPARSABLE_NOT_AFTER`].
 fn leaf_not_after(chain: &str) -> i64 {
     crate::cert::leaf_der_from_chain(chain)
         .ok()
         .and_then(|der| crate::cert::cert_validity(&der).ok())
-        .map_or(UNPARSABLE, |(_, not_after)| not_after)
-}
-
-/// The RFC 9773 certID of a stored chain's leaf, for the `replaces` lookup.
-fn ari_cert_id(chain: &str) -> Option<String> {
-    crate::cert::leaf_der_from_chain(chain)
-        .ok()
-        .and_then(|der| crate::cert::ari_cert_id(&der).ok())
+        .map_or(UNPARSABLE_NOT_AFTER, |(_, not_after)| not_after)
 }
 
 #[async_trait]
@@ -410,7 +340,6 @@ mod tests {
     use super::*;
     use crate::config::{ExpiryNotifyConfig, JobsConfig};
     use crate::notify::{BackendSlot, NotifyDispatcher};
-    use crate::sqlite::order::Identifier;
     use crate::testutil::account_id;
     use serde_json::json;
     use std::collections::HashMap;
@@ -469,54 +398,11 @@ mod tests {
         (job, database)
     }
 
-    /// An issued order on `profile`, with a real certificate so the ARI certID
-    /// the `replaces` signal rests on can actually be derived.
+    /// An issued order on the `default` profile. The real signing lives in
+    /// [`crate::testutil::issued_order`], hoisted there when `admin::ops`
+    /// gained the supersession annotation and needed the same row.
     async fn issued(db: &Database, account: &str, names: &[&str], not_after_days: i64) -> Order {
-        let signer =
-            crate::signer::local_ca::LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let mut order = Order::create(
-            "default",
-            account,
-            names.iter().map(|name| Identifier::dns(*name)).collect(),
-            now_secs() + 3600,
-            None,
-            None,
-            db,
-        )
-        .await
-        .unwrap();
-        let key_pair = rcgen::KeyPair::generate().unwrap();
-        let params = rcgen::CertificateParams::new(
-            names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let csr = params.serialize_request(&key_pair).unwrap();
-        let chain = match crate::signer::SignerBackend::issue(
-            &signer,
-            &order.id,
-            csr.der(),
-            &order.identifiers,
-            crate::signer::RequestedValidity::default(),
-        )
-        .await
-        .unwrap()
-        {
-            crate::signer::IssueOutcome::Issued(chain) => chain,
-            crate::signer::IssueOutcome::Processing => panic!("the in-memory CA is synchronous"),
-        };
-        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-        order
-            .finalize(
-                chain,
-                serial,
-                pubkey,
-                Some(now_secs() + not_after_days * DAY),
-                db,
-            )
-            .await
-            .unwrap();
-        order
+        crate::testutil::issued_order(db, "default", account, names, not_after_days).await
     }
 
     /// The digest's own content: what is expiring, in order, with the days
@@ -571,119 +457,6 @@ mod tests {
         );
     }
 
-    /// The client said it renewed (RFC 9773 §5).
-    #[tokio::test]
-    async fn a_replaces_claim_marks_the_predecessor_superseded() {
-        let (job, db) = harness(14).await;
-        let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
-
-        let cert_id = ari_cert_id(old.certificate.as_deref().unwrap()).unwrap();
-        let successor = issued(&db, &acct, &["a.example.com"], 90).await;
-        sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
-            .bind(&cert_id)
-            .bind(&successor.id)
-            .execute(&db.pool)
-            .await
-            .unwrap();
-
-        let reloaded = Order::find_by_id(&old.id, &db).await.unwrap().unwrap();
-        let superseded = job.superseded_by(&reloaded).await.unwrap().unwrap();
-        assert_eq!(superseded.order_id, successor.id);
-        assert_eq!(superseded.via, "replaces");
-    }
-
-    /// **A `replaces` claim from an order that never issued anything replaces
-    /// nothing.** `find_by_replaces` excludes only `invalid`, because its own
-    /// question is whether the claim is held; here a pending claim would
-    /// silence the one certificate still doing the work.
-    #[tokio::test]
-    async fn a_pending_replaces_claim_supersedes_nothing() {
-        let (job, db) = harness(14).await;
-        let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
-        let cert_id = ari_cert_id(old.certificate.as_deref().unwrap()).unwrap();
-
-        // A claim on the predecessor, from an order with no certificate.
-        let pending = Order::create(
-            "default",
-            &acct,
-            vec![Identifier::dns("a.example.com")],
-            now_secs() + 3600,
-            None,
-            None,
-            &db,
-        )
-        .await
-        .unwrap();
-        sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
-            .bind(&cert_id)
-            .bind(&pending.id)
-            .execute(&db.pool)
-            .await
-            .unwrap();
-
-        let reloaded = Order::find_by_id(&old.id, &db).await.unwrap().unwrap();
-        assert!(job.superseded_by(&reloaded).await.unwrap().is_none());
-    }
-
-    /// The inference: a later certificate covering the same names.
-    #[tokio::test]
-    async fn a_later_certificate_over_the_same_names_supersedes() {
-        let (job, db) = harness(14).await;
-        let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
-        let new = issued(&db, &acct, &["a.example.com", "b.example.com"], 90).await;
-
-        let superseded = job.superseded_by(&old).await.unwrap().unwrap();
-        assert_eq!(superseded.order_id, new.id);
-        assert_eq!(
-            superseded.via, "identifiers",
-            "a superset covers these names, so it is a renewal"
-        );
-    }
-
-    /// The three the inference must **not** draw. Each would silence a
-    /// certificate that really is about to lapse, which is the failure this
-    /// whole annotation is written conservatively to avoid.
-    #[tokio::test]
-    async fn a_partial_a_revoked_and_another_accounts_certificate_supersede_nothing() {
-        let (job, db) = harness(14).await;
-        let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com", "b.example.com"], 3).await;
-
-        // Covers only some of the names: the rest would go uncovered.
-        issued(&db, &acct, &["a.example.com"], 90).await;
-        assert!(
-            job.superseded_by(&old).await.unwrap().is_none(),
-            "a subset is not a renewal"
-        );
-
-        // Covers them all, but has itself been withdrawn.
-        let mut revoked = issued(&db, &acct, &["a.example.com", "b.example.com"], 90).await;
-        revoked.revoke(Some(1), &db).await.unwrap();
-        assert!(
-            job.superseded_by(&old).await.unwrap().is_none(),
-            "a revoked certificate covers nothing"
-        );
-
-        // Covers them all and is live, but belongs to somebody else.
-        let (other, _created) = crate::sqlite::account::Account::find_or_create(
-            "default",
-            b"other-key",
-            Vec::new(),
-            &crate::audit::ClientContext::default(),
-            &db,
-        )
-        .await
-        .unwrap();
-        issued(&db, &other.id, &["a.example.com", "b.example.com"], 90).await;
-        assert!(
-            job.superseded_by(&old).await.unwrap().is_none(),
-            "another subscriber's certificate is not this one's renewal"
-        );
-    }
-
     /// The backfill stamps what it can read and records what it cannot, so the
     /// unreadable row is parsed once rather than on every pass for ever.
     #[tokio::test]
@@ -710,7 +483,7 @@ mod tests {
         let good = Order::find_by_id(&good.id, &db).await.unwrap().unwrap();
         assert!(good.cert_not_after.unwrap() > now_secs());
         let bad = Order::find_by_id(&bad.id, &db).await.unwrap().unwrap();
-        assert_eq!(bad.cert_not_after, Some(UNPARSABLE));
+        assert_eq!(bad.cert_not_after, Some(UNPARSABLE_NOT_AFTER));
 
         // Nothing is left for a second pass to re-parse.
         assert!(

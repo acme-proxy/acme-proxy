@@ -17,7 +17,7 @@
 use base64::prelude::*;
 use serde_json::Value;
 
-use crate::admin::ops::OrderDetail;
+use crate::admin::ops::{ExpiringEntry, OrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -157,6 +157,65 @@ pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
     root.insert("order".to_string(), order);
     root.insert("authorizations".to_string(), Value::Array(authorizations));
     Value::Object(root)
+}
+
+/// One row of the expiry list: `GET /api/expiring`, `/ui/expiring` and
+/// `order list --expiring-in --json`.
+///
+/// A shape of its own rather than [`render_order_json`] plus two members, for
+/// two reasons. That renderer takes `authz_ids`, which no expiry view shows and
+/// which would be a query per row to supply; and this shape is deliberately the
+/// digest's own (`crate::notify::ExpiringCertificate`), so the mail, the page,
+/// the API and the terminal all describe an expiring certificate the same way.
+///
+/// `supersededBy` is **omitted** when nothing has replaced this certificate,
+/// like every other absent member here — and an operator scanning the list is
+/// looking for exactly the rows where it is absent, so `null` would be a value
+/// where the question is presence.
+#[must_use]
+pub fn render_expiring_json(entry: &ExpiringEntry) -> Value {
+    let order = &entry.order;
+    let mut object = serde_json::Map::new();
+    object.insert("orderId".to_string(), Value::String(order.id.clone()));
+    object.insert("profile".to_string(), Value::String(order.profile.clone()));
+    object.insert(
+        "accountId".to_string(),
+        Value::String(order.account_id.clone()),
+    );
+    object.insert(
+        "certSerial".to_string(),
+        Value::String(order.cert_serial.clone().unwrap_or_default()),
+    );
+    object.insert(
+        "identifiers".to_string(),
+        Value::Array(
+            order
+                .identifiers
+                .iter()
+                .map(|identifier| Value::String(identifier.value.clone()))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "notAfter".to_string(),
+        Value::String(rfc3339(order.cert_not_after.unwrap_or_default())),
+    );
+    object.insert(
+        "daysRemaining".to_string(),
+        Value::from(entry.days_remaining),
+    );
+    if let Some(superseded) = &entry.superseded_by {
+        object.insert(
+            "supersededBy".to_string(),
+            serde_json::json!({
+                "orderId": superseded.order_id,
+                "certSerial": superseded.cert_serial,
+                "notAfter": rfc3339(superseded.not_after),
+                "via": superseded.via,
+            }),
+        );
+    }
+    Value::Object(object)
 }
 
 /// `eab list --json` / `eab show --json`.

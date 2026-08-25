@@ -33,6 +33,7 @@ pub mod audit;
 pub mod auth;
 pub mod eab;
 pub mod error;
+pub mod expiring;
 pub mod misc;
 pub mod orders;
 pub mod session;
@@ -98,6 +99,7 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             post(accounts::deactivate_account),
         )
         // Read-only, and the only list here with no control in its rows.
+        .route("/ui/expiring", get(expiring::list_expiring))
         .route("/ui/audit", get(audit::list_audit))
         .route("/ui/audit/{id}", get(audit::get_audit))
         .route("/ui/orders", get(orders::list_orders))

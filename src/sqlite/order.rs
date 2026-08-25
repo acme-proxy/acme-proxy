@@ -102,6 +102,9 @@ pub struct Order {
     pub replaces: Option<String>,
     pub cert_serial: Option<String>,
     pub cert_pubkey: Option<Vec<u8>>,
+    /// The leaf's own notAfter, epoch seconds. `None` on a row finalized before
+    /// the column existed (the digest's backfill stamps those), and
+    /// [`UNPARSABLE_NOT_AFTER`] once the backfill has looked and failed.
     pub cert_not_after: Option<i64>,
     pub revoked_at: Option<i64>,
     pub revocation_reason: Option<i64>,
@@ -187,17 +190,38 @@ macro_rules! columns {
     };
 }
 
-/// The digest's `FROM`/`WHERE`, shared by [`Order::find_expiring`]'s page and
-/// its count for the reason [`OrderQuery::push_predicates`] is one function: a
-/// predicate applied to only one of them reports a total the rows do not match,
-/// which a page control shows and nothing else does.
+/// What [`Order::cert_not_after`] holds for a chain that would not parse, so it
+/// is never parsed again.
 ///
-/// A `macro_rules!` for `columns!`'s reason — `concat!` needs a literal.
-macro_rules! expiring {
-    () => {
-        " FROM orders WHERE profile = ? AND certificate IS NOT NULL \
-          AND revoked_at IS NULL AND cert_not_after >= 0 AND cert_not_after <= ?"
-    };
+/// Any negative value would do, and every reader tests the *sign* rather than
+/// comparing against this — the column is documented as "negative means
+/// unparsable". It is named here, beside the column, because three modules now
+/// write or skip it: the digest's backfill, the expiry predicates below, and
+/// the supersession annotation in `crate::admin`.
+pub const UNPARSABLE_NOT_AFTER: i64 = -1;
+
+/// The expiry listing's `WHERE`, appended to both [`Order::find_expiring`]'s
+/// page and its count for the reason [`OrderQuery::push_predicates`] is one
+/// function: a predicate applied to only one of them reports a total the rows
+/// do not match, which a page control shows and nothing else does.
+///
+/// A function over a `QueryBuilder` rather than the `macro_rules!` this used to
+/// be, because `profile` became optional when the admin surfaces arrived and a
+/// `concat!` literal cannot carry a conditional clause. The three predicates
+/// after it are unconditional and each carries its reason on
+/// [`Order::find_expiring`].
+fn push_expiring_predicates(
+    profile: Option<&str>,
+    before: i64,
+    builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+) {
+    builder.push(" FROM orders WHERE certificate IS NOT NULL AND revoked_at IS NULL");
+    builder.push(" AND cert_not_after >= 0 AND cert_not_after <= ");
+    builder.push_bind(before);
+    if let Some(profile) = profile {
+        builder.push(" AND profile = ");
+        builder.push_bind(profile.to_string());
+    }
 }
 
 impl Order {
@@ -627,9 +651,10 @@ impl Order {
         Ok(())
     }
 
-    /// The certificates on `profile` that expire at or before `before`, soonest
-    /// first, with the unpaged total beside the page — the digest's whole query
-    /// (`[notify.expiry]`, [`crate::notify::expiry`]).
+    /// The certificates expiring at or before `before`, soonest first, with the
+    /// unpaged total beside the page — the digest's whole query
+    /// (`[notify.expiry]`, [`crate::notify::expiry`]) and the admin surfaces'
+    /// (`GET /api/expiring`, `/ui/expiring`, `order list --expiring-in`).
     ///
     /// Three predicates, each carrying its own reason. `certificate IS NOT
     /// NULL` because an order that never issued has nothing to expire;
@@ -637,7 +662,27 @@ impl Order {
     /// go and renew; and `cert_not_after >= 0` because a negative value is the
     /// sweep's sentinel for a chain it could not parse, which is a row to leave
     /// alone rather than to report as expiring in 1970. They are exactly the
-    /// partial index's own predicate, so this is an index range scan.
+    /// partial index's own predicate.
+    ///
+    /// `profile` is an `Option` because the panel lists every endpoint by
+    /// default, like every other admin listing, where the digest asks one
+    /// profile at a time. The two forms cost different things, and the
+    /// difference is the index's column order:
+    ///
+    /// - `Some` is `SEARCH … USING INDEX idx_orders_cert_not_after (profile=?
+    ///   AND cert_not_after>? AND cert_not_after<?)` — a range seek on both
+    ///   columns, and byte for byte the plan the digest's original query got.
+    /// - `None` is `SCAN … USING INDEX idx_orders_cert_not_after`: the partial
+    ///   predicate still matches, so the index is still what is read, but with
+    ///   no leading-column equality there is nothing to seek to, and the index
+    ///   is ordered by `cert_not_after` only *within* a profile — so the
+    ///   ordering below falls to a temp b-tree over the whole result rather
+    ///   than over its last term alone.
+    ///
+    /// That is the price of the unscoped view, and it is stated here rather
+    /// than left to be rediscovered from a query plan. A profile-less index on
+    /// `cert_not_after` would buy it back, and is not worth a second index on
+    /// a table this one already covers until a deployment says otherwise.
     ///
     /// The total is counted rather than derived from the page, so "…and N more"
     /// can be honest without loading a tail nobody will read. `id` breaks the
@@ -645,40 +690,40 @@ impl Order {
     /// a whole-second expiry, and a stable order is what stops one of them
     /// being dropped between the page and the count.
     pub async fn find_expiring(
-        profile: &str,
+        profile: Option<&str>,
         before: i64,
         limit: i64,
+        offset: i64,
         database: &Database,
     ) -> Result<(Vec<Order>, i64), sqlx::Error> {
         debug!(
             event = "db_order_find_expiring_started",
             outcome = "progress",
-            profile = %profile,
+            profile = ?profile,
             before,
-            limit
+            limit,
+            offset
         );
-        let rows = sqlx::query(concat!(
-            "SELECT ",
-            columns!(),
-            expiring!(),
-            " ORDER BY cert_not_after ASC, id ASC LIMIT ?;"
-        ))
-        .bind(profile)
-        .bind(before)
-        .bind(limit)
-        .fetch_all(&database.pool)
-        .await?;
+        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!()));
+        push_expiring_predicates(profile, before, &mut page);
+        page.push(" ORDER BY cert_not_after ASC, id ASC LIMIT ");
+        page.push_bind(limit);
+        page.push(" OFFSET ");
+        page.push_bind(offset);
+
+        let rows = page.build().fetch_all(&database.pool).await?;
         let orders: Vec<Order> = rows
             .into_iter()
             .map(Order::from_row)
             .collect::<Result<_, _>>()?;
 
-        let total: i64 = sqlx::query(concat!("SELECT COUNT(*)", expiring!(), ";"))
-            .bind(profile)
-            .bind(before)
+        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*)");
+        push_expiring_predicates(profile, before, &mut count);
+        let total: i64 = count
+            .build()
             .fetch_one(&database.pool)
             .await?
-            .try_get(0)?;
+            .try_get::<i64, _>(0)?;
 
         Ok((orders, total))
     }
@@ -1873,8 +1918,19 @@ mod tests {
         names: &[&str],
         not_after: Option<i64>,
     ) -> Order {
+        expiring_order_on(db, "default", account, names, not_after).await
+    }
+
+    /// [`expiring_order`] on a named endpoint, for the cases about scoping.
+    async fn expiring_order_on(
+        db: &Database,
+        profile: &str,
+        account: &str,
+        names: &[&str],
+        not_after: Option<i64>,
+    ) -> Order {
         let mut order = Order::create(
-            "default",
+            profile,
             account,
             names.iter().map(|name| Identifier::dns(*name)).collect(),
             now_secs() + 3600,
@@ -1911,7 +1967,7 @@ mod tests {
         let soon = expiring_order(&db, &acct, &["soon.example.com"], Some(now + 2 * DAY)).await;
         let mid = expiring_order(&db, &acct, &["mid.example.com"], Some(now + 9 * DAY)).await;
 
-        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 10, &db)
+        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
 
@@ -1949,7 +2005,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 10, &db)
+        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
@@ -1970,7 +2026,7 @@ mod tests {
             expiring_order(&db, &acct, &[name.as_str()], Some(now + DAY)).await;
         }
 
-        let (page, total) = Order::find_expiring("default", now + 14 * DAY, 2, &db)
+        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 2, 0, &db)
             .await
             .unwrap();
         assert_eq!(page.len(), 2);
@@ -1986,11 +2042,85 @@ mod tests {
         let now = now_secs();
         expiring_order(&db, &acct, &["a.example.com"], Some(now + DAY)).await;
 
-        let (page, total) = Order::find_expiring("other", now + 14 * DAY, 10, &db)
+        let (page, total) = Order::find_expiring(Some("other"), now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         assert!(page.is_empty());
         assert_eq!(total, 0);
+    }
+
+    /// The panel's default view: no profile, so every endpoint at once. The
+    /// digest never asks this — it iterates its configured profiles — but the
+    /// admin surfaces open on it.
+    #[tokio::test]
+    async fn find_expiring_unscoped_spans_every_profile() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+
+        let here =
+            expiring_order_on(&db, "default", &acct, &["a.example.com"], Some(now + DAY)).await;
+        let there =
+            expiring_order_on(&db, "other", &acct, &["b.example.com"], Some(now + 2 * DAY)).await;
+
+        let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
+        assert_eq!(ids, vec![here.id.as_str(), there.id.as_str()]);
+        assert_eq!(total, 2);
+
+        // And the three unconditional predicates still apply unscoped: a
+        // revoked row is absent whichever endpoint issued it.
+        let mut revoked =
+            expiring_order_on(&db, "other", &acct, &["c.example.com"], Some(now + DAY)).await;
+        revoked.revoke(Some(1), &db).await.unwrap();
+        let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(total, 2);
+    }
+
+    /// The offset the page control needs: consecutive windows do not overlap,
+    /// and the total stays the *unpaged* count so the pager's arithmetic has
+    /// something honest to work from.
+    #[tokio::test]
+    async fn find_expiring_pages_without_overlap_and_keeps_the_unpaged_total() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+        for index in 0..5 {
+            let name = format!("host-{index}.example.com");
+            // Distinct expiries, so the ordering is total and the assertion
+            // below is about the offset rather than about a tie-break.
+            expiring_order(&db, &acct, &[name.as_str()], Some(now + (index + 1) * DAY)).await;
+        }
+
+        let (first, total) = Order::find_expiring(None, now + 14 * DAY, 2, 0, &db)
+            .await
+            .unwrap();
+        let (second, second_total) = Order::find_expiring(None, now + 14 * DAY, 2, 2, &db)
+            .await
+            .unwrap();
+
+        assert_eq!(total, 5);
+        assert_eq!(second_total, 5, "the total is unpaged on every window");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 2);
+        let firsts: Vec<&str> = first.iter().map(|order| order.id.as_str()).collect();
+        for order in &second {
+            assert!(
+                !firsts.contains(&order.id.as_str()),
+                "a row must not appear on two pages"
+            );
+        }
+
+        // Past the end is an empty page, not an error and not a wrapped one.
+        let (past, _) = Order::find_expiring(None, now + 14 * DAY, 2, 50, &db)
+            .await
+            .unwrap();
+        assert!(past.is_empty());
     }
 
     /// The backfill's input: rows with a chain and no stamp, and nothing else.

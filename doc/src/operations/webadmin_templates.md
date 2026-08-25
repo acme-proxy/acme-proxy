@@ -42,6 +42,7 @@ each other in `{% extends %}` and `{% include %}`.
 | `accounts/detail.html`, `accounts/_card.html` | One account, and the card every account mutation returns |
 | `orders/list.html`, `orders/_table.html` | The order list |
 | `orders/detail.html`, `orders/_card.html` | One order with its authorizations and challenges |
+| `expiring/list.html`, `expiring/_table.html` | The expiry list, its window and profile filters, and the hidden-count line |
 | `eab/list.html`, `eab/_table.html` | The credential list and the create form |
 | `eab/detail.html`, `eab/_card.html` | One credential |
 | `eab/_created.html` | The one-time HMAC secret |

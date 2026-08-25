@@ -214,6 +214,11 @@ pub fn build_admin_app_with_logins(
         // proves nothing.
         .route("/audit", get(handlers::list_audit))
         .route("/audit/{id}", get(handlers::get_audit))
+        // Read-only for its own reason rather than the audit trail's: renewing
+        // is the *client's* action, driven by its own ACME flow, so there is
+        // nothing here for a route to write. Absent from `mutating_endpoints()`
+        // accordingly.
+        .route("/expiring", get(handlers::list_expiring))
         .route("/nonces", get(handlers::get_nonces))
         .route("/nonces/cleanup", post(handlers::cleanup_nonces))
         .route("/profiles", get(handlers::list_profiles));

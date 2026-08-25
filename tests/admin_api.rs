@@ -2698,3 +2698,228 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
         4
     );
 }
+
+/// One issued order on `PROFILE` whose leaf expires at `not_after`.
+///
+/// The chain is a placeholder rather than a real signature: the identifier
+/// signal reads the stored `identifiers` and `cert_not_after`, and the
+/// `replaces` signal answers `None` on a chain it cannot parse, which is the
+/// fall-through this fixture wants. The suite for the annotation itself lives
+/// in `src/admin/ops.rs`, over really-signed rows.
+async fn expiring(
+    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    account: &str,
+    names: &[&str],
+    not_after: i64,
+) -> String {
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let mut order = Order::create(
+        PROFILE,
+        account,
+        names.iter().map(|name| Identifier::dns(*name)).collect(),
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
+            format!("serial-{}", &order.id[..8]),
+            vec![1],
+            Some(not_after),
+            database,
+        )
+        .await
+        .unwrap();
+    order.id
+}
+
+/// The expiry surface is **read-only**, and for a different reason than the
+/// audit trail's: renewal is the *client's* action, driven by its own ACME
+/// flow. A panel button that placed an order on a subscriber's behalf would be
+/// this server signing for a key it does not hold. That is why `/api/expiring`
+/// contributes nothing to `mutating_endpoints()` — there is no mutating route
+/// to list.
+#[tokio::test]
+async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writing_to_it() {
+    use acme_proxy::sqlite::account::Account;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        b"expiry-key",
+        Vec::new(),
+        &ClientContext::default(),
+        &database,
+    )
+    .await
+    .unwrap();
+
+    let now = now_unix();
+    const DAY: i64 = 24 * 60 * 60;
+    // Half a day past the three, so the day count below distinguishes a floor
+    // from a round without racing the clock at the boundary.
+    let soon = expiring(
+        &database,
+        &account.id,
+        &["soon.example.com"],
+        now + 3 * DAY + DAY / 2,
+    )
+    .await;
+    let mid = expiring(&database, &account.id, &["mid.example.com"], now + 20 * DAY).await;
+    // Renews `soon`, and is itself outside the window: the annotation is about
+    // the row it replaces, not about being listed alongside it.
+    let renewal = expiring(
+        &database,
+        &account.id,
+        &["soon.example.com"],
+        now + 300 * DAY,
+    )
+    .await;
+    // Withdrawn, so not something to go and renew.
+    let mut revoked = acme_proxy::sqlite::order::Order::find_by_id(
+        &expiring(&database, &account.id, &["gone.example.com"], now + 2 * DAY).await,
+        &database,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    revoked.revoke(Some(1), &database).await.unwrap();
+
+    let body =
+        json_body(admin_request(&app, Method::GET, "/api/expiring", Some(&session), None).await)
+            .await;
+    assert_eq!(body["total"], 2, "the revoked row is not expiring");
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    assert_eq!(body["hidden"], 0, "nothing hidden by default");
+    // The default window is the configured lead time, or 30 days where the
+    // digest is off — which `admin_config()` leaves it.
+    assert_eq!(body["days"], 30);
+
+    // Soonest first, which is the query's ordering and not the page's.
+    assert_eq!(body["items"][0]["orderId"], soon);
+    assert_eq!(body["items"][1]["orderId"], mid);
+    assert_eq!(body["items"][0]["daysRemaining"], 3, "floored, not rounded");
+    assert_eq!(body["items"][0]["identifiers"][0], "soon.example.com");
+    assert_eq!(body["items"][0]["supersededBy"]["orderId"], renewal);
+    assert_eq!(body["items"][0]["supersededBy"]["via"], "identifiers");
+    // Absent, not null, on the row nothing has replaced — the presence of this
+    // member is exactly what an operator scans the list for.
+    assert!(
+        !body["items"][1]
+            .as_object()
+            .unwrap()
+            .contains_key("supersededBy"),
+        "{body}"
+    );
+
+    // The window is a filter, and it is the `days` the answer reports back.
+    let narrow = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/expiring?days=7",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(narrow["total"], 1);
+    assert_eq!(narrow["days"], 7);
+    assert_eq!(narrow["items"][0]["orderId"], soon);
+
+    // Hiding the replaced rows drops them from the page and says how many —
+    // and deliberately leaves `total` counting the window, because the
+    // annotation is not a SQL predicate. See `admin::list_expiring`.
+    let hidden = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/expiring?superseded=hide",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hidden["items"].as_array().unwrap().len(), 1);
+    assert_eq!(hidden["items"][0]["orderId"], mid);
+    assert_eq!(hidden["hidden"], 1);
+    assert_eq!(hidden["total"], 2, "the total counts the window");
+    // Anything but `hide` shows them, rather than being refused: a row wrongly
+    // hidden is a certificate an operator stops watching.
+    let typo = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/expiring?superseded=hde",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(typo["items"].as_array().unwrap().len(), 2);
+
+    // A profile that issued none of this answers with none of it.
+    let other = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/expiring?profile=nothing-here",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(other["total"], 0);
+
+    // The page window is the shared one, clamped like every other listing.
+    let paged = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/expiring?limit=1&offset=1",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(paged["total"], 2);
+    assert_eq!(paged["limit"], 1);
+    assert_eq!(paged["offset"], 1);
+    assert_eq!(paged["items"][0]["orderId"], mid);
+
+    // A session is required, like every other resource on this listener.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/expiring", None, None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Nothing writes: every other verb on the path is unroutable.
+    for method in [Method::POST, Method::DELETE, Method::PATCH, Method::PUT] {
+        let response = admin_request(
+            &app,
+            method.clone(),
+            "/api/expiring",
+            Some(&session),
+            Some(json!({})),
+        )
+        .await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} /api/expiring answered {}",
+            response.status()
+        );
+    }
+}

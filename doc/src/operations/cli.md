@@ -141,11 +141,22 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--json` |
+| `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--expiring-in <days>`, `--hide-superseded`, `--json` |
 | `order show <id>` | `--json` |
 | `order delete <id>` | *(prompts)* |
 | `order revoke <id>` | `--reason <n>` |
 
+- `order list --expiring-in <days>` asks a different question over a different
+  query: the certificates this CA issued that reach their notAfter inside the
+  window, **soonest first**, each annotated with whatever has already replaced
+  it. It is the same listing the `[notify.expiry]` digest mails and the panel
+  shows at `/ui/expiring`, so the three cannot come to disagree about what
+  "expiring" or "already replaced" means. Add `--hide-superseded` to drop the
+  rows that have a successor and leave only the ones to act on.
+- **`--status` and `--account-id` are refused with `--expiring-in`**, by name.
+  The expiry listing is issued, unrevoked certificates by definition and has no
+  account predicate, so either flag would silently mean something other than it
+  does elsewhere — the rule `--status` and `audit list --event` already follow.
 - `order show` surfaces `revokedAt` and `revocationReason`, which are
   deliberately absent from the ACME JSON a client sees — revocation state is
   admin-visible only.

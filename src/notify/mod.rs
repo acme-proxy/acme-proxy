@@ -240,22 +240,13 @@ pub struct ExpiringCertificate {
     pub superseded_by: Option<SupersededBy>,
 }
 
-/// The certificate that has taken an expiring one's place, and how that was
-/// established.
+/// Re-exported so this event's payload still names its own members, and so the
+/// serde shape below is unchanged by where the type lives.
 ///
-/// `via` is carried rather than inferred because the two signals do not mean
-/// the same thing to an operator: `replaces` is the client *saying* it renewed
-/// (RFC 9773 §5, exact but only from clients that send one), where
-/// `identifiers` is this server noticing a later certificate covering the same
-/// names — a good inference, and still an inference.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SupersededBy {
-    pub order_id: String,
-    pub cert_serial: String,
-    pub not_after: i64,
-    /// `"replaces"` or `"identifiers"`.
-    pub via: String,
-}
+/// It moved to [`crate::admin::ops`] when the panel and the CLI gained expiry
+/// views: the annotation is computed once, there, and the digest is one of its
+/// three consumers rather than its owner. See [`crate::admin::superseded_by`].
+pub use crate::admin::SupersededBy;
 
 /// Payload of [`NotifyEvent::CertificatesExpiring`]: the periodic digest of
 /// what is about to lapse on one profile.

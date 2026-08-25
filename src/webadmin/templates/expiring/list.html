@@ -1,0 +1,45 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Expiring</h1>
+  <p class="small">
+    Certificates this CA issued that reach their notAfter inside the window,
+    soonest first. A row annotated <em>replaced by</em> already has a successor;
+    the ones to act on are the ones that do not. Read-only — renewal is the
+    client's own ACME flow, not something the panel can place on its behalf.
+  </p>
+
+  <div class="panel">
+    <form class="row" hx-get="/ui/expiring" hx-target="#expiring-table"
+          hx-push-url="true" hx-trigger="change, submit">
+      <div class="field">
+        <label for="profile">Profile</label>
+        <select id="profile" name="profile">
+          <option value="">every profile</option>
+          {% for profile in profiles %}
+            <option value="{{ profile.name }}"
+                    {% if filters.profile == profile.name %}selected{% endif %}>
+              {{ profile.name }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="days">Within (days)</label>
+        <input type="number" id="days" name="days" min="1"
+               value="{{ filters.days }}">
+      </div>
+      {#- The value is `hide` rather than the checkbox's default `on`, because
+          the handler compares against exactly that string and an unchecked box
+          sends no field at all -- which is the "show them" answer. -#}
+      <div class="field">
+        <label for="superseded">Already replaced</label>
+        <select id="superseded" name="superseded">
+          <option value="" {% if not filters.hideSuperseded %}selected{% endif %}>show</option>
+          <option value="hide" {% if filters.hideSuperseded %}selected{% endif %}>hide</option>
+        </select>
+      </div>
+    </form>
+  </div>
+
+  {% include "expiring/_table.html" %}
+{% endblock %}

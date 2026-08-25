@@ -40,6 +40,8 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("login.html"),
         embed!("mfa/challenge.html"),
         embed!("index.html"),
+        embed!("expiring/list.html"),
+        embed!("expiring/_table.html"),
         embed!("audit/list.html"),
         embed!("audit/_table.html"),
         embed!("audit/detail.html"),

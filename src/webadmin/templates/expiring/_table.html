@@ -1,0 +1,67 @@
+{#- The swap target of the expiry list. Read-only: there is no control in this
+    table, because renewal is the client's action and not the panel's. -#}
+<div id="expiring-table">
+  {#- `total` counts the window and `hidden` what this page dropped, because
+      supersession is computed per row and cannot become a SQL predicate. Said
+      out loud here rather than folded into the pager, which would otherwise
+      disagree with the rows underneath it. -#}
+  {% if page.hidden > 0 %}
+    <p class="small muted">
+      {{ page.hidden }} row{{ "" if page.hidden == 1 else "s" }} on this page
+      hidden as already replaced; the count beside the pager is the whole window.
+    </p>
+  {% endif %}
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Profile</th>
+          <th>Identifiers</th>
+          <th>Expires</th>
+          <th>In</th>
+          <th>Account</th>
+          <th>Replaced by</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cert in page.items %}
+          <tr>
+            <td><a href="/ui/orders/{{ cert.orderId }}"><code>{{ cert.orderId }}</code></a></td>
+            <td><code>{{ cert.profile }}</code></td>
+            <td class="wrap-anywhere">
+              {%- for identifier in cert.identifiers -%}
+                {% if not loop.first %}, {% endif %}{{ identifier }}
+              {%- endfor -%}
+            </td>
+            <td class="small">{{ cert.notAfter }}</td>
+            {#- Urgency by class, never an inline `style`: `style-src 'self'`
+                blocks the attribute. The thresholds are the page's own and
+                deliberately coarse -- a week is "act now", a month is "soon". -#}
+            <td>
+              <span class="badge
+                {%- if cert.daysRemaining <= 7 %} urgent
+                {%- elif cert.daysRemaining <= 30 %} soon
+                {%- endif %}">{{ cert.daysRemaining }}d</span>
+            </td>
+            <td><a href="/ui/accounts/{{ cert.accountId }}"><code>{{ cert.accountId }}</code></a></td>
+            {#- Absent is the answer an operator is scanning for, so it renders
+                as the dash rather than as a blank cell. -#}
+            <td class="small">
+              {%- if cert.supersededBy -%}
+                <a href="/ui/orders/{{ cert.supersededBy.orderId }}">
+                  <code>{{ cert.supersededBy.orderId }}</code></a>
+                <span class="badge">{{ cert.supersededBy.via }}</span>
+              {%- else -%}
+                —
+              {%- endif -%}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="7">Nothing is expiring in this window.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

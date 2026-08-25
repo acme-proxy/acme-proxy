@@ -22,7 +22,7 @@
 use base64::prelude::*;
 
 use super::style::Palette;
-use crate::admin::ops::OrderDetail;
+use crate::admin::ops::{ExpiringEntry, OrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -226,6 +226,47 @@ pub fn render_order_line(order: &Order, palette: Palette) -> String {
     line
 }
 
+/// One line of `order list --expiring-in`: `order_id  profile  Nd  not_after
+/// identifiers`, plus a `replaced-by=` suffix where something has.
+///
+/// Two things are painted, both semantic. The days-left column, because "act
+/// now" versus "soon" is the one thing an operator scans this listing for; and
+/// the supersession suffix, because its *presence* is the good news — which is
+/// also why the rows with no suffix are the ones left plain. The thresholds are
+/// the terminal's own and match `/ui/expiring`'s badges.
+#[must_use]
+pub fn render_expiring_line(entry: &ExpiringEntry, palette: Palette) -> String {
+    let order = &entry.order;
+    let identifiers = order
+        .identifiers
+        .iter()
+        .map(|i| i.value.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    // Padded first, then painted: a format width counts bytes.
+    let days = format!("{:>5}", format!("{}d", entry.days_remaining));
+    let days = match entry.days_remaining {
+        0..=7 => palette.bad(&days),
+        8..=30 => palette.warn(&days),
+        _ => days,
+    };
+    let mut line = format!(
+        "{}  {:<12}  {}  {}  {}",
+        order.id,
+        order.profile,
+        days,
+        rfc3339(order.cert_not_after.unwrap_or_default()),
+        identifiers
+    );
+    if let Some(superseded) = &entry.superseded_by {
+        line.push_str(&palette.ok(&format!(
+            "  replaced-by={} via={}",
+            superseded.order_id, superseded.via
+        )));
+    }
+    line
+}
+
 /// `order show` text output.
 #[must_use]
 pub fn render_order_detail_text(detail: &OrderDetail, palette: Palette) -> String {
@@ -380,6 +421,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::admin::ops::SupersededBy;
     use crate::admin::ops::load_order_detail;
     use crate::audit::ClientContext;
     use crate::cli::style::ColorChoice;
@@ -877,6 +919,78 @@ mod tests {
         assert_eq!(
             strip_ansi(&painted),
             render_admin_session_line(&session, Palette::plain())
+        );
+    }
+
+    /// The expiry line's own shape, its three urgency bands, and the suffix
+    /// that only appears where something has replaced the certificate.
+    #[test]
+    fn the_expiring_line_bands_the_days_and_annotates_only_what_was_replaced() {
+        let entry = |days: i64, superseded: Option<SupersededBy>| {
+            let mut order = order_fixture("acct-1", OrderStatus::Valid);
+            order.id = "ord-1".to_string();
+            order.cert_not_after = Some(1_700_000_000);
+            ExpiringEntry {
+                order,
+                days_remaining: days,
+                superseded_by: superseded,
+            }
+        };
+
+        let plain = render_expiring_line(&entry(40, None), Palette::plain());
+        assert!(plain.starts_with("ord-1  default     "), "{plain}");
+        assert!(plain.contains("  40d  "), "{plain}");
+        assert!(plain.contains("2023-11-14"), "{plain}");
+        assert!(plain.ends_with("example.com"), "{plain}");
+        assert!(
+            !plain.contains("replaced-by"),
+            "the absent annotation is what an operator scans for: {plain}"
+        );
+
+        // Inside a week is red, inside a month amber, beyond that plain.
+        assert!(render_expiring_line(&entry(3, None), colour()).contains("\x1b[31m"));
+        assert!(render_expiring_line(&entry(20, None), colour()).contains("\x1b[33m"));
+        let far = render_expiring_line(&entry(40, None), colour());
+        assert_eq!(
+            far,
+            render_expiring_line(&entry(40, None), Palette::plain())
+        );
+
+        let replaced = entry(
+            3,
+            Some(SupersededBy {
+                order_id: "ord-2".to_string(),
+                cert_serial: "0a0b".to_string(),
+                not_after: 1_800_000_000,
+                via: "replaces".to_string(),
+            }),
+        );
+        let line = render_expiring_line(&replaced, Palette::plain());
+        assert!(line.ends_with("  replaced-by=ord-2 via=replaces"), "{line}");
+    }
+
+    /// The days column keeps its width under colour — the same regression the
+    /// account listing pins, for a field this renderer pads itself.
+    #[test]
+    fn colour_never_moves_the_expiring_listings_columns() {
+        let mut order = order_fixture("acct-1", OrderStatus::Valid);
+        order.cert_not_after = Some(1_700_000_000);
+        let entry = ExpiringEntry {
+            order,
+            days_remaining: 3,
+            superseded_by: Some(SupersededBy {
+                order_id: "ord-2".to_string(),
+                cert_serial: "0a0b".to_string(),
+                not_after: 1_800_000_000,
+                via: "identifiers".to_string(),
+            }),
+        };
+
+        let painted = render_expiring_line(&entry, colour());
+        assert!(painted.contains("\x1b[31m   3d\x1b[0m"), "{painted}");
+        assert_eq!(
+            strip_ansi(&painted),
+            render_expiring_line(&entry, Palette::plain())
         );
     }
 }

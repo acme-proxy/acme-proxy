@@ -868,7 +868,9 @@ pub fn totp_code(secret: &[u8], steps: i64) -> String {
     totp::totp_at(secret, totp::step_at(now_unix()) + steps, totp::DIGITS)
 }
 
-fn now_unix() -> i64 {
+/// Wall-clock seconds, the same value `sqlite::nonce::now_secs` returns — that
+/// one is `pub(crate)`, and an integration test links this crate from outside.
+pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

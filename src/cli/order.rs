@@ -25,6 +25,14 @@ pub enum OrderCommand {
         account_id: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Instead: the certificates lapsing within N days, soonest first,
+        /// each annotated with whatever has already replaced it.
+        #[arg(long = "expiring-in")]
+        expiring_in: Option<u64>,
+        /// Omit certificates something has already replaced. Needs
+        /// `--expiring-in`, which is where the annotation comes from.
+        #[arg(long = "hide-superseded")]
+        hide_superseded: bool,
         #[arg(long)]
         json: bool,
     },
@@ -57,8 +65,36 @@ pub async fn run_order_command(
             profile,
             account_id,
             status,
+            expiring_in,
+            hide_superseded,
             json,
         } => {
+            // `--expiring-in` is a different question over a different query,
+            // and the three flags that do not compose with it are refused **by
+            // name** rather than ignored -- `--status`'s own rule, and for its
+            // reason: an argument silently dropped answers with rows that look
+            // like it was honoured.
+            if let Some(days) = expiring_in {
+                return run_expiring(
+                    days,
+                    profile,
+                    account_id.as_deref(),
+                    status.as_deref(),
+                    hide_superseded,
+                    json,
+                    palette,
+                    database,
+                )
+                .await;
+            }
+            if hide_superseded {
+                return Err(CliError(
+                    "--hide-superseded needs --expiring-in: it filters on the supersession \
+                     annotation, which only the expiry listing carries"
+                        .to_string(),
+                ));
+            }
+
             // Refused by name rather than passed through: an unknown status
             // would match no rows, which reads exactly like "nothing is in
             // that state". The same rule `audit list --event` follows.
@@ -204,6 +240,61 @@ pub async fn run_order_command(
             }
         }
     }
+    Ok(())
+}
+
+/// `order list --expiring-in <days>`.
+///
+/// A branch rather than a sibling subcommand because it is still "list orders",
+/// asked with a different filter -- but it is a different *query*
+/// (`Order::find_expiring`, ordered by expiry rather than by age) with its own
+/// fixed status set, so the two filters that cannot mean anything here are
+/// refused instead of ignored.
+///
+/// Unpaged, like the rest of `order list`: a CLI listing has no page control to
+/// offer. That is affordable only because `admin::annotate_expiring` reads each
+/// account's orders once for the whole listing rather than once per row.
+#[allow(clippy::too_many_arguments)]
+async fn run_expiring(
+    days: u64,
+    profile: Option<String>,
+    account_id: Option<&str>,
+    status: Option<&str>,
+    hide_superseded: bool,
+    json: bool,
+    palette: Palette,
+    database: Arc<Database>,
+) -> Result<(), CliError> {
+    if status.is_some() {
+        return Err(CliError(
+            "--status does not apply with --expiring-in: the expiry listing is issued, \
+             unrevoked certificates by definition, so a status filter here would mean \
+             something other than it does everywhere else"
+                .to_string(),
+        ));
+    }
+    if account_id.is_some() {
+        return Err(CliError(
+            "--account-id does not apply with --expiring-in: the expiry listing has no \
+             account predicate, and answering as though it did would report one \
+             subscriber's certificates as every subscriber's"
+                .to_string(),
+        ));
+    }
+
+    let query = admin::ExpiringQuery {
+        profile,
+        before: admin::expiring_horizon(days),
+        include_superseded: !hide_superseded,
+        // The whole window, for `order list`'s documented reason: truncating a
+        // listing silently is worse than the memory.
+        limit: i64::MAX,
+        offset: 0,
+    };
+    let (entries, _total, _hidden) = admin::list_expiring(&query, database).await?;
+    render::print_rows(&entries, json, admin::render_expiring_json, |entry| {
+        render::render_expiring_line(entry, palette)
+    });
     Ok(())
 }
 
@@ -562,6 +653,8 @@ mod tests {
                 profile: Some("default".to_string()),
                 account_id: None,
                 status: None,
+                expiring_in: None,
+                hide_superseded: false,
                 json: true,
             },
             OrderCommand::Show {
@@ -602,6 +695,8 @@ mod tests {
                 profile: None,
                 account_id: None,
                 status: Some("readyy".to_string()),
+                expiring_in: None,
+                hide_superseded: false,
                 json: false,
             },
             true,
@@ -640,6 +735,8 @@ mod tests {
                     profile: None,
                     account_id: None,
                     status: Some(status.as_str().to_string()),
+                    expiring_in: None,
+                    hide_superseded: false,
                     json: false,
                 },
                 true,
@@ -651,5 +748,105 @@ mod tests {
             .await
             .unwrap_or_else(|error| panic!("--status {status} was refused: {error}"));
         }
+    }
+
+    /// A helper for the expiry arm: `order list` with only the flags under
+    /// test, run to completion.
+    async fn list_with(
+        expiring_in: Option<u64>,
+        account_id: Option<&str>,
+        status: Option<&str>,
+        hide_superseded: bool,
+        json: bool,
+        database: Arc<Database>,
+    ) -> Result<(), CliError> {
+        let mut reader: &[u8] = &[];
+        run_order_command(
+            OrderCommand::List {
+                profile: None,
+                account_id: account_id.map(str::to_string),
+                status: status.map(str::to_string),
+                expiring_in,
+                hide_superseded,
+                json,
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &Config::default(),
+            database,
+        )
+        .await
+    }
+
+    /// The expiry listing, both output branches, with a row something has
+    /// replaced and a row nothing has.
+    #[tokio::test]
+    async fn the_expiring_arm_lists_and_renders_both_ways() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = crate::testutil::account_id(&database).await;
+        crate::testutil::issued_order(&database, "default", &acct, &["a.example.com"], 3).await;
+        crate::testutil::issued_order(&database, "default", &acct, &["b.example.com"], 5).await;
+        // Renews the first, so one row carries the annotation and one does not.
+        crate::testutil::issued_order(&database, "default", &acct, &["a.example.com"], 90).await;
+
+        for json in [false, true] {
+            list_with(Some(30), None, None, false, json, database.clone())
+                .await
+                .unwrap();
+            // ...and with the replaced row filtered out.
+            list_with(Some(30), None, None, true, json, database.clone())
+                .await
+                .unwrap();
+        }
+    }
+
+    /// The three combinations refused **by name**.
+    ///
+    /// `--status` and `--account-id` do not apply to the expiry query, and
+    /// `--hide-superseded` has no annotation to filter on without it. Each is
+    /// refused rather than ignored for `--status`'s own reason: an argument
+    /// silently dropped answers with rows that look like it was honoured.
+    #[tokio::test]
+    async fn the_flags_that_do_not_compose_with_expiring_in_are_refused_by_name() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        seed_order(&database, "default").await;
+
+        let error = list_with(
+            Some(30),
+            None,
+            Some("valid"),
+            false,
+            false,
+            database.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.0.contains("--status"), "{error}");
+        assert!(error.0.contains("--expiring-in"), "{error}");
+
+        let error = list_with(
+            Some(30),
+            Some("acct-1"),
+            None,
+            false,
+            false,
+            database.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.0.contains("--account-id"), "{error}");
+        assert!(error.0.contains("--expiring-in"), "{error}");
+
+        let error = list_with(None, None, None, true, false, database.clone())
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("--hide-superseded"), "{error}");
+        assert!(error.0.contains("--expiring-in"), "{error}");
+
+        // And the ordinary listing is untouched by any of it.
+        list_with(None, None, Some("valid"), false, false, database)
+            .await
+            .unwrap();
     }
 }

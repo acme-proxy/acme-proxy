@@ -506,6 +506,71 @@ pub(crate) fn order_fixture(
     order
 }
 
+/// A *really issued* order on `profile`: signed by an in-memory local CA, so
+/// the stored chain parses and the RFC 9773 certID the `replaces` signal rests
+/// on can actually be derived from it.
+///
+/// Hoisted out of `notify::expiry`'s suite when the supersession annotation
+/// moved to `admin::ops` — the digest's tests and the annotation's own both
+/// need a row no hand-built fixture can stand in for. Distinct from
+/// [`order_fixture`], which is an unsaved row with no certificate at all.
+#[cfg(test)]
+pub(crate) async fn issued_order(
+    database: &crate::sqlite::db::Database,
+    profile: &str,
+    account: &str,
+    names: &[&str],
+    not_after_days: i64,
+) -> crate::sqlite::order::Order {
+    use crate::sqlite::order::{Identifier, Order};
+
+    const DAY: i64 = 24 * 60 * 60;
+
+    let signer = crate::signer::local_ca::LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+    let mut order = Order::create(
+        profile,
+        account,
+        names.iter().map(|name| Identifier::dns(*name)).collect(),
+        crate::sqlite::nonce::now_secs() + 3600,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+    let params =
+        rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>())
+            .unwrap();
+    let csr = params.serialize_request(&key_pair).unwrap();
+    let chain = match crate::signer::SignerBackend::issue(
+        &signer,
+        &order.id,
+        csr.der(),
+        &order.identifiers,
+        crate::signer::RequestedValidity::default(),
+    )
+    .await
+    .unwrap()
+    {
+        crate::signer::IssueOutcome::Issued(chain) => chain,
+        crate::signer::IssueOutcome::Processing => panic!("the in-memory CA is synchronous"),
+    };
+    let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+    let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+    order
+        .finalize(
+            chain,
+            serial,
+            pubkey,
+            Some(crate::sqlite::nonce::now_secs() + not_after_days * DAY),
+            database,
+        )
+        .await
+        .unwrap();
+    order
+}
+
 /// One `certificate_issued` row with every optional column filled in, so a
 /// renderer test can blank the ones it wants absent.
 #[cfg(test)]

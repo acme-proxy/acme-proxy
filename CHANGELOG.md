@@ -33,6 +33,36 @@ migrated configuration before restarting.
 
 ### Added
 
+- **An admin surface for the expiry list** — `GET /api/expiring`,
+  `/ui/expiring` and `order list --expiring-in <days>`. `[notify.expiry]`
+  answers "what lapses soon, and has anything replaced it?" once per interval,
+  into a mailbox; these ask the same question on demand, from a browser or a
+  terminal. All three go through **one** operation, so a page and a mail can
+  never disagree about what is expiring or about what counts as already
+  replaced — the supersession rule moved out of the digest's job type and into
+  the shared admin layer to make that structural rather than a convention.
+
+  The panel opens on every endpoint at once, like every other listing, filters
+  by profile and by window, and offers a control the digest has no room for:
+  hiding the certificates something has already renewed, leaving only the ones
+  to act on. They are **shown** by default, because the rows an operator is
+  scanning for are the ones with no annotation. The default window is
+  `[notify.expiry] lead_days` wherever the digest is on, and 30 days where it
+  is off.
+
+  **All three surfaces are read-only, and there is no plan for them not to
+  be**: renewal is the client's own ACME flow against a key this server does
+  not hold, so there is nothing here for a button to do. On the CLI,
+  `--status` and `--account-id` are refused *by name* beside `--expiring-in` —
+  the expiry listing is issued, unrevoked certificates by definition and
+  carries no account predicate, so either flag would silently mean something
+  other than it does elsewhere.
+
+  One shape to know when parsing `/api/expiring`: `total` counts the rows the
+  *window* matches and `hidden` counts the ones a page dropped as already
+  replaced. They are separate because supersession is computed per row rather
+  than in SQL, so the count beside the page cannot follow that filter down.
+
 - **Shell completions and a man page**, generated from the command tree rather
   than maintained beside it: `acme-proxy completions <bash|elvish|fish|
   powershell|zsh>` and `acme-proxy man` each print to stdout. Both read neither
