@@ -102,6 +102,17 @@ pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[String]) ->
         "createdAt".to_string(),
         Value::String(rfc3339(order.created_at)),
     );
+    // The leaf's serial, admin-only for `accountId`'s reason and absent from
+    // every rendering until now — while `audit list --cert-serial` and
+    // `GET /api/audit?certSerial=` both filter on it, so an operator could
+    // search the trail by a value nothing would tell them. Omitted rather than
+    // nulled: an unissued order has no serial, which is a different statement
+    // from an empty one. `render_expiring_json` below deliberately keeps its
+    // `unwrap_or_default()` — that shape is the digest's own, member for
+    // member, and is not this one.
+    if let Some(serial) = order.cert_serial.as_ref() {
+        object.insert("certSerial".to_string(), Value::String(serial.clone()));
+    }
     // The leaf's own expiry, and admin-only for `accountId`'s reason: RFC 8555
     // gives the order object no member for it, and the `notAfter` already in
     // there from `to_json` is the *requested* §7.4 window, which is a different
@@ -379,6 +390,23 @@ mod tests {
         let json = render_order_json(&order, "http://localhost:3000", &[]);
         assert_eq!(json["revokedAt"].as_str().unwrap().len(), 20);
         assert_eq!(json["revocationReason"], 1);
+    }
+
+    #[test]
+    fn render_order_json_carries_the_cert_serial_and_omits_it_when_unissued() {
+        // The complaint this member answers: `audit list --cert-serial` and
+        // `GET /api/audit?certSerial=` both filter on this value, and until now
+        // no order rendering would tell an operator what it was.
+        let mut order = order_fixture("acct", OrderStatus::Valid);
+        order.cert_serial = Some("03a7f1c9".to_string());
+        let json = render_order_json(&order, "http://localhost:3000", &[]);
+        assert_eq!(json["certSerial"], "03a7f1c9");
+
+        // Omitted, not nulled: an order that never issued has no serial, which
+        // is a different statement from an empty one.
+        let unissued = order_fixture("acct", OrderStatus::Pending);
+        let json = render_order_json(&unissued, "http://localhost:3000", &[]);
+        assert!(json.get("certSerial").is_none());
     }
 
     #[test]

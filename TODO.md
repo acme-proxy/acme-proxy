@@ -140,21 +140,6 @@ keeps its corpses stops being read.
       expression index over `json_each`, so the honest options are a scan or a
       generated column in a new migration, and a scan is defensible for a long
       while.
-- [ ] **The order renderings disagree about what an order is.**
-      `orders.cert_serial` is printed by **nothing** — not `render_order_json`,
-      not `render_order_detail_text`, not the panel's card — while two filters
-      accept it, so an operator can search the audit trail by a serial the rest
-      of the tooling will not tell them. And `render_order_detail_text` prints
-      six fields and the authorization tree where its own `--json` carries
-      `createdAt`, `certNotAfter`, `revokedAt`, `revocationReason` and the
-      chain: `doc/src/operations/cli.md` already tells operators that `order
-      show` surfaces `revokedAt` and `revocationReason`, which today only
-      `--json` does. What needs deciding is whether the text rendering tracks
-      the JSON field for field, or stays a summary with the difference stated
-      in the book. The split that put the text renderers in `src/cli/render.rs`
-      was about a `Palette` being structurally unable to reach a `--json`
-      shape; it says nothing about the two carrying different *fields*, and
-      that is being chosen here rather than inherited.
 - [ ] **An admin action trail.** `audit_log` answers one question — who asked
       the CA to sign or withdraw a certificate — and four event names are the
       whole vocabulary. An account deleted, an EAB credential minted or

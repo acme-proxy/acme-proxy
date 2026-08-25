@@ -29,6 +29,19 @@
       {% if detail.order.replaces %}
         <dt>Replaces</dt><dd class="wrap-anywhere"><code>{{ detail.order.replaces }}</code></dd>
       {% endif %}
+      {#- The issued leaf, described three ways. `certSerial` is what an abuse
+          report or an audit-trail search (`/api/audit?certSerial=`) is keyed
+          on, so it belongs on the one page that names the order it came from;
+          `certNotAfter` is the leaf's own expiry, which is a different date
+          from the `Not after` above (that one is the window the client asked
+          for). Both are absent on an order that never issued. -#}
+      {% if detail.order.certSerial %}
+        <dt>Serial</dt>
+        <dd class="wrap-anywhere"><code>{{ detail.order.certSerial }}</code></dd>
+      {% endif %}
+      {% if detail.order.certNotAfter %}
+        <dt>Certificate expires</dt><dd>{{ detail.order.certNotAfter }}</dd>
+      {% endif %}
       {#- The PEM, not `detail.order.certificate`, which is the ACME URL: that
           is reachable only by signed POST-as-GET, so a browser handed it gets
           nothing and printing it was a dead string. -#}

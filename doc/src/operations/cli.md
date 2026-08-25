@@ -170,9 +170,20 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   The expiry listing is issued, unrevoked certificates by definition and has no
   account predicate, so either flag would silently mean something other than it
   does elsewhere — the rule `--status` and `audit list --event` already follow.
-- `order show` surfaces `revokedAt` and `revocationReason`, which are
-  deliberately absent from the ACME JSON a client sees — revocation state is
-  admin-visible only.
+- `order show` prints one field per line, omitting every field that was not
+  recorded rather than rendering it empty — the shape `audit show` and `account
+  show` have. It covers the certificate's serial and the leaf's own `notAfter`
+  beside the requested `notAfter` the client asked for, and the revocation
+  timestamp and reason, which are deliberately absent from the ACME JSON a
+  client sees — revocation state is admin-visible only.
+- **`order show` and `order show --json` describe the same order**, field for
+  field, with one deliberate exception: the issued chain. `--json` carries it as
+  `certificatePem` and the web panel offers it as a download; the text rendering
+  does not, a command run to get one's bearings being the wrong place for
+  several kilobytes of PEM. The three URL members (`authorizations`, `finalize`
+  and the ACME `certificate` URL, which is reachable only by signed
+  POST-as-GET) are likewise `--json`'s alone — the indented authorization tree
+  is what a terminal reads instead.
 - `order revoke` is the operator-side equivalent of `POST /revokeCert`, for an
   out-of-band compromise report a client cannot or will not act on. It calls the
   signer's own `revoke` hook, so a local CA's CRL genuinely reflects it. It is

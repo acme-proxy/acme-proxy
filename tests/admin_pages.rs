@@ -1447,10 +1447,16 @@ async fn issue_into_an_order(
         acme_proxy::signer::IssueOutcome::Issued(chain) => chain,
         other => panic!("expected an inline issuance, got {other:?}"),
     };
-    let (serial, spki) =
-        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    let leaf_der = first_certificate(&chain);
+    let (serial, spki) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    // The leaf's own `notAfter`, exactly as `post_finalize` stamps it — the
+    // helper is only useful to the extent it produces the row production does,
+    // and the card now renders this column.
+    let cert_not_after = acme_proxy::cert::cert_validity(&leaf_der)
+        .ok()
+        .map(|(_, not_after)| not_after);
     order
-        .finalize(chain.clone(), serial, spki, None, database)
+        .finalize(chain.clone(), serial, spki, cert_not_after, database)
         .await
         .unwrap();
 
@@ -1496,6 +1502,24 @@ async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
         !body.contains("/profile/default/certificate/"),
         "the ACME certificate URL is unreachable from a browser and must not \
          be presented as if it were a link"
+    );
+    // The leaf described three ways, not one. The serial is what an abuse
+    // report or `/api/audit?certSerial=` is keyed on, and until the order
+    // renderings were made to agree, no surface would tell an operator what it
+    // was for an order they were looking at.
+    let (serial, _) = acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    assert!(
+        body.contains("<dt>Serial</dt>"),
+        "the card must name the serial"
+    );
+    assert!(
+        body.contains(&serial),
+        "and it must be this order's: {serial}"
+    );
+    assert!(
+        body.contains("<dt>Certificate expires</dt>"),
+        "the leaf's own expiry is a different date from the requested window \
+         above it, and the card carried neither"
     );
 
     let download = admin_page(

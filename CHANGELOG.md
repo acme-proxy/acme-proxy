@@ -33,6 +33,36 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **`order show` prints what its own `--json` carries.** It printed six fields
+  and the authorization tree — `id`, `profile`, `account_id`, `status`,
+  `identifiers`, `expires` — while `order show --json`, `GET /api/orders/{id}`
+  and the panel's order card each carried a different, larger set, and the book
+  documented two of theirs as something `order show` surfaced. It now prints
+  `created` beside those six, then `not_before`, `not_after`, `replaces`,
+  `serial`, `cert_not_after`, `revoked`, `reason` and `error`, each omitted
+  entirely when the column holds nothing — the shape `audit show` and `account
+  show` already had. The layout changed with it: a padded label column, no
+  colon, so `id: abc` is now `id             abc`. A script parsing this output
+  needs `--json`, which is what it was for.
+
+  One member stays `--json`'s alone and the book says so: `certificatePem`, the
+  issued chain, several kilobytes of PEM in a command run to get one's
+  bearings. The panel's `chain.pem` download is the other way to it. The three
+  URL members (`authorizations`, `finalize`, and the ACME `certificate` URL,
+  which a browser cannot follow) are likewise not printed — the indented
+  authorization tree is the terminal's answer to the same question.
+
+  `certSerial` joins the order JSON on **every** surface — `order list --json`,
+  `order show --json`, `GET /api/orders`, `GET /api/orders/{id}` — and the order
+  card gains a `Serial` row and a `Certificate expires` row. Until now the
+  serial was printed by nothing at all, while `audit list --cert-serial` and
+  `GET /api/audit?certSerial=` both filtered on it: an operator could search the
+  audit trail by a value no order rendering would tell them. It is omitted, not
+  nulled, on an order that never issued. Listings are otherwise unchanged —
+  `order list`'s line and the panel's order table keep their columns, a listing
+  being allowed to be a summary where two detail views were not allowed to
+  disagree.
+
 - **`account list` and `order list` are paged**, `--limit`/`--offset`
   defaulting to 50 rows, where both used to answer with the whole table.
   `orders` grows a row per issuance for the life of the deployment, which

@@ -252,6 +252,13 @@ fifty orders would otherwise carry fifty chains for a column no list shows. An
 order that never reached issuance has neither the field nor the download, and
 the route answers `404` rather than an empty file.
 
+The card names the leaf two more ways, and both are on the listing shape as
+well since each is one short string: `certSerial`, which is what an abuse
+report quotes and what `GET /api/audit?certSerial=` filters on, and
+`certNotAfter`, the certificate's own expiry — a different date from the `Not
+after` above it, which is the §7.4 window the client requested. Both are
+**omitted** on an order that never issued rather than sent empty.
+
 ### Revocation
 
 `POST /api/orders/{id}/revoke` resolves the signer from **the order's own

@@ -268,24 +268,96 @@ pub fn render_expiring_line(entry: &ExpiringEntry, palette: Palette) -> String {
     line
 }
 
-/// `order show` text output.
+/// The one-line summary of an order's stored problem document: its `detail`,
+/// else its `type`, else the document itself. The same fallback the order card
+/// renders (`orders/_card.html`), so the two never describe one failure
+/// differently.
+fn problem_summary(error: &serde_json::Value) -> String {
+    for member in ["detail", "type"] {
+        if let Some(text) = error.get(member).and_then(serde_json::Value::as_str) {
+            return text.to_string();
+        }
+    }
+    error.to_string()
+}
+
+/// `order show`, one field per line, then the authorization tree.
+///
+/// Tracks [`crate::admin::render::render_order_detail_json`] member for member,
+/// omitting every field that was not recorded rather than rendering it empty —
+/// the shape [`render_account_detail_text`] and [`render_audit_detail_text`]
+/// already have. It printed six fields until now, while its own `--json`
+/// carried the serial, the leaf's expiry and the revocation state, and the book
+/// documented the *JSON* spelling of the last two as something `order show`
+/// surfaced.
+///
+/// Four JSON members are deliberately not here:
+///
+/// - `authorizations` and `finalize` are **URLs**. The indented tree below
+///   answers the same question for a terminal, and carries the ids.
+/// - `certificate` is the ACME URL, reachable only by signed POST-as-GET, so
+///   printing it is a dead string — the reason the order card refuses it too.
+/// - `certificatePem` is the chain itself, several KB of it, and this is a
+///   command an operator runs to orient themselves. `--json` and the panel's
+///   `chain.pem` download are where the bytes live; `cli.md` says so.
 #[must_use]
 pub fn render_order_detail_text(detail: &OrderDetail, palette: Palette) -> String {
+    let order = &detail.order;
+    // Two columns wider than `render_account_detail_text`'s, because
+    // `cert_not_after` is fourteen characters — and it keeps that spelling
+    // rather than a shorter one precisely because `not_after` is a *different*
+    // field one line above it (the requested §7.4 window, not the leaf's).
     let mut out = format!(
-        "id: {}\nprofile: {}\naccount_id: {}\nstatus: {}\nidentifiers: {}\nexpires: {}\n",
-        detail.order.id,
-        detail.order.profile,
-        detail.order.account_id,
-        palette.status(&detail.order.status.to_string()),
-        detail
-            .order
+        "id             {}\nprofile        {}\naccount_id     {}\nstatus         {}\nidentifiers    {}\ncreated        {}\nexpires        {}\n",
+        order.id,
+        order.profile,
+        order.account_id,
+        palette.status(&order.status.to_string()),
+        order
             .identifiers
             .iter()
             .map(|i| i.value.as_str())
             .collect::<Vec<_>>()
             .join(","),
-        rfc3339(detail.order.expires),
+        rfc3339(order.created_at),
+        rfc3339(order.expires),
     );
+    for (label, value) in [
+        ("not_before", order.not_before.map(rfc3339)),
+        ("not_after", order.not_after.map(rfc3339)),
+        ("replaces", order.replaces.clone()),
+        ("serial", order.cert_serial.clone()),
+        // The negative sentinel means the chain would not parse, which is not a
+        // date to render — `render_order_json`'s guard, for its reason.
+        (
+            "cert_not_after",
+            order
+                .cert_not_after
+                .filter(|value| *value >= 0)
+                .map(rfc3339),
+        ),
+        // Painted whole, like `render_order_line`'s suffix: an order's `status`
+        // stays `valid` after revocation (RFC 8555 defines no revoked status),
+        // so these two lines are the only thing saying the certificate is
+        // withdrawn. `reason` hangs off `revoked_at` as it does in the JSON — a
+        // reason with no revocation would be a column read out of context.
+        (
+            "revoked",
+            order.revoked_at.map(|at| palette.bad(&rfc3339(at))),
+        ),
+        (
+            "reason",
+            order
+                .revoked_at
+                .and(order.revocation_reason)
+                .map(|reason| reason.to_string()),
+        ),
+        ("error", order.error.as_ref().map(problem_summary)),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!("{label:<14} {value}\n"));
+        }
+    }
     for (authz, challenges) in &detail.authorizations {
         out.push_str(&format!(
             "  authz {} [{}] {}\n",
@@ -869,8 +941,223 @@ mod tests {
         // The nested statuses are painted too: an order is read here precisely
         // when one of its authorizations is not what it should be.
         let painted = render_order_detail_text(&detail, colour());
-        assert_eq!(painted.matches("\x1b[33m").count(), 3, "{painted}");
+        assert_eq!(
+            painted.matches("\x1b[33mpending\x1b[0m").count(),
+            3,
+            "the order's, the authorization's and the challenge's: {painted}"
+        );
         assert_eq!(strip_ansi(&painted), text);
+    }
+
+    /// The field set `order show` prints, and the shape it prints it in.
+    ///
+    /// It carried six fields until now while its own `--json` carried the
+    /// serial, the leaf's expiry and the revocation state — so this is the
+    /// assertion that the two describe one order. The absent half matters as
+    /// much: a field that was never recorded gets no line at all, rather than
+    /// a label with nothing after it, which is `render_account_detail_text`'s
+    /// contract and `audit show`'s.
+    #[test]
+    fn render_order_detail_text_omits_every_absent_field() {
+        let mut order = order_fixture("acct", OrderStatus::Valid);
+        order.not_before = Some(1700000000);
+        order.not_after = Some(1700003600);
+        order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.cert_serial = Some("03a7f1c9".to_string());
+        order.cert_not_after = Some(1700007200);
+        order.revoked_at = Some(1700010800);
+        order.revocation_reason = Some(1);
+        order.error = Some(serde_json::json!({
+            "type": "urn:ietf:params:acme:error:badCSR",
+            "detail": "CSR names do not match the order",
+        }));
+        let detail = OrderDetail {
+            order,
+            authorizations: vec![],
+        };
+
+        let text = render_order_detail_text(&detail, Palette::plain());
+        assert!(
+            text.contains(&format!("id             {}", detail.order.id)),
+            "{text}"
+        );
+        assert!(text.contains("profile        default"), "{text}");
+        assert!(text.contains("account_id     acct"), "{text}");
+        assert!(text.contains("status         valid"), "{text}");
+        assert!(text.contains("identifiers    example.com"), "{text}");
+        assert!(text.contains("created        "), "{text}");
+        assert!(text.contains("expires        "), "{text}");
+        assert!(
+            text.contains("not_before     2023-11-14T22:13:20Z"),
+            "{text}"
+        );
+        assert!(
+            text.contains("not_after      2023-11-14T23:13:20Z"),
+            "{text}"
+        );
+        assert!(
+            text.contains("replaces       aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE"),
+            "{text}"
+        );
+        assert!(text.contains("serial         03a7f1c9"), "{text}");
+        assert!(
+            text.contains("cert_not_after 2023-11-15T00:13:20Z"),
+            "{text}"
+        );
+        assert!(
+            text.contains("revoked        2023-11-15T01:13:20Z"),
+            "{text}"
+        );
+        assert!(text.contains("reason         1"), "{text}");
+        // The problem document's `detail`, the one line of it an operator
+        // wants — the same fallback the order card renders.
+        assert!(
+            text.contains("error          CSR names do not match the order"),
+            "{text}"
+        );
+        // Every label lands its value in the same column, `cert_not_after`
+        // included — it is fourteen characters, and the field is wide for it.
+        for line in text.lines() {
+            assert_eq!(&line[14..15], " ", "misaligned: {line:?}");
+            assert_ne!(&line[15..16], " ", "misaligned: {line:?}");
+        }
+
+        // Never recorded, so never a line.
+        let bare = OrderDetail {
+            order: order_fixture("acct", OrderStatus::Pending),
+            authorizations: vec![],
+        };
+        let text = render_order_detail_text(&bare, Palette::plain());
+        for absent in [
+            "not_before",
+            "not_after",
+            "replaces",
+            "serial",
+            "cert_not_after",
+            "revoked",
+            "reason",
+            "error",
+        ] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
+    }
+
+    /// The whole point of the change, asserted as a set: `order show` and
+    /// `order show --json` describe the same order.
+    ///
+    /// The table below is the mapping, and it is checked in **both**
+    /// directions — a JSON member gaining no text line fails here, and so does
+    /// a text line naming nothing in the JSON. Four members are excluded by
+    /// name and the exclusion is the decision, not an oversight: three URLs a
+    /// terminal cannot use (the authorization list and `finalize` are answered
+    /// by the indented tree below the fields; the ACME `certificate` URL is
+    /// reachable only by signed POST-as-GET) and `certificatePem`, the chain
+    /// itself, which `cli.md` documents as `--json`'s alone.
+    #[test]
+    fn the_text_and_json_order_renderings_describe_the_same_order() {
+        /// `(text label, JSON member)`.
+        const FIELDS: &[(&str, &str)] = &[
+            ("id", "id"),
+            ("profile", "profile"),
+            ("account_id", "accountId"),
+            ("status", "status"),
+            ("identifiers", "identifiers"),
+            ("created", "createdAt"),
+            ("expires", "expires"),
+            ("not_before", "notBefore"),
+            ("not_after", "notAfter"),
+            ("replaces", "replaces"),
+            ("serial", "certSerial"),
+            ("cert_not_after", "certNotAfter"),
+            ("revoked", "revokedAt"),
+            ("reason", "revocationReason"),
+            ("error", "error"),
+        ];
+        /// Carried by `--json` and deliberately not printed.
+        const JSON_ONLY: &[&str] = &[
+            "authorizations",
+            "finalize",
+            "certificate",
+            "certificatePem",
+        ];
+
+        // Every optional column populated, or an absent one would read as an
+        // agreed omission rather than as a member nobody renders.
+        let mut order = order_fixture("acct", OrderStatus::Valid);
+        order.not_before = Some(1700000000);
+        order.not_after = Some(1700003600);
+        order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
+        order.cert_serial = Some("03a7f1c9".to_string());
+        order.cert_not_after = Some(1700007200);
+        order.revoked_at = Some(1700010800);
+        order.revocation_reason = Some(1);
+        order.error = Some(serde_json::json!({ "detail": "unreachable" }));
+        order.certificate = Some("-----BEGIN CERTIFICATE-----\n".to_string());
+        let detail = OrderDetail {
+            order,
+            authorizations: vec![],
+        };
+
+        let json = crate::admin::render::render_order_detail_json(&detail, "http://localhost:3000");
+        let members: std::collections::BTreeSet<&str> = json["order"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .filter(|member| !JSON_ONLY.contains(member))
+            .collect();
+        assert_eq!(
+            members,
+            FIELDS.iter().map(|(_, member)| *member).collect(),
+            "a JSON member the text rendering does not print, or the reverse"
+        );
+
+        // A field line is one that starts in column zero; the tree below is
+        // indented, and no value here wraps.
+        let text = render_order_detail_text(&detail, Palette::plain());
+        let labels: std::collections::BTreeSet<&str> = text
+            .lines()
+            .filter(|line| !line.starts_with(' '))
+            .map(|line| line[..14].trim_end())
+            .collect();
+        assert_eq!(labels, FIELDS.iter().map(|(label, _)| *label).collect());
+    }
+
+    /// The negative sentinel is not a date. A row the expiry backfill looked at
+    /// and could not parse prints no `cert_not_after` line, exactly as
+    /// `render_order_json` emits no member for it.
+    #[test]
+    fn an_unparsable_leaf_expiry_prints_no_line() {
+        let mut order = order_fixture("acct", OrderStatus::Valid);
+        order.cert_not_after = Some(crate::sqlite::order::UNPARSABLE_NOT_AFTER);
+        let detail = OrderDetail {
+            order,
+            authorizations: vec![],
+        };
+        assert!(!render_order_detail_text(&detail, Palette::plain()).contains("cert_not_after"),);
+    }
+
+    /// A revoked order's `status` stays `valid` here too, so the two revocation
+    /// lines are the only news — and the timestamp is painted, like the
+    /// listing's suffix.
+    #[test]
+    fn the_order_detail_paints_its_revocation_and_nothing_else_moves() {
+        let mut order = order_fixture("acct", OrderStatus::Valid);
+        order.revoked_at = Some(1700000000);
+        order.revocation_reason = Some(4);
+        let detail = OrderDetail {
+            order,
+            authorizations: vec![],
+        };
+        let painted = render_order_detail_text(&detail, colour());
+        assert!(
+            painted.contains("\x1b[31m2023-11-14T22:13:20Z\x1b[0m"),
+            "{painted}"
+        );
+        assert_eq!(
+            strip_ansi(&painted),
+            render_order_detail_text(&detail, Palette::plain())
+        );
     }
 
     #[test]

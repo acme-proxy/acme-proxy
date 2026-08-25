@@ -2473,6 +2473,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     // certificate, not a chain.
     let (serial, spki) =
         acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    let expected_serial = serial.clone();
     order
         .finalize(chain, serial, spki, None, &database)
         .await
@@ -2494,6 +2495,10 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     // `Order::to_json` deliberately omits.
     assert_eq!(body["revocationReason"], 1);
     assert!(body["revokedAt"].as_str().is_some());
+    // And the serial beside them: it is what an abuse report names and what
+    // `/api/audit?certSerial=` filters on, so the order shape had to stop being
+    // the one surface that would not say it.
+    assert_eq!(body["certSerial"], expected_serial);
 
     // The CA acted, not just the database: the CRL now names the serial.
     let crl = signer.crl_der().await.expect("a local CA always has a CRL");

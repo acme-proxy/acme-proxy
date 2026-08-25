@@ -70,8 +70,8 @@ are **not** exposed in the ACME JSON a client polls.
 They are visible through the admin CLI:
 
 ```bash
-acme-proxy order show <id>          # includes revokedAt / revocationReason
-acme-proxy order show <id> --json
+acme-proxy order show <id>          # prints revoked, reason and the serial
+acme-proxy order show <id> --json   # the same as revokedAt / revocationReason
 ```
 
 ## Revoking as an operator
