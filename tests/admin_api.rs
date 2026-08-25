@@ -2234,6 +2234,131 @@ async fn profiles_reports_the_endpoints_actually_mounted() {
     assert_eq!(profiles[0]["directory"], format!("{BASE}/directory"));
 }
 
+/// `filter show`, behind a session — and the live policy rather than a rebuilt
+/// one, since this listener reads the profiles the process actually mounted.
+#[tokio::test]
+async fn the_filter_policy_api_serves_the_resolved_policy() {
+    let (app, _database, session) =
+        test_admin_app_logged_in_with_filter(admin_config(), test_filter_policy()).await;
+
+    let body = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/profiles/{PROFILE}/filter"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(body["profile"], PROFILE);
+    assert_eq!(body["active"], true);
+    assert_eq!(body["defaultEffect"], "deny");
+    assert!(body["warning"].is_null());
+
+    let checks = body["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0]["name"], "mgmt-net");
+    assert_eq!(checks[0]["type"], "allowed_ip");
+    assert_eq!(checks[0]["stages"], "connection and identifiers");
+    assert_eq!(checks[1]["name"], "names");
+    assert_eq!(checks[1]["type"], "identifiers");
+
+    // Evaluation order, and the condition re-parenthesized -- the member this
+    // whole surface exists for.
+    let rules = body["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0]["name"], "mgmt-bypass");
+    assert_eq!(rules[0]["then"], "allow");
+    assert_eq!(rules[0]["mode"], "enforce");
+    assert_eq!(rules[1]["when"], "names or (mgmt-net and names)");
+    assert_eq!(rules[1]["then"], "deny");
+    assert_eq!(rules[1]["mode"], "warn");
+    assert_eq!(rules[1]["stages"], "identifiers only");
+
+    // The operator's own refusal wording is not here: `filter show` does not
+    // print it, and the two front ends describe a policy identically.
+    assert!(rules[0].get("message").is_none());
+
+    let unknown = admin_request(
+        &app,
+        Method::GET,
+        "/api/profiles/nope/filter",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(unknown).await["error"], "not_found");
+
+    assert_eq!(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/profiles/{PROFILE}/filter"),
+            None,
+            None
+        )
+        .await
+        .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Nothing writes: every other verb on the path is unroutable, which is why
+    // this route contributes no entry to `mutating_endpoints()`.
+    for method in [Method::POST, Method::DELETE, Method::PATCH, Method::PUT] {
+        let response = admin_request(
+            &app,
+            method.clone(),
+            &format!("/api/profiles/{PROFILE}/filter"),
+            Some(&session),
+            Some(json!({})),
+        )
+        .await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} /api/profiles/{PROFILE}/filter answered {}",
+            response.status()
+        );
+    }
+}
+
+/// An endpoint that filters nothing is a **state**, not an error: answering
+/// `404` would be the tempting bug, and it would hide the one policy an
+/// operator most needs to be told about.
+#[tokio::test]
+async fn an_endpoint_with_no_rules_says_so_rather_than_answering_404() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let body = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/profiles/{PROFILE}/filter"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(body["active"], false);
+    // Never consulted where no rule is applicable, so not a fact about this
+    // endpoint at all.
+    assert!(body["defaultEffect"].is_null());
+    assert!(
+        body["warning"]
+            .as_str()
+            .unwrap()
+            .contains("filters nothing")
+    );
+    assert!(body["checks"].as_array().unwrap().is_empty());
+    assert!(body["rules"].as_array().unwrap().is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // Layers
 // ---------------------------------------------------------------------------

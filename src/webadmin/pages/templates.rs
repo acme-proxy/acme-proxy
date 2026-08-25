@@ -57,6 +57,7 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("partials/_flash.html"),
         embed!("partials/_pager.html"),
         embed!("profiles/list.html"),
+        embed!("profiles/filter.html"),
         embed!("profiles/_table.html"),
         embed!("accounts/list.html"),
         embed!("accounts/_table.html"),

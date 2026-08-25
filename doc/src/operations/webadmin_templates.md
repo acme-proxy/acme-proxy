@@ -48,6 +48,7 @@ each other in `{% extends %}` and `{% include %}`.
 | `eab/_created.html` | The one-time HMAC secret |
 | `nonces/index.html`, `nonces/_panel.html` | The nonce count and the sweep control |
 | `profiles/list.html`, `profiles/_table.html` | The mounted endpoints |
+| `profiles/filter.html` | One endpoint's resolved access policy. No fragment: nothing on it swaps |
 
 A file whose name starts with `_` is a **fragment**: htmx swaps it on its own,
 so it must not contain `<html>` or `<body>`, and it must keep the `id` on its

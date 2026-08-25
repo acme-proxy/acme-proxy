@@ -71,20 +71,6 @@ keeps its corpses stops being read.
       `mutating_endpoints()`/`mutating_page_endpoints()`. The open question is
       whether it should wait for the role above: without one, this is every
       operator able to disable every other.
-- [ ] **The resolved filter policy, read-only.** `/ui/profiles` warns that an
-      endpoint with `challenge.bypass` on has `[filter]` and nothing else
-      between it and its clients, and then offers no way to read what that
-      policy says. This is `filter show`, not `filter explain`, and the
-      distinction is the whole of why it is proposable at all: the standing
-      refusal of a web twin is about `explain` **executing** operator scripts
-      and issuing IPAM and DNS requests against an address and names the caller
-      chose, which behind a session is script execution plus SSRF from one
-      stolen cookie. `show` builds the policy from configuration and reaches
-      nothing outside the process. What needs deciding is the shape it renders
-      in: `render_policy` (`src/filter/explain.rs`) is text and takes a
-      `Palette`, and the re-parenthesized condition it prints is the part an
-      operator came for — so either a JSON rendering lands beside it (the same
-      one `filter show --json` wants) or the page grows its own.
 
 ## Admin CLI
 
@@ -100,11 +86,10 @@ keeps its corpses stops being read.
       rest of the CLI.
 - [ ] **The last few asymmetries**, one entry because each is a line of work and
       they share a shape — a thing one front end does that its twin cannot.
-      `filter show --json`: `explain` has it, and a machine-readable policy is
-      what a configuration check in CI would read. `admin user show`: the only
-      listable object with no detail command. The issued chain on stdout:
-      `GET /ui/orders/{id}/chain.pem` has no CLI twin, so a host holding the
-      database goes through a browser for a PEM it already has. A nonce count:
+      `admin user show`: the only listable object with no detail command. The
+      issued chain on stdout: `GET /ui/orders/{id}/chain.pem` has no CLI twin,
+      so a host holding the database goes through a browser for a PEM it
+      already has. A nonce count:
       `GET /api/nonces` reports one, where the shell can only sweep. And
       `profile list`: `GET /api/profiles` names the endpoints actually mounted,
       and nothing on the host can ask. Paging the listings left two more of the

@@ -241,7 +241,7 @@ shell on the host.
 
 | Command | Flags |
 | --- | --- |
-| `filter show` | `--profile <name>` |
+| `filter show` | `--profile <name>`, `--json` |
 | `filter explain` | `--profile <name>`, `--client-ip <ip>`, `--identifier <name>`, `--path <p>`, `--account-id <id>`, `--json` |
 
 `--profile` may be omitted only when exactly one profile exists, the same rule
@@ -274,6 +274,32 @@ rules (first match wins)
                          evaluated at: identifiers only
 ```
 
+`--json` prints the same policy as a document, which is what a configuration
+check in CI reads — and is the shape the web panel renders, so the two front
+ends cannot come to describe one policy differently:
+
+```json
+{
+  "profile": "le",
+  "active": true,
+  "defaultEffect": "deny",
+  "warning": null,
+  "checks": [
+    { "name": "mgmt-net", "type": "allowed_ip", "stages": "connection and identifiers" }
+  ],
+  "rules": [
+    { "name": "inventory-owned", "when": "corp-names and (inventory or mgmt-net)",
+      "then": "allow", "mode": "enforce", "stages": "identifiers only" }
+  ]
+}
+```
+
+`checks` is name-sorted and `rules` is evaluation order. An endpoint with no
+rules answers `"active": false` and the warning above, with `defaultEffect`
+**null** rather than the configured word: `filter.default` is consulted only
+where some rule was applicable, so with no rules it is not a fact about that
+endpoint at all.
+
 `filter explain` evaluates it against a hypothetical request and reports all
 three stages — connection, `newOrder` and CSR — because **every stage must
 allow**, and that is the thing most easily misread. For each it prints every
@@ -296,9 +322,12 @@ run".
 > names the checks that reached outside the process at the end of its output
 > (`sideEffects` under `--json`).
 >
-> That is also why it is a host-only command with no web-admin equivalent: the
-> address and names are chosen by the caller, so behind a session it would be
-> script execution and outbound requests driven from one stolen cookie.
+> That is also why **`explain`** is a host-only command with no web-admin
+> equivalent: the address and names are chosen by the caller, so behind a
+> session it would be script execution and outbound requests driven from one
+> stolen cookie. `show` is the opposite case and the panel does serve it — see
+> [Web Admin](webadmin.md) — because it reads an already-built policy and
+> reaches nothing outside the process.
 
 ## Nonce housekeeping
 

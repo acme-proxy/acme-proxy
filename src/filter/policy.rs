@@ -250,6 +250,22 @@ pub enum Mode {
     Warn,
 }
 
+impl Mode {
+    /// The word `filter.rule.<name>.mode` is spelled with, for
+    /// `filter show --json` and the panel.
+    ///
+    /// The mirror of [`Effect::as_str`], and for the same reason: the two
+    /// words a mode can be should exist in one place rather than beside every
+    /// renderer that prints them.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Warn => "warn",
+        }
+    }
+}
+
 /// One authored rule, before its stages are derived.
 #[derive(Debug, Clone)]
 pub struct Rule {

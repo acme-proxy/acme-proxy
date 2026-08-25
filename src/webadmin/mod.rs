@@ -221,7 +221,14 @@ pub fn build_admin_app_with_logins(
         .route("/expiring", get(handlers::list_expiring))
         .route("/nonces", get(handlers::get_nonces))
         .route("/nonces/cleanup", post(handlers::cleanup_nonces))
-        .route("/profiles", get(handlers::list_profiles));
+        .route("/profiles", get(handlers::list_profiles))
+        // Read-only for a third reason again: a policy is *configuration*,
+        // edited in `config.toml` and reloaded, so there is nothing here for a
+        // route to write — hence its absence from `mutating_endpoints()`. Note
+        // this is `filter show` and never `filter explain`: the latter runs the
+        // operator's scripts and queries the inventory against caller-chosen
+        // inputs, and has no web surface at all.
+        .route("/profiles/{name}/filter", get(handlers::get_profile_filter));
 
     let router = Router::new()
         // Unauthenticated and touching no database: an orchestrator probing

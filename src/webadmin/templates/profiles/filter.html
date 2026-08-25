@@ -1,0 +1,96 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Filter policy</h1>
+  <p class="small">
+    What <code>{{ policy.profile }}</code> is enforcing <em>right now</em>:
+    <code>[filter]</code> is rebuilt and swapped on <code>SIGHUP</code>, so this
+    is the running policy rather than the file on disk. <code>acme-proxy filter
+    show --profile {{ policy.profile }}</code> on the host builds one from
+    configuration instead — it reports what a restart <em>would</em> enforce,
+    and every startup refusal with it. Read-only: a policy is configuration, and
+    configuration is not edited through a browser.
+    <a href="/ui/profiles">Back to endpoints</a>.
+  </p>
+
+  {#- Repeated here rather than only on the list: this is the page an operator
+      opens *because* of that warning, and the policy below is the whole of what
+      stands between the endpoint and its clients. -#}
+  {% if endpoint.challengeBypass %}
+    <div class="flash warn">
+      This endpoint has <code>challenge.bypass</code> on: it issues certificates
+      without ever checking domain control. Everything below is the only access
+      control it has.
+    </div>
+  {% endif %}
+
+  {% if not policy.active %}
+    <div class="flash warn">{{ policy.warning }}</div>
+  {% else %}
+    <div class="panel">
+      <dl class="fields">
+        <dt>Endpoint</dt>
+        <dd class="wrap-anywhere"><code>{{ endpoint.directory }}</code></dd>
+        <dt>Default</dt>
+        <dd>
+          <span class="badge {{ policy.defaultEffect }}">{{ policy.defaultEffect }}</span>
+          <span class="muted small">when a rule was applicable and none matched</span>
+        </dd>
+      </dl>
+    </div>
+
+    <h2>Checks</h2>
+    <p class="muted small">
+      One named question about a request. A check no selected rule names is
+      never built, so it is not listed here either.
+    </p>
+    <div class="panel table-scroll">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Evaluated at</th></tr>
+        </thead>
+        <tbody>
+          {% for check in policy.checks %}
+            <tr>
+              <td><code>{{ check.name }}</code></td>
+              <td><code>{{ check.type }}</code></td>
+              <td class="small">{{ check.stages }}</td>
+            </tr>
+          {% else %}
+            <tr><td class="empty" colspan="3">This policy names no check.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Rules</h2>
+    <p class="muted small">
+      In evaluation order — the first match decides. Conditions are re-printed
+      with every grouping made explicit, so <code>a or b and c</code> reads back
+      as <code>a or (b and c)</code>.
+    </p>
+    <div class="panel table-scroll">
+      <table>
+        <thead>
+          <tr><th>Rule</th><th>Condition</th><th>Then</th><th>Evaluated at</th></tr>
+        </thead>
+        <tbody>
+          {% for rule in policy.rules %}
+            <tr>
+              <td><code>{{ rule.name }}</code></td>
+              <td class="wrap-anywhere"><code>{{ rule.when }}</code></td>
+              <td>
+                <span class="badge {{ rule.then }}">{{ rule.then }}</span>
+                {%- if rule.mode == "warn" %}
+                  <span class="badge warn">does not decide</span>
+                {%- endif %}
+              </td>
+              <td class="small">{{ rule.stages }}</td>
+            </tr>
+          {% else %}
+            <tr><td class="empty" colspan="4">This policy has no rule.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+{% endblock %}

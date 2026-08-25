@@ -78,14 +78,22 @@ pub(crate) fn profile_rows(state: &AdminState) -> Vec<Value> {
     names
         .into_iter()
         .filter_map(|name| state.profiles.get(name))
-        .map(|profile| {
-            json!({
-                "name": profile.name,
-                "baseUrl": profile.base_url,
-                "directory": profile.directory_url(),
-                "challengeBypass": profile.challenges.is_bypassed(),
-                "eabEnabled": profile.eab.enabled,
-            })
-        })
+        .map(|profile| profile_row(profile))
         .collect()
+}
+
+/// One endpoint, as every surface describes it.
+///
+/// Split out of [`profile_rows`] for the filter-policy page, which shows one
+/// endpoint rather than the list and still has to say the same things about it
+/// -- `challengeBypass` above all, since that page is where the warning
+/// matters most.
+pub(crate) fn profile_row(profile: &crate::Profile) -> Value {
+    json!({
+        "name": profile.name,
+        "baseUrl": profile.base_url,
+        "directory": profile.directory_url(),
+        "challengeBypass": profile.challenges.is_bypassed(),
+        "eabEnabled": profile.eab.enabled,
+    })
 }

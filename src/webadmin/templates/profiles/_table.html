@@ -8,6 +8,7 @@
         <th>Directory</th>
         <th>Challenges</th>
         <th>EAB</th>
+        <th>Policy</th>
       </tr>
     </thead>
     <tbody>
@@ -29,9 +30,12 @@
               <span class="badge">off</span>
             {% endif %}
           </td>
+          <td>
+            <a href="/ui/profiles/{{ profile.name }}/filter">Filter policy</a>
+          </td>
         </tr>
       {% else %}
-        <tr><td class="empty" colspan="4">No endpoint is mounted.</td></tr>
+        <tr><td class="empty" colspan="5">No endpoint is mounted.</td></tr>
       {% endfor %}
     </tbody>
   </table>

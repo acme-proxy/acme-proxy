@@ -147,6 +147,7 @@ it that needs a session bounces to `/ui/login`.
 | `/ui/audit` | The CA's audit trail — every issuance and every refusal, filterable, with a detail page per row. **Read-only**: there is no route here that prunes it |
 | `/ui/nonces` | The table size, and a manual sweep |
 | `/ui/profiles` | The endpoints this process serves, and a warning for any that bypass validation |
+| `/ui/profiles/{name}/filter` | One endpoint's resolved access policy: every check, and every rule in evaluation order with its condition re-parenthesized. **Read-only** |
 
 The account pages surface the CA's account-side traceability columns: where
 `newAccount` was called from and the reverse name that address had at the time
@@ -214,6 +215,7 @@ Mounted at `/api`, unversioned. Every response is `application/json` with
 | `GET` | `/api/nonces` | `{count, ttlSeconds}` |
 | `POST` | `/api/nonces/cleanup` | `{ttlSeconds}` optional |
 | `GET` | `/api/profiles` | the endpoints actually mounted |
+| `GET` | `/api/profiles/{name}/filter` | one endpoint's resolved access policy; read-only |
 | `GET` | `/health` | unauthenticated, no database access |
 
 Lists return an envelope, not a bare array — `total` is what the same filters
@@ -299,6 +301,41 @@ than saying so. The page says it in a line above the table.
 The default window is `[notify.expiry] lead_days` wherever the digest is on,
 and 30 days where it is off: an operator who has chosen a lead time gets that
 one back.
+
+### The policy is shown, never explained
+
+`/api/profiles/{name}/filter` and `/ui/profiles/{name}/filter` answer what
+`acme-proxy filter show` prints: the default effect, every check with its type
+and the stages it decides at, and every rule in evaluation order with its
+condition **re-parenthesized**, so an operator who wrote `a or b and c` reads
+`a or (b and c)` back. It is the missing half of the warning on `/ui/profiles`:
+an endpoint with `challenge.bypass` on has `[filter]` and nothing else between
+it and its clients, and this is where that policy can be read.
+
+**`filter explain` has no equivalent here and is not getting one.** It really
+runs the policy — it executes the operator's `custom` scripts and issues real
+IPAM and DNS requests, against an address and a list of names the *caller*
+chose. Behind a session that is script execution plus SSRF from one stolen
+cookie, on a listener that deliberately carries no filter chain and no
+admission control. `show` is the opposite case: it reads an already-built
+policy through four accessors, runs no check, and reaches nothing outside the
+process. Neither surface has a mutating verb — a policy is configuration, and
+configuration is edited in `config.toml` and reloaded — so both contribute no
+entry to the CSRF test table, for the same structural reason `/api/audit` does
+not.
+
+One difference from the CLI is worth knowing, because it is the useful kind.
+The panel reads the **live** policy, the one this process is enforcing right
+now; `acme-proxy filter show` **rebuilds** one from configuration, which is what
+makes it the cheapest pre-restart check. `[filter]` reloads on `SIGHUP` and the
+whole policy is swapped, so between an edit and its reload the two legitimately
+disagree — and a configuration that would be *refused* is reported by the CLI
+while the panel goes on serving the last good policy. Both answers are correct;
+comparing them is how an operator finds out which state they are in.
+
+An endpoint with no rules is a **state, not an error**: the answer carries
+`"active": false` and says the endpoint filters nothing, rather than a `404`.
+That is the one policy an operator most needs to be told about.
 
 ### Errors
 

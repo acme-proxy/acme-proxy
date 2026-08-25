@@ -286,13 +286,21 @@ a {
 /* The audit trail's own outcome, which is not an order status: a row is a
    success or a failure, and reusing the status palette is what keeps a
    refused issuance reading the same red as an invalid order. */
-.badge.success {
+.badge.success,
+/* A filter rule's effect, and deliberately the same green: `Palette::status`
+   already paints the word `allow` as its good role at the terminal, so the
+   panel and `filter show` give one word one colour. Same for `deny` below and
+   for the warn marker above. */
+.badge.allow {
   background: var(--ok-bg);
   color: var(--ok);
 }
 
 .badge.pending,
-.badge.processing {
+.badge.processing,
+/* A filter rule in `mode = "warn"`: it matches and does not decide. Amber for
+   the same reason `palette.warn` is amber in `filter show`. */
+.badge.warn {
   background: var(--warn-bg);
   color: var(--warn);
 }
@@ -301,7 +309,8 @@ a {
 .badge.revoked,
 .badge.deactivated,
 .badge.disabled,
-.badge.failure {
+.badge.failure,
+.badge.deny {
   background: var(--danger-bg);
   color: var(--danger);
 }

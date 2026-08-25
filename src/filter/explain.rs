@@ -3,8 +3,10 @@
 //! Everything `acme-proxy filter show` and `acme-proxy filter explain` print
 //! lives here; [`crate::cli::filter`] marshals arguments and does nothing else.
 //! That split is the one the rest of the admin surface uses, and it is what
-//! would let the web panel serve this later without moving any logic — see the
-//! warning below for why it does not today.
+//! lets the web panel serve `show` — `GET /api/profiles/{name}/filter` and
+//! `/ui/profiles/{name}/filter` render [`policy_json`], the same document
+//! `filter show --json` prints, without moving any logic. The warning below is
+//! about `explain`, which has no web surface and is not getting one.
 //!
 //! ## `explain` really runs the policy
 //!
@@ -20,6 +22,13 @@
 //! it would be script execution and outbound requests driven from one stolen
 //! cookie, on a listener that deliberately carries no filter chain and no
 //! admission control.
+//!
+//! [`render_policy`] and [`policy_json`] are the other half of that argument
+//! rather than an exception to it: they call four accessors on an
+//! already-built [`FilterPolicy`], invoke no [`Check`](super::policy::Check),
+//! and are not even `async`. Nothing a caller can type reaches outside this
+//! process, which is what makes `show` proposable behind a session where
+//! `explain` is not.
 
 use std::fmt::Write as _;
 use std::net::IpAddr;
@@ -37,6 +46,16 @@ use crate::sqlite::order::Identifier;
 /// listed here that happens not to have made a request this time is a harmless
 /// caution, where an omission would be a lie.
 const REACHES_OUT: &[&str] = &["custom", "ipam", "reverse_dns"];
+
+/// What both renderings say about a policy with no rules.
+///
+/// One `const` rather than a sentence per renderer: `render_policy` paints it
+/// and [`policy_json`] carries it bare, and a warning this load-bearing said
+/// two slightly different ways in two front ends is how one of them stops
+/// being read.
+const INACTIVE_WARNING: &str = "no rules configured: this endpoint filters \
+     nothing, and any client that can reach it may request a certificate for \
+     any name";
 
 /// The request `explain` is asked about.
 #[derive(Debug, Clone, Default)]
@@ -178,14 +197,7 @@ pub fn render_policy(profile: &str, policy: &FilterPolicy, palette: Palette) -> 
     let _ = writeln!(out, "profile: {profile}");
 
     if !policy.is_active() {
-        let _ = writeln!(
-            out,
-            "\n{}",
-            palette.warn(
-                "no rules configured: this endpoint filters nothing, and any client that \
-                 can reach it may request a certificate for any name"
-            )
-        );
+        let _ = writeln!(out, "\n{}", palette.warn(INACTIVE_WARNING));
         return out;
     }
 
@@ -387,6 +399,80 @@ pub fn explanation_json(profile: &str, subject: &Subject, explanation: &Explanat
         "stages": stages,
         "allowed": explanation.allowed(),
         "sideEffects": explanation.side_effects,
+    })
+}
+
+/// The resolved policy as a JSON document.
+///
+/// The one shape three consumers share: `filter show --json`,
+/// `GET /api/profiles/{name}/filter`, and the context the `/ui` page's
+/// template walks. Member for member it carries what [`render_policy`] prints
+/// and nothing more — an operator reading the panel and an operator reading
+/// the terminal are looking at the same policy, and neither front end may grow
+/// a field the other cannot show.
+///
+/// **Reaches nothing outside this process.** Four accessors on an
+/// already-built [`FilterPolicy`]; no [`Check`](super::policy::Check) is ever
+/// invoked, which is why this is not `async` and why, unlike [`explain`], it
+/// is safe behind an admin session.
+///
+/// Two orderings are load-bearing and neither is stated in the document:
+/// `rules` is evaluation order, because the first match decides, and `checks`
+/// is name-sorted, because a check has no order of its own.
+///
+/// `defaultEffect` is `null` when the policy is inactive, and the `warning` is
+/// there instead. That is not a formality: `filter.default` is consulted only
+/// where some rule was applicable, so with no rules at all the configured
+/// value is not a fact about this endpoint's behaviour — which is the same
+/// thing [`render_policy`] says by returning before it prints one.
+#[must_use]
+pub fn policy_json(profile: &str, policy: &FilterPolicy) -> Value {
+    if !policy.is_active() {
+        return json!({
+            "profile": profile,
+            "active": false,
+            "defaultEffect": Value::Null,
+            "warning": INACTIVE_WARNING,
+            "checks": [],
+            "rules": [],
+        });
+    }
+
+    let checks: Vec<Value> = policy
+        .checks()
+        .iter()
+        .map(|check| {
+            json!({
+                "name": check.name,
+                "type": check.kind,
+                "stages": check.stages.to_string(),
+            })
+        })
+        .collect();
+
+    let rules: Vec<Value> = policy
+        .rules()
+        .iter()
+        .map(|rule| {
+            json!({
+                "name": rule.name,
+                // `Condition`'s `Display`: the re-parenthesized expression,
+                // which is the member this whole surface exists for.
+                "when": rule.when.to_string(),
+                "then": rule.then.as_str(),
+                "mode": rule.mode.as_str(),
+                "stages": rule.stages.to_string(),
+            })
+        })
+        .collect();
+
+    json!({
+        "profile": profile,
+        "active": true,
+        "defaultEffect": policy.default_effect().as_str(),
+        "warning": Value::Null,
+        "checks": checks,
+        "rules": rules,
     })
 }
 
@@ -660,5 +746,137 @@ mod tests {
             ProxyPolicy::default(),
         );
         assert!(render_policy("default", &policy, Palette::plain()).contains("does not decide"));
+    }
+
+    /// The fixture both `show` renderings are asserted over.
+    ///
+    /// Its condition is written **unparenthesized** on purpose: what comes
+    /// back out is `names or (net and names)`, and that is the whole reason
+    /// either rendering exists.
+    fn two_rule_policy() -> FilterPolicy {
+        FilterPolicy::new(
+            vec![
+                ("net".to_string(), net(&["10.0.0.0/8"])),
+                ("names".to_string(), names(&["*.example.com"])),
+            ],
+            vec![
+                rule(
+                    "mixed",
+                    "names or net and names",
+                    Effect::Allow,
+                    Mode::Enforce,
+                ),
+                rule("dry", "net", Effect::Deny, Mode::Warn),
+            ],
+            Effect::Deny,
+            ProxyPolicy::default(),
+        )
+    }
+
+    #[test]
+    fn the_policy_json_carries_every_check_and_every_rule() {
+        let value = policy_json("default", &two_rule_policy());
+
+        assert_eq!(value["profile"], "default");
+        assert_eq!(value["active"], true);
+        assert_eq!(value["defaultEffect"], "deny");
+        assert!(value["warning"].is_null());
+
+        // Name-sorted, as `FilterPolicy::checks` walks a `BTreeMap`.
+        let checks = value["checks"].as_array().unwrap();
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0]["name"], "names");
+        assert_eq!(checks[0]["type"], "identifiers");
+        assert_eq!(checks[0]["stages"], "identifiers only");
+        assert_eq!(checks[1]["name"], "net");
+        assert_eq!(checks[1]["type"], "allowed_ip");
+        assert_eq!(checks[1]["stages"], "connection and identifiers");
+
+        // Evaluation order, because the first match decides.
+        let rules = value["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["name"], "mixed");
+        assert_eq!(rules[0]["when"], "names or (net and names)");
+        assert_eq!(rules[0]["then"], "allow");
+        assert_eq!(rules[0]["mode"], "enforce");
+        assert_eq!(rules[0]["stages"], "identifiers only");
+        assert_eq!(rules[1]["mode"], "warn");
+    }
+
+    /// A policy with no rules is a state, not an error — and `filter.default`
+    /// is not a fact about it, since no stage ever has an applicable rule.
+    #[test]
+    fn an_inactive_policy_says_so_and_carries_no_default() {
+        let value = policy_json("default", &FilterPolicy::default());
+
+        assert_eq!(value["active"], false);
+        assert!(value["defaultEffect"].is_null());
+        assert!(
+            value["warning"]
+                .as_str()
+                .unwrap()
+                .contains("filters nothing")
+        );
+        assert!(value["checks"].as_array().unwrap().is_empty());
+        assert!(value["rules"].as_array().unwrap().is_empty());
+    }
+
+    /// `message` is the operator's own words for a refusal, and `show` does
+    /// not print it. Its absence here is a decision, not an oversight: the
+    /// panel and the terminal describe a policy identically or one of them is
+    /// lying, and adding it is an addition to *both*.
+    #[test]
+    fn the_operator_message_is_not_in_the_json() {
+        let policy = FilterPolicy::new(
+            vec![("net".to_string(), net(&["10.0.0.0/8"]))],
+            vec![Rule {
+                name: "spoken".to_string(),
+                when: Condition::parse("net").unwrap(),
+                then: Effect::Deny,
+                message: Some("ask the network team".to_string()),
+                mode: Mode::Enforce,
+            }],
+            Effect::Deny,
+            ProxyPolicy::default(),
+        );
+
+        let value = policy_json("default", &policy);
+        assert!(value["rules"][0].get("message").is_none());
+        assert!(!value.to_string().contains("network team"));
+    }
+
+    /// The text and the JSON are two walks over one [`FilterPolicy`] rather
+    /// than one built on the other, so this is what stops them drifting: every
+    /// word the document carries has to appear in what `filter show` prints.
+    #[test]
+    fn the_two_renderings_agree_on_the_vocabulary() {
+        let policy = two_rule_policy();
+        let value = policy_json("default", &policy);
+        let rendered = render_policy("default", &policy, Palette::plain());
+
+        assert!(rendered.contains(value["defaultEffect"].as_str().unwrap()));
+        for check in value["checks"].as_array().unwrap() {
+            for member in ["name", "type", "stages"] {
+                let word = check[member].as_str().unwrap();
+                assert!(rendered.contains(word), "`{word}` missing from {rendered}");
+            }
+        }
+        for rule in value["rules"].as_array().unwrap() {
+            for member in ["name", "when", "then", "stages"] {
+                let word = rule[member].as_str().unwrap();
+                assert!(rendered.contains(word), "`{word}` missing from {rendered}");
+            }
+        }
+
+        // And the sentence an inactive policy is described by, byte for byte:
+        // one `const`, painted on one side and carried bare on the other.
+        let inactive = FilterPolicy::default();
+        assert!(
+            render_policy("default", &inactive, Palette::plain()).contains(
+                policy_json("default", &inactive)["warning"]
+                    .as_str()
+                    .unwrap()
+            )
+        );
     }
 }

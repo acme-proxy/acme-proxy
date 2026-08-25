@@ -68,6 +68,43 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The resolved filter policy, from the panel and in JSON** — `/ui/profiles/{name}/filter`,
+  `GET /api/profiles/{name}/filter` and `acme-proxy filter show --json`.
+  `/ui/profiles` warned that an endpoint with `challenge.bypass` on has
+  `[filter]` and nothing else between it and its clients, and then offered no
+  way to read what that policy said; the answer was an SSH session, at the
+  moment somebody was trying to move quickly. All three surfaces render **one**
+  document, built in one place, so a page and a terminal cannot come to describe
+  one policy differently — the default effect, every check with its type and
+  stages, and every rule in evaluation order with its condition
+  **re-parenthesized**, which is the part an operator came for.
+
+  **This is `filter show`, and only `filter show`.** `filter explain` really
+  runs the policy — it executes the operator's `custom` scripts and issues real
+  IPAM and DNS requests against an address and names the *caller* chose — so
+  behind a session it would be script execution plus SSRF from one stolen
+  cookie. It remains host-only and there is no plan to change that. `show` reads
+  an already-built policy through four accessors, runs no check and reaches
+  nothing outside the process, which is the whole of why it is proposable where
+  its sibling is not. Neither new surface has a mutating verb, so neither
+  contributes an entry to the CSRF test table.
+
+  One difference between the two front ends is deliberate. The panel serves the
+  **live** policy — what the process is enforcing right now — where the CLI
+  **rebuilds** one from configuration, which is what makes `filter show` the
+  cheapest pre-restart check. `[filter]` reloads on `SIGHUP`, so between an edit
+  and its reload the two legitimately disagree, and a configuration that would
+  be *refused* is reported by the CLI while the panel goes on serving the last
+  good policy. Comparing them is how an operator finds out which state they are
+  in.
+
+  Two shapes to know when parsing the JSON: an endpoint with no rules answers
+  `"active": false` and a warning rather than a `404` — filtering nothing is a
+  state, and the one an operator most needs to be told about — and its
+  `defaultEffect` is `null`, because `filter.default` is consulted only where
+  some rule was applicable and is therefore not a fact about such an endpoint at
+  all.
+
 - **An admin surface for the expiry list** — `GET /api/expiring`,
   `/ui/expiring` and `order list --expiring-in <days>`. `[notify.expiry]`
   answers "what lapses soon, and has anything replaced it?" once per interval,

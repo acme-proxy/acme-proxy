@@ -677,6 +677,7 @@ fn authenticated_pages() -> Vec<&'static str> {
         "/ui/eab/some-kid",
         "/ui/nonces",
         "/ui/profiles",
+        "/ui/profiles/default/filter",
         "/ui/account",
     ]
 }
@@ -937,19 +938,21 @@ async fn a_hostile_reverse_name_is_escaped_on_both_account_surfaces() {
 async fn an_id_echoed_into_a_not_found_page_is_escaped() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    let response = admin_page(
-        &app,
+    // Two shapes of caller-supplied path segment: an account id, and a profile
+    // name. Both are interpolated into a message the `PageError` document
+    // renders with no template, so both go through `escape_html` or neither.
+    for path in [
         "/ui/accounts/%3Cscript%3Ealert(1)%3C%2Fscript%3E",
-        Some(&session),
-        false,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        "/ui/profiles/%3Cscript%3Ealert(1)%3C%2Fscript%3E/filter",
+    ] {
+        let response = admin_page(&app, path, Some(&session), false).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
 
-    let body = html_body(response).await;
-    assert!(!body.contains("<script>alert"));
-    assert!(body.contains("&lt;script&gt;"));
-    assert!(body.contains("<code>not_found</code>"));
+        let body = html_body(response).await;
+        assert!(!body.contains("<script>alert"), "{path}");
+        assert!(body.contains("&lt;script&gt;"), "{path}");
+        assert!(body.contains("<code>not_found</code>"), "{path}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1799,6 +1802,108 @@ async fn the_profiles_page_warns_when_an_endpoint_bypasses_validation() {
     // all -- and the warning is the whole point of the page.
     assert!(body.contains("challenge.bypass"));
     assert!(body.contains(r#"<span class="badge invalid">bypassed</span>"#));
+    // The gap this page used to leave: it warns that `[filter]` is all such an
+    // endpoint has, and now says where to read it.
+    assert!(body.contains(&format!(r#"href="/ui/profiles/{PROFILE}/filter""#)));
+}
+
+/// The answer to "and what does that policy say?", which `/ui/profiles` warns
+/// about and used to leave to an SSH session.
+#[tokio::test]
+async fn the_filter_policy_page_shows_what_the_process_is_enforcing() {
+    let (app, _database, session) =
+        test_admin_app_logged_in_with_filter(admin_config(), test_filter_policy()).await;
+
+    let path = format!("/ui/profiles/{PROFILE}/filter");
+    let body = html_body(admin_page(&app, &path, Some(&session), false).await).await;
+
+    assert!(body.starts_with("<!doctype html>"), "{body}");
+    assert!(body.contains("mgmt-net"), "{body}");
+    assert!(body.contains("allowed_ip"), "{body}");
+    assert!(body.contains("connection and identifiers"), "{body}");
+    assert!(body.contains("identifiers only"), "{body}");
+
+    // The re-parenthesized condition, end to end: configuration -> `build` ->
+    // `policy_json` -> template. The operator wrote it without parentheses.
+    assert!(body.contains("names or (mgmt-net and names)"), "{body}");
+
+    // The default effect, and the warn rule that matches without deciding.
+    assert!(
+        body.contains(r#"<span class="badge deny">deny</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<span class="badge allow">allow</span>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<span class="badge warn">does not decide</span>"#),
+        "{body}"
+    );
+
+    // Urgency and effect are classes, never inline styles -- `style-src 'self'`
+    // blocks those.
+    assert!(!body.contains("style="), "{body}");
+
+    // Read-only: no form and no htmx target of its own. The layout's own
+    // sign-out button is the only `hx-post` a page ever carries, so the
+    // assertion that means anything is the unroutable-verb loop at the end.
+    assert!(!body.contains("<form"), "{body}");
+    assert!(!body.contains("hx-target"), "{body}");
+
+    // A sub-page of Profiles, not a nav entry of its own.
+    assert!(
+        body.contains(r#"<a href="/ui/profiles" class="active">Profiles</a>"#),
+        "{body}"
+    );
+
+    // No fragment: there is nothing on this page for htmx to swap, so an
+    // `HX-Request` still gets the whole document rather than a bare partial.
+    let htmx = html_body(admin_page(&app, &path, Some(&session), true).await).await;
+    assert!(htmx.starts_with("<!doctype html>"), "{htmx}");
+
+    // An unmounted endpoint is a `404`, not an empty policy.
+    assert_eq!(
+        admin_page(&app, "/ui/profiles/nope/filter", Some(&session), false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Nothing writes: every other verb on the path is unroutable, which is why
+    // this route contributes no entry to `mutating_page_endpoints()`.
+    for method in [Method::POST, Method::DELETE, Method::PATCH] {
+        let response = admin_form_request(&app, method.clone(), &path, Some(&session), None).await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} {path} answered {}",
+            response.status()
+        );
+    }
+}
+
+/// An endpoint that filters nothing says so, and says nothing else -- the
+/// page's parity with `render_policy`, which returns before it prints a
+/// default or a table.
+#[tokio::test]
+async fn the_filter_policy_page_says_plainly_when_nothing_is_configured() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let body = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/profiles/{PROFILE}/filter"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+
+    assert!(body.contains("filters nothing"), "{body}");
+    assert!(!body.contains("Evaluated at"), "{body}");
+    assert!(!body.contains("first match decides"), "{body}");
 }
 
 // ---------------------------------------------------------------------------

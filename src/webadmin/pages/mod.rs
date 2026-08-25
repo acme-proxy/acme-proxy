@@ -34,6 +34,7 @@ pub mod auth;
 pub mod eab;
 pub mod error;
 pub mod expiring;
+pub mod filter;
 pub mod misc;
 pub mod orders;
 pub mod session;
@@ -117,6 +118,13 @@ pub(crate) fn pages_router() -> Router<AdminState> {
         .route("/ui/nonces", get(misc::get_nonces))
         .route("/ui/nonces/cleanup", post(misc::cleanup_nonces))
         .route("/ui/profiles", get(misc::list_profiles))
+        // Read-only: a policy is configuration, and `filter explain` -- the
+        // one that would need a form -- has no web surface at all. Absent from
+        // `mutating_page_endpoints()` accordingly.
+        .route(
+            "/ui/profiles/{name}/filter",
+            get(filter::get_profile_filter),
+        )
 }
 
 /// The context every full page needs on top of its own data.

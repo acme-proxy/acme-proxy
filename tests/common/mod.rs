@@ -684,6 +684,15 @@ pub async fn test_admin_app(config: Config) -> (Router, Arc<Database>) {
 pub async fn test_admin_app_with_signer(
     config: Config,
 ) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
+    admin_app_with(config, Arc::new(FilterPolicy::default())).await
+}
+
+/// The one place the admin router is built, so the variants above and below
+/// cannot drift into mounting different endpoints.
+async fn admin_app_with(
+    config: Config,
+    filter: Arc<FilterPolicy>,
+) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let signer: Arc<dyn SignerBackend> =
@@ -691,7 +700,7 @@ pub async fn test_admin_app_with_signer(
     let profile = one_profile(
         &config,
         signer.clone(),
-        Arc::new(FilterPolicy::default()),
+        filter,
         default_challenges(),
         no_notifications().await,
     );
@@ -702,6 +711,81 @@ pub async fn test_admin_app_with_signer(
         test_auditor(database.clone()),
     );
     (router, database, signer)
+}
+
+/// A `[filter]` policy with two checks and two rules, built the way the server
+/// builds one.
+///
+/// Every other admin harness mounts `FilterPolicy::default()` — no rules, so
+/// `is_active()` is false — which is the honest default for a suite that does
+/// not care about filtering, and exactly wrong for a surface whose whole
+/// subject is the checks and the rules.
+///
+/// Built through `filter::from_config` rather than `FilterPolicy::new`, because
+/// that is the path a running server takes: it is what decides each check's
+/// kind and each rule's stage intersection, so a test over it is a test of the
+/// real thing.
+///
+/// `corp`'s condition is written **without parentheses** on purpose. What the
+/// panel and the CLI must print back is `names or (mgmt-net and names)`, and
+/// that re-parenthesization is the reason either surface exists.
+pub fn test_filter_policy() -> Arc<FilterPolicy> {
+    use acme_proxy::config::{CheckConfig, FilterConfig, RuleConfig};
+
+    let filter = FilterConfig {
+        rules: vec!["mgmt-bypass".to_string(), "corp".to_string()],
+        default: "deny".to_string(),
+        rule: [
+            (
+                "mgmt-bypass".to_string(),
+                RuleConfig {
+                    when: "mgmt-net".to_string(),
+                    then: "allow".to_string(),
+                    ..RuleConfig::default()
+                },
+            ),
+            (
+                "corp".to_string(),
+                RuleConfig {
+                    when: "names or mgmt-net and names".to_string(),
+                    then: "deny".to_string(),
+                    mode: "warn".to_string(),
+                    ..RuleConfig::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        check: [
+            (
+                "mgmt-net".to_string(),
+                CheckConfig {
+                    r#type: "allowed_ip".to_string(),
+                    allow: vec!["10.0.0.0/8".to_string()],
+                    ..CheckConfig::default()
+                },
+            ),
+            (
+                "names".to_string(),
+                CheckConfig {
+                    r#type: "identifiers".to_string(),
+                    allow: vec!["*.corp.example.com".to_string()],
+                    ..CheckConfig::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..FilterConfig::default()
+    };
+
+    acme_proxy::filter::from_config(
+        &filter,
+        &acme_proxy::config::DnsConfig::default(),
+        None,
+        false,
+    )
+    .expect("the test policy must build")
 }
 
 /// A signed-in admin session: the cookie to send back and the CSRF token every
@@ -719,7 +803,16 @@ pub const ADMIN_PASSWORD: &str = "a-long-enough-password";
 pub async fn test_admin_app_logged_in(
     config: Config,
 ) -> (Router, Arc<Database>, AdminSessionHandle) {
-    let (app, database) = test_admin_app(config).await;
+    test_admin_app_logged_in_with_filter(config, Arc::new(FilterPolicy::default())).await
+}
+
+/// [`test_admin_app_logged_in`], over a profile mounting a policy of the
+/// caller's choosing — for the surfaces whose subject *is* the policy.
+pub async fn test_admin_app_logged_in_with_filter(
+    config: Config,
+    filter: Arc<FilterPolicy>,
+) -> (Router, Arc<Database>, AdminSessionHandle) {
+    let (app, database, _signer) = admin_app_with(config, filter).await;
     acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
         .await
         .expect("the bootstrap operator must be creatable");

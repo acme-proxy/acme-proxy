@@ -1,8 +1,9 @@
 //! `acme-proxy filter show|explain` — reading the configured access policy.
 //!
 //! Argument marshalling and profile resolution only; everything printed comes
-//! from [`crate::filter::explain`], so the panel could serve the same output
-//! later without moving any logic. Why it does not today is recorded there.
+//! from [`crate::filter::explain`], which is what lets the panel serve `show`
+//! from the same renderings without moving any logic. `explain` stays here and
+//! only here; why is recorded there.
 
 use std::net::IpAddr;
 
@@ -12,7 +13,7 @@ use super::style::Palette;
 use super::{CliError, resolve_profile};
 use crate::config::Config;
 use crate::filter::explain::{
-    Subject, explain, explanation_json, render_explanation, render_policy,
+    Subject, explain, explanation_json, policy_json, render_explanation, render_policy,
 };
 use crate::sqlite::order::Identifier;
 
@@ -23,6 +24,8 @@ pub enum FilterCommand {
         /// Which endpoint's policy. Optional when exactly one is configured.
         #[arg(long)]
         profile: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Evaluate the policy against a hypothetical request.
     ///
@@ -55,9 +58,13 @@ pub async fn run_filter_command(
     config: &Config,
 ) -> Result<(), CliError> {
     match command {
-        FilterCommand::Show { profile } => {
+        FilterCommand::Show { profile, json } => {
             let (name, policy) = build(config, profile.as_deref())?;
-            print!("{}", render_policy(&name, &policy, palette));
+            if json {
+                print_json(&policy_json(&name, &policy))?;
+            } else {
+                print!("{}", render_policy(&name, &policy, palette));
+            }
             Ok(())
         }
         FilterCommand::Explain {
@@ -79,12 +86,7 @@ pub async fn run_filter_command(
 
             let explanation = explain(&policy, &subject).await;
             if json {
-                let value = explanation_json(&name, &subject, &explanation);
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&value)
-                        .map_err(|error| CliError(format!("cannot render JSON: {error}")))?
-                );
+                print_json(&explanation_json(&name, &subject, &explanation))?;
             } else {
                 print!(
                     "{}",
@@ -94,6 +96,23 @@ pub async fn run_filter_command(
             Ok(())
         }
     }
+}
+
+/// Both `--json` shapes, printed the one way.
+///
+/// Pretty rather than the compact `println!` [`crate::cli::render::print_rows`]
+/// uses: that one prints a *listing*, and these two print one object each — and
+/// the two subcommands of `filter` should not differ in how they hand it over.
+///
+/// Takes no [`Palette`], which is what keeps `--json` structurally out of
+/// colour's reach rather than merely out of its way.
+fn print_json(value: &serde_json::Value) -> Result<(), CliError> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value)
+            .map_err(|error| CliError(format!("cannot render JSON: {error}")))?
+    );
+    Ok(())
 }
 
 /// Resolves the profile and builds its policy, exactly as startup would.
@@ -184,9 +203,15 @@ mod tests {
     async fn show_prints_the_policy_of_the_only_profile() {
         let config = load(ONE_PROFILE);
         assert!(
-            run(&config, FilterCommand::Show { profile: None })
-                .await
-                .is_ok()
+            run(
+                &config,
+                FilterCommand::Show {
+                    profile: None,
+                    json: false
+                }
+            )
+            .await
+            .is_ok()
         );
     }
 
@@ -197,7 +222,8 @@ mod tests {
             run(
                 &config,
                 FilterCommand::Show {
-                    profile: Some("default".to_string())
+                    profile: Some("default".to_string()),
+                    json: false
                 }
             )
             .await
@@ -212,6 +238,7 @@ mod tests {
             &config,
             FilterCommand::Show {
                 profile: Some("nope".to_string()),
+                json: false,
             },
         )
         .await
@@ -229,9 +256,15 @@ mod tests {
             [profiles.b]
             "#,
         );
-        let error = run(&config, FilterCommand::Show { profile: None })
-            .await
-            .unwrap_err();
+        let error = run(
+            &config,
+            FilterCommand::Show {
+                profile: None,
+                json: false,
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(error.0.contains("--profile"), "{}", error.0);
     }
 
@@ -251,10 +284,41 @@ mod tests {
             check.net.allow = ["10.0.0.0/8"]
             "#,
         );
-        let error = run(&config, FilterCommand::Show { profile: None })
+        // Both shapes: the refusal comes out of `build` before the output
+        // branch, so a `--json` caller gets the error and not an empty
+        // document.
+        for json in [false, true] {
+            let error = run(
+                &config,
+                FilterCommand::Show {
+                    profile: None,
+                    json,
+                },
+            )
             .await
             .unwrap_err();
-        assert!(error.0.contains("at column"), "{}", error.0);
+            assert!(error.0.contains("at column"), "{}", error.0);
+        }
+    }
+
+    /// `show` answers in both shapes, the way `explain` already does.
+    #[tokio::test]
+    async fn show_runs_in_both_output_shapes() {
+        let config = load(ONE_PROFILE);
+        for json in [false, true] {
+            assert!(
+                run(
+                    &config,
+                    FilterCommand::Show {
+                        profile: None,
+                        json
+                    }
+                )
+                .await
+                .is_ok(),
+                "show --json={json} must succeed"
+            );
+        }
     }
 
     fn explain_of(profile: Option<String>, ip: &str, names: &[&str], json: bool) -> FilterCommand {
