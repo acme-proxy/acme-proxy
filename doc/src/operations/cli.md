@@ -30,8 +30,20 @@ delete`, `order delete`, `audit cleanup`, `admin user delete` and `admin user
 totp reset` prompt; nothing else is gated by it.
 
 **`--json`** — where supported, emit JSON instead of the human-readable line
-format. List commands print a **single JSON array**; single-item commands print
-one JSON object. (It is not newline-delimited JSON.)
+format. Single-item commands print one JSON object. A **paged** list command
+(`account list`, `order list`, `audit list`) prints the same envelope the admin
+JSON API returns, so a script does not learn one shape for the shell and another
+for the API:
+
+```json
+{ "items": [ … ], "total": 137, "limit": 50, "offset": 0 }
+```
+
+`total` is what the same filters match *unpaged*, which is the difference
+between having read the table and having read a page of it. The unpaged
+listings — `eab list`, `admin user list`, `admin session list` — print a bare
+JSON array: those are tables an operator mints by hand, so there is no page and
+no total to report. (Neither shape is newline-delimited JSON.)
 
 **`--color <auto|always|never>`** — when to colour the human-readable output.
 Also global. The default is `auto`: colour when the stream is a terminal and
@@ -117,7 +129,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `account list` | `--profile <name>`, `--json` |
+| `account list` | `--profile <name>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `account show <id>` | `--json` |
 | `account update-contact <id>` | `--contact <uri>` (repeatable) |
 | `account deactivate <id>` | — |
@@ -126,6 +138,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 - `account list --profile` restricts the listing to one ACME endpoint. Without
   it, accounts from every profile are listed — the admin CLI is deliberately
   unscoped by default, unlike the request path, which always scopes by profile.
+  The listing is **newest first** and paged; see [Paging](#paging) below.
 - `account list` shows, per account, the address its key was last seen from and
   that address's reverse name (`ip (ptr)`, the address alone when no name
   resolved, `-` when neither was recorded). `account show` prints one field per
@@ -141,7 +154,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--expiring-in <days>`, `--hide-superseded`, `--json` |
+| `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--expiring-in <days>`, `--hide-superseded`, `--limit <n>`, `--offset <n>`, `--json` |
 | `order show <id>` | `--json` |
 | `order delete <id>` | *(prompts)* |
 | `order revoke <id>` | `--reason <n>` |
@@ -174,10 +187,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 | `audit show <id>` | `--json` |
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
-- `audit list` is **paged**, defaulting to 50 rows, unlike `account list` and
-  `order list`. This table grows a row per issuance for the life of the
-  deployment, so it always prints `N of M row(s)` — a page must never be
-  mistaken for the whole trail. Page with `--offset`.
+- `audit list` is paged like the other two listings; see [Paging](#paging).
 - **An unknown `--event` or `--outcome` is refused by name**, listing the values
   this build knows. Passed through to SQL it would answer "no rows", which reads
   exactly like "nothing happened".
@@ -189,6 +199,43 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 The web admin can read this trail but not prune it — see
 [Audit Trail](audit.md).
+
+## Paging
+
+`account list`, `order list` (both of its queries) and `audit list` take
+`--limit <n>` and `--offset <n>`, defaulting to **50 rows**. `orders` and
+`audit_log` each grow a row per issuance for the life of the deployment, so
+there is deliberately no "everything" spelling and `--limit 0` is not a way
+around it: on a year-old CA that is a terminal full of scrollback and a table
+loaded into memory. A nonsense window is corrected rather than refused — a
+`--limit 0` becomes one row, a negative `--offset` becomes zero.
+
+Every paged listing ends with a count, always and not only when the page is
+short:
+
+```console
+$ acme-proxy order list --limit 2
+...
+2 of 1877 row(s).
+```
+
+"42 of 1877" is the difference between having read the table and having read a
+page of it. Page with `--offset`; the listings are ordered newest first,
+tie-broken on the row id, so a row cannot swap between pages and go unseen.
+
+`order list --expiring-in` adds a third number when `--hide-superseded` drops
+rows, because supersession is decided per row and cannot become part of the
+query — so the total counts the *window*, not the rows printed under it:
+
+```console
+$ acme-proxy order list --expiring-in 30 --hide-superseded --limit 20
+...
+6 of 8 row(s), 2 superseded hidden.
+```
+
+The window is not clamped to `admin.page_size_max`. That key is a ceiling on
+what an HTTP caller may ask the server for; this front end already answers to a
+shell on the host.
 
 ## Access policy
 

@@ -1,7 +1,8 @@
 {#- The swap target of the EAB list.
 
     `Eab::list_all` is unpaginated (an operator mints these by hand, a few at a
-    time), so there is no pager here -- unlike accounts and orders.
+    time), so there is no pager here -- unlike accounts and orders. `GET
+    /api/eab` does window, over `Eab::search`; a script has no scroll bar.
 
     `oob` is set only by `_created.html`, which returns this table alongside the
     new credential so the list refreshes without a reload. The attribute has to

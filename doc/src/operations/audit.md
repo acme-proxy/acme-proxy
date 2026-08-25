@@ -63,12 +63,13 @@ acme-proxy audit show 4213
 | `audit show <id>` | `--json` |
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
-`audit list` is **paged**, defaulting to 50 rows, unlike `account list` and
-`order list`. This table grows a row per issuance for the life of the
-deployment, so it always prints `N of M row(s)` — a page must never be mistaken
-for the whole trail. There is no "everything" spelling on purpose; on a year-old
-CA that is a terminal full of scrollback and a table loaded into memory. Page
-with `--offset`.
+`audit list` is **paged**, defaulting to 50 rows, as `account list` and `order
+list` are. This table grows a row per issuance for the life of the deployment,
+so it always prints `N of M row(s)` — a page must never be mistaken for the
+whole trail. There is no "everything" spelling on purpose; on a year-old CA that
+is a terminal full of scrollback and a table loaded into memory. Page with
+`--offset`, and see [Paging](cli.md#paging) for the window every listing shares
+and the `--json` envelope it answers with.
 
 ```console
 $ acme-proxy audit list --outcome failure --since-days 7

@@ -6,6 +6,7 @@ use acme_proxy::cli::account::{AccountCommand, run_account_command};
 use acme_proxy::cli::eab::{EabCommand, run_eab_command};
 use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
 use acme_proxy::cli::order::{OrderCommand, run_order_command};
+use acme_proxy::cli::window::DEFAULT_LIMIT;
 use acme_proxy::config::Config;
 use acme_proxy::sqlite::account::Account;
 use acme_proxy::sqlite::db::Database;
@@ -29,6 +30,8 @@ async fn account_cli_list_and_show() {
     run_account_command(
         AccountCommand::List {
             profile: None,
+            limit: DEFAULT_LIMIT,
+            offset: 0,
             json: false,
         },
         false,
@@ -42,6 +45,8 @@ async fn account_cli_list_and_show() {
     run_account_command(
         AccountCommand::List {
             profile: None,
+            limit: DEFAULT_LIMIT,
+            offset: 0,
             json: true,
         },
         false,
@@ -189,6 +194,8 @@ async fn order_cli_list_show_delete() {
             status: Some("pending".to_string()),
             expiring_in: None,
             hide_superseded: false,
+            limit: DEFAULT_LIMIT,
+            offset: 0,
             json: false,
         },
         false,
@@ -207,6 +214,8 @@ async fn order_cli_list_show_delete() {
             status: None,
             expiring_in: None,
             hide_superseded: false,
+            limit: DEFAULT_LIMIT,
+            offset: 0,
             json: true,
         },
         false,
@@ -447,6 +456,8 @@ async fn order_cli_lists_what_is_expiring() {
                 status: None,
                 expiring_in: Some(30),
                 hide_superseded,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
                 json,
             },
             false,
@@ -467,6 +478,8 @@ async fn order_cli_lists_what_is_expiring() {
             status: None,
             expiring_in: Some(1),
             hide_superseded: false,
+            limit: DEFAULT_LIMIT,
+            offset: 0,
             json: true,
         },
         false,

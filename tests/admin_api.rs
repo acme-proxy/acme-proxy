@@ -1616,6 +1616,52 @@ async fn accounts_list_pages_and_reports_the_total() {
     assert_eq!(paged["total"], 5);
 }
 
+/// The one list endpoint that used to answer a bare array. The book says lists
+/// return an envelope, without qualification, so this pins that `/api/eab` is
+/// one of them.
+#[tokio::test]
+async fn the_eab_list_pages_and_reports_the_total() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    for _ in 0..5 {
+        acme_proxy::sqlite::eab::Eab::create(None, None, &database)
+            .await
+            .unwrap();
+    }
+
+    let body =
+        json_body(admin_request(&app, Method::GET, "/api/eab?limit=2", Some(&session), None).await)
+            .await;
+    assert_eq!(body["total"], 5);
+    assert_eq!(body["limit"], 2);
+    assert_eq!(body["offset"], 0);
+    assert_eq!(body["items"].as_array().unwrap().len(), 2);
+    assert!(body["items"][0]["kid"].as_str().is_some());
+    // Never the secret, whatever the shape around it.
+    assert!(body["items"][0].get("hmacKey").is_none());
+
+    let paged = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/eab?limit=2&offset=4",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(paged["items"].as_array().unwrap().len(), 1);
+    assert_eq!(paged["total"], 5, "the total is the table, not the page");
+
+    // An absent window is the default page, not the whole table by another
+    // spelling.
+    let bare =
+        json_body(admin_request(&app, Method::GET, "/api/eab", Some(&session), None).await).await;
+    assert_eq!(bare["limit"], 50);
+    assert_eq!(bare["offset"], 0);
+    assert_eq!(bare["total"], 5);
+}
+
 #[tokio::test]
 async fn a_limit_over_the_ceiling_is_clamped_rather_than_refused() {
     let mut config = admin_config();

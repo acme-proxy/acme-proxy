@@ -64,6 +64,7 @@ pub mod render;
 pub mod style;
 pub mod upstream;
 pub mod webadmin;
+pub mod window;
 
 pub use account::AccountCommand;
 pub use audit::AuditCommand;
@@ -1746,7 +1747,9 @@ mod tests {
             Some(Command::Account {
                 command: AccountCommand::List {
                     json: true,
-                    profile: None
+                    profile: None,
+                    limit: window::DEFAULT_LIMIT,
+                    offset: 0
                 }
             })
         ));
@@ -1812,6 +1815,8 @@ mod tests {
                     status: Some(s),
                     expiring_in: None,
                     hide_superseded: false,
+                    limit: window::DEFAULT_LIMIT,
+                    offset: 0,
                     json: true
                 }
             }) if a == "acct-1" && s == "pending"
@@ -1835,6 +1840,8 @@ mod tests {
                     status: None,
                     account_id: None,
                     profile: None,
+                    limit: window::DEFAULT_LIMIT,
+                    offset: 0,
                     json: false
                 }
             })
@@ -2140,6 +2147,8 @@ mod tests {
             Command::Account {
                 command: AccountCommand::List {
                     profile: None,
+                    limit: window::DEFAULT_LIMIT,
+                    offset: 0,
                     json: false,
                 },
             },
@@ -2150,6 +2159,8 @@ mod tests {
                     status: None,
                     expiring_in: None,
                     hide_superseded: false,
+                    limit: window::DEFAULT_LIMIT,
+                    offset: 0,
                     json: false,
                 },
             },

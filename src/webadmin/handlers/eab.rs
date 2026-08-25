@@ -1,7 +1,7 @@
 //! `/api/eab` — External Account Binding credentials.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -11,6 +11,7 @@ use crate::admin;
 use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 
 #[derive(Debug, Deserialize, Default)]
@@ -20,14 +21,21 @@ pub struct CreateEab {
     pub profile: Option<String>,
 }
 
-/// `GET /api/eab` — every credential. Never the secret.
+/// `GET /api/eab?limit=&offset=` — one page of credentials. Never the secret.
+///
+/// Takes `Query<PageParams>` directly rather than declaring the window inline:
+/// the `#[serde(flatten)]` trap documented on `AccountListParams` needs a
+/// filter to flatten *around*, and this listing has none. `oldest first` here,
+/// where the other lists are newest first — see [`Eab::search`].
 pub async fn list_eab(
     State(state): State<AdminState>,
+    Query(params): Query<PageParams>,
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
-    let keys = Eab::list_all(&state.database).await?;
+    let page = params.resolve(&state.config);
+    let (keys, total) = Eab::search(page.limit, page.offset, &state.database).await?;
     let items: Vec<Value> = keys.iter().map(admin::render_eab_json).collect();
-    Ok(Json(Value::Array(items)))
+    Ok(Json(page_envelope(items, total, page)))
 }
 
 /// `GET /api/eab/{kid}` — one credential. Never the secret.

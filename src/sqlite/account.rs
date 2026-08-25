@@ -32,7 +32,6 @@ use crate::sqlite::nonce::now_secs;
 /// - `find_by_pubkey`: Lookup account by public key
 /// - `find_by_id`: Lookup account by ID
 /// - `find_or_create`: Create new account or return existing one (RFC 8555 §7.3)
-/// - `list_all`: List every account, oldest first (admin CLI)
 /// - `delete`: Hard-delete an account, cascading to its orders (admin CLI)
 /// - `to_json`: Convert to RFC 8555 account JSON object format
 #[derive(Debug)]
@@ -468,45 +467,16 @@ impl Account {
         row.map(Account::from_row).transpose()
     }
 
-    /// Lists accounts, oldest first — the admin CLI's listing. `profile` filters
-    /// to one endpoint; `None` lists every account of every profile, which is
-    /// what an operator asking "what is on this server?" wants.
-    pub async fn list_all(
-        profile: Option<&str>,
-        database: &Database,
-    ) -> Result<Vec<Account>, sqlx::Error> {
-        debug!(event = "db_account_list_all_started", outcome = "progress", profile = ?profile);
-        let rows = match profile {
-            Some(profile) => {
-                sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM accounts WHERE profile = ? ORDER BY created_at ASC;"
-                ))
-                .bind(profile)
-                .fetch_all(&database.pool)
-                .await?
-            }
-            None => {
-                sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM accounts ORDER BY created_at ASC;"
-                ))
-                .fetch_all(&database.pool)
-                .await?
-            }
-        };
-
-        rows.into_iter().map(Account::from_row).collect()
-    }
-
     /// One page of accounts, newest first, plus the total the same filter
     /// matches unpaged.
     ///
     /// The [`Account`] counterpart to [`crate::sqlite::order::Order::search`],
-    /// and additive for the same reason: [`Account::list_all`] stays as it is
-    /// for the admin CLI, which wants everything.
+    /// and the **only** listing this model offers: an unpaged `list_all` stood
+    /// beside it until `account list` grew a window, and a second listing whose
+    /// ordering disagreed with this one was a page control waiting to skip a
+    /// row. `profile` filters to one endpoint; `None` lists accounts of every
+    /// profile, which is what an operator asking "what is on this server?"
+    /// wants.
     ///
     /// Two literal statements per branch rather than a builder: with one
     /// optional filter there are only two shapes, and `sqlx::query`'s
@@ -984,31 +954,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reloaded.eab_kid.as_deref(), Some("some-kid"));
-    }
-
-    #[tokio::test]
-    async fn list_all_orders_oldest_first() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-
-        let (first, _) =
-            Account::find_or_create("default", &[1u8], vec![], &ClientContext::default(), &db)
-                .await
-                .unwrap();
-        let (second, _) =
-            Account::find_or_create("default", &[2u8], vec![], &ClientContext::default(), &db)
-                .await
-                .unwrap();
-
-        let all = Account::list_all(None, &db).await.unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].id, first.id);
-        assert_eq!(all[1].id, second.id);
-    }
-
-    #[tokio::test]
-    async fn list_all_when_empty_is_empty() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(Account::list_all(None, &db).await.unwrap().is_empty());
     }
 
     #[tokio::test]

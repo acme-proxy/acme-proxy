@@ -8,17 +8,9 @@ use crate::audit::ALL_AUDIT_EVENTS;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::sqlite::audit::AuditQuery;
 use crate::sqlite::db::Database;
-
-/// Default rows per `audit list` page.
-///
-/// The table grows a row per issuance for the life of the deployment, so unlike
-/// `account list`/`order list` — which are unpaged and answer with whatever is
-/// there — this one has to have a window. `--limit 0` is not a way around it;
-/// there is deliberately no "everything" spelling, because on a year-old CA
-/// that is a terminal full of scrollback and a table loaded into memory.
-const DEFAULT_LIMIT: i64 = 50;
 
 #[derive(Subcommand)]
 pub enum AuditCommand {
@@ -111,6 +103,7 @@ pub async fn run_audit_command(
             json,
         } => {
             check_filters(event.as_deref(), outcome.as_deref())?;
+            let window = Window::resolve(limit, offset);
             let query = AuditQuery {
                 profile,
                 account_id,
@@ -119,25 +112,18 @@ pub async fn run_audit_command(
                 event,
                 outcome,
                 since: since_days.map(admin::audit_cutoff),
-                limit: limit.max(1),
-                offset: offset.max(0),
+                limit: window.limit,
+                offset: window.offset,
             };
             let (entries, total) = admin::list_audit(&query, database).await?;
-            if json {
-                let rows: Vec<_> = entries
-                    .iter()
-                    .map(crate::sqlite::audit::AuditEntry::to_json)
-                    .collect();
-                println!("{}", serde_json::json!({ "total": total, "entries": rows }));
-            } else {
-                for entry in &entries {
-                    println!("{}", render::render_audit_line(entry, palette));
-                }
-                // Always, not only when the page is short: "42 of 1877" is the
-                // difference between having read the trail and having read a
-                // page of it, and the count is already computed.
-                println!("{} of {total} row(s).", entries.len());
-            }
+            render::print_page(
+                &entries,
+                total,
+                window,
+                json,
+                crate::sqlite::audit::AuditEntry::to_json,
+                |entry| render::render_audit_line(entry, palette),
+            );
         }
         AuditCommand::Show { id, json } => {
             let Some(entry) = admin::find_audit(id, database).await? else {

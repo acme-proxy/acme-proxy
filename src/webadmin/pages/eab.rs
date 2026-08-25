@@ -33,8 +33,12 @@ pub struct CreateForm {
 
 /// `GET /ui/eab`
 ///
-/// Unpaginated, matching `GET /api/eab`: an operator mints these by hand, a few
-/// at a time, and `Eab::list_all` is the only listing the model offers.
+/// Unpaginated, over `Eab::list_all`: an operator mints these by hand, a few at
+/// a time, so the whole table is a page. `GET /api/eab` is the one that windows
+/// -- it answers the envelope every list endpoint in that API answers, and a
+/// script has no scroll bar to reach the rest with. Both read the table in the
+/// same order (oldest first), which is what keeps the two surfaces describing
+/// one listing.
 pub async fn list_eab(
     State(state): State<AdminState>,
     session: PageSession,

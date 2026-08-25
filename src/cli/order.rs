@@ -7,6 +7,7 @@ use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::signer;
 use crate::sqlite::authz::Authorization;
@@ -33,6 +34,10 @@ pub enum OrderCommand {
         /// `--expiring-in`, which is where the annotation comes from.
         #[arg(long = "hide-superseded")]
         hide_superseded: bool,
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
         #[arg(long)]
         json: bool,
     },
@@ -67,13 +72,19 @@ pub async fn run_order_command(
             status,
             expiring_in,
             hide_superseded,
+            limit,
+            offset,
             json,
         } => {
+            let window = Window::resolve(limit, offset);
+
             // `--expiring-in` is a different question over a different query,
             // and the three flags that do not compose with it are refused **by
             // name** rather than ignored -- `--status`'s own rule, and for its
             // reason: an argument silently dropped answers with rows that look
-            // like it was honoured.
+            // like it was honoured. The window is not among them: it is the one
+            // flag that means the same thing on both queries, so it is passed
+            // straight through.
             if let Some(days) = expiring_in {
                 return run_expiring(
                     days,
@@ -81,6 +92,7 @@ pub async fn run_order_command(
                     account_id.as_deref(),
                     status.as_deref(),
                     hide_superseded,
+                    window,
                     json,
                     palette,
                     database,
@@ -107,24 +119,23 @@ pub async fn run_order_command(
             // It used to load every order in the database and filter the three
             // fields in Rust, which is one policy written twice — and the two
             // could drift into disagreeing about what `--status` means.
-            //
-            // `limit` is the whole table on purpose: a CLI listing has no page
-            // control to offer, and truncating silently would be worse than the
-            // memory.
             let query = OrderQuery {
                 profile,
                 account_id,
                 status,
-                limit: i64::MAX,
-                offset: 0,
+                limit: window.limit,
+                offset: window.offset,
             };
-            let (orders, _total) = Order::search(&query, &database).await?;
+            let (orders, total) = Order::search(&query, &database).await?;
+            // Not `render::print_page`, and this is the only listing that opts
+            // out: the `--json` rendering needs one batched authorization
+            // lookup for the whole page, not one query per row — the N+1 the
+            // web admin's `render_orders` already avoids, and what
+            // `find_ids_by_orders` exists for. Handing that closure to
+            // `print_page` would make the text path pay for a query it never
+            // reads, so the two halves are spelled out and the shared envelope
+            // and footer are called directly.
             if json {
-                // One query for the whole listing, not one per row. This is
-                // `limit: i64::MAX` above, so the per-row form cost a query per
-                // order in the entire table — the same N+1 the web admin's
-                // `render_orders` already avoids, and what
-                // `find_ids_by_orders` exists for.
                 let ids: Vec<&str> = orders.iter().map(|o| o.id.as_str()).collect();
                 let mut authz_ids = Authorization::find_ids_by_orders(&ids, &database).await?;
                 let rendered: Vec<_> = orders
@@ -137,11 +148,12 @@ pub async fn run_order_command(
                         )
                     })
                     .collect();
-                println!("{}", serde_json::Value::Array(rendered));
+                println!("{}", render::json_page(rendered, total, window));
             } else {
                 for order in &orders {
                     println!("{}", render::render_order_line(order, palette));
                 }
+                render::print_footer(orders.len(), total);
             }
         }
         OrderCommand::Show { id, json } => match admin::load_order_detail(&id, database).await? {
@@ -251,9 +263,12 @@ pub async fn run_order_command(
 /// fixed status set, so the two filters that cannot mean anything here are
 /// refused instead of ignored.
 ///
-/// Unpaged, like the rest of `order list`: a CLI listing has no page control to
-/// offer. That is affordable only because `admin::annotate_expiring` reads each
-/// account's orders once for the whole listing rather than once per row.
+/// Paged like the rest of `order list`, and reporting `hidden` beside the total
+/// exactly as `GET /api/expiring` does -- `total` counts the *window*, not the
+/// answer, because supersession is computed per row and cannot become a SQL
+/// predicate. `admin::annotate_expiring` still reads each account's orders once
+/// for the whole page rather than once per row, which is what keeps a page over
+/// a single busy account from re-reading its history fifty times.
 #[allow(clippy::too_many_arguments)]
 async fn run_expiring(
     days: u64,
@@ -261,6 +276,7 @@ async fn run_expiring(
     account_id: Option<&str>,
     status: Option<&str>,
     hide_superseded: bool,
+    window: Window,
     json: bool,
     palette: Palette,
     database: Arc<Database>,
@@ -286,15 +302,27 @@ async fn run_expiring(
         profile,
         before: admin::expiring_horizon(days),
         include_superseded: !hide_superseded,
-        // The whole window, for `order list`'s documented reason: truncating a
-        // listing silently is worse than the memory.
-        limit: i64::MAX,
-        offset: 0,
+        limit: window.limit,
+        offset: window.offset,
     };
-    let (entries, _total, _hidden) = admin::list_expiring(&query, database).await?;
-    render::print_rows(&entries, json, admin::render_expiring_json, |entry| {
-        render::render_expiring_line(entry, palette)
-    });
+    let (entries, total, hidden) = admin::list_expiring(&query, database).await?;
+    if json {
+        let items = entries.iter().map(admin::render_expiring_json).collect();
+        let mut envelope = render::json_page(items, total, window);
+        if let Some(object) = envelope.as_object_mut() {
+            // The same two extra members `GET /api/expiring` adds, spelled the
+            // same way: one answer to "what is expiring" rendered identically
+            // wherever it is asked.
+            object.insert("hidden".to_string(), serde_json::json!(hidden));
+            object.insert("days".to_string(), serde_json::json!(days));
+        }
+        println!("{envelope}");
+    } else {
+        for entry in &entries {
+            println!("{}", render::render_expiring_line(entry, palette));
+        }
+        render::print_expiring_footer(entries.len(), total, hidden);
+    }
     Ok(())
 }
 
@@ -655,6 +683,8 @@ mod tests {
                 status: None,
                 expiring_in: None,
                 hide_superseded: false,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
                 json: true,
             },
             OrderCommand::Show {
@@ -697,6 +727,8 @@ mod tests {
                 status: Some("readyy".to_string()),
                 expiring_in: None,
                 hide_superseded: false,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
                 json: false,
             },
             true,
@@ -737,6 +769,8 @@ mod tests {
                     status: Some(status.as_str().to_string()),
                     expiring_in: None,
                     hide_superseded: false,
+                    limit: DEFAULT_LIMIT,
+                    offset: 0,
                     json: false,
                 },
                 true,
@@ -768,6 +802,8 @@ mod tests {
                 status: status.map(str::to_string),
                 expiring_in,
                 hide_superseded,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
                 json,
             },
             true,
@@ -798,6 +834,48 @@ mod tests {
             list_with(Some(30), None, None, true, json, database.clone())
                 .await
                 .unwrap();
+        }
+    }
+
+    /// Both queries take the same window, and a nonsense one is corrected
+    /// rather than handed to SQL — where `LIMIT -1` means *no limit* in SQLite.
+    /// `--expiring-in` is included on purpose: the window is the one flag that
+    /// means the same thing on both, so unlike `--status` it is not refused
+    /// beside it.
+    #[tokio::test]
+    async fn both_listings_take_a_window_and_clamp_a_nonsense_one() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        seed_order(&database, "default").await;
+
+        let mut reader: &[u8] = &[];
+        for expiring_in in [None, Some(30)] {
+            for (limit, offset, json) in
+                [(1, 0, false), (1, 1, false), (1, 0, true), (0, -5, false)]
+            {
+                run_order_command(
+                    OrderCommand::List {
+                        profile: None,
+                        account_id: None,
+                        status: None,
+                        expiring_in,
+                        hide_superseded: false,
+                        limit,
+                        offset,
+                        json,
+                    },
+                    true,
+                    Palette::plain(),
+                    &mut reader,
+                    &Config::default(),
+                    database.clone(),
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "--expiring-in {expiring_in:?} --limit {limit} --offset {offset}: {error}"
+                    )
+                });
+            }
         }
     }
 

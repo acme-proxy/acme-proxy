@@ -31,6 +31,41 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`account list` and `order list` are paged**, `--limit`/`--offset`
+  defaulting to 50 rows, where both used to answer with the whole table.
+  `orders` grows a row per issuance for the life of the deployment, which
+  reaches a real CA within a year — the reason `audit list` has been paged since
+  it existed. There is deliberately no "everything" spelling and `--limit 0` is
+  not a way around it. Both now end with `N of M row(s).`, so a page is never
+  mistaken for the whole table; `order list --expiring-in` says the third number
+  out loud (`6 of 8 row(s), 2 superseded hidden.`) because supersession is
+  decided per row and cannot become part of the query. A script that read the
+  whole listing needs `--limit` with a number it chooses; the window is **not**
+  clamped to `admin.page_size_max`, which is a ceiling on what an HTTP caller
+  may ask the server for.
+
+- **`account list` is now newest first**, where it was oldest first. It reads
+  the same `Account::search` the panel and `GET /api/accounts` do — a listing
+  paged one way and ordered the other is a page control waiting to skip a row.
+  `order list` and `audit list` were already newest first.
+
+- **Every paged `--json` listing answers an envelope**:
+  `{items, total, limit, offset}`, member for member the one the admin JSON API
+  returns. `audit list --json` moves onto it from `{total, entries}` — the
+  members are the same information under `items` rather than `entries`, plus the
+  window it was answered with. `eab list`, `admin user list` and `admin session
+  list` still print a bare array: an operator mints those by hand, so there is
+  no page and no total to report.
+
+- **`GET /api/eab` returns the list envelope**, not a bare array, and accepts
+  `?limit=&offset=` clamped to `admin.page_size_max` like every other list
+  endpoint. It was the one that did not, over a table where revoking keeps the
+  row; the book already documented the envelope as what lists return. Ordering
+  is unchanged (oldest first), so `/ui/eab` and `eab list` still describe the
+  same listing in the same order.
+
 ### Added
 
 - **An admin surface for the expiry list** — `GET /api/expiring`,

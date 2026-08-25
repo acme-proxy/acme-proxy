@@ -441,57 +441,21 @@ impl Order {
         rows.into_iter().map(Order::from_row).collect()
     }
 
-    /// Lists orders across every account, oldest first — the admin CLI's
-    /// listing. `profile` filters to one endpoint (`None` lists all of them);
-    /// unlike [`Order::find_by_account`] (one account, newest-first, for the
-    /// order-list URL) there is no account filter — callers filter by
-    /// account/status client-side rather than building dynamic SQL for what is
-    /// expected to be a small, locally-run admin table.
-    pub async fn list_all(
-        profile: Option<&str>,
-        database: &Database,
-    ) -> Result<Vec<Order>, sqlx::Error> {
-        debug!(event = "db_order_list_all_started", outcome = "progress", profile = ?profile);
-        let rows = match profile {
-            Some(profile) => {
-                sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM orders WHERE profile = ? ORDER BY created_at ASC;"
-                ))
-                .bind(profile)
-                .fetch_all(&database.pool)
-                .await?
-            }
-            None => {
-                sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM orders ORDER BY created_at ASC;"
-                ))
-                .fetch_all(&database.pool)
-                .await?
-            }
-        };
-
-        rows.into_iter().map(Order::from_row).collect()
-    }
-
     /// One page of orders matching `query`, plus the total the same predicate
     /// matches unpaged.
     ///
-    /// Additive: [`Order::list_all`] is untouched, because the admin CLI counts
-    /// on getting everything. This exists because `orders` grows a row per
-    /// issuance forever — the first operator to open the web admin on a
-    /// year-old deployment would otherwise pull the whole table into memory and
-    /// JSON-encode it.
+    /// The **only** cross-account listing this model offers. An unpaged
+    /// `list_all` stood beside it, oldest first, until both front ends took a
+    /// window; `orders` grows a row per issuance forever, so an operator
+    /// opening either surface on a year-old deployment would otherwise pull the
+    /// whole table into memory and render it.
     ///
     /// The filters are in SQL rather than applied afterwards for the same
     /// reason they have to be: filtering a page in memory would make the page
     /// size wrong. It is also the *only* implementation of that policy — the
-    /// CLI's `order list` used to hold a second one in Rust over `list_all`,
-    /// which meant one meaning of `--status` written twice and a whole table
-    /// loaded to filter three fields.
+    /// CLI's `order list` used to hold a second one in Rust over the unpaged
+    /// listing, which meant one meaning of `--status` written twice and a whole
+    /// table loaded to filter three fields.
     ///
     /// Built with a [`sqlx::QueryBuilder`]: `sqlx::query` takes only
     /// `&'static str`, and every value below goes through `push_bind`, so
@@ -1555,55 +1519,6 @@ mod tests {
         assert_eq!(reloaded.status, OrderStatus::Invalid);
         let json = reloaded.to_json("http://localhost:3000", &[]);
         assert_eq!(json["error"], error);
-    }
-
-    #[tokio::test]
-    async fn list_all_lists_orders_across_accounts_oldest_first() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let acct1 = account_id(&db).await;
-        let (acct2, _) = crate::sqlite::account::Account::find_or_create(
-            "default",
-            &[9u8],
-            vec![],
-            &ClientContext::default(),
-            &db,
-        )
-        .await
-        .unwrap();
-
-        let first = Order::create(
-            "default",
-            &acct1,
-            vec![Identifier::dns("a.example")],
-            now_secs() + 3600,
-            None,
-            None,
-            &db,
-        )
-        .await
-        .unwrap();
-        let second = Order::create(
-            "default",
-            &acct2.id,
-            vec![Identifier::dns("b.example")],
-            now_secs() + 3600,
-            None,
-            None,
-            &db,
-        )
-        .await
-        .unwrap();
-
-        let all = Order::list_all(None, &db).await.unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].id, first.id);
-        assert_eq!(all[1].id, second.id);
-    }
-
-    #[tokio::test]
-    async fn list_all_when_empty_is_empty() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(Order::list_all(None, &db).await.unwrap().is_empty());
     }
 
     #[tokio::test]

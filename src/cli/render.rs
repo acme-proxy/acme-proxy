@@ -22,6 +22,7 @@
 use base64::prelude::*;
 
 use super::style::Palette;
+use super::window::Window;
 use crate::admin::ops::{ExpiringEntry, OrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
@@ -416,6 +417,91 @@ pub fn print_rows<T>(
     }
 }
 
+/// The envelope a paged `--json` listing answers with.
+///
+/// Deliberately the same four members, spelled the same way, as
+/// [`crate::webadmin::handlers::paging::page_envelope`]: `total` is what the
+/// same filters match **unpaged**, which is the whole difference between having
+/// read the table and having read a page of it, and a script should not have to
+/// learn one shape for the API and another for the shell.
+///
+/// The unpaged listings beside this one — `eab list`, `admin user list`,
+/// `admin session list` — stay bare arrays through [`print_rows`]. Those are
+/// tables an operator mints by hand, a few rows at a time; nothing there is a
+/// page, so nothing there has a total to report.
+#[must_use]
+pub fn json_page(items: Vec<serde_json::Value>, total: i64, window: Window) -> serde_json::Value {
+    serde_json::json!({
+        "items": items,
+        "total": total,
+        "limit": window.limit,
+        "offset": window.offset,
+    })
+}
+
+/// The line under a paged listing.
+///
+/// Printed **always**, not only when the page is short: "42 of 1877" is the
+/// difference between having read the trail and having read a page of it, and
+/// the count is already computed. Carries no [`Palette`] — a count is data, and
+/// colour here is decorative.
+fn footer_line(shown: usize, total: i64) -> String {
+    format!("{shown} of {total} row(s).")
+}
+
+/// The same line where supersession has dropped rows from the page.
+///
+/// `total` counts the **window**, not the rows below it: `admin::list_expiring`
+/// filters superseded certificates in Rust, because the annotation cannot
+/// become a SQL predicate. A bare "1 of 4" over a page that quietly dropped two
+/// is arithmetic an operator cannot reproduce, so the third number is said out
+/// loud — the terminal's spelling of the `hidden` member `GET /api/expiring`
+/// adds to its envelope for the same reason.
+fn expiring_footer_line(shown: usize, total: i64, hidden: i64) -> String {
+    if hidden > 0 {
+        format!("{shown} of {total} row(s), {hidden} superseded hidden.")
+    } else {
+        footer_line(shown, total)
+    }
+}
+
+/// Prints [`footer_line`].
+pub fn print_footer(shown: usize, total: i64) {
+    println!("{}", footer_line(shown, total));
+}
+
+/// Prints [`expiring_footer_line`].
+pub fn print_expiring_footer(shown: usize, total: i64, hidden: i64) {
+    println!("{}", expiring_footer_line(shown, total, hidden));
+}
+
+/// Prints one page, in whichever of the two shapes was asked for.
+///
+/// [`print_rows`]'s paged twin, and the same division of labour: the `to_line`
+/// closure carries the [`Palette`], so the `json` branch stays structurally
+/// unable to reach one. `order list --json` is the one caller that does not go
+/// through here — it batches an authorization lookup its `to_json` needs, and
+/// folding that in would make the text path pay for a query it never reads —
+/// so it calls [`json_page`] and [`print_footer`] directly instead.
+pub fn print_page<T>(
+    rows: &[T],
+    total: i64,
+    window: Window,
+    json: bool,
+    to_json: impl Fn(&T) -> serde_json::Value,
+    to_line: impl Fn(&T) -> String,
+) {
+    if json {
+        let rendered: Vec<_> = rows.iter().map(to_json).collect();
+        println!("{}", json_page(rendered, total, window));
+    } else {
+        for row in rows {
+            println!("{}", to_line(row));
+        }
+        print_footer(rows.len(), total);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -456,6 +542,53 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// The footer under every paged listing, asserted on its exact bytes: four
+    /// commands print it now, and an operator's `awk` counts on the shape.
+    #[test]
+    fn the_footer_reports_the_page_against_the_unpaged_total() {
+        assert_eq!(footer_line(2, 137), "2 of 137 row(s).");
+        // A short page and an empty one are still a page, and still say so.
+        assert_eq!(footer_line(0, 0), "0 of 0 row(s).");
+    }
+
+    /// The expiry footer says the third number out loud, and is byte-identical
+    /// to the ordinary one when there is nothing to say.
+    #[test]
+    fn the_expiry_footer_names_the_rows_supersession_removed() {
+        assert_eq!(
+            expiring_footer_line(1, 4, 2),
+            "1 of 4 row(s), 2 superseded hidden."
+        );
+        assert_eq!(expiring_footer_line(4, 4, 0), footer_line(4, 4));
+    }
+
+    /// The CLI envelope is the API's, member for member — the whole point of
+    /// having it. A caller should not learn one shape for `--json` and another
+    /// for `/api`.
+    #[test]
+    fn the_json_envelope_matches_the_apis() {
+        let window = Window::resolve(2, 4);
+        let envelope = json_page(vec![serde_json::json!({"id": "a"})], 17, window);
+
+        assert_eq!(envelope["total"], 17);
+        assert_eq!(envelope["limit"], 2);
+        assert_eq!(envelope["offset"], 4);
+        assert_eq!(envelope["items"].as_array().unwrap().len(), 1);
+
+        let page = crate::webadmin::handlers::paging::Page {
+            limit: 2,
+            offset: 4,
+        };
+        assert_eq!(
+            envelope,
+            crate::webadmin::handlers::paging::page_envelope(
+                vec![serde_json::json!({"id": "a"})],
+                17,
+                page
+            )
+        );
     }
 
     /// The client column has three states in one place — address with a name,

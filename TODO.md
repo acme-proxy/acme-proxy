@@ -88,18 +88,6 @@ keeps its corpses stops being read.
 
 ## Admin CLI
 
-- [ ] **Paged listings.** `account list` and `order list` pass `limit:
-      i64::MAX` and print whatever comes back, where `audit list` has had
-      `--limit`/`--offset` and the `N of M row(s)` line since it existed. The
-      reason stated there — a table that grows a row per issuance for the life
-      of the deployment — reaches orders within a year of a CA running, and the
-      JSON API already pages all three and clamps to `admin.page_size_max`.
-      `Account::search` and `Order::search` already return the unpaged total
-      beside the page, so this is argument marshalling rather than a query.
-      `GET /api/eab` belongs here from the other direction: it is the one list
-      endpoint answering a **bare array** instead of `page_envelope`'s
-      `{items, total, limit, offset}` — which the book documents as what lists
-      return — over a table where revoking keeps the row.
 - [ ] **Exit codes that distinguish.** `src/main.rs` exits `1` for a
       configuration error, a database that will not open, and every `CliError`
       alike, so a script cannot tell "no such order" from "the database is
@@ -119,7 +107,14 @@ keeps its corpses stops being read.
       database goes through a browser for a PEM it already has. A nonce count:
       `GET /api/nonces` reports one, where the shell can only sweep. And
       `profile list`: `GET /api/profiles` names the endpoints actually mounted,
-      and nothing on the host can ask.
+      and nothing on the host can ask. Paging the listings left two more of the
+      same shape: `eab list`, `admin user list` and `admin session list` are the
+      three CLI listings still answering a **bare array** with no window, and
+      `/ui/eab` is unpaged where `GET /api/eab` now windows — `Eab::search`
+      exists, so that page is a `PageParams` plus the `pager` the accounts and
+      orders templates already use. Each is defensible alone (an operator mints
+      those rows by hand, a few at a time) and indefensible as a set, which is
+      the argument for doing them together or not at all.
 
 ## Both surfaces
 

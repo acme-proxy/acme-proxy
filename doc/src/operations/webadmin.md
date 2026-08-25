@@ -204,7 +204,7 @@ Mounted at `/api`, unversioned. Every response is `application/json` with
 | `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
 | `DELETE` | `/api/orders/{id}` | |
-| `GET` | `/api/eab` | never shows a secret |
+| `GET` | `/api/eab?limit=&offset=` | never shows a secret; oldest first |
 | `POST` | `/api/eab` | `{label, profile}` — **returns the secret, once** |
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |

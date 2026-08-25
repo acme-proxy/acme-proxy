@@ -7,17 +7,22 @@ use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
-    /// List accounts, of every profile unless one is named.
+    /// List accounts, newest first, of every profile unless one is named.
     List {
         /// Restrict the listing to one ACME endpoint.
         #[arg(long)]
         profile: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
         #[arg(long)]
         json: bool,
     },
@@ -48,10 +53,19 @@ pub async fn run_account_command(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
-        AccountCommand::List { profile, json } => {
-            let accounts = Account::list_all(profile.as_deref(), &database).await?;
-            render::print_rows(
+        AccountCommand::List {
+            profile,
+            limit,
+            offset,
+            json,
+        } => {
+            let window = Window::resolve(limit, offset);
+            let (accounts, total) =
+                Account::search(profile.as_deref(), window.limit, window.offset, &database).await?;
+            render::print_page(
                 &accounts,
+                total,
+                window,
                 json,
                 |a| admin::render_account_json(a, &config.server.base_url),
                 |a| render::render_account_line(a, palette),
@@ -178,6 +192,68 @@ mod tests {
         );
     }
 
+    /// The listing takes a window, and a nonsense one is corrected rather than
+    /// handed to SQL — where `LIMIT -1` means *no limit* in SQLite, the one
+    /// answer a page must never accidentally give. `audit list`'s rule, now
+    /// this one's.
+    #[tokio::test]
+    async fn list_runs_in_both_shapes_and_clamps_a_nonsense_window() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Config::default();
+        for key in [&[1u8][..], &[2u8][..], &[3u8][..]] {
+            Account::find_or_create("default", key, vec![], &ClientContext::default(), &database)
+                .await
+                .unwrap();
+        }
+
+        let mut reader: &[u8] = &[];
+        for (limit, offset, json) in [(2, 0, false), (2, 2, false), (2, 0, true), (0, -5, false)] {
+            run_account_command(
+                AccountCommand::List {
+                    profile: None,
+                    limit,
+                    offset,
+                    json,
+                },
+                true,
+                Palette::plain(),
+                &mut reader,
+                &config,
+                database.clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("--limit {limit} --offset {offset}: {error}"));
+        }
+    }
+
+    /// The window reaches the query rather than being clamped and dropped: two
+    /// pages of two over three rows do not overlap, and the total stays the
+    /// unpaged count on both. Asserted against the model the command calls,
+    /// since a command body prints rather than returns.
+    #[tokio::test]
+    async fn consecutive_pages_do_not_overlap_and_the_total_stays_unpaged() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        for key in [&[1u8][..], &[2u8][..], &[3u8][..]] {
+            Account::find_or_create("default", key, vec![], &ClientContext::default(), &database)
+                .await
+                .unwrap();
+        }
+
+        let (first, total) = Account::search(None, 2, 0, &database).await.unwrap();
+        let (second, also_total) = Account::search(None, 2, 2, &database).await.unwrap();
+
+        assert_eq!(total, 3);
+        assert_eq!(also_total, 3, "the total is the table, not the page");
+        assert_eq!(first.len(), 2);
+        assert_eq!(second.len(), 1);
+        for account in &second {
+            assert!(
+                !first.iter().any(|earlier| earlier.id == account.id),
+                "a row appeared on two pages"
+            );
+        }
+    }
+
     /// The JSON arms render through `admin::render_account_json`, which needs
     /// the configured `base_url` — a separate branch from the line renderer.
     #[tokio::test]
@@ -198,6 +274,8 @@ mod tests {
         run_account_command(
             AccountCommand::List {
                 profile: Some("default".to_string()),
+                limit: DEFAULT_LIMIT,
+                offset: 0,
                 json: true,
             },
             true,
