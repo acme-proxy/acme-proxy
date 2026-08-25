@@ -156,6 +156,23 @@ x509-parser = "0.18"
 # CLI arg parsing for the `serve`/`account`/`order`/`nonce` subcommands
 # (src/main.rs).
 clap = { version = "4", features = ["derive"] }
+# `completions <shell>` and `man`, generated from the very derive above rather
+# than written out beside it: the CLI is deliberately unfrozen before 1.0.0, so a
+# hand-maintained completion script or man page rots at the first rename and
+# nothing in CI would notice. Neither crate widens the graph much —
+# `clap_complete` has *no* default features and `clap_mangen` adds only `roff` —
+# and all three carry `clap`'s own dual MIT/Apache-2.0, which `deny.toml` allows.
+# Held at 4.5 deliberately, and `~` rather than the default caret so a `cargo
+# update` cannot walk onto 4.6: that line's bash backend escapes a `-` in the
+# *binary* name to `__` when it builds the word-matching loop and to
+# `__subcmd__` when it builds the `case` labels those very ids are matched
+# against, so for a command called `acme-proxy` nothing below the top level
+# completes at all. `the_bash_script_is_internally_consistent` in
+# `src/cli/generate.rs` is the guard: it fails on any release still carrying
+# this, so lifting the pin is a one-line experiment rather than a leap. The
+# other four shells are unaffected.
+clap_complete = "~4.5"
+clap_mangen = "0.3"
 # SMTP delivery for the `notify` subsystem's `email` backend. `tokio1-rustls-tls`
 # keeps it on the same TLS stack as the rest of the project (no native-tls/OpenSSL).
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }

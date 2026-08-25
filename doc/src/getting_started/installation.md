@@ -37,6 +37,18 @@ This fetches the published crate, compiles it, and puts the binary in
 acme-proxy --version
 ```
 
+Tab completion and a man page come out of the binary itself, so there is nothing
+extra to download:
+
+```bash
+acme-proxy completions zsh > ~/.zfunc/_acme-proxy
+acme-proxy man | sudo tee /usr/share/man/man1/acme-proxy.1 > /dev/null
+```
+
+Both are generated from the command tree, so regenerate them when you upgrade.
+The per-shell paths are in the
+[admin CLI](../operations/cli.md#shell-completions) chapter.
+
 To pin a version, or to move to a specific one later, name it:
 
 ```bash

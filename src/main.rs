@@ -16,7 +16,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::error;
 
-use acme_proxy::cli::{Cli, Palette, dispatch, init_logging};
+use acme_proxy::cli::{Cli, Command, Palette, dispatch, generate, init_logging};
 use acme_proxy::config::Config;
 use acme_proxy::sqlite::db::Database;
 
@@ -33,6 +33,21 @@ async fn main() {
         std::io::stderr().is_terminal(),
         std::env::var("NO_COLOR").ok().as_deref(),
     );
+
+    // Answered here, *before* the configuration and the database: neither
+    // command reads either, and `Database::connect` creates its file, so
+    // `acme-proxy completions bash` would otherwise drop a `sqlite.db` into
+    // whatever directory a shell startup file or a packaging script happened to
+    // run it from — as root, in the usual case. The generation itself lives in
+    // `cli::generate`, where a test can reach it; this is the fifth branch of
+    // wiring in a file the coverage floor excludes.
+    if let Some(command @ (Command::Completions { .. } | Command::Man)) = &cli.command {
+        if let Err(error) = generate::write(command, &mut std::io::stdout().lock()) {
+            eprintln!("{}", palette.bad(&error.to_string()));
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let config = Arc::new(Config::load().unwrap_or_else(|error| {
         eprintln!("{}", palette.bad(&format!("configuration error: {error}")));

@@ -44,6 +44,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use clap_complete::aot::Shell;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
@@ -51,6 +52,7 @@ pub mod account;
 pub mod audit;
 pub mod eab;
 pub mod filter;
+pub mod generate;
 mod logging;
 
 /// Installs the `[logging]` configuration. Re-exported because `main.rs` is
@@ -142,6 +144,14 @@ pub enum Command {
         #[command(subcommand)]
         command: AdminCommand,
     },
+    /// Print a shell completion script on stdout.
+    Completions {
+        /// The shell to generate for.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    /// Print this binary's man page, in roff, on stdout.
+    Man,
 }
 
 /// Picks the profile a command acts on.
@@ -237,6 +247,12 @@ pub async fn dispatch(
         }
         Command::Admin { command } => {
             webadmin::run_admin_command(command, yes, palette, reader, database).await
+        }
+        // Reachable here, though `main.rs` answers both before it opens
+        // anything: an `unreachable!()` would be dead code under the coverage
+        // floor, and routing them keeps this a total function over `Command`.
+        command @ (Command::Completions { .. } | Command::Man) => {
+            generate::write(&command, &mut std::io::stdout().lock())
         }
     }
 }
@@ -2117,6 +2133,10 @@ mod tests {
             },
             Command::Eab {
                 command: EabCommand::List { json: false },
+            },
+            Command::Man,
+            Command::Completions {
+                shell: clap_complete::aot::Shell::Bash,
             },
             // `Upstream` is deliberately absent: it acts on a *profile's*
             // `[signer.relay]`, and this config has none, so it now

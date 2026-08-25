@@ -64,6 +64,55 @@ a bug report asks for, and the answer a checkout cannot give on a host where the
 binary was copied in. `--help` is its counterpart and works at every level:
 `acme-proxy audit --help` lists that group's subcommands.
 
+## Shell completions
+
+`acme-proxy completions <shell>` prints a completion script on stdout, for
+`bash`, `elvish`, `fish`, `powershell` or `zsh`. It is generated from the same
+command tree `clap` parses, so it covers every subcommand and flag, four levels
+deep — `acme-proxy admin user totp ` completes to `status`, `reset` and
+`recovery-codes`. Flag *values* complete only where the flag has a fixed set
+`clap` knows about, which today is `--color`; `--status` and `--outcome` take a
+string the command refuses by name, so a shell has nothing to offer for them.
+
+The command reads neither the configuration nor the database, so it works
+anywhere, including in a shell startup file and before a deployment exists.
+
+```bash
+# bash — system-wide, or ~/.local/share/bash-completion/completions/acme-proxy
+acme-proxy completions bash | sudo tee /etc/bash_completion.d/acme-proxy
+
+# zsh — any directory on $fpath; the file must be named _acme-proxy
+acme-proxy completions zsh > ~/.zfunc/_acme-proxy
+
+# fish
+acme-proxy completions fish > ~/.config/fish/completions/acme-proxy.fish
+```
+
+Regenerate after upgrading: before 1.0.0 the CLI is not frozen, so a script kept
+from an older binary can go on offering a subcommand that no longer exists. The
+policy is stated in the
+[changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
+
+One limitation is the generator's rather than this CLI's: the `fish` script
+stops completing at three levels, so `acme-proxy admin user totp ` offers
+nothing past `totp`. The other four shells complete the whole tree.
+
+## Man page
+
+`acme-proxy man` prints the roff source of `acme-proxy.1` on stdout. Like
+`completions`, it reads nothing and is generated from the command tree:
+
+```bash
+acme-proxy man | sudo tee /usr/share/man/man1/acme-proxy.1 > /dev/null
+man acme-proxy
+```
+
+It is one page for the top-level command — the options, every subcommand with
+its one-line purpose, the environment variables, the configuration file, and a
+pointer back to this book. The per-flag detail of each subcommand lives in the
+tables below rather than in the page, which is why `SEE ALSO` names the book.
+Read it without installing anything with `acme-proxy man | man -l -`.
+
 ## Account management
 
 | Command | Flags |

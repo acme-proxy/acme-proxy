@@ -33,6 +33,15 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Shell completions and a man page**, generated from the command tree rather
+  than maintained beside it: `acme-proxy completions <bash|elvish|fish|
+  powershell|zsh>` and `acme-proxy man` each print to stdout. Both read neither
+  the configuration nor the database — they are answered before either is
+  opened — so they work in a shell startup file and before a deployment exists.
+  Because they are generated, they cannot fall behind a renamed subcommand;
+  because the CLI is not frozen before 1.0.0, regenerate them on upgrade.
+  Installation paths are in the book's Admin CLI chapter.
+
 - **Expiry reminders** (`[notify.expiry]`, off by default) — a periodic digest
   of the certificates approaching their notAfter, as a seventh notify event
   (`certificates_expiring`). `lead_days` is the window and `0` means the sweep
