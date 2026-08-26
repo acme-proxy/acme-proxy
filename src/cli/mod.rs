@@ -247,7 +247,7 @@ pub async fn dispatch(
             upstream::run_upstream_command(command, reader, config).await
         }
         Command::Admin { command } => {
-            webadmin::run_admin_command(command, yes, palette, reader, database).await
+            webadmin::run_admin_command(command, yes, palette, reader, config, database).await
         }
         // Reachable here, though `main.rs` answers both before it opens
         // anything: an `unreachable!()` would be dead code under the coverage

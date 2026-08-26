@@ -68,7 +68,7 @@ reported for information.
 | V3 Web Frontend Security | 16 | 1 | 0 | 2 | 6 / 4 / 2 |
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
-| V6 Authentication | 20 | 3 | 4 | 8 | 6 / 3 / 3 |
+| V6 Authentication | 24 | 3 | 0 | 8 | 6 / 3 / 3 |
 | V7 Session Management | 14 | 2 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
@@ -78,13 +78,14 @@ reported for information.
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 0 / 1 / 0 |
-| **Total** | **158** | **18** | **5** | **36** | **43 / 21 / 16** |
+| **Total** | **162** | **18** | **1** | **36** | **43 / 21 / 16** |
 
-The short version. At **L1 there is one gap** — V6.2.4, checking passwords
-against a common-password list — and at **L2 there are four**: V6.1.2 and
-V6.2.11 (a context-specific word list, documented and then enforced), V6.2.12
-(breached-password checking) and V15.1.2 (an SBOM artifact). Three of those
-four are the same missing control seen from three angles.
+The short version. **There is no L1 gap**, and at **L2 there is one**:
+V15.1.2, an SBOM artifact. The four password-policy requirements that used to
+sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 / V6.2.12 at L2 — were one
+missing control seen from four angles, and closed as one:
+`check_password_policy` now refuses a password that names this deployment, or
+that appears in a compiled-in corpus of common passwords.
 
 Everything else that falls short of *met* is either a **partial** — a control
 that exists but does not reach everywhere the requirement asks — or a
@@ -243,20 +244,20 @@ assessed under V9.
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | 6.1.1 | Documented anti-automation and lockout behaviour | 1 | met | [Web Admin](../operations/webadmin.md#authentication) and the `login_max_attempts` / `login_window_seconds` entries in [Configuration Reference](../configuration/reference.md). The limiter is keyed on the peer **address**, never the username, so no attacker can lock an operator out by guessing at them |
-| 6.1.2 | Documented list of context-specific words barred from passwords | 2 | **gap** | No such list exists |
+| 6.1.2 | Documented list of context-specific words barred from passwords | 2 | met | Derived and documented: [Password policy](../operations/webadmin_users.md#the-context-specific-word-list) |
 | 6.1.3 | Multiple authentication pathways documented together | 2 | met | There are two — a panel session and a shell on the host — and [Users & Sessions](../operations/webadmin_users.md) states which operations belong to which and why create and `passwd` stay on the host |
 | 6.2.1 | Passwords at least 8 characters | 1 | met | `MIN_PASSWORD_LEN = 12`, counted in characters rather than bytes (`src/admin/password.rs`) |
 | 6.2.2 | Users can change their password | 1 | partial | Only through `acme-proxy admin user passwd` on the host. An operator with no shell cannot rotate their own password |
 | 6.2.3 | Password change requires current and new password | 1 | partial | `admin user passwd` takes only the new password. It answers to a shell that can already read and rewrite the database, so no password would add authority — but it does mean no *self-service* change path exists that could require one |
-| 6.2.4 | Check against the top 3000 passwords | 1 | **gap** | `check_password_policy` enforces length only |
-| 6.2.5 | No composition rules | 1 | met | Length is the only rule, deliberately (`src/admin/password.rs`) |
+| 6.2.4 | Check against the top 3000 passwords | 1 | met | 13 918 entries compiled in (`src/admin/corpus/`); every shorter entry is already refused on length |
+| 6.2.5 | No composition rules | 1 | met | Deliberately none. The three rules are about length, this deployment's own words and known-common passwords — none dictates shape (`src/admin/password.rs`) |
 | 6.2.6 | Password fields use `type=password` | 1 | met | `templates/login.html` and the step-up field in `templates/account/_card.html` |
 | 6.2.7 | Paste and password managers permitted | 1 | met | Standard inputs with `autocomplete="username"` / `"current-password"`; nothing blocks paste |
-| 6.2.8 | Password verified exactly as received | 1 | met | No trimming, no case folding. An over-long password is *rejected*, never truncated |
+| 6.2.8 | Password verified exactly as received | 1 | met | `verify_password` hashes the bytes as received: no trimming, no case folding, and an over-long password is *rejected* rather than truncated. The policy check folds a copy to compare against the corpus and the word list, and never touches what is stored |
 | 6.2.9 | Passwords of at least 64 characters permitted | 2 | met | `MAX_PASSWORD_LEN = 1024` bytes, a denial-of-service bound rather than a policy |
 | 6.2.10 | No forced periodic rotation | 2 | met | Nothing expires a password. The stored form is self-describing, so raising the KDF cost re-encodes a row on its owner's next login instead of forcing a change |
-| 6.2.11 | Context-specific word list used | 2 | **gap** | Follows from 6.1.2 |
-| 6.2.12 | Check against breached passwords | 2 | **gap** | No breach-corpus check |
+| 6.2.11 | Context-specific word list used | 2 | met | `PasswordContext` in `src/admin/password.rs`, matched as a substring |
+| 6.2.12 | Check against breached passwords | 2 | met | Same corpus: breach-derived (`xato-net`), filtered to the reachable length range |
 | 6.3.1 | Credential-stuffing and brute-force controls | 1 | met | `LoginLimiter` refuses over the limit **before** the 600 000-iteration KDF runs, which makes it an availability control as much as a credential one (`src/webadmin/session.rs`) |
 | 6.3.2 | No default accounts | 1 | met | The `admin_users` migration seeds no rows and there is no sign-up page; the first operator is created by `admin user create` on the host |
 | 6.3.3 | MFA or a combination of single factors | 2 | partial | TOTP with recovery codes is implemented and `admin.require_mfa` enforces it for every operator — but it defaults to `false`, so a stock deployment is single-factor. [Hardening](hardening.md#the-web-admin) tells operators to turn it on. For L3 this would need a hardware factor; see [Documented deviations](#documented-deviations) |
@@ -563,18 +564,6 @@ non-feature. It is stated as such in the
 
 Open shortfalls against the L1/L2 bar, worst first. Each is also an entry in
 `TODO.md`.
-
-**Passwords are not checked against a common-password or breach corpus** —
-*V6.2.4 (L1), V6.2.12 (L2).* `check_password_policy` enforces length and
-nothing else, so `passwordpassword` is accepted at twelve characters. This is
-the only **L1** gap in the assessment. The surface is small — a handful of
-operator accounts, behind a rate limiter that refuses before the KDF runs, and
-a second factor when one is enrolled — but the control is cheap and the
-requirement is L1.
-
-**No context-specific word list** — *V6.1.2, V6.2.11 (L2).* Neither documented
-nor enforced. "acme", "proxy", the CA subject and the deployment's hostname are
-the obvious members, and the list has to be documented before it can be used.
 
 **No SBOM** — *V15.1.2 (L2).* `Cargo.lock` pins everything and `cargo deny
 check` gates advisories, licences and registries on every CI run — the

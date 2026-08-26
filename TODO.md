@@ -94,20 +94,6 @@ keeps its corpses stops being read.
       whether it should wait for the role above: without one, this is every
       operator able to disable every other.
 
-- [ ] **Passwords are checked for length and nothing else.** ASVS **V6.2.4**
-      (L1) wants a check against the top 3000 common passwords, **V6.2.12**
-      against a breach corpus, and **V6.1.2**/**V6.2.11** against a documented
-      list of context-specific words — "acme", "proxy", the CA subject, the
-      deployment's hostname. `check_password_policy` in `src/admin/password.rs`
-      is the single place all of it goes, and it is already the one function
-      both front ends call. This is the assessment's only **L1** gap.
-      What needs deciding is the corpus: a compiled-in list costs binary size
-      for every deployment including the ones with `admin.enabled = false`, and
-      a k-anonymity lookup against an online range API costs an outbound
-      dependency on a credential path — which is the sort of thing
-      [the security model](doc/src/security/index.md) would then have to name.
-      The context list is free either way and should not wait for the answer.
-
 - [ ] **No password change in the panel** — ASVS **V6.2.2** (L1). `admin user
       passwd` on the host is the only path, so an operator with no shell cannot
       rotate their own password, and "create and `passwd` deliberately stay on

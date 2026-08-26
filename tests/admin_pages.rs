@@ -10,6 +10,7 @@
 
 mod common;
 
+use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use acme_proxy::sqlite::audit::AuditEntry;
 use axum::http::{Method, StatusCode, header};
@@ -45,9 +46,14 @@ async fn the_sign_in_page_renders_without_a_session_and_carries_no_htmx() {
 #[tokio::test]
 async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database,
+    )
+    .await
+    .unwrap();
 
     let response = admin_form_request(
         &app,
@@ -75,9 +81,14 @@ async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel()
 #[tokio::test]
 async fn a_failed_form_login_re_renders_the_page_with_its_real_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database,
+    )
+    .await
+    .unwrap();
 
     let response = admin_form_request(
         &app,
@@ -105,9 +116,14 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database,
+    )
+    .await
+    .unwrap();
 
     for _ in 0..2 {
         admin_form_request(
@@ -140,9 +156,14 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
 #[tokio::test]
 async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     enrol_totp(database, "alice").await;
 
     let response = admin_form_request(
@@ -183,9 +204,14 @@ async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() 
 #[tokio::test]
 async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
         .execute(&database.pool)
@@ -259,9 +285,14 @@ async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
 #[tokio::test]
 async fn a_half_authenticated_cookie_reaches_no_page() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     enrol_totp(database, "alice").await;
 
     let started = admin_form_request(
@@ -296,9 +327,14 @@ async fn require_mfa_turns_the_challenge_page_into_an_enrolment_page() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database,
+    )
+    .await
+    .unwrap();
 
     let started = admin_form_request(
         &app,
@@ -526,9 +562,14 @@ async fn the_account_page_reports_its_refusals_as_banners() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -563,9 +604,14 @@ async fn the_account_page_reports_its_refusals_as_banners() {
 #[tokio::test]
 async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     let session = admin_login_mfa(&app, database, "alice", ADMIN_PASSWORD, &secret).await;
 
@@ -789,9 +835,14 @@ async fn every_mutating_page_endpoint_refuses_a_missing_csrf_token() {
 #[tokio::test]
 async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user("bob", ADMIN_PASSWORD, database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database,
+    )
+    .await
+    .unwrap();
     let other = admin_login(&app, "bob", ADMIN_PASSWORD).await;
 
     for (method, path) in mutating_page_endpoints() {
@@ -1302,9 +1353,14 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy::sqlite::order::{Identifier, Order};
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let (account, _) = Account::find_or_create(
@@ -1471,9 +1527,14 @@ async fn issue_into_an_order(
 #[tokio::test]
 async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
     let (order_id, chain) = issue_into_an_order(&database, &signer, "chain.example.com").await;
@@ -1785,9 +1846,14 @@ async fn a_page_limit_over_the_ceiling_is_clamped_rather_than_refused() {
     let mut config = admin_config();
     config.admin.page_size_max = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .unwrap();
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
     seed(&database, 5).await;
 

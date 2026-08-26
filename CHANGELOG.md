@@ -292,6 +292,45 @@ migrated configuration before restarting.
   non-JSON log format the restriction also stops a caller writing fields that
   were never emitted.
 
+### Security
+
+- **An operator's password is now checked against a common-password corpus and
+  against a list of words naming the deployment**, not only for length. This
+  closes the ASVS 5.0 self-assessment's only **L1** gap (V6.2.4) and three of
+  its L2 gaps (V6.1.2, V6.2.11, V6.2.12), which were one missing control seen
+  from four angles. `check_password_policy` in `src/admin/password.rs` is still
+  the single place every rule lives, and `admin user create` and `admin user
+  passwd` are still the only callers.
+
+  **This is a behaviour change**: a password that `admin user create` accepted
+  before may now be refused. Nothing runs on *sign-in* — an existing password
+  that predates the rules still works, and a corpus refresh must never lock an
+  operator out of the panel they would have to be signed in to fix.
+
+  There are three rules, cheapest first, and each ends the check so one refusal
+  names one reason. Length is unchanged. The second refuses a password
+  *containing* any word that names this deployment, compared case-insensitively
+  and ignoring words under four characters: `acme` and `proxy` always, plus the
+  operator's username, the hosts of `server.base_url` and `admin.base_url`, the
+  words of `[signer.local_ca.subject]` (globally and per profile) and each
+  profile's name — so `acmeproxy2026!` is refused, and a CA at
+  `ca.example.com` also refuses anything containing `example`. The third
+  refuses a password that *is* one of 13 918 known common passwords compiled
+  into the binary; it is whole-string, never a substring, so
+  `a-long-enough-password` is still accepted.
+
+  **No configuration key was added**, and no outbound connection: the corpus
+  ships in the binary, so the security model still names three request-forgery
+  surfaces rather than four. That was affordable only because the corpus is
+  filtered to entries of at least `MIN_PASSWORD_LEN` characters — `password`,
+  `qwerty` and `123456` are refused on length before it is consulted, so
+  carrying them would cost every deployment bytes for a comparison that can
+  never run. Filtering the upstream million at twelve characters turns 8.5 MB
+  into 195 KB. Provenance, the rank cut and the size budget it was derived from
+  are in `src/admin/corpus/README.md`; the word list and its two deliberate
+  limits are documented under `## Password policy` in
+  `doc/src/operations/webadmin_users.md`.
+
 ### Packaging
 
 - Published to [crates.io](https://crates.io/crates/acme-proxy), so

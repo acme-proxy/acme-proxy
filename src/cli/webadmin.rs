@@ -20,11 +20,13 @@ use clap::Subcommand;
 use crate::admin;
 use crate::admin::mfa;
 use crate::admin::ops::DeleteOutcome;
+use crate::admin::password::PasswordContext;
 use crate::admin::prompt::confirm;
 use crate::admin::users::{self, UserError};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::config::Config;
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::db::Database;
@@ -131,11 +133,12 @@ pub async fn run_admin_command(
     yes: bool,
     palette: Palette,
     reader: &mut impl BufRead,
+    config: &Config,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
         AdminCommand::User { command } => {
-            run_user_command(command, yes, palette, reader, database).await
+            run_user_command(command, yes, palette, reader, config, database).await
         }
         AdminCommand::Session { command } => run_session_command(command, palette, database).await,
     }
@@ -146,6 +149,7 @@ async fn run_user_command(
     yes: bool,
     palette: Palette,
     reader: &mut impl BufRead,
+    config: &Config,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
@@ -154,7 +158,8 @@ async fn run_user_command(
             password_file,
         } => {
             let password = read_password(password_file.as_deref(), reader)?;
-            let user = users::create_user(&username, &password, database)
+            let context = PasswordContext::from_config(config, &username);
+            let user = users::create_user(&username, &password, &context, database)
                 .await
                 .map_err(user_error)?;
             // The id, not the password: nothing echoes a credential back.
@@ -171,7 +176,8 @@ async fn run_user_command(
             password_file,
         } => {
             let password = read_password(password_file.as_deref(), reader)?;
-            match users::set_password(&username, &password, database)
+            let context = PasswordContext::from_config(config, &username);
+            match users::set_password(&username, &password, &context, database)
                 .await
                 .map_err(user_error)?
             {
@@ -414,14 +420,34 @@ mod tests {
         Arc::new(Database::connect_in_memory().await.unwrap())
     }
 
-    /// Runs a command with a stdin that supplies `input`.
+    /// Runs a command with a stdin that supplies `input`, against a default
+    /// configuration.
     async fn run(
         command: AdminCommand,
         input: &str,
         database: Arc<Database>,
     ) -> Result<(), CliError> {
+        run_with_config(command, input, &Config::default(), database).await
+    }
+
+    /// [`run`] with the configuration spelled out, for the tests that care
+    /// what [`PasswordContext::from_config`] derived from it.
+    async fn run_with_config(
+        command: AdminCommand,
+        input: &str,
+        config: &Config,
+        database: Arc<Database>,
+    ) -> Result<(), CliError> {
         let mut reader = input.as_bytes();
-        run_admin_command(command, true, Palette::plain(), &mut reader, database).await
+        run_admin_command(
+            command,
+            true,
+            Palette::plain(),
+            &mut reader,
+            config,
+            database,
+        )
+        .await
     }
 
     fn create(username: &str) -> AdminCommand {
@@ -498,6 +524,40 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.0.starts_with("cannot read /nonexistent/pw"));
+    }
+
+    /// The words the *configuration* produced have to reach the terminal, or
+    /// the operator is told their password is unacceptable and not why. This
+    /// is also the only test that proves `dispatch`'s `&Config` is threaded
+    /// all the way to `PasswordContext::from_config` rather than dropped.
+    #[tokio::test]
+    async fn create_surfaces_the_context_and_corpus_rules_in_words() {
+        let db = db().await;
+
+        let error = run(create("alice"), "passwordpassword\n", db.clone())
+            .await
+            .unwrap_err();
+        assert!(error.0.contains("commonly used"), "got: {}", error.0);
+
+        let mut config = Config::default();
+        config.server.base_url = "https://ca.contoso.example".to_string();
+        let error = run_with_config(
+            create("alice"),
+            "contoso-is-my-password\n",
+            &config,
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.0.contains("contoso"), "got: {}", error.0);
+        assert!(
+            error.0.contains("names this deployment"),
+            "got: {}",
+            error.0
+        );
+
+        // Neither attempt created anything.
+        assert!(AdminUser::list_all(&db).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -673,6 +733,7 @@ mod tests {
             false,
             Palette::plain(),
             &mut no,
+            &Config::default(),
             db.clone(),
         )
         .await
@@ -942,9 +1003,16 @@ mod tests {
         // moves. Removing a security control is confirm-gated, unlike
         // `order revoke`, which only ever tightens trust.
         let mut no = b"n\n".as_slice();
-        run_admin_command(reset(), false, Palette::plain(), &mut no, db.clone())
-            .await
-            .unwrap();
+        run_admin_command(
+            reset(),
+            false,
+            Palette::plain(),
+            &mut no,
+            &Config::default(),
+            db.clone(),
+        )
+        .await
+        .unwrap();
         let unchanged = AdminUser::find_by_username("alice", &db)
             .await
             .unwrap()

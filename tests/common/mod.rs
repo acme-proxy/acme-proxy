@@ -17,6 +17,7 @@ use acme_proxy::audit::Auditor;
 pub use acme_proxy::audit::ClientContext;
 use acme_proxy::{Profile, ProfileParts, build_app};
 
+use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
 };
@@ -813,9 +814,14 @@ pub async fn test_admin_app_logged_in_with_filter(
     filter: Arc<FilterPolicy>,
 ) -> (Router, Arc<Database>, AdminSessionHandle) {
     let (app, database, _signer) = admin_app_with(config, filter).await;
-    acme_proxy::admin::users::create_user("alice", ADMIN_PASSWORD, database.clone())
-        .await
-        .expect("the bootstrap operator must be creatable");
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .expect("the bootstrap operator must be creatable");
     let handle = admin_login(&app, "alice", ADMIN_PASSWORD).await;
     (app, database, handle)
 }

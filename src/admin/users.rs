@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::admin::ops::DeleteOutcome;
-use crate::admin::password;
+use crate::admin::password::{self, PasswordContext};
 use crate::admin::prompt::confirm;
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -66,9 +66,10 @@ pub enum AuthOutcome {
 pub async fn create_user(
     username: &str,
     plaintext: &str,
+    context: &PasswordContext,
     database: Arc<Database>,
 ) -> Result<AdminUser, UserError> {
-    password::check_password_policy(plaintext).map_err(UserError::Policy)?;
+    password::check_password_policy(plaintext, context).map_err(UserError::Policy)?;
 
     let normalized = username.trim().to_lowercase();
     if normalized.is_empty() {
@@ -98,9 +99,10 @@ pub async fn list_users(database: Arc<Database>) -> Result<Vec<AdminUser>, sqlx:
 pub async fn set_password(
     username: &str,
     plaintext: &str,
+    context: &PasswordContext,
     database: Arc<Database>,
 ) -> Result<Option<AdminUser>, UserError> {
-    password::check_password_policy(plaintext).map_err(UserError::Policy)?;
+    password::check_password_policy(plaintext, context).map_err(UserError::Policy)?;
 
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(None);
@@ -284,7 +286,9 @@ mod tests {
     #[tokio::test]
     async fn create_user_normalizes_and_hashes() {
         let db = db().await;
-        let user = create_user("  Alice ", GOOD, db.clone()).await.unwrap();
+        let user = create_user("  Alice ", GOOD, &PasswordContext::empty(), db.clone())
+            .await
+            .unwrap();
         assert_eq!(user.username, "alice");
         assert!(user.is_active());
         // Stored one-way: the plaintext appears nowhere.
@@ -298,25 +302,80 @@ mod tests {
     #[tokio::test]
     async fn create_user_refuses_a_password_below_the_policy() {
         let db = db().await;
-        let error = create_user("alice", "short", db.clone()).await.unwrap_err();
+        let error = create_user("alice", "short", &PasswordContext::empty(), db.clone())
+            .await
+            .unwrap_err();
         assert!(matches!(error, UserError::Policy(_)));
         assert!(error.to_string().contains("at least 12"));
         // Nothing was written.
         assert!(list_users(db).await.unwrap().is_empty());
     }
 
+    /// The other two policy rules reach this layer through the same
+    /// `UserError::Policy`, and leave the table as untouched as the length
+    /// rule does.
+    #[tokio::test]
+    async fn create_user_refuses_a_common_password_and_a_deployment_word() {
+        let db = db().await;
+
+        let error = create_user(
+            "alice",
+            "passwordpassword",
+            &PasswordContext::empty(),
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, UserError::Policy(_)));
+        assert!(error.to_string().contains("commonly used"));
+
+        let mut config = crate::config::Config::default();
+        config.server.base_url = "https://ca.example.com".to_string();
+        let context = PasswordContext::from_config(&config, "alice");
+        let error = create_user("alice", "acmeproxy2026!!", &context, db.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, UserError::Policy(_)));
+        assert!(error.to_string().contains("names this deployment"));
+
+        // Neither attempt wrote a row.
+        assert!(list_users(db).await.unwrap().is_empty());
+    }
+
+    /// `set_password` checks the policy before the user lookup, so all three
+    /// rules answer the same way for a name that does not exist.
+    #[tokio::test]
+    async fn set_password_refuses_a_common_password_before_looking_the_user_up() {
+        let db = db().await;
+        let error = set_password(
+            "nobody",
+            "passwordpassword",
+            &PasswordContext::empty(),
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("commonly used"), "got: {error}");
+    }
+
     #[tokio::test]
     async fn create_user_refuses_an_empty_username() {
         let db = db().await;
-        let error = create_user("   ", GOOD, db).await.unwrap_err();
+        let error = create_user("   ", GOOD, &PasswordContext::empty(), db)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("username must not be empty"));
     }
 
     #[tokio::test]
     async fn create_user_refuses_a_duplicate_in_words_not_a_unique_violation() {
         let db = db().await;
-        create_user("alice", GOOD, db.clone()).await.unwrap();
-        let error = create_user("ALICE", GOOD, db).await.unwrap_err();
+        create_user("alice", GOOD, &PasswordContext::empty(), db.clone())
+            .await
+            .unwrap();
+        let error = create_user("ALICE", GOOD, &PasswordContext::empty(), db)
+            .await
+            .unwrap_err();
         assert!(matches!(error, UserError::DuplicateUsername(_)));
         assert_eq!(
             error.to_string(),
@@ -343,7 +402,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            set_password("alice", GOOD, db.clone())
+            set_password("alice", GOOD, &PasswordContext::empty(), db.clone())
                 .await
                 .unwrap()
                 .is_some()
@@ -370,7 +429,7 @@ mod tests {
     async fn set_password_of_an_unknown_user_is_none_and_checks_the_policy_first() {
         let db = db().await;
         assert!(
-            set_password("nobody", GOOD, db.clone())
+            set_password("nobody", GOOD, &PasswordContext::empty(), db.clone())
                 .await
                 .unwrap()
                 .is_none()
@@ -378,7 +437,9 @@ mod tests {
         // The policy is checked before the lookup, so a bad password for an
         // unknown user is a policy error rather than a silent `None`.
         assert!(matches!(
-            set_password("nobody", "short", db).await.unwrap_err(),
+            set_password("nobody", "short", &PasswordContext::empty(), db)
+                .await
+                .unwrap_err(),
             UserError::Policy(_)
         ));
     }

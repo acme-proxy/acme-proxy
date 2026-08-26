@@ -50,13 +50,78 @@ command warns when it notices a terminal.
 
 ## Password policy
 
-Minimum 12 characters, maximum 1024 bytes. Length is the only rule: composition
-rules ("one digit, one symbol") measurably push people towards weaker, more
-guessable passwords, and this is an operator surface with a handful of accounts
-rather than a consumer signup.
+Three rules, checked in this order, each of which ends the check — one refusal
+names one reason:
+
+1. **Length.** Minimum 12 characters, maximum 1024 bytes.
+2. **It must not name this deployment** — see the word list below.
+3. **It must not be a commonly used password** — see the corpus below.
+
+There are deliberately **no composition rules**. "One digit, one symbol"
+measurably pushes people towards weaker, more guessable passwords; the two
+checks above refuse the passwords composition rules were reaching for, without
+dictating shape.
 
 Length is counted in **characters**, so a 12-character passphrase in a non-Latin
-script is 12, not its byte count.
+script is 12, not its byte count. The maximum is in bytes, and is a
+denial-of-service control rather than a security one: without it a sign-in could
+hand 600 000 iterations a multi-megabyte input.
+
+All three run on `admin user create` and `admin user passwd`, and **none of them
+runs on sign-in**. A password that predates a rule change must still work, and a
+corpus refresh must never lock an operator out of the panel they would need to
+be signed in to fix.
+
+### The context-specific word list
+
+A password may not **contain** any word that names this deployment, compared
+case-insensitively. Words shorter than four characters are ignored: a subject
+holding `CA`, or a host label `io`, would refuse a large share of every password
+anyone typed and buy nothing.
+
+The list is derived from your own configuration, not fixed:
+
+| Source | What is taken |
+|---|---|
+| Always | `acme`, `proxy` |
+| The operator's username | Split on anything that is not a letter or a digit |
+| `server.base_url`, `admin.base_url` | The **host** only, split on `.` and `-` |
+| `[signer.local_ca.subject]` — global and each profile's own | `common_name`, `organization`, `organizational_unit`, `state`, `locality`, each split into words |
+| Each `[profiles.<name>]` name | The name, which appears in every `kid` and order URL that endpoint issues |
+
+So a CA at `https://ca.example.com` with a CommonName of "Example Corp Issuing
+CA", managed by `operator`, refuses any password containing `acme`, `proxy`,
+`example`, `corp`, `issuing` or `operator` — `acmeproxy2026!` among them.
+
+Two limits are deliberate:
+
+- **A CA already on disk is not described here.** `[signer.local_ca.subject]` is
+  read only when this server *generates* a CA, so an adopted `ca.pem` carries a
+  subject the configuration never saw. Add those words to the subject section if
+  you want them barred.
+- **`country` is not read**, being two characters and so below the floor
+  whatever it holds.
+
+If no profile resolves — which is every `admin user create` run against a
+configuration that has none yet — the rest of the list still applies. A missing
+section is never a reason to refuse a password change.
+
+### The common-password corpus
+
+A password may not **be** (whole-string, case-insensitively) one of 13 918 known
+common passwords compiled into the binary. It is not a substring test:
+`a-long-enough-password` contains `password` and is accepted.
+
+The corpus is the top 700 000 entries of SecLists'
+`xato-net-10-million-passwords-1000000.txt`, **filtered to entries of at least
+12 characters**. That filter is the whole reason a compiled-in list is
+affordable: `password`, `qwerty` and `123456` are refused by the length rule
+before this check is reached, so carrying them would cost every deployment
+bytes — including the ones running with `admin.enabled = false` — in exchange
+for nothing. Filtering turns 8.5 MB into 195 KB.
+
+Provenance, the exact rank cut, the size budget it was derived from and the
+refresh command live in `src/admin/corpus/README.md`.
 
 Passwords are stored as PBKDF2-HMAC-SHA256 at 600 000 iterations (OWASP's
 current recommendation for the non-Argon2 case), in a self-describing format:
