@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use uuid::Uuid;
 
 use axum::{
     Extension, Json,
@@ -89,7 +90,7 @@ fn compound_identifier_problem(mut rejections: Vec<Problem>) -> Problem {
 async fn check_replaces(
     cert_id: &str,
     profile: &str,
-    account_id: &str,
+    account_id: Uuid,
     identifiers: &[Identifier],
     database: &Arc<Database>,
 ) -> Result<String, Problem> {
@@ -221,7 +222,7 @@ async fn release_claim(order: &mut Order, database: &Database, id: &str) {
 /// one thing that differs between where the closure is built and where it runs.
 fn issue_failed(
     profile: &str,
-    account_id: &str,
+    account_id: Uuid,
     order: &Order,
     client: &crate::audit::ClientContext,
     reason: &'static str,
@@ -348,7 +349,7 @@ pub async fn post_new_order(
     check_identifiers(
         &profile.filter,
         client_ip,
-        &account.id,
+        &account.id.to_string(),
         &profile.name,
         IdentifierStage::NewOrder,
         &identifiers,
@@ -359,9 +360,9 @@ pub async fn post_new_order(
     // RFC 9773 §5, run after `signer_account` so the "same ACME Account" check
     // has an account to compare against.
     let replaces = match payload.replaces {
-        Some(ref cert_id) => Some(
-            check_replaces(cert_id, &profile.name, &account.id, &identifiers, &database).await?,
-        ),
+        Some(ref cert_id) => {
+            Some(check_replaces(cert_id, &profile.name, account.id, &identifiers, &database).await?)
+        }
         None => None,
     };
 
@@ -374,7 +375,7 @@ pub async fn post_new_order(
     let client = audit.client(&request_context).await;
     let mut order = Order::new(
         &profile.name,
-        &account.id,
+        account.id,
         identifiers,
         expires,
         not_before,
@@ -389,10 +390,10 @@ pub async fn post_new_order(
         order.insert(&mut *tx).await?;
 
         for identifier in &order.identifiers {
-            let authz = Authorization::new(&order.id, identifier.clone(), order.expires);
+            let authz = Authorization::new(order.id, identifier.clone(), order.expires);
             authz.insert(&mut *tx).await?;
             for typ in challenges.types_for(is_wildcard(&identifier.value)) {
-                Challenge::new(&authz.id, typ).insert(&mut *tx).await?;
+                Challenge::new(authz.id, typ).insert(&mut *tx).await?;
             }
             authz_ids.push(authz.id);
         }
@@ -460,7 +461,7 @@ pub async fn post_order(
 
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
-    let authz_ids = order_authz_ids(&order.id, &database).await?;
+    let authz_ids = order_authz_ids(order.id, &database).await?;
     Ok(order_response(&order, base, &authz_ids))
 }
 
@@ -475,7 +476,7 @@ const PROCESSING_RETRY_AFTER: &str = "5";
 /// RFC 8555 §7.4 has the client poll a `processing` order rather than holding
 /// the request open, and *SHOULD* send this header to pace it. Every other
 /// status renders exactly as before.
-fn order_response(order: &Order, base: &str, authz_ids: &[String]) -> Response {
+fn order_response(order: &Order, base: &str, authz_ids: &[Uuid]) -> Response {
     let mut response = Json(order.to_json(base, authz_ids)).into_response();
     if order.status == OrderStatus::Processing {
         response.headers_mut().insert(
@@ -531,7 +532,7 @@ pub async fn post_finalize(
     // The reverse lookup runs once here and is reused by whichever arm answers.
     let client = audit.client(&request_context).await;
     let failed = |order: &Order, reason: &'static str, detail: &str| {
-        issue_failed(&profile.name, &account.id, order, &client, reason, detail)
+        issue_failed(&profile.name, account.id, order, &client, reason, detail)
     };
 
     let csr_der = match BASE64_URL_SAFE_NO_PAD.decode(&payload.csr) {
@@ -576,7 +577,7 @@ pub async fn post_finalize(
         if let Err(problem) = check_identifiers(
             filter,
             client_ip,
-            &order.account_id,
+            order.account_id.to_string().as_str(),
             &profile.name,
             IdentifierStage::Csr,
             &requested,
@@ -641,7 +642,12 @@ pub async fn post_finalize(
     }
 
     let issued = signer
-        .issue(&order.id, &csr_der, &order.identifiers, validity)
+        .issue(
+            &order.id.to_string(),
+            &csr_der,
+            &order.identifiers,
+            validity,
+        )
         .await;
     let chain = match issued {
         Ok(IssueOutcome::Issued(chain)) => chain,
@@ -674,7 +680,7 @@ pub async fn post_finalize(
                     error = %error
                 );
             }
-            let authz_ids = order_authz_ids(&order.id, &database).await?;
+            let authz_ids = order_authz_ids(order.id, &database).await?;
             info!(event = "order_finalize_delegated", outcome = "success", order_id = %id);
             return Ok(order_response(&order, base, &authz_ids));
         }
@@ -773,7 +779,7 @@ pub async fn post_finalize(
             Problem::server_internal("Order finalize failed")
         })?;
 
-    let authz_ids = order_authz_ids(&order.id, &database).await?;
+    let authz_ids = order_authz_ids(order.id, &database).await?;
     info!(
         event = "order_finalized",
         outcome = "success",
@@ -785,7 +791,7 @@ pub async fn post_finalize(
             crate::audit::AuditRecord::new(
                 crate::audit::AuditEvent::CertificateIssued,
                 &profile.name,
-                crate::audit::Actor::acme(&account.id),
+                crate::audit::Actor::acme(account.id.to_string()),
             )
             .with_order(&order)
             .with_client(client)
@@ -797,8 +803,8 @@ pub async fn post_finalize(
         .dispatch(crate::notify::NotifyEvent::CertificateIssued(
             crate::notify::CertificateIssuedData {
                 profile: profile.name.clone(),
-                order_id: order.id.clone(),
-                account_id: order.account_id.clone(),
+                order_id: order.id.to_string(),
+                account_id: order.account_id.clone().to_string(),
                 cert_serial: cert_serial.clone(),
                 identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
                 client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),

@@ -78,7 +78,7 @@ pub async fn post_authz(
         deactivate_authz(&mut authz, &mut order, &database).await?;
     }
 
-    let challenges = Challenge::find_by_authz(&authz.id, &database)
+    let challenges = Challenge::find_by_authz(authz.id, &database)
         .await
         .map_err(|error| {
             error!(
@@ -169,9 +169,9 @@ async fn deactivate_authz(
     let demote = order.status == OrderStatus::Ready;
     let outcome = async {
         let mut tx = database.pool.begin().await?;
-        Authorization::set_deactivated(&authz.id, &mut *tx).await?;
+        Authorization::set_deactivated(authz.id, &mut *tx).await?;
         if demote {
-            Order::set_pending(&order.id, &mut *tx).await?;
+            Order::set_pending(order.id, &mut *tx).await?;
         }
         tx.commit().await
     }
@@ -221,22 +221,22 @@ async fn commit_validation(
     let validated = now_secs();
     let outcome = async {
         let mut tx = database.pool.begin().await?;
-        Challenge::set_valid(&challenge.id, validated, &mut *tx).await?;
-        Authorization::set_valid(&authz.id, &mut *tx).await?;
+        Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
+        Authorization::set_valid(authz.id, &mut *tx).await?;
 
         // `pool.begin()` issues a deferred BEGIN, but the two writes above have
         // already taken the RESERVED lock by the time this reads — so this sees
         // its own write and no other writer can interleave. Putting a read
         // first here would break that.
         let promote = order.status == OrderStatus::Pending && {
-            let authzs = Authorization::find_by_order_with(&order.id, &mut *tx).await?;
+            let authzs = Authorization::find_by_order_with(order.id, &mut *tx).await?;
             authzs.len() == order.identifiers.len()
                 && authzs
                     .iter()
                     .all(|authz| authz.status == AuthzStatus::Valid)
         };
         if promote {
-            Order::set_ready(&order.id, &mut *tx).await?;
+            Order::set_ready(order.id, &mut *tx).await?;
         }
         tx.commit().await?;
         Ok::<bool, sqlx::Error>(promote)
@@ -280,9 +280,9 @@ async fn commit_validation_failure(
 ) -> Result<(), Problem> {
     let outcome = async {
         let mut tx = database.pool.begin().await?;
-        Challenge::set_invalid(&challenge.id, problem, &mut *tx).await?;
-        Authorization::set_invalid(&authz.id, &mut *tx).await?;
-        Order::set_invalid(&order.id, problem, &mut *tx).await?;
+        Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
+        Authorization::set_invalid(authz.id, &mut *tx).await?;
+        Order::set_invalid(order.id, problem, &mut *tx).await?;
         tx.commit().await
     }
     .await;
@@ -376,13 +376,14 @@ pub async fn post_challenge(
             Problem::server_internal("Key authorization could not be computed")
         })?;
         let key_authorization = format!("{}.{}", challenge.token, thumbprint);
+        let challenge_id = challenge.id.to_string();
 
         let context = ValidationContext {
             identifier: authz.base_identifier(),
             wildcard: authz.is_wildcard(),
             token: &challenge.token,
             key_authorization: &key_authorization,
-            challenge_id: &challenge.id,
+            challenge_id: &challenge_id,
         };
 
         match challenges.validate(&challenge.typ, &context).await {
@@ -416,10 +417,10 @@ pub async fn post_challenge(
                     .notify
                     .dispatch(NotifyEvent::ChallengeFailed(ChallengeFailedData {
                         profile: profile.name.clone(),
-                        order_id: order.id.clone(),
-                        account_id: account.id.clone(),
-                        authz_id: authz.id.clone(),
-                        challenge_id: challenge.id.clone(),
+                        order_id: order.id.to_string(),
+                        account_id: account.id.to_string(),
+                        authz_id: authz.id.to_string(),
+                        challenge_id: challenge.id.clone().to_string(),
                         challenge_type: challenge.typ.clone(),
                         identifier: authz.base_identifier().to_string(),
                         error: error.kind().to_string(),

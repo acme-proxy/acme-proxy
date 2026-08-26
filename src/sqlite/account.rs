@@ -2,6 +2,7 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::audit::ClientContext;
 use crate::sqlite::db::Database;
@@ -35,7 +36,7 @@ use crate::sqlite::nonce::now_secs;
 /// - `to_json`: Convert to RFC 8555 account JSON object format
 #[derive(Debug)]
 pub struct Account {
-    pub id: String,
+    pub id: Uuid,
     /// The ACME endpoint (`[profiles.<name>]`) this account was registered at.
     /// Accounts are keyed by `(profile, pubkey)`, so the same client key at two
     /// endpoints is two accounts — see the schema comment in
@@ -48,7 +49,7 @@ pub struct Account {
     pub created_at: i64,
     /// Which EAB credential (if any) created this account -- an audit trail
     /// only, set once and never overwritten. See [`Account::set_eab_kid`].
-    pub eab_kid: Option<String>,
+    pub eab_kid: Option<Uuid>,
     /// Whether this account agreed to the terms of service when it was created
     /// (RFC 8555 §7.3.3). `None` for an account created at an endpoint that
     /// advertised none — which is not the same as "declined", and renders as an
@@ -168,6 +169,9 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_by_id_started", outcome = "progress", profile = %profile, account_id = %id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(None);
+        };
         let row = sqlx::query(concat!(
             "SELECT ",
             columns!(),
@@ -211,7 +215,7 @@ impl Account {
         }
 
         let account = Account {
-            id: crate::sqlite::id::mint().to_string(),
+            id: crate::sqlite::id::mint(),
             profile: profile.to_string(),
             pubkey: pubkey.to_vec(),
             contact,
@@ -240,7 +244,7 @@ impl Account {
              created_ptr, last_seen_at, last_seen_ip, last_seen_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
         )
-        .bind(&account.id)
+        .bind(account.id)
         .bind(&account.profile)
         .bind(&account.pubkey)
         .bind(contact_json)
@@ -328,7 +332,7 @@ impl Account {
         .bind(now)
         .bind(&client.ip)
         .bind(&client.ptr)
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?;
 
@@ -354,7 +358,7 @@ impl Account {
 
         sqlx::query("UPDATE accounts SET contact = ? WHERE id = ?;")
             .bind(contact_json)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -369,7 +373,7 @@ impl Account {
     pub async fn deactivate(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_deactivation_started", outcome = "progress", account_id = %self.id);
         sqlx::query("UPDATE accounts SET status = 'deactivated' WHERE id = ?;")
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -391,7 +395,7 @@ impl Account {
         debug!(event = "db_account_pubkey_update_started", outcome = "progress", account_id = ?self.id);
         sqlx::query("UPDATE accounts SET pubkey = ? WHERE id = ?;")
             .bind(pubkey)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -408,17 +412,17 @@ impl Account {
     /// even if a different (still valid) EAB credential is presented that time.
     pub async fn set_eab_kid(
         &mut self,
-        eab_kid: &str,
+        eab_kid: Uuid,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_eab_kid_set_started", outcome = "progress", account_id = ?self.id, eab_kid = ?eab_kid);
         sqlx::query("UPDATE accounts SET eab_kid = ? WHERE id = ?;")
             .bind(eab_kid)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
-        self.eab_kid = Some(eab_kid.to_string());
+        self.eab_kid = Some(eab_kid);
         info!(event = "db_account_eab_kid_set", outcome = "success", account_id = ?self.id, eab_kid = ?eab_kid);
         Ok(())
     }
@@ -434,7 +438,7 @@ impl Account {
     pub async fn set_terms_agreed(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_terms_agreed_started", outcome = "progress", account_id = ?self.id);
         sqlx::query("UPDATE accounts SET terms_of_service_agreed = 1 WHERE id = ?;")
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -454,6 +458,9 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_any_by_id_started", outcome = "progress", account_id = %id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(None);
+        };
         let row = sqlx::query(concat!(
             "SELECT ",
             columns!(),
@@ -542,6 +549,9 @@ impl Account {
     /// there".
     pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_account_delete_started", outcome = "progress", account_id = ?id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(false);
+        };
         let result = sqlx::query("DELETE FROM accounts WHERE id = ?;")
             .bind(id)
             .execute(&database.pool)
@@ -608,7 +618,7 @@ mod tests {
     #[test]
     fn needs_touch_yields_to_the_interval_but_never_to_a_changed_address() {
         let mut account = Account {
-            id: "a".to_string(),
+            id: crate::sqlite::id::mint(),
             profile: "default".to_string(),
             pubkey: vec![1],
             contact: vec![],
@@ -687,7 +697,7 @@ mod tests {
         assert_eq!(found.last_seen_ip.as_deref(), Some("198.51.100.4"));
         assert_eq!(found.last_seen_ptr.as_deref(), Some("second.example.com"));
         // ...and on disk, with the creation columns untouched.
-        let reloaded = Account::find_by_id("default", &found.id, &db)
+        let reloaded = Account::find_by_id("default", found.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -706,7 +716,7 @@ mod tests {
             ..ClientContext::default()
         };
         found.touch(&nameless, &db).await.unwrap();
-        let reloaded = Account::find_by_id("default", &found.id, &db)
+        let reloaded = Account::find_by_id("default", found.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -785,7 +795,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        let by_id = Account::find_by_id("default", &account.id, &db)
+        let by_id = Account::find_by_id("default", account.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -840,7 +850,7 @@ mod tests {
         // In-memory struct is updated…
         assert_eq!(account.contact, new_contact);
         // …and so is the stored row.
-        let reloaded = Account::find_by_id("default", &account.id, &db)
+        let reloaded = Account::find_by_id("default", account.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -861,7 +871,7 @@ mod tests {
         account.deactivate(&db).await.unwrap();
 
         assert_eq!(account.status, "deactivated");
-        let reloaded = Account::find_by_id("default", &account.id, &db)
+        let reloaded = Account::find_by_id("default", account.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -882,7 +892,7 @@ mod tests {
         // In-memory struct is updated…
         assert_eq!(account.pubkey, new_pubkey);
         // …and so is the stored row, findable under the new key.
-        let reloaded = Account::find_by_id("default", &account.id, &db)
+        let reloaded = Account::find_by_id("default", account.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -939,20 +949,21 @@ mod tests {
     #[tokio::test]
     async fn set_eab_kid_persists_and_syncs() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let kid = crate::sqlite::id::mint();
         let (mut account, _) =
             Account::find_or_create("default", &[5u8], vec![], &ClientContext::default(), &db)
                 .await
                 .unwrap();
         assert!(account.eab_kid.is_none());
 
-        account.set_eab_kid("some-kid", &db).await.unwrap();
-        assert_eq!(account.eab_kid.as_deref(), Some("some-kid"));
+        account.set_eab_kid(kid, &db).await.unwrap();
+        assert_eq!(account.eab_kid, Some(kid));
 
-        let reloaded = Account::find_by_id("default", &account.id, &db)
+        let reloaded = Account::find_by_id("default", account.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reloaded.eab_kid.as_deref(), Some("some-kid"));
+        assert_eq!(reloaded.eab_kid, Some(kid));
     }
 
     #[tokio::test]
@@ -963,9 +974,13 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert!(Account::delete(&account.id, &db).await.unwrap());
         assert!(
-            Account::find_by_id("default", &account.id, &db)
+            Account::delete(account.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+        );
+        assert!(
+            Account::find_by_id("default", account.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
@@ -988,7 +1003,7 @@ mod tests {
 
         crate::sqlite::order::Order::create(
             "default",
-            &account.id,
+            account.id,
             vec![],
             now_secs() + 3600,
             None,
@@ -998,9 +1013,11 @@ mod tests {
         .await
         .unwrap();
 
-        Account::delete(&account.id, &db).await.unwrap();
+        Account::delete(account.id.to_string().as_str(), &db)
+            .await
+            .unwrap();
 
-        let remaining = crate::sqlite::order::Order::find_by_account(&account.id, &db)
+        let remaining = crate::sqlite::order::Order::find_by_account(account.id, &db)
             .await
             .unwrap();
         assert!(remaining.is_empty());
@@ -1023,13 +1040,13 @@ mod tests {
             .unwrap();
             sqlx::query("UPDATE accounts SET created_at = ? WHERE id = ?;")
                 .bind(base - index as i64)
-                .bind(&account.id)
+                .bind(account.id)
                 .execute(&db.pool)
                 .await
                 .unwrap();
             ids.push(account.id);
         }
-        ids
+        ids.into_iter().map(|v| v.to_string()).collect()
     }
 
     #[tokio::test]
@@ -1040,13 +1057,13 @@ mod tests {
         let (page, total) = Account::search(None, 2, 0, &db).await.unwrap();
         assert_eq!(total, 5, "the total must ignore the page window");
         assert_eq!(
-            page.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            page.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
             ids[..2]
         );
 
         let (second, _) = Account::search(None, 2, 2, &db).await.unwrap();
         assert_eq!(
-            second.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+            second.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
             ids[2..4]
         );
 

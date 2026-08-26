@@ -2,6 +2,7 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::random::random_token;
 use crate::sqlite::db::Database;
@@ -34,8 +35,8 @@ use crate::sqlite::status::{self, AuthzStatus, ChallengeStatus};
 /// `strip_prefix` and no migration.
 #[derive(Debug)]
 pub struct Authorization {
-    pub id: String,
-    pub order_id: String,
+    pub id: Uuid,
+    pub order_id: Uuid,
     pub identifier: Identifier,
     pub status: AuthzStatus,
     pub expires: i64,
@@ -55,8 +56,8 @@ pub struct Authorization {
 /// which the client reads back from the challenge object.
 #[derive(Debug)]
 pub struct Challenge {
-    pub id: String,
-    pub authz_id: String,
+    pub id: Uuid,
+    pub authz_id: Uuid,
     pub typ: String,
     pub token: String,
     pub status: ChallengeStatus,
@@ -96,10 +97,10 @@ impl Authorization {
 
     /// Builds a new `pending` authorization for `identifier`. Pure — nothing is
     /// persisted until [`Authorization::insert`] runs.
-    pub(crate) fn new(order_id: &str, identifier: Identifier, expires: i64) -> Authorization {
+    pub(crate) fn new(order_id: Uuid, identifier: Identifier, expires: i64) -> Authorization {
         Authorization {
-            id: crate::sqlite::id::mint().to_string(),
-            order_id: order_id.to_string(),
+            id: crate::sqlite::id::mint(),
+            order_id,
             identifier,
             status: AuthzStatus::Pending,
             expires,
@@ -122,8 +123,8 @@ impl Authorization {
             "INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
-        .bind(&self.id)
-        .bind(&self.order_id)
+        .bind(self.id)
+        .bind(self.order_id)
         .bind(identifier_json)
         .bind(self.status.as_str())
         .bind(self.expires)
@@ -137,7 +138,7 @@ impl Authorization {
 
     /// Creates a new authorization for `identifier` in the `pending` state.
     pub async fn create(
-        order_id: &str,
+        order_id: Uuid,
         identifier: Identifier,
         expires: i64,
         database: &Database,
@@ -152,6 +153,9 @@ impl Authorization {
         database: &Database,
     ) -> Result<Option<Authorization>, sqlx::Error> {
         debug!(event = "db_authz_find_by_id_started", outcome = "progress", authz_id = ?id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(None);
+        };
         let row = sqlx::query(concat!(
             "SELECT ",
             authz_columns!(),
@@ -167,7 +171,7 @@ impl Authorization {
     /// Lists an order's authorizations, oldest first (creation order), for the
     /// order object's `authorizations` array and the all-valid readiness check.
     pub async fn find_by_order(
-        order_id: &str,
+        order_id: Uuid,
         database: &Database,
     ) -> Result<Vec<Authorization>, sqlx::Error> {
         Self::find_by_order_with(order_id, &database.pool).await
@@ -175,7 +179,7 @@ impl Authorization {
 
     /// How many authorizations an order has. [`crate::sqlite::order::Order::count_by_account`]'s
     /// counterpart, and for the same reason.
-    pub async fn count_by_order(order_id: &str, database: &Database) -> Result<i64, sqlx::Error> {
+    pub async fn count_by_order(order_id: Uuid, database: &Database) -> Result<i64, sqlx::Error> {
         let row = sqlx::query("SELECT COUNT(*) FROM authorizations WHERE order_id = ?;")
             .bind(order_id)
             .fetch_one(&database.pool)
@@ -193,10 +197,10 @@ impl Authorization {
     /// An order with no authorizations is simply absent from the map, which is
     /// what a caller wants: `map.remove(id).unwrap_or_default()`.
     pub async fn find_ids_by_orders(
-        order_ids: &[&str],
+        order_ids: &[Uuid],
         database: &Database,
-    ) -> Result<std::collections::HashMap<String, Vec<String>>, sqlx::Error> {
-        let mut grouped: std::collections::HashMap<String, Vec<String>> =
+    ) -> Result<std::collections::HashMap<Uuid, Vec<Uuid>>, sqlx::Error> {
+        let mut grouped: std::collections::HashMap<Uuid, Vec<Uuid>> =
             std::collections::HashMap::new();
         if order_ids.is_empty() {
             return Ok(grouped);
@@ -219,8 +223,8 @@ impl Authorization {
             orders = order_ids.len()
         );
         for row in builder.build().fetch_all(&database.pool).await? {
-            let order_id: String = row.try_get("order_id")?;
-            let id: String = row.try_get("id")?;
+            let order_id: Uuid = row.try_get("order_id")?;
+            let id: Uuid = row.try_get("id")?;
             grouped.entry(order_id).or_default().push(id);
         }
         Ok(grouped)
@@ -235,7 +239,7 @@ impl Authorization {
     /// can each read before the other's write commits, so neither sees a
     /// complete set and neither promotes the order.
     pub(crate) async fn find_by_order_with<'e, E>(
-        order_id: &str,
+        order_id: Uuid,
         executor: E,
     ) -> Result<Vec<Authorization>, sqlx::Error>
     where
@@ -261,7 +265,7 @@ impl Authorization {
     /// The in-memory sync stays in `mark_valid`: it must not happen until the
     /// transaction has committed, or a rollback leaves the object claiming a
     /// status the database never took.
-    pub(crate) async fn set_valid<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -273,7 +277,7 @@ impl Authorization {
     }
 
     /// The `invalid` transition as a bare statement; see [`Authorization::set_valid`].
-    pub(crate) async fn set_invalid<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -294,7 +298,7 @@ impl Authorization {
     /// Bare-statement only: §7.5.2's deactivate-and-demote pair is committed in
     /// one transaction (`handlers::authz`), so there is no persist-and-sync twin
     /// to go with it.
-    pub(crate) async fn set_deactivated<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -309,7 +313,7 @@ impl Authorization {
     /// same persist-and-sync pattern as [`crate::sqlite::order::Order::finalize`]).
     pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
-        Self::set_valid(&self.id, &database.pool).await?;
+        Self::set_valid(self.id, &database.pool).await?;
 
         self.status = AuthzStatus::Valid;
         info!(event = "db_authz_marked_valid", outcome = "success", authz_id = ?self.id);
@@ -324,7 +328,7 @@ impl Authorization {
     /// reads the reason from the challenge it triggered.
     pub async fn mark_invalid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_authz_mark_invalid_started", outcome = "progress", authz_id = ?self.id);
-        Self::set_invalid(&self.id, &database.pool).await?;
+        Self::set_invalid(self.id, &database.pool).await?;
 
         self.status = AuthzStatus::Invalid;
         info!(event = "db_authz_marked_invalid", outcome = "failure", authz_id = ?self.id);
@@ -421,10 +425,10 @@ impl Challenge {
     /// **Each challenge gets its own token**, even when several are offered for
     /// one authorization: RFC 8555 §8 describes the token as a per-challenge
     /// value, and every key authorization derives from it.
-    pub(crate) fn new(authz_id: &str, typ: &str) -> Challenge {
+    pub(crate) fn new(authz_id: Uuid, typ: &str) -> Challenge {
         Challenge {
-            id: crate::sqlite::id::mint().to_string(),
-            authz_id: authz_id.to_string(),
+            id: crate::sqlite::id::mint(),
+            authz_id,
             typ: typ.to_string(),
             token: random_token(),
             status: ChallengeStatus::Pending,
@@ -445,8 +449,8 @@ impl Challenge {
             "INSERT INTO challenges (id, authz_id, type, token, status, validated, created_at) \
              VALUES (?, ?, ?, ?, ?, NULL, ?);",
         )
-        .bind(&self.id)
-        .bind(&self.authz_id)
+        .bind(self.id)
+        .bind(self.authz_id)
         .bind(&self.typ)
         .bind(&self.token)
         .bind(self.status.as_str())
@@ -461,7 +465,7 @@ impl Challenge {
     /// Creates a new challenge of type `typ`, with a fresh random token, in the
     /// `pending` state.
     pub async fn create(
-        authz_id: &str,
+        authz_id: Uuid,
         typ: &str,
         database: &Database,
     ) -> Result<Challenge, sqlx::Error> {
@@ -475,6 +479,9 @@ impl Challenge {
         database: &Database,
     ) -> Result<Option<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_id_started", outcome = "progress", challenge_id = ?id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(None);
+        };
         let row = sqlx::query(concat!(
             "SELECT ",
             challenge_columns!(),
@@ -490,7 +497,7 @@ impl Challenge {
     /// Lists an authorization's challenges (creation order), for the
     /// authorization object's `challenges` array.
     pub async fn find_by_authz(
-        authz_id: &str,
+        authz_id: Uuid,
         database: &Database,
     ) -> Result<Vec<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_authz_started", outcome = "progress", authz_id = ?authz_id);
@@ -535,7 +542,7 @@ impl Challenge {
         let claimed = sqlx::query(
             "UPDATE challenges SET status = 'processing' WHERE id = ? AND status = 'pending';",
         )
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?
         .rows_affected()
@@ -560,7 +567,7 @@ impl Challenge {
     /// its in-memory copy with the same instant. See
     /// [`Authorization::set_valid`] for why the sync is separate.
     pub(crate) async fn set_valid<'e, E>(
-        id: &str,
+        id: Uuid,
         validated: i64,
         executor: E,
     ) -> Result<(), sqlx::Error>
@@ -577,7 +584,7 @@ impl Challenge {
 
     /// The `invalid` transition as a bare statement; see [`Challenge::set_valid`].
     pub(crate) async fn set_invalid<'e, E>(
-        id: &str,
+        id: Uuid,
         error: &Value,
         executor: E,
     ) -> Result<(), sqlx::Error>
@@ -597,7 +604,7 @@ impl Challenge {
     pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         let validated = now_secs();
         debug!(event = "db_challenge_mark_valid_started", outcome = "progress", challenge_id = ?self.id);
-        Self::set_valid(&self.id, validated, &database.pool).await?;
+        Self::set_valid(self.id, validated, &database.pool).await?;
 
         self.status = ChallengeStatus::Valid;
         self.validated = Some(validated);
@@ -617,7 +624,7 @@ impl Challenge {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_challenge_mark_invalid_started", outcome = "progress", challenge_id = ?self.id);
-        Self::set_invalid(&self.id, &error, &database.pool).await?;
+        Self::set_invalid(self.id, &error, &database.pool).await?;
 
         self.status = ChallengeStatus::Invalid;
         self.error = Some(error);
@@ -671,7 +678,7 @@ mod tests {
         for name in ["a.example.com", "b.example.com"] {
             let order = Order::create(
                 "default",
-                &account,
+                account,
                 vec![Identifier::dns(name)],
                 now_secs() + 3600,
                 None,
@@ -681,22 +688,22 @@ mod tests {
             .await
             .unwrap();
             let first =
-                Authorization::create(&order.id, Identifier::dns(name), now_secs() + 3600, &db)
+                Authorization::create(order.id, Identifier::dns(name), now_secs() + 3600, &db)
                     .await
                     .unwrap();
             expected.push((order.id, first.id));
         }
 
-        let ids: Vec<&str> = expected.iter().map(|(o, _)| o.as_str()).collect();
+        let ids: Vec<Uuid> = expected.iter().map(|(o, _)| *o).collect();
         let grouped = Authorization::find_ids_by_orders(&ids, &db).await.unwrap();
         assert_eq!(grouped.len(), 2);
         for (order_id, authz_id) in &expected {
-            assert_eq!(grouped[order_id], vec![authz_id.clone()]);
+            assert_eq!(grouped[order_id], vec![*authz_id]);
         }
 
         // An order with no authorizations is simply absent, which is what
         // `remove(..).unwrap_or_default()` at the call site relies on.
-        let grouped = Authorization::find_ids_by_orders(&["nope"], &db)
+        let grouped = Authorization::find_ids_by_orders(&[crate::sqlite::id::mint()], &db)
             .await
             .unwrap();
         assert!(grouped.is_empty());
@@ -724,7 +731,7 @@ mod tests {
         .unwrap();
         let order = Order::create(
             "default",
-            &account.id,
+            account.id,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -733,7 +740,7 @@ mod tests {
         )
         .await
         .unwrap();
-        order.id
+        order.id.to_string()
     }
 
     /// The `set_*` twins exist so `post_challenge` can put the challenge,
@@ -748,27 +755,33 @@ mod tests {
     async fn the_validation_transitions_roll_back_together() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
-        let challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
+        let challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
         // Everything the success path does, then abandoned rather than
         // committed — standing in for a failure after the first statement.
         let mut tx = db.pool.begin().await.unwrap();
-        Challenge::set_valid(&challenge.id, now_secs(), &mut *tx)
+        Challenge::set_valid(challenge.id, now_secs(), &mut *tx)
             .await
             .unwrap();
-        Authorization::set_valid(&authz.id, &mut *tx).await.unwrap();
-        Order::set_ready(&oid, &mut *tx).await.unwrap();
+        Authorization::set_valid(authz.id, &mut *tx).await.unwrap();
+        Order::set_ready(oid.parse().unwrap(), &mut *tx)
+            .await
+            .unwrap();
         tx.rollback().await.unwrap();
 
-        let reloaded_authz = Authorization::find_by_id(&authz.id, &db)
+        let reloaded_authz = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
-        let reloaded_challenge = Challenge::find_by_id(&challenge.id, &db)
+        let reloaded_challenge = Challenge::find_by_id(challenge.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -785,22 +798,28 @@ mod tests {
     async fn the_validation_transitions_commit_together() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
-        let challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
+        let challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
         let mut tx = db.pool.begin().await.unwrap();
-        Challenge::set_valid(&challenge.id, now_secs(), &mut *tx)
+        Challenge::set_valid(challenge.id, now_secs(), &mut *tx)
             .await
             .unwrap();
-        Authorization::set_valid(&authz.id, &mut *tx).await.unwrap();
-        Order::set_ready(&oid, &mut *tx).await.unwrap();
+        Authorization::set_valid(authz.id, &mut *tx).await.unwrap();
+        Order::set_ready(oid.parse().unwrap(), &mut *tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         assert_eq!(
-            Challenge::find_by_id(&challenge.id, &db)
+            Challenge::find_by_id(challenge.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .unwrap()
@@ -808,7 +827,7 @@ mod tests {
             ChallengeStatus::Valid
         );
         assert_eq!(
-            Authorization::find_by_id(&authz.id, &db)
+            Authorization::find_by_id(authz.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .unwrap()
@@ -826,20 +845,26 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
 
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
         assert_eq!(authz.status, AuthzStatus::Pending);
 
-        let by_id = Authorization::find_by_id(&authz.id, &db)
+        let by_id = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(by_id.identifier, Identifier::dns("example.com"));
-        assert_eq!(by_id.order_id, oid);
+        assert_eq!(by_id.order_id.to_string(), oid);
 
-        let by_order = Authorization::find_by_order(&oid, &db).await.unwrap();
+        let by_order = Authorization::find_by_order(oid.parse().unwrap(), &db)
+            .await
+            .unwrap();
         assert_eq!(by_order.len(), 1);
     }
 
@@ -848,14 +873,18 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
 
-        let mut authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let mut authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
         authz.mark_valid(&db).await.unwrap();
 
         assert_eq!(authz.status, AuthzStatus::Valid);
-        let reloaded = Authorization::find_by_id(&authz.id, &db)
+        let reloaded = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -867,11 +896,15 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
 
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
-        let challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
+        let challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
         let json = authz.to_json("http://localhost:3000", std::slice::from_ref(&challenge));
         assert_eq!(json["status"], "pending");
@@ -888,24 +921,28 @@ mod tests {
     async fn challenge_create_find_round_trip() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
 
-        let challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
         assert_eq!(challenge.typ, "http-01");
         assert_eq!(challenge.status, ChallengeStatus::Pending);
         assert!(!challenge.token.is_empty());
         assert!(challenge.validated.is_none());
 
-        let by_id = Challenge::find_by_id(&challenge.id, &db)
+        let by_id = Challenge::find_by_id(challenge.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(by_id.token, challenge.token);
 
-        let by_authz = Challenge::find_by_authz(&authz.id, &db).await.unwrap();
+        let by_authz = Challenge::find_by_authz(authz.id, &db).await.unwrap();
         assert_eq!(by_authz.len(), 1);
     }
 
@@ -913,18 +950,22 @@ mod tests {
     async fn challenge_mark_valid_persists_and_syncs() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
 
-        let mut challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let mut challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
         challenge.mark_valid(&db).await.unwrap();
 
         assert_eq!(challenge.status, ChallengeStatus::Valid);
         assert!(challenge.validated.is_some());
 
-        let reloaded = Challenge::find_by_id(&challenge.id, &db)
+        let reloaded = Challenge::find_by_id(challenge.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -942,12 +983,16 @@ mod tests {
     async fn challenge_mark_invalid_persists_the_problem_document() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
 
-        let mut challenge = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        let mut challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
         let problem = serde_json::json!({
             "type": "urn:ietf:params:acme:error:incorrectResponse",
             "detail": "response body does not match the key authorization",
@@ -960,7 +1005,7 @@ mod tests {
         // RFC 8555 §8 stamps `validated` only on success.
         assert!(challenge.validated.is_none());
 
-        let reloaded = Challenge::find_by_id(&challenge.id, &db)
+        let reloaded = Challenge::find_by_id(challenge.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -976,14 +1021,18 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
 
-        let mut authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let mut authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
         authz.mark_invalid(&db).await.unwrap();
 
         assert_eq!(authz.status, AuthzStatus::Invalid);
-        let reloaded = Authorization::find_by_id(&authz.id, &db)
+        let reloaded = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -996,25 +1045,29 @@ mod tests {
     async fn an_authorization_holds_one_challenge_per_type() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
 
-        let http = Challenge::create(&authz.id, "http-01", &db).await.unwrap();
-        let dns_01 = Challenge::create(&authz.id, "dns-01", &db).await.unwrap();
-        Challenge::create(&authz.id, "tls-alpn-01", &db)
+        let http = Challenge::create(authz.id, "http-01", &db).await.unwrap();
+        let dns_01 = Challenge::create(authz.id, "dns-01", &db).await.unwrap();
+        Challenge::create(authz.id, "tls-alpn-01", &db)
             .await
             .unwrap();
 
         // Each carries its own token: a key authorization is per challenge.
         assert_ne!(http.token, dns_01.token);
 
-        let challenges = Challenge::find_by_authz(&authz.id, &db).await.unwrap();
+        let challenges = Challenge::find_by_authz(authz.id, &db).await.unwrap();
         assert_eq!(challenges.len(), 3);
 
         // A second challenge of a type already offered is refused by the schema.
-        assert!(Challenge::create(&authz.id, "http-01", &db).await.is_err());
+        assert!(Challenge::create(authz.id, "http-01", &db).await.is_err());
     }
 
     /// A wildcard authorization stores the `*.` form but renders the base name
@@ -1026,18 +1079,18 @@ mod tests {
         let oid = order_id(&db).await;
 
         let authz = Authorization::create(
-            &oid,
+            oid.parse().unwrap(),
             Identifier::dns("*.example.com"),
             now_secs() + 3600,
             &db,
         )
         .await
         .unwrap();
-        let challenge = Challenge::create(&authz.id, "dns-01", &db).await.unwrap();
+        let challenge = Challenge::create(authz.id, "dns-01", &db).await.unwrap();
 
         // The row keeps the wildcard form, so the canonical two-authorization
         // order does not collide on `UNIQUE(order_id, identifier)`.
-        let reloaded = Authorization::find_by_id(&authz.id, &db)
+        let reloaded = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -1061,10 +1114,14 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let oid = order_id(&db).await;
 
-        let authz =
-            Authorization::create(&oid, Identifier::dns("example.com"), now_secs() + 3600, &db)
-                .await
-                .unwrap();
+        let authz = Authorization::create(
+            oid.parse().unwrap(),
+            Identifier::dns("example.com"),
+            now_secs() + 3600,
+            &db,
+        )
+        .await
+        .unwrap();
         assert!(!authz.is_wildcard());
         assert_eq!(authz.base_identifier(), "example.com");
         assert!(

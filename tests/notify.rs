@@ -490,7 +490,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         .as_secs() as i64;
     let mut order = Order::create(
         "default",
-        &account.id,
+        account.id,
         vec![Identifier::dns("lapsing.example.com")],
         now + 3600,
         None,

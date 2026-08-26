@@ -2202,7 +2202,7 @@ mod tests {
     fn sweep_row() -> crate::sqlite::job::Job {
         use crate::sqlite::nonce::now_secs;
         crate::sqlite::job::Job {
-            id: "crl-sweep".to_string(),
+            id: crate::sqlite::id::mint(),
             kind: crate::signer::local_ca::sweep::CRL_SWEEP_KIND.to_string(),
             dedup_key: "all".to_string(),
             payload: serde_json::json!({}),

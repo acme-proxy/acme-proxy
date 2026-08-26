@@ -212,7 +212,7 @@ async fn a_job_stranded_by_a_dead_process_is_reclaimed_and_finished() {
     let _stop = start(&queue, handler.clone(), &config);
 
     until(|| handler.runs() == 1).await;
-    let settled = Job::find_by_id(&claimed.id, &database)
+    let settled = Job::find_by_id(claimed.id, &database)
         .await
         .unwrap()
         .unwrap();
@@ -452,7 +452,7 @@ async fn a_runner_that_lost_its_lease_settles_nothing_and_abandons_nothing() {
         .unwrap()
         .expect("the job is live while the handler runs");
     sqlx::query("UPDATE jobs SET lease_owner = 'thief' WHERE id = ?;")
-        .bind(&job.id)
+        .bind(job.id)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -461,14 +461,14 @@ async fn a_runner_that_lost_its_lease_settles_nothing_and_abandons_nothing() {
     gate.add_permits(1);
 
     // The row is exactly as the thief left it.
-    let after = Job::find_by_id(&job.id, &database).await.unwrap().unwrap();
+    let after = Job::find_by_id(job.id, &database).await.unwrap().unwrap();
     assert_eq!(after.status, "running", "a lost lease settles nothing");
     assert_eq!(after.lease_owner.as_deref(), Some("thief"));
 
     // Hand the row back, and wait for the runner to claim it a second time —
     // which it can only do once the refused settlement is behind it.
     sqlx::query("UPDATE jobs SET status = 'ready', lease_owner = NULL WHERE id = ?;")
-        .bind(&job.id)
+        .bind(job.id)
         .execute(&database.pool)
         .await
         .unwrap();

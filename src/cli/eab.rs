@@ -122,15 +122,15 @@ mod tests {
             },
             EabCommand::List { json: true },
             EabCommand::Show {
-                kid: eab.kid.clone(),
+                kid: eab.kid.to_string(),
                 json: true,
             },
             EabCommand::Show {
-                kid: eab.kid.clone(),
+                kid: eab.kid.to_string(),
                 json: false,
             },
             EabCommand::Revoke {
-                kid: eab.kid.clone(),
+                kid: eab.kid.to_string(),
             },
         ] {
             run_eab_command(command, Palette::plain(), database.clone())
@@ -140,7 +140,7 @@ mod tests {
 
         run_eab_command(
             EabCommand::Revoke {
-                kid: eab.kid.clone(),
+                kid: eab.kid.to_string(),
             },
             Palette::plain(),
             database.clone(),
@@ -149,7 +149,7 @@ mod tests {
         .expect("revoking an already-revoked key is a no-op, not a failure");
 
         assert_eq!(
-            Eab::find_any_by_kid(&eab.kid, &database)
+            Eab::find_any_by_kid(eab.kid.to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .unwrap()

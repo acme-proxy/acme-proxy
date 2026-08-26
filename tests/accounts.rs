@@ -168,18 +168,18 @@ async fn the_orders_list_omits_invalid_and_expired_orders() {
     }
 
     sqlx::query("UPDATE orders SET status = 'invalid' WHERE id = ?")
-        .bind(&ids[1])
+        .bind(ids[1].parse::<uuid::Uuid>().unwrap())
         .execute(&db.pool)
         .await
         .unwrap();
     sqlx::query("UPDATE orders SET expires = 1 WHERE id = ?")
-        .bind(&ids[2])
+        .bind(ids[2].parse::<uuid::Uuid>().unwrap())
         .execute(&db.pool)
         .await
         .unwrap();
     // Valid *and* long expired: the certificate outlives the order object.
     sqlx::query("UPDATE orders SET status = 'valid', expires = 1 WHERE id = ?")
-        .bind(&ids[3])
+        .bind(ids[3].parse::<uuid::Uuid>().unwrap())
         .execute(&db.pool)
         .await
         .unwrap();

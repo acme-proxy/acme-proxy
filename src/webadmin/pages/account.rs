@@ -317,7 +317,7 @@ pub async fn regenerate_recovery_codes(
 
 /// What `GET /api/mfa` answers, for the template.
 async fn status(state: &AdminState, user: &AdminUser) -> Result<Value, PageError> {
-    let remaining = mfa::recovery_codes_remaining(&user.id, state.database.clone()).await?;
+    let remaining = mfa::recovery_codes_remaining(user.id, state.database.clone()).await?;
     Ok(json!({
         "totpEnabled": user.has_totp(),
         "enrolmentPending": user.has_pending_totp(),

@@ -150,24 +150,281 @@ mod tests {
         let expected = format!("VARCHAR({})", random_token().len());
 
         for (table, column) in [("nonces", "value"), ("challenges", "token")] {
-            let columns: Vec<(String, String)> =
-                sqlx::query_as("SELECT name, type FROM pragma_table_info(?);")
-                    .bind(table)
-                    .fetch_all(&database.pool)
-                    .await
-                    .unwrap();
-
-            let declared = columns
-                .iter()
-                .find(|(name, _)| name == column)
-                .map(|(_, declared)| declared.as_str())
-                .unwrap_or_else(|| panic!("no column {table}.{column}"));
-
             assert_eq!(
-                declared, expected,
+                declared_type(&database, table, column).await,
+                expected,
                 "{table}.{column} declares a width the value no longer has"
             );
         }
+    }
+
+    /// The declared type of every column holding a row id.
+    ///
+    /// The [`random_token`] twin above, for the other family of values the
+    /// schema declares a type for. Ids are the 16 bytes of a UUID
+    /// ([`crate::sqlite::id`]), stored as a BLOB rather than as the 36
+    /// characters of its rendering, and this is what notices a column that went
+    /// back to text — or a new table added with a `VARCHAR(36)` id out of
+    /// habit.
+    ///
+    /// It matters for the reason the widths do: SQLite gives a declared type an
+    /// affinity and enforces nothing, where the PostgreSQL set these
+    /// declarations will be transcribed into (`TODO.md`) has a native `uuid`
+    /// and does enforce it. `nonces.value` is what a stale declaration looks
+    /// like once nothing can notice it.
+    #[tokio::test]
+    async fn every_id_column_is_declared_a_blob() {
+        let database = Database::connect_in_memory().await.unwrap();
+
+        let minted = crate::sqlite::id::mint();
+        assert_eq!(
+            minted.get_version_num(),
+            7,
+            "ids are UUID v7 (RFC 9562 §5.7)"
+        );
+        assert_eq!(minted.as_bytes().len(), 16, "which is what a column holds");
+
+        for (table, column) in [
+            ("accounts", "id"),
+            ("accounts", "eab_kid"),
+            ("orders", "id"),
+            ("orders", "account_id"),
+            ("authorizations", "id"),
+            ("authorizations", "order_id"),
+            ("challenges", "id"),
+            ("challenges", "authz_id"),
+            ("eab_keys", "kid"),
+            ("upstream_orders", "order_id"),
+            ("admin_users", "id"),
+            ("admin_sessions", "user_id"),
+            ("admin_recovery_codes", "id"),
+            ("admin_recovery_codes", "user_id"),
+            ("jobs", "id"),
+        ] {
+            assert_eq!(
+                declared_type(&database, table, column).await,
+                "BLOB",
+                "{table}.{column} holds a row id"
+            );
+        }
+
+        // Asserted by name so neither reads as an oversight later. `audit_log`
+        // has no foreign keys on purpose — its rows outlive their subjects, so
+        // these two name a row that may be gone rather than pointing at one,
+        // and they sit beside `actor_id` and `request_id`, which are free-form.
+        for column in ["account_id", "order_id"] {
+            assert_eq!(
+                declared_type(&database, "audit_log", column).await,
+                "VARCHAR(36)",
+                "audit_log.{column} is deliberately still text"
+            );
+        }
+    }
+
+    /// Version of `20260827120000_uuid_ids_as_blobs.sql`, the migration that
+    /// converted every id column from its 36-character rendering to the 16
+    /// bytes behind it.
+    const BLOB_IDS: i64 = 20_260_827_120_000;
+
+    /// Every row survives the conversion to BLOB ids, with its id intact and
+    /// its foreign keys still resolving.
+    ///
+    /// This is the only thing standing between a mistyped column list and
+    /// silent data loss, and there are two ways to lose a row there. An
+    /// `INSERT ... SELECT` drops any column it does not name, quietly. And
+    /// `DROP TABLE` under `foreign_keys = ON` fires `ON DELETE CASCADE` into
+    /// every child, so a rebuild that drops a parent while a rebuilt child
+    /// already references it empties the child — with no error, and nothing
+    /// else in this suite would notice, since a fresh database has no rows to
+    /// lose.
+    ///
+    /// So the fixture is a database at the migration *before* that one, seeded
+    /// through raw SQL with a v4 id in every column that was about to move,
+    /// including the nullable `accounts.eab_kid` (where an unconvertible value
+    /// would become `NULL` rather than failing a `NOT NULL`) and the columns
+    /// deliberately left as text beside them.
+    #[tokio::test]
+    async fn the_blob_migration_preserves_every_row() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .unwrap()
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+
+        let mut converted = None;
+        for migration in MIGRATOR.iter() {
+            if migration.version == BLOB_IDS {
+                converted = Some(migration);
+                break;
+            }
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let converted = converted.expect("the id migration is in the embedded set");
+
+        sqlx::raw_sql(SEED_V4_ROWS).execute(&pool).await.unwrap();
+        sqlx::raw_sql(converted.sql.clone())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Every table kept its row, and every id is now the 16 bytes of the v4
+        // it held. `accounts.eab_kid` is the nullable one, and carries a value
+        // here for exactly that reason.
+        let account: (Vec<u8>, Option<Vec<u8>>) =
+            sqlx::query_as("SELECT id, eab_kid FROM accounts;")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            uuid::Uuid::from_slice(&account.0).unwrap().to_string(),
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(
+            uuid::Uuid::from_slice(&account.1.expect("eab_kid survived"))
+                .unwrap()
+                .to_string(),
+            "99999999-9999-4999-8999-999999999999"
+        );
+
+        for table in [
+            "orders",
+            "authorizations",
+            "challenges",
+            "upstream_orders",
+            "eab_keys",
+            "admin_users",
+            "admin_sessions",
+            "admin_recovery_codes",
+            "jobs",
+            "audit_log",
+        ] {
+            // `AssertSqlSafe` for `Job::claim_next`'s reason: sqlx refuses a
+            // query string that is not `'static`, and the table name here comes
+            // from the literal list above rather than from any input.
+            let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table};"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, 1, "{table} lost its row");
+        }
+
+        // The foreign keys resolve across the conversion — a join is what
+        // proves both sides were converted the same way, where two counts
+        // would pass even if they had not been.
+        let joined: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM challenges c \
+             JOIN authorizations a ON a.id = c.authz_id \
+             JOIN orders o ON o.id = a.order_id \
+             JOIN accounts acct ON acct.id = o.account_id;",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(joined, 1, "the account → challenge chain no longer joins");
+
+        let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check;")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
+
+        // The columns that deliberately did not move still hold their text.
+        let replaces: String = sqlx::query_scalar("SELECT replaces FROM orders;")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(replaces, "aaa.bbb", "an ARI certID is not one of our ids");
+        let audited: String = sqlx::query_scalar("SELECT account_id FROM audit_log;")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            audited, "11111111-1111-4111-8111-111111111111",
+            "audit_log names a row that may be gone, and stays text"
+        );
+
+        // And the CASCADE the staging detour exists to protect is still wired:
+        // it must survive the rebuild, not merely be absent during it.
+        sqlx::raw_sql("DELETE FROM accounts;")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for table in ["orders", "authorizations", "challenges"] {
+            // `AssertSqlSafe` for `Job::claim_next`'s reason: sqlx refuses a
+            // query string that is not `'static`, and the table name here comes
+            // from the literal list above rather than from any input.
+            let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {table};"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(rows, 0, "deleting the account did not cascade into {table}");
+        }
+    }
+
+    /// One row per table, each carrying a UUID v4 in every id column — the
+    /// shape a database written before `sqlite::id` existed holds.
+    const SEED_V4_ROWS: &str = "\
+INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, eab_kid) VALUES
+  ('11111111-1111-4111-8111-111111111111', 'default', X'AA', '[]', 'valid', 100,
+   '99999999-9999-4999-8999-999999999999');
+INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) VALUES
+  ('99999999-9999-4999-8999-999999999999', X'CC', 'lab', NULL, 'active', 99);
+INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at, replaces)
+VALUES
+  ('33333333-3333-4333-8333-333333333333', 'default',
+   '11111111-1111-4111-8111-111111111111', 'pending', '[]', 200, 102, 'aaa.bbb');
+INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) VALUES
+  ('44444444-4444-4444-8444-444444444444', '33333333-3333-4333-8333-333333333333',
+   '{\"type\":\"dns\",\"value\":\"a.example\"}', 'pending', 200, 103);
+INSERT INTO challenges (id, authz_id, type, token, status, created_at, error) VALUES
+  ('55555555-5555-4555-8555-555555555555', '44444444-4444-4444-8444-444444444444',
+   'http-01', 'tok', 'pending', 104, '{\"e\":1}');
+INSERT INTO upstream_orders (order_id, upstream_order_url, csr_der, status, created_at,
+                             updated_at, request_id) VALUES
+  ('33333333-3333-4333-8333-333333333333', 'https://up/o', X'DD', 'processing', 105, 105,
+   'req-abc');
+INSERT INTO admin_users (id, username, password_hash, status, created_at, updated_at) VALUES
+  ('66666666-6666-4666-8666-666666666666', 'root', 'h', 'active', 106, 106);
+INSERT INTO admin_sessions (token_hash, user_id, csrf_token, state, created_at, expires_at,
+                            last_seen_at) VALUES
+  ('deadbeef', '66666666-6666-4666-8666-666666666666', 'csrf', 'active', 107, 999, 107);
+INSERT INTO admin_recovery_codes (id, user_id, code_hash, created_at) VALUES
+  ('77777777-7777-4777-8777-777777777777', '66666666-6666-4666-8666-666666666666', 'ch', 108);
+INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, max_attempts, created_at,
+                  updated_at, lease_owner) VALUES
+  ('88888888-8888-4888-8888-888888888888', 'k', 'dk', '{}', 'ready', 109, 5, 109, 109,
+   'runner-1');
+INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind, account_id, order_id)
+VALUES
+  (110, 'certificate_issued', 'success', 'default', 'acme',
+   '11111111-1111-4111-8111-111111111111', '33333333-3333-4333-8333-333333333333');
+";
+
+    /// The `pragma_table_info` lookup both declaration guards above run.
+    async fn declared_type(database: &Database, table: &str, column: &str) -> String {
+        let columns: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, type FROM pragma_table_info(?);")
+                .bind(table)
+                .fetch_all(&database.pool)
+                .await
+                .unwrap();
+
+        columns
+            .into_iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, declared)| declared)
+            .unwrap_or_else(|| panic!("no column {table}.{column}"))
     }
 
     /// RFC 9773 §5's "not already been marked as replaced" holds even when two

@@ -166,7 +166,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
         };
         signer
             .issue(
-                &order.id,
+                order.id.to_string().as_str(),
                 &csr_der(),
                 &identifiers(),
                 RequestedValidity::default(),
@@ -175,8 +175,18 @@ async fn each_profile_is_relayed_by_its_own_backend() {
             .unwrap();
     }
 
-    let settled_a = await_status(db.clone(), &order_a.id, OrderStatus::Valid).await;
-    let settled_b = await_status(db.clone(), &order_b.id, OrderStatus::Valid).await;
+    let settled_a = await_status(
+        db.clone(),
+        order_a.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
+    let settled_b = await_status(
+        db.clone(),
+        order_b.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
     let _ = shutdown.send(true);
 
     assert_eq!(
@@ -205,7 +215,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
 /// A claimed row, as the runner would hand one over.
 fn job(payload: serde_json::Value) -> Job {
     Job {
-        id: "job-1".to_string(),
+        id: crate::sqlite::id::mint(),
         kind: RELAY_JOB_KIND.to_string(),
         dedup_key: "ord-1".to_string(),
         payload,
@@ -301,7 +311,7 @@ async fn a_row_for_an_unmounted_profile_is_retried_rather_than_abandoned() {
 
     match handler
         .run(&job(
-            serde_json::json!({"order_id": "ord-1", "profile": "gone"}),
+            serde_json::json!({"order_id": super::order_id("ord-1"), "profile": "gone"}),
         ))
         .await
     {
@@ -341,7 +351,9 @@ async fn a_payload_from_before_the_profile_was_recorded_resolves_from_the_order(
 
     // And an order that is gone as well as unnamed retires rather than looping.
     match handler
-        .run(&job(serde_json::json!({"order_id": "ord-vanished"})))
+        .run(&job(
+            serde_json::json!({"order_id": super::order_id("ord-vanished")}),
+        ))
         .await
     {
         JobOutcome::Failed(reason) => assert!(reason.contains("no longer exists"), "{reason}"),
@@ -392,7 +404,7 @@ async fn recovery_re_queues_the_in_flight_orders_of_every_backend() {
     for profile in ["a", "b"] {
         let order = ready_order_for(profile, db.clone()).await;
         UpstreamOrder::create(
-            &order.id,
+            order.id.to_string().as_str(),
             "https://upstream.example/order/1",
             Some("https://upstream.example/order/1/finalize"),
             &csr_der(),
@@ -406,7 +418,7 @@ async fn recovery_re_queues_the_in_flight_orders_of_every_backend() {
     handler(&db, &pair).recover(&queue).await;
 
     for (profile, id) in queued {
-        let row = crate::sqlite::job::Job::find_live(RELAY_JOB_KIND, &id, &db)
+        let row = crate::sqlite::job::Job::find_live(RELAY_JOB_KIND, id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap_or_else(|| panic!("order {id} on profile `{profile}` must be re-queued"));

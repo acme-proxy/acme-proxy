@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use rcgen::{CertificateSigningRequestParams, DnType, DnValue, SanType};
 use rustls_pki_types::CertificateSigningRequestDer;
@@ -83,7 +84,7 @@ async fn resolve_eab(
     // Deliberately the unscoped lookup: the credential authorised this account
     // when it was created, and re-checking the profile scope now would make a
     // later narrowing of that scope silently rewrite history.
-    let key = crate::sqlite::eab::Eab::find_any_by_kid(&kid, database)
+    let key = crate::sqlite::eab::Eab::find_any_by_kid(kid.to_string().as_str(), database)
         .await
         .map_err(|error| {
             error!(event = "eab_lookup_failed", outcome = "failure", kid = %kid, error = %error);
@@ -91,7 +92,7 @@ async fn resolve_eab(
         })?;
 
     Ok(key.map(|key| EabIdentity {
-        kid: key.kid,
+        kid: key.kid.to_string(),
         label: key.label,
         active: key.status == "active",
     }))
@@ -566,7 +567,7 @@ pub(crate) async fn load_owned_authz(
         })?
         .ok_or_else(|| Problem::malformed("Unknown authorization"))?;
 
-    let order = load_owned_order(&authz.order_id, account, database).await?;
+    let order = load_owned_order(authz.order_id.to_string().as_str(), account, database).await?;
     Ok((authz, order))
 }
 
@@ -585,16 +586,17 @@ pub(crate) async fn load_owned_challenge(
         })?
         .ok_or_else(|| Problem::malformed("Unknown challenge"))?;
 
-    let (authz, order) = load_owned_authz(&challenge.authz_id, account, database).await?;
+    let (authz, order) =
+        load_owned_authz(challenge.authz_id.to_string().as_str(), account, database).await?;
     Ok((challenge, authz, order))
 }
 
 /// Fetches an order's authorization ids.
 #[instrument(name = "order_authz_ids", skip_all, fields(order_id = %order_id))]
 pub(crate) async fn order_authz_ids(
-    order_id: &str,
+    order_id: Uuid,
     database: &Arc<Database>,
-) -> Result<Vec<String>, Problem> {
+) -> Result<Vec<Uuid>, Problem> {
     Ok(Authorization::find_by_order(order_id, database)
         .await
         .map_err(|error| {

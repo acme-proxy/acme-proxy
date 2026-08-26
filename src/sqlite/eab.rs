@@ -2,6 +2,7 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::random::random_bytes;
 use crate::sqlite::db::Database;
@@ -26,7 +27,7 @@ use crate::sqlite::order::rfc3339;
 /// - `to_json`: admin-facing rendering (never includes the secret)
 #[derive(Debug)]
 pub struct Eab {
-    pub kid: String,
+    pub kid: Uuid,
     pub secret: Vec<u8>,
     pub label: Option<String>,
     /// Which ACME endpoint the credential is good for. `None` means every
@@ -62,7 +63,7 @@ impl Eab {
         database: &Database,
     ) -> Result<Eab, sqlx::Error> {
         let eab = Eab {
-            kid: crate::sqlite::id::mint().to_string(),
+            kid: crate::sqlite::id::mint(),
             secret: random_bytes::<SECRET_LEN>().to_vec(),
             label,
             profile,
@@ -75,7 +76,7 @@ impl Eab {
             "INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
-        .bind(&eab.kid)
+        .bind(eab.kid)
         .bind(&eab.secret)
         .bind(&eab.label)
         .bind(&eab.profile)
@@ -97,6 +98,9 @@ impl Eab {
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
         debug!(event = "db_eab_find_by_kid_started", outcome = "progress", kid = ?kid, profile = %profile);
+        let Some(kid) = crate::sqlite::id::parse(kid) else {
+            return Ok(None);
+        };
         let row = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
              WHERE kid = ? AND (profile IS NULL OR profile = ?);",
@@ -118,6 +122,9 @@ impl Eab {
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
         debug!(event = "db_eab_find_any_by_kid_started", outcome = "progress", kid = ?kid);
+        let Some(kid) = crate::sqlite::id::parse(kid) else {
+            return Ok(None);
+        };
         let row = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys WHERE kid = ?;",
         )
@@ -193,6 +200,9 @@ impl Eab {
     /// matches the row and reports `true`. Returns whether a row existed.
     pub async fn revoke(kid: &str, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_eab_revoke_started", outcome = "progress", kid = ?kid);
+        let Some(kid) = crate::sqlite::id::parse(kid) else {
+            return Ok(false);
+        };
         let result = sqlx::query("UPDATE eab_keys SET status = 'revoked' WHERE kid = ?;")
             .bind(kid)
             .execute(&database.pool)
@@ -250,7 +260,7 @@ mod tests {
     async fn find_by_kid_round_trip() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let created = Eab::create(None, None, &db).await.unwrap();
-        let found = Eab::find_by_kid(&created.kid, "default", &db)
+        let found = Eab::find_by_kid(created.kid.to_string().as_str(), "default", &db)
             .await
             .unwrap()
             .unwrap();
@@ -288,8 +298,8 @@ mod tests {
         let second = Eab::create(None, None, &db).await.unwrap();
         let all = Eab::list_all(&db).await.unwrap();
         assert_eq!(all.len(), 2);
-        let kids: Vec<&str> = all.iter().map(|eab| eab.kid.as_str()).collect();
-        assert_eq!(kids, [first.kid.as_str(), second.kid.as_str()]);
+        let kids: Vec<String> = all.iter().map(|eab| eab.kid.to_string()).collect();
+        assert_eq!(kids, [first.kid.to_string(), second.kid.to_string()]);
     }
 
     /// The window `GET /api/eab` hands down. Every row created inside one
@@ -306,7 +316,7 @@ mod tests {
             for _ in 0..5 {
                 kids.push(Eab::create(None, None, &db).await.unwrap().kid);
             }
-            kids
+            kids.into_iter().map(|v| v.to_string()).collect()
         };
 
         let (first, total) = Eab::search(2, 0, &db).await.unwrap();
@@ -323,7 +333,7 @@ mod tests {
             .iter()
             .chain(second.iter())
             .chain(third.iter())
-            .map(|eab| eab.kid.clone())
+            .map(|eab| eab.kid.to_string())
             .collect();
         assert_eq!(walked.len(), created.len());
         for kid in &created {
@@ -349,14 +359,14 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|eab| eab.kid)
+            .map(|eab| eab.kid.to_string())
             .collect();
         let paged: Vec<String> = Eab::search(50, 0, &db)
             .await
             .unwrap()
             .0
             .into_iter()
-            .map(|eab| eab.kid)
+            .map(|eab| eab.kid.to_string())
             .collect();
 
         assert_eq!(paged, unpaged);
@@ -366,16 +376,24 @@ mod tests {
     async fn revoke_marks_revoked_reports_true_and_is_idempotent() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let eab = Eab::create(None, None, &db).await.unwrap();
-        assert!(Eab::revoke(&eab.kid, &db).await.unwrap());
         assert!(
-            !Eab::find_by_kid(&eab.kid, "default", &db)
+            Eab::revoke(eab.kid.to_string().as_str(), &db)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !Eab::find_by_kid(eab.kid.to_string().as_str(), "default", &db)
                 .await
                 .unwrap()
                 .unwrap()
                 .is_active()
         );
         // Revoking again still matches the row.
-        assert!(Eab::revoke(&eab.kid, &db).await.unwrap());
+        assert!(
+            Eab::revoke(eab.kid.to_string().as_str(), &db)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -391,7 +409,7 @@ mod tests {
         let json = eab.to_json();
         assert!(json.get("secret").is_none());
         assert!(json.get("hmacKey").is_none());
-        assert_eq!(json["kid"], eab.kid);
+        assert_eq!(json["kid"], eab.kid.to_string());
         assert_eq!(json["status"], "active");
         assert_eq!(json["label"], "x");
     }

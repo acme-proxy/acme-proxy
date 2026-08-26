@@ -569,14 +569,18 @@ async fn an_order_missing_an_authorization_never_becomes_ready() {
 
     // Drop the second authorization and its challenge, leaving the order row
     // still claiming two identifiers.
-    let surviving = authz_urls[0].rsplit('/').next().unwrap().to_string();
+    // Parsed, not bound as the string the URL carries: an id column holds the
+    // 16 bytes, and SQLite never compares text equal to a blob -- so a `!=`
+    // over an unparsed id is true of *every* row, and these two statements
+    // would empty both tables instead of leaving one authorization behind.
+    let surviving: uuid::Uuid = authz_urls[0].rsplit('/').next().unwrap().parse().unwrap();
     sqlx::query("DELETE FROM challenges WHERE authz_id != ?;")
-        .bind(&surviving)
+        .bind(surviving)
         .execute(&db.pool)
         .await
         .unwrap();
     sqlx::query("DELETE FROM authorizations WHERE id != ?;")
-        .bind(&surviving)
+        .bind(surviving)
         .execute(&db.pool)
         .await
         .unwrap();

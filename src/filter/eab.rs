@@ -156,7 +156,7 @@ impl EabList {
         // itself, and either should be enough.
         let constrained = !self.allow.is_empty() || !self.kids.is_empty();
         if constrained {
-            let permitted = self.kids.contains(&eab.kid)
+            let permitted = self.kids.contains(&eab.kid.to_string())
                 || (eab.label.is_some() && self.allow.iter().any(|p| p.is_match(label)));
             if !permitted {
                 return Verdict::Fail(format!(

@@ -378,7 +378,7 @@ async fn drain_ready(
             // Unreachable: the claim filters on the registry's own kinds. If it
             // ever happens the row must not be left leased for a full lease.
             warn!(event = "job_kind_unknown", outcome = "failure", job_id = %job.id, job_kind = %job.kind);
-            let _ = Job::retry(&job.id, runner_id, now_secs(), "no handler", &database).await;
+            let _ = Job::retry(job.id, runner_id, now_secs(), "no handler", &database).await;
             continue;
         };
 
@@ -474,7 +474,7 @@ async fn run_one(
 
     match outcome {
         JobOutcome::Done => {
-            let settled = Job::complete(&job.id, runner_id, &database).await;
+            let settled = Job::complete(job.id, runner_id, &database).await;
             report_settlement(&job, settled);
             info!(
                 event = "job_run_completed",
@@ -487,7 +487,7 @@ async fn run_one(
         }
         JobOutcome::Reschedule(delay) => {
             let run_at = now_secs().saturating_add(seconds(delay));
-            let settled = Job::reschedule(&job.id, runner_id, run_at, &database).await;
+            let settled = Job::reschedule(job.id, runner_id, run_at, &database).await;
             report_settlement(&job, settled);
             debug!(
                 event = "job_run_rescheduled",
@@ -517,7 +517,7 @@ async fn run_one(
                 return;
             }
 
-            let settled = Job::retry(&job.id, runner_id, run_at, &reason, &database).await;
+            let settled = Job::retry(job.id, runner_id, run_at, &reason, &database).await;
             report_settlement(&job, settled);
             warn!(
                 event = "job_run_retried",
@@ -546,7 +546,7 @@ async fn retire(
     reason: &str,
     database: &Database,
 ) {
-    let settled = Job::abandon(&job.id, runner_id, reason, database).await;
+    let settled = Job::abandon(job.id, runner_id, reason, database).await;
     if !report_settlement(job, settled) {
         return;
     }
@@ -855,16 +855,12 @@ mod tests {
 
         assert_eq!(handler.runs(), 1);
         assert_eq!(handler.abandons(), 0);
-        let job = Job::find_by_id(
-            &Job::find_live("test", "k", queue.database())
-                .await
-                .unwrap()
-                .map_or_else(|| "gone".to_string(), |job| job.id),
-            queue.database(),
-        )
-        .await
-        .unwrap();
-        assert!(job.is_none(), "a done job holds no identity");
+        // Asked of `find_live` directly. It went through `find_by_id` on the id
+        // `find_live` returned, or the literal `"gone"` when it returned
+        // nothing — which said the same thing twice as long as an unparseable
+        // id could reach a query at all, and says nothing now that one cannot.
+        let live = Job::find_live("test", "k", queue.database()).await.unwrap();
+        assert!(live.is_none(), "a done job holds no identity");
     }
 
     /// The property the whole retry design turns on: a transient failure must

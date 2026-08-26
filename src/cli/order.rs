@@ -1,5 +1,6 @@
 use std::io::BufRead;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use clap::Subcommand;
 
@@ -136,7 +137,7 @@ pub async fn run_order_command(
             // reads, so the two halves are spelled out and the shared envelope
             // and footer are called directly.
             if json {
-                let ids: Vec<&str> = orders.iter().map(|o| o.id.as_str()).collect();
+                let ids: Vec<Uuid> = orders.iter().map(|o| o.id).collect();
                 let mut authz_ids = Authorization::find_ids_by_orders(&ids, &database).await?;
                 let rendered: Vec<_> = orders
                     .iter()
@@ -386,7 +387,7 @@ mod tests {
         .unwrap();
         Order::create(
             profile,
-            &account.id,
+            account.id,
             vec![crate::sqlite::order::Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -416,7 +417,7 @@ mod tests {
         let csr = params.serialize_request(&key_pair).unwrap();
         let chain = match signer
             .issue(
-                &order.id,
+                order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
                 RequestedValidity::default(),
@@ -485,7 +486,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         let error = run_order_command(
             OrderCommand::Revoke {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 reason: None,
             },
             true,
@@ -511,7 +512,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         let error = run_order_command(
             OrderCommand::Revoke {
-                id: order.id,
+                id: order.id.to_string(),
                 reason: None,
             },
             true,
@@ -538,7 +539,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         let error = run_order_command(
             OrderCommand::Revoke {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 reason: None,
             },
             true,
@@ -568,7 +569,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         run_order_command(
             OrderCommand::Revoke {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 reason: Some(1),
             },
             true,
@@ -581,7 +582,7 @@ mod tests {
         .expect("a certificate issued by this profile's CA must revoke");
 
         assert!(
-            Order::find_by_id(&order.id, &database)
+            Order::find_by_id(order.id.to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .unwrap()
@@ -591,7 +592,7 @@ mod tests {
 
         let error = run_order_command(
             OrderCommand::Revoke {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 reason: None,
             },
             true,
@@ -624,7 +625,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         let error = run_order_command(
             OrderCommand::Revoke {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 reason: Some(7),
             },
             true,
@@ -647,7 +648,7 @@ mod tests {
         let mut reader: &[u8] = b"n\n";
         run_order_command(
             OrderCommand::Delete {
-                id: order.id.clone(),
+                id: order.id.to_string(),
             },
             false,
             Palette::plain(),
@@ -659,7 +660,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            Order::find_by_id(&order.id, &database)
+            Order::find_by_id(order.id.to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .is_some()
@@ -686,11 +687,11 @@ mod tests {
                 json: true,
             },
             OrderCommand::Show {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 json: true,
             },
             OrderCommand::Show {
-                id: order.id.clone(),
+                id: order.id.to_string(),
                 json: false,
             },
         ] {
@@ -819,10 +820,10 @@ mod tests {
     async fn the_expiring_arm_lists_and_renders_both_ways() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = crate::testutil::account_id(&database).await;
-        crate::testutil::issued_order(&database, "default", &acct, &["a.example.com"], 3).await;
-        crate::testutil::issued_order(&database, "default", &acct, &["b.example.com"], 5).await;
+        crate::testutil::issued_order(&database, "default", acct, &["a.example.com"], 3).await;
+        crate::testutil::issued_order(&database, "default", acct, &["b.example.com"], 5).await;
         // Renews the first, so one row carries the annotation and one does not.
-        crate::testutil::issued_order(&database, "default", &acct, &["a.example.com"], 90).await;
+        crate::testutil::issued_order(&database, "default", acct, &["a.example.com"], 90).await;
 
         for json in [false, true] {
             list_with(Some(30), None, None, false, json, database.clone())

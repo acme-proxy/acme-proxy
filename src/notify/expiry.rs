@@ -180,7 +180,7 @@ impl ExpiryDigestJob {
             } else {
                 stamped += 1;
             }
-            if let Err(error) = Order::set_cert_not_after(&id, not_after, &self.database).await {
+            if let Err(error) = Order::set_cert_not_after(id, not_after, &self.database).await {
                 error!(event = "notify_expiry_backfill_failed", outcome = "failure", profile = %profile, order_id = %id, error = %error);
                 return;
             }
@@ -227,8 +227,8 @@ impl ExpiryDigestJob {
         let certificates = entries
             .into_iter()
             .map(|entry| ExpiringCertificate {
-                order_id: entry.order.id,
-                account_id: entry.order.account_id,
+                order_id: entry.order.id.to_string(),
+                account_id: entry.order.account_id.to_string(),
                 cert_serial: entry.order.cert_serial.unwrap_or_default(),
                 identifiers: entry
                     .order
@@ -349,7 +349,7 @@ mod tests {
     /// A claimed row for `profile`, as the runner would hand one to `run`.
     fn row(profile: &str) -> Job {
         Job {
-            id: "digest".to_string(),
+            id: crate::sqlite::id::mint(),
             kind: EXPIRY_JOB_KIND.to_string(),
             dedup_key: profile.to_string(),
             payload: json!({}),
@@ -401,7 +401,12 @@ mod tests {
     /// An issued order on the `default` profile. The real signing lives in
     /// [`crate::testutil::issued_order`], hoisted there when `admin::ops`
     /// gained the supersession annotation and needed the same row.
-    async fn issued(db: &Database, account: &str, names: &[&str], not_after_days: i64) -> Order {
+    async fn issued(
+        db: &Database,
+        account: uuid::Uuid,
+        names: &[&str],
+        not_after_days: i64,
+    ) -> Order {
         crate::testutil::issued_order(db, "default", account, names, not_after_days).await
     }
 
@@ -411,12 +416,12 @@ mod tests {
     async fn a_digest_lists_what_is_expiring() {
         let (job, db) = harness(14).await;
         let acct = account_id(&db).await;
-        let soon = issued(&db, &acct, &["soon.example.com"], 3).await;
-        issued(&db, &acct, &["later.example.com"], 60).await;
+        let soon = issued(&db, acct, &["soon.example.com"], 3).await;
+        issued(&db, acct, &["later.example.com"], 60).await;
         // Half a day past the three, so the assertion below distinguishes a
         // floor from a round: an operator told "4 days" about a certificate
         // that lapses in three and a half has been told the wrong week.
-        Order::set_cert_not_after(&soon.id, now_secs() + 3 * DAY + DAY / 2, &db)
+        Order::set_cert_not_after(soon.id, now_secs() + 3 * DAY + DAY / 2, &db)
             .await
             .unwrap();
 
@@ -447,7 +452,7 @@ mod tests {
     async fn nothing_expiring_produces_no_digest_at_all() {
         let (job, db) = harness(14).await;
         let acct = account_id(&db).await;
-        issued(&db, &acct, &["fine.example.com"], 60).await;
+        issued(&db, acct, &["fine.example.com"], 60).await;
 
         assert!(
             job.collect("default", job.profiles["default"])
@@ -464,25 +469,31 @@ mod tests {
         let (job, db) = harness(14).await;
         let acct = account_id(&db).await;
 
-        let good = issued(&db, &acct, &["good.example.com"], 30).await;
-        let bad = issued(&db, &acct, &["bad.example.com"], 30).await;
+        let good = issued(&db, acct, &["good.example.com"], 30).await;
+        let bad = issued(&db, acct, &["bad.example.com"], 30).await;
         sqlx::query("UPDATE orders SET cert_not_after = NULL WHERE id IN (?, ?);")
-            .bind(&good.id)
-            .bind(&bad.id)
+            .bind(good.id)
+            .bind(bad.id)
             .execute(&db.pool)
             .await
             .unwrap();
         sqlx::query("UPDATE orders SET certificate = 'not a pem' WHERE id = ?;")
-            .bind(&bad.id)
+            .bind(bad.id)
             .execute(&db.pool)
             .await
             .unwrap();
 
         job.backfill("default").await;
 
-        let good = Order::find_by_id(&good.id, &db).await.unwrap().unwrap();
+        let good = Order::find_by_id(good.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(good.cert_not_after.unwrap() > now_secs());
-        let bad = Order::find_by_id(&bad.id, &db).await.unwrap().unwrap();
+        let bad = Order::find_by_id(bad.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(bad.cert_not_after, Some(UNPARSABLE_NOT_AFTER));
 
         // Nothing is left for a second pass to re-parse.

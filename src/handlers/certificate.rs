@@ -125,7 +125,7 @@ pub async fn post_revoke_cert(
     // row already says which key it must have been. Resolved here so the
     // refusal rows below can name a signer this server has not authorized.
     let actor = match &account {
-        Some(cached) => crate::audit::Actor::acme(&cached.id),
+        Some(cached) => crate::audit::Actor::acme(cached.id.to_string()),
         None => crate::audit::Actor::acme_certificate_key(),
     };
     // One reverse lookup for whichever arm answers.
@@ -277,8 +277,8 @@ pub async fn post_revoke_cert(
         .notify
         .dispatch(NotifyEvent::CertificateRevoked(CertificateRevokedData {
             profile: profile.name.clone(),
-            order_id: order.id.clone(),
-            account_id: order.account_id.clone(),
+            order_id: order.id.to_string(),
+            account_id: order.account_id.clone().to_string(),
             cert_serial: serial_hex.clone(),
             reason: payload.reason,
             client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),

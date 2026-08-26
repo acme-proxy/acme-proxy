@@ -391,7 +391,7 @@ async fn resolve_live(
         return Err(AdminError::session_idle());
     }
 
-    let Some(user) = AdminUser::find_by_id(&session.user_id, &state.database).await? else {
+    let Some(user) = AdminUser::find_by_id(session.user_id, &state.database).await? else {
         // The FK cascade should make this impossible; if it happens, the
         // session is orphaned and must not authenticate anybody.
         warn!(event = "admin_session_orphaned", outcome = "failure", session_fp = %fingerprint(&token_hash));

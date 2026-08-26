@@ -12,6 +12,7 @@
 //! database.
 
 use std::sync::Arc;
+use uuid::Uuid;
 
 use tracing::{info, warn};
 
@@ -104,7 +105,7 @@ pub async fn verify_second_factor(
         if !user.claim_totp_step(step, &database).await? {
             return Ok(MfaOutcome::Replayed);
         }
-        let left = AdminRecoveryCode::count_unused(&user.id, &database).await?;
+        let left = AdminRecoveryCode::count_unused(user.id, &database).await?;
         return Ok(MfaOutcome::Accepted {
             via: MfaMethod::Totp,
             recovery_codes_left: left,
@@ -116,15 +117,15 @@ pub async fn verify_second_factor(
         return Ok(MfaOutcome::Rejected);
     }
 
-    for code in AdminRecoveryCode::list_unused(&user.id, &database).await? {
+    for code in AdminRecoveryCode::list_unused(user.id, &database).await? {
         match password::verify_password(&code.code_hash, &candidate) {
             Ok(true) => {
-                if !AdminRecoveryCode::consume(&code.id, &database).await? {
+                if !AdminRecoveryCode::consume(code.id, &database).await? {
                     // Lost the race to a concurrent submission of this very
                     // code. Refusing is the correct answer for the loser.
                     return Ok(MfaOutcome::Rejected);
                 }
-                let left = AdminRecoveryCode::count_unused(&user.id, &database).await?;
+                let left = AdminRecoveryCode::count_unused(user.id, &database).await?;
                 warn!(event = "admin_mfa_recovery_code_used",
                       outcome = "success",
                       user_id = %user.id,
@@ -246,7 +247,7 @@ pub async fn disable_totp(
     database: Arc<Database>,
 ) -> Result<(), sqlx::Error> {
     user.clear_totp(&database).await?;
-    AdminRecoveryCode::delete_for_user(&user.id, &database).await?;
+    AdminRecoveryCode::delete_for_user(user.id, &database).await?;
     revoke_other_sessions(user, keep_session, database).await?;
 
     info!(event = "admin_mfa_disabled", outcome = "success", user_id = %user.id, username = %user.username);
@@ -270,7 +271,7 @@ pub async fn regenerate_recovery_codes(
 
 /// How many unspent recovery codes this operator holds.
 pub async fn recovery_codes_remaining(
-    user_id: &str,
+    user_id: Uuid,
     database: Arc<Database>,
 ) -> Result<i64, sqlx::Error> {
     AdminRecoveryCode::count_unused(user_id, &database).await
@@ -297,7 +298,7 @@ async fn issue_recovery_codes(
         .iter()
         .map(|code| password::hash_generated_secret(&recovery::normalize(code)))
         .collect();
-    AdminRecoveryCode::replace_all(&user.id, &hashes, &database).await?;
+    AdminRecoveryCode::replace_all(user.id, &hashes, &database).await?;
     Ok(codes)
 }
 
@@ -308,9 +309,9 @@ async fn revoke_other_sessions(
 ) -> Result<u64, sqlx::Error> {
     match keep_session {
         Some(token_hash) => {
-            AdminSession::delete_for_user_except(&user.id, token_hash, &database).await
+            AdminSession::delete_for_user_except(user.id, token_hash, &database).await
         }
-        None => AdminSession::delete_for_user(&user.id, &database).await,
+        None => AdminSession::delete_for_user(user.id, &database).await,
     }
 }
 
@@ -379,9 +380,7 @@ mod tests {
         assert!(!user.has_totp());
         assert!(user.has_pending_totp());
         assert_eq!(
-            recovery_codes_remaining(&user.id, db.clone())
-                .await
-                .unwrap(),
+            recovery_codes_remaining(user.id, db.clone()).await.unwrap(),
             0
         );
 
@@ -398,7 +397,7 @@ mod tests {
         );
         assert_eq!(codes.len(), recovery::CODE_COUNT);
         assert_eq!(
-            recovery_codes_remaining(&user.id, db).await.unwrap(),
+            recovery_codes_remaining(user.id, db).await.unwrap(),
             recovery::CODE_COUNT as i64
         );
     }
@@ -520,7 +519,7 @@ mod tests {
         );
 
         assert_eq!(
-            recovery_codes_remaining(&user.id, db).await.unwrap(),
+            recovery_codes_remaining(user.id, db).await.unwrap(),
             recovery::CODE_COUNT as i64 - 3
         );
     }
@@ -530,14 +529,14 @@ mod tests {
         let db = db().await;
         let (mut user, _) = enrolled(db.clone()).await;
 
-        let first = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap();
+        let first = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap();
         let second = regenerate_recovery_codes(&user, db.clone()).await.unwrap();
         assert_eq!(second.len(), recovery::CODE_COUNT);
 
         // A code from the old set is worth nothing now. Verify through the
         // stored hashes rather than the plaintext, which the first call never
         // returned.
-        for code in AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap() {
+        for code in AdminRecoveryCode::list_unused(user.id, &db).await.unwrap() {
             assert!(first.iter().all(|old| old.id != code.id));
         }
         assert_eq!(
@@ -563,16 +562,14 @@ mod tests {
         assert!(!user.has_pending_totp());
         assert_eq!(user.totp_last_step, None);
         assert_eq!(
-            recovery_codes_remaining(&user.id, db.clone())
-                .await
-                .unwrap(),
+            recovery_codes_remaining(user.id, db.clone()).await.unwrap(),
             0,
             "a recovery code for a factor that no longer exists is a second password"
         );
 
         // Re-read from the database: the in-memory sync must not be the only
         // place this happened.
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert!(!reloaded.has_totp());
         assert!(!reloaded.has_pending_totp());
         assert_eq!(reloaded.totp_last_step, None);
@@ -585,7 +582,7 @@ mod tests {
 
         let kept = AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "kept-hash",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -598,7 +595,7 @@ mod tests {
         .unwrap();
         AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "other-hash",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -619,14 +616,14 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let live = AdminSession::list_all(Some(&user.id), &db).await.unwrap();
+        let live = AdminSession::list_all(Some(user.id), &db).await.unwrap();
         assert_eq!(live.len(), 1, "every other browser must be signed out");
         assert_eq!(live[0].token_hash, "kept-hash");
 
         // And disabling takes the last one too, when nothing is kept.
         disable_totp(&mut user, None, db.clone()).await.unwrap();
         assert!(
-            AdminSession::list_all(Some(&user.id), &db)
+            AdminSession::list_all(Some(user.id), &db)
                 .await
                 .unwrap()
                 .is_empty()

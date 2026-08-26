@@ -269,9 +269,10 @@ fn a_record_carries_only_what_was_set_on_it() {
 /// identifiers into the row so the trail survives the order being deleted.
 #[test]
 fn with_order_freezes_the_identifiers_rather_than_leaving_a_reference() {
+    let account = crate::sqlite::id::mint();
     let order = crate::sqlite::order::Order::new(
         "le",
-        "acct-7",
+        account,
         vec![
             crate::sqlite::order::Identifier::dns("a.example.com"),
             crate::sqlite::order::Identifier::dns("*.example.com"),
@@ -283,8 +284,8 @@ fn with_order_freezes_the_identifiers_rather_than_leaving_a_reference() {
     let record =
         AuditRecord::new(AuditEvent::CertificateIssued, "le", Actor::system()).with_order(&order);
 
-    assert_eq!(record.order_id.as_deref(), Some(order.id.as_str()));
-    assert_eq!(record.account_id.as_deref(), Some("acct-7"));
+    assert_eq!(record.order_id, Some(order.id.to_string()));
+    assert_eq!(record.account_id, Some(account.to_string()));
     assert_eq!(record.identifiers, vec!["a.example.com", "*.example.com"]);
 }
 

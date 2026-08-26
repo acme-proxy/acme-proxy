@@ -439,7 +439,9 @@ pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<crate::sqlite::order::Iden
 /// `admin::render`, `sqlite::order`) — the same accumulation as `TempDir` and
 /// the `Identifier` builders, and the reason both now live somewhere shared.
 #[cfg(test)]
-pub(crate) async fn account_id(database: &std::sync::Arc<crate::sqlite::db::Database>) -> String {
+pub(crate) async fn account_id(
+    database: &std::sync::Arc<crate::sqlite::db::Database>,
+) -> uuid::Uuid {
     let (account, _) = crate::sqlite::account::Account::find_or_create(
         "default",
         &[1u8, 2, 3],
@@ -491,7 +493,7 @@ pub(crate) async fn account_seen_from(
 /// An unsaved order in the `default` profile, in `status`.
 #[cfg(test)]
 pub(crate) fn order_fixture(
-    account_id: &str,
+    account_id: uuid::Uuid,
     status: crate::sqlite::status::OrderStatus,
 ) -> crate::sqlite::order::Order {
     let mut order = crate::sqlite::order::Order::new(
@@ -518,7 +520,7 @@ pub(crate) fn order_fixture(
 pub(crate) async fn issued_order(
     database: &crate::sqlite::db::Database,
     profile: &str,
-    account: &str,
+    account: uuid::Uuid,
     names: &[&str],
     not_after_days: i64,
 ) -> crate::sqlite::order::Order {
@@ -545,7 +547,7 @@ pub(crate) async fn issued_order(
     let csr = params.serialize_request(&key_pair).unwrap();
     let chain = match crate::signer::SignerBackend::issue(
         &signer,
-        &order.id,
+        order.id.to_string().as_str(),
         csr.der(),
         &order.identifiers,
         crate::signer::RequestedValidity::default(),
@@ -598,13 +600,17 @@ pub(crate) fn audit_entry() -> crate::sqlite::audit::AuditEntry {
 
 /// An `active` operator with no second factor and no login yet.
 ///
+/// The id both admin fixtures carry, so the session keeps naming its user.
+#[cfg(test)]
+pub(crate) const ADMIN_FIXTURE_ID: uuid::Uuid = uuid::uuid!("11111111-2222-3333-4444-555555555555");
+
 /// The `password_hash` is a syntactically valid stored hash rather than a
 /// placeholder, because more than one test asserts `pbkdf2` never reaches a
 /// terminal and a fake would pass that vacuously.
 #[cfg(test)]
 pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
     crate::sqlite::admin_user::AdminUser {
-        id: "11111111-2222-3333-4444-555555555555".to_string(),
+        id: ADMIN_FIXTURE_ID,
         username: "alice".to_string(),
         password_hash: "pbkdf2-sha256$600000$c2FsdA$aGFzaA".to_string(),
         status: "active".to_string(),
@@ -622,7 +628,7 @@ pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
 pub(crate) fn admin_session_fixture() -> crate::sqlite::admin_session::AdminSession {
     crate::sqlite::admin_session::AdminSession {
         token_hash: "0123456789abcdef0123456789abcdef".to_string(),
-        user_id: "11111111-2222-3333-4444-555555555555".to_string(),
+        user_id: ADMIN_FIXTURE_ID,
         csrf_token: "the-csrf-token".to_string(),
         state: "active".to_string(),
         mfa_attempts: 0,

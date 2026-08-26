@@ -172,7 +172,7 @@ mod tests {
         let mut reader: &[u8] = b"n\n";
         run_account_command(
             AccountCommand::Delete {
-                id: account.id.clone(),
+                id: account.id.to_string(),
             },
             false,
             Palette::plain(),
@@ -184,7 +184,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            Account::find_any_by_id(&account.id, &database)
+            Account::find_any_by_id(account.id.to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .is_some(),
@@ -289,7 +289,7 @@ mod tests {
 
         run_account_command(
             AccountCommand::Show {
-                id: account.id,
+                id: account.id.to_string(),
                 json: true,
             },
             true,

@@ -1084,7 +1084,7 @@ async fn seed(
         .unwrap();
         Order::create(
             PROFILE,
-            &account.id,
+            account.id,
             vec![Identifier::dns(format!("host{index}.example.com"))],
             2_000_000_000,
             None,
@@ -1093,7 +1093,7 @@ async fn seed(
         )
         .await
         .unwrap();
-        ids.push(account.id);
+        ids.push(account.id.to_string());
     }
     ids
 }
@@ -1375,7 +1375,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     let identifier = Identifier::dns("revoke-me.example.com");
     let mut order = Order::create(
         PROFILE,
-        &account.id,
+        account.id,
         vec![identifier.clone()],
         2_000_000_000,
         None,
@@ -1393,7 +1393,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     };
     let issued = signer
         .issue(
-            &order.id,
+            &order.id.to_string(),
             &csr_der,
             &[identifier],
             RequestedValidity::default(),
@@ -1476,7 +1476,7 @@ async fn issue_into_an_order(
     let identifier = Identifier::dns(name);
     let mut order = Order::create(
         PROFILE,
-        &account.id,
+        account.id,
         vec![identifier.clone()],
         2_000_000_000,
         None,
@@ -1492,7 +1492,7 @@ async fn issue_into_an_order(
     };
     let issued = signer
         .issue(
-            &order.id,
+            &order.id.to_string(),
             &csr_der,
             &[identifier],
             RequestedValidity::default(),
@@ -1516,7 +1516,7 @@ async fn issue_into_an_order(
         .await
         .unwrap();
 
-    (order.id, chain)
+    (order.id.to_string(), chain)
 }
 
 /// The card shows the certificate itself, not the ACME URL.
@@ -1623,7 +1623,7 @@ async fn downloading_a_chain_from_an_unissued_order_is_a_404() {
     )
     .await
     .unwrap();
-    let order_id = &orders[0].id;
+    let order_id = orders[0].id;
 
     let response = admin_page(
         &app,
@@ -1739,7 +1739,7 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
 
     // Move the row to a profile the harness does not mount.
     sqlx::query("UPDATE orders SET profile = 'gone' WHERE id = ?")
-        .bind(&orders[0].id)
+        .bind(orders[0].id)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -2240,7 +2240,7 @@ async fn the_page_surface_fails_closed_when_the_database_is_gone() {
 /// chain — `tests/admin_api.rs`'s `expiring` and for its reason.
 async fn expiring_row(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
-    account: &str,
+    account: uuid::Uuid,
     names: &[&str],
     not_after: i64,
 ) -> String {
@@ -2260,14 +2260,14 @@ async fn expiring_row(
     order
         .finalize(
             "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
-            format!("serial-{}", &order.id[..8]),
+            format!("serial-{}", &order.id.to_string()[..8]),
             vec![1],
             Some(not_after),
             database,
         )
         .await
         .unwrap();
-    order.id
+    order.id.to_string()
 }
 
 /// The `/ui` twin of
@@ -2296,11 +2296,11 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
 
     const DAY: i64 = 24 * 60 * 60;
     let now = now_unix();
-    let soon = expiring_row(&database, &account.id, &["soon.example.com"], now + 3 * DAY).await;
-    let mid = expiring_row(&database, &account.id, &["mid.example.com"], now + 20 * DAY).await;
+    let soon = expiring_row(&database, account.id, &["soon.example.com"], now + 3 * DAY).await;
+    let mid = expiring_row(&database, account.id, &["mid.example.com"], now + 20 * DAY).await;
     let renewal = expiring_row(
         &database,
-        &account.id,
+        account.id,
         &["soon.example.com"],
         now + 300 * DAY,
     )
@@ -2309,7 +2309,7 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     // EAB label, on a page that renders it into a table cell.
     expiring_row(
         &database,
-        &account.id,
+        account.id,
         &["<script>alert(1)</script>"],
         now + 5 * DAY,
     )

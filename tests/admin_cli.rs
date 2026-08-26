@@ -59,7 +59,7 @@ async fn account_cli_list_and_show() {
     .unwrap();
     run_account_command(
         AccountCommand::Show {
-            id: account.id.clone(),
+            id: account.id.to_string(),
             json: false,
         },
         false,
@@ -72,7 +72,7 @@ async fn account_cli_list_and_show() {
     .unwrap();
     run_account_command(
         AccountCommand::Show {
-            id: account.id.clone(),
+            id: account.id.to_string(),
             json: true,
         },
         false,
@@ -102,7 +102,7 @@ async fn account_cli_update_deactivate_delete() {
     let mut reader: &[u8] = &[];
     run_account_command(
         AccountCommand::UpdateContact {
-            id: account.id.clone(),
+            id: account.id.to_string(),
             contact: vec!["mailto:updated@example.com".to_string()],
         },
         false,
@@ -116,7 +116,7 @@ async fn account_cli_update_deactivate_delete() {
 
     run_account_command(
         AccountCommand::Deactivate {
-            id: account.id.clone(),
+            id: account.id.to_string(),
         },
         false,
         Palette::plain(),
@@ -130,7 +130,7 @@ async fn account_cli_update_deactivate_delete() {
     let mut reader = b"no\n".as_slice();
     run_account_command(
         AccountCommand::Delete {
-            id: account.id.clone(),
+            id: account.id.to_string(),
         },
         false,
         Palette::plain(),
@@ -144,7 +144,7 @@ async fn account_cli_update_deactivate_delete() {
     let mut reader: &[u8] = &[];
     run_account_command(
         AccountCommand::Delete {
-            id: account.id.clone(),
+            id: account.id.to_string(),
         },
         true,
         Palette::plain(),
@@ -176,7 +176,7 @@ async fn order_cli_list_show_delete() {
         .as_secs() as i64;
     let order = Order::create(
         "default",
-        &account.id,
+        account.id,
         vec![Identifier::dns("example.com")],
         now + 3600,
         None,
@@ -190,7 +190,7 @@ async fn order_cli_list_show_delete() {
     run_order_command(
         OrderCommand::List {
             profile: None,
-            account_id: Some(account.id.clone()),
+            account_id: Some(account.id.to_string()),
             status: Some("pending".to_string()),
             expiring_in: None,
             hide_superseded: false,
@@ -229,7 +229,7 @@ async fn order_cli_list_show_delete() {
 
     run_order_command(
         OrderCommand::Show {
-            id: order.id.clone(),
+            id: order.id.to_string(),
             json: false,
         },
         false,
@@ -243,7 +243,7 @@ async fn order_cli_list_show_delete() {
 
     run_order_command(
         OrderCommand::Show {
-            id: order.id.clone(),
+            id: order.id.to_string(),
             json: true,
         },
         false,
@@ -258,7 +258,7 @@ async fn order_cli_list_show_delete() {
     let mut reader = b"no\n".as_slice();
     run_order_command(
         OrderCommand::Delete {
-            id: order.id.clone(),
+            id: order.id.to_string(),
         },
         false,
         Palette::plain(),
@@ -272,7 +272,7 @@ async fn order_cli_list_show_delete() {
     let mut reader: &[u8] = &[];
     run_order_command(
         OrderCommand::Delete {
-            id: order.id.clone(),
+            id: order.id.to_string(),
         },
         true,
         Palette::plain(),
@@ -358,11 +358,11 @@ async fn eab_cli_create_list_show_revoke() {
     .unwrap();
 
     let keys = acme_proxy::sqlite::eab::Eab::list_all(&db).await.unwrap();
-    let kid = keys[0].kid.clone();
+    let kid = keys[0].kid;
 
     run_eab_command(
         EabCommand::Show {
-            kid: kid.clone(),
+            kid: kid.to_string(),
             json: false,
         },
         Palette::plain(),
@@ -373,7 +373,7 @@ async fn eab_cli_create_list_show_revoke() {
 
     run_eab_command(
         EabCommand::Show {
-            kid: kid.clone(),
+            kid: kid.to_string(),
             json: true,
         },
         Palette::plain(),
@@ -383,7 +383,9 @@ async fn eab_cli_create_list_show_revoke() {
     .unwrap();
 
     run_eab_command(
-        EabCommand::Revoke { kid: kid.clone() },
+        EabCommand::Revoke {
+            kid: kid.to_string(),
+        },
         Palette::plain(),
         db.clone(),
     )
@@ -426,7 +428,7 @@ async fn order_cli_lists_what_is_expiring() {
     ] {
         let mut order = Order::create(
             "default",
-            &account.id,
+            account.id,
             vec![Identifier::dns(name)],
             now + 3600,
             None,
@@ -438,7 +440,7 @@ async fn order_cli_lists_what_is_expiring() {
         order
             .finalize(
                 "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
-                format!("serial-{}", &order.id[..8]),
+                format!("serial-{}", &order.id.to_string()[..8]),
                 vec![1],
                 Some(now + days * DAY),
                 &db,

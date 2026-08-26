@@ -431,7 +431,7 @@ mod tests {
         let account_id = crate::testutil::account_id(&db).await;
         let order = crate::sqlite::order::Order::new(
             "default",
-            &account_id,
+            account_id,
             vec![crate::sqlite::order::Identifier::dns("a.example.com")],
             0,
             None,
@@ -443,7 +443,7 @@ mod tests {
             AuditRecord::new(
                 AuditEvent::CertificateIssued,
                 "default",
-                Actor::acme(&account_id),
+                Actor::acme(account_id.to_string()),
             )
             .with_order(&order),
             &db,
@@ -452,19 +452,19 @@ mod tests {
         .unwrap();
 
         // The cascade takes the order with the account; neither takes the row.
-        crate::sqlite::account::Account::delete(&account_id, &db)
+        crate::sqlite::account::Account::delete(account_id.to_string().as_str(), &db)
             .await
             .unwrap();
         assert!(
-            crate::sqlite::order::Order::find_by_id(&order.id, &db)
+            crate::sqlite::order::Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
         );
 
         let entry = AuditEntry::find_by_id(id, &db).await.unwrap().unwrap();
-        assert_eq!(entry.account_id.as_deref(), Some(account_id.as_str()));
-        assert_eq!(entry.order_id.as_deref(), Some(order.id.as_str()));
+        assert_eq!(entry.account_id, Some(account_id.to_string()));
+        assert_eq!(entry.order_id, Some(order.id.to_string()));
         assert_eq!(entry.identifiers, vec!["a.example.com"]);
     }
 

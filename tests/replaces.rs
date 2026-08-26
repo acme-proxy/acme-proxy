@@ -375,7 +375,7 @@ async fn an_invalid_replacement_order_does_not_block_a_retry() {
     // Whatever made it fail — a challenge that never validated, a signer error
     // at finalize — the order ends up terminal.
     sqlx::query("UPDATE orders SET status = 'invalid' WHERE id = ?")
-        .bind(&first_id)
+        .bind(first_id.parse::<uuid::Uuid>().unwrap())
         .execute(&db.pool)
         .await
         .unwrap();

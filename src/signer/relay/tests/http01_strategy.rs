@@ -53,14 +53,14 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     assert_eq!(upstream.challenge_triggered(), 1);
 
@@ -120,14 +120,14 @@ async fn http01_retracts_after_a_rejected_challenge() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Invalid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Invalid).await;
 
     assert_eq!(
         tokens.retracted.lock().unwrap().len(),
@@ -167,16 +167,21 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
 
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -216,16 +221,21 @@ async fn http01_refuses_a_wildcard_authorization() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
 
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -354,14 +364,14 @@ async fn http01_answers_past_a_challenge_type_carrying_no_token() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     let thumbprint = crate::extractors::acme::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
     assert_eq!(

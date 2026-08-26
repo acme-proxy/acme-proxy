@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 use crate::admin::prompt::confirm;
 use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
@@ -122,7 +123,7 @@ pub async fn confirm_delete_account(
     let Some(account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
     };
-    let order_count = Order::count_by_account(id, &database).await?;
+    let order_count = Order::count_by_account(account.id, &database).await?;
     let prompt = format!(
         "Delete account {id} (status: {}, {order_count} order(s) will cascade)?",
         account.status
@@ -157,7 +158,7 @@ pub async fn confirm_delete_order(
     let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
     };
-    let authz_count = Authorization::count_by_order(id, &database).await?;
+    let authz_count = Authorization::count_by_order(order.id, &database).await?;
     let prompt = format!(
         "Delete order {id} (status: {}, {authz_count} authorization(s) will cascade)?",
         order.status
@@ -191,19 +192,21 @@ pub async fn confirm_cleanup_nonces(
 /// How many orders an account delete would cascade, or `None` if there is no
 /// such account. Shared so the prompt and the bare delete agree on the count.
 async fn account_cascade(id: &str, database: Arc<Database>) -> Result<Option<u64>, sqlx::Error> {
-    if Account::find_any_by_id(id, &database).await?.is_none() {
+    let Some(account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
-    }
-    Ok(Some(Order::count_by_account(id, &database).await? as u64))
+    };
+    Ok(Some(
+        Order::count_by_account(account.id, &database).await? as u64,
+    ))
 }
 
 /// The [`account_cascade`] counterpart for an order's authorizations.
 async fn order_cascade(id: &str, database: Arc<Database>) -> Result<Option<u64>, sqlx::Error> {
-    if Order::find_by_id(id, &database).await?.is_none() {
+    let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(None);
-    }
+    };
     Ok(Some(
-        Authorization::count_by_order(id, &database).await? as u64,
+        Authorization::count_by_order(order.id, &database).await? as u64,
     ))
 }
 
@@ -369,10 +372,10 @@ pub async fn load_order_detail(
     let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(None);
     };
-    let authzs = Authorization::find_by_order(&order.id, &database).await?;
+    let authzs = Authorization::find_by_order(order.id, &database).await?;
     let mut authorizations = Vec::with_capacity(authzs.len());
     for authz in authzs {
-        let challenges = Challenge::find_by_authz(&authz.id, &database).await?;
+        let challenges = Challenge::find_by_authz(authz.id, &database).await?;
         authorizations.push((authz, challenges));
     }
     Ok(Some(OrderDetail {
@@ -504,7 +507,7 @@ pub async fn superseded_by(
         && successor.revoked_at.is_none()
     {
         return Ok(Some(SupersededBy {
-            order_id: successor.id,
+            order_id: successor.id.to_string(),
             cert_serial: successor.cert_serial.unwrap_or_default(),
             not_after: successor.cert_not_after.unwrap_or_default(),
             via: "replaces".to_string(),
@@ -537,7 +540,7 @@ pub async fn superseded_by(
             .collect();
         if names.is_subset(&covered) {
             return Ok(Some(SupersededBy {
-                order_id: candidate.id.clone(),
+                order_id: candidate.id.to_string(),
                 cert_serial: candidate.cert_serial.clone().unwrap_or_default(),
                 not_after: candidate.cert_not_after.unwrap_or_default(),
                 via: "identifiers".to_string(),
@@ -564,13 +567,13 @@ pub async fn annotate_expiring(
     database: &Database,
 ) -> Result<Vec<ExpiringEntry>, sqlx::Error> {
     let now = now_secs();
-    let mut by_account: HashMap<String, Vec<Order>> = HashMap::new();
+    let mut by_account: HashMap<Uuid, Vec<Order>> = HashMap::new();
     let mut entries = Vec::with_capacity(orders.len());
 
     for order in orders {
-        if !by_account.contains_key(&order.account_id) {
-            let candidates = Order::find_by_account(&order.account_id, database).await?;
-            by_account.insert(order.account_id.clone(), candidates);
+        if let std::collections::hash_map::Entry::Vacant(slot) = by_account.entry(order.account_id)
+        {
+            slot.insert(Order::find_by_account(order.account_id, database).await?);
         }
         // Present by construction — inserted directly above when absent, so
         // the empty slice is unreachable rather than a fallback.
@@ -646,14 +649,19 @@ mod tests {
     }
 
     /// An order with a chain a certID can be derived from, on `default`.
-    async fn issued(db: &Database, account: &str, names: &[&str], not_after_days: i64) -> Order {
+    async fn issued(
+        db: &Database,
+        account: uuid::Uuid,
+        names: &[&str],
+        not_after_days: i64,
+    ) -> Order {
         issued_order(db, "default", account, names, not_after_days).await
     }
 
     /// [`superseded_by`] with the candidate list it would fetch for itself —
     /// what a caller holding one order and no cache does.
     async fn annotation(order: &Order, db: &Database) -> Option<SupersededBy> {
-        let candidates = Order::find_by_account(&order.account_id, db).await.unwrap();
+        let candidates = Order::find_by_account(order.account_id, db).await.unwrap();
         superseded_by(order, &candidates, db).await.unwrap()
     }
 
@@ -776,7 +784,7 @@ mod tests {
         let order = finalized_order(db.clone(), &signer).await;
 
         let outcome = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             Some(1),
             Actor::admin("root"),
             ClientContext {
@@ -798,8 +806,8 @@ mod tests {
         assert_eq!(row.outcome, "success");
         assert_eq!(row.actor_kind, "admin");
         assert_eq!(row.actor_id.as_deref(), Some("root"));
-        assert_eq!(row.account_id.as_deref(), Some(order.account_id.as_str()));
-        assert_eq!(row.order_id.as_deref(), Some(order.id.as_str()));
+        assert_eq!(row.account_id, Some(order.account_id.to_string()));
+        assert_eq!(row.order_id, Some(order.id.to_string()));
         assert_eq!(row.cert_serial, order.cert_serial);
         assert_eq!(row.client_ip.as_deref(), Some("203.0.113.7"));
         assert_eq!(row.client_ptr.as_deref(), Some("desk.example.com"));
@@ -808,7 +816,7 @@ mod tests {
         // Revoking again is `AlreadyRevoked` and writes nothing: the operator
         // is being told the state of things, not refused a CA action.
         let outcome = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             None,
             Actor::admin("root"),
             ClientContext::default(),
@@ -830,7 +838,7 @@ mod tests {
         let order = finalized_order(db.clone(), &signer).await;
 
         revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             None,
             cli_actor(),
             ClientContext::default(),
@@ -864,12 +872,13 @@ mod tests {
         let acct = account_id(&db).await;
 
         let mut reader = b"n\n".as_slice();
-        let outcome = confirm_delete_account(&acct, false, &mut reader, db.clone())
-            .await
-            .unwrap();
+        let outcome =
+            confirm_delete_account(acct.to_string().as_str(), false, &mut reader, db.clone())
+                .await
+                .unwrap();
         assert_eq!(outcome, DeleteOutcome::Cancelled);
         assert!(
-            Account::find_by_id("default", &acct, &db)
+            Account::find_by_id("default", acct.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_some()
@@ -882,7 +891,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -893,17 +902,23 @@ mod tests {
         .unwrap();
 
         let mut reader: &[u8] = &[];
-        let outcome = confirm_delete_account(&acct, true, &mut reader, db.clone())
-            .await
-            .unwrap();
+        let outcome =
+            confirm_delete_account(acct.to_string().as_str(), true, &mut reader, db.clone())
+                .await
+                .unwrap();
         assert_eq!(outcome, DeleteOutcome::Deleted);
         assert!(
-            Account::find_by_id("default", &acct, &db)
+            Account::find_by_id("default", acct.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
         );
-        assert!(Order::find_by_id(&order.id, &db).await.unwrap().is_none());
+        assert!(
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -922,7 +937,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -933,11 +948,21 @@ mod tests {
         .unwrap();
 
         let mut reader = b"no\n".as_slice();
-        let outcome = confirm_delete_order(&order.id, false, &mut reader, db.clone())
-            .await
-            .unwrap();
+        let outcome = confirm_delete_order(
+            order.id.to_string().as_str(),
+            false,
+            &mut reader,
+            db.clone(),
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome, DeleteOutcome::Cancelled);
-        assert!(Order::find_by_id(&order.id, &db).await.unwrap().is_some());
+        assert!(
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -946,7 +971,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -956,7 +981,7 @@ mod tests {
         .await
         .unwrap();
         let authz = Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             crate::sqlite::nonce::now_secs() + 3600,
             &db,
@@ -965,13 +990,19 @@ mod tests {
         .unwrap();
 
         let mut reader: &[u8] = &[];
-        let outcome = confirm_delete_order(&order.id, true, &mut reader, db.clone())
-            .await
-            .unwrap();
+        let outcome =
+            confirm_delete_order(order.id.to_string().as_str(), true, &mut reader, db.clone())
+                .await
+                .unwrap();
         assert_eq!(outcome, DeleteOutcome::Deleted);
-        assert!(Order::find_by_id(&order.id, &db).await.unwrap().is_none());
         assert!(
-            Authorization::find_by_id(&authz.id, &db)
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Authorization::find_by_id(authz.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
@@ -994,7 +1025,7 @@ mod tests {
         for _ in 0..2 {
             Order::create(
                 "default",
-                &acct,
+                acct,
                 vec![Identifier::dns("example.com")],
                 crate::sqlite::nonce::now_secs() + 3600,
                 None,
@@ -1006,11 +1037,13 @@ mod tests {
         }
 
         assert_eq!(
-            delete_account(&acct, db.clone()).await.unwrap(),
+            delete_account(acct.to_string().as_str(), db.clone())
+                .await
+                .unwrap(),
             Some(Deleted { cascaded: 2 })
         );
         assert!(
-            Account::find_by_id("default", &acct, &db)
+            Account::find_by_id("default", acct.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
@@ -1029,7 +1062,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -1039,7 +1072,7 @@ mod tests {
         .await
         .unwrap();
         Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             crate::sqlite::nonce::now_secs() + 3600,
             &db,
@@ -1048,10 +1081,17 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            delete_order(&order.id, db.clone()).await.unwrap(),
+            delete_order(order.id.to_string().as_str(), db.clone())
+                .await
+                .unwrap(),
             Some(Deleted { cascaded: 1 })
         );
-        assert!(Order::find_by_id(&order.id, &db).await.unwrap().is_none());
+        assert!(
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1088,7 +1128,7 @@ mod tests {
         let acct = account_id(&db).await;
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -1103,7 +1143,7 @@ mod tests {
         let csr = params.serialize_request(&key_pair).unwrap();
         let chain = match signer
             .issue(
-                &order.id,
+                order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
                 crate::signer::RequestedValidity::default(),
@@ -1148,7 +1188,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -1159,7 +1199,7 @@ mod tests {
         .unwrap();
 
         let outcome = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             None,
             cli_actor(),
             ClientContext::default(),
@@ -1178,7 +1218,7 @@ mod tests {
         let order = finalized_order(db.clone(), &signer).await;
 
         let outcome = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             Some(1),
             cli_actor(),
             ClientContext::default(),
@@ -1193,7 +1233,10 @@ mod tests {
         assert!(revoked.revoked_at.is_some());
         assert_eq!(revoked.revocation_reason, Some(1));
 
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(reloaded.revoked_at.is_some());
 
         use x509_parser::prelude::FromDer;
@@ -1210,7 +1253,7 @@ mod tests {
         let order = finalized_order(db.clone(), &signer).await;
 
         revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             None,
             cli_actor(),
             ClientContext::default(),
@@ -1220,7 +1263,7 @@ mod tests {
         .await
         .unwrap();
         let outcome = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             None,
             cli_actor(),
             ClientContext::default(),
@@ -1239,7 +1282,7 @@ mod tests {
         let order = finalized_order(db.clone(), &signer).await;
 
         let error = revoke_order(
-            &order.id,
+            order.id.to_string().as_str(),
             Some(999),
             cli_actor(),
             ClientContext::default(),
@@ -1318,13 +1361,14 @@ mod tests {
         let acct = account_id(&db).await;
 
         let contact = vec!["mailto:a@example.com".to_string()];
-        let updated = update_account_contact(&acct, contact.clone(), db.clone())
-            .await
-            .unwrap()
-            .unwrap();
+        let updated =
+            update_account_contact(acct.to_string().as_str(), contact.clone(), db.clone())
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(updated.contact, contact);
 
-        let reloaded = Account::find_by_id("default", &acct, &db)
+        let reloaded = Account::find_by_id("default", acct.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -1342,13 +1386,13 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
 
-        let updated = deactivate_account(&acct, db.clone())
+        let updated = deactivate_account(acct.to_string().as_str(), db.clone())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(updated.status, "deactivated");
 
-        let reloaded = Account::find_by_id("default", &acct, &db)
+        let reloaded = Account::find_by_id("default", acct.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -1367,7 +1411,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -1377,16 +1421,19 @@ mod tests {
         .await
         .unwrap();
         let authz = Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             crate::sqlite::nonce::now_secs() + 3600,
             &db,
         )
         .await
         .unwrap();
-        Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
-        let detail = load_order_detail(&order.id, db).await.unwrap().unwrap();
+        let detail = load_order_detail(order.id.to_string().as_str(), db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(detail.order.id, order.id);
         assert_eq!(detail.authorizations.len(), 1);
         assert_eq!(detail.authorizations[0].0.id, authz.id);
@@ -1417,20 +1464,23 @@ mod tests {
     async fn a_replaces_claim_marks_the_predecessor_superseded() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
+        let old = issued(&db, acct, &["a.example.com"], 3).await;
 
         let cert_id = ari_cert_id(old.certificate.as_deref().unwrap()).unwrap();
-        let successor = issued(&db, &acct, &["a.example.com"], 90).await;
+        let successor = issued(&db, acct, &["a.example.com"], 90).await;
         sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
-            .bind(&successor.id)
+            .bind(successor.id)
             .execute(&db.pool)
             .await
             .unwrap();
 
-        let reloaded = Order::find_by_id(&old.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(old.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         let superseded = annotation(&reloaded, &db).await.unwrap();
-        assert_eq!(superseded.order_id, successor.id);
+        assert_eq!(superseded.order_id, successor.id.to_string());
         assert_eq!(superseded.via, "replaces");
     }
 
@@ -1442,13 +1492,13 @@ mod tests {
     async fn a_pending_replaces_claim_supersedes_nothing() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
+        let old = issued(&db, acct, &["a.example.com"], 3).await;
         let cert_id = ari_cert_id(old.certificate.as_deref().unwrap()).unwrap();
 
         // A claim on the predecessor, from an order with no certificate.
         let pending = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("a.example.com")],
             now_secs() + 3600,
             None,
@@ -1459,12 +1509,15 @@ mod tests {
         .unwrap();
         sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
-            .bind(&pending.id)
+            .bind(pending.id)
             .execute(&db.pool)
             .await
             .unwrap();
 
-        let reloaded = Order::find_by_id(&old.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(old.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(annotation(&reloaded, &db).await.is_none());
     }
 
@@ -1473,11 +1526,11 @@ mod tests {
     async fn a_later_certificate_over_the_same_names_supersedes() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com"], 3).await;
-        let new = issued(&db, &acct, &["a.example.com", "b.example.com"], 90).await;
+        let old = issued(&db, acct, &["a.example.com"], 3).await;
+        let new = issued(&db, acct, &["a.example.com", "b.example.com"], 90).await;
 
         let superseded = annotation(&old, &db).await.unwrap();
-        assert_eq!(superseded.order_id, new.id);
+        assert_eq!(superseded.order_id, new.id.to_string());
         assert_eq!(
             superseded.via, "identifiers",
             "a superset covers these names, so it is a renewal"
@@ -1491,17 +1544,17 @@ mod tests {
     async fn a_partial_a_revoked_and_another_accounts_certificate_supersede_nothing() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let old = issued(&db, &acct, &["a.example.com", "b.example.com"], 3).await;
+        let old = issued(&db, acct, &["a.example.com", "b.example.com"], 3).await;
 
         // Covers only some of the names: the rest would go uncovered.
-        issued(&db, &acct, &["a.example.com"], 90).await;
+        issued(&db, acct, &["a.example.com"], 90).await;
         assert!(
             annotation(&old, &db).await.is_none(),
             "a subset is not a renewal"
         );
 
         // Covers them all, but has itself been withdrawn.
-        let mut revoked = issued(&db, &acct, &["a.example.com", "b.example.com"], 90).await;
+        let mut revoked = issued(&db, acct, &["a.example.com", "b.example.com"], 90).await;
         revoked.revoke(Some(1), &db).await.unwrap();
         assert!(
             annotation(&old, &db).await.is_none(),
@@ -1518,7 +1571,7 @@ mod tests {
         )
         .await
         .unwrap();
-        issued(&db, &other.id, &["a.example.com", "b.example.com"], 90).await;
+        issued(&db, other.id, &["a.example.com", "b.example.com"], 90).await;
         assert!(
             annotation(&old, &db).await.is_none(),
             "another subscriber's certificate is not this one's renewal"
@@ -1576,11 +1629,11 @@ mod tests {
         let db = db().await;
         let acct = account_id(&db).await;
 
-        let a = issued(&db, &acct, &["a.example.com"], 3).await;
-        let b = issued(&db, &acct, &["b.example.com"], 5).await;
+        let a = issued(&db, acct, &["a.example.com"], 3).await;
+        let b = issued(&db, acct, &["b.example.com"], 5).await;
         // Renews `a` only. `b` must stay un-annotated even though it shares
         // the cached candidate list that contains this row.
-        let renewal = issued(&db, &acct, &["a.example.com"], 90).await;
+        let renewal = issued(&db, acct, &["a.example.com"], 90).await;
 
         let (orders, _total) = Order::find_expiring(None, expiring_horizon(30), 50, 0, &db)
             .await
@@ -1590,18 +1643,21 @@ mod tests {
         let annotated = |id: &str| -> Option<SupersededBy> {
             entries
                 .iter()
-                .find(|entry| entry.order.id == id)
+                .find(|entry| entry.order.id.to_string() == id)
                 .and_then(|entry| entry.superseded_by.clone())
         };
-        assert_eq!(annotated(&a.id).unwrap().order_id, renewal.id);
+        assert_eq!(
+            annotated(a.id.to_string().as_str()).unwrap().order_id,
+            renewal.id.to_string()
+        );
         assert!(
-            annotated(&b.id).is_none(),
+            annotated(b.id.to_string().as_str()).is_none(),
             "a shared candidate list must not leak one row's renewal onto another"
         );
         // And the days came out of the same helper the digest uses. Stamped
         // half a day past the three so the assertion distinguishes a floor
         // from a round without racing the clock at the boundary.
-        Order::set_cert_not_after(&a.id, now_secs() + 3 * DAY + DAY / 2, &db)
+        Order::set_cert_not_after(a.id, now_secs() + 3 * DAY + DAY / 2, &db)
             .await
             .unwrap();
         let (orders, _total) = Order::find_expiring(None, expiring_horizon(30), 50, 0, &db)
@@ -1619,9 +1675,9 @@ mod tests {
     async fn hiding_superseded_rows_reports_the_count_rather_than_shrinking_the_total() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let a = issued(&db, &acct, &["a.example.com"], 3).await;
-        issued(&db, &acct, &["b.example.com"], 5).await;
-        issued(&db, &acct, &["a.example.com"], 90).await;
+        let a = issued(&db, acct, &["a.example.com"], 3).await;
+        issued(&db, acct, &["b.example.com"], 5).await;
+        issued(&db, acct, &["a.example.com"], 90).await;
 
         let query = |include: bool| ExpiringQuery {
             profile: None,
@@ -1653,9 +1709,9 @@ mod tests {
     async fn the_listing_scopes_by_profile_and_answers_soonest_first() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let here = issued_order(&db, "default", &acct, &["a.example.com"], 5).await;
-        let sooner = issued_order(&db, "default", &acct, &["b.example.com"], 2).await;
-        issued_order(&db, "other", &acct, &["c.example.com"], 1).await;
+        let here = issued_order(&db, "default", acct, &["a.example.com"], 5).await;
+        let sooner = issued_order(&db, "default", acct, &["b.example.com"], 2).await;
+        issued_order(&db, "other", acct, &["c.example.com"], 1).await;
 
         let scoped = ExpiringQuery {
             profile: Some("default".to_string()),
@@ -1665,11 +1721,11 @@ mod tests {
             offset: 0,
         };
         let (entries, total, _) = list_expiring(&scoped, db.clone()).await.unwrap();
-        let ids: Vec<&str> = entries
+        let ids: Vec<String> = entries
             .iter()
-            .map(|entry| entry.order.id.as_str())
+            .map(|entry| entry.order.id.to_string())
             .collect();
-        assert_eq!(ids, vec![sooner.id.as_str(), here.id.as_str()]);
+        assert_eq!(ids, vec![sooner.id.to_string(), here.id.to_string()]);
         assert_eq!(total, 2);
 
         let unscoped = ExpiringQuery {

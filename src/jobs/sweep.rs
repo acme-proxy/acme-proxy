@@ -309,7 +309,7 @@ mod tests {
     /// A claimed row, as the runner would hand one to `run`.
     fn row(kind: &str) -> Job {
         Job {
-            id: "sweep".to_string(),
+            id: crate::sqlite::id::mint(),
             kind: kind.to_string(),
             dedup_key: SWEEP_KEY.to_string(),
             payload: json!({}),
@@ -451,7 +451,7 @@ mod tests {
             .unwrap();
         crate::sqlite::admin_session::AdminSession::create(
             crate::sqlite::admin_session::NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "hash",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -487,24 +487,34 @@ mod tests {
     async fn the_queue_sweep_removes_settled_rows() {
         let (database, _queue) = setup().await;
         let stale = now_secs() - 30 * 24 * 60 * 60;
+        // A real id, not a readable placeholder: `Job::find_by_id` takes a
+        // `Uuid`, so a row this test cannot name is a row it cannot assert the
+        // absence of — which is the whole assertion below.
+        let old = crate::sqlite::id::mint();
         sqlx::query(
             "INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, attempts, \
              max_attempts, created_at, updated_at) \
-             VALUES ('old', 'test', 'k', '{}', 'failed', ?, 1, 1, ?, ?);",
+             VALUES (?, 'test', 'k', '{}', 'failed', ?, 1, 1, ?, ?);",
         )
+        .bind(old)
         .bind(stale)
         .bind(stale)
         .bind(stale)
         .execute(&database.pool)
         .await
         .unwrap();
+        assert!(
+            Job::find_by_id(old, &database).await.unwrap().is_some(),
+            "the fixture must be there before the sweep, or its absence after \
+             proves nothing"
+        );
 
         let handler = SweepJob::jobs(database.clone(), 7);
         match handler.run(&row(RETENTION_JOB_KIND)).await {
             JobOutcome::Reschedule(delay) => assert_eq!(delay, DAILY),
             other => panic!("{other:?}"),
         }
-        assert!(Job::find_by_id("old", &database).await.unwrap().is_none());
+        assert!(Job::find_by_id(old, &database).await.unwrap().is_none());
     }
 
     /// One row, whatever happens: the property that makes a periodic job a queue
@@ -578,7 +588,7 @@ mod tests {
         for _ in 0..3 {
             let order = Order::create(
                 "default",
-                &account.id,
+                account.id,
                 vec![Identifier::dns("example.com")],
                 ancient,
                 None,
@@ -611,19 +621,24 @@ mod tests {
 
         assert_eq!(removed, 1, "only the expired, undecided order goes");
         assert!(
-            Order::find_by_id(expired_pending, &database)
+            Order::find_by_id(&expired_pending.to_string(), &database)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            Order::find_by_id(expired_valid, &database)
+            Order::find_by_id(&expired_valid.to_string(), &database)
                 .await
                 .unwrap()
                 .is_some(),
             "a valid order is never swept: its row is how a certificate is revoked"
         );
-        assert!(Order::find_by_id(fresh, &database).await.unwrap().is_some());
+        assert!(
+            Order::find_by_id(&fresh.to_string(), &database)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// A profile keeps its own history: the sweep is one handler, so a second
@@ -648,7 +663,7 @@ mod tests {
             .unwrap();
             let order = Order::create(
                 profile,
-                &account.id,
+                account.id,
                 vec![Identifier::dns("example.com")],
                 ancient,
                 None,
@@ -666,13 +681,13 @@ mod tests {
 
         assert_eq!(removed, 1);
         assert!(
-            Order::find_by_id(&ids[0], &database)
+            Order::find_by_id(ids[0].to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            Order::find_by_id(&ids[1], &database)
+            Order::find_by_id(ids[1].to_string().as_str(), &database)
                 .await
                 .unwrap()
                 .is_some(),

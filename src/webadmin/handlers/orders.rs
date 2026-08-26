@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::admin;
 use crate::admin::ops::{RevokeError, RevokeOutcome};
@@ -148,7 +149,7 @@ pub async fn revoke_order(
                            profile = %order.profile,
                            reason = ?reason,
                            username = %auth.user.username);
-            let authz_ids = authz_ids(&order.id, &state).await?;
+            let authz_ids = authz_ids(order.id, &state).await?;
             Ok(Json(admin::render_order_json(
                 &order,
                 &state.config.server.base_url,
@@ -191,7 +192,7 @@ pub(crate) async fn render_orders(
 ) -> Result<Vec<Value>, AdminError> {
     // One query for the whole page, not one per row: a default page of 50 used
     // to cost 51.
-    let ids: Vec<&str> = orders.iter().map(|order| order.id.as_str()).collect();
+    let ids: Vec<Uuid> = orders.iter().map(|order| order.id).collect();
     let mut grouped = Authorization::find_ids_by_orders(&ids, &state.database).await?;
 
     let items = orders
@@ -209,7 +210,7 @@ pub(crate) async fn render_orders(
 
 /// The authorization ids `Order::to_json` needs to build its `authorizations`
 /// URLs.
-async fn authz_ids(order_id: &str, state: &AdminState) -> Result<Vec<String>, AdminError> {
+async fn authz_ids(order_id: Uuid, state: &AdminState) -> Result<Vec<Uuid>, AdminError> {
     Ok(Authorization::find_by_order(order_id, &state.database)
         .await?
         .into_iter()

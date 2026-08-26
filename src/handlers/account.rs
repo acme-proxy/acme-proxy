@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use uuid::Uuid;
 
 use axum::{
     Extension, Json,
@@ -187,7 +188,7 @@ pub async fn post_new_account(
 
     if created {
         if let Some(kid) = &eab_kid
-            && let Err(error) = account.set_eab_kid(kid, &database).await
+            && let Err(error) = account.set_eab_kid(*kid, &database).await
         {
             error!(event = "account_eab_kid_persist_failed", outcome = "failure", account_id = %account.id, error = %error);
         }
@@ -203,7 +204,7 @@ pub async fn post_new_account(
             .notify
             .dispatch(NotifyEvent::AccountCreated(AccountCreatedData {
                 profile: profile.name.clone(),
-                account_id: account.id.clone(),
+                account_id: account.id.to_string(),
                 contact: account.contact.clone(),
                 client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
             }))
@@ -240,7 +241,7 @@ pub async fn verify_eab(
     header: &ProtectedHeader,
     profile: &str,
     database: &Arc<Database>,
-) -> Result<String, Problem> {
+) -> Result<Uuid, Problem> {
     let eab_jws = eab_jws.ok_or_else(|| {
         warn!(event = "eab_required", outcome = "failure", profile);
         Problem::external_account_required("This server requires External Account Binding")
@@ -438,7 +439,7 @@ pub async fn post_key_change(
         })?;
     if let Some(existing) = conflicting_account {
         warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %existing.id);
-        return Ok(key_change_conflict(base, &existing.id));
+        return Ok(key_change_conflict(base, existing.id.to_string().as_str()));
     }
 
     if let Err(error) = old_account.update_pubkey(&new_pubkey, &database).await {
@@ -456,7 +457,7 @@ pub async fn post_key_change(
                 Account::find_by_pubkey(&profile.name, &new_pubkey, &database).await
         {
             warn!(event = "key_change_conflict", outcome = "failure", account_id = %old_account.id, conflicting_account_id = %winner.id);
-            return Ok(key_change_conflict(base, &winner.id));
+            return Ok(key_change_conflict(base, winner.id.to_string().as_str()));
         }
         error!(event = "key_change_persist_failed", outcome = "failure", account_id = %old_account.id, error = %error);
         return Err(Problem::server_internal("Account key update failed"));
@@ -507,7 +508,7 @@ pub async fn post_account_orders(
     let base = &profile.base_url;
 
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
-    if account.id != id {
+    if account.id.to_string() != id {
         warn!(
             event = "account_orders_ownership_mismatch",
             outcome = "failure",
@@ -519,7 +520,7 @@ pub async fn post_account_orders(
 
     // RFC 8555 §7.1.2.1's filtered view — expired and `invalid` orders are not
     // URLs worth handing back (see `find_active_by_account`).
-    let orders = Order::find_active_by_account(&id, &database)
+    let orders = Order::find_active_by_account(account.id, &database)
         .await
         .map_err(|error| {
             error!(

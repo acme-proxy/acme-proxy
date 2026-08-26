@@ -160,7 +160,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     // Issuance returns immediately, before the upstream has finished.
     let outcome = signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -169,7 +169,12 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
         .unwrap();
     assert!(matches!(outcome, IssueOutcome::Processing));
 
-    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
+    let settled = await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
     assert!(
         settled.cert_serial.is_some(),
@@ -185,7 +190,7 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     );
 
     // And the mapping row records where it came from.
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -211,7 +216,13 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
 
-    match settle(&signer.0, "ord-deleted", real_chain().await).await {
+    match settle(
+        &signer.0,
+        &super::order_id("ord-deleted"),
+        real_chain().await,
+    )
+    .await
+    {
         crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("no longer exists")),
         other => panic!("a vanished order must be permanent, got {other:?}"),
     }
@@ -240,7 +251,13 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
 
     // Not a PEM chain at all.
     let order = ready_order(db.clone()).await;
-    match settle(&signer.0, &order.id, "not a PEM chain".to_string()).await {
+    match settle(
+        &signer.0,
+        order.id.to_string().as_str(),
+        "not a PEM chain".to_string(),
+    )
+    .await
+    {
         crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("chain unparsable")),
         other => panic!("an unparsable chain must be permanent, got {other:?}"),
     }
@@ -252,7 +269,7 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
         "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
         BASE64_STANDARD.encode(b"not a certificate")
     );
-    match settle(&signer.0, &order.id, chain).await {
+    match settle(&signer.0, order.id.to_string().as_str(), chain).await {
         crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("leaf unparsable")),
         other => panic!("an unparsable leaf must be permanent, got {other:?}"),
     }
@@ -303,7 +320,7 @@ async fn settle_notifies_only_the_owning_profile() {
 
     let outcome = signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -312,7 +329,12 @@ async fn settle_notifies_only_the_owning_profile() {
         .unwrap();
     assert!(matches!(outcome, IssueOutcome::Processing));
 
-    await_status(db.clone(), &order.id, OrderStatus::Valid).await;
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
 
     // `settle` queues the notification rather than delivering it, so the row has
     // to be claimed and run before the recorder sees anything. Waiting on the
@@ -329,7 +351,7 @@ async fn settle_notifies_only_the_owning_profile() {
     match &events_a[0] {
         NotifyEvent::CertificateIssued(data) => {
             assert_eq!(data.profile, "a");
-            assert_eq!(data.order_id, order.id);
+            assert_eq!(data.order_id, order.id.to_string());
             assert!(data.client_ip.is_none(), "no request is in scope here");
         }
         other => panic!("expected CertificateIssued, got {other:?}"),
@@ -367,14 +389,14 @@ async fn issue_polls_until_the_upstream_settles() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
     assert!(
         upstream.order_polls() >= 4,
         "expected repeated polling, saw {}",
@@ -406,7 +428,7 @@ async fn a_failing_upstream_marks_the_order_invalid() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -414,10 +436,15 @@ async fn a_failing_upstream_marks_the_order_invalid() {
         .await
         .unwrap();
 
-    let settled = await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
+    let settled = await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
     assert!(settled.error.is_some(), "the client must be told why");
 
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -465,7 +492,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -473,7 +500,12 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
         .await
         .unwrap();
 
-    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
+    let settled = await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
     assert!(
         upstream.order_polls() > 2,
@@ -511,7 +543,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -519,10 +551,15 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
         .await
         .unwrap();
 
-    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
     let job = crate::sqlite::job::Job::find_live(
         crate::signer::relay::flow::RELAY_JOB_KIND,
-        &order.id,
+        order.id.to_string().as_str(),
         &db,
     )
     .await
@@ -559,7 +596,7 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -567,8 +604,13 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
         .await
         .unwrap();
 
-    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -610,7 +652,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
 
     let first = signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -619,7 +661,7 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
         .unwrap();
     let second = signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -629,8 +671,13 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     assert!(matches!(first, IssueOutcome::Processing));
     assert!(matches!(second, IssueOutcome::Processing));
 
-    await_status(db.clone(), &order.id, OrderStatus::Valid).await;
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -664,7 +711,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
@@ -673,7 +720,7 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
         .unwrap();
     // The rejection happens at the upstream's finalize, inside the relay,
     // so it lands as an invalid order rather than an inline error.
-    await_status(db, &order.id, OrderStatus::Invalid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Invalid).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -744,7 +791,7 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     // processing and the mapping row exists, but no task is running.
     assert!(order.claim_for_finalize(&db).await.unwrap());
     UpstreamOrder::create(
-        &order.id,
+        order.id.to_string().as_str(),
         &format!("{}/order/1", upstream.base),
         None,
         &csr_der(),
@@ -764,9 +811,14 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
 
-    let settled = await_status(db.clone(), &order.id, OrderStatus::Valid).await;
+    let settled = await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Valid,
+    )
+    .await;
     assert_eq!(settled.certificate.as_deref(), Some(chain.as_str()));
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -783,7 +835,7 @@ async fn recovery_ignores_rows_that_already_settled() {
     let order = ready_order(db.clone()).await;
 
     UpstreamOrder::create(
-        &order.id,
+        order.id.to_string().as_str(),
         &format!("{}/order/1", upstream.base),
         None,
         &csr_der(),
@@ -791,7 +843,7 @@ async fn recovery_ignores_rows_that_already_settled() {
     )
     .await
     .unwrap();
-    UpstreamOrder::mark_valid(&order.id, None, &db)
+    UpstreamOrder::mark_valid(order.id.to_string().as_str(), None, &db)
         .await
         .unwrap();
 
@@ -874,7 +926,7 @@ mod handler {
     /// A claimed row, as the runner would hand one over.
     fn job(payload: serde_json::Value) -> Job {
         Job {
-            id: "job-1".to_string(),
+            id: crate::sqlite::id::mint(),
             kind: RELAY_JOB_KIND.to_string(),
             dedup_key: "ord-1".to_string(),
             payload,
@@ -915,7 +967,10 @@ mod handler {
         let db = database().await;
         let (handler, _signer, _upstream, _dir) = handler_for(db).await;
 
-        match handler.run(&job_on_default("ord-gone")).await {
+        match handler
+            .run(&job_on_default(&super::order_id("ord-gone")))
+            .await
+        {
             JobOutcome::Failed(reason) => assert!(reason.contains("no upstream order")),
             other => panic!("expected a permanent failure, got {other:?}"),
         }
@@ -929,19 +984,30 @@ mod handler {
         let (handler, signer, _upstream, _dir) = handler_for(db.clone()).await;
         db.pool.close().await;
 
-        match handler.run(&job_on_default("ord-1")).await {
+        match handler
+            .run(&job_on_default(&super::order_id("ord-1")))
+            .await
+        {
             JobOutcome::Retry(reason) => assert!(reason.contains("reading the upstream order")),
             other => panic!("expected a retry, got {other:?}"),
         }
 
         // `settle`'s own lookup, on the same closed pool.
-        match settle(&signer.0, "ord-1", "irrelevant".to_string()).await {
+        match settle(
+            &signer.0,
+            &super::order_id("ord-1"),
+            "irrelevant".to_string(),
+        )
+        .await
+        {
             JobOutcome::Retry(reason) => assert!(reason.contains("reading the local order")),
             other => panic!("expected a retry, got {other:?}"),
         }
 
         // And `abandon` degrades to a log rather than panicking.
-        handler.abandon(&job_on_default("ord-1"), "why").await;
+        handler
+            .abandon(&job_on_default(&super::order_id("ord-1")), "why")
+            .await;
     }
 
     /// The order context is best-effort on **both** members: an order that
@@ -953,14 +1019,14 @@ mod handler {
         let db = database().await;
         let (_handler, signer, _upstream, _dir) = handler_for(db.clone()).await;
 
-        let missing = OrderContext::read("ord-missing", &signer.0).await;
+        let missing = OrderContext::read(&super::order_id("ord-missing"), &signer.0).await;
         assert!(
             missing.deadline.is_none() && missing.profile.is_none(),
             "a missing order names neither an expiry nor an endpoint"
         );
 
         db.pool.close().await;
-        let unreadable = OrderContext::read("ord-1", &signer.0).await;
+        let unreadable = OrderContext::read(&super::order_id("ord-1"), &signer.0).await;
         assert!(
             unreadable.deadline.is_none() && unreadable.profile.is_none(),
             "an unreadable order degrades to no context, not to a refusal"
@@ -974,7 +1040,9 @@ mod handler {
     async fn abandoning_a_vanished_order_is_survived() {
         let db = database().await;
         let (handler, _signer, _upstream, _dir) = handler_for(db).await;
-        handler.abandon(&job_on_default("ord-gone"), "why").await;
+        handler
+            .abandon(&job_on_default(&super::order_id("ord-gone")), "why")
+            .await;
     }
 
     /// With no mapping row the audit trail cannot name who asked, and says so:
@@ -996,7 +1064,7 @@ mod handler {
             .await;
 
         assert_eq!(
-            Order::find_by_id(&order.id, &db)
+            Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1005,7 +1073,7 @@ mod handler {
         );
         let (rows, _) = crate::sqlite::audit::AuditEntry::search(
             &crate::sqlite::audit::AuditQuery {
-                order_id: Some(order.id.clone()),
+                order_id: Some(order.id.clone().to_string()),
                 limit: 10,
                 ..Default::default()
             },
@@ -1058,7 +1126,7 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
         outcomes.push(
             signer
                 .issue(
-                    &order.id,
+                    order.id.to_string().as_str(),
                     &csr_der(),
                     &identifiers(),
                     RequestedValidity::default(),
@@ -1077,13 +1145,13 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
 
     // One mapping row, and it still points at the order the first call opened.
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_orders WHERE order_id = ?;")
-        .bind(&order.id)
+        .bind(order.id)
         .fetch_one(&db.pool)
         .await
         .unwrap();
     assert_eq!(rows, 1, "one order may have only one upstream order");
 
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();

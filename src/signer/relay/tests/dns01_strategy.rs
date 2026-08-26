@@ -71,14 +71,14 @@ async fn bypass_triggers_the_offered_challenge() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     assert_eq!(
         upstream.challenge_triggered(),
@@ -113,14 +113,14 @@ async fn bypass_triggers_a_challenge_of_any_type() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 }
 
 /// A rejected challenge fails the order rather than hanging: under bypass
@@ -148,14 +148,14 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Invalid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Invalid).await;
 }
 
 /// The dns-01 path end to end: publish the record the upstream asked for,
@@ -186,14 +186,14 @@ async fn dns01_publishes_triggers_and_cleans_up() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     assert_eq!(
         upstream.challenge_triggered(),
@@ -246,14 +246,14 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Invalid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Invalid).await;
 
     assert_eq!(
         updater.deleted.lock().unwrap().len(),
@@ -289,16 +289,21 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db.clone(), &order.id, OrderStatus::Invalid).await;
+    await_status(
+        db.clone(),
+        order.id.to_string().as_str(),
+        OrderStatus::Invalid,
+    )
+    .await;
 
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &db)
+    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
         .await
         .unwrap()
         .unwrap();
@@ -338,14 +343,14 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Invalid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Invalid).await;
     assert_eq!(
         upstream.challenge_triggered(),
         0,
@@ -391,14 +396,14 @@ async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     // The record published must still be the dns-01 one, derived from the
     // token of the challenge the relay actually answered.
@@ -445,14 +450,14 @@ async fn bypass_prefers_a_challenge_it_could_answer() {
 
     signer
         .issue(
-            &order.id,
+            order.id.to_string().as_str(),
             &csr_der(),
             &identifiers(),
             RequestedValidity::default(),
         )
         .await
         .unwrap();
-    await_status(db, &order.id, OrderStatus::Valid).await;
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
     assert_eq!(upstream.challenge_triggered(), 1);
     assert_eq!(upstream.tokenless_triggered(), 0);

@@ -123,7 +123,7 @@ pub(crate) async fn sign_in(
         let ttl = Duration::from_secs(state.config.admin.session_ttl_seconds);
         let session = AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: &minted.token_hash,
                 csrf_token: &csrf_token,
                 created_ip,
@@ -159,7 +159,7 @@ pub(crate) async fn sign_in(
     // No `record_failure` either: the password *was* right.
     let session = AdminSession::create_pending(
         NewSession {
-            user_id: &user.id,
+            user_id: user.id,
             token_hash: &minted.token_hash,
             csrf_token: &csrf_token,
             created_ip,
@@ -417,7 +417,7 @@ pub async fn delete_session(
     AuthenticatedWrite(auth): AuthenticatedWrite,
 ) -> Result<Response, AdminError> {
     let scope = if query.all {
-        AdminSession::delete_for_user(&auth.user.id, &state.database).await?;
+        AdminSession::delete_for_user(auth.user.id, &state.database).await?;
         "all"
     } else {
         AdminSession::delete(&auth.session.token_hash, &state.database).await?;

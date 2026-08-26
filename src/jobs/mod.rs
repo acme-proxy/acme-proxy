@@ -238,7 +238,7 @@ impl JobQueue {
         );
         let queued = Job::enqueue(
             crate::sqlite::job::NewJob {
-                id: &crate::sqlite::id::mint().to_string(),
+                id: crate::sqlite::id::mint(),
                 kind: spec.kind,
                 dedup_key: &spec.key,
                 payload: &spec.payload,

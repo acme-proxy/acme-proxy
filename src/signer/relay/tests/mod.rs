@@ -140,6 +140,23 @@ fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
     Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
 }
 
+/// A readable fixture name as a real order id.
+///
+/// The relay carries an order id through a job payload as a *string*, and it
+/// reaches `Order::find_by_id` and `UpstreamOrder::find_by_order_id` -- both of
+/// which parse it and answer "absent" for anything that is not an id. So a
+/// fixture spelling `"ord-1"` would never reach the database at all, and the
+/// arms that exist for a database failure would go untested while still
+/// looking green. Deriving the bytes from the name keeps the name in the test
+/// where it explains something, and keeps the id parseable.
+pub(super) fn order_id(name: &str) -> String {
+    let mut bytes = [0u8; 16];
+    let name = name.as_bytes();
+    let take = name.len().min(16);
+    bytes[..take].copy_from_slice(&name[..take]);
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
 use super::account::kid_path;
 use super::client::UpstreamError;
 use super::flow::settle;
@@ -349,7 +366,7 @@ async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
     .unwrap();
     let mut order = Order::create(
         profile,
-        &account.id,
+        account.id,
         vec![Identifier::dns("example.com")],
         now_secs() + 3600,
         None,
@@ -403,7 +420,7 @@ async fn ready_order(database: Arc<Database>) -> Order {
     .unwrap();
     let mut order = Order::create(
         "default",
-        &account.id,
+        account.id,
         vec![Identifier::dns("example.com")],
         now_secs() + 3600,
         None,

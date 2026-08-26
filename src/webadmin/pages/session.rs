@@ -209,7 +209,7 @@ pub async fn post_logout(
     session: PageSessionWrite,
 ) -> Result<Response, PageError> {
     let scope = if query.all {
-        AdminSession::delete_for_user(&session.auth.user.id, &state.database).await?;
+        AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;
         "all"
     } else {
         AdminSession::delete(&session.auth.session.token_hash, &state.database).await?;

@@ -5,6 +5,7 @@ use sqlx::sqlite::SqliteRow;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -79,13 +80,13 @@ impl Identifier {
 ///   `Account`'s `orders` URL).
 #[derive(Debug)]
 pub struct Order {
-    pub id: String,
+    pub id: Uuid,
     /// The ACME endpoint (`[profiles.<name>]`) this order was placed at. It
     /// always matches the owning account's own `profile` — the redundancy is
     /// what lets the two lookups that take no account (`find_by_cert_serial`,
     /// for revocation, and ARI) stay scoped to one endpoint.
     pub profile: String,
-    pub account_id: String,
+    pub account_id: Uuid,
     pub status: OrderStatus,
     pub identifiers: Vec<Identifier>,
     pub expires: i64,
@@ -142,12 +143,11 @@ impl OrderQuery {
     /// is the kind of bug a page control shows and nothing else does.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
         let mut separator = " WHERE ";
-        // `status` arrives as an `OrderStatus` and the other two as `String`s,
-        // so each contributes its own `&str` and the array stays one type. The
+        // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
+        // each contributes its own `&str` and the array stays one type. The
         // bind is still a parameter, never interpolated SQL.
         for (column, value) in [
             ("profile = ", self.profile.as_deref()),
-            ("account_id = ", self.account_id.as_deref()),
             ("status = ", self.status.map(OrderStatus::as_str)),
         ] {
             if let Some(value) = value {
@@ -157,6 +157,22 @@ impl OrderQuery {
                     .push_bind(value.to_string());
                 separator = " AND ";
             }
+        }
+
+        // `account_id` is the one predicate over a column holding bytes rather
+        // than text, so it is the one that has to parse: a `String` bound
+        // against a BLOB never compares equal in SQLite, so an unparsed filter
+        // would answer "no orders" for every account rather than erroring.
+        //
+        // A value that is not an id at all keeps the shape the other two have —
+        // it is compared, never executed, and matches nothing. That is what
+        // `search_binds_hostile_filters_as_values` asserts, and `profile` above
+        // is still bound raw, so the injection vector it exists for is intact.
+        if let Some(account_id) = self.account_id.as_deref() {
+            builder
+                .push(separator)
+                .push("account_id = ")
+                .push_bind(super::id::parse(account_id));
         }
     }
 }
@@ -264,16 +280,16 @@ impl Order {
     /// until [`Order::insert`] runs.
     pub(crate) fn new(
         profile: &str,
-        account_id: &str,
+        account_id: Uuid,
         identifiers: Vec<Identifier>,
         expires: i64,
         not_before: Option<i64>,
         not_after: Option<i64>,
     ) -> Order {
         Order {
-            id: crate::sqlite::id::mint().to_string(),
+            id: crate::sqlite::id::mint(),
             profile: profile.to_string(),
-            account_id: account_id.to_string(),
+            account_id,
             status: OrderStatus::Pending,
             identifiers,
             expires,
@@ -332,9 +348,9 @@ impl Order {
             "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, created_at, created_ip, created_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?);",
         )
-        .bind(&self.id)
+        .bind(self.id)
         .bind(&self.profile)
-        .bind(&self.account_id)
+        .bind(self.account_id)
         .bind(self.status.as_str())
         .bind(identifiers_json)
         .bind(self.expires)
@@ -355,7 +371,7 @@ impl Order {
     /// separately by the caller) and returns it.
     pub async fn create(
         profile: &str,
-        account_id: &str,
+        account_id: Uuid,
         identifiers: Vec<Identifier>,
         expires: i64,
         not_before: Option<i64>,
@@ -376,6 +392,9 @@ impl Order {
 
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(None);
+        };
         let row = sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE id = ?;"))
             .bind(id)
             .fetch_optional(&database.pool)
@@ -397,7 +416,7 @@ impl Order {
     /// The client-facing order-list URL wants
     /// [`Order::find_active_by_account`] instead.
     pub async fn find_by_account(
-        account_id: &str,
+        account_id: Uuid,
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_account_started", outcome = "progress", account_id = ?account_id);
@@ -426,7 +445,7 @@ impl Order {
     /// object's expiry is housekeeping (`order.validity_seconds`) and the
     /// certificate it points at outlives it — that URL still works.
     pub async fn find_active_by_account(
-        account_id: &str,
+        account_id: Uuid,
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_active_by_account_started", outcome = "progress", account_id = ?account_id);
@@ -539,7 +558,7 @@ impl Order {
     /// number, and loading every row means deserializing each one's
     /// `identifiers` JSON to throw it away.
     pub async fn count_by_account(
-        account_id: &str,
+        account_id: Uuid,
         database: &Database,
     ) -> Result<i64, sqlx::Error> {
         let row = sqlx::query("SELECT COUNT(*) FROM orders WHERE account_id = ?;")
@@ -553,6 +572,9 @@ impl Order {
     /// authorizations and challenges. Returns whether a row existed to delete.
     pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_delete_started", outcome = "progress", order_id = ?id);
+        let Some(id) = crate::sqlite::id::parse(id) else {
+            return Ok(false);
+        };
         let result = sqlx::query("DELETE FROM orders WHERE id = ?;")
             .bind(id)
             .execute(&database.pool)
@@ -601,7 +623,7 @@ impl Order {
         .bind(&cert_serial)
         .bind(&cert_pubkey)
         .bind(cert_not_after)
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?;
 
@@ -703,7 +725,7 @@ impl Order {
         profile: &str,
         limit: i64,
         database: &Database,
-    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+    ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT id, certificate FROM orders WHERE profile = ? \
              AND certificate IS NOT NULL AND cert_not_after IS NULL LIMIT ?;",
@@ -726,7 +748,7 @@ impl Order {
     /// will not parse has to be *recorded* as unparsable, or every pass parses
     /// it again for the life of the deployment.
     pub async fn set_cert_not_after(
-        id: &str,
+        id: Uuid,
         cert_not_after: i64,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
@@ -816,7 +838,7 @@ impl Order {
         sqlx::query("UPDATE orders SET revoked_at = ?, revocation_reason = ? WHERE id = ?;")
             .bind(now)
             .bind(reason)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -837,7 +859,7 @@ impl Order {
     /// in-memory sync stays in `mark_invalid`, since it must not happen until
     /// the transaction has committed.
     pub(crate) async fn set_invalid<'e, E>(
-        id: &str,
+        id: Uuid,
         error: &Value,
         executor: E,
     ) -> Result<(), sqlx::Error>
@@ -854,7 +876,7 @@ impl Order {
     }
 
     /// The `ready` transition as a bare statement; see [`Order::set_invalid`].
-    pub(crate) async fn set_ready<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -866,7 +888,7 @@ impl Order {
     }
 
     /// The `pending` transition as a bare statement; see [`Order::set_invalid`].
-    pub(crate) async fn set_pending<'e, E>(id: &str, executor: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -883,7 +905,7 @@ impl Order {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_order_mark_invalid_started", outcome = "progress", order_id = ?self.id);
-        Self::set_invalid(&self.id, &error, &database.pool).await?;
+        Self::set_invalid(self.id, &error, &database.pool).await?;
 
         self.error = Some(error);
         self.status = OrderStatus::Invalid;
@@ -896,7 +918,7 @@ impl Order {
     /// [`Order::finalize`]).
     pub async fn mark_ready(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_order_mark_ready_started", outcome = "progress", order_id = ?self.id);
-        Self::set_ready(&self.id, &database.pool).await?;
+        Self::set_ready(self.id, &database.pool).await?;
 
         self.status = OrderStatus::Ready;
         info!(event = "db_order_marked_ready", outcome = "success", order_id = ?self.id);
@@ -916,7 +938,7 @@ impl Order {
     /// keeping with the model.
     pub async fn mark_pending(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
-        Self::set_pending(&self.id, &database.pool).await?;
+        Self::set_pending(self.id, &database.pool).await?;
 
         self.status = OrderStatus::Pending;
         info!(event = "db_order_marked_pending", outcome = "success", order_id = ?self.id);
@@ -952,7 +974,7 @@ impl Order {
         let claimed = sqlx::query(
             "UPDATE orders SET status = 'processing' WHERE id = ? AND status = 'ready';",
         )
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?
         .rows_affected()
@@ -984,7 +1006,7 @@ impl Order {
         let released = sqlx::query(
             "UPDATE orders SET status = 'ready' WHERE id = ? AND status = 'processing';",
         )
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?
         .rows_affected()
@@ -1002,7 +1024,7 @@ impl Order {
     /// `certificate` URL appears only once the order is `valid`, and `notBefore`/
     /// `notAfter`/`error` appear only when set.
     #[must_use]
-    pub fn to_json(&self, base_url: &str, authz_ids: &[String]) -> Value {
+    pub fn to_json(&self, base_url: &str, authz_ids: &[Uuid]) -> Value {
         let mut object = serde_json::Map::new();
         object.insert(
             "status".to_string(),
@@ -1062,7 +1084,7 @@ mod tests {
 
         let stamped = Order::new(
             "default",
-            &account,
+            account,
             vec![Identifier::dns("a.example.com")],
             0,
             None,
@@ -1075,20 +1097,26 @@ mod tests {
             request_id: Some("req-1".to_string()),
         });
         stamped.insert(&db.pool).await.unwrap();
-        let reloaded = Order::find_by_id(&stamped.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(stamped.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.created_ip.as_deref(), Some("203.0.113.7"));
         assert_eq!(reloaded.created_ptr.as_deref(), Some("host.example.com"));
 
         let bare = Order::new(
             "default",
-            &account,
+            account,
             vec![Identifier::dns("b.example.com")],
             0,
             None,
             None,
         );
         bare.insert(&db.pool).await.unwrap();
-        let reloaded = Order::find_by_id(&bare.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(bare.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.created_ip, None);
         assert_eq!(reloaded.created_ptr, None);
 
@@ -1117,7 +1145,7 @@ mod tests {
 
         let created = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1128,7 +1156,10 @@ mod tests {
         .unwrap();
         assert_eq!(created.status, OrderStatus::Pending);
 
-        let found = Order::find_by_id(&created.id, &db).await.unwrap().unwrap();
+        let found = Order::find_by_id(created.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found.account_id, acct);
         assert_eq!(found.identifiers, vec![Identifier::dns("example.com")]);
         assert!(found.certificate.is_none());
@@ -1141,7 +1172,7 @@ mod tests {
 
         Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("a.example")],
             now_secs() + 3600,
             None,
@@ -1152,7 +1183,7 @@ mod tests {
         .unwrap();
         Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("b.example")],
             now_secs() + 3600,
             None,
@@ -1162,7 +1193,7 @@ mod tests {
         .await
         .unwrap();
 
-        let orders = Order::find_by_account(&acct, &db).await.unwrap();
+        let orders = Order::find_by_account(acct, &db).await.unwrap();
         assert_eq!(orders.len(), 2);
     }
 
@@ -1179,7 +1210,7 @@ mod tests {
 
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1189,12 +1220,12 @@ mod tests {
         .await
         .unwrap();
 
-        let authz_ids = vec!["authz-1".to_string()];
-        let json = order.to_json("http://localhost:3000", &authz_ids);
+        let authz = crate::sqlite::id::mint();
+        let json = order.to_json("http://localhost:3000", &[authz]);
         assert_eq!(json["status"], "pending");
         assert_eq!(
             json["authorizations"],
-            json!(["http://localhost:3000/authz/authz-1"])
+            json!([format!("http://localhost:3000/authz/{authz}")])
         );
         assert_eq!(
             json["finalize"],
@@ -1219,7 +1250,7 @@ mod tests {
 
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             Some(now_secs()),
@@ -1241,7 +1272,7 @@ mod tests {
 
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1268,7 +1299,10 @@ mod tests {
         assert_eq!(order.cert_serial.as_deref(), Some("aabbcc"));
         assert_eq!(order.cert_pubkey.as_deref(), Some(&[1u8, 2, 3][..]));
         // …and so is the stored row, and to_json now exposes the certificate URL.
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.status, OrderStatus::Valid);
         assert_eq!(reloaded.cert_serial.as_deref(), Some("aabbcc"));
         assert_eq!(reloaded.cert_pubkey.as_deref(), Some(&[1u8, 2, 3][..]));
@@ -1289,7 +1323,7 @@ mod tests {
 
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1301,7 +1335,10 @@ mod tests {
         order.mark_ready(&db).await.unwrap();
 
         // A second handle on the same row, as a concurrent request would have.
-        let mut rival = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let mut rival = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(order.claim_for_finalize(&db).await.unwrap());
         assert_eq!(order.status, OrderStatus::Processing);
@@ -1311,7 +1348,10 @@ mod tests {
         assert!(!rival.claim_for_finalize(&db).await.unwrap());
         assert_eq!(rival.status, OrderStatus::Ready);
 
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.status, OrderStatus::Processing);
     }
 
@@ -1331,7 +1371,7 @@ mod tests {
         ] {
             let mut order = Order::create(
                 "default",
-                &acct,
+                acct,
                 vec![Identifier::dns("example.com")],
                 now_secs() + 3600,
                 None,
@@ -1370,7 +1410,7 @@ mod tests {
 
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1384,7 +1424,10 @@ mod tests {
 
         order.release_finalize_claim(&db).await.unwrap();
         assert_eq!(order.status, OrderStatus::Ready);
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.status, OrderStatus::Ready);
 
         // Now the race: the claim is held, a deactivation demotes the order,
@@ -1394,7 +1437,10 @@ mod tests {
         order.mark_pending(&db).await.unwrap();
         order.release_finalize_claim(&db).await.unwrap();
         assert_eq!(order.status, OrderStatus::Pending);
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.status, OrderStatus::Pending);
     }
 
@@ -1402,7 +1448,7 @@ mod tests {
         let acct = account_id(&db).await;
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1455,7 +1501,10 @@ mod tests {
         assert_eq!(order.revocation_reason, Some(1));
         assert_eq!(order.status, OrderStatus::Valid);
         // …and so is the stored row.
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(reloaded.revoked_at.is_some());
         assert_eq!(reloaded.revocation_reason, Some(1));
         assert_eq!(reloaded.status, OrderStatus::Valid);
@@ -1470,7 +1519,10 @@ mod tests {
 
         assert!(order.revoked_at.is_some());
         assert!(order.revocation_reason.is_none());
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(reloaded.revocation_reason.is_none());
     }
 
@@ -1493,7 +1545,7 @@ mod tests {
 
         let mut order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1514,7 +1566,10 @@ mod tests {
         assert_eq!(order.status, OrderStatus::Invalid);
         assert_eq!(order.error, Some(error.clone()));
         // …and so is the stored row, and to_json now exposes the error object.
-        let reloaded = Order::find_by_id(&order.id, &db).await.unwrap().unwrap();
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(reloaded.status, OrderStatus::Invalid);
         let json = reloaded.to_json("http://localhost:3000", &[]);
         assert_eq!(json["error"], error);
@@ -1526,7 +1581,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1536,8 +1591,17 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(Order::delete(&order.id, &db).await.unwrap());
-        assert!(Order::find_by_id(&order.id, &db).await.unwrap().is_none());
+        assert!(
+            Order::delete(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+        );
+        assert!(
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1552,7 +1616,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -1563,27 +1627,29 @@ mod tests {
         .unwrap();
 
         let authz = crate::sqlite::authz::Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             now_secs() + 3600,
             &db,
         )
         .await
         .unwrap();
-        crate::sqlite::authz::Challenge::create(&authz.id, "http-01", &db)
+        crate::sqlite::authz::Challenge::create(authz.id, "http-01", &db)
             .await
             .unwrap();
 
-        Order::delete(&order.id, &db).await.unwrap();
+        Order::delete(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap();
 
         assert!(
-            crate::sqlite::authz::Authorization::find_by_order(&order.id, &db)
+            crate::sqlite::authz::Authorization::find_by_order(order.id, &db)
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            crate::sqlite::authz::Challenge::find_by_authz(&authz.id, &db)
+            crate::sqlite::authz::Challenge::find_by_authz(authz.id, &db)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1596,7 +1662,7 @@ mod tests {
     async fn seed_orders(
         db: &Arc<Database>,
         profile: &str,
-        account_id: &str,
+        account_id: Uuid,
         count: usize,
     ) -> Vec<String> {
         let base = now_secs();
@@ -1615,7 +1681,7 @@ mod tests {
             .unwrap();
             sqlx::query("UPDATE orders SET created_at = ? WHERE id = ?;")
                 .bind(base - index as i64)
-                .bind(&order.id)
+                .bind(order.id)
                 .execute(&db.pool)
                 .await
                 .unwrap();
@@ -1623,7 +1689,7 @@ mod tests {
         }
         // Newest first is the order `search` returns, and `ids` is already in
         // that order: index 0 was backdated least.
-        ids
+        ids.into_iter().map(|v| v.to_string()).collect()
     }
 
     fn window(limit: i64, offset: i64) -> OrderQuery {
@@ -1638,19 +1704,19 @@ mod tests {
     async fn search_pages_newest_first_and_reports_the_unpaged_total() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
-        let ids = seed_orders(&db, "default", &acct, 5).await;
+        let ids = seed_orders(&db, "default", acct, 5).await;
 
         let (page, total) = Order::search(&window(2, 0), &db).await.unwrap();
         assert_eq!(total, 5, "the total must ignore the page window");
         assert_eq!(
-            page.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+            page.iter().map(|o| o.id.to_string()).collect::<Vec<_>>(),
             ids[..2]
         );
 
         let (second, total) = Order::search(&window(2, 2), &db).await.unwrap();
         assert_eq!(total, 5);
         assert_eq!(
-            second.iter().map(|o| o.id.clone()).collect::<Vec<_>>(),
+            second.iter().map(|o| o.id.to_string()).collect::<Vec<_>>(),
             ids[2..4]
         );
 
@@ -1674,7 +1740,7 @@ mod tests {
         for index in 0..4 {
             let order = Order::create(
                 "default",
-                &acct,
+                acct,
                 vec![Identifier::dns(format!("same-second-{index}.example.com"))],
                 now_secs() + 3600,
                 None,
@@ -1692,7 +1758,7 @@ mod tests {
             let (page, total) = Order::search(&window(1, offset), &db).await.unwrap();
             assert_eq!(total, 4);
             assert_eq!(page.len(), 1);
-            seen.push(page[0].id.clone());
+            seen.push(page[0].id);
         }
         seen.sort();
         assert_eq!(
@@ -1715,9 +1781,9 @@ mod tests {
         .await
         .unwrap();
 
-        seed_orders(&db, "default", &acct, 3).await;
-        seed_orders(&db, "default", &other_account.id, 2).await;
-        let mut ready = seed_orders(&db, "default", &acct, 1).await;
+        seed_orders(&db, "default", acct, 3).await;
+        seed_orders(&db, "default", other_account.id, 2).await;
+        let mut ready = seed_orders(&db, "default", acct, 1).await;
         let ready_id = ready.pop().unwrap();
         Order::find_by_id(&ready_id, &db)
             .await
@@ -1733,7 +1799,7 @@ mod tests {
 
         // By account.
         let by_account = OrderQuery {
-            account_id: Some(acct.clone()),
+            account_id: Some(acct.clone().to_string()),
             ..window(50, 0)
         };
         let (rows, total) = Order::search(&by_account, &db).await.unwrap();
@@ -1747,12 +1813,12 @@ mod tests {
         };
         let (rows, total) = Order::search(&by_status, &db).await.unwrap();
         assert_eq!(total, 1);
-        assert_eq!(rows[0].id, ready_id);
+        assert_eq!(rows[0].id.to_string(), ready_id);
 
         // All three at once, and the count must agree with the rows.
         let combined = OrderQuery {
             profile: Some("default".to_string()),
-            account_id: Some(acct.clone()),
+            account_id: Some(acct.clone().to_string()),
             status: Some(OrderStatus::Pending),
             limit: 50,
             offset: 0,
@@ -1775,8 +1841,8 @@ mod tests {
     async fn search_scopes_by_profile() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
-        seed_orders(&db, "default", &acct, 2).await;
-        seed_orders(&db, "other", &acct, 3).await;
+        seed_orders(&db, "default", acct, 2).await;
+        seed_orders(&db, "other", acct, 3).await;
 
         let scoped = OrderQuery {
             profile: Some("other".to_string()),
@@ -1798,7 +1864,7 @@ mod tests {
     async fn a_filter_value_is_bound_not_interpolated() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
-        seed_orders(&db, "default", &acct, 2).await;
+        seed_orders(&db, "default", acct, 2).await;
 
         for hostile in ["' OR 1=1 --", "default'; DROP TABLE orders; --"] {
             let by_profile = OrderQuery {
@@ -1828,7 +1894,7 @@ mod tests {
     /// production one and only the date is a fixture.
     async fn expiring_order(
         db: &Database,
-        account: &str,
+        account: uuid::Uuid,
         names: &[&str],
         not_after: Option<i64>,
     ) -> Order {
@@ -1839,7 +1905,7 @@ mod tests {
     async fn expiring_order_on(
         db: &Database,
         profile: &str,
-        account: &str,
+        account: uuid::Uuid,
         names: &[&str],
         not_after: Option<i64>,
     ) -> Order {
@@ -1857,7 +1923,7 @@ mod tests {
         order
             .finalize(
                 "-----BEGIN CERTIFICATE-----\n...".to_string(),
-                format!("serial-{}", &order.id[..8]),
+                format!("serial-{}", &order.id.to_string()[..8]),
                 vec![1],
                 not_after,
                 db,
@@ -1877,19 +1943,19 @@ mod tests {
         let acct = account_id(&db).await;
         let now = now_secs();
 
-        let far = expiring_order(&db, &acct, &["far.example.com"], Some(now + 60 * DAY)).await;
-        let soon = expiring_order(&db, &acct, &["soon.example.com"], Some(now + 2 * DAY)).await;
-        let mid = expiring_order(&db, &acct, &["mid.example.com"], Some(now + 9 * DAY)).await;
+        let far = expiring_order(&db, acct, &["far.example.com"], Some(now + 60 * DAY)).await;
+        let soon = expiring_order(&db, acct, &["soon.example.com"], Some(now + 2 * DAY)).await;
+        let mid = expiring_order(&db, acct, &["mid.example.com"], Some(now + 9 * DAY)).await;
 
         let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
 
-        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
-        assert_eq!(ids, vec![soon.id.as_str(), mid.id.as_str()]);
+        let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
+        assert_eq!(ids, vec![soon.id.to_string(), mid.id.to_string()]);
         assert_eq!(total, 2);
         assert!(
-            !ids.contains(&far.id.as_str()),
+            !ids.contains(&far.id.to_string()),
             "a certificate outside the window is not expiring yet"
         );
     }
@@ -1901,29 +1967,27 @@ mod tests {
         let acct = account_id(&db).await;
         let now = now_secs();
 
-        let live = expiring_order(&db, &acct, &["live.example.com"], Some(now + DAY)).await;
+        let live = expiring_order(&db, acct, &["live.example.com"], Some(now + DAY)).await;
 
         // Revoked: withdrawn, so not something to go and renew.
         let mut revoked =
-            expiring_order(&db, &acct, &["revoked.example.com"], Some(now + DAY)).await;
+            expiring_order(&db, acct, &["revoked.example.com"], Some(now + DAY)).await;
         revoked.revoke(Some(1), &db).await.unwrap();
 
         // Never stamped: issued before the column existed. The backfill has to
         // reach it before the digest can, or a NULL would sort as "expiring".
-        expiring_order(&db, &acct, &["old.example.com"], None).await;
+        expiring_order(&db, acct, &["old.example.com"], None).await;
 
         // Stamped unparsable: the sweep looked and could not read the chain.
         // A negative value must not read as "expired in 1970".
-        let broken = expiring_order(&db, &acct, &["broken.example.com"], None).await;
-        Order::set_cert_not_after(&broken.id, -1, &db)
-            .await
-            .unwrap();
+        let broken = expiring_order(&db, acct, &["broken.example.com"], None).await;
+        Order::set_cert_not_after(broken.id, -1, &db).await.unwrap();
 
         let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
-        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
-        assert_eq!(ids, vec![live.id.as_str()]);
+        let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
+        assert_eq!(ids, vec![live.id.to_string()]);
         assert_eq!(total, 1);
     }
 
@@ -1937,7 +2001,7 @@ mod tests {
         let now = now_secs();
         for index in 0..5 {
             let name = format!("host-{index}.example.com");
-            expiring_order(&db, &acct, &[name.as_str()], Some(now + DAY)).await;
+            expiring_order(&db, acct, &[name.as_str()], Some(now + DAY)).await;
         }
 
         let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 2, 0, &db)
@@ -1954,7 +2018,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
-        expiring_order(&db, &acct, &["a.example.com"], Some(now + DAY)).await;
+        expiring_order(&db, acct, &["a.example.com"], Some(now + DAY)).await;
 
         let (page, total) = Order::find_expiring(Some("other"), now + 14 * DAY, 10, 0, &db)
             .await
@@ -1973,21 +2037,21 @@ mod tests {
         let now = now_secs();
 
         let here =
-            expiring_order_on(&db, "default", &acct, &["a.example.com"], Some(now + DAY)).await;
+            expiring_order_on(&db, "default", acct, &["a.example.com"], Some(now + DAY)).await;
         let there =
-            expiring_order_on(&db, "other", &acct, &["b.example.com"], Some(now + 2 * DAY)).await;
+            expiring_order_on(&db, "other", acct, &["b.example.com"], Some(now + 2 * DAY)).await;
 
         let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
-        let ids: Vec<&str> = page.iter().map(|order| order.id.as_str()).collect();
-        assert_eq!(ids, vec![here.id.as_str(), there.id.as_str()]);
+        let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
+        assert_eq!(ids, vec![here.id.to_string(), there.id.to_string()]);
         assert_eq!(total, 2);
 
         // And the three unconditional predicates still apply unscoped: a
         // revoked row is absent whichever endpoint issued it.
         let mut revoked =
-            expiring_order_on(&db, "other", &acct, &["c.example.com"], Some(now + DAY)).await;
+            expiring_order_on(&db, "other", acct, &["c.example.com"], Some(now + DAY)).await;
         revoked.revoke(Some(1), &db).await.unwrap();
         let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
             .await
@@ -2008,7 +2072,7 @@ mod tests {
             let name = format!("host-{index}.example.com");
             // Distinct expiries, so the ordering is total and the assertion
             // below is about the offset rather than about a tie-break.
-            expiring_order(&db, &acct, &[name.as_str()], Some(now + (index + 1) * DAY)).await;
+            expiring_order(&db, acct, &[name.as_str()], Some(now + (index + 1) * DAY)).await;
         }
 
         let (first, total) = Order::find_expiring(None, now + 14 * DAY, 2, 0, &db)
@@ -2022,10 +2086,10 @@ mod tests {
         assert_eq!(second_total, 5, "the total is unpaged on every window");
         assert_eq!(first.len(), 2);
         assert_eq!(second.len(), 2);
-        let firsts: Vec<&str> = first.iter().map(|order| order.id.as_str()).collect();
+        let firsts: Vec<String> = first.iter().map(|order| order.id.to_string()).collect();
         for order in &second {
             assert!(
-                !firsts.contains(&order.id.as_str()),
+                !firsts.contains(&order.id.to_string()),
                 "a row must not appear on two pages"
             );
         }
@@ -2043,12 +2107,12 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
 
-        let unstamped = expiring_order(&db, &acct, &["old.example.com"], None).await;
-        expiring_order(&db, &acct, &["new.example.com"], Some(now_secs())).await;
+        let unstamped = expiring_order(&db, acct, &["old.example.com"], None).await;
+        expiring_order(&db, acct, &["new.example.com"], Some(now_secs())).await;
         // Never issued: no certificate, so nothing to parse.
         Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("pending.example.com")],
             now_secs() + 3600,
             None,
@@ -2064,7 +2128,7 @@ mod tests {
 
         // And once stamped it stops being returned, which is what stops the
         // sweep re-parsing the same row for ever.
-        Order::set_cert_not_after(&unstamped.id, -1, &db)
+        Order::set_cert_not_after(unstamped.id, -1, &db)
             .await
             .unwrap();
         assert!(

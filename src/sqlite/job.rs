@@ -20,6 +20,7 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -33,7 +34,7 @@ use crate::sqlite::nonce::now_secs;
 /// unrecognised one is simply left alone.
 #[derive(Debug, Clone)]
 pub struct Job {
-    pub id: String,
+    pub id: Uuid,
     pub kind: String,
     pub dedup_key: String,
     pub payload: Value,
@@ -64,7 +65,7 @@ const COLUMNS: &str = "id, kind, dedup_key, payload, status, run_at, attempts, m
 /// type.
 #[derive(Debug)]
 pub struct NewJob<'a> {
-    pub id: &'a str,
+    pub id: Uuid,
     pub kind: &'a str,
     pub dedup_key: &'a str,
     pub payload: &'a Value,
@@ -213,7 +214,7 @@ impl Job {
 
     /// Marks a claimed job finished. `Ok(false)` means the lease was lost.
     pub async fn complete(
-        id: &str,
+        id: Uuid,
         runner_id: &str,
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
@@ -222,7 +223,7 @@ impl Job {
 
     /// Returns a claimed job to the queue, to run again at `run_at`.
     pub async fn retry(
-        id: &str,
+        id: Uuid,
         runner_id: &str,
         run_at: i64,
         error: &str,
@@ -248,7 +249,7 @@ impl Job {
     /// retire itself, and a successful occurrence must not leave the previous
     /// failure's text sitting on the row as though it were current.
     pub async fn reschedule(
-        id: &str,
+        id: Uuid,
         runner_id: &str,
         run_at: i64,
         database: &Database,
@@ -258,7 +259,7 @@ impl Job {
 
     /// Retires a claimed job permanently, recording why.
     pub async fn abandon(
-        id: &str,
+        id: Uuid,
         runner_id: &str,
         error: &str,
         database: &Database,
@@ -274,7 +275,7 @@ impl Job {
     /// runner was working, and the four call sites would each have had to
     /// remember. `rows_affected() == 1` is the caller's answer.
     async fn settle(
-        id: &str,
+        id: Uuid,
         runner_id: &str,
         status: &str,
         run_at: Option<i64>,
@@ -356,7 +357,7 @@ impl Job {
     }
 
     /// One row by id.
-    pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+    pub async fn find_by_id(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
         // A `QueryBuilder` rather than `sqlx::query`, which takes only
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
@@ -432,8 +433,23 @@ mod tests {
         Arc::new(Database::connect_in_memory().await.unwrap())
     }
 
+    /// A stable id for a fixture, derived from a readable name.
+    ///
+    /// Ids are UUIDs, so a fixture cannot spell one inline and stay legible --
+    /// and minting one per row would move the name out of the assertion, which
+    /// is where it does the explaining. The bytes are the name itself, padded:
+    /// distinct names give distinct ids, which is the whole of what a fixture
+    /// needs from them.
+    fn job_id(name: &str) -> Uuid {
+        let mut bytes = [0u8; 16];
+        let name = name.as_bytes();
+        let take = name.len().min(16);
+        bytes[..take].copy_from_slice(&name[..take]);
+        Uuid::from_bytes(bytes)
+    }
+
     /// Queues one job with sensible defaults, returning whether it was queued.
-    async fn enqueue(id: &str, key: &str, run_at: i64, database: &Database) -> bool {
+    async fn enqueue(id: Uuid, key: &str, run_at: i64, database: &Database) -> bool {
         Job::enqueue(
             NewJob {
                 id,
@@ -463,7 +479,7 @@ mod tests {
         assert!(
             Job::enqueue(
                 NewJob {
-                    id: "job-1",
+                    id: job_id("job-1"),
                     kind: "relay",
                     dedup_key: "ord-1",
                     payload: &json!({"order_id": "ord-1"}),
@@ -477,7 +493,10 @@ mod tests {
             .unwrap()
         );
 
-        let job = Job::find_by_id("job-1", &database).await.unwrap().unwrap();
+        let job = Job::find_by_id(job_id("job-1"), &database)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(job.kind, "relay");
         assert_eq!(job.dedup_key, "ord-1");
         assert_eq!(job.payload, json!({"order_id": "ord-1"}));
@@ -496,22 +515,22 @@ mod tests {
     #[tokio::test]
     async fn a_live_job_holds_its_identity_and_a_settled_one_releases_it() {
         let database = db().await;
-        assert!(enqueue("job-1", "ord-1", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "ord-1", now_secs(), &database).await);
         assert!(
-            !enqueue("job-2", "ord-1", now_secs(), &database).await,
+            !enqueue(job_id("job-2"), "ord-1", now_secs(), &database).await,
             "a second live job must not take an identity already held"
         );
 
         // Claimed is still live.
         let job = claim("runner-a", &database).await.unwrap();
         assert!(
-            !enqueue("job-3", "ord-1", now_secs(), &database).await,
+            !enqueue(job_id("job-3"), "ord-1", now_secs(), &database).await,
             "'running' holds the identity exactly as 'ready' does"
         );
 
-        Job::complete(&job.id, "runner-a", &database).await.unwrap();
+        Job::complete(job.id, "runner-a", &database).await.unwrap();
         assert!(
-            enqueue("job-4", "ord-1", now_secs(), &database).await,
+            enqueue(job_id("job-4"), "ord-1", now_secs(), &database).await,
             "a settled job releases its identity"
         );
     }
@@ -519,16 +538,16 @@ mod tests {
     #[tokio::test]
     async fn claiming_takes_the_oldest_eligible_row_and_only_once() {
         let database = db().await;
-        assert!(enqueue("job-new", "b", now_secs() - 10, &database).await);
-        assert!(enqueue("job-old", "a", now_secs() - 100, &database).await);
+        assert!(enqueue(job_id("job-new"), "b", now_secs() - 10, &database).await);
+        assert!(enqueue(job_id("job-old"), "a", now_secs() - 100, &database).await);
 
         let first = claim("runner-a", &database).await.unwrap();
-        assert_eq!(first.id, "job-old", "oldest `run_at` first");
+        assert_eq!(first.id, job_id("job-old"), "oldest `run_at` first");
         assert_eq!(first.attempts, 1, "the counter moves at claim");
         assert_eq!(first.lease_owner.as_deref(), Some("runner-a"));
 
         let second = claim("runner-b", &database).await.unwrap();
-        assert_eq!(second.id, "job-new");
+        assert_eq!(second.id, job_id("job-new"));
         assert!(
             claim("runner-c", &database).await.is_none(),
             "a claimed row is not claimable again"
@@ -538,14 +557,14 @@ mod tests {
     #[tokio::test]
     async fn claiming_skips_a_job_whose_run_at_has_not_arrived() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs() + 3_600, &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs() + 3_600, &database).await);
         assert!(claim("runner-a", &database).await.is_none());
     }
 
     #[tokio::test]
     async fn claiming_skips_a_kind_the_runner_does_not_hold() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
 
         let claimed = Job::claim_next(
             "runner-a",
@@ -565,7 +584,7 @@ mod tests {
     #[tokio::test]
     async fn claiming_with_no_registered_kinds_asks_the_database_nothing() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
         assert!(
             Job::claim_next("runner-a", &[], now_secs() + 60, now_secs(), &database)
                 .await
@@ -579,25 +598,28 @@ mod tests {
     #[tokio::test]
     async fn a_settlement_from_a_runner_that_lost_the_lease_writes_nothing() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
         let job = claim("runner-a", &database).await.unwrap();
 
         for settled in [
-            Job::complete(&job.id, "runner-b", &database).await.unwrap(),
-            Job::retry(&job.id, "runner-b", now_secs(), "x", &database)
+            Job::complete(job.id, "runner-b", &database).await.unwrap(),
+            Job::retry(job.id, "runner-b", now_secs(), "x", &database)
                 .await
                 .unwrap(),
-            Job::reschedule(&job.id, "runner-b", now_secs(), &database)
+            Job::reschedule(job.id, "runner-b", now_secs(), &database)
                 .await
                 .unwrap(),
-            Job::abandon(&job.id, "runner-b", "x", &database)
+            Job::abandon(job.id, "runner-b", "x", &database)
                 .await
                 .unwrap(),
         ] {
             assert!(!settled, "the lease guard must refuse a foreign settlement");
         }
 
-        let after = Job::find_by_id("job-1", &database).await.unwrap().unwrap();
+        let after = Job::find_by_id(job_id("job-1"), &database)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.status, "running");
         assert_eq!(after.lease_owner.as_deref(), Some("runner-a"));
     }
@@ -605,16 +627,19 @@ mod tests {
     #[tokio::test]
     async fn retry_returns_the_job_at_its_new_time_and_keeps_the_attempt_count() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
         let job = claim("runner-a", &database).await.unwrap();
 
         assert!(
-            Job::retry(&job.id, "runner-a", 9_999, "upstream timed out", &database)
+            Job::retry(job.id, "runner-a", 9_999, "upstream timed out", &database)
                 .await
                 .unwrap()
         );
 
-        let after = Job::find_by_id("job-1", &database).await.unwrap().unwrap();
+        let after = Job::find_by_id(job_id("job-1"), &database)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.status, "ready");
         assert_eq!(after.run_at, 9_999);
         assert_eq!(after.attempts, 1, "a retry does not forgive the attempt");
@@ -625,21 +650,24 @@ mod tests {
     #[tokio::test]
     async fn reschedule_resets_the_attempt_count_and_clears_the_last_error() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
         let job = claim("runner-a", &database).await.unwrap();
-        Job::retry(&job.id, "runner-a", now_secs(), "a failure", &database)
+        Job::retry(job.id, "runner-a", now_secs(), "a failure", &database)
             .await
             .unwrap();
         let job = claim("runner-a", &database).await.unwrap();
         assert_eq!(job.attempts, 2);
 
         assert!(
-            Job::reschedule(&job.id, "runner-a", 5_000, &database)
+            Job::reschedule(job.id, "runner-a", 5_000, &database)
                 .await
                 .unwrap()
         );
 
-        let after = Job::find_by_id("job-1", &database).await.unwrap().unwrap();
+        let after = Job::find_by_id(job_id("job-1"), &database)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.status, "ready");
         assert_eq!(after.run_at, 5_000);
         assert_eq!(after.attempts, 0, "a fresh occurrence starts fresh");
@@ -649,16 +677,19 @@ mod tests {
     #[tokio::test]
     async fn abandon_is_terminal_and_records_why() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
         let job = claim("runner-a", &database).await.unwrap();
 
         assert!(
-            Job::abandon(&job.id, "runner-a", "the order no longer exists", &database)
+            Job::abandon(job.id, "runner-a", "the order no longer exists", &database)
                 .await
                 .unwrap()
         );
 
-        let after = Job::find_by_id("job-1", &database).await.unwrap().unwrap();
+        let after = Job::find_by_id(job_id("job-1"), &database)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.status, "failed");
         assert_eq!(
             after.last_error.as_deref(),
@@ -669,8 +700,8 @@ mod tests {
     #[tokio::test]
     async fn reclaim_takes_only_leases_that_have_expired() {
         let database = db().await;
-        assert!(enqueue("job-live", "a", now_secs(), &database).await);
-        assert!(enqueue("job-dead", "b", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-live"), "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-dead"), "b", now_secs(), &database).await);
 
         // One long lease, one already expired.
         Job::claim_next(
@@ -691,7 +722,7 @@ mod tests {
             1
         );
 
-        let reclaimed = Job::find_by_id("job-dead", &database)
+        let reclaimed = Job::find_by_id(job_id("job-dead"), &database)
             .await
             .unwrap()
             .unwrap();
@@ -702,7 +733,7 @@ mod tests {
             "the attempt was spent, and the row must keep saying so"
         );
 
-        let held = Job::find_by_id("job-live", &database)
+        let held = Job::find_by_id(job_id("job-live"), &database)
             .await
             .unwrap()
             .unwrap();
@@ -712,14 +743,14 @@ mod tests {
     #[tokio::test]
     async fn release_owned_is_scoped_to_one_runner() {
         let database = db().await;
-        assert!(enqueue("job-1", "a", now_secs(), &database).await);
-        assert!(enqueue("job-2", "b", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-2"), "b", now_secs(), &database).await);
         claim("runner-a", &database).await.unwrap();
         claim("runner-b", &database).await.unwrap();
 
         assert_eq!(Job::release_owned("runner-a", &database).await.unwrap(), 1);
         assert_eq!(
-            Job::find_by_id("job-1", &database)
+            Job::find_by_id(job_id("job-1"), &database)
                 .await
                 .unwrap()
                 .unwrap()
@@ -727,7 +758,7 @@ mod tests {
             "ready"
         );
         assert_eq!(
-            Job::find_by_id("job-2", &database)
+            Job::find_by_id(job_id("job-2"), &database)
                 .await
                 .unwrap()
                 .unwrap()
@@ -739,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn find_live_sees_a_queued_job_and_not_a_settled_one() {
         let database = db().await;
-        assert!(enqueue("job-1", "ord-1", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-1"), "ord-1", now_secs(), &database).await);
         assert!(
             Job::find_live("test", "ord-1", &database)
                 .await
@@ -748,7 +779,7 @@ mod tests {
         );
 
         let job = claim("runner-a", &database).await.unwrap();
-        Job::complete(&job.id, "runner-a", &database).await.unwrap();
+        Job::complete(job.id, "runner-a", &database).await.unwrap();
         assert!(
             Job::find_live("test", "ord-1", &database)
                 .await
@@ -760,22 +791,22 @@ mod tests {
     #[tokio::test]
     async fn cleanup_removes_settled_rows_strictly_older_than_the_cutoff() {
         let database = db().await;
-        assert!(enqueue("job-done", "a", now_secs(), &database).await);
-        assert!(enqueue("job-live", "b", now_secs() + 3_600, &database).await);
+        assert!(enqueue(job_id("job-done"), "a", now_secs(), &database).await);
+        assert!(enqueue(job_id("job-live"), "b", now_secs() + 3_600, &database).await);
         let job = claim("runner-a", &database).await.unwrap();
-        Job::complete(&job.id, "runner-a", &database).await.unwrap();
+        Job::complete(job.id, "runner-a", &database).await.unwrap();
 
         // The cutoff is `updated_at`, which `complete` has just stamped to now.
         assert_eq!(Job::cleanup(now_secs(), &database).await.unwrap(), 0);
         assert_eq!(Job::cleanup(now_secs() + 1, &database).await.unwrap(), 1);
         assert!(
-            Job::find_by_id("job-done", &database)
+            Job::find_by_id(job_id("job-done"), &database)
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
-            Job::find_by_id("job-live", &database)
+            Job::find_by_id(job_id("job-live"), &database)
                 .await
                 .unwrap()
                 .is_some(),

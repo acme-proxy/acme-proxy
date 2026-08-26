@@ -1630,8 +1630,8 @@ async fn eab_labels_scope_each_tenant_to_its_own_names() {
 
     let signer_a = EcSigner::new();
     let signer_b = EcSigner::new();
-    let account_a = register_with_eab(&app, &signer_a, &key_a.kid, &key_a.secret).await;
-    let account_b = register_with_eab(&app, &signer_b, &key_b.kid, &key_b.secret).await;
+    let account_a = register_with_eab(&app, &signer_a, &key_a.kid.to_string(), &key_a.secret).await;
+    let account_b = register_with_eab(&app, &signer_b, &key_b.kid.to_string(), &key_b.secret).await;
 
     // Each tenant may have its own names.
     for (account, signer, name) in [

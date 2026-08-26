@@ -138,7 +138,7 @@ pub async fn get_mfa(
     State(state): State<AdminState>,
     auth: Authenticated,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let remaining = mfa::recovery_codes_remaining(&auth.user.id, state.database).await?;
+    let remaining = mfa::recovery_codes_remaining(auth.user.id, state.database).await?;
     Ok(Json(json!({
         "totpEnabled": auth.user.has_totp(),
         "enrolmentPending": auth.user.has_pending_totp(),
@@ -303,7 +303,7 @@ mod tests {
 
     fn user_with(password_hash: &str, totp: Option<&[u8]>) -> AdminUser {
         AdminUser {
-            id: "11111111-2222-3333-4444-555555555555".to_string(),
+            id: crate::testutil::ADMIN_FIXTURE_ID,
             username: "alice".to_string(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),

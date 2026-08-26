@@ -1,6 +1,7 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -23,8 +24,8 @@ use crate::sqlite::order::rfc3339;
 /// - `delete_for_user`: what removing the factor takes with it
 #[derive(Debug, Clone)]
 pub struct AdminRecoveryCode {
-    pub id: String,
-    pub user_id: String,
+    pub id: Uuid,
+    pub user_id: Uuid,
     /// `<algo>$<params>$<salt>$<hash>`, exactly a `password_hash`.
     pub code_hash: String,
     pub created_at: i64,
@@ -54,7 +55,7 @@ impl AdminRecoveryCode {
     /// superseded, not of anything still reachable, and keeping them would make
     /// "10 minted, 7 remaining" a sum over sets.
     pub async fn replace_all(
-        user_id: &str,
+        user_id: Uuid,
         hashes: &[String],
         database: &Database,
     ) -> Result<(), sqlx::Error> {
@@ -71,7 +72,7 @@ impl AdminRecoveryCode {
                 "INSERT INTO admin_recovery_codes (id, user_id, code_hash, created_at, used_at) \
                  VALUES (?, ?, ?, ?, NULL);",
             )
-            .bind(crate::sqlite::id::mint().to_string())
+            .bind(crate::sqlite::id::mint())
             .bind(user_id)
             .bind(hash)
             .bind(now)
@@ -93,7 +94,7 @@ impl AdminRecoveryCode {
     /// The unspent codes, oldest first -- what `admin::mfa` walks one PBKDF2
     /// run at a time when a submission is not a TOTP code.
     pub async fn list_unused(
-        user_id: &str,
+        user_id: Uuid,
         database: &Database,
     ) -> Result<Vec<AdminRecoveryCode>, sqlx::Error> {
         let rows = sqlx::query(
@@ -110,7 +111,7 @@ impl AdminRecoveryCode {
 
     /// How many are left -- the "7 of 10 remaining" the panel and
     /// `admin user totp status` both show.
-    pub async fn count_unused(user_id: &str, database: &Database) -> Result<i64, sqlx::Error> {
+    pub async fn count_unused(user_id: Uuid, database: &Database) -> Result<i64, sqlx::Error> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS total FROM admin_recovery_codes \
              WHERE user_id = ? AND used_at IS NULL;",
@@ -131,7 +132,7 @@ impl AdminRecoveryCode {
     ///
     /// Stamps rather than deletes -- see the migration's comment: "this code was
     /// spent, at T" is the audit trail a recovery-code use exists to leave.
-    pub async fn consume(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
+    pub async fn consume(id: Uuid, database: &Database) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             "UPDATE admin_recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL;",
         )
@@ -153,7 +154,7 @@ impl AdminRecoveryCode {
     /// Drops every code of one user -- what removing the second factor takes
     /// with it, since a recovery code recovers access to a factor that no
     /// longer exists.
-    pub async fn delete_for_user(user_id: &str, database: &Database) -> Result<u64, sqlx::Error> {
+    pub async fn delete_for_user(user_id: Uuid, database: &Database) -> Result<u64, sqlx::Error> {
         let result = sqlx::query("DELETE FROM admin_recovery_codes WHERE user_id = ?;")
             .bind(user_id)
             .execute(&database.pool)
@@ -194,34 +195,28 @@ mod tests {
     async fn replace_all_mints_a_set_and_supersedes_the_previous_one() {
         let (db, user) = db_with_user().await;
 
-        AdminRecoveryCode::replace_all(&user.id, &hashes(10), &db)
+        AdminRecoveryCode::replace_all(user.id, &hashes(10), &db)
             .await
             .unwrap();
         assert_eq!(
-            AdminRecoveryCode::count_unused(&user.id, &db)
-                .await
-                .unwrap(),
+            AdminRecoveryCode::count_unused(user.id, &db).await.unwrap(),
             10
         );
 
         // Spend one, then regenerate: the old set must be gone entirely --
         // both the eight still live and the one already spent, or "remaining"
         // would be a sum over sets.
-        let first = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap()[0]
-            .id
-            .clone();
-        assert!(AdminRecoveryCode::consume(&first, &db).await.unwrap());
+        let first = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap()[0].id;
+        assert!(AdminRecoveryCode::consume(first, &db).await.unwrap());
         assert_eq!(
-            AdminRecoveryCode::count_unused(&user.id, &db)
-                .await
-                .unwrap(),
+            AdminRecoveryCode::count_unused(user.id, &db).await.unwrap(),
             9
         );
 
-        AdminRecoveryCode::replace_all(&user.id, &hashes(10), &db)
+        AdminRecoveryCode::replace_all(user.id, &hashes(10), &db)
             .await
             .unwrap();
-        let after = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap();
+        let after = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap();
         assert_eq!(after.len(), 10);
         assert!(
             after.iter().all(|code| code.id != first),
@@ -234,25 +229,25 @@ mod tests {
     #[tokio::test]
     async fn a_code_can_be_consumed_exactly_once() {
         let (db, user) = db_with_user().await;
-        AdminRecoveryCode::replace_all(&user.id, &hashes(3), &db)
+        AdminRecoveryCode::replace_all(user.id, &hashes(3), &db)
             .await
             .unwrap();
 
-        let code = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap()[0].clone();
+        let code = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap()[0].clone();
 
-        assert!(AdminRecoveryCode::consume(&code.id, &db).await.unwrap());
+        assert!(AdminRecoveryCode::consume(code.id, &db).await.unwrap());
         assert!(
-            !AdminRecoveryCode::consume(&code.id, &db).await.unwrap(),
+            !AdminRecoveryCode::consume(code.id, &db).await.unwrap(),
             "a second consumption of one code must fail, whatever raced it"
         );
         assert!(
-            !AdminRecoveryCode::consume("no-such-code", &db)
+            !AdminRecoveryCode::consume(crate::sqlite::id::mint(), &db)
                 .await
                 .unwrap()
         );
 
         // And it leaves the audit stamp rather than the row.
-        let remaining = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap();
+        let remaining = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap();
         assert_eq!(remaining.len(), 2);
         assert!(remaining.iter().all(|other| other.id != code.id));
     }
@@ -260,15 +255,13 @@ mod tests {
     #[tokio::test]
     async fn deleting_the_operator_cascades_to_their_codes() {
         let (db, user) = db_with_user().await;
-        AdminRecoveryCode::replace_all(&user.id, &hashes(10), &db)
+        AdminRecoveryCode::replace_all(user.id, &hashes(10), &db)
             .await
             .unwrap();
 
-        assert!(AdminUser::delete(&user.id, &db).await.unwrap());
+        assert!(AdminUser::delete(user.id, &db).await.unwrap());
         assert_eq!(
-            AdminRecoveryCode::count_unused(&user.id, &db)
-                .await
-                .unwrap(),
+            AdminRecoveryCode::count_unused(user.id, &db).await.unwrap(),
             0
         );
     }
@@ -276,20 +269,18 @@ mod tests {
     #[tokio::test]
     async fn delete_for_user_removes_the_whole_set() {
         let (db, user) = db_with_user().await;
-        AdminRecoveryCode::replace_all(&user.id, &hashes(10), &db)
+        AdminRecoveryCode::replace_all(user.id, &hashes(10), &db)
             .await
             .unwrap();
 
         assert_eq!(
-            AdminRecoveryCode::delete_for_user(&user.id, &db)
+            AdminRecoveryCode::delete_for_user(user.id, &db)
                 .await
                 .unwrap(),
             10
         );
         assert_eq!(
-            AdminRecoveryCode::count_unused(&user.id, &db)
-                .await
-                .unwrap(),
+            AdminRecoveryCode::count_unused(user.id, &db).await.unwrap(),
             0
         );
     }
@@ -297,16 +288,16 @@ mod tests {
     #[tokio::test]
     async fn to_json_leaks_no_hash() {
         let (db, user) = db_with_user().await;
-        AdminRecoveryCode::replace_all(&user.id, &["a-secret-hash".to_string()], &db)
+        AdminRecoveryCode::replace_all(user.id, &["a-secret-hash".to_string()], &db)
             .await
             .unwrap();
 
-        let code = AdminRecoveryCode::list_unused(&user.id, &db).await.unwrap()[0].clone();
+        let code = AdminRecoveryCode::list_unused(user.id, &db).await.unwrap()[0].clone();
         let rendered = code.to_json().to_string();
 
         assert!(!rendered.contains("a-secret-hash"));
         assert!(!rendered.contains("codeHash"));
-        assert!(rendered.contains(&code.id));
+        assert!(rendered.contains(&code.id.to_string()));
         assert!(rendered.contains("\"usedAt\":null"));
     }
 }

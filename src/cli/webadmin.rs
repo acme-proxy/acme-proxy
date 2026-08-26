@@ -220,7 +220,7 @@ async fn run_totp_command(
     match command {
         AdminUserTotpCommand::Status { username, json } => {
             let user = find_user(&username, database.clone()).await?;
-            let remaining = mfa::recovery_codes_remaining(&user.id, database).await?;
+            let remaining = mfa::recovery_codes_remaining(user.id, database).await?;
 
             if json {
                 println!(
@@ -317,7 +317,7 @@ async fn run_session_command(
                 },
             };
 
-            let sessions = AdminSession::list_all(user_id.as_deref(), &database).await?;
+            let sessions = AdminSession::list_all(user_id, &database).await?;
             render::print_rows(
                 &sessions,
                 json,
@@ -766,7 +766,7 @@ mod tests {
             .unwrap();
         AdminSession::create(
             NewSession {
-                user_id: &alice.id,
+                user_id: alice.id,
                 token_hash: "hash-a",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -825,7 +825,7 @@ mod tests {
         for hash in ["a", "b"] {
             AdminSession::create(
                 NewSession {
-                    user_id: &alice.id,
+                    user_id: alice.id,
                     token_hash: hash,
                     csrf_token: "csrf",
                     created_ip: None,
@@ -981,7 +981,7 @@ mod tests {
 
         AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "live-session",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -1028,13 +1028,13 @@ mod tests {
         assert!(!after.has_totp());
         assert!(!after.has_pending_totp());
         assert_eq!(
-            mfa::recovery_codes_remaining(&after.id, db.clone())
+            mfa::recovery_codes_remaining(after.id, db.clone())
                 .await
                 .unwrap(),
             0
         );
         assert!(
-            AdminSession::list_all(Some(&after.id), &db)
+            AdminSession::list_all(Some(after.id), &db)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -1054,7 +1054,7 @@ mod tests {
         let user = enrol("alice", db.clone()).await;
 
         let before =
-            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(&user.id, &db)
+            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
                 .await
                 .unwrap();
         assert_eq!(before.len(), 10);
@@ -1070,7 +1070,7 @@ mod tests {
         .unwrap();
 
         let after =
-            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(&user.id, &db)
+            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
                 .await
                 .unwrap();
         assert_eq!(after.len(), 10);

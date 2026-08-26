@@ -2,6 +2,7 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
+use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -25,7 +26,7 @@ use crate::sqlite::order::rfc3339;
 /// - `to_json`: admin-facing rendering (never the password hash, never a secret)
 #[derive(Debug, Clone)]
 pub struct AdminUser {
-    pub id: String,
+    pub id: Uuid,
     /// Always lowercase: [`AdminUser::create`] normalizes before writing, so
     /// `Alice` and `alice` cannot become two logins that read as one.
     pub username: String,
@@ -89,7 +90,7 @@ impl AdminUser {
     ) -> Result<AdminUser, sqlx::Error> {
         let now = now_secs();
         let user = AdminUser {
-            id: crate::sqlite::id::mint().to_string(),
+            id: crate::sqlite::id::mint(),
             username: username.trim().to_lowercase(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
@@ -106,7 +107,7 @@ impl AdminUser {
             "INSERT INTO admin_users (id, username, password_hash, status, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
-        .bind(&user.id)
+        .bind(user.id)
         .bind(&user.username)
         .bind(&user.password_hash)
         .bind(&user.status)
@@ -120,7 +121,7 @@ impl AdminUser {
     }
 
     pub async fn find_by_id(
-        id: &str,
+        id: Uuid,
         database: &Database,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
         debug!(event = "db_admin_user_find_by_id_started", outcome = "progress", id = ?id);
@@ -187,7 +188,7 @@ impl AdminUser {
         sqlx::query("UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?;")
             .bind(password_hash)
             .bind(now)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -210,7 +211,7 @@ impl AdminUser {
         sqlx::query("UPDATE admin_users SET status = ?, updated_at = ? WHERE id = ?;")
             .bind(status)
             .bind(now)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -234,7 +235,7 @@ impl AdminUser {
         sqlx::query("UPDATE admin_users SET totp_pending_secret = ?, updated_at = ? WHERE id = ?;")
             .bind(secret)
             .bind(now)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -265,7 +266,7 @@ impl AdminUser {
              WHERE id = ? AND totp_pending_secret IS NOT NULL;",
         )
         .bind(now)
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?;
 
@@ -287,7 +288,7 @@ impl AdminUser {
              totp_last_step = NULL, updated_at = ? WHERE id = ?;",
         )
         .bind(now)
-        .bind(&self.id)
+        .bind(self.id)
         .execute(&database.pool)
         .await?;
 
@@ -319,7 +320,7 @@ impl AdminUser {
         )
         .bind(step)
         .bind(now)
-        .bind(&self.id)
+        .bind(self.id)
         .bind(step)
         .execute(&database.pool)
         .await?;
@@ -340,7 +341,7 @@ impl AdminUser {
         let now = now_secs();
         sqlx::query("UPDATE admin_users SET last_login_at = ? WHERE id = ?;")
             .bind(now)
-            .bind(&self.id)
+            .bind(self.id)
             .execute(&database.pool)
             .await?;
 
@@ -351,7 +352,7 @@ impl AdminUser {
     /// Removes the operator. Their sessions go with them via the schema's
     /// `ON DELETE CASCADE`, which needs `foreign_keys` on -- `Database::connect`
     /// and `connect_in_memory` both pin it. Returns whether a row existed.
-    pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
+    pub async fn delete(id: Uuid, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_admin_user_delete_started", outcome = "progress", id = ?id);
         let result = sqlx::query("DELETE FROM admin_users WHERE id = ?;")
             .bind(id)
@@ -437,7 +438,7 @@ mod tests {
         assert_eq!(found.id, created.id);
         assert_eq!(found.password_hash, "hash");
 
-        let by_id = AdminUser::find_by_id(&created.id, &db)
+        let by_id = AdminUser::find_by_id(created.id, &db)
             .await
             .unwrap()
             .unwrap();
@@ -453,7 +454,12 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(AdminUser::find_by_id("nope", &db).await.unwrap().is_none());
+        assert!(
+            AdminUser::find_by_id(crate::sqlite::id::mint(), &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -499,7 +505,7 @@ mod tests {
         // decides, rather than the UUID tiebreak.
         sqlx::query("UPDATE admin_users SET created_at = ? WHERE id = ?;")
             .bind(older.created_at - 60)
-            .bind(&older.id)
+            .bind(older.id)
             .execute(&db.pool)
             .await
             .unwrap();
@@ -516,7 +522,7 @@ mod tests {
         user.set_password_hash("new", &db).await.unwrap();
         assert_eq!(user.password_hash, "new");
 
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.password_hash, "new");
     }
 
@@ -527,7 +533,7 @@ mod tests {
         user.set_status("disabled", &db).await.unwrap();
         assert!(!user.is_active());
 
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert!(!reloaded.is_active());
     }
 
@@ -542,7 +548,7 @@ mod tests {
             !user.has_totp(),
             "a pending enrolment must not read as a second factor"
         );
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(
             reloaded.totp_pending_secret.as_deref(),
             Some(&b"secret-bytes"[..])
@@ -552,12 +558,12 @@ mod tests {
         user.confirm_totp(&db).await.unwrap();
         assert!(user.has_totp());
         assert!(!user.has_pending_totp());
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.totp_secret.as_deref(), Some(&b"secret-bytes"[..]));
         assert_eq!(reloaded.totp_pending_secret, None);
 
         user.clear_totp(&db).await.unwrap();
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.totp_secret, None);
         assert_eq!(reloaded.totp_pending_secret, None);
         assert_eq!(reloaded.totp_last_step, None);
@@ -575,7 +581,7 @@ mod tests {
         user.confirm_totp(&db).await.unwrap();
 
         assert!(user.has_totp());
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.totp_secret.as_deref(), Some(&b"live"[..]));
     }
 
@@ -600,7 +606,7 @@ mod tests {
 
         // Strictly newer advances it, and persists.
         assert!(user.claim_totp_step(101, &db).await.unwrap());
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.totp_last_step, Some(101));
     }
 
@@ -618,7 +624,7 @@ mod tests {
         user.mark_logged_in(&db).await.unwrap();
         assert!(user.last_login_at.is_some());
 
-        let reloaded = AdminUser::find_by_id(&user.id, &db).await.unwrap().unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.last_login_at, user.last_login_at);
     }
 
@@ -626,8 +632,8 @@ mod tests {
     async fn delete_reports_whether_a_row_existed() {
         let db = db().await;
         let user = AdminUser::create("alice", "h", &db).await.unwrap();
-        assert!(AdminUser::delete(&user.id, &db).await.unwrap());
-        assert!(!AdminUser::delete(&user.id, &db).await.unwrap());
+        assert!(AdminUser::delete(user.id, &db).await.unwrap());
+        assert!(!AdminUser::delete(user.id, &db).await.unwrap());
     }
 
     #[tokio::test]

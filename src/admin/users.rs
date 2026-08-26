@@ -110,7 +110,7 @@ pub async fn set_password(
 
     let hash = password::hash_password(plaintext);
     user.set_password_hash(&hash, &database).await?;
-    AdminSession::delete_for_user(&user.id, &database).await?;
+    AdminSession::delete_for_user(user.id, &database).await?;
     Ok(Some(user))
 }
 
@@ -129,7 +129,7 @@ pub async fn set_status(
 
     user.set_status(status, &database).await?;
     if status == "disabled" {
-        AdminSession::delete_for_user(&user.id, &database).await?;
+        AdminSession::delete_for_user(user.id, &database).await?;
     }
     Ok(Some(user))
 }
@@ -144,7 +144,7 @@ pub async fn revoke_sessions(
         return Ok(None);
     };
     Ok(Some(
-        AdminSession::delete_for_user(&user.id, &database).await?,
+        AdminSession::delete_for_user(user.id, &database).await?,
     ))
 }
 
@@ -157,7 +157,7 @@ pub async fn delete_user(username: &str, database: Arc<Database>) -> Result<bool
     let Some(user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(false);
     };
-    AdminUser::delete(&user.id, &database).await
+    AdminUser::delete(user.id, &database).await
 }
 
 /// [`delete_user`], asking first and naming what goes with it.
@@ -170,7 +170,7 @@ pub async fn confirm_delete_user(
     let Some(user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
     };
-    let sessions = AdminSession::list_all(Some(&user.id), &database)
+    let sessions = AdminSession::list_all(Some(user.id), &database)
         .await?
         .len();
     let prompt = format!(
@@ -180,7 +180,7 @@ pub async fn confirm_delete_user(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(DeleteOutcome::Cancelled);
     }
-    AdminUser::delete(&user.id, &database).await?;
+    AdminUser::delete(user.id, &database).await?;
     Ok(DeleteOutcome::Deleted)
 }
 
@@ -389,7 +389,7 @@ mod tests {
         let user = user_with_cheap_password("alice", "old-password", db.clone()).await;
         AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "hash-a",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -408,7 +408,7 @@ mod tests {
                 .is_some()
         );
         assert!(
-            AdminSession::list_all(Some(&user.id), &db)
+            AdminSession::list_all(Some(user.id), &db)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -450,7 +450,7 @@ mod tests {
         let user = user_with_cheap_password("alice", "pw", db.clone()).await;
         AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "hash-a",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -464,7 +464,7 @@ mod tests {
 
         set_status("alice", "disabled", db.clone()).await.unwrap();
         assert!(
-            AdminSession::list_all(Some(&user.id), &db)
+            AdminSession::list_all(Some(user.id), &db)
                 .await
                 .unwrap()
                 .is_empty()
@@ -491,7 +491,7 @@ mod tests {
         for hash in ["a", "b"] {
             AdminSession::create(
                 NewSession {
-                    user_id: &user.id,
+                    user_id: user.id,
                     token_hash: hash,
                     csrf_token: "csrf",
                     created_ip: None,

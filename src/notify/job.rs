@@ -212,7 +212,7 @@ mod tests {
     /// handler only ever reads `payload` and `attempts`.
     fn row(payload: Value) -> Job {
         Job {
-            id: "job-1".to_string(),
+            id: crate::sqlite::id::mint(),
             kind: NOTIFY_JOB_KIND.to_string(),
             dedup_key: "k".to_string(),
             payload,

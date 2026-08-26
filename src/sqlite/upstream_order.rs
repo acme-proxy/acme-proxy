@@ -15,6 +15,7 @@
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -28,7 +29,7 @@ pub(crate) const MAX_PROCESSING_BATCH: usize = 500;
 
 #[derive(Debug, Clone)]
 pub struct UpstreamOrder {
-    pub order_id: String,
+    pub order_id: Uuid,
     pub upstream_order_url: String,
     pub upstream_finalize_url: Option<String>,
     pub upstream_certificate_url: Option<String>,
@@ -99,6 +100,9 @@ impl UpstreamOrder {
         client: &crate::audit::ClientContext,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(());
+        };
         sqlx::query(
             "UPDATE upstream_orders \
              SET client_ip = ?, client_ptr = ?, user_agent = ?, request_id = ? \
@@ -127,9 +131,12 @@ impl UpstreamOrder {
         csr_der: &[u8],
         database: &Database,
     ) -> Result<Option<UpstreamOrder>, sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(None);
+        };
         let now = now_secs();
         let record = UpstreamOrder {
-            order_id: order_id.to_string(),
+            order_id,
             upstream_order_url: upstream_order_url.to_string(),
             upstream_finalize_url: upstream_finalize_url.map(str::to_string),
             upstream_certificate_url: None,
@@ -151,7 +158,7 @@ impl UpstreamOrder {
               created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?);",
         )
-        .bind(&record.order_id)
+        .bind(record.order_id)
         .bind(&record.upstream_order_url)
         .bind(&record.upstream_finalize_url)
         .bind(&record.csr_der)
@@ -171,6 +178,9 @@ impl UpstreamOrder {
         order_id: &str,
         database: &Database,
     ) -> Result<Option<UpstreamOrder>, sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(None);
+        };
         let row = sqlx::query("SELECT * FROM upstream_orders WHERE order_id = ?;")
             .bind(order_id)
             .fetch_optional(&database.pool)
@@ -184,6 +194,9 @@ impl UpstreamOrder {
         certificate_url: Option<&str>,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(());
+        };
         sqlx::query(
             "UPDATE upstream_orders \
              SET status = 'valid', upstream_certificate_url = ?, updated_at = ? \
@@ -204,6 +217,9 @@ impl UpstreamOrder {
         error: &str,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(());
+        };
         sqlx::query(
             "UPDATE upstream_orders SET status = 'invalid', error = ?, updated_at = ? \
              WHERE order_id = ?;",
@@ -281,7 +297,7 @@ mod tests {
         .unwrap();
         Order::create(
             "default",
-            &account.id,
+            account.id,
             vec![Identifier::dns("example.com")],
             now_secs() + 3600,
             None,
@@ -306,7 +322,7 @@ mod tests {
         let order = order(&database).await;
 
         UpstreamOrder::create(
-            &order.id,
+            order.id.to_string().as_str(),
             "https://up.example/order/1",
             None,
             b"csr",
@@ -317,7 +333,7 @@ mod tests {
         .unwrap();
 
         // Before `post_finalize` stores anything: empty, not partial.
-        let mapping = UpstreamOrder::find_by_order_id(&order.id, &database)
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &database)
             .await
             .unwrap()
             .unwrap();
@@ -329,11 +345,11 @@ mod tests {
             user_agent: Some("lego".to_string()),
             request_id: Some("req-1".to_string()),
         };
-        UpstreamOrder::set_client(&order.id, &client, &database)
+        UpstreamOrder::set_client(order.id.to_string().as_str(), &client, &database)
             .await
             .unwrap();
 
-        let mapping = UpstreamOrder::find_by_order_id(&order.id, &database)
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &database)
             .await
             .unwrap()
             .unwrap();
@@ -354,7 +370,7 @@ mod tests {
         let order = order(&db).await;
 
         let created = UpstreamOrder::create(
-            &order.id,
+            order.id.to_string().as_str(),
             "https://up.example/order/1",
             Some("https://up.example/order/1/finalize"),
             b"csr-bytes",
@@ -365,7 +381,7 @@ mod tests {
         .expect("a first insert must succeed");
         assert_eq!(created.status, "processing");
 
-        let found = UpstreamOrder::find_by_order_id(&order.id, &db)
+        let found = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .expect("the row just written must be found");
@@ -385,21 +401,33 @@ mod tests {
         let order = order(&db).await;
 
         assert!(
-            UpstreamOrder::create(&order.id, "https://up.example/order/1", None, b"csr", &db)
-                .await
-                .unwrap()
-                .is_some()
+            UpstreamOrder::create(
+                order.id.to_string().as_str(),
+                "https://up.example/order/1",
+                None,
+                b"csr",
+                &db
+            )
+            .await
+            .unwrap()
+            .is_some()
         );
         assert!(
-            UpstreamOrder::create(&order.id, "https://up.example/order/2", None, b"csr", &db)
-                .await
-                .unwrap()
-                .is_none(),
+            UpstreamOrder::create(
+                order.id.to_string().as_str(),
+                "https://up.example/order/2",
+                None,
+                b"csr",
+                &db
+            )
+            .await
+            .unwrap()
+            .is_none(),
             "a duplicate must be reported as already-in-flight, not inserted"
         );
 
         // And the original row is untouched by the refused attempt.
-        let found = UpstreamOrder::find_by_order_id(&order.id, &db)
+        let found = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -410,15 +438,25 @@ mod tests {
     async fn mark_valid_records_the_certificate_url() {
         let db = database().await;
         let order = order(&db).await;
-        UpstreamOrder::create(&order.id, "https://up.example/order/1", None, b"csr", &db)
-            .await
-            .unwrap();
+        UpstreamOrder::create(
+            order.id.to_string().as_str(),
+            "https://up.example/order/1",
+            None,
+            b"csr",
+            &db,
+        )
+        .await
+        .unwrap();
 
-        UpstreamOrder::mark_valid(&order.id, Some("https://up.example/cert/1"), &db)
-            .await
-            .unwrap();
+        UpstreamOrder::mark_valid(
+            order.id.to_string().as_str(),
+            Some("https://up.example/cert/1"),
+            &db,
+        )
+        .await
+        .unwrap();
 
-        let found = UpstreamOrder::find_by_order_id(&order.id, &db)
+        let found = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -433,15 +471,21 @@ mod tests {
     async fn mark_invalid_records_the_reason() {
         let db = database().await;
         let order = order(&db).await;
-        UpstreamOrder::create(&order.id, "https://up.example/order/1", None, b"csr", &db)
+        UpstreamOrder::create(
+            order.id.to_string().as_str(),
+            "https://up.example/order/1",
+            None,
+            b"csr",
+            &db,
+        )
+        .await
+        .unwrap();
+
+        UpstreamOrder::mark_invalid(order.id.to_string().as_str(), "upstream said no", &db)
             .await
             .unwrap();
 
-        UpstreamOrder::mark_invalid(&order.id, "upstream said no", &db)
-            .await
-            .unwrap();
-
-        let found = UpstreamOrder::find_by_order_id(&order.id, &db)
+        let found = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
             .await
             .unwrap()
             .unwrap();
@@ -457,13 +501,25 @@ mod tests {
         let still_running = order(&db).await;
         let finished = order(&db).await;
 
-        UpstreamOrder::create(&still_running.id, "https://up.example/a", None, b"csr", &db)
-            .await
-            .unwrap();
-        UpstreamOrder::create(&finished.id, "https://up.example/b", None, b"csr", &db)
-            .await
-            .unwrap();
-        UpstreamOrder::mark_valid(&finished.id, None, &db)
+        UpstreamOrder::create(
+            still_running.id.to_string().as_str(),
+            "https://up.example/a",
+            None,
+            b"csr",
+            &db,
+        )
+        .await
+        .unwrap();
+        UpstreamOrder::create(
+            finished.id.to_string().as_str(),
+            "https://up.example/b",
+            None,
+            b"csr",
+            &db,
+        )
+        .await
+        .unwrap();
+        UpstreamOrder::mark_valid(finished.id.to_string().as_str(), None, &db)
             .await
             .unwrap();
 

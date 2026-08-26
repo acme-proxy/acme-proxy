@@ -261,7 +261,7 @@ async fn a_session_deleted_out_from_under_the_request_stops_authenticating() {
         .await
         .unwrap()
         .unwrap();
-    acme_proxy::sqlite::admin_session::AdminSession::delete_for_user(&user.id, &database)
+    acme_proxy::sqlite::admin_session::AdminSession::delete_for_user(user.id, &database)
         .await
         .unwrap();
 
@@ -883,7 +883,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        acme_proxy::admin::mfa::recovery_codes_remaining(&user.id, database.clone())
+        acme_proxy::admin::mfa::recovery_codes_remaining(user.id, database.clone())
             .await
             .unwrap(),
         9
@@ -905,7 +905,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        acme_proxy::admin::mfa::recovery_codes_remaining(&user.id, database)
+        acme_proxy::admin::mfa::recovery_codes_remaining(user.id, database)
             .await
             .unwrap(),
         9
@@ -1669,7 +1669,7 @@ async fn seed(
         .unwrap();
         Order::create(
             PROFILE,
-            &account.id,
+            account.id,
             vec![Identifier::dns(format!("host{index}.example.com"))],
             2_000_000_000,
             None,
@@ -1678,7 +1678,7 @@ async fn seed(
         )
         .await
         .unwrap();
-        ids.push(account.id);
+        ids.push(account.id.to_string());
     }
     ids
 }
@@ -2053,8 +2053,10 @@ async fn an_order_detail_carries_its_authorizations() {
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let orders = Order::find_by_account(&ids[0], &database).await.unwrap();
-    let order_id = &orders[0].id;
+    let orders = Order::find_by_account(ids[0].parse().unwrap(), &database)
+        .await
+        .unwrap();
+    let order_id = orders[0].id;
 
     let authz = Authorization::create(
         order_id,
@@ -2064,7 +2066,7 @@ async fn an_order_detail_carries_its_authorizations() {
     )
     .await
     .unwrap();
-    Challenge::create(&authz.id, "http-01", &database)
+    Challenge::create(authz.id, "http-01", &database)
         .await
         .unwrap();
 
@@ -2079,7 +2081,7 @@ async fn an_order_detail_carries_its_authorizations() {
         .await,
     )
     .await;
-    assert_eq!(body["order"]["id"], *order_id);
+    assert_eq!(body["order"]["id"], order_id.to_string());
     assert_eq!(body["authorizations"].as_array().unwrap().len(), 1);
     assert_eq!(
         body["authorizations"][0]["challenges"]
@@ -2096,8 +2098,10 @@ async fn revoking_an_order_covers_every_outcome() {
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let orders = Order::find_by_account(&ids[0], &database).await.unwrap();
-    let order_id = orders[0].id.clone();
+    let orders = Order::find_by_account(ids[0].parse().unwrap(), &database)
+        .await
+        .unwrap();
+    let order_id = orders[0].id;
 
     // Never issued.
     let response = admin_request(
@@ -2156,7 +2160,7 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_conflict() {
     .unwrap();
     let order = Order::create(
         "retired",
-        &account.id,
+        account.id,
         vec![Identifier::dns("old.example.com")],
         2_000_000_000,
         None,
@@ -2186,8 +2190,10 @@ async fn an_order_can_be_deleted_and_names_its_cascade() {
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let orders = Order::find_by_account(&ids[0], &database).await.unwrap();
-    let order_id = &orders[0].id;
+    let orders = Order::find_by_account(ids[0].parse().unwrap(), &database)
+        .await
+        .unwrap();
+    let order_id = orders[0].id;
 
     let body = json_body(
         admin_request(
@@ -2202,7 +2208,7 @@ async fn an_order_can_be_deleted_and_names_its_cascade() {
     .await;
     assert_eq!(body["deleted"]["authorizations"], 0);
     assert!(
-        Order::find_by_id(order_id, &database)
+        Order::find_by_id(&order_id.to_string(), &database)
             .await
             .unwrap()
             .is_none()
@@ -2552,7 +2558,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     let identifier = Identifier::dns("revoke-me.example.com");
     let mut order = Order::create(
         PROFILE,
-        &account.id,
+        account.id,
         vec![identifier.clone()],
         2_000_000_000,
         None,
@@ -2569,7 +2575,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     };
     let issued = signer
         .issue(
-            &order.id,
+            &order.id.to_string(),
             &csr_der,
             &[identifier],
             RequestedValidity::default(),
@@ -2601,7 +2607,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = json_body(response).await;
-    assert_eq!(body["id"], order.id);
+    assert_eq!(body["id"], order.id.to_string());
     // `render_order_json` surfaces the admin-only revocation columns that
     // `Order::to_json` deliberately omits.
     assert_eq!(body["revocationReason"], 1);
@@ -3010,7 +3016,7 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
 /// in `src/admin/ops.rs`, over really-signed rows.
 async fn expiring(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
-    account: &str,
+    account: uuid::Uuid,
     names: &[&str],
     not_after: i64,
 ) -> String {
@@ -3030,14 +3036,14 @@ async fn expiring(
     order
         .finalize(
             "-----BEGIN CERTIFICATE-----\nplaceholder\n".to_string(),
-            format!("serial-{}", &order.id[..8]),
+            format!("serial-{}", &order.id.to_string()[..8]),
             vec![1],
             Some(not_after),
             database,
         )
         .await
         .unwrap();
-    order.id
+    order.id.to_string()
 }
 
 /// The expiry surface is **read-only**, and for a different reason than the
@@ -3067,24 +3073,24 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
     // from a round without racing the clock at the boundary.
     let soon = expiring(
         &database,
-        &account.id,
+        account.id,
         &["soon.example.com"],
         now + 3 * DAY + DAY / 2,
     )
     .await;
-    let mid = expiring(&database, &account.id, &["mid.example.com"], now + 20 * DAY).await;
+    let mid = expiring(&database, account.id, &["mid.example.com"], now + 20 * DAY).await;
     // Renews `soon`, and is itself outside the window: the annotation is about
     // the row it replaces, not about being listed alongside it.
     let renewal = expiring(
         &database,
-        &account.id,
+        account.id,
         &["soon.example.com"],
         now + 300 * DAY,
     )
     .await;
     // Withdrawn, so not something to go and renew.
     let mut revoked = acme_proxy::sqlite::order::Order::find_by_id(
-        &expiring(&database, &account.id, &["gone.example.com"], now + 2 * DAY).await,
+        &expiring(&database, account.id, &["gone.example.com"], now + 2 * DAY).await,
         &database,
     )
     .await

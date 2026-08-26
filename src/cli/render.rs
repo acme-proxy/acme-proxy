@@ -98,8 +98,10 @@ pub fn render_account_detail_text(account: &Account, palette: Palette) -> String
     if let Some(seen) = account.last_seen_at {
         out.push_str(&format!("last_seen     {}\n", rfc3339(seen)));
     }
+    if let Some(kid) = account.eab_kid {
+        out.push_str(&format!("eab_kid       {kid}\n"));
+    }
     for (label, value) in [
-        ("eab_kid", account.eab_kid.as_ref()),
         ("created_ip", account.created_ip.as_ref()),
         ("created_ptr", account.created_ptr.as_ref()),
         ("last_seen_ip", account.last_seen_ip.as_ref()),
@@ -781,7 +783,7 @@ mod tests {
         )
         .await;
         let line = render_account_line(&both, Palette::plain());
-        assert!(line.contains(&both.id), "{line}");
+        assert!(line.contains(&both.id.to_string()), "{line}");
         assert!(line.contains("valid"), "{line}");
         assert!(line.contains("mailto:a@example.com"), "{line}");
         assert!(line.contains("203.0.113.7 (host.example.com)"), "{line}");
@@ -872,9 +874,9 @@ mod tests {
 
     #[test]
     fn render_order_line_includes_expected_fields() {
-        let order = order_fixture("acct", OrderStatus::Pending);
+        let order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending);
         let line = render_order_line(&order, Palette::plain());
-        assert!(line.contains(&order.id));
+        assert!(line.contains(&order.id.to_string()));
         assert!(line.contains("pending"));
         assert!(line.contains("example.com"));
     }
@@ -894,7 +896,7 @@ mod tests {
             (OrderStatus::Pending, "33"),
             (OrderStatus::Invalid, "31"),
         ] {
-            let order = order_fixture("acct", status);
+            let order = order_fixture(crate::sqlite::id::mint(), status);
             let painted = render_order_line(&order, colour());
             assert!(
                 painted.contains(&format!("\x1b[{code}m{}\x1b[0m", status.as_str())),
@@ -913,7 +915,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -923,19 +925,22 @@ mod tests {
         .await
         .unwrap();
         let authz = Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             crate::sqlite::nonce::now_secs() + 3600,
             &db,
         )
         .await
         .unwrap();
-        Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
-        let detail = load_order_detail(&order.id, db).await.unwrap().unwrap();
+        let detail = load_order_detail(order.id.to_string().as_str(), db)
+            .await
+            .unwrap()
+            .unwrap();
         let text = render_order_detail_text(&detail, Palette::plain());
-        assert!(text.contains(&order.id));
-        assert!(text.contains(&authz.id));
+        assert!(text.contains(&order.id.to_string()));
+        assert!(text.contains(&authz.id.to_string()));
         assert!(text.contains("http-01"));
 
         // The nested statuses are painted too: an order is read here precisely
@@ -959,7 +964,8 @@ mod tests {
     /// contract and `audit show`'s.
     #[test]
     fn render_order_detail_text_omits_every_absent_field() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let account = crate::sqlite::id::mint();
+        let mut order = order_fixture(account, OrderStatus::Valid);
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
@@ -982,7 +988,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("profile        default"), "{text}");
-        assert!(text.contains("account_id     acct"), "{text}");
+        assert!(
+            text.contains(&format!("account_id     {account}")),
+            "{text}"
+        );
         assert!(text.contains("status         valid"), "{text}");
         assert!(text.contains("identifiers    example.com"), "{text}");
         assert!(text.contains("created        "), "{text}");
@@ -1024,7 +1033,7 @@ mod tests {
 
         // Never recorded, so never a line.
         let bare = OrderDetail {
-            order: order_fixture("acct", OrderStatus::Pending),
+            order: order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending),
             authorizations: vec![],
         };
         let text = render_order_detail_text(&bare, Palette::plain());
@@ -1083,7 +1092,8 @@ mod tests {
 
         // Every optional column populated, or an absent one would read as an
         // agreed omission rather than as a member nobody renders.
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let account = crate::sqlite::id::mint();
+        let mut order = order_fixture(account, OrderStatus::Valid);
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
         order.replaces = Some("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE".to_string());
@@ -1128,7 +1138,7 @@ mod tests {
     /// `render_order_json` emits no member for it.
     #[test]
     fn an_unparsable_leaf_expiry_prints_no_line() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.cert_not_after = Some(crate::sqlite::order::UNPARSABLE_NOT_AFTER);
         let detail = OrderDetail {
             order,
@@ -1142,7 +1152,7 @@ mod tests {
     /// listing's suffix.
     #[test]
     fn the_order_detail_paints_its_revocation_and_nothing_else_moves() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(4);
         let detail = OrderDetail {
@@ -1162,7 +1172,7 @@ mod tests {
 
     #[test]
     fn render_order_line_revoked_includes_reason_and_time() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let line = render_order_line(&order, Palette::plain());
@@ -1174,7 +1184,7 @@ mod tests {
     /// thing that can carry the news — and it is painted whole.
     #[test]
     fn a_revoked_order_paints_its_suffix_even_though_its_status_is_valid() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let painted = render_order_line(&order, colour());
@@ -1194,7 +1204,7 @@ mod tests {
             .await
             .unwrap();
         let line = render_eab_line(&eab, Palette::plain());
-        assert!(line.contains(&eab.kid));
+        assert!(line.contains(&eab.kid.to_string()));
         assert!(line.contains("active"));
         assert!(line.contains("team-a"));
 
@@ -1208,7 +1218,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let eab = Eab::create(None, None, &db).await.unwrap();
         let text = render_eab_created_text(&eab, Palette::plain());
-        assert!(text.contains(&eab.kid));
+        assert!(text.contains(&eab.kid.to_string()));
         assert!(text.contains(&BASE64_URL_SAFE_NO_PAD.encode(&eab.secret)));
         assert!(text.contains("Store the hmacKey now"));
     }
@@ -1346,9 +1356,10 @@ mod tests {
     /// that only appears where something has replaced the certificate.
     #[test]
     fn the_expiring_line_bands_the_days_and_annotates_only_what_was_replaced() {
-        let entry = |days: i64, superseded: Option<SupersededBy>| {
-            let mut order = order_fixture("acct-1", OrderStatus::Valid);
-            order.id = "ord-1".to_string();
+        let id = crate::sqlite::id::mint();
+        let entry = move |days: i64, superseded: Option<SupersededBy>| {
+            let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+            order.id = id;
             order.cert_not_after = Some(1_700_000_000);
             ExpiringEntry {
                 order,
@@ -1358,7 +1369,7 @@ mod tests {
         };
 
         let plain = render_expiring_line(&entry(40, None), Palette::plain());
-        assert!(plain.starts_with("ord-1  default     "), "{plain}");
+        assert!(plain.starts_with(&format!("{id}  default")), "{plain}");
         assert!(plain.contains("  40d  "), "{plain}");
         assert!(plain.contains("2023-11-14"), "{plain}");
         assert!(plain.ends_with("example.com"), "{plain}");
@@ -1393,7 +1404,7 @@ mod tests {
     /// account listing pins, for a field this renderer pads itself.
     #[test]
     fn colour_never_moves_the_expiring_listings_columns() {
-        let mut order = order_fixture("acct-1", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.cert_not_after = Some(1_700_000_000);
         let entry = ExpiringEntry {
             order,

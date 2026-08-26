@@ -16,6 +16,7 @@
 
 use base64::prelude::*;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::admin::ops::{ExpiringEntry, OrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
@@ -51,7 +52,7 @@ pub fn render_account_json(account: &Account, base_url: &str) -> Value {
         .as_object()
         .cloned()
         .unwrap_or_default();
-    object.insert("id".to_string(), Value::String(account.id.clone()));
+    object.insert("id".to_string(), Value::String(account.id.to_string()));
     object.insert(
         "profile".to_string(),
         Value::String(account.profile.clone()),
@@ -82,13 +83,13 @@ pub fn render_account_json(account: &Account, base_url: &str) -> Value {
 
 /// JSON representation for order admin display.
 #[must_use]
-pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[String]) -> Value {
+pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[Uuid]) -> Value {
     let mut object = order
         .to_json(&profile_base_url(base_url, &order.profile), authz_ids)
         .as_object()
         .cloned()
         .unwrap_or_default();
-    object.insert("id".to_string(), Value::String(order.id.clone()));
+    object.insert("id".to_string(), Value::String(order.id.to_string()));
     object.insert("profile".to_string(), Value::String(order.profile.clone()));
     // Admin-only, like `id` and `profile`: the ACME order object deliberately
     // never names its account, but an operator looking at an order almost
@@ -96,7 +97,7 @@ pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[String]) ->
     // front end can offer that link.
     object.insert(
         "accountId".to_string(),
-        Value::String(order.account_id.clone()),
+        Value::String(order.account_id.to_string()),
     );
     object.insert(
         "createdAt".to_string(),
@@ -138,11 +139,7 @@ pub fn render_order_json(order: &Order, base_url: &str, authz_ids: &[String]) ->
 /// `order show --json` JSON output.
 #[must_use]
 pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
-    let authz_ids: Vec<String> = detail
-        .authorizations
-        .iter()
-        .map(|(a, _)| a.id.clone())
-        .collect();
+    let authz_ids: Vec<Uuid> = detail.authorizations.iter().map(|(a, _)| a.id).collect();
     let profile_base = profile_base_url(base_url, &detail.order.profile);
     let authorizations: Vec<Value> = detail
         .authorizations
@@ -187,11 +184,11 @@ pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
 pub fn render_expiring_json(entry: &ExpiringEntry) -> Value {
     let order = &entry.order;
     let mut object = serde_json::Map::new();
-    object.insert("orderId".to_string(), Value::String(order.id.clone()));
+    object.insert("orderId".to_string(), Value::String(order.id.to_string()));
     object.insert("profile".to_string(), Value::String(order.profile.clone()));
     object.insert(
         "accountId".to_string(),
-        Value::String(order.account_id.clone()),
+        Value::String(order.account_id.to_string()),
     );
     object.insert(
         "certSerial".to_string(),
@@ -289,9 +286,14 @@ mod tests {
         .await;
 
         let json = render_account_json(&account, "http://localhost:3000");
-        assert_eq!(json["id"], account.id);
+        assert_eq!(json["id"], account.id.to_string());
         assert_eq!(json["status"], "valid");
-        assert!(json["orders"].as_str().unwrap().contains(&account.id));
+        assert!(
+            json["orders"]
+                .as_str()
+                .unwrap()
+                .contains(&account.id.to_string())
+        );
         assert!(json["pubkeyFingerprint"].is_string());
         assert_eq!(json["createdIp"], "203.0.113.7");
         assert_eq!(json["createdPtr"], "host.example.com");
@@ -316,19 +318,22 @@ mod tests {
 
     #[test]
     fn render_order_json_includes_id_and_authorizations() {
-        let order = order_fixture("acct", OrderStatus::Pending);
-        let authz_ids = vec!["authz-1".to_string()];
-        let json = render_order_json(&order, "http://localhost:3000", &authz_ids);
-        assert_eq!(json["id"], order.id);
+        let account = crate::sqlite::id::mint();
+        let authz = crate::sqlite::id::mint();
+        let order = order_fixture(account, OrderStatus::Pending);
+        let json = render_order_json(&order, "http://localhost:3000", &[authz]);
+        assert_eq!(json["id"], order.id.to_string());
         // Admin output is rendered against the *profile's* base URL, not the
         // server's: that is the URL the client was handed.
         assert_eq!(json["profile"], "default");
         // Admin-only, and absent from the ACME order object: without it
         // neither front end could link an order back to its account.
-        assert_eq!(json["accountId"], "acct");
+        assert_eq!(json["accountId"], account.to_string());
         assert_eq!(
             json["authorizations"],
-            serde_json::json!(["http://localhost:3000/profile/default/authz/authz-1"])
+            serde_json::json!([format!(
+                "http://localhost:3000/profile/default/authz/{authz}"
+            )])
         );
     }
 
@@ -338,7 +343,7 @@ mod tests {
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
-            &acct,
+            acct,
             vec![Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
@@ -348,18 +353,21 @@ mod tests {
         .await
         .unwrap();
         let authz = Authorization::create(
-            &order.id,
+            order.id,
             Identifier::dns("example.com"),
             crate::sqlite::nonce::now_secs() + 3600,
             &db,
         )
         .await
         .unwrap();
-        Challenge::create(&authz.id, "http-01", &db).await.unwrap();
+        Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
-        let detail = load_order_detail(&order.id, db).await.unwrap().unwrap();
+        let detail = load_order_detail(order.id.to_string().as_str(), db)
+            .await
+            .unwrap()
+            .unwrap();
         let json = render_order_detail_json(&detail, "http://localhost:3000");
-        assert_eq!(json["order"]["id"], order.id);
+        assert_eq!(json["order"]["id"], order.id.to_string());
         assert_eq!(json["authorizations"].as_array().unwrap().len(), 1);
         assert_eq!(
             json["authorizations"][0]["challenges"]
@@ -384,7 +392,7 @@ mod tests {
 
     #[test]
     fn render_order_json_revoked_includes_reason_and_time() {
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let json = render_order_json(&order, "http://localhost:3000", &[]);
@@ -397,14 +405,14 @@ mod tests {
         // The complaint this member answers: `audit list --cert-serial` and
         // `GET /api/audit?certSerial=` both filter on this value, and until now
         // no order rendering would tell an operator what it was.
-        let mut order = order_fixture("acct", OrderStatus::Valid);
+        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
         order.cert_serial = Some("03a7f1c9".to_string());
         let json = render_order_json(&order, "http://localhost:3000", &[]);
         assert_eq!(json["certSerial"], "03a7f1c9");
 
         // Omitted, not nulled: an order that never issued has no serial, which
         // is a different statement from an empty one.
-        let unissued = order_fixture("acct", OrderStatus::Pending);
+        let unissued = order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending);
         let json = render_order_json(&unissued, "http://localhost:3000", &[]);
         assert!(json.get("certSerial").is_none());
     }

@@ -420,9 +420,9 @@ impl JobHandler for RelayJob {
             }
 
             for row in pending {
-                let context = OrderContext::read(&row.order_id, inner).await;
+                let context = OrderContext::read(row.order_id.to_string().as_str(), inner).await;
                 queue
-                    .enqueue_or_log(relay_spec(&row.order_id, &context))
+                    .enqueue_or_log(relay_spec(row.order_id.to_string().as_str(), &context))
                     .await;
             }
         }
@@ -977,7 +977,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
             .dispatch(NotifyEvent::CertificateIssued(CertificateIssuedData {
                 profile: order.profile.clone(),
                 order_id: order_id.to_string(),
-                account_id: order.account_id.clone(),
+                account_id: order.account_id.clone().to_string(),
                 cert_serial: serial.clone(),
                 identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
                 client_ip: None,
@@ -1002,7 +1002,7 @@ async fn relay_record(
     order: &Order,
     inner: &Inner,
 ) -> crate::audit::AuditRecord {
-    let mapping = UpstreamOrder::find_by_order_id(&order.id, &inner.database)
+    let mapping = UpstreamOrder::find_by_order_id(&order.id.to_string(), &inner.database)
         .await
         .unwrap_or_else(|error| {
             warn!(event = "upstream_order_client_context_lookup_failed", outcome = "failure", order_id = %order.id, error = %error);
@@ -1010,7 +1010,7 @@ async fn relay_record(
         });
     let (actor, client) = match &mapping {
         Some(mapping) => (
-            crate::audit::Actor::acme(&order.account_id),
+            crate::audit::Actor::acme(order.account_id.to_string()),
             mapping.client(),
         ),
         None => (

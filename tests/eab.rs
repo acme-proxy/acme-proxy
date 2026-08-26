@@ -105,7 +105,12 @@ async fn valid_eab_creates_account_and_records_kid() {
         .unwrap();
 
     let nonce = fetch_nonce(&app).await;
-    let eab = build_eab(&key.kid, &key.secret, NEW_ACCOUNT_URL, &signer.jwk());
+    let eab = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
     let body = signer.sign(
         NEW_ACCOUNT_URL,
         &nonce,
@@ -128,7 +133,7 @@ async fn valid_eab_creates_account_and_records_kid() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(account.eab_kid.as_deref(), Some(key.kid.as_str()));
+    assert_eq!(account.eab_kid, Some(key.kid));
 }
 
 #[tokio::test]
@@ -136,10 +141,15 @@ async fn revoked_kid_is_rejected() {
     let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
     let signer = EcSigner::new();
     let key = Eab::create(None, None, &db).await.unwrap();
-    Eab::revoke(&key.kid, &db).await.unwrap();
+    Eab::revoke(&key.kid.to_string(), &db).await.unwrap();
 
     let nonce = fetch_nonce(&app).await;
-    let eab = build_eab(&key.kid, &key.secret, NEW_ACCOUNT_URL, &signer.jwk());
+    let eab = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
     let body = signer.sign(
         NEW_ACCOUNT_URL,
         &nonce,
@@ -186,7 +196,7 @@ async fn bad_hmac_signature_is_rejected() {
     // Signed with the wrong secret -- the kid is real and active, but the MAC
     // does not verify against the key's actual stored secret.
     let eab = build_eab(
-        &key.kid,
+        &key.kid.to_string(),
         b"wrong-secret-wrong-secret-wrong!",
         NEW_ACCOUNT_URL,
         &signer.jwk(),
@@ -212,7 +222,7 @@ async fn url_mismatch_is_rejected() {
     let nonce = fetch_nonce(&app).await;
     // The inner EAB JWS names a different URL than the request actually hit.
     let eab = build_eab(
-        &key.kid,
+        &key.kid.to_string(),
         &key.secret,
         "http://localhost:3000/profile/default/somewhereElse",
         &signer.jwk(),
@@ -239,7 +249,12 @@ async fn payload_jwk_mismatch_is_rejected() {
     let nonce = fetch_nonce(&app).await;
     // The EAB payload names `other_signer`'s key, but the outer JWS is signed
     // by `account_signer` -- the credential does not bind to this account.
-    let eab = build_eab(&key.kid, &key.secret, NEW_ACCOUNT_URL, &other_signer.jwk());
+    let eab = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &other_signer.jwk(),
+    );
     let body = account_signer.sign(
         NEW_ACCOUNT_URL,
         &nonce,
@@ -261,7 +276,12 @@ async fn same_kid_binds_two_distinct_accounts() {
 
     let first_signer = EcSigner::new();
     let nonce = fetch_nonce(&app).await;
-    let eab = build_eab(&key.kid, &key.secret, NEW_ACCOUNT_URL, &first_signer.jwk());
+    let eab = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &first_signer.jwk(),
+    );
     let body = first_signer.sign(
         NEW_ACCOUNT_URL,
         &nonce,
@@ -273,7 +293,12 @@ async fn same_kid_binds_two_distinct_accounts() {
 
     let second_signer = EcSigner::new();
     let nonce = fetch_nonce(&app).await;
-    let eab = build_eab(&key.kid, &key.secret, NEW_ACCOUNT_URL, &second_signer.jwk());
+    let eab = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &second_signer.jwk(),
+    );
     let body = second_signer.sign(
         NEW_ACCOUNT_URL,
         &nonce,

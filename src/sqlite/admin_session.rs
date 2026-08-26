@@ -1,4 +1,5 @@
 use std::time::Duration;
+use uuid::Uuid;
 
 use serde_json::Value;
 use sqlx::Row;
@@ -32,7 +33,7 @@ use crate::sqlite::order::rfc3339;
 pub struct AdminSession {
     /// Hex-encoded SHA-256 of the cookie's bearer token.
     pub token_hash: String,
-    pub user_id: String,
+    pub user_id: Uuid,
     /// Per-session CSRF token, plaintext: it authorises nothing on its own.
     pub csrf_token: String,
     /// `active`, or `pending_mfa` once a second factor exists to be outstanding.
@@ -62,7 +63,7 @@ pub struct AdminSession {
 /// It also retires two `#[allow(clippy::too_many_arguments)]`.
 #[derive(Debug, Clone)]
 pub struct NewSession<'a> {
-    pub user_id: &'a str,
+    pub user_id: Uuid,
     /// Hex-encoded SHA-256 of the cookie token. Minted by the caller: this
     /// layer holds no RNG and so cannot accidentally reuse one.
     pub token_hash: &'a str,
@@ -140,7 +141,7 @@ impl AdminSession {
         let now = now_secs();
         let session = AdminSession {
             token_hash: new.token_hash.to_string(),
-            user_id: new.user_id.to_string(),
+            user_id: new.user_id,
             csrf_token: new.csrf_token.to_string(),
             state: state.to_string(),
             mfa_attempts: 0,
@@ -159,7 +160,7 @@ impl AdminSession {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(&session.token_hash)
-        .bind(&session.user_id)
+        .bind(session.user_id)
         .bind(&session.csrf_token)
         .bind(&session.state)
         .bind(session.created_at)
@@ -254,7 +255,7 @@ impl AdminSession {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(&session.token_hash)
-        .bind(&session.user_id)
+        .bind(session.user_id)
         .bind(&session.csrf_token)
         .bind(&session.state)
         .bind(session.created_at)
@@ -365,7 +366,7 @@ impl AdminSession {
 
     /// Revokes every session of one user -- `admin session revoke --user`, and
     /// the "log me out everywhere" case. Returns how many went.
-    pub async fn delete_for_user(user_id: &str, database: &Database) -> Result<u64, sqlx::Error> {
+    pub async fn delete_for_user(user_id: Uuid, database: &Database) -> Result<u64, sqlx::Error> {
         let result = sqlx::query("DELETE FROM admin_sessions WHERE user_id = ?;")
             .bind(user_id)
             .execute(&database.pool)
@@ -383,7 +384,7 @@ impl AdminSession {
     /// password change needs, so the operator making it is not logged out by
     /// their own action while every other browser is.
     pub async fn delete_for_user_except(
-        user_id: &str,
+        user_id: Uuid,
         keep_token_hash: &str,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
@@ -423,7 +424,7 @@ impl AdminSession {
 
     /// Every session, or every session of one user, newest first.
     pub async fn list_all(
-        user_id: Option<&str>,
+        user_id: Option<Uuid>,
         database: &Database,
     ) -> Result<Vec<AdminSession>, sqlx::Error> {
         // Two literal statements rather than one built up: `sqlx::query` takes
@@ -533,7 +534,7 @@ mod tests {
     async fn session(db: Arc<Database>, user: &AdminUser, token_hash: &str) -> AdminSession {
         AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash,
                 csrf_token: "csrf",
                 created_ip: Some("192.0.2.1".to_string()),
@@ -583,7 +584,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let error = AdminSession::create(
             NewSession {
-                user_id: "ghost",
+                user_id: crate::sqlite::id::mint(),
                 token_hash: "aaaa",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -651,7 +652,7 @@ mod tests {
         session(db.clone(), &bob, "b1").await;
 
         assert_eq!(
-            AdminSession::delete_for_user(&alice.id, &db).await.unwrap(),
+            AdminSession::delete_for_user(alice.id, &db).await.unwrap(),
             2
         );
         assert!(
@@ -670,7 +671,7 @@ mod tests {
         session(db.clone(), &user, "drop2").await;
 
         assert_eq!(
-            AdminSession::delete_for_user_except(&user.id, "keep", &db)
+            AdminSession::delete_for_user_except(user.id, "keep", &db)
                 .await
                 .unwrap(),
             2
@@ -693,7 +694,7 @@ mod tests {
     async fn deleting_a_user_cascades_to_their_sessions() {
         let (db, user) = db_with_user().await;
         session(db.clone(), &user, "aaaa").await;
-        assert!(AdminUser::delete(&user.id, &db).await.unwrap());
+        assert!(AdminUser::delete(user.id, &db).await.unwrap());
         assert!(
             AdminSession::find_by_token_hash("aaaa", &db)
                 .await
@@ -713,7 +714,7 @@ mod tests {
         session(db.clone(), &bob, "b1").await;
 
         assert_eq!(AdminSession::list_all(None, &db).await.unwrap().len(), 2);
-        let alices = AdminSession::list_all(Some(&alice.id), &db).await.unwrap();
+        let alices = AdminSession::list_all(Some(alice.id), &db).await.unwrap();
         assert_eq!(alices.len(), 1);
         assert_eq!(alices[0].token_hash, "a1");
     }
@@ -750,7 +751,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         let pending = AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "pending-hash",
                 csrf_token: "csrf",
                 created_ip: Some("192.0.2.1".to_string()),
@@ -785,7 +786,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "pending-hash",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -831,7 +832,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "pending",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -858,7 +859,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "pending-hash",
                 csrf_token: "pending-csrf",
                 created_ip: Some("192.0.2.1".to_string()),
@@ -903,7 +904,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            AdminSession::list_all(Some(&user.id), &db)
+            AdminSession::list_all(Some(user.id), &db)
                 .await
                 .unwrap()
                 .len(),
@@ -940,7 +941,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "fresh",
                 csrf_token: "c",
                 created_ip: None,
@@ -953,7 +954,7 @@ mod tests {
         .unwrap();
         AdminSession::create_pending(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "abandoned",
                 csrf_token: "c",
                 created_ip: None,
@@ -980,7 +981,7 @@ mod tests {
     fn expiry_and_idleness_are_judged_at_the_boundary_second() {
         let base = AdminSession {
             token_hash: "aaaa".to_string(),
-            user_id: "u".to_string(),
+            user_id: crate::sqlite::id::mint(),
             csrf_token: "c".to_string(),
             state: "active".to_string(),
             mfa_attempts: 0,
@@ -1006,7 +1007,7 @@ mod tests {
         let (db, user) = db_with_user().await;
         let created = AdminSession::create(
             NewSession {
-                user_id: &user.id,
+                user_id: user.id,
                 token_hash: "0123456789abcdef0123456789abcdef",
                 csrf_token: "the-csrf-token",
                 created_ip: None,
@@ -1023,7 +1024,7 @@ mod tests {
         assert!(!rendered.contains("0123456789abcdef0123456789abcdef"));
         assert!(!rendered.contains("the-csrf-token"));
         assert_eq!(json["id"], "01234567");
-        assert_eq!(json["userId"], user.id);
+        assert_eq!(json["userId"], user.id.to_string());
         assert_eq!(json["state"], "active");
         assert_eq!(json["createdIp"], Value::Null);
     }

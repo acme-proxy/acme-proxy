@@ -315,8 +315,8 @@ impl AuditRecord {
     /// order may be deleted long before the row is read.
     #[must_use]
     pub fn with_order(mut self, order: &crate::sqlite::order::Order) -> Self {
-        self.order_id = Some(order.id.clone());
-        self.account_id = Some(order.account_id.clone());
+        self.order_id = Some(order.id.clone().to_string());
+        self.account_id = Some(order.account_id.clone().to_string());
         self.identifiers = order
             .identifiers
             .iter()
