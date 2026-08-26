@@ -7,7 +7,7 @@ whose text is vendored under `rfc/asvs-5.0/` in this repository.
 - **Assessed at:** Level 2. Every L1 and L2 requirement in scope is given a
   status; L3 requirements are listed too, as information rather than as a bar
   being claimed.
-- **Assessed against:** the tree at release 0.2.0.
+- **Assessed against:** the tree at release 0.3.0.
 - **Method:** source review. The evidence column names a file, not a promise —
   for a control requirement, the documentation on this site is context and the
   code is the evidence.

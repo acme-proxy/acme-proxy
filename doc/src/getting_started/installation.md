@@ -52,7 +52,7 @@ The per-shell paths are in the
 To pin a version, or to move to a specific one later, name it:
 
 ```bash
-cargo install acme-proxy --version 0.2.0
+cargo install acme-proxy --version 0.3.0
 ```
 
 Upgrading is `cargo install acme-proxy --force`. Before doing so across a minor

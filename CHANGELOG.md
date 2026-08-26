@@ -31,6 +31,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-26
+
 ### Breaking
 
 - **`order show` prints what its own `--json` carries.** It printed six fields
@@ -362,6 +364,28 @@ migrated configuration before restarting.
 
 ### Documentation
 
+- **An ASVS 5.0 self-assessment**, as a new chapter of the book
+  ([Security → ASVS 5.0 Assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html)).
+  Every requirement of every in-scope chapter is enumerated and given a status
+  at **L2** — 162 met, 18 partial, one gap, 36 not applicable — with L3
+  reported as information rather than as a bar being claimed. The evidence
+  column names a file rather than a promise: for a control requirement the
+  documentation is context and the code is the evidence. **There is no L1 gap**,
+  and the single L2 one is V15.1.2, an SBOM artifact; the four password-policy
+  requirements that sat there when the assessment was written were closed in
+  this same release (see `### Security` above). It is a **self-assessment and
+  not a certification** — ASVS is explicit that a verification claim means an
+  assessor performed the work, and nobody outside the project has.
+
+  The ASVS 5.0 text itself is vendored under `rfc/asvs-5.0/`, the treatment
+  `rfc8555.txt` and `rfc9773.txt` already get, so a claim about a requirement
+  can be checked at the revision that made it and the assessment can be
+  re-derived against a later ASVS release by diffing. **Its licence differs
+  from the two RFCs beside it**: ASVS is CC BY-SA 4.0, not the IETF's terms, so
+  those files state their own licence and are not covered by this repository's
+  MIT. The share-alike reaches derivative works of the document and not the
+  crate, which quotes none of it; `rfc/` is excluded from the published
+  `.crate` either way.
 - **The `[filter]` examples in the configuration reference and the Profiles
   chapter still used the 0.1.x shape** that 0.2.0 removed, so copying either
   produced a server that refused to start (`filter.enabled is no longer a
@@ -1385,6 +1409,7 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/acme-proxy/acme-proxy/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/acme-proxy/acme-proxy/releases/tag/0.1.0
