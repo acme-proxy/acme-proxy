@@ -22,12 +22,14 @@ use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
+use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::Authenticated;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].
 #[derive(Debug, Deserialize, Default)]
 pub struct ExpiringListParams {
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
     /// How far ahead to look. Absent is [`crate::admin::default_lead_days`],
     /// which is the deployment's own `[notify.expiry] lead_days` wherever the
@@ -39,6 +41,7 @@ pub struct ExpiringListParams {
     /// and the digest's argument for that is in [`crate::notify::expiry`]'s
     /// module docs. The page has room for a control the digest does not, which
     /// is the whole of why this exists here and not there.
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub superseded: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

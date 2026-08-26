@@ -15,6 +15,7 @@ use serde_json::{Map, Value};
 use crate::admin;
 use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
+use crate::webadmin::handlers::params::non_empty;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
@@ -167,12 +168,6 @@ async fn load(kid: &str, state: &AdminState) -> Result<Value, PageError> {
         .await?
         .ok_or_else(|| not_found(kid))?;
     Ok(admin::render_eab_json(&eab))
-}
-
-/// A form field left blank is absent, not the empty string.
-fn non_empty(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 fn not_found(kid: &str) -> PageError {

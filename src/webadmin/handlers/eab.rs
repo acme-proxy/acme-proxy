@@ -12,12 +12,15 @@ use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
+use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateEab {
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub label: Option<String>,
     /// Bind the credential to one endpoint. Absent means every profile.
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
 }
 

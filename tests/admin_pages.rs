@@ -2348,6 +2348,24 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     assert!(body.contains("&lt;script&gt;"), "{body}");
     // The filter form is an `hx-get`, which is a read.
     assert!(body.contains(r#"hx-get="/ui/expiring""#), "{body}");
+
+    // ...and the form's "every profile" option submits `profile=`, not an
+    // omitted key, so the exact URL htmx pushes must still list everything.
+    // This is the reported bug: the page was right until an operator touched
+    // the filter, and empty from then on.
+    let blank = html_body(
+        admin_page(
+            &app,
+            "/ui/expiring?profile=&days=30&superseded=",
+            Some(&session),
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert!(blank.contains("soon.example.com"), "{blank}");
+    assert!(blank.contains("mid.example.com"), "{blank}");
+    assert!(!blank.contains("Nothing is expiring"), "{blank}");
     // Nothing is hidden by default, so the count line is absent.
     assert!(!body.contains("hidden as already replaced"), "{body}");
 
@@ -2409,4 +2427,80 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
             response.status()
         );
     }
+}
+
+/// The same rule as `admin_api::a_blank_filter_is_absent_on_every_list`, on the
+/// front end that actually produces the shape.
+///
+/// A `<select>` inside a submitted form always contributes its `name`, so the
+/// panel's "every profile" / "any status" options arrive as `profile=` and
+/// `status=` rather than as omitted keys — and every list emptied itself the
+/// moment an operator touched its filter form. `/ui/orders` was worse than
+/// empty: `status=` reached `OrderStatus::from_str`, which refuses an unknown
+/// spelling by name, so "any status" answered `400`.
+///
+/// Each URL below is what htmx pushes with every control left at its default.
+#[tokio::test]
+async fn a_blank_filter_leaves_every_list_page_unfiltered() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    seed(&database, 3).await;
+
+    for (path, blank) in [
+        ("/ui/accounts", "/ui/accounts?profile="),
+        ("/ui/orders", "/ui/orders?profile=&status=&accountId="),
+        (
+            "/ui/audit",
+            "/ui/audit?profile=&event=&outcome=&accountId=&certSerial=",
+        ),
+    ] {
+        let response = admin_page(&app, blank, Some(&session), true).await;
+        assert_eq!(response.status(), StatusCode::OK, "{blank}");
+        let filtered = html_body(response).await;
+        let unfiltered = html_body(admin_page(&app, path, Some(&session), true).await).await;
+        assert_eq!(
+            filtered.matches("<tr").count(),
+            unfiltered.matches("<tr").count(),
+            "{blank} filtered on the empty string:\n{filtered}"
+        );
+    }
+
+    // The identifiers are on the page, not merely a matching row count.
+    let orders = html_body(
+        admin_page(
+            &app,
+            "/ui/orders?profile=&status=&accountId=",
+            Some(&session),
+            true,
+        )
+        .await,
+    )
+    .await;
+    for index in 0..3 {
+        assert!(
+            orders.contains(&format!("host{index}.example.com")),
+            "{orders}"
+        );
+    }
+
+    // A named filter still filters.
+    let named = html_body(
+        admin_page(
+            &app,
+            "/ui/orders?profile=nothing-here",
+            Some(&session),
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert!(!named.contains("host0.example.com"), "{named}");
+
+    // And a genuinely unknown status is still refused by name, since that
+    // refusal is what tells an operator a typo from an empty state.
+    assert_eq!(
+        admin_page(&app, "/ui/orders?status=typo", Some(&session), true)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 }

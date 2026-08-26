@@ -3182,6 +3182,20 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
     .await;
     assert_eq!(other["total"], 0);
 
+    // A *blank* profile is not that: it is the "every profile" option of the
+    // panel's own `<select>`, which submits `profile=` rather than omitting the
+    // key. Asserted against the unfiltered total rather than against a bare
+    // non-zero, so this cannot start passing again by accident.
+    for query in [
+        "/api/expiring?profile=",
+        "/api/expiring?profile=&days=30&superseded=",
+    ] {
+        let blank =
+            json_body(admin_request(&app, Method::GET, query, Some(&session), None).await).await;
+        assert_eq!(blank["total"], 2, "{query} filtered on the empty string");
+        assert_eq!(blank["items"].as_array().unwrap().len(), 2, "{query}");
+    }
+
     // The page window is the shared one, clamped like every other listing.
     let paged = json_body(
         admin_request(
@@ -3224,4 +3238,108 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
             response.status()
         );
     }
+}
+
+/// A list control left at its "any"/"every" option is **not** a filter for the
+/// empty string.
+///
+/// An HTML `<select>` inside a submitted form always contributes its `name`, so
+/// `<option value="">` arrives as `profile=` rather than as an omitted key, and
+/// `serde_urlencoded` reads that as `Some("")`. Every predicate builder below
+/// then honoured it — `AND profile = ''` matches no row — so the panel's own
+/// filter form emptied each list the moment an operator touched it. The CLI
+/// never saw the shape at all, clap giving `None` for an omitted `--profile`,
+/// which is why `order list` was right where `/ui/orders` was empty.
+///
+/// `status=` was the worst of them: it reached `OrderStatus::from_str`, which
+/// refuses an unknown spelling **by name**, so "any status" was a `400` rather
+/// than merely an empty page. Pinned here beside the rest.
+///
+/// Every assertion is against the *unfiltered* answer rather than a bare
+/// non-zero, so none of them can start passing again by accident.
+#[tokio::test]
+async fn a_blank_filter_is_absent_on_every_list() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    seed(&database, 3).await;
+    for _ in 0..2 {
+        AuditEntry::insert(
+            AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
+                .with_account("acct-1")
+                .with_serial("0a0b"),
+            &database,
+        )
+        .await
+        .unwrap();
+    }
+
+    // Each pair is (the unfiltered listing, the same listing with every filter
+    // control left blank — the exact query string the panel's form submits).
+    for (bare, blank, expected) in [
+        ("/api/accounts", "/api/accounts?profile=", 3),
+        ("/api/orders", "/api/orders?profile=&accountId=&status=", 3),
+        (
+            "/api/audit",
+            "/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=",
+            2,
+        ),
+    ] {
+        let response = admin_request(&app, Method::GET, blank, Some(&session), None).await;
+        assert_eq!(response.status(), StatusCode::OK, "{blank}");
+        let filtered = json_body(response).await;
+        let unfiltered =
+            json_body(admin_request(&app, Method::GET, bare, Some(&session), None).await).await;
+
+        assert_eq!(unfiltered["total"], expected, "{bare} seeded wrong");
+        assert_eq!(
+            filtered["total"], unfiltered["total"],
+            "{blank} filtered on the empty string"
+        );
+        assert_eq!(
+            filtered["items"].as_array().unwrap().len(),
+            unfiltered["items"].as_array().unwrap().len(),
+            "{blank}"
+        );
+    }
+
+    // A named filter still filters — the fix must not have turned the controls
+    // into decoration.
+    let named = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?status=pending",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(named["total"], 3);
+    let elsewhere = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/accounts?profile=nothing-here",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(elsewhere["total"], 0);
+
+    // And a filter that is only whitespace is still blank: a text input can
+    // carry a space the operator cannot see.
+    let padded = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?accountId=%20%20",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(padded["total"], 3);
 }

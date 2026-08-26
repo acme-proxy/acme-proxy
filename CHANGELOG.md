@@ -33,6 +33,21 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **The panel's list filters no longer empty the list.** Selecting *every
+  profile* on `/ui/expiring` showed nothing, while picking one profile showed
+  its certificates — the reported symptom, and the same defect on `/ui/orders`,
+  `/ui/accounts` and `/ui/audit`. An HTML `<select>` inside a submitted form
+  always contributes its name, so the "every profile" option arrives as
+  `profile=` rather than as an omitted key; that was read as a filter for the
+  *empty string*, and `WHERE profile = ''` matches no row. `/ui/orders` was
+  worse than empty: its *any status* option reached the by-name status refusal
+  and answered `400`. A blank query filter is now the same as an omitted one on
+  both `/ui` and `/api` — as it always was for the CLI, where clap yields no
+  value for an omitted `--profile`, which is why `acme-proxy order list
+  --expiring-in` was right throughout. A blank `profile` on `POST /api/eab` now
+  also means *every endpoint*, matching what the panel's own form already did
+  and what the field is documented to mean. No configuration change is needed.
+
 - **Two profiles on the `relay` signer backend start.** A configuration
   mounting two relaying endpoints against *different* upstreams — a Let's
   Encrypt profile beside a commercial CA, or two internal ones — refused to

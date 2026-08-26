@@ -18,20 +18,24 @@ use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
+use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::Authenticated;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].
 #[derive(Debug, Deserialize, Default)]
 pub struct AuditListParams {
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
-    #[serde(rename = "accountId")]
+    #[serde(rename = "accountId", default, deserialize_with = "empty_is_absent")]
     pub account_id: Option<String>,
-    #[serde(rename = "orderId")]
+    #[serde(rename = "orderId", default, deserialize_with = "empty_is_absent")]
     pub order_id: Option<String>,
-    #[serde(rename = "certSerial")]
+    #[serde(rename = "certSerial", default, deserialize_with = "empty_is_absent")]
     pub cert_serial: Option<String>,
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub event: Option<String>,
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub outcome: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

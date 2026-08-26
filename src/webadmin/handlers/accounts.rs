@@ -13,6 +13,7 @@ use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
+use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 
 /// Note the window fields are declared inline rather than `#[serde(flatten)]`
@@ -22,6 +23,7 @@ use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 /// `a_limit_over_the_ceiling_is_clamped_rather_than_refused`.
 #[derive(Debug, Deserialize, Default)]
 pub struct AccountListParams {
+    #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

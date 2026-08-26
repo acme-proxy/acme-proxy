@@ -183,6 +183,11 @@ with scripting disabled.
 Mounted at `/api`, unversioned. Every response is `application/json` with
 `Cache-Control: no-store`.
 
+A filter left blank is the same as leaving it out: `?profile=` is every profile,
+not a profile whose name is the empty string. That matters because the panel's
+own controls are `<select>` elements inside a submitted form, which always send
+their name — so `every profile` and `any status` reach the API as blanks.
+
 | Method | Path | |
 |---|---|---|
 | `POST` | `/api/session` | sign in — `{username, password}` |
