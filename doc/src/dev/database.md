@@ -284,6 +284,43 @@ nothing else.
 None of them reaches an ACME object either — the wire format is RFC 8555's and
 stays that way. They surface through the admin CLI and the web admin only.
 
+## Ids are UUID v7, stored as bytes
+
+Every row this server creates is keyed by a **UUID version 7** (RFC 9562 §5.7),
+minted in one place, `sqlite::id::mint`. Version 7 rather than 4 because its
+leading 48 bits are a millisecond timestamp: ids created close together share a
+prefix, so an index over them is written at its right-hand edge instead of at a
+fresh random leaf per insert, and `ORDER BY created_at, id` — the tie-break the
+paged listings use on a whole-second `created_at` — comes out chronological.
+SQLite feels the first only mildly; PostgreSQL, where a random primary key costs
+a page split and a full-page WAL write per row, would feel it a great deal more.
+
+The column holds the **sixteen bytes**, not the thirty-six characters of the
+rendering. Nothing on the wire changes for it — an id is still rendered by
+`Uuid::to_string`, so account URLs, `kid`s, order URLs and every admin API
+member are the same lower-case hyphenated form they always were. What changes is
+an ad-hoc query: an id column now prints as a blob and wants `hex()`.
+
+```bash
+# Readable ids.
+sqlite3 sqlite.db "SELECT lower(hex(id)), profile, status FROM accounts;"
+
+# Looking one up by the id from a URL or a log line.
+sqlite3 sqlite.db "SELECT status FROM orders
+                    WHERE id = unhex(replace('6ba7b810-9dad-41d1-80b4-00c04fd430c8','-',''));"
+```
+
+A few columns look like ids and are not, so they stay text: `orders.replaces` is
+an RFC 9773 certID, `audit_log.actor_id` may be an account id or an admin
+username, `audit_log.account_id` and `order_id` name a row that may already be
+gone, and `request_id` is whatever the caller sent.
+
+Rows created before this changed were converted in place, keeping the v4 ids
+they were minted with — an id is a foreign key, a `kid` is a credential a client
+stored, and an order id is inside a URL a client polls for weeks, so none of
+them could be reissued. A table therefore holds both versions, and only the v7s
+sort by creation.
+
 ## Reading it directly
 
 The file is `sqlite.db` by default and is opened in **WAL mode**, so there are
@@ -291,10 +328,17 @@ normally `sqlite.db-wal` and `sqlite.db-shm` beside it. Copying only `sqlite.db`
 gives you a database missing every recent write; back up all three, or use
 `sqlite3 sqlite.db ".backup backup.db"`, which is consistent by construction.
 
+Ids are stored as bytes, so they need `hex()` on the way out and `unhex()` on
+the way in — see
+[Ids are UUID v7, stored as bytes](#ids-are-uuid-v7-stored-as-bytes).
+
 ```bash
 # What has this account been issued?
-sqlite3 sqlite.db "SELECT id, status, identifiers, datetime(created_at,'unixepoch')
-                     FROM orders WHERE account_id = '…' ORDER BY created_at DESC;"
+sqlite3 sqlite.db "SELECT lower(hex(id)), status, identifiers,
+                          datetime(created_at,'unixepoch')
+                     FROM orders
+                    WHERE account_id = unhex(replace('…','-',''))
+                    ORDER BY created_at DESC;"
 
 # Everything refused in the last day.
 sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, profile, client_ip, reason

@@ -156,9 +156,10 @@ then emit goes to stderr rather than into the output a script is parsing.
 ### Request correlation
 
 Every request passes through one server-wide middleware that reads an incoming
-`x-request-id` header or generates a UUID when absent, opens the `request` span,
-and echoes the id back on the response. Every log line emitted while handling
-that request is nested under that span and carries the id, so one client's
+`x-request-id` header or generates a UUID v7 when absent, opens the `request`
+span, and echoes the id back on the response. Every log line emitted while
+handling that request is nested under that span and carries the id, so one
+client's
 failing renewal can be pulled out of a busy log in a single query — and a
 reverse proxy that already assigns request ids will have its value preserved
 rather than replaced. A header whose bytes are not valid ASCII cannot be echoed

@@ -33,6 +33,47 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **Row ids are UUID version 7, stored as sixteen bytes rather than
+  thirty-six characters.** Two changes at once, and neither is visible from
+  outside the server: an id is still rendered by `Uuid::to_string`, so account
+  URLs, `kid`s, order URLs and every admin API member are byte-identical, and
+  the upgrade is still just starting the new binary.
+
+  Version 7's leading 48 bits are a millisecond timestamp, so ids created close
+  together share a prefix. An id index is written at its right-hand edge rather
+  than at a fresh random leaf per insert, and the `ORDER BY created_at, id`
+  tie-break the seven paged listings use on a whole-second `created_at` now
+  falls out chronological where a v4 gave a fresh random permutation per pair.
+  The motive is the PostgreSQL backend (`TODO.md`), where a random primary key
+  costs a page split and a full-page WAL write per row and where the same type
+  maps to a native `uuid` column.
+
+  The storage change is a **rebuild of ten tables in place** — `accounts`,
+  `orders`, `authorizations`, `challenges`, `eab_keys`, `upstream_orders`,
+  `admin_users`, `admin_sessions`, `admin_recovery_codes` and `jobs` — done now
+  because no deployment exists to be careful of, and it is not reversible.
+  Existing rows keep the v4 ids they were minted with: an id is a foreign key,
+  a `kid` is a credential a client stored, and an order id is inside a URL a
+  client polls for weeks. So a table holds both versions, and only the v7s sort
+  by creation.
+
+  Four columns look like ids and are deliberately left as text —
+  `orders.replaces` (an RFC 9773 certID), `audit_log.actor_id` (an account id
+  *or* an admin username), and `audit_log.account_id` / `order_id`, which name
+  a row that may already be gone rather than pointing at one.
+
+  What an operator has to change is **ad-hoc SQL**. An id column prints as a
+  blob and no longer compares equal to a quoted string:
+
+  ```bash
+  sqlite3 sqlite.db "SELECT lower(hex(id)), status FROM orders
+                      WHERE account_id = unhex(replace('<the id>','-',''));"
+  ```
+
+  `acme-proxy account list`, `order list` and the admin API are unaffected and
+  remain the intended way in. One smaller thing goes with it: an id rendered
+  into a log line loses the quotation marks `String`'s `Debug` put around it.
+
 - **The IPAM custom-field defaults are renamed.** `ipam.netbox.custom_field`
   now defaults to **`acme_domains`** (was `acme_allowed_names`), and
   `ipam.phpipam.custom_field` to **`custom_acme_domains`** (was

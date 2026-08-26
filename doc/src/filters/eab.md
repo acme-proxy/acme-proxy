@@ -28,7 +28,7 @@ authenticated, so there is no credential to ask about.
 ## Why the label and not the account
 
 The obvious handle for "which client is this" would be the account id, and it
-is the wrong one. An account id is a UUID generated when the account is
+is the wrong one. An account id is a UUID v7 generated when the account is
 created, so a policy naming one can only be written *after* the fact, and you
 would be editing configuration in response to a client registering.
 

@@ -23,6 +23,17 @@ keeps its corpses stops being read.
       this mints. `declared_token_widths_match_random_token` is what keeps the
       two token columns honest as `TOKEN_BYTES` moves.
 
+      Ids need no transcription at all: they are `uuid::Uuid` in Rust and a
+      BLOB here, so the Postgres set declares them `uuid` and the same binds
+      and `try_get`s work unchanged — `sqlx`'s `uuid` feature already covers
+      both dialects. `every_id_column_is_declared_a_blob` (`src/sqlite/db.rs`)
+      is the list of columns that move, and the two it names as deliberate
+      exceptions are the two to leave as text there too. What *is*
+      dialect-specific is `sqlite::id::parse`, which exists because a `&str`
+      bound against a BLOB matches nothing where Postgres would refuse the
+      parameter outright; the seam is already one function, and the eleven
+      callers named in `src/CLAUDE.md` are the whole of what depends on it.
+
 - [ ] **A last-resort handler for a panicking handler** — ASVS **V16.5.4**. A
       panic in a route aborts that connection's task with no response at all;
       the process survives (`panic = "abort"` is deliberately not set) and the
