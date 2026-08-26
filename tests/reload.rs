@@ -402,7 +402,7 @@ async fn a_logging_change_reloads_and_moves_the_level() {
         "#,
     );
     let config = load_from(&dir);
-    acme_proxy::cli::init_logging(&config.logging).expect("the subscriber must install");
+    acme_proxy::cli::init_logging(&config.logging, None).expect("the subscriber must install");
     assert_eq!(LevelFilter::current(), LevelFilter::INFO);
 
     let server = boot(config, false).await;

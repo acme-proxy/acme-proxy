@@ -71,6 +71,36 @@ log stream and is a configuration key rather than a flag; the CLI's colour is
 not configurable, on purpose, since the right answer depends on the terminal in
 front of you rather than on the deployment.
 
+**`--log-level <off|error|warn|info|debug|trace>`** — emit log records for this
+run. Also global.
+
+An admin command prints **only its own output** by default: no log records at
+all, on either stream. That is what makes `acme-proxy account list --json | jq`
+work — before this flag existed, a `db_migration_completed` record landed on
+stdout ahead of the JSON on every invocation, because `[logging]` was installed
+for every subcommand and its `target` defaults to `stdout`.
+
+- Records go to **stderr**, whatever `logging.target` says. stdout is the
+  answer; a diagnostic does not belong in it.
+- The level covers `acme-proxy` alone, so `--log-level debug` does not also
+  turn on `sqlx` and `hyper`. Set `RUST_LOG` for a directive that reaches
+  further — a non-empty `RUST_LOG` turns records on by itself, with no flag.
+- `--log-level off` is silence stated explicitly, which is what a script wants
+  when the environment it runs in may carry a `RUST_LOG`.
+
+It is worth reaching for on `filter show`, which builds the policy exactly as
+startup does and so is the cheapest pre-restart check: the *refusals* are
+printed either way, but the advisories are log records, so
+`filter show --log-level warn` is how you see `filter_disabled` and
+`filter_check_unused` before a restart rather than after it.
+
+On `serve` the flag outranks both `RUST_LOG` and `logging.filter` — a flag was
+typed where the other two are ambient — and `[logging]`'s other five keys still
+decide the format, the target and the rest. It survives a `SIGHUP`, so an
+operator who started the server at `--log-level debug` keeps it across a reload;
+an edit to `logging.filter` is then a no-op the server warns about
+([`server_logging_filter_overridden`](monitoring.md#structured-events)).
+
 **`--version`** — print the build's own version and exit. It is the first thing
 a bug report asks for, and the answer a checkout cannot give on a host where the
 binary was copied in. `--help` is its counterpart and works at every level:

@@ -2,14 +2,40 @@
 //!
 //! Split out of `cli/mod.rs`, where it was ~95 production lines with no
 //! coupling to anything else in the file: the clap tree, `dispatch` and the
-//! `serve*` chain never call any of it beyond the single `init_logging` in
-//! [`run`](super::run).
+//! `serve*` chain never call any of it beyond the single [`init_logging`]
+//! `src/main.rs` makes.
 //!
 //! The rule the whole module follows: **every knob is validated before anything
 //! is installed, and an unknown value is an error the caller prints and exits
 //! on rather than a silent fallback.** A certificate authority running at a log
 //! level or to a destination its operator did not ask for is worse than one
 //! that refuses to start and says why.
+//!
+//! # Who gets a subscriber
+//!
+//! `[logging]` describes the **server's** log stream, and until this module
+//! grew [`plan_logging`] every subcommand got it: with the shipped defaults
+//! (`acme_proxy=info`, to **stdout**) `acme-proxy account list --json | jq`
+//! read a `db_migration_completed` record before the JSON, and `filter
+//! explain` wrote a `warn` into the middle of the explanation it was printing.
+//!
+//! So the decision is now made per invocation, by a pure function a test can
+//! drive rather than in `main.rs`, which the coverage floor excludes:
+//!
+//! - `serve` gets the stack `[logging]` describes, exactly as before.
+//! - **Any other subcommand emits nothing at all** unless the operator asks —
+//!   with `--log-level`, or with a non-empty `RUST_LOG`. There is no subscriber
+//!   in that case, so every `tracing` call in the process is a no-op rather
+//!   than a filtered one.
+//! - When one does ask, the records go to **stderr** whatever `logging.target`
+//!   says, because stdout is the answer the operator's `jq` or `awk` is reading
+//!   and a diagnostic does not belong in it.
+//!
+//! [`LogLevel`] outranks both `RUST_LOG` and `logging.filter`, which is
+//! [`super::style`]'s argument for `--color always` outranking `NO_COLOR`: a
+//! flag was typed on this command line where the other two are ambient. See
+//! [`FilterSource`], which travels with the filter so a reload can say which of
+//! the three won.
 //!
 //! # Reloading
 //!
@@ -42,6 +68,7 @@
 
 use std::sync::OnceLock;
 
+use clap::ValueEnum;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -58,20 +85,156 @@ type Installed = Box<dyn Layer<Registry> + Send + Sync>;
 /// subscriber of its own. See the reloading notes in the module doc.
 static RELOAD: OnceLock<reload::Handle<Installed, Registry>> = OnceLock::new();
 
-/// The tracing filter, and where it came from.
+/// The `--log-level` directive this process was started with, or unset when the
+/// flag was not given.
+///
+/// Beside [`RELOAD`] and for its reason, stated in the module doc: a reload
+/// rebuilds the stack from the *file*, so without somewhere process-wide to
+/// read the flag back from, `SIGHUP` would silently drop it — and threading it
+/// down instead would touch the same six signatures, `serve_on*` included.
+/// Written once, after the value has been validated by building a filter from
+/// it, so a refused startup leaves nothing behind.
+static FILTER_OVERRIDE: OnceLock<String> = OnceLock::new();
+
+/// The `--log-level` directive to apply, or `None` when the flag was not given.
+///
+/// The one accessor for [`FILTER_OVERRIDE`], so a reload re-reads what startup
+/// was told rather than each caller reaching for the cell.
+pub(crate) fn flag_override() -> Option<&'static str> {
+    FILTER_OVERRIDE.get().map(String::as_str)
+}
+
+/// `--log-level`: how much this invocation logs.
+///
+/// A crate-local enum rather than [`tracing::Level`] for two reasons: `off` is
+/// not a level, and `clap`'s [`ValueEnum`] cannot be implemented for a foreign
+/// type anyway. Being a `value_enum` is also what puts the six values into the
+/// generated shell completions, which is what `--color` already buys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    /// The `EnvFilter` directive this level asks for.
+    ///
+    /// **Scoped to this crate's own target**, so `--log-level debug` does not
+    /// also unleash `sqlx`, `hyper` and `rustls` on someone who wanted to see
+    /// why one command behaved oddly. `RUST_LOG` stays the way to write a
+    /// directive that reaches further — it is the same string this would have
+    /// to become, and a flag that took one would be a second spelling of it.
+    pub(crate) fn directive(self) -> String {
+        match self {
+            // Not `acme_proxy=off`: a per-target directive at `off` still
+            // leaves every *other* target at the default level, so the one
+            // value asking for silence would be the one that did not deliver
+            // it.
+            Self::Off => "off".to_string(),
+            Self::Error => "acme_proxy=error".to_string(),
+            Self::Warn => "acme_proxy=warn".to_string(),
+            Self::Info => "acme_proxy=info".to_string(),
+            Self::Debug => "acme_proxy=debug".to_string(),
+            Self::Trace => "acme_proxy=trace".to_string(),
+        }
+    }
+}
+
+/// Which subscriber, if any, an invocation installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoggingPlan {
+    /// Install nothing. Every `tracing` call in the process is then a no-op,
+    /// which is stronger — and cheaper — than a subscriber filtering them all
+    /// out.
+    Silent,
+    /// Install the stack `[logging]` describes: the server's own log stream.
+    Server,
+    /// Install a diagnostic stack on stderr for a one-shot admin command.
+    Command,
+}
+
+/// Decides what this invocation logs, from the subcommand and the two ways an
+/// operator can ask.
+///
+/// Pure, and here rather than in `src/main.rs` because that file is excluded
+/// from the coverage floor: every rule below is a row of a table test.
+///
+/// `rust_log` counts only when **non-empty**, which is
+/// [`super::style::no_color_set`]'s judgement applied to the other ambient
+/// environment variable this CLI reads. A `RUST_LOG=` left behind by a
+/// `${RUST_LOG:-}`-style shell default is not somebody asking for logs, and
+/// treating it as one would put records back in the pipe this exists to keep
+/// clean.
+pub fn plan_logging(
+    command: Option<&super::Command>,
+    level: Option<LogLevel>,
+    rust_log: Option<&str>,
+) -> LoggingPlan {
+    match command {
+        // A daemon logs; the flag only sharpens what it says. `None` is the
+        // default subcommand, i.e. a bare `acme-proxy`.
+        None | Some(super::Command::Serve) => LoggingPlan::Server,
+        // `main.rs` answers both before it loads a configuration, so neither
+        // reaches here — but answering them keeps this total over `Command`,
+        // the rule `dispatch` follows for the same pair.
+        Some(super::Command::Completions { .. } | super::Command::Man) => LoggingPlan::Silent,
+        Some(_) => {
+            if level.is_some() || rust_log.is_some_and(|value| !value.is_empty()) {
+                LoggingPlan::Command
+            } else {
+                LoggingPlan::Silent
+            }
+        }
+    }
+}
+
+/// Which of the three layers supplied the filter in force.
 ///
 /// The provenance travels with the filter because it decides whether an
-/// operator is owed a warning: with `RUST_LOG` set, editing `logging.filter`
-/// and reloading changes nothing at all, and a silent no-op is the one outcome
-/// worth a line in the log.
+/// operator is owed a warning: with either of the two outranking layers in
+/// play, editing `logging.filter` and reloading changes nothing at all, and a
+/// silent no-op is the one outcome worth a line in the log. It is also the
+/// `source` field on that warning, so the operator is told *which* to unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FilterSource {
+    /// `--log-level`, typed on this command line.
+    Flag,
+    /// `RUST_LOG`, from the environment.
+    Env,
+    /// `logging.filter`, from the configuration file.
+    Config,
+}
+
+impl FilterSource {
+    /// The `source` field's value on `server_logging_filter_overridden`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Flag => "flag",
+            Self::Env => "env",
+            Self::Config => "config",
+        }
+    }
+
+    /// Whether `logging.filter` was overruled, i.e. whether editing it and
+    /// reloading would change nothing.
+    pub(crate) fn outranks_config(self) -> bool {
+        !matches!(self, Self::Config)
+    }
+}
+
+/// The tracing filter, and where it came from.
 #[derive(Debug)]
 struct ResolvedFilter {
     filter: EnvFilter,
-    from_env: bool,
+    source: FilterSource,
 }
 
-/// Builds the tracing filter: `RUST_LOG` if set and valid, else
-/// `logging.filter`.
+/// Builds the tracing filter: `flag` if given, else `RUST_LOG` if set and
+/// valid, else `logging.filter`.
 ///
 /// Returns an error rather than unwrapping. `logging.filter` is
 /// operator-supplied and environment-overridable, so a typo in it used to
@@ -81,20 +244,39 @@ struct ResolvedFilter {
 /// authority quietly running at a different log level than its operator asked
 /// for is worse than one that refuses to start and says why.
 ///
-/// The `RUST_LOG`-wins precedence is the same on a reload as at startup, and
-/// deliberately: the two disagreeing about what the server is running would be
-/// worse than the override itself.
-fn build_env_filter(logging: &crate::config::LoggingConfig) -> Result<ResolvedFilter, String> {
+/// `flag` outranks `RUST_LOG` for [`super::style`]'s reason: it was typed on
+/// this command line, where the environment is ambient. It is a [`LogLevel`]
+/// rendering rather than operator text, so it cannot fail to parse — but it
+/// goes through the same `try_new` as the other two rather than being trusted,
+/// since a value that cannot fail is one nobody notices becoming able to.
+///
+/// The precedence is the same on a reload as at startup, and deliberately: the
+/// two disagreeing about what the server is running would be worse than the
+/// override itself.
+fn build_env_filter(
+    logging: &crate::config::LoggingConfig,
+    flag: Option<&str>,
+) -> Result<ResolvedFilter, String> {
+    if let Some(directive) = flag {
+        return EnvFilter::try_new(directive)
+            .map(|filter| ResolvedFilter {
+                filter,
+                source: FilterSource::Flag,
+            })
+            .map_err(|error| {
+                format!("--log-level `{directive}` is not a valid tracing filter: {error}")
+            });
+    }
     if let Ok(filter) = EnvFilter::try_from_default_env() {
         return Ok(ResolvedFilter {
             filter,
-            from_env: true,
+            source: FilterSource::Env,
         });
     }
     EnvFilter::try_new(&logging.filter)
         .map(|filter| ResolvedFilter {
             filter,
-            from_env: false,
+            source: FilterSource::Config,
         })
         .map_err(|error| {
             format!(
@@ -162,8 +344,9 @@ fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
 /// *after* building this and still leave the running configuration untouched.
 pub(crate) struct PreparedLogging {
     layer: Installed,
-    /// `RUST_LOG` was set and parsed, so `logging.filter` had no say.
-    pub(crate) filter_from_env: bool,
+    /// Which of the three layers the filter came from, and so whether
+    /// `logging.filter` had any say.
+    pub(crate) filter_source: FilterSource,
 }
 
 /// Resolves `[logging]` into a layer stack, validating every key.
@@ -172,8 +355,9 @@ pub(crate) struct PreparedLogging {
 /// reasoning behind [`super::build_generation`], applied to one layer.
 pub(crate) fn prepare_logging(
     logging: &crate::config::LoggingConfig,
+    flag: Option<&str>,
 ) -> Result<PreparedLogging, String> {
-    let ResolvedFilter { filter, from_env } = build_env_filter(logging)?;
+    let ResolvedFilter { filter, source } = build_env_filter(logging, flag)?;
     let writer = parse_target(&logging.target)?;
     let span_events = parse_span_events(&logging.span_events)?;
     let ansi = ansi_enabled(logging.ansi, std::env::var("NO_COLOR").ok().as_deref());
@@ -209,7 +393,7 @@ pub(crate) fn prepare_logging(
 
     Ok(PreparedLogging {
         layer,
-        filter_from_env: from_env,
+        filter_source: source,
     })
 }
 
@@ -233,14 +417,55 @@ pub(crate) fn publish_logging(prepared: PreparedLogging) -> bool {
 /// the same reasoning as [`build_env_filter`]: a certificate authority running
 /// at a log level or to a destination its operator did not ask for is worse
 /// than one that refuses to start and says why.
-pub fn init_logging(logging: &crate::config::LoggingConfig) -> Result<(), String> {
-    let prepared = prepare_logging(logging)?;
+pub fn init_logging(
+    logging: &crate::config::LoggingConfig,
+    level: Option<LogLevel>,
+) -> Result<(), String> {
+    let directive = level.map(LogLevel::directive);
+    let prepared = prepare_logging(logging, directive.as_deref())?;
     let (layer, handle) = reload::Layer::new(prepared.layer);
     tracing_subscriber::registry().with(layer).init();
     // A second install would already have panicked in `init()` above, so the
     // only way this loses the race is a caller that never got that far.
     let _ = RELOAD.set(handle);
+    // Stored only now: a directive that would not build must leave the cell
+    // unset, or a refused startup would hand a reload a filter nothing ever
+    // installed.
+    if let Some(directive) = directive {
+        let _ = FILTER_OVERRIDE.set(directive);
+    }
     Ok(())
+}
+
+/// The stack a one-shot admin command logs through, when it logs at all.
+///
+/// **`stderr`, whatever `logging.target` says**, and `logging.filter` is not
+/// consulted either: that section describes the *server's* log stream, while
+/// this is a diagnostic an operator asked one command for. stdout is the answer
+/// — the rows, or the `--json` document — and putting a record in it is what
+/// this whole path exists to stop.
+///
+/// Human-readable rather than `logging.json_format`'s shape for the same
+/// reason: the audience is the terminal the command was typed into. `NO_COLOR`
+/// still vetoes the colour, through the shared [`ansi_enabled`].
+fn command_logging_config() -> crate::config::LoggingConfig {
+    crate::config::LoggingConfig {
+        target: "stderr".to_string(),
+        // The compiled default, deliberately, and not the operator's own
+        // `logging.filter`. It is reached only when `--log-level` was not
+        // given, i.e. when a non-empty `RUST_LOG` is what asked — and that
+        // outranks it, so this is a fallback nothing normally reads.
+        ..crate::config::LoggingConfig::default()
+    }
+}
+
+/// Installs the diagnostic subscriber a one-shot admin command asked for.
+///
+/// `level` is `None` when a non-empty `RUST_LOG` is what asked, in which case
+/// it supplies the filter through [`build_env_filter`]'s second layer — see
+/// [`plan_logging`], which is what decides this function is called at all.
+pub fn init_command_logging(level: Option<LogLevel>) -> Result<(), String> {
+    init_logging(&command_logging_config(), level)
 }
 
 #[cfg(test)]
@@ -258,7 +483,7 @@ mod tests {
             filter: "this is not=a=valid=filter".to_string(),
             ..Default::default()
         };
-        let error = build_env_filter(&logging).unwrap_err();
+        let error = build_env_filter(&logging, None).unwrap_err();
         assert!(error.contains("logging.filter"), "{error}");
         assert!(error.contains("this is not=a=valid=filter"), "{error}");
     }
@@ -274,10 +499,11 @@ mod tests {
             filter: "acme_proxy=debug".to_string(),
             ..Default::default()
         };
-        let resolved = build_env_filter(&logging).expect("a valid filter builds");
-        assert!(
-            !resolved.from_env,
-            "with RUST_LOG unset the filter comes from `logging.filter`",
+        let resolved = build_env_filter(&logging, None).expect("a valid filter builds");
+        assert_eq!(
+            resolved.source,
+            FilterSource::Config,
+            "with RUST_LOG unset and no flag the filter comes from `logging.filter`",
         );
     }
 
@@ -294,8 +520,8 @@ mod tests {
             filter: "acme_proxy=trace".to_string(),
             ..Default::default()
         };
-        let resolved = build_env_filter(&logging).expect("RUST_LOG parses");
-        assert!(resolved.from_env);
+        let resolved = build_env_filter(&logging, None).expect("RUST_LOG parses");
+        assert_eq!(resolved.source, FilterSource::Env);
 
         unsafe { std::env::remove_var("RUST_LOG") };
     }
@@ -362,7 +588,7 @@ mod tests {
 
             // Not `expect_err`: the `Ok` side holds a boxed `Layer`, which has
             // no `Debug` to print.
-            let Err(error) = prepare_logging(&logging) else {
+            let Err(error) = prepare_logging(&logging, None) else {
                 panic!("`{expected}` must be refused, not built");
             };
             assert!(error.contains(expected), "{error}");
@@ -380,8 +606,8 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
-        let prepared =
-            prepare_logging(&crate::config::LoggingConfig::default()).expect("the defaults build");
+        let prepared = prepare_logging(&crate::config::LoggingConfig::default(), None)
+            .expect("the defaults build");
         assert!(!publish_logging(prepared));
     }
 
@@ -403,7 +629,7 @@ mod tests {
             target: "stderr".to_string(),
             ..Default::default()
         };
-        init_logging(&at_info).expect("the subscriber installs");
+        init_logging(&at_info, None).expect("the subscriber installs");
         assert_eq!(LevelFilter::current(), LevelFilter::INFO);
         assert!(!tracing::enabled!(target: "acme_proxy", tracing::Level::DEBUG));
 
@@ -412,7 +638,7 @@ mod tests {
             target: "stderr".to_string(),
             ..Default::default()
         };
-        let prepared = prepare_logging(&at_debug).expect("the debug filter builds");
+        let prepared = prepare_logging(&at_debug, None).expect("the debug filter builds");
         assert!(publish_logging(prepared), "the handle is installed");
 
         assert_eq!(LevelFilter::current(), LevelFilter::DEBUG);
@@ -429,11 +655,14 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
-        init_logging(&crate::config::LoggingConfig {
-            target: "stderr".to_string(),
-            ansi: false,
-            ..Default::default()
-        })
+        init_logging(
+            &crate::config::LoggingConfig {
+                target: "stderr".to_string(),
+                ansi: false,
+                ..Default::default()
+            },
+            None,
+        )
         .expect("the subscriber installs");
 
         let as_json = crate::config::LoggingConfig {
@@ -443,7 +672,7 @@ mod tests {
             span_events: "close".to_string(),
             ..Default::default()
         };
-        let prepared = prepare_logging(&as_json).expect("the JSON stack builds");
+        let prepared = prepare_logging(&as_json, None).expect("the JSON stack builds");
         assert!(publish_logging(prepared));
 
         // The filter has to survive the shape change: `and_then` puts it on the
@@ -500,7 +729,7 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::remove_var("RUST_LOG") };
 
-            let error = init_logging(&logging).unwrap_err();
+            let error = init_logging(&logging, None).unwrap_err();
             assert!(error.contains(expected), "{error}");
         }
     }
@@ -520,7 +749,7 @@ mod tests {
             span_events: "close".to_string(),
             ..Default::default()
         };
-        assert!(init_logging(&logging).is_ok());
+        assert!(init_logging(&logging, None).is_ok());
     }
 
     #[test]
@@ -531,6 +760,263 @@ mod tests {
             span_events: "full".to_string(),
             ..Default::default()
         };
-        assert!(init_logging(&logging).is_ok());
+        assert!(init_logging(&logging, None).is_ok());
+    }
+
+    /// One row of the `plan_logging` table: a command line, the flag, the
+    /// environment, and what the three of them must decide.
+    type PlanCase<'a> = (
+        &'a [&'a str],
+        Option<LogLevel>,
+        Option<&'a str>,
+        LoggingPlan,
+    );
+
+    /// Parsed rather than hand-built: naming every subcommand enum here would
+    /// be a second copy of the clap tree, and what has to be right is what a
+    /// real command line resolves to.
+    fn command_of(argv: &[&str]) -> Option<super::super::Command> {
+        use clap::Parser;
+        super::super::Cli::try_parse_from(argv)
+            .expect("the fixture command line parses")
+            .command
+    }
+
+    /// The whole point of the flag, as a table: **an admin command is silent
+    /// unless somebody asked**, `serve` never is, and `RUST_LOG` counts only
+    /// when it holds something.
+    #[test]
+    fn plan_logging_decides_who_gets_a_subscriber() {
+        let cases: Vec<PlanCase> = vec![
+            // A daemon logs, however it was reached and whatever is unset.
+            (&["acme-proxy"], None, None, LoggingPlan::Server),
+            (&["acme-proxy", "serve"], None, None, LoggingPlan::Server),
+            (
+                &["acme-proxy", "serve"],
+                Some(LogLevel::Debug),
+                None,
+                LoggingPlan::Server,
+            ),
+            // The reported bug: these used to write `db_migration_completed`
+            // into the operator's `jq` pipe.
+            (
+                &["acme-proxy", "account", "list"],
+                None,
+                None,
+                LoggingPlan::Silent,
+            ),
+            (
+                &["acme-proxy", "filter", "show"],
+                None,
+                None,
+                LoggingPlan::Silent,
+            ),
+            (
+                &["acme-proxy", "audit", "list"],
+                None,
+                None,
+                LoggingPlan::Silent,
+            ),
+            (
+                &["acme-proxy", "admin", "user", "list"],
+                None,
+                None,
+                LoggingPlan::Silent,
+            ),
+            // Both ways of asking, and only those two.
+            (
+                &["acme-proxy", "account", "list"],
+                Some(LogLevel::Debug),
+                None,
+                LoggingPlan::Command,
+            ),
+            (
+                &["acme-proxy", "account", "list"],
+                Some(LogLevel::Off),
+                None,
+                LoggingPlan::Command,
+            ),
+            (
+                &["acme-proxy", "account", "list"],
+                None,
+                Some("acme_proxy=debug"),
+                LoggingPlan::Command,
+            ),
+            // A `${RUST_LOG:-}` shell default is present, not a request — the
+            // judgement `no_color_set` already makes about the other ambient
+            // variable this CLI reads.
+            (
+                &["acme-proxy", "account", "list"],
+                None,
+                Some(""),
+                LoggingPlan::Silent,
+            ),
+            // Answered by `main.rs` before any of this, but total here anyway.
+            (&["acme-proxy", "man"], None, None, LoggingPlan::Silent),
+            (
+                &["acme-proxy", "completions", "bash"],
+                Some(LogLevel::Trace),
+                Some("debug"),
+                LoggingPlan::Silent,
+            ),
+        ];
+
+        for (argv, level, rust_log, expected) in cases {
+            let command = command_of(argv);
+            let plan = plan_logging(command.as_ref(), level, rust_log);
+            assert_eq!(
+                plan,
+                expected,
+                "`{}` with level {level:?} and RUST_LOG {rust_log:?}",
+                argv.join(" "),
+            );
+        }
+    }
+
+    /// A flag was typed on this command line where both other layers are
+    /// ambient — `super::super::style`'s argument for `--color always`
+    /// outranking `NO_COLOR`, applied to the filter.
+    #[test]
+    fn the_flag_outranks_rust_log_and_the_file() {
+        let _guard = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("RUST_LOG", "acme_proxy=warn") };
+
+        let logging = crate::config::LoggingConfig {
+            filter: "acme_proxy=error".to_string(),
+            ..Default::default()
+        };
+        let resolved = build_env_filter(&logging, Some(&LogLevel::Trace.directive()))
+            .expect("the flag's directive builds");
+        assert_eq!(resolved.source, FilterSource::Flag);
+        assert_eq!(
+            resolved.filter.to_string(),
+            "acme_proxy=trace",
+            "neither RUST_LOG nor logging.filter may have a say once the flag is given",
+        );
+
+        unsafe { std::env::remove_var("RUST_LOG") };
+    }
+
+    /// Each level's directive is **scoped to this crate**, so `--log-level
+    /// debug` does not also unleash `sqlx` and `hyper` on somebody debugging
+    /// one command. `off` is the exception and has to be: a per-target
+    /// directive at `off` leaves every other target at the default level, so
+    /// the one value asking for silence would be the one not delivering it.
+    #[test]
+    fn every_level_renders_a_directive_scoped_to_this_crate() {
+        assert_eq!(LogLevel::Off.directive(), "off");
+        for (level, expected) in [
+            (LogLevel::Error, "acme_proxy=error"),
+            (LogLevel::Warn, "acme_proxy=warn"),
+            (LogLevel::Info, "acme_proxy=info"),
+            (LogLevel::Debug, "acme_proxy=debug"),
+            (LogLevel::Trace, "acme_proxy=trace"),
+        ] {
+            assert_eq!(level.directive(), expected);
+            EnvFilter::try_new(level.directive()).expect("every directive parses");
+        }
+        EnvFilter::try_new(LogLevel::Off.directive()).expect("`off` parses");
+    }
+
+    /// stdout is the answer an admin command was run for — the rows, or the
+    /// `--json` document — so a record asked for with `--log-level` goes to
+    /// stderr whatever `logging.target` says. That key describes the server's
+    /// stream, and this path deliberately does not consult it.
+    #[test]
+    fn a_command_run_logs_to_stderr_whatever_logging_target_says() {
+        assert_eq!(
+            crate::config::LoggingConfig::default().target,
+            "stdout",
+            "the default this must not inherit",
+        );
+        let built = command_logging_config();
+        assert_eq!(built.target, "stderr");
+        assert!(!built.json_format, "the audience is a terminal");
+    }
+
+    /// The three `FilterSource`s, and the question the reload warning asks of
+    /// them. `config` is the only one that does *not* make an edited
+    /// `logging.filter` a no-op.
+    #[test]
+    fn only_the_two_outranking_sources_silence_an_edit() {
+        assert!(FilterSource::Flag.outranks_config());
+        assert!(FilterSource::Env.outranks_config());
+        assert!(!FilterSource::Config.outranks_config());
+        assert_eq!(FilterSource::Flag.as_str(), "flag");
+        assert_eq!(FilterSource::Env.as_str(), "env");
+        assert_eq!(FilterSource::Config.as_str(), "config");
+    }
+
+    /// The flag's own directives cannot fail to parse — they are renderings of
+    /// a closed enum — but the arm is built to refuse rather than to trust,
+    /// since a value that cannot be wrong is one nobody notices becoming able
+    /// to. Driven with a hand-written directive, which is the only way in.
+    #[test]
+    fn an_unparseable_flag_directive_is_refused_by_name() {
+        let error = build_env_filter(
+            &crate::config::LoggingConfig::default(),
+            Some("not=a=filter"),
+        )
+        .unwrap_err();
+        assert!(error.contains("--log-level"), "{error}");
+        assert!(error.contains("not=a=filter"), "{error}");
+    }
+
+    /// The whole admin-command path, installed: the flag's level in force and
+    /// the records on stderr. Its own process, like the three installers above.
+    #[test]
+    fn a_command_subscriber_installs_at_the_flags_level() {
+        let _guard = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("RUST_LOG") };
+
+        init_command_logging(Some(LogLevel::Warn)).expect("the subscriber installs");
+        assert_eq!(LevelFilter::current(), LevelFilter::WARN);
+        assert!(!tracing::enabled!(target: "acme_proxy", tracing::Level::INFO));
+        assert_eq!(flag_override(), Some("acme_proxy=warn"));
+    }
+
+    /// A `--log-level` typed at startup has to survive a `SIGHUP`: the stack is
+    /// rebuilt from the *file*, so without the process-wide cell the reload
+    /// would quietly demote the server to `logging.filter`. Its own process,
+    /// like the three installers above — it installs a global subscriber and
+    /// writes a `OnceLock`.
+    #[test]
+    fn the_flag_survives_a_reload() {
+        let _guard = crate::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("RUST_LOG") };
+
+        assert!(flag_override().is_none(), "nothing is set before startup");
+
+        let at_error = crate::config::LoggingConfig {
+            filter: "acme_proxy=error".to_string(),
+            target: "stderr".to_string(),
+            ..Default::default()
+        };
+        init_logging(&at_error, Some(LogLevel::Debug)).expect("the subscriber installs");
+        assert_eq!(LevelFilter::current(), LevelFilter::DEBUG);
+        assert_eq!(flag_override(), Some("acme_proxy=debug"));
+
+        // The reload's own call, verbatim: a new file with a different filter,
+        // rebuilt through the flag the cell remembers.
+        let edited = crate::config::LoggingConfig {
+            filter: "acme_proxy=error".to_string(),
+            target: "stderr".to_string(),
+            span_events: "close".to_string(),
+            ..Default::default()
+        };
+        let prepared = prepare_logging(&edited, flag_override()).expect("the stack rebuilds");
+        assert_eq!(prepared.filter_source, FilterSource::Flag);
+        assert!(publish_logging(prepared));
+        assert_eq!(
+            LevelFilter::current(),
+            LevelFilter::DEBUG,
+            "the reload must not demote the server to the file's filter",
+        );
     }
 }

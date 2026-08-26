@@ -58,6 +58,9 @@ mod logging;
 /// Installs the `[logging]` configuration. Re-exported because `main.rs` is
 /// what calls it — see [`dispatch`].
 pub use logging::init_logging;
+/// The `--log-level` flag and the per-invocation decision it feeds. Re-exported
+/// for `main.rs`, which is where the subscriber is installed.
+pub use logging::{LogLevel, LoggingPlan, init_command_logging, plan_logging};
 pub mod nonce;
 pub mod order;
 pub mod render;
@@ -94,6 +97,11 @@ pub struct Cli {
     /// When to colour human-readable output. `--json` output never carries it.
     #[arg(long, value_enum, default_value_t = ColorChoice::Auto, global = true)]
     pub color: ColorChoice,
+
+    /// Emit log records for this run, at this level, on stderr. Without it an
+    /// admin command prints only its own output; `serve` uses `[logging]`.
+    #[arg(long, value_enum, global = true)]
+    pub log_level: Option<LogLevel>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -1348,8 +1356,9 @@ struct Prepared {
     sockets: SocketPlans,
     logging: logging::PreparedLogging,
     /// Whether `RUST_LOG` is what the filter came from, so the publish phase can
-    /// say when an edited `logging.filter` changed nothing.
-    logging_filter_from_env: bool,
+    /// say when an edited `logging.filter` changed nothing, and which of the
+    /// two outranking layers is why.
+    logging_filter_source: logging::FilterSource,
     /// The endpoints in this generation that the previous one did not mount.
     mounted: Vec<Arc<Profile>>,
     /// The endpoints the previous generation mounted and this one does not.
@@ -1398,8 +1407,12 @@ fn prepare_reload(
     // the whole reload with the message startup would have printed, not leave a
     // half-swapped generation behind. The same build-then-publish split
     // `Assembly::build_parts` makes.
-    let logging = logging::prepare_logging(&next.logging).map_err(ReloadError::Build)?;
-    let logging_filter_from_env = logging.filter_from_env;
+    // `flag_override()` is how a `--log-level` typed at startup survives a
+    // `SIGHUP`: the stack is rebuilt from the file, so without re-reading it
+    // the reload would silently demote the server to `logging.filter`.
+    let logging = logging::prepare_logging(&next.logging, logging::flag_override())
+        .map_err(ReloadError::Build)?;
+    let logging_filter_source = logging.filter_source;
 
     // The same validation startup runs before either socket binds, so a panel
     // that would refuse to start refuses to be reloaded into. It also compiles
@@ -1458,7 +1471,7 @@ fn prepare_reload(
         generation,
         sockets,
         logging,
-        logging_filter_from_env,
+        logging_filter_source,
         mounted,
         unmounted,
     })
@@ -1498,7 +1511,7 @@ fn publish_reload(
         generation: built,
         sockets,
         logging,
-        logging_filter_from_env,
+        logging_filter_source,
         mounted,
         unmounted,
     } = prepared;
@@ -1570,15 +1583,18 @@ fn publish_reload(
         );
     }
 
-    // `RUST_LOG` outranks `logging.filter` on a reload exactly as it does at
-    // startup — the two disagreeing would be worse — but that makes an edited
-    // `logging.filter` a silent no-op, which is the one outcome an operator
-    // would read as "my reload did not land". Said only when both halves hold:
-    // the environment won, *and* the file's filter actually moved.
-    if logging_filter_from_env && applied.logging.filter != next.logging.filter {
+    // `--log-level` and `RUST_LOG` both outrank `logging.filter` on a reload
+    // exactly as they do at startup — the two disagreeing would be worse — but
+    // that makes an edited `logging.filter` a silent no-op, which is the one
+    // outcome an operator would read as "my reload did not land". Said only
+    // when both halves hold: something outranked the file, *and* the file's
+    // filter actually moved. `source` names which, since the two are unset in
+    // different places.
+    if logging_filter_source.outranks_config() && applied.logging.filter != next.logging.filter {
         warn!(
             event = "server_logging_filter_overridden",
             outcome = "advisory",
+            source = logging_filter_source.as_str(),
             configured = %next.logging.filter,
         );
     }
@@ -1750,6 +1766,38 @@ mod tests {
         };
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
         assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    /// `--log-level` is global like `--yes` and `--color`, so it may be given
+    /// on either side of the subcommand — which is the whole reason an
+    /// operator reaches for it, having already typed the command once.
+    #[test]
+    fn log_level_is_a_global_flag_with_a_closed_set_of_values() {
+        let cli = Cli::try_parse_from(["acme-proxy", "account", "list"]).unwrap();
+        assert_eq!(
+            cli.log_level, None,
+            "absent by default: an admin command says nothing unless asked",
+        );
+
+        for argv in [
+            ["acme-proxy", "--log-level", "debug", "account", "list"],
+            ["acme-proxy", "account", "list", "--log-level", "debug"],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert_eq!(cli.log_level, Some(LogLevel::Debug), "{argv:?}");
+        }
+
+        let cli = Cli::try_parse_from(["acme-proxy", "serve", "--log-level", "off"]).unwrap();
+        assert_eq!(cli.log_level, Some(LogLevel::Off));
+
+        // A `value_enum`, so an unrecognised level is refused with the six
+        // spellings listed rather than treated as a filter directive.
+        let Err(error) =
+            Cli::try_parse_from(["acme-proxy", "account", "list", "--log-level", "loud"])
+        else {
+            panic!("`--log-level loud` must be refused");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
     }
 
     #[test]

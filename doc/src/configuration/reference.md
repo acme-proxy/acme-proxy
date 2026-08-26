@@ -665,13 +665,25 @@ What the resulting records actually contain, and what to alert on, is
 
 **`filter`** (`String`) — *Default: `"acme_proxy=info"` | Env: `ACME_PROXY_LOGGING__FILTER`*
 
-`EnvFilter` directive, used **only when `RUST_LOG` is unset**. `RUST_LOG` wins
-whenever it is present, and replaces the whole filter — a bare `RUST_LOG=debug`
-therefore also turns on debug logging for every dependency. That precedence is
-the same on a reload as at startup, which means editing this key while
-`RUST_LOG` is set changes nothing; the server logs
-`server_logging_filter_overridden` rather than letting the edit pass for
-applied.
+`EnvFilter` directive, and the last of three layers to be consulted. The
+precedence, highest first:
+
+- **`--log-level`**, typed on the command line. A flag was asked for here and
+  now, where the other two are ambient — the same reasoning that has `--color
+  always` outrank `NO_COLOR`. It sets `acme_proxy` alone, so it never turns on
+  a dependency's logging by accident.
+- **`RUST_LOG`**, when set to a non-empty value. It replaces the whole filter,
+  so a bare `RUST_LOG=debug` also turns on debug logging for every dependency.
+- **this key**.
+
+That precedence is the same on a reload as at startup, which means editing this
+key while either of the two outranks it changes nothing; the server logs
+`server_logging_filter_overridden`, whose `source` field names which one, rather
+than letting the edit pass for applied.
+
+This section describes the **server's** log stream. An admin command emits
+nothing at all unless asked — see
+[the CLI's `--log-level`](../operations/cli.md#global-flags).
 
 **`json_format`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_LOGGING__JSON_FORMAT`*
 

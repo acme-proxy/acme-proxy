@@ -148,6 +148,11 @@ debug logging for every dependency. `acme-proxy` does not configure SQL
 statement logging itself; to see `sqlx`'s own statement logs you must ask for
 them explicitly, e.g. `RUST_LOG=acme_proxy=info,sqlx=debug`.
 
+Everything on this page is the **server's** log stream. The admin commands emit
+none of it unless asked, with
+[`--log-level`](cli.md#global-flags) or a non-empty `RUST_LOG`, and what they
+then emit goes to stderr rather than into the output a script is parsing.
+
 ### Request correlation
 
 Every request passes through one server-wide middleware that reads an incoming
@@ -228,7 +233,7 @@ The events worth building alerts on:
 | `server_config_reloaded` | info | A `SIGHUP` applied. Carries `generation`, which counts from 1 and rises by one per reload — the quickest check that one landed — and `listeners_rebound`, naming any socket that moved. |
 | `server_config_reload_refused` | warn | The new file changes a key that cannot change while the process runs. Nothing was applied; the `error` field names the key. |
 | `server_config_reload_failed` | error | The new file did not load, or what it asks for could not be built. Nothing was applied. |
-| `server_logging_filter_overridden` | warn | A reload changed `logging.filter` while `RUST_LOG` was set, so the edit had no effect. `RUST_LOG` wins on a reload exactly as it does at startup; unset it and reload again. |
+| `server_logging_filter_overridden` | warn | A reload changed `logging.filter` while something outranked it, so the edit had no effect. `source` names which: `"flag"` for a `--log-level` on the server's own command line, `"env"` for `RUST_LOG`. Both win on a reload exactly as they do at startup; drop the one named and reload again. |
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |

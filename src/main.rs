@@ -8,15 +8,19 @@
 //! each of them stays a plain function a test can call and assert on.
 //!
 //! That is also why this file is excluded from the coverage floor: none of it
-//! is reachable from a test, because all four failure branches end the process.
+//! is reachable from a test, because every failure branch here ends the
+//! process. What *is* decidable — which subscriber this invocation gets — lives
+//! in `cli::plan_logging` for that reason, and is called from here.
 
 use std::io::IsTerminal;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::error;
 
-use acme_proxy::cli::{Cli, Command, Palette, dispatch, generate, init_logging};
+use acme_proxy::cli::{
+    Cli, Command, LoggingPlan, Palette, dispatch, generate, init_command_logging, init_logging,
+    plan_logging,
+};
 use acme_proxy::config::Config;
 use acme_proxy::sqlite::db::Database;
 
@@ -54,7 +58,21 @@ async fn main() {
         std::process::exit(1);
     }));
 
-    init_logging(&config.logging).unwrap_or_else(|error| {
+    // Which subscriber this invocation gets — `serve` the server's own, an
+    // admin command one only if it asked, and otherwise none at all. The rule
+    // lives in `cli::plan_logging` rather than here, because this file is
+    // excluded from the coverage floor and that decision is worth a table test.
+    let installed = plan_logging(
+        cli.command.as_ref(),
+        cli.log_level,
+        std::env::var("RUST_LOG").ok().as_deref(),
+    );
+    let logging = match installed {
+        LoggingPlan::Silent => Ok(()),
+        LoggingPlan::Server => init_logging(&config.logging, cli.log_level),
+        LoggingPlan::Command => init_command_logging(cli.log_level),
+    };
+    logging.unwrap_or_else(|error| {
         eprintln!("{}", palette.bad(&error));
         std::process::exit(1);
     });
@@ -63,7 +81,19 @@ async fn main() {
         Database::connect(&config.database.url)
             .await
             .unwrap_or_else(|error| {
-                error!(event = "db_connect_failed", outcome = "failure", database_url = %config.database.url, error = %error);
+                // stderr rather than the `error!` this used to be: under
+                // `LoggingPlan::Silent` there is no subscriber, so the record
+                // went nowhere and the process exited 1 having said nothing at
+                // all. A failure to open the database is fatal before anything
+                // serves, which is exactly what the configuration error above
+                // already reports this way.
+                eprintln!(
+                    "{}",
+                    palette.bad(&format!(
+                        "database error: cannot open {}: {error}",
+                        config.database.url
+                    ))
+                );
                 std::process::exit(1);
             }),
     );

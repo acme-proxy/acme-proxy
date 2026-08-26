@@ -286,7 +286,12 @@ enabled = false                     # ACME_PROXY_METRICS__ENABLED
 bind_address = "127.0.0.1:3002"     # ACME_PROXY_METRICS__BIND_ADDRESS
 
 [logging]
-# Log level filtering (EnvFilter format). Overridden by RUST_LOG environment variable.
+# This section is the SERVER's log stream. The admin subcommands emit nothing at
+# all unless asked, with `--log-level <level>` or a non-empty RUST_LOG, and what
+# they then emit goes to stderr so stdout stays what a script parses.
+#
+# Log level filtering (EnvFilter format). Last of three layers: a `--log-level`
+# on the command line outranks RUST_LOG, which outranks this.
 filter = "acme_proxy=info"  # ACME_PROXY_LOGGING__FILTER
 # Enable structured JSON logging for integration with centralized log aggregators.
 json_format = false                 # ACME_PROXY_LOGGING__JSON_FORMAT

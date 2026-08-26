@@ -31,7 +31,34 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Added
+
+- **`--log-level <off|error|warn|info|debug|trace>`**, a third global CLI flag
+  beside `--yes` and `--color`. It is how an admin command is asked for log
+  records now that it emits none by default (below), and on `serve` it outranks
+  both `RUST_LOG` and `logging.filter` — a flag was typed where the other two
+  are ambient, the same reasoning that has `--color always` outrank `NO_COLOR`.
+  The level covers `acme-proxy` alone, so it never turns on a dependency's
+  logging by accident; `RUST_LOG` stays the way to write a directive that
+  reaches further. It survives a `SIGHUP`, and `server_logging_filter_overridden`
+  gains a `source` field naming which of the two overrode an edited
+  `logging.filter`.
+
 ### Fixed
+
+- **An admin command no longer writes log records into its own output.** The
+  tracing subscriber was installed for every subcommand, and `[logging]`
+  defaults to `acme_proxy=info` on **stdout** — so `acme-proxy account list
+  --json | jq` read a `db_migration_completed` record before the JSON on every
+  single invocation, `filter show` prefixed its policy with a dozen build
+  records, and `filter explain` wrote a `warn` into the middle of the
+  explanation it was printing. A subcommand other than `serve` now installs no
+  subscriber at all unless it is asked, with the new `--log-level` or a
+  non-empty `RUST_LOG`; when it is, the records go to **stderr**, whatever
+  `logging.target` says, so stdout stays exactly what a script parses. `serve`
+  is unchanged: `[logging]` is the server's log stream and still describes it in
+  full. A script that was parsing an admin command's stdout gets only the output
+  now — if it was stripping log lines back out, that step is dead code.
 
 - **The panel's list filters no longer empty the list.** Selecting *every
   profile* on `/ui/expiring` showed nothing, while picking one profile showed
