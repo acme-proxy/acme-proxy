@@ -272,7 +272,7 @@ mod tests {
     async fn order(database: &Database) -> Order {
         let (account, _) = Account::find_or_create(
             "default",
-            uuid::Uuid::new_v4().as_bytes(),
+            &crate::random::random_bytes::<16>(),
             Vec::new(),
             &ClientContext::default(),
             database,

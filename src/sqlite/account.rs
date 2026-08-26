@@ -2,7 +2,6 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::audit::ClientContext;
 use crate::sqlite::db::Database;
@@ -212,7 +211,7 @@ impl Account {
         }
 
         let account = Account {
-            id: Uuid::new_v4().to_string(),
+            id: crate::sqlite::id::mint().to_string(),
             profile: profile.to_string(),
             pubkey: pubkey.to_vec(),
             contact,
@@ -1102,7 +1101,8 @@ mod tests {
     /// the client with no account at all.
     #[tokio::test]
     async fn concurrent_find_or_create_for_one_key_yields_one_account() {
-        let file = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", Uuid::new_v4()));
+        let file =
+            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
         let db = Arc::new(Database::connect(&url).await.unwrap());
 

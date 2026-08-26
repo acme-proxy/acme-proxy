@@ -77,7 +77,7 @@ mod tests {
         // A unique temp path so the "database does not exist → create it" branch
         // runs (the in-memory helper never exercises it).
         let file =
-            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
 
         let database = Database::connect(&url).await.unwrap();

@@ -2,7 +2,6 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -90,7 +89,7 @@ impl AdminUser {
     ) -> Result<AdminUser, sqlx::Error> {
         let now = now_secs();
         let user = AdminUser {
-            id: Uuid::new_v4().to_string(),
+            id: crate::sqlite::id::mint().to_string(),
             username: username.trim().to_lowercase(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
@@ -479,14 +478,16 @@ mod tests {
         AdminUser::create("b", "h", &db).await.unwrap();
         let all = AdminUser::list_all(&db).await.unwrap();
         assert_eq!(all.len(), 2);
-        // Deliberately not asserting *which* comes first: two users created in
-        // the same second tie on `created_at`, and the `id ASC` tiebreak is a
-        // random UUID. The order is stable across reads, which is all a list
-        // owes its caller -- it is not insertion order, and asserting it was
-        // is how this test failed one run in two.
-        let mut names: Vec<&str> = all.iter().map(|u| u.username.as_str()).collect();
-        names.sort_unstable();
-        assert_eq!(names, ["a", "b"]);
+        // Two users created in the same second tie on `created_at`, so the
+        // `id ASC` tiebreak decides -- and since `sqlite::id::mint` is a UUID
+        // v7, whose leading 48 bits are a millisecond timestamp, that tiebreak
+        // is insertion order. It used to be a random UUID, so this assertion
+        // failed one run in two and the test sorted the names before making it.
+        //
+        // Only for rows minted since that change: nothing was backfilled, so a
+        // v4 still ties arbitrarily against a v7 in the same second, for ever.
+        let names: Vec<&str> = all.iter().map(|u| u.username.as_str()).collect();
+        assert_eq!(names, ["a", "b"], "the v7 tiebreak is insertion order");
     }
 
     #[tokio::test]

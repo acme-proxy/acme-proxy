@@ -114,7 +114,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     };
 
     let id_str = if id_str.is_empty() {
-        Uuid::new_v4().to_string()
+        Uuid::now_v7().to_string()
     } else {
         id_str
     };
@@ -302,7 +302,7 @@ mod tests {
         let res = app().oneshot(req).await.unwrap();
 
         let id = res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap();
-        assert_eq!(id.len(), Uuid::new_v4().to_string().len());
+        assert_eq!(id.len(), Uuid::now_v7().to_string().len());
     }
 
     /// Whitespace-only is as good as absent — otherwise the id echoed back is
@@ -339,7 +339,7 @@ mod tests {
         let res = app().oneshot(req).await.unwrap();
 
         let id = res.headers().get(&X_REQUEST_ID).unwrap().to_str().unwrap();
-        assert_eq!(id.len(), Uuid::new_v4().to_string().len());
+        assert_eq!(id.len(), Uuid::now_v7().to_string().len());
 
         // The boundary itself is accepted, so the ceiling is a ceiling and not
         // an off-by-one.
@@ -363,7 +363,7 @@ mod tests {
     /// whole line. Each of these is replaced by a generated id.
     #[tokio::test]
     async fn a_request_id_that_could_forge_log_structure_is_replaced() {
-        let generated = Uuid::new_v4().to_string().len();
+        let generated = Uuid::now_v7().to_string().len();
         for forged in [
             "abc outcome=success",
             "abc=def",

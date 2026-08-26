@@ -71,7 +71,7 @@ impl AdminRecoveryCode {
                 "INSERT INTO admin_recovery_codes (id, user_id, code_hash, created_at, used_at) \
                  VALUES (?, ?, ?, ?, NULL);",
             )
-            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(crate::sqlite::id::mint().to_string())
             .bind(user_id)
             .bind(hash)
             .bind(now)

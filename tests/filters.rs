@@ -885,7 +885,7 @@ async fn the_default_configuration_filters_nothing() {
 async fn a_custom_script_filter_enforces_policy_end_to_end() {
     use std::fs;
 
-    let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::now_v7()));
     fs::create_dir_all(&dir).unwrap();
     let script_path = dir.join("filter.sh");
 
@@ -940,7 +940,7 @@ exit 0
 async fn two_custom_script_filters_both_run() {
     use std::fs;
 
-    let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("acme-proxy-test-{}", uuid::Uuid::now_v7()));
     fs::create_dir_all(&dir).unwrap();
 
     let write_script = |name: &str, forbidden: &str| -> std::path::PathBuf {

@@ -551,7 +551,7 @@ impl Drop for DiskDb {
 /// nothing behind.
 pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     init_tracing();
-    let path = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::new_v4()));
+    let path = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
     let database = Arc::new(
         Database::connect(&format!("sqlite://{}", path.display()))
             .await
@@ -2317,7 +2317,7 @@ pub struct TempDir(std::path::PathBuf);
 impl TempDir {
     pub fn new(label: &str) -> Self {
         let path =
-            std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }

@@ -5,7 +5,6 @@ use sqlx::sqlite::SqliteRow;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
@@ -272,7 +271,7 @@ impl Order {
         not_after: Option<i64>,
     ) -> Order {
         Order {
-            id: Uuid::new_v4().to_string(),
+            id: crate::sqlite::id::mint().to_string(),
             profile: profile.to_string(),
             account_id: account_id.to_string(),
             status: OrderStatus::Pending,

@@ -164,7 +164,7 @@ async fn run_loop(
     mut config_rx: watch::Receiver<Arc<JobsConfig>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let runner_id = uuid::Uuid::new_v4().to_string();
+    let runner_id = uuid::Uuid::now_v7().to_string();
     let database = queue.database().clone();
     let mut registry = registry_rx.borrow_and_update().clone();
     let mut config = RunnerConfig::from(&config_rx.borrow_and_update());

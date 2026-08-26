@@ -153,7 +153,7 @@ impl Lab {
             .await
             .expect("image build task panicked");
 
-        let uuid = uuid::Uuid::new_v4();
+        let uuid = uuid::Uuid::now_v7();
         let network = format!("e2e-lab-{}", uuid);
         let status = TokioCommand::new(container_runtime())
             .args(["network", "create", &network])

@@ -2,7 +2,6 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::random::random_bytes;
 use crate::sqlite::db::Database;
@@ -63,7 +62,7 @@ impl Eab {
         database: &Database,
     ) -> Result<Eab, sqlx::Error> {
         let eab = Eab {
-            kid: Uuid::new_v4().to_string(),
+            kid: crate::sqlite::id::mint().to_string(),
             secret: random_bytes::<SECRET_LEN>().to_vec(),
             label,
             profile,
@@ -270,16 +269,16 @@ mod tests {
         );
     }
 
-    /// Every key comes back, and an empty table is empty rather than an error.
+    /// Every key comes back, in the order they were created, and an empty
+    /// table is empty rather than an error.
     ///
-    /// Deliberately **not** an assertion on insertion order: `created_at` is a
-    /// whole second, so two keys minted in one test share it, and the row that
-    /// then comes first is decided by the `kid` tie-break -- a random uuid.
-    /// That the two listings agree on an order is
-    /// `search_reads_the_table_in_the_same_order_as_list_all`'s to say; that
-    /// the order is *oldest first* needs rows a second apart, which is
-    /// `search_pages_without_overlap_and_reports_the_unpaged_total`'s
-    /// stability guarantee rather than this test's.
+    /// `created_at` is a whole second, so two keys minted in one test share it
+    /// and the `kid` tie-break decides. That used to be a random uuid, and this
+    /// test could say nothing about which came first; a `kid` is now a UUID v7
+    /// (`sqlite::id::mint`), so the tie-break is insertion order -- the same
+    /// observable `list_all_returns_every_user_and_empty_is_empty`
+    /// (`sqlite::admin_user`) asserts, and for the same reason. It holds only
+    /// for rows minted since that change, nothing having been backfilled.
     #[tokio::test]
     async fn list_all_returns_every_key_and_empty_is_empty() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -289,12 +288,8 @@ mod tests {
         let second = Eab::create(None, None, &db).await.unwrap();
         let all = Eab::list_all(&db).await.unwrap();
         assert_eq!(all.len(), 2);
-        for expected in [&first.kid, &second.kid] {
-            assert!(
-                all.iter().any(|eab| eab.kid == *expected),
-                "{expected} was not listed"
-            );
-        }
+        let kids: Vec<&str> = all.iter().map(|eab| eab.kid.as_str()).collect();
+        assert_eq!(kids, [first.kid.as_str(), second.kid.as_str()]);
     }
 
     /// The window `GET /api/eab` hands down. Every row created inside one

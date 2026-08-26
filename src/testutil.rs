@@ -114,7 +114,7 @@ impl TempDir {
     /// if one ever survives a hard crash.
     pub(crate) fn new(label: &str) -> Self {
         let path =
-            std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&path).expect("temp directory must be creatable");
         Self(path)
     }

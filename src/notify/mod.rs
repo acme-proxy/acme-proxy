@@ -548,7 +548,7 @@ impl NotifyDispatcher {
 
         let kind = event.kind();
         let payload = event.payload();
-        let delivery_id = uuid::Uuid::new_v4().to_string();
+        let delivery_id = uuid::Uuid::now_v7().to_string();
         for slot in &self.slots {
             if !slot.wants(&event) {
                 continue;

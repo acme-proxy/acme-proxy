@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_verify_of_one_nonce_succeeds_exactly_once() {
         let file =
-            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
         let database = Arc::new(Database::connect(&url).await.unwrap());
 

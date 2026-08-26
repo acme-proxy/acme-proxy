@@ -340,7 +340,7 @@ fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> crate::notify::Backe
 async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
     let (account, _) = Account::find_or_create(
         profile,
-        uuid::Uuid::new_v4().as_bytes(),
+        &crate::random::random_bytes::<16>(),
         Vec::new(),
         &ClientContext::default(),
         &database,
@@ -394,7 +394,7 @@ async fn real_chain() -> String {
 async fn ready_order(database: Arc<Database>) -> Order {
     let (account, _) = Account::find_or_create(
         "default",
-        uuid::Uuid::new_v4().as_bytes(),
+        &crate::random::random_bytes::<16>(),
         Vec::new(),
         &ClientContext::default(),
         &database,

@@ -2,7 +2,6 @@ use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
-use uuid::Uuid;
 
 use crate::random::random_token;
 use crate::sqlite::db::Database;
@@ -99,7 +98,7 @@ impl Authorization {
     /// persisted until [`Authorization::insert`] runs.
     pub(crate) fn new(order_id: &str, identifier: Identifier, expires: i64) -> Authorization {
         Authorization {
-            id: Uuid::new_v4().to_string(),
+            id: crate::sqlite::id::mint().to_string(),
             order_id: order_id.to_string(),
             identifier,
             status: AuthzStatus::Pending,
@@ -424,7 +423,7 @@ impl Challenge {
     /// value, and every key authorization derives from it.
     pub(crate) fn new(authz_id: &str, typ: &str) -> Challenge {
         Challenge {
-            id: Uuid::new_v4().to_string(),
+            id: crate::sqlite::id::mint().to_string(),
             authz_id: authz_id.to_string(),
             typ: typ.to_string(),
             token: random_token(),
