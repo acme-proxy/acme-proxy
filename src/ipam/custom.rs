@@ -283,6 +283,16 @@ mod tests {
     /// The property the subsystem rests on: a broken script is the *server*
     /// failing to decide, which the filter turns into a retryable 500. It is
     /// enforced by the type — there is no denial to return from here.
+    ///
+    /// **Every script here drains its stdin** (`cat > /dev/null`), the rule
+    /// `signer::custom` and `notify::custom` already keep. This backend always
+    /// sends the address as JSON on stdin, so a script that exits without
+    /// reading it races the parent's write: when the child wins, the write is
+    /// an `EPIPE`, `ScriptOutcome::stdin_error` records it, and `detail`
+    /// appends "(the script did not read its input: …)" — by design, and
+    /// exactly what an operator wants to be told. Draining is what lets these
+    /// stay `assert_eq!` on the script's own words rather than a `starts_with`
+    /// that would no longer be checking the property named above.
     #[tokio::test]
     async fn any_other_non_zero_exit_is_an_error_carrying_the_scripts_own_words() {
         let dir = TempDir::new("ipam-custom");
@@ -290,7 +300,7 @@ mod tests {
         let error = backend(
             &dir,
             "broken.sh",
-            "#!/bin/sh\necho 'inventory unreachable'\nexit 1\n",
+            "#!/bin/sh\ncat > /dev/null\necho 'inventory unreachable'\nexit 1\n",
         )
         .names_for(client())
         .await
@@ -300,14 +310,14 @@ mod tests {
         let error = backend(
             &dir,
             "stderr.sh",
-            "#!/bin/sh\necho 'token refused' >&2\nexit 4\n",
+            "#!/bin/sh\ncat > /dev/null\necho 'token refused' >&2\nexit 4\n",
         )
         .names_for(client())
         .await
         .unwrap_err();
         assert_eq!(error.0, "token refused");
 
-        let error = backend(&dir, "silent.sh", "#!/bin/sh\nexit 9\n")
+        let error = backend(&dir, "silent.sh", "#!/bin/sh\ncat > /dev/null\nexit 9\n")
             .names_for(client())
             .await
             .unwrap_err();
