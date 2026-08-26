@@ -75,6 +75,15 @@ pub struct Script {
     pub pose_challenge: bool,
     /// Offer `http-01` on that authorization instead of the default `dns-01`.
     pub offer_http01: bool,
+    /// Offer a challenge type carrying **no `token`**, ahead of the one the
+    /// relay answers.
+    ///
+    /// This is what Let's Encrypt began doing when `dns-persist-01` joined the
+    /// offer, and it broke every relayed order: the relay's view of a challenge
+    /// required a token, so one unfamiliar entry failed the parse of the whole
+    /// authorization. Placed *first* on purpose — the entry the relay wants is
+    /// only reached once the ones before it have been parsed.
+    pub offer_tokenless_challenge: bool,
     /// Reject the challenge instead of accepting it.
     pub fail_challenge: bool,
     /// Make the authorization's identifier a wildcard, which `http-01` cannot
@@ -114,6 +123,9 @@ struct Counters {
     bad_nonce_sent: AtomicUsize,
     /// Set once the posed challenge has been triggered.
     challenge_triggered: AtomicUsize,
+    /// Triggers of the tokenless challenge — the one the relay must never
+    /// pick, since it could not answer it.
+    tokenless_triggered: AtomicUsize,
     /// The body the `http-01` challenge fetch returned, so a test can assert on
     /// the exact key authorization served — the twin of the dns-01 tests
     /// asserting against `expected_value(...)` on their stub updater.
@@ -151,6 +163,12 @@ impl Upstream {
     /// How many times the posed challenge was triggered.
     pub fn challenge_triggered(&self) -> usize {
         self.counters.challenge_triggered.load(Ordering::SeqCst)
+    }
+
+    /// How many times the tokenless challenge was triggered, which for every
+    /// strategy must be zero.
+    pub fn tokenless_triggered(&self) -> usize {
+        self.counters.tokenless_triggered.load(Ordering::SeqCst)
     }
 
     /// The body the `http-01` challenge fetch read back from the responder,
@@ -447,21 +465,38 @@ async fn route(
             } else {
                 "example.com"
             };
+            let mut challenges = Vec::new();
+            if script.offer_tokenless_challenge {
+                // No `token` member at all, exactly as Boulder serves
+                // `dns-persist-01`: its value derives from the account URI.
+                challenges.push(json!({
+                    "type": "dns-persist-01",
+                    "url": format!("{base}/chall/persist"),
+                    "status": "pending",
+                    "accounturi": format!("{base}/acct/1"),
+                }));
+            }
+            challenges.push(json!({
+                "type": typ,
+                "url": format!("{base}/chall/1"),
+                "token": CHALLENGE_TOKEN,
+                "status": status,
+            }));
             json_response(
                 200,
                 &json!({
                     "status": status,
                     "identifier": { "type": "dns", "value": identifier },
-                    "challenges": [{
-                        "type": typ,
-                        "url": format!("{base}/chall/1"),
-                        "token": CHALLENGE_TOKEN,
-                        "status": status,
-                    }],
+                    "challenges": challenges,
                 }),
                 None,
                 counters,
             )
+        }
+        // Nothing here answers it: the point is the counter staying at zero.
+        "/chall/persist" => {
+            counters.tokenless_triggered.fetch_add(1, Ordering::SeqCst);
+            json_response(200, &json!({ "status": "processing" }), None, counters)
         }
         "/chall/1" => {
             counters.challenge_triggered.fetch_add(1, Ordering::SeqCst);

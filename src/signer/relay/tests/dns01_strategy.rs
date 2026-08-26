@@ -352,3 +352,108 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
         "nothing should be triggered when the record was never published"
     );
 }
+
+/// The regression: an upstream offering a challenge type this server does not
+/// implement, ahead of the one it does.
+///
+/// Let's Encrypt began posing `dns-persist-01` beside the three familiar types,
+/// and it carries no `token` — which is legal, since its TXT value derives from
+/// the account URI. The relay's view of a challenge required one, so serde
+/// failed the parse of the **whole** authorization and the `dns-01` challenge
+/// next to it was never reached: every relayed order sat `processing` until the
+/// client gave up. Nothing here is about `dns-persist-01` in particular; what is
+/// asserted is that a type the relay does not answer cannot break an
+/// authorization it does not participate in.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
+    let upstream = testsrv::start(Script {
+        chain: real_chain().await,
+        pose_challenge: true,
+        offer_tokenless_challenge: true,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let updater = Arc::new(StubUpdater::default());
+    let queue = test_queue(db.clone());
+    let signer = with_updater(
+        RelaySigner::from_config(
+            &config(&upstream, &dir),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
+        )
+        .unwrap(),
+        updater.clone(),
+    );
+    let _runner = TestRunner::start(queue, &signer);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            &order.id,
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+    await_status(db, &order.id, OrderStatus::Valid).await;
+
+    // The record published must still be the dns-01 one, derived from the
+    // token of the challenge the relay actually answered.
+    let thumbprint = crate::extractors::acme::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let expected = crate::challenge::dns_01::expected_value(&format!(
+        "{}.{thumbprint}",
+        testsrv::CHALLENGE_TOKEN
+    ));
+    assert_eq!(
+        updater.published.lock().unwrap().clone(),
+        vec![("_acme-challenge.example.com.".to_string(), expected)]
+    );
+    assert_eq!(upstream.challenge_triggered(), 1);
+    assert_eq!(
+        upstream.tokenless_triggered(),
+        0,
+        "the relay must never trigger a challenge it has no way to answer"
+    );
+}
+
+/// Bypass triggers *something*, and with a tokenless type on offer that has to
+/// be the one it could actually satisfy — an upstream validating out of band
+/// still decides against the challenge it was told to look at.
+#[tokio::test(flavor = "multi_thread")]
+async fn bypass_prefers_a_challenge_it_could_answer() {
+    let upstream = testsrv::start(Script {
+        chain: real_chain().await,
+        pose_challenge: true,
+        offer_tokenless_challenge: true,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let queue = test_queue(db.clone());
+    let signer = RelaySigner::from_config(
+        &config(&upstream, &dir),
+        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        &crate::signer::CarriedState::new(),
+    )
+    .unwrap();
+    let _runner = TestRunner::start(queue, &signer);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            &order.id,
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+    await_status(db, &order.id, OrderStatus::Valid).await;
+
+    assert_eq!(upstream.challenge_triggered(), 1);
+    assert_eq!(upstream.tokenless_triggered(), 0);
+}

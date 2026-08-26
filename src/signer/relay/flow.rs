@@ -45,7 +45,7 @@ use crate::sqlite::order::Order;
 use crate::sqlite::upstream_order::UpstreamOrder;
 
 use super::client::{Signer, UpstreamError};
-use super::wire::{UpstreamAuthzView, UpstreamOrderView};
+use super::wire::{UpstreamAuthzView, UpstreamChallengeView, UpstreamOrderView};
 use super::{ChallengeStrategy, Inner, RelayState, dns01, http01};
 
 /// The `jobs.kind` one relayed issuance is queued under.
@@ -623,10 +623,12 @@ async fn answer_dns01(
                 ))
             })?;
 
+        let token = require_token(challenge, &authz.identifier.value)?;
+
         // Name and digest come from the inbound validator's own helpers, so the
         // two directions cannot disagree about the convention.
         let name = crate::challenge::dns_01::record_name(&authz.identifier.value);
-        let key_authorization = format!("{}.{thumbprint}", challenge.token);
+        let key_authorization = format!("{token}.{thumbprint}");
         let value = crate::challenge::dns_01::expected_value(&key_authorization);
 
         // RFC 2136 wants an absolute name.
@@ -715,14 +717,15 @@ async fn answer_http01(
                 ))
             })?;
 
+        let token = require_token(challenge, &authz.identifier.value)?;
+
         // §8.3 serves the key authorization itself — no digest, unlike dns-01.
-        let key_authorization = format!("{}.{thumbprint}", challenge.token);
+        let key_authorization = format!("{token}.{thumbprint}");
 
         // Dropped at the end of this iteration, on any early return, and — the
         // case an explicit retract would miss — when the job runner's per-attempt
         // timeout drops this future mid-poll.
-        let _published =
-            http01::PublishedToken::publish(tokens.clone(), &challenge.token, &key_authorization);
+        let _published = http01::PublishedToken::publish(tokens.clone(), token, &key_authorization);
 
         // Returns only once the upstream's authorization is terminal, so every
         // validation fetch — including a multi-perspective CA's several — has
@@ -742,16 +745,44 @@ async fn answer_bypass(inner: &Inner, authorizations: &[String]) -> Result<(), R
             continue;
         }
 
-        let challenge = authz.challenges.first().ok_or_else(|| {
-            RelayFailure::Permanent(format!(
-                "upstream authorization for {} offers no challenges to bypass",
-                authz.identifier.value
-            ))
-        })?;
+        // Prefer one of the token-based types: an upstream that bypasses
+        // validation will accept whichever challenge is triggered, but a type
+        // this server could never satisfy is the wrong one to pick when a
+        // familiar one is sitting beside it. Falls back to the first challenge
+        // so an upstream offering only unfamiliar types still gets triggered.
+        let challenge = authz
+            .challenges
+            .iter()
+            .find(|challenge| challenge.token.is_some())
+            .or_else(|| authz.challenges.first())
+            .ok_or_else(|| {
+                RelayFailure::Permanent(format!(
+                    "upstream authorization for {} offers no challenges to bypass",
+                    authz.identifier.value
+                ))
+            })?;
 
         trigger_and_await(inner, &challenge.url, authz_url).await?;
     }
     Ok(())
+}
+
+/// The token a token-based challenge type must carry.
+///
+/// Permanent rather than retryable: a CA that offered `dns-01` or `http-01`
+/// without a token is contradicting itself, and no number of attempts changes
+/// what it says. Distinct from the challenge simply being absent from the
+/// offer, which is what the `offers no …` refusals above report.
+fn require_token<'a>(
+    challenge: &'a UpstreamChallengeView,
+    identifier: &str,
+) -> Result<&'a str, RelayFailure> {
+    challenge.token.as_deref().ok_or_else(|| {
+        RelayFailure::Permanent(format!(
+            "upstream {} challenge for {identifier} carries no token",
+            challenge.typ
+        ))
+    })
 }
 
 /// Reads one upstream authorization.

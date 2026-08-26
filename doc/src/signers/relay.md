@@ -59,6 +59,13 @@ Two consequences fall straight out of the diagram:
 
 ## Challenge strategies
 
+The strategy names the *one* challenge type the proxy answers upstream. A CA
+offers several — Let's Encrypt currently poses four — and every type the
+strategy does not name is ignored, including ones this server has no
+implementation for at all. Nothing falls back: if the upstream authorization
+does not offer the type the strategy names, the relay says so and stops, rather
+than trying a type it could not finish.
+
 ### `dns01` (RFC 2136 TSIG)
 This is the strategy that can prove a wildcard. The proxy intercepts internal
 HTTP-01 or DNS-01 challenges, but to satisfy the external CA, the proxy solves
@@ -101,6 +108,11 @@ There is no `[signer.relay.http01]` table: setting `challenge_strategy =
 Used when the upstream CA implicitly trusts the proxy's account (e.g., a
 commercial CA with pre-validated domains). The proxy simply tells the upstream
 "I have validated this", bypassing external challenges entirely.
+
+This is the one strategy that does not name a type: it triggers whatever the
+authorization offers. It prefers a challenge it could have satisfied had it
+needed to, since an upstream that validates out of band still decides against
+the challenge it was pointed at.
 
 ## Deploying the http-01 responder
 

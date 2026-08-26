@@ -320,3 +320,54 @@ async fn a_reload_carries_the_published_key_authorizations_across() {
         "nothing was live to carry: the intermediate backend served no tokens",
     );
 }
+
+/// The `dns01_strategy` regression's twin: a tokenless challenge type ahead of
+/// the `http-01` one must not stop the relay reading past it, and the key
+/// authorization served has to stay bound to the `http-01` token.
+#[tokio::test(flavor = "multi_thread")]
+async fn http01_answers_past_a_challenge_type_carrying_no_token() {
+    let tokens = Arc::new(StubTokens::default());
+    let responder = spawn_responder(tokens.clone()).await;
+    let upstream = testsrv::start(Script {
+        chain: real_chain().await,
+        pose_challenge: true,
+        offer_http01: true,
+        offer_tokenless_challenge: true,
+        http01_responder: Some(responder),
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let queue = test_queue(db.clone());
+    let signer = with_tokens(
+        RelaySigner::from_config(
+            &config(&upstream, &dir),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            &crate::signer::CarriedState::new(),
+        )
+        .unwrap(),
+        tokens.clone(),
+    );
+    let _runner = TestRunner::start(queue, &signer);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            &order.id,
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+    await_status(db, &order.id, OrderStatus::Valid).await;
+
+    let thumbprint = crate::extractors::acme::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    assert_eq!(
+        upstream.http01_body(),
+        Some(format!("{}.{thumbprint}", testsrv::CHALLENGE_TOKEN)),
+        "the body served must come from the http-01 token, not the entry beside it"
+    );
+    assert_eq!(upstream.tokenless_triggered(), 0);
+}

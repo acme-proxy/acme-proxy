@@ -46,6 +46,29 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A `relay` profile issues again against Let's Encrypt.** Let's Encrypt now
+  poses `dns-persist-01` alongside `http-01`/`dns-01`/`tls-alpn-01` in every
+  authorization, and that challenge type carries **no `token`** — its TXT value
+  derives from the account URI, which is the whole point of the method. The
+  relay's model of an upstream challenge required a token, so serde failed the
+  parse of the *entire* authorization, the `dns-01` challenge sitting next to it
+  included, and the relay never answered a challenge it was perfectly able to
+  answer. The symptom was not an error but a silence: the failure is retryable,
+  so the order sat `processing` for `jobs.max_attempts` while the only diagnosis
+  anywhere was one `job_run_retried` line reading ``missing field `token` `` —
+  and every client timed out first (certbot with a bare
+  `acme.errors.TimeoutError`). `token` is now optional on the wire, where it
+  belongs: `type` and `url` are on every challenge object, a token is on the
+  token-based types only. **No configuration changes.** Three things come with
+  it: a `dns-01` or `http-01` challenge that really does arrive without a token
+  is a *permanent* failure naming the type, not a retry, since a CA
+  contradicting itself will say the same thing next time; the `bypass` strategy
+  now triggers the first challenge it could actually satisfy rather than
+  whichever came first, an unanswerable type being the wrong pick when a
+  familiar one is beside it; and a challenge missing `type` or `url` stays a
+  loud parse failure, deliberately not skipped, so a genuinely malformed offer
+  cannot quietly become "offers no dns-01 challenge".
+
 - **The `netbox` IPAM backend accepts a NetBox v2 API token.** NetBox 4.5
   introduced a second generation of API token and made it the default for
   newly-created ones: a v2 token is the single string `nbt_<key>.<secret>`,

@@ -83,5 +83,75 @@ pub(super) struct UpstreamChallengeView {
     #[serde(rename = "type")]
     pub(super) typ: String,
     pub(super) url: String,
-    pub(super) token: String,
+    /// Absent on challenge types that do not use one.
+    ///
+    /// `type` and `url` belong to every challenge object (§7.1.4), but `token`
+    /// belongs only to the token-based types, and a CA offers types this server
+    /// does not implement: Let's Encrypt now poses `dns-persist-01` beside the
+    /// three familiar ones, and it derives its TXT value from the account URI
+    /// rather than from a token, so the member is simply absent. While this was
+    /// a required `String` that one entry failed the parse of the **whole**
+    /// authorization — the `dns-01` challenge sitting next to it included — and
+    /// the relay never answered a challenge it was perfectly able to answer.
+    ///
+    /// Deliberately optional here rather than skipping entries that will not
+    /// parse: a malformed `dns-01` challenge must stay a loud protocol error,
+    /// not become a confusing "offers no dns-01 challenge".
+    #[serde(default)]
+    pub(super) token: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape Let's Encrypt began serving when `dns-persist-01` joined the
+    /// offer: a challenge with no `token`, sitting in front of the one the
+    /// relay actually answers. While `token` was required this failed the whole
+    /// authorization, so the `dns-01` challenge below was never reached.
+    #[test]
+    fn a_tokenless_challenge_does_not_fail_the_authorization() {
+        let body = serde_json::json!({
+            "status": "pending",
+            "identifier": { "type": "dns", "value": "example.com" },
+            "challenges": [
+                {
+                    "type": "dns-persist-01",
+                    "url": "https://ca.example/chall/persist",
+                    "status": "pending",
+                    "accounturi": "https://ca.example/acct/1",
+                },
+                {
+                    "type": "dns-01",
+                    "url": "https://ca.example/chall/dns",
+                    "status": "pending",
+                    "token": "the-token",
+                },
+            ],
+        });
+
+        let view: UpstreamAuthzView = serde_json::from_value(body).expect("authorization parses");
+
+        assert_eq!(view.identifier.value, "example.com");
+        assert_eq!(view.challenges.len(), 2);
+        assert_eq!(view.challenges[0].token, None);
+        assert_eq!(
+            view.challenges[1].token.as_deref(),
+            Some("the-token"),
+            "the challenge the relay answers still carries its token"
+        );
+    }
+
+    /// The converse: `type` and `url` belong to every challenge object, so a
+    /// body missing one stays a parse failure rather than being skipped.
+    #[test]
+    fn a_challenge_missing_its_url_is_still_a_parse_failure() {
+        let body = serde_json::json!({
+            "status": "pending",
+            "identifier": { "type": "dns", "value": "example.com" },
+            "challenges": [{ "type": "dns-01", "token": "the-token" }],
+        });
+
+        serde_json::from_value::<UpstreamAuthzView>(body).unwrap_err();
+    }
 }
