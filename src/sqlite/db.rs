@@ -70,6 +70,8 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    use crate::random::random_token;
+
     #[tokio::test]
     async fn connect_creates_file_and_runs_migrations() {
         // A unique temp path so the "database does not exist → create it" branch
@@ -129,6 +131,41 @@ mod tests {
             assert!(
                 names.iter().any(|name| name == expected),
                 "missing index {expected}; have {names:?}"
+            );
+        }
+    }
+
+    /// The declared width of every column holding a [`random_token`] value must
+    /// match what that function actually produces.
+    ///
+    /// `nonces.value` was declared `VARCHAR(36)` — accurate for the UUID v4 it
+    /// held until the nonce moved to the CSPRNG, and false from that moment on.
+    /// It stayed false because SQLite gives the column TEXT affinity and
+    /// enforces no length, so nothing anywhere could notice. This is what
+    /// notices: change `TOKEN_BYTES` and the failure lands here, beside the
+    /// migration that has to be written.
+    #[tokio::test]
+    async fn declared_token_widths_match_random_token() {
+        let database = Database::connect_in_memory().await.unwrap();
+        let expected = format!("VARCHAR({})", random_token().len());
+
+        for (table, column) in [("nonces", "value"), ("challenges", "token")] {
+            let columns: Vec<(String, String)> =
+                sqlx::query_as("SELECT name, type FROM pragma_table_info(?);")
+                    .bind(table)
+                    .fetch_all(&database.pool)
+                    .await
+                    .unwrap();
+
+            let declared = columns
+                .iter()
+                .find(|(name, _)| name == column)
+                .map(|(_, declared)| declared.as_str())
+                .unwrap_or_else(|| panic!("no column {table}.{column}"));
+
+            assert_eq!(
+                declared, expected,
+                "{table}.{column} declares a width the value no longer has"
             );
         }
     }

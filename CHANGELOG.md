@@ -239,11 +239,26 @@ migrated configuration before restarting.
   §6.5.1, which requires the `Replay-Nonce` value to be base64url — a
   hyphenated UUID is not, and the same section tells clients to ignore a value
   that is not. Nothing had broken, because no real client checks the shape.
-  There is **no migration**: `nonces.value` has SQLite TEXT affinity, so the
-  `VARCHAR(36)` its frozen migration declares enforces no length. The four
-  lines that mint it now live in one place, `src/random.rs`, which
+  The four lines that mint it now live in one place, `src/random.rs`, which
   `authz::generate_token` and `eab::generate_secret` had each written out
-  separately.
+  separately. The column the nonce is stored in is corrected by the entry
+  below.
+
+- **`nonces.value` and `challenges.token` declare the width they actually
+  hold.** Both columns store the same value — 32 CSPRNG bytes base64url-encoded
+  without padding, 43 characters — and neither said so: `nonces.value` was
+  `VARCHAR(36)`, accurate while the nonce was a UUID v4 and false once it was
+  not, and `challenges.token` was a bare `VARCHAR`. Both are now `VARCHAR(43)`.
+  SQLite gives either TEXT affinity and enforces no length, so **nothing about
+  what the server stores or accepts changes**; what changes is that the frozen
+  migration set — the one artifact this project guarantees, and the one a port
+  to another dialect transcribes — stops describing data it no longer holds.
+  The upgrade rewrites the two tables in place (SQLite cannot alter a declared
+  type), preserving every row and re-creating `idx_nonces_created_at` and
+  `idx_challenges_authz`, which a `DROP TABLE` takes with it. The width is
+  derived from `TOKEN_BYTES` in `src/random.rs` and pinned to it by
+  `declared_token_widths_match_random_token`, so the next change to that
+  constant fails in the test suite rather than surviving as a wrong number.
 
 - **Two `newAccount` requests carrying the same account key no longer race into
   a `500`.** `find_or_create` read then inserted, so two renewals starting

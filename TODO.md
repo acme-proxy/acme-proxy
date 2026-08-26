@@ -12,12 +12,16 @@ keeps its corpses stops being read.
       idiom the nonces and recovery codes rest on, and `migrations/` — frozen
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
       own migration set selected by the URL scheme, never edits to the files
-      already there. One trap in transcribing them: `nonces.value` is declared
-      `VARCHAR(36)`, which SQLite ignores (TEXT affinity, no length check) and
-      Postgres enforces — and a nonce has been 43 base64url characters since
-      0.2.0, so a faithful copy would reject every one of them. It is `TEXT`
-      there, and every other `VARCHAR(n)` in the frozen set is worth re-reading
-      the same way.
+      already there. The declared widths can be transcribed literally: every
+      `VARCHAR(n)` in the set was re-read against what its column actually
+      holds, and the one that had drifted — `nonces.value`, still declared
+      `VARCHAR(36)` after the nonce became a 43-character CSPRNG token — was
+      corrected along with `challenges.token`, which holds the same value and
+      declared no width at all. That mattered only for this port: SQLite
+      ignores a width (TEXT affinity, no length check) where Postgres enforces
+      one, so a faithful copy of the old files would have rejected every nonce
+      this mints. `declared_token_widths_match_random_token` is what keeps the
+      two token columns honest as `TOKEN_BYTES` moves.
 
 - [ ] **A last-resort handler for a panicking handler** — ASVS **V16.5.4**. A
       panic in a route aborts that connection's task with no response at all;

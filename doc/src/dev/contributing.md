@@ -88,19 +88,33 @@ sqlx migrate add add_widget_table
 ```
 
 `sqlx` tracks each migration by a checksum, so editing a file that has already
-run turns every existing deployment into a startup failure. This reverses the
+run turns every existing deployment into a startup failure. One build-system
+trap while you work: `sqlx::migrate!()` embeds the set at **compile** time and
+adding or removing a file under `migrations/` does not on its own invalidate
+the build, so a test can be run against the previous set — `touch src/lib.rs`
+after changing the directory. This reverses the
 rule that held before the first release, when the server had never been deployed
 and a schema change meant editing the migration and running `rm -f sqlite.db*`.
 
-Two consequences:
+Three consequences:
 
 - **A new column is a new file**, even when it plainly belongs to an existing
   table. `ALTER TABLE ADD COLUMN` is cheap; putting it in the original `CREATE
   TABLE` is what breaks.
 - **A new `CHECK`, `UNIQUE` or foreign key needs a table rebuild**, because
   SQLite cannot add one to an existing table. Write the rebuild in the new
-  migration, and remember that an `INSERT … SELECT` silently drops any column
-  you forget to name.
+  migration, and remember the two things a rebuild loses silently: an
+  `INSERT … SELECT` drops any column you forget to name, and `DROP TABLE`
+  takes the table's indexes with it — including ones declared in an earlier
+  migration, which will not run again to put them back.
+- **A wrong declared width is a rebuild too.** SQLite gives `VARCHAR(n)` TEXT
+  affinity and enforces no length, so a width that no longer matches its data
+  costs nothing at runtime and is wrong everywhere else — in what `.schema`
+  tells an operator, and in any port to a dialect that does check.
+  `20260826120000_declared_widths_for_random_tokens.sql` is the worked
+  example. Where the width follows a constant in `src/`, pin the two together
+  with a test; that file's `VARCHAR(43)` is `TOKEN_BYTES` and nothing else, so
+  a change to the constant has to reach the schema.
 
 ## Changing a configuration key
 
