@@ -27,6 +27,7 @@
 //! network, a proxy or an overloaded CA has not decided anything, so ask again;
 //! a CA that stated a reason has, so believe it.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,13 +39,14 @@ use tracing::{error, info, warn};
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateIssuedData, NotifyEvent};
+use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::Order;
 use crate::sqlite::upstream_order::UpstreamOrder;
 
 use super::client::{Signer, UpstreamError};
 use super::wire::{UpstreamAuthzView, UpstreamOrderView};
-use super::{ChallengeStrategy, Inner, dns01, http01};
+use super::{ChallengeStrategy, Inner, RelayState, dns01, http01};
 
 /// The `jobs.kind` one relayed issuance is queued under.
 pub const RELAY_JOB_KIND: &str = "signer_relay_issue";
@@ -104,12 +106,130 @@ pub(super) fn classify(error: &UpstreamError) -> RelayFailure {
     }
 }
 
-/// One relayed issuance, as a durable job.
+/// Every relayed issuance in the process, as one durable job handler.
 ///
-/// Holds nothing but the backend's own `Arc<Inner>`: the order id travels on the
-/// job's payload, and everything else is re-read from the database each attempt,
-/// because a value captured on the first attempt would be stale on the fourth.
-pub struct RelayJob(pub(super) Arc<Inner>);
+/// **One handler over every relay profile, not one per backend**, and the
+/// distinction is the whole reason this type has a map in it.
+/// [`crate::jobs::JobRegistry::register`] refuses a second handler for one
+/// `kind`, while [`crate::signer::build_backends`] deliberately does *not*
+/// collapse two profiles whose `[signer.relay]` sections differ — a Let's
+/// Encrypt endpoint beside a commercial CA is two backends. Returning a handler
+/// from each would therefore make that supported configuration a startup error,
+/// which is exactly what `SignerBackend::relay_state` handing over *state*
+/// avoids, the way `crl_pruner` already does for two local CAs.
+///
+/// Which backend answers for a row is decided per row, from the profile the
+/// payload names — the `notify_deliver` idiom. Everything else is still re-read
+/// from the database each attempt, because a value captured on the first
+/// attempt would be stale on the fourth.
+pub struct RelayJob {
+    /// Profile name to the backend relaying for it. Built from the *current*
+    /// generation's profile list rather than from anything a backend
+    /// remembers: a backend whose configuration did not move is reused verbatim
+    /// across a reload, so a profile newly mounted onto it would be missing
+    /// from any list the backend itself kept.
+    targets: BTreeMap<String, Arc<Inner>>,
+    /// The distinct backends, each with the profiles it serves — what
+    /// [`RelayJob::recover`] fans out over. Grouped once here rather than per
+    /// sweep, since `recover` runs once per process and the grouping is by
+    /// `Arc` identity.
+    upstreams: Vec<(Arc<Inner>, Vec<String>)>,
+    /// The longest per-attempt budget among `targets`, used only for a row that
+    /// names no profile (see [`RelayJob::target_for`]). Longer than one backend
+    /// asked for is the safe direction: an attempt that would have been cut
+    /// short runs to its own conclusion instead. `None` only with no targets at
+    /// all, which falls back to `jobs.lease_seconds` like any other handler.
+    longest_lease: Option<Duration>,
+    /// The pool, which every backend shares, taken as an argument rather than
+    /// from a target so the legacy-row fallback can read an order before it has
+    /// an `Inner` — and so no target is a degenerate case rather than a panic.
+    database: Arc<Database>,
+}
+
+impl RelayJob {
+    /// One handler over every relay profile mounted in this generation.
+    ///
+    /// Registered by `cli::build_generation` only when `targets` is non-empty,
+    /// the way `CrlSweepJob` is registered only when some backend keeps a
+    /// ledger: a deployment with no relay profile has nothing to claim. An
+    /// empty set is nonetheless a working handler that claims nothing, rather
+    /// than a panic — that caller's guard is about not registering a kind
+    /// nothing will ever queue, not about safety here.
+    #[must_use]
+    pub fn new(database: Arc<Database>, targets: Vec<(String, RelayState)>) -> Self {
+        let mut upstreams: Vec<(Arc<Inner>, Vec<String>)> = Vec::new();
+        for (profile, state) in &targets {
+            match upstreams
+                .iter_mut()
+                .find(|(inner, _)| Arc::ptr_eq(inner, &state.0))
+            {
+                Some((_, served)) => served.push(profile.clone()),
+                None => upstreams.push((state.0.clone(), vec![profile.clone()])),
+            }
+        }
+
+        let longest_lease = targets.iter().map(|(_, state)| state.0.poll.timeout).max();
+
+        Self {
+            targets: targets
+                .into_iter()
+                .map(|(profile, state)| (profile, state.0))
+                .collect(),
+            upstreams,
+            longest_lease,
+            database,
+        }
+    }
+
+    /// The backend this row belongs to, from the profile its payload names.
+    ///
+    /// `None` covers two different situations the callers tell apart: a payload
+    /// with no `profile` at all — a row queued by a build before this field
+    /// existed, still in flight across the upgrade — and a profile that is no
+    /// longer mounted. [`RelayJob::resolve`] resolves the first from the order
+    /// row and refuses the second; this synchronous form exists for
+    /// [`JobHandler::lease`], which has no database and no `await`.
+    fn target_for(&self, job: &Job) -> Option<&Arc<Inner>> {
+        let profile = job.payload.get("profile").and_then(Value::as_str)?;
+        self.targets.get(profile)
+    }
+
+    /// The backend this row belongs to, reading the order when the payload does
+    /// not say.
+    async fn resolve(&self, job: &Job, order_id: &str) -> Resolved<'_> {
+        if let Some(profile) = job.payload.get("profile").and_then(Value::as_str) {
+            return match self.targets.get(profile) {
+                Some(inner) => Resolved::Backend(inner),
+                None => Resolved::Unmounted(profile.to_string()),
+            };
+        }
+
+        // No profile on the payload: a row queued before it was written. The
+        // order itself still says which endpoint it was placed against, and
+        // that is what the payload would have carried.
+        match Order::find_by_id(order_id, &self.database).await {
+            Ok(Some(order)) => match self.targets.get(&order.profile) {
+                Some(inner) => Resolved::Backend(inner),
+                None => Resolved::Unmounted(order.profile),
+            },
+            Ok(None) => Resolved::Gone,
+            Err(error) => Resolved::Unreadable(error.to_string()),
+        }
+    }
+}
+
+/// What [`RelayJob::resolve`] found. Four answers rather than an `Option`
+/// because each settles the job differently.
+enum Resolved<'a> {
+    /// The backend that relays for this row.
+    Backend(&'a Arc<Inner>),
+    /// The profile is named but not mounted here.
+    Unmounted(String),
+    /// The local order the row names has been deleted.
+    Gone,
+    /// The order could not be read at all.
+    Unreadable(String),
+}
 
 #[async_trait]
 impl JobHandler for RelayJob {
@@ -117,18 +237,46 @@ impl JobHandler for RelayJob {
         RELAY_JOB_KIND
     }
 
-    /// The per-attempt budget is `signer.relay.poll_timeout_secs`, which is what
-    /// the hand-rolled `tokio::time::timeout` around this used to be — so an
-    /// attempt is bounded exactly as before, and the queue adds retries on top
-    /// rather than changing how long one try may take.
-    fn lease(&self) -> Option<Duration> {
-        Some(self.0.poll.timeout)
+    /// The per-attempt budget is the **owning profile's**
+    /// `signer.relay.poll_timeout_secs`, which is what the hand-rolled
+    /// `tokio::time::timeout` around this used to be — so an attempt is bounded
+    /// exactly as before, and the queue adds retries on top rather than changing
+    /// how long one try may take.
+    ///
+    /// Per profile rather than one number for the handler because
+    /// [`poll_until`] has no deadline of its own: this is the only thing
+    /// bounding it, so a shared maximum would let an endpoint configured for a
+    /// minute poll for five. A row naming no profile falls back to the longest
+    /// configured budget, this being synchronous and having no order to read.
+    fn lease(&self, job: &Job) -> Option<Duration> {
+        self.target_for(job)
+            .map(|inner| inner.poll.timeout)
+            .or(self.longest_lease)
     }
 
     async fn run(&self, job: &Job) -> JobOutcome {
-        let inner = &self.0;
         let Some(order_id) = job.payload.get("order_id").and_then(Value::as_str) else {
             return JobOutcome::Failed("the job payload names no order".to_string());
+        };
+
+        let inner = match self.resolve(job, order_id).await {
+            Resolved::Backend(inner) => inner,
+            // **`Retry`, not `Failed`.** A profile can be absent for the length
+            // of one reload, and `Failed` calls `abandon`, which tells the
+            // client its order is `invalid` — a terminal answer to a
+            // configuration window. The attempt budget and the job's own
+            // deadline still retire it if the profile really is gone.
+            Resolved::Unmounted(profile) => {
+                return JobOutcome::Retry(format!(
+                    "no relay backend is mounted for profile `{profile}`"
+                ));
+            }
+            Resolved::Gone => {
+                return JobOutcome::Failed(format!("local order {order_id} no longer exists"));
+            }
+            Resolved::Unreadable(error) => {
+                return JobOutcome::Retry(format!("reading the local order failed: {error}"));
+            }
         };
 
         // Re-read every attempt: `mark_valid` may have run since the last one,
@@ -167,8 +315,15 @@ impl JobHandler for RelayJob {
     /// order stays `processing` through a transient upstream failure instead of
     /// going terminally `invalid` on the first blip.
     async fn abandon(&self, job: &Job, reason: &str) {
-        let inner = &self.0;
         let Some(order_id) = job.payload.get("order_id").and_then(Value::as_str) else {
+            return;
+        };
+
+        // Resolved again rather than carried from `run`: `abandon` is also
+        // called for a job that exhausted its attempts or passed its deadline
+        // without this process ever running one.
+        let Resolved::Backend(inner) = self.resolve(job, order_id).await else {
+            warn!(event = "upstream_relay_backend_unresolved", outcome = "failure", order_id = %order_id, reason = %reason);
             return;
         };
 
@@ -226,40 +381,50 @@ impl JobHandler for RelayJob {
     ///
     /// This is why the CSR is stored — an upstream order still at `ready` needs
     /// that exact CSR to finalize, and it is long gone from memory.
+    /// Fans out over every relay backend, since this handler serves them all
+    /// and `runner::recover_new_kinds` calls it once per kind per process.
+    ///
+    /// Each backend is asked only for the orders of the profiles **this
+    /// generation** says it serves — which is why the profile list lives on
+    /// this map rather than on the backend. A backend reused across a reload
+    /// remembers the profile set it was built for, so a profile mounted onto an
+    /// unchanged `[signer]` section would have had its in-flight orders left on
+    /// the floor until a restart.
     async fn recover(&self, queue: &JobQueue) {
-        let inner = &self.0;
-        let pending = match UpstreamOrder::list_processing(&inner.profiles, &inner.database).await {
-            Ok(pending) => pending,
-            Err(error) => {
-                // Best-effort by contract: log and let the server start.
-                error!(event = "upstream_resume_lookup_failed", outcome = "failure", error = %error);
-                return;
+        for (inner, profiles) in &self.upstreams {
+            let pending = match UpstreamOrder::list_processing(profiles, &inner.database).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    // Best-effort by contract: log and let the server start.
+                    error!(event = "upstream_resume_lookup_failed", outcome = "failure", error = %error);
+                    continue;
+                }
+            };
+
+            if pending.is_empty() {
+                continue;
             }
-        };
-
-        if pending.is_empty() {
-            return;
-        }
-        info!(
-            event = "upstream_relay_resume_started",
-            outcome = "progress",
-            count = pending.len()
-        );
-        if pending.len() >= crate::sqlite::upstream_order::MAX_PROCESSING_BATCH {
-            warn!(
-                event = "upstream_relay_batch_capped",
-                outcome = "advisory",
-                count = pending.len(),
-                "more orders are still processing than one recovery pass picks up; the \
-                 rest are taken by a later restart",
+            info!(
+                event = "upstream_relay_resume_started",
+                outcome = "progress",
+                count = pending.len()
             );
-        }
+            if pending.len() >= crate::sqlite::upstream_order::MAX_PROCESSING_BATCH {
+                warn!(
+                    event = "upstream_relay_batch_capped",
+                    outcome = "advisory",
+                    count = pending.len(),
+                    "more orders are still processing than one recovery pass picks up; the \
+                     rest are taken by a later restart",
+                );
+            }
 
-        for row in pending {
-            let deadline = order_deadline(&row.order_id, inner).await;
-            queue
-                .enqueue_or_log(relay_spec(&row.order_id, deadline))
-                .await;
+            for row in pending {
+                let context = OrderContext::read(&row.order_id, inner).await;
+                queue
+                    .enqueue_or_log(relay_spec(&row.order_id, &context))
+                    .await;
+            }
         }
     }
 }
@@ -268,27 +433,52 @@ impl JobHandler for RelayJob {
 ///
 /// The payload is the order's *identity* and nothing else: every other field the
 /// relay needs is on the `upstream_orders` row, and re-reading it each attempt
-/// is what keeps a retry from working off a stale snapshot.
-pub(super) fn relay_spec(order_id: &str, deadline: Option<i64>) -> JobSpec {
+/// is what keeps a retry from working off a stale snapshot. The profile is part
+/// of that identity — an order is placed against one endpoint and stays there —
+/// and it is what tells [`RelayJob`] which upstream this row belongs to, the
+/// same way a `notify_deliver` row names the profile it is delivering for.
+pub(super) fn relay_spec(order_id: &str, context: &OrderContext) -> JobSpec {
+    let mut payload = json!({ "order_id": order_id });
+    if let Some(profile) = &context.profile {
+        payload["profile"] = json!(profile);
+    }
     JobSpec::now(RELAY_JOB_KIND, order_id)
-        .with_payload(json!({ "order_id": order_id }))
-        .with_deadline(deadline)
+        .with_payload(payload)
+        .with_deadline(context.deadline)
 }
 
-/// The local order's own `expires`, as the job's deadline.
+/// What the queue needs from the local order a relay was asked for: how long it
+/// may be retried, and which endpoint it was placed against.
 ///
-/// Past that point the order is refused on read, so a certificate obtained
-/// upstream could never be collected by the client that asked for it: retrying
-/// beyond it is not merely wasteful, it cannot produce the outcome. A lookup
-/// failure yields `None` — no deadline is a worse bound than the right one, but
-/// a better one than refusing to queue the work at all.
-pub(super) async fn order_deadline(order_id: &str, inner: &Inner) -> Option<i64> {
-    match Order::find_by_id(order_id, &inner.database).await {
-        Ok(Some(order)) => Some(order.expires),
-        Ok(None) => None,
-        Err(error) => {
-            warn!(event = "upstream_relay_deadline_lookup_failed", outcome = "failure", order_id = %order_id, error = %error);
-            None
+/// Both come from one read, on a path that has just made an HTTPS round trip.
+/// A lookup failure yields neither, which is deliberate on both counts: no
+/// deadline is a worse bound than the right one but a better one than refusing
+/// to queue the work at all, and a payload naming no profile still resolves —
+/// [`RelayJob::resolve`] reads the order itself, which is the same fallback a
+/// row queued before this field existed takes.
+#[derive(Default)]
+pub(super) struct OrderContext {
+    /// `orders.expires`. Past that point the order is refused on read, so a
+    /// certificate obtained upstream could never be collected by the client
+    /// that asked for it: retrying beyond it is not merely wasteful, it cannot
+    /// produce the outcome.
+    pub(super) deadline: Option<i64>,
+    /// `orders.profile`, which names the relay backend that owns this work.
+    pub(super) profile: Option<String>,
+}
+
+impl OrderContext {
+    pub(super) async fn read(order_id: &str, inner: &Inner) -> Self {
+        match Order::find_by_id(order_id, &inner.database).await {
+            Ok(Some(order)) => Self {
+                deadline: Some(order.expires),
+                profile: Some(order.profile),
+            },
+            Ok(None) => Self::default(),
+            Err(error) => {
+                warn!(event = "upstream_relay_order_context_lookup_failed", outcome = "failure", order_id = %order_id, error = %error);
+                Self::default()
+            }
         }
     }
 }
@@ -878,11 +1068,29 @@ mod tests {
 
     #[test]
     fn a_relay_job_spec_carries_the_order_id_as_both_identity_and_payload() {
-        let spec = relay_spec("ord-1", Some(1_234));
+        let spec = relay_spec(
+            "ord-1",
+            &OrderContext {
+                deadline: Some(1_234),
+                profile: Some("le".to_string()),
+            },
+        );
         assert_eq!(spec.kind, RELAY_JOB_KIND);
         // The key, so two finalize requests for one order queue one job.
         assert_eq!(spec.key, "ord-1");
-        assert_eq!(spec.payload, json!({"order_id": "ord-1"}));
+        // The profile beside it is what tells the shared handler which upstream
+        // this row belongs to.
+        assert_eq!(spec.payload, json!({"order_id": "ord-1", "profile": "le"}));
         assert_eq!(spec.deadline, Some(1_234));
+    }
+
+    /// An order that could not be read names no endpoint, and the payload then
+    /// carries no `profile` member at all rather than a null one — which is
+    /// what `RelayJob::resolve` distinguishes to take the order-row fallback.
+    #[test]
+    fn a_spec_for_an_unreadable_order_names_neither_profile_nor_deadline() {
+        let spec = relay_spec("ord-1", &OrderContext::default());
+        assert_eq!(spec.payload, json!({"order_id": "ord-1"}));
+        assert_eq!(spec.deadline, None);
     }
 }

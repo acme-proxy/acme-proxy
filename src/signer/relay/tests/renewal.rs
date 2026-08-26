@@ -35,7 +35,6 @@ async fn renewal_info_uses_the_upstream_window() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -71,7 +70,6 @@ async fn no_upstream_renewal_info_means_no_opinion() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -97,7 +95,6 @@ async fn a_certificate_without_an_aki_yields_no_opinion() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -126,7 +123,6 @@ async fn an_unparsable_window_is_an_error() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )

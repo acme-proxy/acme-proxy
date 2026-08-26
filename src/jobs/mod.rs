@@ -148,12 +148,19 @@ pub trait JobHandler: Send + Sync {
     /// Must be safe to run again from scratch: see the module documentation.
     async fn run(&self, job: &Job) -> JobOutcome;
 
-    /// How long one attempt may take, and therefore how long the lease is held.
+    /// How long one attempt at *this row* may take, and therefore how long the
+    /// lease is held.
     ///
     /// `None` takes `jobs.lease_seconds`. The runner enforces it with a timeout
     /// and writes a lease slightly longer, so the in-process deadline always
     /// fires before another runner could steal the row.
-    fn lease(&self) -> Option<Duration> {
+    ///
+    /// Takes the job because a handler may serve several configurations of one
+    /// subsystem — `signer::relay::flow::RelayJob` is one handler over every
+    /// relay profile in the process, and `signer.relay.poll_timeout_secs` is
+    /// per profile. The runner has the claimed row in hand when it asks, so
+    /// this costs nothing; a handler with one budget ignores the argument.
+    fn lease(&self, _job: &Job) -> Option<Duration> {
         None
     }
 

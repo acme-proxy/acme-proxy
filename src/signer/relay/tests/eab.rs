@@ -14,7 +14,6 @@ async fn a_startup_needing_eab_points_at_the_register_command() {
     let dir = TempDir::new("upstream");
     let error = startup_error(RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -53,7 +52,6 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
 
     RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -91,7 +89,6 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     };
     let error = startup_error(RelaySigner::from_config(
         &kid_only,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -110,7 +107,6 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     };
     let error = startup_error(RelaySigner::from_config(
         &secret_only,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -137,7 +133,6 @@ async fn a_config_credential_with_bad_base64_is_a_startup_error() {
     };
     let error = startup_error(RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -169,7 +164,6 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
     };
     let error = startup_error(RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -206,7 +200,6 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
 
     RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -220,7 +213,6 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     // secret is unused, and nothing fails.
     RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -311,7 +303,6 @@ async fn after_registering_startup_needs_no_credential() {
 
     RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),

@@ -167,6 +167,31 @@ poll_interval_ms = 2000
 poll_timeout_secs = 300
 ```
 
+### Several relaying profiles
+
+`[signer]` is a per-profile section, so one server can relay to several
+upstreams at once — a Let's Encrypt endpoint beside a commercial CA, or one
+internal CA per environment. Each profile gets its own `[signer.relay]`, and
+they must not share an `account_key_path`: two backends over one upstream
+account key would overwrite each other's registration, and startup refuses it
+by name.
+
+```toml
+[profiles.public.signer]
+backend = "relay"
+relay.directory_url = "https://acme-v02.api.letsencrypt.org/directory"
+relay.account_key_path = "public_account.key"
+
+[profiles.partner.signer]
+backend = "relay"
+relay.directory_url = "https://acme.commercial-ca.example/directory"
+relay.account_key_path = "partner_account.key"
+```
+
+Two profiles whose `[signer]` sections are byte-for-byte identical share one
+backend and one upstream account; anything that differs makes them independent.
+See [Profiles](../core/profiles.md) for what else a profile separates.
+
 ### Reference
 
 **`directory_url`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL`*

@@ -31,6 +31,23 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two profiles on the `relay` signer backend start.** A configuration
+  mounting two relaying endpoints against *different* upstreams — a Let's
+  Encrypt profile beside a commercial CA, or two internal ones — refused to
+  start: `two job handlers registered for kind signer_relay_issue`. Each
+  backend returned a job handler of its own, and the job registry allows
+  one handler per kind, so the second registration was a fatal error; two
+  profiles sharing an *identical* `[signer]` section were unaffected, since
+  those share one backend. There is now one relay handler for the process,
+  dispatching each queued issuance to the backend that owns the profile the
+  order was placed against — the shape the CRL prune, the order sweep and
+  notification delivery already had. Recovery after a restart also now covers
+  every relay backend, and picks up orders on a profile mounted by a `SIGHUP`
+  onto an unchanged `[signer]` section, which it previously left until a
+  restart. No configuration change is needed.
+
 ## [0.3.0] — 2026-08-26
 
 ### Breaking

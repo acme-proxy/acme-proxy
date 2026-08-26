@@ -2075,10 +2075,12 @@ mod tests {
     /// both from **one** handler.
     ///
     /// The trap this exists for: `JobRegistry::register` refuses two handlers
-    /// for one `kind`, so returning the sweep from `SignerBackend::jobs()` —
-    /// where every other background handler comes from — would have made a
-    /// two-CA deployment a startup error. Nothing in a single-profile test can
-    /// see that.
+    /// for one `kind`, so returning the sweep from the backend itself would
+    /// have made a two-CA deployment a startup error. Nothing in a
+    /// single-profile test can see that — which is not hypothetical: the relay
+    /// backend *did* return its own handler, and two relaying profiles against
+    /// different upstreams could not start until it stopped
+    /// (`signer::relay::tests::multi_profile`).
     #[tokio::test]
     async fn one_sweep_handler_serves_every_ca_in_the_process() {
         use crate::jobs::{JobHandler, JobRegistry};

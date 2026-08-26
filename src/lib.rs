@@ -154,7 +154,6 @@
 //!             ProfileParts {
 //!                 signer: signer::from_config(
 //!                     &sections.signer,
-//!                     vec![profile.name.clone()],
 //!                     &signer::SignerParts {
 //!                         database: database.clone(),
 //!                         notifiers: notifiers.clone().into(),
@@ -205,11 +204,13 @@
 //!     );
 //!
 //!     // One runner drains the queue for the process. Every handler comes from
-//!     // a subsystem that has background work — `SignerBackend::jobs`,
-//!     // notification delivery, and the periodic table sweeps — and the runner
-//!     // calls `recover` on each before it claims anything, which is how work a
-//!     // previous run left in flight is picked back up, and how each sweep's
-//!     // single row gets queued.
+//!     // a subsystem that has background work — relayed issuance, notification
+//!     // delivery, the periodic table sweeps — and the runner calls `recover`
+//!     // on each before it claims anything, which is how work a previous run
+//!     // left in flight is picked back up, and how each sweep's single row gets
+//!     // queued. **One handler per kind, never per backend**: a handler covers
+//!     // every profile or backend of its kind and picks the right one per row,
+//!     // since `register` refuses a second handler for a kind it already has.
 //!     let mut registry = jobs::JobRegistry::new();
 //!     registry.register(Arc::new(notify::NotifyJob::new(notifiers)))?;
 //!     registry.register(Arc::new(jobs::SweepJob::nonces(

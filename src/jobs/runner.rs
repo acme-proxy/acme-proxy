@@ -384,7 +384,7 @@ async fn drain_ready(
 
         let queue = queue.clone();
         let runner_id = runner_id.to_string();
-        let budget = handler.lease().unwrap_or(config.lease);
+        let budget = handler.lease(&job).unwrap_or(config.lease);
         let retry = (config.retry_base, config.retry_max);
         tokio::spawn(async move {
             run_one(job, handler, &queue, &runner_id, budget, retry).await;
@@ -735,7 +735,7 @@ mod tests {
             self.kind
         }
 
-        fn lease(&self) -> Option<Duration> {
+        fn lease(&self, _job: &Job) -> Option<Duration> {
             self.budget
         }
 

@@ -7,11 +7,11 @@ use super::JobHandler;
 
 /// The handlers one runner drains for.
 ///
-/// Assembled at startup from every subsystem that has background work — today
-/// `SignerBackend::jobs` and the retention sweep — and thereafter read-only.
-/// The runner claims **only** the kinds registered here, which is what lets an
-/// older binary meet a row a newer one wrote and leave it alone rather than
-/// failing to dispatch it.
+/// Assembled at startup from every subsystem that has background work — relayed
+/// issuance, notification delivery, the CRL prune and the table sweeps — and
+/// thereafter read-only. The runner claims **only** the kinds registered here,
+/// which is what lets an older binary meet a row a newer one wrote and leave it
+/// alone rather than failing to dispatch it.
 #[derive(Default)]
 pub struct JobRegistry {
     handlers: BTreeMap<&'static str, Arc<dyn JobHandler>>,
@@ -28,9 +28,14 @@ impl JobRegistry {
     /// A duplicate `kind` is a startup error rather than a silent replacement:
     /// two handlers on one kind would each claim about half the rows, so half
     /// the work would run through the wrong code with no symptom but the
-    /// outcome. Deduplication *by handler* is the caller's job — two profiles
-    /// sharing one signer backend hand over the same `Arc`, and the second
-    /// registration is exactly this error.
+    /// outcome.
+    ///
+    /// This is why **no subsystem registers a handler per instance**: one
+    /// handler covers every profile or backend of its kind and picks the right
+    /// one per row, from what the row itself names. `SignerBackend` therefore
+    /// hands over *state* (`crl_pruner`, `relay_state`) and never a handler —
+    /// it returned one per backend until two relaying profiles against
+    /// different upstreams met exactly this error at startup.
     pub fn register(&mut self, handler: Arc<dyn JobHandler>) -> anyhow::Result<()> {
         let kind = handler.kind();
         if self.handlers.contains_key(kind) {

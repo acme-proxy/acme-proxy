@@ -62,7 +62,6 @@ async fn bypass_triggers_the_offered_challenge() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -105,7 +104,6 @@ async fn bypass_triggers_a_challenge_of_any_type() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -141,7 +139,6 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -178,7 +175,6 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -239,7 +235,6 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -283,7 +278,6 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -330,7 +324,6 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
     let signer = with_updater(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )

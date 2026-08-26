@@ -13,6 +13,7 @@
 //! - [`lifecycle`] — startup, provisioning, `issue`/relay/settle, revoke, recovery
 //! - [`eab`] — the upstream credential, both ways of supplying it
 //! - [`dns01_strategy`] / [`http01_strategy`] — the two answering strategies
+//! - [`multi_profile`] — several relay profiles, and the one handler over them
 //! - [`renewal`] — RFC 9773 windows, and the `UpstreamError` mapping
 //!
 //! Since the relay became a [`crate::jobs`] handler, `issue` **enqueues** rather
@@ -25,6 +26,7 @@ mod dns01_strategy;
 mod eab;
 mod http01_strategy;
 mod lifecycle;
+mod multi_profile;
 mod renewal;
 
 /// The job configuration the tests run under: everything fast, retries off.
@@ -81,15 +83,20 @@ impl TestRunner {
         Self::start_with(queue, signer, test_jobs_config())
     }
 
+    /// The profile every fixture here places its orders under, and therefore
+    /// the one the handler has to be told this signer relays for.
+    const DEFAULT_PROFILES: &'static [&'static str] = &["default"];
+
     /// The runner, plus the [`NotifyJob`] that actually delivers what `settle`
     /// queues. Only the notification test needs it: everywhere else the relay's
     /// dispatcher has no backends, so the rows are never written.
     fn start_notifying(
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
+        profiles: &[&str],
         notifiers: crate::notify::Notifiers,
     ) -> Self {
-        Self::start_inner(queue, signer, test_jobs_config(), Some(notifiers))
+        Self::start_inner(queue, signer, profiles, test_jobs_config(), Some(notifiers))
     }
 
     fn start_with(
@@ -97,19 +104,20 @@ impl TestRunner {
         signer: &RelaySigner,
         config: crate::config::JobsConfig,
     ) -> Self {
-        Self::start_inner(queue, signer, config, None)
+        Self::start_inner(queue, signer, Self::DEFAULT_PROFILES, config, None)
     }
 
     fn start_inner(
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
+        profiles: &[&str],
         config: crate::config::JobsConfig,
         notifiers: Option<crate::notify::Notifiers>,
     ) -> Self {
         let mut registry = crate::jobs::JobRegistry::new();
-        for handler in signer.jobs() {
-            registry.register(handler).unwrap();
-        }
+        registry
+            .register(Arc::new(relay_handler(signer, profiles)))
+            .unwrap();
         if let Some(notifiers) = notifiers {
             registry
                 .register(Arc::new(crate::notify::NotifyJob::new(notifiers)))
@@ -195,6 +203,86 @@ fn relay_parts(
         egress: crate::testutil::egress_with(test_resolver()),
         jobs,
     }
+}
+
+/// A `TokenStore` that records what it was asked to publish *and* answers
+/// lookups, so one type both drives the real responder route and carries
+/// the assertions.
+#[derive(Default)]
+struct StubTokens {
+    published: std::sync::Mutex<Vec<(String, String)>>,
+    retracted: std::sync::Mutex<Vec<String>>,
+    live: std::sync::Mutex<HashMap<String, String>>,
+}
+
+impl StubTokens {
+    /// The tokens this store was asked to publish, as `(token, key auth)`.
+    ///
+    /// Which store saw a publish is how [`multi_profile`] tells two relay
+    /// backends apart: a row routed to the wrong one leaves this empty.
+    fn published(&self) -> Vec<(String, String)> {
+        self.published.lock().unwrap().clone()
+    }
+}
+
+impl http01::TokenStore for StubTokens {
+    fn publish(&self, token: &str, key_authorization: &str) {
+        self.published
+            .lock()
+            .unwrap()
+            .push((token.to_string(), key_authorization.to_string()));
+        self.live
+            .lock()
+            .unwrap()
+            .insert(token.to_string(), key_authorization.to_string());
+    }
+    fn retract(&self, token: &str) {
+        self.retracted.lock().unwrap().push(token.to_string());
+        self.live.lock().unwrap().remove(token);
+    }
+    fn lookup(&self, token: &str) -> Option<String> {
+        self.live.lock().unwrap().get(token).cloned()
+    }
+}
+
+/// The twin of `with_updater`, for the `http01` strategy.
+///
+/// Shared by [`http01_strategy`] and [`multi_profile`] — hoisted here when the
+/// second consumer arrived, this file being where the fixtures every section
+/// needs live.
+fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
+    let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
+    RelaySigner(Arc::new(Inner {
+        strategy: ChallengeStrategy::Http01(tokens),
+        ..inner
+    }))
+}
+
+/// One signer as the process-wide handler holds it: mounted under the profiles
+/// this fixture places its orders on.
+///
+/// The handler is no longer the backend's own — it dispatches per row from the
+/// profile the payload names — so every fixture has to say which profiles the
+/// signer under test answers for, exactly as `cli::build_generation` does from
+/// the live profile list.
+fn relay_handler(signer: &RelaySigner, profiles: &[&str]) -> flow::RelayJob {
+    // The pool comes off the backend here where `cli::build_generation` hands
+    // over the process's own: every relay shares it, so the two are the same
+    // handle either way.
+    flow::RelayJob::new(
+        signer.0.database.clone(),
+        profiles
+            .iter()
+            .map(|profile| {
+                (
+                    (*profile).to_string(),
+                    signer
+                        .relay_state()
+                        .expect("a relay backend always has state to hand over"),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// Records every event it receives, so a test can assert `settle()`

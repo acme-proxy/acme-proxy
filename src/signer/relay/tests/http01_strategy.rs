@@ -1,45 +1,6 @@
 use super::*;
 use crate::sqlite::status::OrderStatus;
 
-/// A `TokenStore` that records what it was asked to publish *and* answers
-/// lookups, so one type both drives the real responder route and carries
-/// the assertions.
-#[derive(Default)]
-struct StubTokens {
-    published: std::sync::Mutex<Vec<(String, String)>>,
-    retracted: std::sync::Mutex<Vec<String>>,
-    live: std::sync::Mutex<HashMap<String, String>>,
-}
-
-impl http01::TokenStore for StubTokens {
-    fn publish(&self, token: &str, key_authorization: &str) {
-        self.published
-            .lock()
-            .unwrap()
-            .push((token.to_string(), key_authorization.to_string()));
-        self.live
-            .lock()
-            .unwrap()
-            .insert(token.to_string(), key_authorization.to_string());
-    }
-    fn retract(&self, token: &str) {
-        self.retracted.lock().unwrap().push(token.to_string());
-        self.live.lock().unwrap().remove(token);
-    }
-    fn lookup(&self, token: &str) -> Option<String> {
-        self.live.lock().unwrap().get(token).cloned()
-    }
-}
-
-/// The twin of [`with_updater`], for the `http01` strategy.
-fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
-    let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
-    RelaySigner(Arc::new(Inner {
-        strategy: ChallengeStrategy::Http01(tokens),
-        ..inner
-    }))
-}
-
 /// Serves `tokens` from the **production** handler on an ephemeral loopback
 /// port, so the scripted upstream fetches what a deployment would.
 ///
@@ -81,7 +42,6 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -149,7 +109,6 @@ async fn http01_retracts_after_a_rejected_challenge() {
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -197,7 +156,6 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -247,7 +205,6 @@ async fn http01_refuses_a_wildcard_authorization() {
     let signer = with_tokens(
         RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
             &crate::signer::CarriedState::new(),
         )
@@ -292,7 +249,6 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
 
     let error = startup_error(RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -326,7 +282,7 @@ async fn a_reload_carries_the_published_key_authorizations_across() {
         test_queue(database().await),
     );
     let build = |cfg: &RelayConfig, carried: &crate::signer::CarriedState| {
-        RelaySigner::from_config(cfg, vec!["default".to_string()], &parts, carried).unwrap()
+        RelaySigner::from_config(cfg, &parts, carried).unwrap()
     };
 
     let running = build(&cfg, &crate::signer::CarriedState::new());

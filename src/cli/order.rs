@@ -211,7 +211,6 @@ pub async fn run_order_command(
             let metrics = Arc::new(crate::metrics::Metrics::new(database.clone()));
             let signer = signer::from_config(
                 &profile.sections.signer,
-                vec![profile.name.clone()],
                 &signer::SignerParts {
                     database: database.clone(),
                     notifiers: std::collections::HashMap::new().into(),
@@ -407,7 +406,6 @@ mod tests {
             .expect("the default dns configuration must build a resolver");
         let signer: Arc<dyn SignerBackend> = signer::from_config(
             &profile.sections.signer,
-            vec![profile.name.clone()],
             &crate::testutil::signer_parts(database.clone(), resolver),
             &signer::CarriedState::new(),
         )

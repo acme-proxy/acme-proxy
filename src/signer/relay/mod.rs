@@ -42,7 +42,7 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::config::RelayConfig;
-use crate::jobs::{JobHandler, JobQueue};
+use crate::jobs::JobQueue;
 use crate::signer::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
@@ -63,7 +63,7 @@ use client::{AccountKey, AcmeClient, Signer};
 use account::provision;
 pub use account::{register_upstream_account, stored_kid};
 pub(crate) use eab::decode_secret;
-use flow::{RelayJob, order_deadline, relay_spec};
+use flow::{OrderContext, relay_spec};
 use wire::{RenewalInfoView, UpstreamOrderView, parse_rfc3339, upstream_to_signer_error};
 
 /// How this proxy satisfies the *upstream's* domain-control requirement.
@@ -130,12 +130,8 @@ struct Inner {
     database: Arc<Database>,
     strategy: ChallengeStrategy,
     poll: PollConfig,
-    /// The profiles this backend answers for — several endpoints may share one
-    /// upstream configuration, and [`RelayJob::recover`] must pick up their
-    /// in-flight orders and **only** theirs.
-    profiles: Vec<String>,
-    /// The whole `profile name -> dispatcher` map, not just the entries in
-    /// `profiles` above: a cheap clone either way, and it sidesteps keeping a
+    /// The whole `profile name -> dispatcher` map, not merely the profiles this
+    /// backend relays for: a cheap clone either way, and it sidesteps keeping a
     /// second, filtered copy in sync. `settle()` looks up the right one by
     /// `Order.profile` once an issuance resolves — the only place this backend
     /// has no `AppState`/`Profile` to reach a notifier through at all.
@@ -168,6 +164,16 @@ struct Inner {
 
 pub struct RelaySigner(Arc<Inner>);
 
+/// One relay backend, as the process-wide [`flow::RelayJob`] holds it.
+///
+/// Opaque on purpose: the handler lives in [`flow`] and reaches `Inner`
+/// directly, so nothing outside this module needs a single accessor. It exists
+/// only so [`crate::signer::SignerBackend::relay_state`] has a type to name —
+/// the `crl_pruner` shape, with a concrete type instead of a trait object
+/// because the one consumer is this backend's own handler rather than a third
+/// party that must be kept ignorant of what a [`RelaySigner`] is.
+pub struct RelayState(Arc<Inner>);
+
 /// The `Location` sidecar next to the account key: `foo.key` → `foo.kid`.
 ///
 /// Same convention as `local_ca`'s ledger sidecar next to its CRL. Holding the
@@ -182,7 +188,6 @@ impl RelaySigner {
     /// unreachable upstream does not stop the server from booting.
     pub fn from_config(
         cfg: &RelayConfig,
-        profiles: Vec<String>,
         parts: &crate::signer::SignerParts,
         carried: &crate::signer::CarriedState,
     ) -> anyhow::Result<Self> {
@@ -296,7 +301,6 @@ impl RelaySigner {
             database: parts.database.clone(),
             strategy,
             poll,
-            profiles,
             notifiers: parts.notifiers.clone(),
             metrics: parts.metrics.clone(),
             jobs: parts.jobs.clone(),
@@ -372,27 +376,29 @@ impl SignerBackend for RelaySigner {
 
         // The order's own `expires` bounds how long this may be retried: past
         // it the order is refused on read, so a certificate obtained upstream
-        // could never be collected. One extra primary-key read on a path that
-        // has just made an HTTPS round trip, and worth it because the bound then
-        // survives a restart rather than being recomputed from nothing.
-        let deadline = order_deadline(order_id, &inner).await;
+        // could never be collected. Its `profile` comes back from the same read
+        // and names the backend that owns the work, this one handling `issue`
+        // but the shared handler having several to choose between. One extra
+        // primary-key read on a path that has just made an HTTPS round trip, and
+        // worth it because both then survive a restart rather than being
+        // recomputed from nothing.
+        let context = OrderContext::read(order_id, &inner).await;
         inner
             .jobs
-            .enqueue(relay_spec(order_id, deadline))
+            .enqueue(relay_spec(order_id, &context))
             .await
             .map_err(|error| SignerError::Internal(format!("queueing the relay: {error}")))?;
 
         Ok(IssueOutcome::Processing)
     }
 
-    /// The relay's one job kind.
+    /// This backend, as the shared [`flow::RelayJob`] sees it.
     ///
-    /// A getter on the trait for the same reason `crl_der` and `http01_tokens`
-    /// are: whether a backend has background work is the backend's own business,
-    /// and the alternative is threading a registry through `build_backends` for
-    /// the two implementations that have nothing to register.
-    fn jobs(&self) -> Vec<Arc<dyn JobHandler>> {
-        vec![Arc::new(RelayJob(self.0.clone()))]
+    /// State rather than a handler, for the reason `crl_pruner` is: the
+    /// registry refuses two handlers for one `kind`, and two relay profiles
+    /// pointed at different upstreams are two backends.
+    fn relay_state(&self) -> Option<RelayState> {
+        Some(RelayState(self.0.clone()))
     }
 
     #[tracing::instrument(name = "relay_revoke", skip_all)]

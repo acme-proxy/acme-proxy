@@ -764,31 +764,37 @@ pub(crate) fn build_generation(
             }),
     };
 
-    // Every subsystem with background work, in one registry. Deduplicated by
-    // `Arc` identity: two profiles can share one signer backend, and its handler
-    // must be registered once — the registry refuses a second handler for one
-    // kind outright, since two would each claim about half the rows. The
-    // identity is kept as a `usize` rather than the pointer itself, so this
-    // function's caller stays `Send`; it is spawned.
+    // Every subsystem with background work, in one registry. **Nothing here
+    // registers a handler per backend**: the registry refuses a second handler
+    // for one kind outright, since two would each claim about half the rows, and
+    // two profiles over different `[signer]` sections are two backends that
+    // `build_backends` deliberately does not collapse. So each backend hands
+    // over *state* and one handler is built over all of it.
     let mut job_registry = crate::jobs::JobRegistry::new();
+    // The CRL ledgers are collected once per distinct backend, since two
+    // profiles sharing one CA share one ledger and pruning it twice a day would
+    // be pointless work. The identity is kept as a `usize` rather than the
+    // pointer itself, so this function's caller stays `Send`; it is spawned.
     let mut registered: Vec<usize> = Vec::new();
     let mut pruners: Vec<Arc<dyn crate::signer::CrlPruner>> = Vec::new();
+    // The relay backends are collected per *profile*, because that is the key a
+    // job row is dispatched on — and because taking the profile list from the
+    // backend would take a stale one: a backend whose configuration did not
+    // move is reused verbatim across a reload, so a profile newly mounted onto
+    // it is not in any list it remembers.
+    let mut relays: Vec<(String, crate::signer::relay::RelayState)> = Vec::new();
     for profile in &profiles {
+        relays.extend(
+            profile
+                .signer
+                .relay_state()
+                .map(|state| (profile.name.clone(), state)),
+        );
         let identity = Arc::as_ptr(&profile.signer).cast::<()>() as usize;
         if registered.contains(&identity) {
             continue;
         }
         registered.push(identity);
-        for handler in profile.signer.jobs() {
-            job_registry.register(handler).inspect_err(|error| {
-                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
-            })?;
-        }
-        // Collected rather than registered, and that is the whole reason
-        // `crl_pruner` is not simply another entry in `jobs()`: the registry
-        // refuses two handlers for one kind, so two profiles over *different*
-        // local CAs — which the dedup above deliberately does not collapse —
-        // would be a startup error. One handler over every ledger instead.
         pruners.extend(profile.signer.crl_pruner());
     }
     // The periodic CRL prune, over whichever CAs keep a ledger of their own.
@@ -803,10 +809,23 @@ pub(crate) fn build_generation(
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
     }
-    // Notification delivery. **Not** deduplicated by `Arc` identity like the
-    // signer handlers above: there is one handler for every profile, holding the
-    // whole `profile name -> dispatcher` map, and a job row names its own
-    // profile. Registered unconditionally — a profile with no `[notify]`
+    // Relayed issuance, over every relay profile at once. Registered only when
+    // some profile relays, for `CrlSweepJob`'s reason: a deployment with none
+    // has no row of this kind to claim.
+    if !relays.is_empty() {
+        job_registry
+            .register(Arc::new(crate::signer::relay::flow::RelayJob::new(
+                database.clone(),
+                relays,
+            )))
+            .inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
+    }
+    // Notification delivery. The same shape as the two above and the reason it
+    // is: one handler for every profile, holding the whole
+    // `profile name -> dispatcher` map, with a job row naming its own profile.
+    // Registered unconditionally — a profile with no `[notify]`
     // backends queues nothing, so the handler simply never claims a row, and
     // making the registration conditional would mean a row queued before a
     // configuration change had nobody to run it.
@@ -2267,6 +2286,54 @@ mod tests {
             config
         }
 
+        /// Two profiles, each relaying to an upstream of its own.
+        ///
+        /// The two `[signer]` sections must genuinely differ — different
+        /// `directory_url` *and* `account_key_path` — or `build_backends`
+        /// collapses them to one shared backend and the case under test never
+        /// arises. `signer_paths` would refuse a shared account key outright.
+        fn two_relay_profiles(
+            dir: impl AsRef<std::path::Path>,
+            first: &crate::signer::relay::testsrv::Upstream,
+            second: &crate::signer::relay::testsrv::Upstream,
+        ) -> Config {
+            let dir = dir.as_ref();
+            let _lock = crate::config::ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let body = format!(
+                r#"
+                [server]
+                bind_address = "127.0.0.1:0"
+                base_url = "http://localhost:3000"
+
+                [profiles.first]
+                signer.backend = "relay"
+                signer.relay.directory_url = "{first_url}"
+                signer.relay.account_key_path = "{dir}/first.key"
+
+                [profiles.second]
+                signer.backend = "relay"
+                signer.relay.directory_url = "{second_url}"
+                signer.relay.account_key_path = "{dir}/second.key"
+                "#,
+                first_url = first.directory_url(),
+                second_url = second.directory_url(),
+                dir = dir.display(),
+            );
+            std::fs::write(dir.join("config.toml"), body).unwrap();
+            // SAFETY: the lock above makes this the only thread touching the
+            // environment, and the variable is removed before returning.
+            unsafe {
+                std::env::set_var("ACME_PROXY_CONFIG", dir.join("config").to_str().unwrap());
+            }
+            let config = Config::load().unwrap();
+            unsafe {
+                std::env::remove_var("ACME_PROXY_CONFIG");
+            }
+            config
+        }
+
         fn temp_dir() -> crate::testutil::TempDir {
             crate::testutil::TempDir::new("serve")
         }
@@ -2628,6 +2695,43 @@ mod tests {
             let mut response = String::new();
             stream.read_to_string(&mut response).await.unwrap();
             response
+        }
+
+        /// Two profiles relaying to **different** upstreams start.
+        ///
+        /// The whole shape of the reported bug: each profile's `[signer]`
+        /// section differs, so `build_backends` keeps them apart, so there are
+        /// two relay backends — and asking each for its own job handler made
+        /// `JobRegistry::register` refuse the second for kind
+        /// `signer_relay_issue`, taking the process down before the socket was
+        /// ever served. This is the end-to-end form of
+        /// `signer::relay::tests::multi_profile`, and the only test here that
+        /// exercises `build_generation` assembling the registry from more than
+        /// one relay.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn two_profiles_relaying_to_different_upstreams_start() {
+            use crate::signer::relay::testsrv;
+
+            let first = testsrv::start(testsrv::Script::default()).await;
+            let second = testsrv::start(testsrv::Script::default()).await;
+            let dir = temp_dir();
+            let config = two_relay_profiles(&dir, &first, &second);
+
+            let (addr, shutdown, handle) = boot(config).await;
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+
+            shutdown.send(()).unwrap();
+            handle
+                .await
+                .unwrap()
+                .expect("two relay profiles must not refuse to start");
         }
 
         /// A configuration mounting nothing fails before the socket is ever

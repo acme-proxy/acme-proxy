@@ -275,27 +275,31 @@ pub trait SignerBackend: Send + Sync {
         Ok(None)
     }
 
-    /// The background work this backend needs a durable queue for.
+    /// This backend's in-flight issuances, as the process-wide relay handler
+    /// sees them, if it resolves issuance asynchronously at all.
     ///
-    /// Only a backend that resolves issuance asynchronously has anything to
-    /// register: its work outlives the request that started it and must survive
-    /// the process. A synchronous backend like [`local_ca::LocalCa`] never has a
-    /// half-finished issuance at all, so the default is an empty list.
+    /// Only a backend whose work outlives the request that started it has
+    /// anything to hand over; a synchronous backend like [`local_ca::LocalCa`]
+    /// never has a half-finished issuance, so the default is `None`.
     ///
-    /// A getter on the trait for the same reason
-    /// [`crl_der`](SignerBackend::crl_der) and
-    /// [`http01_tokens`](SignerBackend::http01_tokens) are: whether a backend has
-    /// something to publish, or to run later, is the backend's own business, and
-    /// the alternative is threading a registry through `build_backends` for the
-    /// two implementations that have nothing to put in it.
+    /// **State, not a [`JobHandler`](crate::jobs::JobHandler)** — the same
+    /// distinction, and for the same reason, as
+    /// [`crl_pruner`](SignerBackend::crl_pruner) above. This method replaced a
+    /// `jobs()` returning one handler per backend, which made two profiles
+    /// relaying to *different* upstreams — two backends, since
+    /// [`build_backends`] deliberately does not collapse them — a startup
+    /// error, `JobRegistry::register` refusing the second handler for
+    /// `signer_relay_issue`. `cli::build_generation` now builds one
+    /// [`relay::flow::RelayJob`] over every relay profile in the process, which
+    /// picks the backend per row from the profile the row names.
     ///
-    /// This replaced a `resume` hook that took no arguments and returned
-    /// nothing, which each asynchronous backend implemented by re-spawning its
-    /// own tasks at startup. Recovery is now one case of a queue rather than a
-    /// mechanism of its own — see [`crate::jobs::JobHandler::recover`], which is
-    /// where that logic went.
-    fn jobs(&self) -> Vec<Arc<dyn crate::jobs::JobHandler>> {
-        Vec::new()
+    /// There is deliberately no general "here are my job handlers" hook left on
+    /// this trait: every one it could return has this problem, and a subsystem
+    /// that wants a queue registers one handler covering every backend of its
+    /// kind. Recovery is a case of that queue rather than a mechanism of its own
+    /// — see [`crate::jobs::JobHandler::recover`].
+    fn relay_state(&self) -> Option<relay::RelayState> {
+        None
     }
 
     /// The `http-01` token store this backend answers the *upstream's* own
@@ -316,15 +320,18 @@ pub trait SignerBackend: Send + Sync {
     /// This backend's revocation ledger, if it keeps one that grows and can be
     /// swept (RFC 5280 §3.3).
     ///
-    /// A getter rather than an entry in [`jobs`](SignerBackend::jobs), and the
-    /// distinction is not cosmetic: [`crate::jobs::JobRegistry::register`]
-    /// refuses two handlers for one `kind`, and two profiles with *different*
-    /// `[signer.local_ca]` sections are two distinct backends — so a handler
-    /// returned from `jobs()` would make a supported configuration a startup
-    /// error. Handing over the *state* instead lets `cli::build_generation`
-    /// build one handler over every CA in the process, the shape
+    /// A getter handing over *state* rather than a
+    /// [`JobHandler`](crate::jobs::JobHandler), and the distinction is not
+    /// cosmetic: [`crate::jobs::JobRegistry::register`] refuses two handlers for
+    /// one `kind`, and two profiles with *different* `[signer.local_ca]`
+    /// sections are two distinct backends — so a handler returned from here
+    /// would make a supported configuration a startup error. Handing over the
+    /// state instead lets `cli::build_generation` build one handler over every
+    /// CA in the process, the shape
     /// [`http01_tokens`](SignerBackend::http01_tokens) already has for the same
-    /// reason.
+    /// reason. [`relay_state`](SignerBackend::relay_state) below is the second
+    /// method of this shape, and the trait deliberately has no third form: a
+    /// backend never returns a handler of its own.
     ///
     /// Only [`local_ca::LocalCa`] overrides it, and only when it has files to
     /// persist to. The delegating backends have no ledger of their own — the
@@ -336,9 +343,10 @@ pub trait SignerBackend: Send + Sync {
     /// What this backend hands to whichever backend replaces it on a
     /// configuration reload, keyed by the resource each piece describes.
     ///
-    /// A getter on the trait for the third time and for the same reason as
-    /// [`crl_der`](SignerBackend::crl_der) and [`jobs`](SignerBackend::jobs):
-    /// what a backend owns is the backend's own business. The default is empty,
+    /// A getter on the trait for the fourth time and for the same reason as
+    /// [`crl_der`](SignerBackend::crl_der) and
+    /// [`relay_state`](SignerBackend::relay_state): what a backend owns is the
+    /// backend's own business. The default is empty,
     /// which is the honest answer for [`custom::CustomScriptSigner`] — it holds
     /// nothing between calls — and for any state that already has a durable
     /// home.
@@ -428,7 +436,6 @@ pub struct SignerParts {
 /// refused with the running generation untouched).
 pub fn from_config(
     cfg: &SignerConfig,
-    profiles: Vec<String>,
     parts: &SignerParts,
     carried: &CarriedState,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
@@ -442,7 +449,7 @@ pub fn from_config(
         // answered `processing` and returned, so no `Auditor` — and no request
         // — is in scope when the certificate actually arrives.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay, profiles, parts, carried,
+            &cfg.relay, parts, carried,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -572,16 +579,6 @@ pub fn build_backends(
         }
     }
 
-    // Which profiles each distinct configuration serves — what a relaying
-    // backend needs to know to recover the right orders and only those.
-    let mut served: HashMap<String, Vec<String>> = HashMap::new();
-    for profile in profiles {
-        served
-            .entry(key_of(&profile.sections.signer))
-            .or_default()
-            .push(profile.name.clone());
-    }
-
     // Gathered once, before anything is built: a backend rebuilt over the same
     // files must find the live ledger, and the outgoing instances are still
     // holding it at this point — which is the whole reason the handover is a
@@ -606,13 +603,8 @@ pub fn build_backends(
                 backend
             }
             (None, None) => {
-                let backend = from_config(
-                    &profile.sections.signer,
-                    served.get(&key).cloned().unwrap_or_default(),
-                    parts,
-                    &carried,
-                )
-                .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                let backend = from_config(&profile.sections.signer, parts, &carried)
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 set.by_identity.insert(key, backend.clone());
                 backend
             }
@@ -1009,13 +1001,8 @@ mod tests {
     #[tokio::test]
     async fn builds_the_local_ca_backend_and_it_can_issue() {
         let (cfg, _dir) = config("local_ca");
-        let signer = from_config(
-            &cfg,
-            vec!["default".to_string()],
-            &parts().await,
-            &CarriedState::new(),
-        )
-        .expect("local_ca is a known backend");
+        let signer = from_config(&cfg, &parts().await, &CarriedState::new())
+            .expect("local_ca is a known backend");
 
         // Reached through the trait object, which is how handlers see it.
         let key_pair = rcgen::KeyPair::generate().unwrap();
@@ -1061,13 +1048,8 @@ mod tests {
             },
             ..SignerConfig::default()
         };
-        let signer = from_config(
-            &cfg,
-            vec!["default".to_string()],
-            &parts().await,
-            &CarriedState::new(),
-        )
-        .expect("custom is a known backend");
+        let signer = from_config(&cfg, &parts().await, &CarriedState::new())
+            .expect("custom is a known backend");
 
         let outcome = signer
             .issue(
@@ -1087,13 +1069,7 @@ mod tests {
     #[tokio::test]
     async fn the_local_ca_backend_has_no_renewal_info_opinion() {
         let (cfg, _dir) = config("local_ca");
-        let signer = from_config(
-            &cfg,
-            vec!["default".to_string()],
-            &parts().await,
-            &CarriedState::new(),
-        )
-        .unwrap();
+        let signer = from_config(&cfg, &parts().await, &CarriedState::new()).unwrap();
         assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
     }
 
@@ -1103,12 +1079,7 @@ mod tests {
     async fn an_unknown_backend_is_a_startup_error() {
         let (cfg, _dir) = config("hashicorp-vault");
         // `Arc<dyn SignerBackend>` is not `Debug`, so `unwrap_err` is unavailable.
-        let error = match from_config(
-            &cfg,
-            vec!["default".to_string()],
-            &parts().await,
-            &CarriedState::new(),
-        ) {
+        let error = match from_config(&cfg, &parts().await, &CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend must not build"),
         };
@@ -1126,12 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn the_old_acme_proxy_backend_name_is_refused_by_its_new_one() {
         let (cfg, _dir) = config("acme_proxy");
-        let error = match from_config(
-            &cfg,
-            vec!["default".to_string()],
-            &parts().await,
-            &CarriedState::new(),
-        ) {
+        let error = match from_config(&cfg, &parts().await, &CarriedState::new()) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("the old backend name must not build"),
         };

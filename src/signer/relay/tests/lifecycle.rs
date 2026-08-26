@@ -15,7 +15,6 @@ async fn an_empty_directory_url_is_a_startup_error() {
     let db = database().await;
     let error = startup_error(RelaySigner::from_config(
         &RelayConfig::default(),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
         &crate::signer::CarriedState::new(),
     ));
@@ -38,7 +37,6 @@ async fn an_unknown_challenge_strategy_is_a_startup_error() {
 
     let error = startup_error(RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
         &crate::signer::CarriedState::new(),
     ));
@@ -66,7 +64,6 @@ async fn the_dns01_strategy_needs_its_provider_configured() {
 
     let error = startup_error(RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
         &crate::signer::CarriedState::new(),
     ));
@@ -85,7 +82,6 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
 
     let _first = RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
         &crate::signer::CarriedState::new(),
     )
@@ -99,7 +95,6 @@ async fn the_account_is_provisioned_once_and_then_reloaded() {
 
     let _second = RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
         &crate::signer::CarriedState::new(),
     )
@@ -124,7 +119,6 @@ async fn the_generated_account_key_is_owner_only() {
     let cfg = config(&upstream, &dir);
     let _signer = RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(
             database().await,
             no_notifiers(),
@@ -156,7 +150,6 @@ async fn issue_relays_the_order_and_finalizes_it_locally() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -212,7 +205,6 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -240,7 +232,6 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -301,14 +292,13 @@ async fn settle_notifies_only_the_owning_profile() {
 
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["a".to_string(), "b".to_string()],
         &relay_parts(db.clone(), notifiers.clone(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
     .unwrap();
     // The same runner drains both kinds: `settle` queues the notification, and
     // the `NotifyJob` registered here is what actually delivers it.
-    let _runner = TestRunner::start_notifying(queue, &signer, notifiers);
+    let _runner = TestRunner::start_notifying(queue, &signer, &["a", "b"], notifiers);
     let order = ready_order_for("a", db.clone()).await;
 
     let outcome = signer
@@ -368,7 +358,6 @@ async fn issue_polls_until_the_upstream_settles() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -408,7 +397,6 @@ async fn a_failing_upstream_marks_the_order_invalid() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -468,7 +456,6 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
     let queue = test_queue_with(db.clone(), &jobs);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -515,7 +502,6 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
     let queue = test_queue_with(db.clone(), &jobs);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -564,7 +550,6 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &cfg,
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -616,7 +601,6 @@ async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -671,7 +655,6 @@ async fn an_upstream_bad_csr_surfaces_as_bad_csr() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -700,7 +683,6 @@ async fn revoke_reaches_the_upstream() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -727,7 +709,6 @@ async fn revoke_treats_already_revoked_as_success() {
     let queue = test_queue(database().await);
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(database().await, no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -777,7 +758,6 @@ async fn recovery_finishes_a_relay_left_behind_by_a_restart() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -818,7 +798,6 @@ async fn recovery_ignores_rows_that_already_settled() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -842,7 +821,6 @@ async fn recovery_with_no_pending_rows_does_nothing() {
     let queue = test_queue(db.clone());
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
         &crate::signer::CarriedState::new(),
     )
@@ -863,21 +841,34 @@ async fn recovery_with_no_pending_rows_does_nothing() {
 mod handler {
     use super::*;
     use crate::jobs::{JobHandler, JobOutcome};
-    use crate::signer::relay::flow::{RELAY_JOB_KIND, RelayJob};
+    use crate::signer::relay::flow::{OrderContext, RELAY_JOB_KIND, RelayJob};
     use crate::sqlite::job::Job;
 
     /// Builds a backend with no runner: these tests call the handler by hand.
-    async fn handler_for(db: Arc<Database>) -> (RelayJob, Upstream, TempDir) {
+    ///
+    /// The signer comes back beside the handler because `RelayJob` no longer
+    /// *is* one backend — it routes to whichever one the row's profile names —
+    /// so the tests that reach past the handler into `Inner` take it from here.
+    async fn handler_for(db: Arc<Database>) -> (RelayJob, RelaySigner, Upstream, TempDir) {
         let upstream = testsrv::start(Script::default()).await;
         let dir = TempDir::new("upstream");
         let signer = RelaySigner::from_config(
             &config(&upstream, &dir),
-            vec!["default".to_string()],
             &relay_parts(db.clone(), no_notifiers(), test_queue(db)),
             &crate::signer::CarriedState::new(),
         )
         .unwrap();
-        (RelayJob(signer.0.clone()), upstream, dir)
+        let handler = relay_handler(&signer, &["default"]);
+        (handler, signer, upstream, dir)
+    }
+
+    /// A claimed row for the one profile [`handler_for`] mounts.
+    ///
+    /// The `profile` member is what tells the handler which backend owns the
+    /// row; a payload without it takes the order-row fallback instead, which
+    /// `multi_profile` covers on its own.
+    fn job_on_default(order_id: &str) -> Job {
+        job(serde_json::json!({"order_id": order_id, "profile": "default"}))
     }
 
     /// A claimed row, as the runner would hand one over.
@@ -905,7 +896,7 @@ mod handler {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_payload_naming_no_order_is_permanent() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db).await;
+        let (handler, _signer, _upstream, _dir) = handler_for(db).await;
 
         match handler.run(&job(serde_json::json!({}))).await {
             JobOutcome::Failed(reason) => assert!(reason.contains("names no order")),
@@ -922,12 +913,9 @@ mod handler {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_missing_mapping_row_is_permanent() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db).await;
+        let (handler, _signer, _upstream, _dir) = handler_for(db).await;
 
-        match handler
-            .run(&job(serde_json::json!({"order_id": "ord-gone"})))
-            .await
-        {
+        match handler.run(&job_on_default("ord-gone")).await {
             JobOutcome::Failed(reason) => assert!(reason.contains("no upstream order")),
             other => panic!("expected a permanent failure, got {other:?}"),
         }
@@ -938,49 +926,44 @@ mod handler {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_database_failure_is_retryable_everywhere_it_is_met() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+        let (handler, signer, _upstream, _dir) = handler_for(db.clone()).await;
         db.pool.close().await;
 
-        match handler
-            .run(&job(serde_json::json!({"order_id": "ord-1"})))
-            .await
-        {
+        match handler.run(&job_on_default("ord-1")).await {
             JobOutcome::Retry(reason) => assert!(reason.contains("reading the upstream order")),
             other => panic!("expected a retry, got {other:?}"),
         }
 
         // `settle`'s own lookup, on the same closed pool.
-        match settle(&handler.0, "ord-1", "irrelevant".to_string()).await {
+        match settle(&signer.0, "ord-1", "irrelevant".to_string()).await {
             JobOutcome::Retry(reason) => assert!(reason.contains("reading the local order")),
             other => panic!("expected a retry, got {other:?}"),
         }
 
         // And `abandon` degrades to a log rather than panicking.
-        handler
-            .abandon(&job(serde_json::json!({"order_id": "ord-1"})), "why")
-            .await;
+        handler.abandon(&job_on_default("ord-1"), "why").await;
     }
 
-    /// The deadline is best-effort: an order that cannot be read yields no
-    /// bound rather than refusing to queue the work at all.
+    /// The order context is best-effort on **both** members: an order that
+    /// cannot be read yields no bound and no profile, rather than refusing to
+    /// queue the work at all. A payload with no profile then takes the
+    /// order-row fallback, which is the same read, later.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_deadline_for_an_unreadable_order_is_absent_rather_than_fatal() {
+    async fn an_unreadable_order_yields_no_context_rather_than_a_refusal() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+        let (_handler, signer, _upstream, _dir) = handler_for(db.clone()).await;
 
+        let missing = OrderContext::read("ord-missing", &signer.0).await;
         assert!(
-            crate::signer::relay::flow::order_deadline("ord-missing", &handler.0)
-                .await
-                .is_none(),
-            "a missing order has no expiry to bound anything by"
+            missing.deadline.is_none() && missing.profile.is_none(),
+            "a missing order names neither an expiry nor an endpoint"
         );
 
         db.pool.close().await;
+        let unreadable = OrderContext::read("ord-1", &signer.0).await;
         assert!(
-            crate::signer::relay::flow::order_deadline("ord-1", &handler.0)
-                .await
-                .is_none(),
-            "an unreadable order degrades to no deadline, not to a refusal"
+            unreadable.deadline.is_none() && unreadable.profile.is_none(),
+            "an unreadable order degrades to no context, not to a refusal"
         );
     }
 
@@ -990,18 +973,19 @@ mod handler {
     #[tokio::test(flavor = "multi_thread")]
     async fn abandoning_a_vanished_order_is_survived() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db).await;
-        handler
-            .abandon(&job(serde_json::json!({"order_id": "ord-gone"})), "why")
-            .await;
+        let (handler, _signer, _upstream, _dir) = handler_for(db).await;
+        handler.abandon(&job_on_default("ord-gone"), "why").await;
     }
 
     /// With no mapping row the audit trail cannot name who asked, and says so:
     /// `Actor::system` and an empty client context, rather than inventing one.
+    ///
+    /// Its payload deliberately names no profile, so this doubles as `abandon`
+    /// taking the order-row fallback all the way to a written audit row.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_retirement_with_no_mapping_row_is_attributed_to_the_system() {
         let db = database().await;
-        let (handler, _upstream, _dir) = handler_for(db.clone()).await;
+        let (handler, _signer, _upstream, _dir) = handler_for(db.clone()).await;
         let order = ready_order(db.clone()).await;
 
         handler
@@ -1063,7 +1047,6 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
     let db = database().await;
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
-        vec!["default".to_string()],
         &relay_parts(db.clone(), no_notifiers(), test_queue(db.clone())),
         &crate::signer::CarriedState::new(),
     )
