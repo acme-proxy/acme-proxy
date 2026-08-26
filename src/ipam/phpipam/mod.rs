@@ -144,7 +144,7 @@ impl PhpIpamBackend {
                 !cfg.custom_field.trim().is_empty(),
                 "ipam.phpipam.custom_field is empty while ipam.phpipam.sources names \
                  `custom_field` or `device`; name the phpIPAM column holding the permitted \
-                 names (default `custom_acme_allowed_names`)"
+                 names (default `custom_acme_domains`)"
             );
         }
 
@@ -308,7 +308,7 @@ mod tests {
 
     fn with_column(value: Value) -> PhpIpamAddress {
         PhpIpamAddress {
-            fields: json!({ "custom_acme_allowed_names": value })
+            fields: json!({ "custom_acme_domains": value })
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -494,10 +494,7 @@ mod tests {
     async fn the_device_is_consulted_when_the_address_carries_no_names() {
         let api = StubPhpIpam::default()
             .with_address("10.0.0.5", vec![on_device(3)])
-            .with_device(
-                3,
-                json!({ "custom_acme_allowed_names": "machine.example.com" }),
-            );
+            .with_device(3, json!({ "custom_acme_domains": "machine.example.com" }));
 
         assert_permits(
             &names(&backend(&config(), api)).await,
@@ -516,10 +513,7 @@ mod tests {
                         ..with_column(json!("own.example.com"))
                     }],
                 )
-                .with_device(
-                    3,
-                    json!({ "custom_acme_allowed_names": "machine.example.com" }),
-                ),
+                .with_device(3, json!({ "custom_acme_domains": "machine.example.com" })),
         );
         let backend = PhpIpamBackend::with_api(&config(), api.clone()).unwrap();
 
@@ -540,10 +534,7 @@ mod tests {
                     ..PhpIpamAddress::default()
                 }],
             )
-            .with_device(
-                3,
-                json!({ "custom_acme_allowed_names": "machine.example.com" }),
-            );
+            .with_device(3, json!({ "custom_acme_domains": "machine.example.com" }));
 
         let names = names(&backend(&config(), api)).await;
         assert_permits(&names, "host.example.com");
@@ -555,10 +546,7 @@ mod tests {
         let api = Arc::new(
             StubPhpIpam::default()
                 .with_address("10.0.0.5", vec![on_device(3)])
-                .with_device(
-                    3,
-                    json!({ "custom_acme_allowed_names": "machine.example.com" }),
-                ),
+                .with_device(3, json!({ "custom_acme_domains": "machine.example.com" })),
         );
         let cfg = with_sources(&["dns_name", "custom_field"]);
         let backend = PhpIpamBackend::with_api(&cfg, api.clone()).unwrap();
@@ -661,7 +649,7 @@ mod tests {
     #[test]
     fn the_debug_impl_shows_the_policy_without_the_api() {
         let rendered = format!("{:?}", backend(&config(), StubPhpIpam::default()));
-        assert!(rendered.contains("custom_acme_allowed_names"), "{rendered}");
+        assert!(rendered.contains("custom_acme_domains"), "{rendered}");
         assert!(rendered.contains("Device"), "{rendered}");
     }
 }

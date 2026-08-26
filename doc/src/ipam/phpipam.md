@@ -37,11 +37,11 @@ in the environment.
 
 - **`hostname`** on the address — the direct analogue of NetBox's `dns_name`,
   read when `sources` names `dns_name`.
-- **A custom column** (`custom_field`, by default
-  `custom_acme_allowed_names`). phpIPAM prefixes custom columns with `custom_`,
-  so the default carries that prefix; write whatever your column is actually
-  called. Add it under **Administration → Custom fields** for *IP addresses*
-  and — for the `device` source — for *Devices*.
+- **A custom column** (`custom_field`, by default `custom_acme_domains`).
+  phpIPAM prefixes custom columns with `custom_`, so the default carries that
+  prefix; write whatever your column is actually called. Add it under
+  **Administration → Custom fields** for *IP addresses* and — for the `device`
+  source — for *Devices*.
 
 A phpIPAM custom field is a **plain text column**, so several names are written
 comma-separated:
@@ -84,7 +84,7 @@ backend = "phpipam"
 url = "https://ipam.internal.example.com"
 app_id = "acme"
 token = "your_app_code"
-custom_field = "custom_acme_allowed_names"
+custom_field = "custom_acme_domains"
 sources = ["dns_name", "custom_field", "device"]
 ```
 
@@ -106,7 +106,7 @@ a stray slash would silently retarget the API rather than fail.
 The application's app code, sent as a `token` header. A secret: prefer the
 environment variable.
 
-**`custom_field`** (`String`) — *Default: `"custom_acme_allowed_names"` | Env: `ACME_PROXY_IPAM__PHPIPAM__CUSTOM_FIELD`*
+**`custom_field`** (`String`) — *Default: `"custom_acme_domains"` | Env: `ACME_PROXY_IPAM__PHPIPAM__CUSTOM_FIELD`*
 
 Column holding the permitted names, on the address and on its device. Only read
 when `sources` names `custom_field` or `device`.

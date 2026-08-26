@@ -46,11 +46,11 @@ Two places, and either or both can be trusted:
 
 - **`dns_name`** on the IP address object — the ordinary case, one name per
   address.
-- **A custom field** (`custom_field`, by default `acme_allowed_names`) for the
-  extra names that address may request. Configure it in NetBox as a
-  multi-select or a text field on `ipam.ipaddress` and — for the `device`
-  source — on `dcim.device` and `virtualization.virtualmachine`. A single
-  string is accepted as well as a list.
+- **A custom field** (`custom_field`, by default `acme_domains`) for the extra
+  names that address may request. Configure it in NetBox as a multi-select or a
+  text field on `ipam.ipaddress` and — for the `device` source — on
+  `dcim.device` and `virtualization.virtualmachine`. A single string is accepted
+  as well as a list.
 
 With the `device` source, an address that carries no value of its own falls
 back to the field on its device or virtual machine, so names can be declared
@@ -124,7 +124,7 @@ backend = "netbox"
 [ipam.netbox]
 url = "https://netbox.internal.example.com"
 token = "your_netbox_read_only_token"
-custom_field = "acme_allowed_names"
+custom_field = "acme_domains"
 sources = ["dns_name", "custom_field", "device"]
 ```
 
@@ -148,7 +148,7 @@ a subpath works. Required when `ipam.backend` is `netbox`.
 NetBox API token, of either generation — see
 [Authenticating](#authenticating). A secret: prefer the environment variable.
 
-**`custom_field`** (`String`) — *Default: `"acme_allowed_names"` | Env: `ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD`*
+**`custom_field`** (`String`) — *Default: `"acme_domains"` | Env: `ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD`*
 
 Custom field holding the permitted names, on the address object and on its
 device or virtual machine. Only read when `sources` names `custom_field` or

@@ -31,6 +31,30 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The IPAM custom-field defaults are renamed.** `ipam.netbox.custom_field`
+  now defaults to **`acme_domains`** (was `acme_allowed_names`), and
+  `ipam.phpipam.custom_field` to **`custom_acme_domains`** (was
+  `custom_acme_allowed_names`, keeping phpIPAM's mandatory `custom_` column
+  prefix). The two moved together: they name the same thing in two inventories
+  and reading as though they did not was the whole problem. The key itself is
+  unchanged, so a deployment that spells `custom_field` out in its configuration
+  is untouched — and that is also why this one is **not** refused by name at
+  startup like a renamed key: nothing about the configuration is stale to look
+  at, only its unset value moved. A deployment relying on the default either
+  renames the field in NetBox / the column in phpIPAM, or pins the old name:
+
+  ```toml
+  [ipam.netbox]
+  custom_field = "acme_allowed_names"
+  ```
+
+  Left unmigrated, the inventory answers with the field absent, which the
+  backends read as "this address is entitled to no extra names" — the addresses
+  keep whatever their `dns_name`/`hostname` permits and lose the rest, so the
+  symptom is a refused `newOrder` rather than a startup failure.
+
 ### Added
 
 - **`--log-level <off|error|warn|info|debug|trace>`**, a third global CLI flag

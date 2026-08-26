@@ -5,7 +5,7 @@
 //! One lookup always happens: `GET /api/ipam/ip-addresses/?address=<client ip>`.
 //! What it returns permits names two ways — the address object's own `dns_name`
 //! ([`Source::DnsName`]) and a custom field on it ([`Source::CustomField`]),
-//! by default `acme_allowed_names`.
+//! by default `acme_domains`.
 //!
 //! Three more lookups are conditional on [`Source`]s that are off by default,
 //! because each widens what a client may certify:
@@ -230,7 +230,7 @@ impl NetboxBackend {
                 !cfg.custom_field.trim().is_empty(),
                 "ipam.netbox.custom_field is empty while ipam.netbox.sources names \
                  `custom_field` or `device`; name the NetBox custom field holding the \
-                 permitted names (default `acme_allowed_names`)"
+                 permitted names (default `acme_domains`)"
             );
         }
         if sources.contains(&Source::Vip) {
@@ -561,7 +561,7 @@ mod tests {
     /// An address object whose custom field lists `names`.
     fn with_field(names: Value) -> NetboxIp {
         NetboxIp {
-            custom_fields: json!({ "acme_allowed_names": names })
+            custom_fields: json!({ "acme_domains": names })
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -759,7 +759,7 @@ mod tests {
     async fn the_device_is_consulted_when_the_address_carries_no_names() {
         let api = StubNetbox::default()
             .with_address("10.0.0.5", vec![assigned()])
-            .with_object(3, json!({ "acme_allowed_names": ["machine.example.com"] }));
+            .with_object(3, json!({ "acme_domains": ["machine.example.com"] }));
 
         assert_permits(
             &names(&backend(&config(), api)).await,
@@ -778,7 +778,7 @@ mod tests {
                         ..with_field(json!(["own.example.com"]))
                     }],
                 )
-                .with_object(3, json!({ "acme_allowed_names": ["machine.example.com"] })),
+                .with_object(3, json!({ "acme_domains": ["machine.example.com"] })),
         );
         let backend = NetboxBackend::with_api(&config(), api.clone()).unwrap();
 
@@ -800,7 +800,7 @@ mod tests {
                     ..NetboxIp::default()
                 }],
             )
-            .with_object(3, json!({ "acme_allowed_names": ["machine.example.com"] }));
+            .with_object(3, json!({ "acme_domains": ["machine.example.com"] }));
 
         let names = names(&backend(&config(), api)).await;
         assert_permits(&names, "host.example.com");
@@ -812,7 +812,7 @@ mod tests {
         let api = Arc::new(
             StubNetbox::default()
                 .with_address("10.0.0.5", vec![assigned()])
-                .with_object(3, json!({ "acme_allowed_names": ["machine.example.com"] })),
+                .with_object(3, json!({ "acme_domains": ["machine.example.com"] })),
         );
         let cfg = with_sources(&["dns_name", "custom_field"]);
         let backend = NetboxBackend::with_api(&cfg, api.clone()).unwrap();
@@ -834,7 +834,7 @@ mod tests {
                     ..with_field(json!(["own.example.com"]))
                 }],
             )
-            .with_object(3, json!({ "acme_allowed_names": ["machine.example.com"] }));
+            .with_object(3, json!({ "acme_domains": ["machine.example.com"] }));
         let cfg = with_sources(&["dns_name", "device"]);
 
         let names = names(&backend(&cfg, api)).await;
@@ -1194,10 +1194,7 @@ mod tests {
             "10.0.0.5",
             vec![NetboxIp {
                 dns_name: "host.example.com".to_string(),
-                custom_fields: json!({ "acme_allowed_names": 42 })
-                    .as_object()
-                    .unwrap()
-                    .clone(),
+                custom_fields: json!({ "acme_domains": 42 }).as_object().unwrap().clone(),
                 ..NetboxIp::default()
             }],
         );
@@ -1271,7 +1268,7 @@ mod tests {
     #[test]
     fn the_debug_impl_shows_the_policy_without_the_api() {
         let rendered = format!("{:?}", backend(&config(), StubNetbox::default()));
-        assert!(rendered.contains("acme_allowed_names"), "{rendered}");
+        assert!(rendered.contains("acme_domains"), "{rendered}");
         assert!(rendered.contains("Device"), "{rendered}");
     }
 

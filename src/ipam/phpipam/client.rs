@@ -25,8 +25,8 @@
 //!
 //! Every phpIPAM answer is `{"code": 200, "success": true, "data": …}`, with
 //! `data` an array for a search and an object for a detail read. Custom columns
-//! are plain top-level members of each row (`custom_acme_allowed_names`),
-//! unlike NetBox's nested `custom_fields`.
+//! are plain top-level members of each row (`custom_acme_domains`), unlike
+//! NetBox's nested `custom_fields`.
 //!
 //! [`search`]: PhpIpamApi::search
 
@@ -312,7 +312,7 @@ mod tests {
                     "ip": "10.0.0.5",
                     "hostname": "host.example.com",
                     "deviceId": "3",
-                    "custom_acme_allowed_names": "www.example.com"
+                    "custom_acme_domains": "www.example.com"
                 }]
             })
         }
@@ -331,7 +331,7 @@ mod tests {
             assert_eq!(objects[0].hostname, "host.example.com");
             assert_eq!(objects[0].device_id, Some(3));
             assert_eq!(
-                objects[0].fields["custom_acme_allowed_names"],
+                objects[0].fields["custom_acme_domains"],
                 json!("www.example.com")
             );
 
@@ -435,15 +435,12 @@ mod tests {
             let (port, server) = serve_once(ok(json!({
                 "code": 200,
                 "data": { "id": "3", "hostname": "srv1",
-                          "custom_acme_allowed_names": "machine.example.com" }
+                          "custom_acme_domains": "machine.example.com" }
             })))
             .await;
 
             let fields = client(port).device(3).await.unwrap();
-            assert_eq!(
-                fields["custom_acme_allowed_names"],
-                json!("machine.example.com")
-            );
+            assert_eq!(fields["custom_acme_domains"], json!("machine.example.com"));
 
             let request = server.await.unwrap();
             assert!(

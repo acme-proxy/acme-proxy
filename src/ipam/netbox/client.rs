@@ -504,7 +504,7 @@ mod tests {
                     "id": 12,
                     "address": "10.0.0.5/24",
                     "dns_name": "host.example.com",
-                    "custom_fields": { "acme_allowed_names": ["www.example.com"] },
+                    "custom_fields": { "acme_domains": ["www.example.com"] },
                     "assigned_object_type": "dcim.interface",
                     "assigned_object_id": 7,
                     "assigned_object": { "id": 7, "name": "eth0", "device": { "id": 3 } }
@@ -524,7 +524,7 @@ mod tests {
             assert_eq!(objects.len(), 1);
             assert_eq!(objects[0].dns_name, "host.example.com");
             assert_eq!(
-                objects[0].custom_fields["acme_allowed_names"],
+                objects[0].custom_fields["acme_domains"],
                 json!(["www.example.com"])
             );
             assert_eq!(objects[0].assigned, Some(on_device()));
@@ -628,7 +628,7 @@ mod tests {
         async fn fetches_a_devices_custom_fields() {
             let (port, server) = serve_once(ok(json!({
                 "id": 3,
-                "custom_fields": { "acme_allowed_names": ["machine.example.com"] }
+                "custom_fields": { "acme_domains": ["machine.example.com"] }
             })))
             .await;
 
@@ -637,7 +637,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(fields["acme_allowed_names"], json!(["machine.example.com"]));
+            assert_eq!(fields["acme_domains"], json!(["machine.example.com"]));
 
             let request = server.await.unwrap();
             assert!(

@@ -103,7 +103,7 @@ impl Default for NetboxConfig {
         Self {
             url: String::new(),
             token: String::new(),
-            custom_field: "acme_allowed_names".to_string(),
+            custom_field: "acme_domains".to_string(),
             sources: default_sources(),
             // The roles NetBox itself offers for a shared address. Listing them
             // all is not a widening: nothing is queried at all unless `vip` is
@@ -161,7 +161,7 @@ impl Default for PhpIpamConfig {
             url: String::new(),
             app_id: "acme".to_string(),
             token: String::new(),
-            custom_field: "custom_acme_allowed_names".to_string(),
+            custom_field: "custom_acme_domains".to_string(),
             sources: default_sources(),
             ca_cert_path: String::new(),
             insecure_skip_verify: false,

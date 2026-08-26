@@ -1065,7 +1065,7 @@ mod netbox_stub {
                 "id": 12,
                 "address": "192.168.1.5/24",
                 "dns_name": "",
-                "custom_fields": { "acme_allowed_names": names },
+                "custom_fields": { "acme_domains": names },
             }]
         })
     }
@@ -1273,7 +1273,7 @@ fn phpipam_owns(names: &str) -> Value {
             "id": "12",
             "ip": "192.168.1.5",
             "hostname": "",
-            "custom_acme_allowed_names": names,
+            "custom_acme_domains": names,
         }]
     })
 }

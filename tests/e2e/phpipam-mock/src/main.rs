@@ -38,7 +38,7 @@ fn get_addresses() -> HashMap<String, Value> {
             "hostname": "",
             "deviceId": "0",
             // A text column, so several names would be comma-separated.
-            "custom_acme_allowed_names": "allowed.example.com",
+            "custom_acme_domains": "allowed.example.com",
         }),
     );
     map.insert(
@@ -49,7 +49,7 @@ fn get_addresses() -> HashMap<String, Value> {
             "ip": acmesh_ip,
             "hostname": "",
             "deviceId": "3",
-            "custom_acme_allowed_names": "",
+            "custom_acme_domains": "",
         }),
     );
     map
@@ -62,7 +62,7 @@ fn get_devices() -> HashMap<u32, Value> {
         json!({
             "id": "3",
             "hostname": "srv1",
-            "custom_acme_allowed_names": "machine.example.com",
+            "custom_acme_domains": "machine.example.com",
         }),
     );
     map

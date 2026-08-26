@@ -63,7 +63,7 @@ struct AssignmentResponse {
 }
 
 fn no_names() -> serde_json::Value {
-    serde_json::json!({ "acme_allowed_names": [] })
+    serde_json::json!({ "acme_domains": [] })
 }
 
 /// An address on `device`'s interface `interface`, carrying no names itself.
@@ -94,7 +94,7 @@ fn get_addresses() -> HashMap<String, IpAddress> {
             id: 12,
             address: format!("{certbot_ip}/24"),
             dns_name: String::new(),
-            custom_fields: serde_json::json!({"acme_allowed_names": ["allowed.example.com"]}),
+            custom_fields: serde_json::json!({"acme_domains": ["allowed.example.com"]}),
             role: None,
             assigned_object_type: Some("dcim.interface".to_string()),
             assigned_object: Some(
@@ -114,7 +114,7 @@ fn get_devices() -> HashMap<u32, Device> {
         3,
         Device {
             id: 3,
-            custom_fields: serde_json::json!({"acme_allowed_names": ["machine.example.com"]}),
+            custom_fields: serde_json::json!({"acme_domains": ["machine.example.com"]}),
         },
     );
     map

@@ -1011,7 +1011,7 @@ token = ""                          # ACME_PROXY_IPAM__NETBOX__TOKEN
 # it in NetBox as a multi-select or text field on ipam.ipaddress (and, for the
 # `device` source, on dcim.device / virtualization.virtualmachine). A single
 # string is accepted as well as a list.
-custom_field = "acme_allowed_names"  # ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD
+custom_field = "acme_domains"        # ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD
 # Which NetBox address roles mark a service address, for the `vip` source.
 # Read only when `vip` is in sources, so this is *which* roles rather than
 # whether to look at all. The role is re-checked on the answer as well as sent
@@ -1055,7 +1055,7 @@ token = ""                          # ACME_PROXY_IPAM__PHPIPAM__TOKEN
 # and — for the `device` source — on the device. phpIPAM prefixes custom
 # columns with `custom_`, so the default carries that prefix. It is a text
 # column, so several names are written comma-separated.
-custom_field = "custom_acme_allowed_names"  # ACME_PROXY_IPAM__PHPIPAM__CUSTOM_FIELD
+custom_field = "custom_acme_domains"  # ACME_PROXY_IPAM__PHPIPAM__CUSTOM_FIELD
 # Extra CA certificates (PEM) to trust on top of the public roots.
 # Ignored when insecure_skip_verify is on.
 ca_cert_path = ""                   # ACME_PROXY_IPAM__PHPIPAM__CA_CERT_PATH

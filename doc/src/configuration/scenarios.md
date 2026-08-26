@@ -145,7 +145,7 @@ timeout_ms = 5000
 url = "https://netbox.internal.company.com"
 # Store this in ACME_PROXY_IPAM__NETBOX__TOKEN ideally
 token = "your_netbox_read_only_token"
-custom_field = "acme_allowed_names"
+custom_field = "acme_domains"
 sources = ["dns_name", "custom_field", "device"]
 
 [profiles.default]
