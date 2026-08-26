@@ -27,6 +27,7 @@ pub mod audit;
 pub mod authz;
 pub mod db;
 pub mod eab;
+pub mod id;
 pub mod job;
 pub mod nonce;
 pub mod order;
