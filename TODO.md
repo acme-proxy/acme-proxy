@@ -12,17 +12,12 @@ keeps its corpses stops being read.
       idiom the nonces and recovery codes rest on, and `migrations/` — frozen
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
       own migration set selected by the URL scheme, never edits to the files
-      already there.
-
-- [ ] **ACME replay nonces are a UUID v4** — 122 bits, from `Uuid::new_v4()` in
-      `src/sqlite/nonce.rs`, where every other non-guessable value in the tree
-      is 256 bits out of `ring::rand::SystemRandom`. ASVS **V11.5.1** names
-      UUIDs explicitly as not meeting its bar, and the fix is
-      `authz::generate_token`'s four lines applied here. Guessing a nonce is
-      worthless without an account key to sign with it, so this is a
-      consistency defect rather than an
-      exploitable one — which is exactly why it should be cheap: `value` is a
-      `String` column with no format constraint, so nothing migrates.
+      already there. One trap in transcribing them: `nonces.value` is declared
+      `VARCHAR(36)`, which SQLite ignores (TEXT affinity, no length check) and
+      Postgres enforces — and a nonce has been 43 base64url characters since
+      0.2.0, so a faithful copy would reject every one of them. It is `TEXT`
+      there, and every other `VARCHAR(n)` in the frozen set is worth re-reading
+      the same way.
 
 - [ ] **A last-resort handler for a panicking handler** — ASVS **V16.5.4**. A
       panic in a route aborts that connection's task with no response at all;

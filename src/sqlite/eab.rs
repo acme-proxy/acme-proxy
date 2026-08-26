@@ -1,10 +1,10 @@
-use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::random::random_bytes;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
@@ -41,16 +41,6 @@ pub struct Eab {
 /// matching HS256's key size.
 const SECRET_LEN: usize = 32;
 
-/// A fresh high-entropy HMAC secret. RNG failure is unrecoverable, so this
-/// panics rather than threading an error through -- the same trade-off
-/// `authz::generate_token` makes for challenge tokens.
-fn generate_secret() -> Vec<u8> {
-    let rng = SystemRandom::new();
-    let mut bytes = vec![0u8; SECRET_LEN];
-    rng.fill(&mut bytes).expect("system RNG unavailable");
-    bytes
-}
-
 impl Eab {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(Eab {
@@ -74,7 +64,7 @@ impl Eab {
     ) -> Result<Eab, sqlx::Error> {
         let eab = Eab {
             kid: Uuid::new_v4().to_string(),
-            secret: generate_secret(),
+            secret: random_bytes::<SECRET_LEN>().to_vec(),
             label,
             profile,
             status: "active".to_string(),

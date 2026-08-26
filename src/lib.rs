@@ -263,6 +263,7 @@ pub mod middlewares;
 pub mod notify;
 pub mod pemfile;
 pub mod proxy;
+mod random;
 pub mod reload;
 pub mod script_hook;
 pub mod signer;

@@ -232,6 +232,19 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **ACME replay nonces are 256-bit CSPRNG values, not UUID v4.** Minted from
+  `ring::rand::SystemRandom` and base64url-encoded, matching every other
+  non-guessable value in the tree. Closes two things at once: ASVS **V11.5.1**
+  (122 bits, and a form the requirement names explicitly), and RFC 8555
+  §6.5.1, which requires the `Replay-Nonce` value to be base64url — a
+  hyphenated UUID is not, and the same section tells clients to ignore a value
+  that is not. Nothing had broken, because no real client checks the shape.
+  There is **no migration**: `nonces.value` has SQLite TEXT affinity, so the
+  `VARCHAR(36)` its frozen migration declares enforces no length. The four
+  lines that mint it now live in one place, `src/random.rs`, which
+  `authz::generate_token` and `eab::generate_secret` had each written out
+  separately.
+
 - **Two `newAccount` requests carrying the same account key no longer race into
   a `500`.** `find_or_create` read then inserted, so two renewals starting
   together — a first boot, or a client retrying a response it thought was slow —

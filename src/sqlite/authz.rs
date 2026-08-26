@@ -1,11 +1,10 @@
-use base64::prelude::*;
-use ring::rand::{SecureRandom, SystemRandom};
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::random::random_token;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::{Identifier, rfc3339};
@@ -67,16 +66,6 @@ pub struct Challenge {
     /// fails.
     pub error: Option<Value>,
     pub created_at: i64,
-}
-
-/// A fresh high-entropy challenge token: 32 random bytes, base64url-encoded (the
-/// shape RFC 8555 §8.1 requires). RNG failure is catastrophic and cannot be
-/// recovered from, so it panics rather than returning an unusable token.
-fn generate_token() -> String {
-    let rng = SystemRandom::new();
-    let mut bytes = [0u8; 32];
-    rng.fill(&mut bytes).expect("system RNG unavailable");
-    BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Every column of `authorizations`, in one place: each read must select the same set
@@ -438,7 +427,7 @@ impl Challenge {
             id: Uuid::new_v4().to_string(),
             authz_id: authz_id.to_string(),
             typ: typ.to_string(),
-            token: generate_token(),
+            token: random_token(),
             status: ChallengeStatus::Pending,
             validated: None,
             error: None,

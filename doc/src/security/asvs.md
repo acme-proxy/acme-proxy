@@ -72,13 +72,13 @@ reported for information.
 | V7 Session Management | 14 | 2 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
-| V11 Cryptography | 9 | 4 | 0 | 1 | 5 / 2 / 3 |
+| V11 Cryptography | 10 | 3 | 0 | 1 | 5 / 2 / 3 |
 | V12 Secure Communication | 6 | 1 | 0 | 2 | 0 / 2 / 1 |
 | V13 Configuration | 8 | 5 | 0 | 0 | 4 / 4 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 0 / 1 / 0 |
-| **Total** | **157** | **19** | **5** | **36** | **43 / 21 / 16** |
+| **Total** | **158** | **18** | **5** | **36** | **43 / 21 / 16** |
 
 The short version. At **L1 there is one gap** — V6.2.4, checking passwords
 against a common-password list — and at **L2 there are four**: V6.1.2 and
@@ -284,7 +284,7 @@ assessed under V9.
 | 6.6.3 | Rate-limit code-based out-of-band mechanisms | 2 | n/a | No out-of-band factor. TOTP guessing is bounded twice — `mfa_attempts` on the pending row and the five-minute `PENDING_MFA_TTL` |
 | 6.6.4 | Rate-limit push notifications | 3 | n/a | No push factor |
 | 6.7.1 | Certificates verifying authentication assertions protected from modification | 3 | met | Account public keys live in `accounts` under the database's file mode; a modified key is a key that no longer verifies its own account's requests |
-| 6.7.2 | Challenge nonce at least 64 bits and unique | 3 | met | A UUID v4 (122 bits), unique by primary key and single-use by `rows_affected` (`src/sqlite/nonce.rs`). See V11.5.1 for why 122 is worth revisiting |
+| 6.7.2 | Challenge nonce at least 64 bits and unique | 3 | met | 256 bits from `ring::rand::SystemRandom`, unique by primary key and single-use by `rows_affected` (`src/sqlite/nonce.rs`) |
 | 6.8.1 | Identity cannot be spoofed across identity providers | 2 | n/a | No identity provider |
 | 6.8.2 | Signatures on authentication assertions validated | 2 | n/a | No external assertions. The equivalent for ACME JWS is V9.1.1 |
 | 6.8.3 | SAML assertions processed once | 2 | n/a | No SAML |
@@ -373,7 +373,7 @@ is a reference token and is assessed under V7.
 | 11.4.2 | Passwords stored with an approved, expensive KDF | 2 | met | PBKDF2-HMAC-SHA256 at 600 000 iterations with a 128-bit per-row salt — OWASP's current recommendation for the non-Argon2 case. See [Documented deviations](#documented-deviations) for why not Argon2id |
 | 11.4.3 | Collision-resistant hashes of adequate length in signatures | 2 | met | SHA-256 for every signature and every integrity use. HMAC-SHA-1's security rests on the PRF property, not collision resistance |
 | 11.4.4 | Approved KDF with key-stretching for password-derived keys | 2 | met | Same PBKDF2 parameters; recovery codes go through the identical path |
-| 11.5.1 | Non-guessable values from a CSPRNG with ≥ 128 bits | 2 | partial | Session tokens, CSRF tokens, EAB secrets and challenge tokens are all 256 bits from `ring::rand::SystemRandom`. **ACME replay nonces are UUID v4** — 122 bits, and a form this requirement names explicitly. See [Gaps](#gaps) |
+| 11.5.1 | Non-guessable values from a CSPRNG with ≥ 128 bits | 2 | met | Session tokens, CSRF tokens, EAB secrets, challenge tokens and ACME replay nonces are all 256 bits from `ring::rand::SystemRandom`, base64url-encoded, through the one `src/random.rs`. The nonce was a UUID v4 until 0.2.0 — 122 bits, and a form this requirement names explicitly |
 | 11.5.2 | RNG works securely under heavy demand | 3 | met | `SystemRandom` draws from the OS CSPRNG; there is no userspace pool to exhaust |
 | 11.6.1 | Approved algorithms for key generation and signatures | 2 | met | `rcgen` generates ECDSA P-256 by default; the accepted account-key algorithms are the two RFC 8555 defines. Key generation can be delegated to a PKCS#11 token, where the key never leaves the device |
 | 11.6.2 | Approved key exchange with secure parameters | 3 | met | `rustls` with `with_safe_default_protocol_versions()`: TLS 1.2 and 1.3 only, and only its own vetted groups |
@@ -587,14 +587,6 @@ L2.* Every secret is named and classified by what its compromise buys, and each
 one *can* be rotated — EAB credentials without a restart, the CA key by
 re-issuing an intermediate. What no page states is how often any of them
 should be.
-
-**ACME replay nonces are UUID v4** — *V11.5.1 (L2).* 122 bits rather than 128,
-in a form the requirement names explicitly as not satisfying it. Every other
-non-guessable value in the tree is 256 bits from `ring::rand::SystemRandom`;
-the nonce is the one that is not. The practical exposure is small — guessing a
-nonce is worthless without an account key to sign with it — so this is a
-consistency defect rather than an exploitable one, and the fix is to mint it
-the way `authz::generate_token` already does.
 
 **Password change is host-only, and takes no current password** — *V6.2.2,
 V6.2.3 (L1).* There is no self-service change in the panel, so an operator

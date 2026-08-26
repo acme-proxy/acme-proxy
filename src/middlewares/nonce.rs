@@ -14,7 +14,7 @@
 //! ## Behavior
 //!
 //! The middleware:
-//! 1. Generates a new UUID nonce for each request
+//! 1. Generates a new 256-bit base64url nonce for each request
 //! 2. Saves the nonce to the database
 //! 3. Adds the nonce to the `Replay-Nonce` header in the response
 //! 4. Handles database errors gracefully by logging and omitting the header

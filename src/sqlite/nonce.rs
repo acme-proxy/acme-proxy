@@ -2,8 +2,8 @@ use std::time::{Duration, SystemTime};
 
 use sqlx::Row;
 use tracing::{debug, info};
-use uuid::Uuid;
 
+use crate::random::random_token;
 use crate::sqlite::db::Database;
 
 /// A replay nonce used for ACME protocol anti-replay protection.
@@ -11,7 +11,9 @@ use crate::sqlite::db::Database;
 /// ## ACME Protocol Compliance
 ///
 /// According to RFC 8555, nonces are used to prevent replay attacks:
-/// - Each nonce is a UUID v4 string
+/// - Each nonce is 32 random bytes from the system CSPRNG, base64url-encoded
+///   without padding — the octet-string form §6.5.1 requires, and 256 bits
+///   like every other non-guessable value in this tree
 /// - Nonces are generated for every response
 /// - Clients must include a valid nonce in their requests
 /// - Nonces are single-use and expire after a TTL period
@@ -26,7 +28,7 @@ use crate::sqlite::db::Database;
 /// ## Database Storage
 ///
 /// Nonces are stored in the `nonces` table with:
-/// - `value`: The UUID string of the nonce
+/// - `value`: The base64url nonce string
 /// - `created_at`: Unix timestamp when the nonce was created
 ///
 /// ## Lifecycle
@@ -54,8 +56,8 @@ impl Default for Nonce {
 /// sign a request with it. `Nonce::save` runs from the response middleware, so
 /// logging the value there put *every nonce this server has minted* into the
 /// log stream while it was still live and unused — a log reader could lift one
-/// straight out. Eight characters of a UUID v4 are enough to follow one request
-/// across lines and far too few to replay.
+/// straight out. Eight of the 43 base64url characters are enough to follow one
+/// request across lines and, at ~48 bits, far too few to replay.
 #[must_use]
 pub fn fingerprint(value: &str) -> &str {
     value.get(..8).unwrap_or(value)
@@ -74,7 +76,7 @@ impl Nonce {
     #[must_use]
     pub fn new() -> Self {
         Nonce {
-            value: Uuid::new_v4().to_string(),
+            value: random_token(),
             created_at: now_secs(),
         }
     }
@@ -176,6 +178,7 @@ impl Nonce {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::prelude::*;
     use std::sync::Arc;
 
     /// Matches the default `nonce.ttl_seconds` (5 minutes).
@@ -287,6 +290,28 @@ mod tests {
         // Only the fresh nonce survives, and it is still usable.
         assert_eq!(nonce_count(&database).await, 1);
         assert!(Nonce::verify(&fresh_value, &database, TTL).await.unwrap());
+    }
+
+    /// RFC 8555 §6.5.1: the `Replay-Nonce` value "MUST be an octet string
+    /// encoded according to the base64url encoding", and clients are told to
+    /// ignore one that is not. This was a hyphenated UUID v4 until 0.2.0 —
+    /// out of the alphabet, and 122 bits where every other non-guessable
+    /// value in the tree is 256.
+    #[test]
+    fn a_minted_nonce_is_base64url_over_32_bytes() {
+        let value = Nonce::new().value;
+
+        assert!(
+            value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "outside the base64url alphabet: {value}"
+        );
+        assert_eq!(
+            BASE64_URL_SAFE_NO_PAD.decode(&value).unwrap().len(),
+            32,
+            "256 bits, like every other non-guessable value here"
+        );
     }
 
     /// `Default` exists so `Nonce` composes where one is expected; it must
