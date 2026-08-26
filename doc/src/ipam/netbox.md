@@ -23,6 +23,23 @@ Up to four more are made, each gated by a source:
 
 A read-only API token is enough.
 
+## Authenticating
+
+NetBox has two generations of API token, and this backend sends whichever it is
+given: the scheme is derived from the token itself, so there is nothing to
+configure.
+
+| Token | Sent as | Where it comes from |
+| --- | --- | --- |
+| `nbt_<key>.<secret>` | `Authorization: Bearer nbt_<key>.<secret>` | v2, the default since NetBox 4.5 |
+| anything else | `Authorization: Token <token>` | the legacy v1 token, not accepted from NetBox 4.7 |
+
+The `nbt_` prefix is NetBox's own marker for a v2 token, and the whole string —
+key, dot and secret — is displayed once when the token is created, so paste it
+verbatim. A value starting `nbt_` that carries no `.` is the key half on its
+own: that is refused at startup, because NetBox would otherwise answer every
+lookup with a `403`, which looks exactly like a token that has been revoked.
+
 ## Declaring names
 
 Two places, and either or both can be trusted:
@@ -128,8 +145,8 @@ a subpath works. Required when `ipam.backend` is `netbox`.
 
 **`token`** (`String`) — *Default: `""` | Env: `ACME_PROXY_IPAM__NETBOX__TOKEN`*
 
-NetBox API token, sent as `Authorization: Token <token>`. A secret: prefer the
-environment variable.
+NetBox API token, of either generation — see
+[Authenticating](#authenticating). A secret: prefer the environment variable.
 
 **`custom_field`** (`String`) — *Default: `"acme_allowed_names"` | Env: `ACME_PROXY_IPAM__NETBOX__CUSTOM_FIELD`*
 

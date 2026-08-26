@@ -68,7 +68,10 @@ pub struct NetboxConfig {
     /// Base URL of the NetBox instance, e.g. `https://netbox.example.com`. Any
     /// path is kept, so an instance served under a subpath works.
     pub url: String,
-    /// NetBox API token, sent as `Authorization: Token <token>`.
+    /// NetBox API token. Both generations are accepted and the scheme
+    /// follows the token itself: a v2 one (`nbt_<key>.<secret>`, the
+    /// default since NetBox 4.5) is sent as `Authorization: Bearer …`,
+    /// a legacy v1 one as `Authorization: Token …`.
     pub token: String,
     /// Custom field, on the IP address or on its device/VM, holding the extra
     /// names that address may have certified.

@@ -46,6 +46,25 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **The `netbox` IPAM backend accepts a NetBox v2 API token.** NetBox 4.5
+  introduced a second generation of API token and made it the default for
+  newly-created ones: a v2 token is the single string `nbt_<key>.<secret>`,
+  shown once at creation, and authenticates over the standard bearer scheme
+  (`Authorization: Bearer …`) where the legacy v1 token used
+  `Authorization: Token …`. This backend hardcoded the v1 scheme, so on any
+  NetBox 4.5 or later a token minted the ordinary way was refused with a `403`
+  — and since `IpamError` has no denial variant by design, that surfaced as a
+  retryable `500` on every `newOrder` an `ipam` check guards, with nothing
+  naming the cause. The scheme now follows the token itself, off the `nbt_`
+  prefix NetBox mints for exactly that purpose, so **no configuration changes**
+  and both generations work (v1 stops being accepted in NetBox 4.7). Three
+  things come with it: the credential is trimmed, so a token carrying the
+  newline of the env file it was read from still builds a header; a value
+  starting `nbt_` with no `.` is the key half pasted without its secret and is
+  now a startup error rather than a permanent `403`; and a `401`/`403` from
+  NetBox names the scheme the token was sent under, which is the one thing the
+  answer itself cannot distinguish from a revoked token.
+
 - **An admin command no longer writes log records into its own output.** The
   tracing subscriber was installed for every subcommand, and `[logging]`
   defaults to `acme_proxy=info` on **stdout** — so `acme-proxy account list

@@ -13,7 +13,8 @@
 //!
 //! The transport, the body cap, the TLS policy and the error shape all live in
 //! [`ipam::http`](crate::ipam::http), which both backends share. What is here
-//! is NetBox's own paths, filters and wire shapes.
+//! is NetBox's own paths, filters, wire shapes and the two schemes its two
+//! token generations authenticate under — see [`V2_TOKEN_PREFIX`].
 
 use std::net::IpAddr;
 
@@ -31,10 +32,25 @@ use crate::ipam::http::{JsonApi, JsonApiError, tls_config};
 pub(super) const DEVICE_INTERFACE: &str = "dcim.interface";
 pub(super) const VM_INTERFACE: &str = "virtualization.vminterface";
 
+/// The fixed prefix NetBox mints onto a v2 API token.
+///
+/// NetBox 4.5 made v2 the default and authenticates it over the standard bearer
+/// scheme (`Authorization: Bearer nbt_<key>.<secret>`), where a legacy v1 token
+/// stays `Authorization: Token <token>` and stops being accepted in NetBox 4.7.
+/// The prefix exists to make a v2 credential identifiable, and NetBox shows the
+/// whole string once at creation — so the token an operator pastes already says
+/// which scheme it wants, and no configuration key has to.
+const V2_TOKEN_PREFIX: &str = "nbt_";
+
 /// A NetBox REST client.
 #[derive(Debug)]
 pub struct NetboxClient {
     api: JsonApi,
+    /// The scheme the configured token asked for, kept only to name it on a
+    /// refusal: NetBox rejects a credential sent under the wrong scheme exactly
+    /// as it rejects one that expired, so the answer alone cannot tell an
+    /// operator which of the two happened.
+    scheme: &'static str,
 }
 
 impl NetboxClient {
@@ -51,11 +67,27 @@ impl NetboxClient {
              token, preferably through ACME_PROXY_IPAM__NETBOX__TOKEN"
         );
 
+        // Trimmed rather than taken verbatim: the emptiness check above already
+        // trims, and a token arriving from an env file with its newline still
+        // attached is not a header value hyper will build.
+        let credential = cfg.token.trim();
+        let v2 = credential.starts_with(V2_TOKEN_PREFIX);
+        anyhow::ensure!(
+            !v2 || credential[V2_TOKEN_PREFIX.len()..].contains('.'),
+            "ipam.netbox.token starts `{V2_TOKEN_PREFIX}` but carries no secret; a NetBox v2 \
+             token is the single string `{V2_TOKEN_PREFIX}<key>.<secret>` shown once when the \
+             token is created, not the key half on its own"
+        );
+        let scheme = if v2 { "Bearer" } else { "Token" };
+
         Ok(Self {
             api: JsonApi::new(
                 &cfg.url,
                 "ipam.netbox.url",
-                vec![(hyper::header::AUTHORIZATION, format!("Token {}", cfg.token))],
+                vec![(
+                    hyper::header::AUTHORIZATION,
+                    format!("{scheme} {credential}"),
+                )],
                 tls_config(
                     &cfg.ca_cert_path,
                     cfg.insecure_skip_verify,
@@ -63,6 +95,7 @@ impl NetboxClient {
                 )?,
                 outbound,
             )?,
+            scheme,
         })
     }
 
@@ -72,7 +105,15 @@ impl NetboxClient {
         self.api
             .get(path_and_query)
             .await
-            .map_err(|error: JsonApiError| error.message)
+            .map_err(|error: JsonApiError| match error.status {
+                Some(hyper::StatusCode::UNAUTHORIZED | hyper::StatusCode::FORBIDDEN) => format!(
+                    "{}; ipam.netbox.token was sent as `Authorization: {} …`. A NetBox v2 token \
+                     (the default since NetBox 4.5) starts `{V2_TOKEN_PREFIX}` and goes under \
+                     `Bearer`; a legacy v1 token goes under `Token`.",
+                    error.message, self.scheme
+                ),
+                _ => error.message,
+            })
     }
 
     /// The address list endpoint, with a pre-built query string.
@@ -321,6 +362,22 @@ mod tests {
         assert!(error.contains("ACME_PROXY_IPAM__NETBOX__TOKEN"), "{error}");
     }
 
+    /// The key half of a v2 token pasted without its secret. NetBox shows the
+    /// two joined, so this is a copy that stopped at the dot — and it would
+    /// otherwise authenticate nowhere, with a 403 as the only symptom.
+    #[test]
+    fn a_v2_token_carrying_no_secret_is_a_startup_error() {
+        let cfg = NetboxConfig {
+            token: "nbt_4F9DAouzURLb".to_string(),
+            ..config("https://netbox.example.com")
+        };
+        let error = NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ipam.netbox.token"), "{error}");
+        assert!(error.contains("nbt_<key>.<secret>"), "{error}");
+    }
+
     #[test]
     fn an_unparsable_url_is_a_startup_error() {
         let error = NetboxClient::new(
@@ -422,6 +479,15 @@ mod tests {
             .unwrap()
         }
 
+        /// The same client with the token spelled out, for the two schemes.
+        fn client_with_token(port: u16, token: &str) -> NetboxClient {
+            let cfg = NetboxConfig {
+                token: token.to_string(),
+                ..config(&format!("http://127.0.0.1:{port}"))
+            };
+            NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver())).unwrap()
+        }
+
         fn on_device() -> AssignedRef {
             AssignedRef {
                 kind: AssignedKind::Device,
@@ -469,6 +535,63 @@ mod tests {
                 "{request}"
             );
             assert!(request.contains("authorization: Token t0ken"), "{request}");
+        }
+
+        /// A NetBox v2 token — the default since NetBox 4.5 — authenticates
+        /// under `Bearer`, not the `Token` scheme its predecessor used. The
+        /// `nbt_` prefix is the whole of how the two are told apart.
+        #[tokio::test]
+        async fn a_v2_token_authenticates_as_a_bearer_credential() {
+            let (port, server) = serve_once(ok(one_address())).await;
+            let token = "nbt_4F9DAouzURLb.zjebxBPzICiPbWz0Wtx0fTL7bCKXKGTYhNzkgC2S";
+
+            client_with_token(port, token)
+                .ip_addresses("10.0.0.5".parse().unwrap())
+                .await
+                .unwrap();
+
+            let request = server.await.unwrap();
+            assert!(
+                request.contains(&format!("authorization: Bearer {token}")),
+                "{request}"
+            );
+        }
+
+        /// A token read out of an env file keeps its newline, which is not a
+        /// header value hyper will build — so the request never leaves at all.
+        #[tokio::test]
+        async fn surrounding_whitespace_is_trimmed_off_the_credential() {
+            let (port, server) = serve_once(ok(one_address())).await;
+
+            client_with_token(port, "  t0ken\n")
+                .ip_addresses("10.0.0.5".parse().unwrap())
+                .await
+                .unwrap();
+
+            let request = server.await.unwrap();
+            assert!(
+                request.contains("authorization: Token t0ken\r\n"),
+                "{request}"
+            );
+        }
+
+        /// NetBox refuses a credential sent under the wrong scheme exactly as
+        /// it refuses an expired one, so the answer alone leaves an operator
+        /// with nothing to check. Name the scheme that was used.
+        #[tokio::test]
+        async fn a_refused_credential_names_the_scheme_it_was_sent_under() {
+            let (port, _server) =
+                serve_once(status(403, "Forbidden", r#"{"detail":"Invalid token"}"#)).await;
+
+            let error = client_with_token(port, "t0ken")
+                .ip_addresses("10.0.0.5".parse().unwrap())
+                .await
+                .unwrap_err();
+
+            assert!(error.contains("Invalid token"), "{error}");
+            assert!(error.contains("ipam.netbox.token"), "{error}");
+            assert!(error.contains("Authorization: Token"), "{error}");
+            assert!(error.contains("nbt_"), "{error}");
         }
 
         /// An IPv6 address's colons must survive into the query.

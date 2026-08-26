@@ -999,9 +999,13 @@ sources = ["dns_name", "custom_field", "device"]  # ACME_PROXY_IPAM__NETBOX__SOU
 # Base URL of the instance. Any path is kept, so a NetBox served under a
 # subpath (https://example.com/netbox) works. Required when backend = "netbox".
 url = ""                            # ACME_PROXY_IPAM__NETBOX__URL
-# API token, sent as `Authorization: Token <token>`. A read-only token is
-# enough. Prefer the environment variable over writing it here: this is a
-# secret, like [signer.relay.dns01.rfc2136]'s TSIG key.
+# API token. A read-only one is enough, and either generation works: the scheme
+# follows the token itself, so there is nothing here to switch. A v2 token —
+# the default since NetBox 4.5 — is the whole `nbt_<key>.<secret>` string shown
+# once at creation and is sent as `Authorization: Bearer ...`; a legacy v1 token
+# is sent as `Authorization: Token ...` and stops being accepted in NetBox 4.7.
+# Prefer the environment variable over writing it here: this is a secret, like
+# [signer.relay.dns01.rfc2136]'s TSIG key.
 token = ""                          # ACME_PROXY_IPAM__NETBOX__TOKEN
 # Custom field holding the extra names an address may have certified. Configure
 # it in NetBox as a multi-select or text field on ipam.ipaddress (and, for the
