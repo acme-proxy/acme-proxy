@@ -65,6 +65,7 @@
 # Security
 - [Security Model](security/index.md)
 - [Hardening Checklist](security/hardening.md)
+- [ASVS 5.0 Assessment](security/asvs.md)
 
 # Developer Documentation
 - [Architecture & Design](dev/architecture.md)
