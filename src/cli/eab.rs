@@ -6,6 +6,7 @@ use crate::admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::sqlite::db::Database;
 use crate::sqlite::eab::Eab;
 
@@ -22,8 +23,12 @@ pub enum EabCommand {
         #[arg(long)]
         json: bool,
     },
-    /// List every EAB key. Never shows the secret.
+    /// List EAB keys, newest first. Never shows the secret.
     List {
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
         #[arg(long)]
         json: bool,
     },
@@ -55,9 +60,14 @@ pub async fn run_eab_command(
                 print!("{}", render::render_eab_created_text(&eab, palette));
             }
         }
-        EabCommand::List { json } => {
-            let keys = Eab::list_all(&database).await?;
-            render::print_rows(&keys, json, admin::render_eab_json, |eab| {
+        EabCommand::List {
+            limit,
+            offset,
+            json,
+        } => {
+            let window = Window::resolve(limit, offset);
+            let (keys, total) = Eab::search(window.limit, window.offset, &database).await?;
+            render::print_page(&keys, total, window, json, admin::render_eab_json, |eab| {
                 render::render_eab_line(eab, palette)
             });
         }
@@ -120,7 +130,11 @@ mod tests {
                 profile: Some("default".to_string()),
                 json: true,
             },
-            EabCommand::List { json: true },
+            EabCommand::List {
+                limit: DEFAULT_LIMIT,
+                offset: 0,
+                json: true,
+            },
             EabCommand::Show {
                 kid: eab.kid.to_string(),
                 json: true,

@@ -63,6 +63,7 @@ pub use logging::init_logging;
 pub use logging::{LogLevel, LoggingPlan, init_command_logging, plan_logging};
 pub mod nonce;
 pub mod order;
+pub mod profile;
 pub mod render;
 pub mod style;
 pub mod upstream;
@@ -74,6 +75,7 @@ pub use audit::AuditCommand;
 pub use eab::EabCommand;
 pub use nonce::NonceCommand;
 pub use order::OrderCommand;
+pub use profile::ProfileCommand;
 pub use upstream::UpstreamCommand;
 pub use webadmin::AdminCommand;
 
@@ -130,6 +132,11 @@ pub enum Command {
     Nonce {
         #[command(subcommand)]
         command: NonceCommand,
+    },
+    /// Inspect the ACME endpoints this configuration mounts.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
     },
     /// Manage External Account Binding (EAB) credentials.
     Eab {
@@ -248,6 +255,9 @@ pub async fn dispatch(
         }
         Command::Nonce { command } => {
             nonce::run_nonce_command(command, yes, reader, config, database).await
+        }
+        Command::Profile { command } => {
+            profile::run_profile_command(command, palette, config).await
         }
         Command::Eab { command } => eab::run_eab_command(command, palette, database).await,
         Command::Filter { command } => filter::run_filter_command(command, palette, config).await,
@@ -1970,7 +1980,81 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Eab {
-                command: EabCommand::List { json: false }
+                command: EabCommand::List {
+                    limit: 50,
+                    offset: 0,
+                    json: false
+                }
+            })
+        ));
+
+        // The four commands added with `TODO.md`'s "last few asymmetries": a
+        // detail for the one listable object that had none, and the three reads
+        // the panel could already answer and the host could not.
+        let cli = Cli::try_parse_from(["acme-proxy", "order", "chain", "ord-1"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Order {
+                command: OrderCommand::Chain { id }
+            }) if id == "ord-1"
+        ));
+
+        let cli = Cli::try_parse_from(["acme-proxy", "nonce", "count", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Nonce {
+                command: NonceCommand::Count { json: true }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["acme-proxy", "profile", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::List { json: false }
+            })
+        ));
+
+        let cli = Cli::try_parse_from(["acme-proxy", "admin", "user", "show", "alice"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Admin {
+                command: AdminCommand::User {
+                    command: crate::cli::webadmin::AdminUserCommand::Show { username, json: false }
+                }
+            }) if username == "alice"
+        ));
+
+        // The window the three formerly unwindowed listings grew, defaulted the
+        // same way as the four that already had one.
+        let cli =
+            Cli::try_parse_from(["acme-proxy", "admin", "user", "list", "--limit", "2"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Admin {
+                command: AdminCommand::User {
+                    command: crate::cli::webadmin::AdminUserCommand::List {
+                        limit: 2,
+                        offset: 0,
+                        json: false
+                    }
+                }
+            })
+        ));
+
+        let cli =
+            Cli::try_parse_from(["acme-proxy", "admin", "session", "list", "--offset=5"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Admin {
+                command: AdminCommand::Session {
+                    command: crate::cli::webadmin::AdminSessionCommand::List {
+                        username: None,
+                        limit: window::DEFAULT_LIMIT,
+                        offset: 5,
+                        json: false
+                    }
+                }
             })
         ));
 
@@ -2173,6 +2257,8 @@ mod tests {
                 command: AdminCommand::Session {
                     command: crate::cli::webadmin::AdminSessionCommand::List {
                         username: None,
+                        limit: 50,
+                        offset: 0,
                         json: true
                     }
                 }
@@ -2236,13 +2322,25 @@ mod tests {
                     ttl_seconds: Some(1),
                 },
             },
+            Command::Nonce {
+                command: NonceCommand::Count { json: false },
+            },
             Command::Eab {
-                command: EabCommand::List { json: false },
+                command: EabCommand::List {
+                    limit: 50,
+                    offset: 0,
+                    json: false,
+                },
             },
             Command::Man,
             Command::Completions {
                 shell: clap_complete::aot::Shell::Bash,
             },
+            // `Profile` is deliberately absent for `Upstream`'s reason below,
+            // arrived at from the other end: it resolves the profiles, and
+            // `Config::default()` mounts none, so it reports that rather than
+            // listing nothing. Its arm is driven from `cli::profile`'s own
+            // tests, against a configuration that has some.
             // `Upstream` is deliberately absent: it acts on a *profile's*
             // `[signer.relay]`, and this config has none, so it now
             // reports that rather than silently reading the global base

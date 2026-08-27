@@ -23,6 +23,7 @@ use base64::prelude::*;
 
 use super::style::Palette;
 use super::window::Window;
+use crate::admin::ProfileSummary;
 use crate::admin::ops::{ExpiringEntry, OrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
@@ -448,6 +449,89 @@ pub fn render_admin_totp_line(
     )
 }
 
+/// `admin user show <username>`, one field per line.
+///
+/// The listing's twin, split for [`render_account_detail_text`]'s reason: the
+/// second factor takes the line count past what
+/// [`render_admin_user_line`] can carry. The factor wording is
+/// [`render_admin_totp_line`]'s own three states, reused rather than
+/// re-spelled -- `admin user show` and `admin user totp status` describing one
+/// factor differently is exactly the confusion the pending state already
+/// invites.
+#[must_use]
+pub fn render_admin_user_detail_text(
+    user: &AdminUser,
+    recovery_codes_remaining: i64,
+    palette: Palette,
+) -> String {
+    let mut out = format!(
+        "id             {}\nusername       {}\nstatus         {}\ntotp           {}\n\
+         recovery_codes {}\ncreated        {}\nupdated        {}\n",
+        user.id,
+        user.username,
+        palette.status(&user.status),
+        totp_state(user, palette),
+        recovery_codes_remaining,
+        rfc3339(user.created_at),
+        rfc3339(user.updated_at),
+    );
+    // Omitted rather than rendered as "never" when unset, the rule every
+    // `render_*_json` here follows: an operator who has never signed in is a
+    // different fact from one whose last sign-in this build cannot name.
+    if let Some(last) = user.last_login_at {
+        out.push_str(&format!("last_login     {}\n", rfc3339(last)));
+    }
+    out
+}
+
+/// The three states an operator's second factor can be in.
+///
+/// "Enrolment pending" and "no factor" behave identically at the login prompt,
+/// and this is the only line that tells them apart -- an operator who believes
+/// they enrolled and never confirmed has no other way to find out. The pending
+/// word carries its own explanation, so it is painted whole rather than through
+/// `status`, which would leave the parenthetical plain and read as two separate
+/// pieces of information.
+fn totp_state(user: &AdminUser, palette: Palette) -> String {
+    if user.has_totp() {
+        palette.status("enabled")
+    } else if user.has_pending_totp() {
+        palette.warn("pending (enrolment started, never confirmed)")
+    } else {
+        palette.status("off")
+    }
+}
+
+/// One line: `name  challenges  eab  directory`.
+///
+/// `profile list`'s row. The directory URL comes **last** despite being the
+/// field an operator most often copies, because it is the only one here with no
+/// bounded vocabulary: a base URL varies by tens of characters, and any column
+/// after it would be ragged. The two flags in front of it are padded and so
+/// line up down the listing.
+///
+/// The bypass state is painted through [`Palette::warn`] because it is the one
+/// field here that is a warning rather than a value: an endpoint that marks a
+/// challenge `valid` without checking anything is an open CA wherever
+/// `[filter]` is empty, and `/ui/profiles` flags it for the same reason.
+#[must_use]
+pub fn render_profile_line(profile: &ProfileSummary, palette: Palette) -> String {
+    // Padded, then painted -- a format width counts bytes, so the other order
+    // counts the escape and collapses the column.
+    let challenges = if profile.challenge_bypass {
+        palette.warn(&format!("{:<9}", "bypassed"))
+    } else {
+        palette.status(&format!("{:<9}", "validated"))
+    };
+    format!(
+        "{:<20}  challenges={}  eab={:<3}  {}",
+        profile.name,
+        challenges,
+        if profile.eab_enabled { "on" } else { "off" },
+        profile.directory_url(),
+    )
+}
+
 /// One line: `id  user  state  created_at  expires_at  ip`.
 ///
 /// `id` is a fingerprint of the token hash, not the hash: see
@@ -465,32 +549,6 @@ pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> St
     )
 }
 
-/// Prints a listing the way every `--json`-capable list command prints one:
-/// one JSON array, or one human-readable line per row.
-///
-/// Six commands had written out the same `if json { … map(to_json).collect()
-/// … } else { for row in rows { println!(to_line) } }`. The shape is the
-/// contract — a JSON listing is an *array*, never a stream of objects, so a
-/// caller can pipe it into `jq` — and it should exist once.
-///
-/// Takes no [`Palette`]: the `to_line` closure captures one at the call site,
-/// which is also what keeps the `json` branch structurally unable to reach it.
-pub fn print_rows<T>(
-    rows: &[T],
-    json: bool,
-    to_json: impl Fn(&T) -> serde_json::Value,
-    to_line: impl Fn(&T) -> String,
-) {
-    if json {
-        let rendered: Vec<_> = rows.iter().map(to_json).collect();
-        println!("{}", serde_json::Value::Array(rendered));
-    } else {
-        for row in rows {
-            println!("{}", to_line(row));
-        }
-    }
-}
-
 /// The envelope a paged `--json` listing answers with.
 ///
 /// Deliberately the same four members, spelled the same way, as
@@ -499,10 +557,12 @@ pub fn print_rows<T>(
 /// read the table and having read a page of it, and a script should not have to
 /// learn one shape for the API and another for the shell.
 ///
-/// The unpaged listings beside this one — `eab list`, `admin user list`,
-/// `admin session list` — stay bare arrays through [`print_rows`]. Those are
-/// tables an operator mints by hand, a few rows at a time; nothing there is a
-/// page, so nothing there has a total to report.
+/// The **only** listing shape the binary answers with. Three listings — `eab
+/// list`, `admin user list`, `admin session list` — used to print a bare array
+/// instead, on the argument that an operator mints those rows by hand a few at
+/// a time and so has no page to report. That was true of the tables and false
+/// of the scripts reading them, which had to learn one shape for the shell and
+/// another for `/api`; the bare-array renderer beside this one went with them.
 #[must_use]
 pub fn json_page(items: Vec<serde_json::Value>, total: i64, window: Window) -> serde_json::Value {
     serde_json::json!({
@@ -551,12 +611,12 @@ pub fn print_expiring_footer(shown: usize, total: i64, hidden: i64) {
 
 /// Prints one page, in whichever of the two shapes was asked for.
 ///
-/// [`print_rows`]'s paged twin, and the same division of labour: the `to_line`
-/// closure carries the [`Palette`], so the `json` branch stays structurally
-/// unable to reach one. `order list --json` is the one caller that does not go
-/// through here — it batches an authorization lookup its `to_json` needs, and
-/// folding that in would make the text path pay for a query it never reads —
-/// so it calls [`json_page`] and [`print_footer`] directly instead.
+/// The `to_line` closure carries the [`Palette`], which is what keeps the
+/// `json` branch structurally unable to reach one. `order list --json` is the
+/// one caller that does not go through here — it batches an authorization
+/// lookup its `to_json` needs, and folding that in would make the text path pay
+/// for a query it never reads — so it calls [`json_page`] and [`print_footer`]
+/// directly instead.
 pub fn print_page<T>(
     rows: &[T],
     total: i64,
@@ -616,6 +676,76 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// The detail an operator's row could not carry, and the layout rule every
+    /// renderer here keeps: strip the escapes and the plain rendering comes
+    /// back byte for byte.
+    #[test]
+    fn the_operator_detail_names_the_factor_and_survives_stripping() {
+        let mut user = admin_user_fixture();
+
+        let plain = render_admin_user_detail_text(&user, 0, Palette::plain());
+        assert!(plain.contains("username       alice"));
+        assert!(plain.contains("totp           off"));
+        assert!(plain.contains("recovery_codes 0"));
+        // Omitted rather than rendered as "never": an operator who has not
+        // signed in is a different fact from one whose last sign-in is unknown.
+        assert!(!plain.contains("last_login"), "{plain}");
+
+        assert_eq!(
+            strip_ansi(&render_admin_user_detail_text(&user, 0, colour())),
+            plain
+        );
+
+        // The state a listing cannot show. `totp status` says the same words,
+        // through the same helper, so the two commands cannot describe one
+        // factor differently.
+        user.totp_pending_secret = Some(vec![1, 2, 3]);
+        let pending = render_admin_user_detail_text(&user, 0, Palette::plain());
+        assert!(
+            pending.contains("enrolment started, never confirmed"),
+            "{pending}"
+        );
+        assert!(
+            render_admin_totp_line(&user, 0, Palette::plain())
+                .contains("enrolment started, never confirmed")
+        );
+
+        user.totp_secret = Some(vec![4, 5, 6]);
+        user.last_login_at = Some(1_700_000_500);
+        let enabled = render_admin_user_detail_text(&user, 7, Palette::plain());
+        assert!(enabled.contains("totp           enabled"), "{enabled}");
+        assert!(enabled.contains("recovery_codes 7"));
+        assert!(enabled.contains("last_login     "), "{enabled}");
+    }
+
+    /// `profile list`'s row, and the one field on it that is a warning rather
+    /// than a value.
+    #[test]
+    fn the_profile_line_paints_a_bypassing_endpoint_and_nothing_else() {
+        let mut profile = ProfileSummary {
+            name: "le".to_string(),
+            base_url: "https://ca.example.com/profile/le".to_string(),
+            challenge_bypass: false,
+            eab_enabled: true,
+        };
+
+        let plain = render_profile_line(&profile, Palette::plain());
+        assert!(plain.contains("https://ca.example.com/profile/le/directory"));
+        assert!(plain.contains("challenges=validated"));
+        assert!(plain.contains("eab=on"));
+        assert_eq!(strip_ansi(&render_profile_line(&profile, colour())), plain);
+
+        profile.challenge_bypass = true;
+        profile.eab_enabled = false;
+        let bypassed = render_profile_line(&profile, Palette::plain());
+        assert!(bypassed.contains("challenges=bypassed"));
+        assert!(bypassed.contains("eab=off"));
+        assert_eq!(
+            strip_ansi(&render_profile_line(&profile, colour())),
+            bypassed
+        );
     }
 
     /// The footer under every paged listing, asserted on its exact bytes: four

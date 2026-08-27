@@ -216,7 +216,9 @@ mod tests {
             page.contains("acme\\-proxy"),
             "the page does not name itself"
         );
-        for subcommand in ["serve", "account", "order", "audit", "eab", "admin"] {
+        for subcommand in [
+            "serve", "account", "order", "audit", "nonce", "profile", "eab", "admin",
+        ] {
             assert!(
                 page.contains(subcommand),
                 "the SUBCOMMANDS section omits `{subcommand}`"

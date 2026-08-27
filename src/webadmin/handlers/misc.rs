@@ -21,19 +21,17 @@ pub struct CleanupRequest {
 
 /// `GET /api/nonces` — how many rows the table holds.
 ///
-/// A count and nothing else: a nonce is a bearer credential until it is
-/// consumed, so listing values would put live ones on a screen. The count is
-/// the useful part — it should sit near the request rate times the TTL, and a
-/// number far above that says the reaper is not running.
+/// The shape is [`admin::render_nonce_stats_json`], which `nonce count --json`
+/// also answers with: a count is not worth two spellings.
 pub async fn get_nonces(
     State(state): State<AdminState>,
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let count = Nonce::count(&state.database).await?;
-    Ok(Json(json!({
-        "count": count,
-        "ttlSeconds": state.config.nonce.ttl_seconds,
-    })))
+    Ok(Json(admin::render_nonce_stats_json(
+        count,
+        state.config.nonce.ttl_seconds,
+    )))
 }
 
 /// `POST /api/nonces/cleanup` — sweep now, rather than waiting for the reaper.
@@ -88,12 +86,11 @@ pub(crate) fn profile_rows(state: &AdminState) -> Vec<Value> {
 /// endpoint rather than the list and still has to say the same things about it
 /// -- `challengeBypass` above all, since that page is where the warning
 /// matters most.
+///
+/// The document itself is [`admin::render_profile_json`], which
+/// `acme-proxy profile list` renders too. The two reach it from opposite
+/// directions -- a mounted profile here, a resolved configuration there -- and
+/// [`admin::ProfileSummary`] is where that difference is written down.
 pub(crate) fn profile_row(profile: &crate::Profile) -> Value {
-    json!({
-        "name": profile.name,
-        "baseUrl": profile.base_url,
-        "directory": profile.directory_url(),
-        "challengeBypass": profile.challenges.is_bypassed(),
-        "eabEnabled": profile.eab.enabled,
-    })
+    admin::render_profile_json(&admin::ProfileSummary::mounted(profile))
 }

@@ -343,21 +343,31 @@ async fn eab_cli_create_list_show_revoke() {
     .unwrap();
 
     run_eab_command(
-        EabCommand::List { json: false },
+        EabCommand::List {
+            limit: 50,
+            offset: 0,
+            json: false,
+        },
         Palette::plain(),
         db.clone(),
     )
     .await
     .unwrap();
     run_eab_command(
-        EabCommand::List { json: true },
+        EabCommand::List {
+            limit: 50,
+            offset: 0,
+            json: true,
+        },
         Palette::plain(),
         db.clone(),
     )
     .await
     .unwrap();
 
-    let keys = acme_proxy::sqlite::eab::Eab::list_all(&db).await.unwrap();
+    let (keys, _) = acme_proxy::sqlite::eab::Eab::search(50, 0, &db)
+        .await
+        .unwrap();
     let kid = keys[0].kid;
 
     run_eab_command(

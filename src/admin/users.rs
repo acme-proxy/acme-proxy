@@ -86,9 +86,16 @@ pub async fn create_user(
     Ok(AdminUser::create(&normalized, &hash, &database).await?)
 }
 
-/// Every operator, oldest first.
-pub async fn list_users(database: Arc<Database>) -> Result<Vec<AdminUser>, sqlx::Error> {
-    AdminUser::list_all(&database).await
+/// One page of the operators, oldest first, plus the total the table holds.
+///
+/// The direction is [`AdminUser::search`]'s and is the one listing in the
+/// binary that does not put the newest row on top.
+pub async fn list_users(
+    limit: i64,
+    offset: i64,
+    database: Arc<Database>,
+) -> Result<(Vec<AdminUser>, i64), sqlx::Error> {
+    AdminUser::search(limit, offset, &database).await
 }
 
 /// Replaces an operator's password and **revokes every session they hold**.
@@ -308,7 +315,7 @@ mod tests {
         assert!(matches!(error, UserError::Policy(_)));
         assert!(error.to_string().contains("at least 12"));
         // Nothing was written.
-        assert!(list_users(db).await.unwrap().is_empty());
+        assert_eq!(list_users(50, 0, db).await.unwrap().1, 0);
     }
 
     /// The other two policy rules reach this layer through the same
@@ -339,7 +346,7 @@ mod tests {
         assert!(error.to_string().contains("names this deployment"));
 
         // Neither attempt wrote a row.
-        assert!(list_users(db).await.unwrap().is_empty());
+        assert_eq!(list_users(50, 0, db).await.unwrap().1, 0);
     }
 
     /// `set_password` checks the policy before the user lookup, so all three

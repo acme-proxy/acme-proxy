@@ -159,7 +159,15 @@ impl AdminUser {
         row.map(AdminUser::from_row).transpose()
     }
 
-    /// Every operator, oldest first -- `admin user list`.
+    /// Every operator, oldest first.
+    ///
+    /// A **scan**, not a listing: its one caller is
+    /// `admin::mfa::operators_without_a_factor`, which counts the operators
+    /// with no confirmed factor for the `admin.require_mfa` startup warning.
+    /// Nothing renders it, which is why it can sit beside [`AdminUser::search`]
+    /// without being the second listing the paging pass deleted
+    /// `Account::list_all` for -- an order nothing displays cannot disagree
+    /// with the paged one.
     pub async fn list_all(database: &Database) -> Result<Vec<AdminUser>, sqlx::Error> {
         debug!(
             event = "db_admin_user_list_all_started",
@@ -174,6 +182,46 @@ impl AdminUser {
         .await?;
 
         rows.into_iter().map(AdminUser::from_row).collect()
+    }
+
+    /// One page of `admin user list`, plus the total the table holds unpaged.
+    ///
+    /// **Oldest first**, and the one listing in the binary that is: every other
+    /// paged listing puts the newest row on top, but the bootstrap operator --
+    /// the one created before the panel could be signed in to at all -- is
+    /// precisely the row whose position should not move as colleagues are
+    /// added. `id` breaks the `created_at` tie for `Eab::search`'s reason:
+    /// `created_at` is a whole second, and operators are created in one go.
+    pub async fn search(
+        limit: i64,
+        offset: i64,
+        database: &Database,
+    ) -> Result<(Vec<AdminUser>, i64), sqlx::Error> {
+        debug!(
+            event = "db_admin_user_search_started",
+            outcome = "progress",
+            limit = limit,
+            offset = offset
+        );
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_users ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?;"
+        ))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&database.pool)
+        .await?;
+        let total: i64 = sqlx::query("SELECT COUNT(*) FROM admin_users;")
+            .fetch_one(&database.pool)
+            .await?
+            .try_get(0)?;
+
+        let users = rows
+            .into_iter()
+            .map(AdminUser::from_row)
+            .collect::<Result<_, _>>()?;
+        Ok((users, total))
     }
 
     /// Replaces the stored hash. Callers are responsible for invalidating the
@@ -494,6 +542,63 @@ mod tests {
         // v4 still ties arbitrarily against a v7 in the same second, for ever.
         let names: Vec<&str> = all.iter().map(|u| u.username.as_str()).collect();
         assert_eq!(names, ["a", "b"], "the v7 tiebreak is insertion order");
+    }
+
+    /// The window `admin user list` hands down. Both facts a page needs: the
+    /// rows it holds, and the total it is a page *of*.
+    #[tokio::test]
+    async fn search_pages_without_overlap_and_reports_the_unpaged_total() {
+        let db = db().await;
+        assert_eq!(AdminUser::search(50, 0, &db).await.unwrap().1, 0);
+
+        for name in ["a", "b", "c", "d", "e"] {
+            AdminUser::create(name, "h", &db).await.unwrap();
+        }
+
+        let (first, total) = AdminUser::search(2, 0, &db).await.unwrap();
+        let (second, also_total) = AdminUser::search(2, 2, &db).await.unwrap();
+        let (third, _) = AdminUser::search(2, 4, &db).await.unwrap();
+
+        assert_eq!((total, also_total), (5, 5), "the total is the table");
+        assert_eq!((first.len(), second.len(), third.len()), (2, 2, 1));
+
+        // Walked end to end the pages are the table exactly once, which is both
+        // "no overlap" and "nothing skipped" in one assertion -- and in the
+        // creation order the `id` tiebreak preserves, since all five tie on
+        // `created_at`.
+        let walked: Vec<&str> = first
+            .iter()
+            .chain(second.iter())
+            .chain(third.iter())
+            .map(|user| user.username.as_str())
+            .collect();
+        assert_eq!(walked, ["a", "b", "c", "d", "e"]);
+    }
+
+    /// Oldest first, and the only listing in the binary that is: the bootstrap
+    /// operator is the row whose position should not move as colleagues are
+    /// added.
+    #[tokio::test]
+    async fn search_reads_the_table_in_the_same_order_as_the_scan() {
+        let db = db().await;
+        for name in ["a", "b", "c"] {
+            AdminUser::create(name, "h", &db).await.unwrap();
+        }
+
+        let scanned: Vec<String> = AdminUser::list_all(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|user| user.username)
+            .collect();
+        let paged: Vec<String> = AdminUser::search(50, 0, &db)
+            .await
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|user| user.username)
+            .collect();
+        assert_eq!(paged, scanned);
     }
 
     #[tokio::test]

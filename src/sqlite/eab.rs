@@ -21,8 +21,9 @@ use crate::sqlite::order::rfc3339;
 ///
 /// - `create`: generate a fresh key and persist it, `active`
 /// - `find_by_kid`: lookup by kid (the request-time verification path)
-/// - `list_all`: list every key, oldest first (admin CLI, `/ui/eab`)
-/// - `search`: one page of the same listing plus the unpaged total (`/api/eab`)
+/// - `search`: one page of the listing, newest first, plus the unpaged total --
+///   the only listing of this table, read by `eab list`, `/ui/eab` and
+///   `GET /api/eab` alike
 /// - `revoke`: move to the terminal `revoked` state
 /// - `to_json`: admin-facing rendering (never includes the secret)
 #[derive(Debug)]
@@ -135,34 +136,26 @@ impl Eab {
         row.map(Eab::from_row).transpose()
     }
 
-    /// Lists every key, oldest first -- `eab list` and `/ui/eab`.
+    /// One page of the listing, plus the total the table holds unpaged.
     ///
-    /// Tie-broken on `kid` so it reads the table in the *same* order
-    /// [`Eab::search`] pages it in. `created_at` is a whole second, and an
-    /// operator minting a handful of credentials in one go lands them all in
-    /// one -- so without the tie-break these two orderings were free to
-    /// disagree, and the unpaged one was not even stable between calls.
-    pub async fn list_all(database: &Database) -> Result<Vec<Eab>, sqlx::Error> {
-        debug!(event = "db_eab_list_all_started", outcome = "progress");
-        let rows = sqlx::query(
-            "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
-             ORDER BY created_at ASC, kid ASC;",
-        )
-        .fetch_all(&database.pool)
-        .await?;
-
-        rows.into_iter().map(Eab::from_row).collect()
-    }
-
-    /// One page of the same listing, plus the total the table holds unpaged.
+    /// The **only** listing of this table: `GET /api/eab`, `/ui/eab` and
+    /// `eab list` all read it, which is what stops the three describing one
+    /// credential set differently.
     ///
-    /// `GET /api/eab`'s window. Ordering stays **oldest first**, unlike
-    /// `Account::search` and `Order::search`: this is a table an operator mints
-    /// by hand a few rows at a time, so a fresh head buys nothing, and flipping
-    /// it would make the API disagree with `/ui/eab` and `eab list`, both of
-    /// which still read [`Eab::list_all`]. `kid` breaks the `created_at` tie for
-    /// `Account::search`'s reason — whole-second timestamps would otherwise let
-    /// two rows swap between pages, and one of them would never be seen.
+    /// **Newest first**, like `Account::search` and `Order::search`. It was
+    /// oldest first while the page and the command still read an unpaged
+    /// `list_all` — the reason recorded here was that flipping it would make
+    /// the API disagree with them — and that reason expired when both moved
+    /// onto this query. What settles the direction now is the mint form:
+    /// `pages::eab::create_eab` re-renders the table out of band so a new
+    /// credential appears without a reload, and the only page it can sensibly
+    /// render is the first, so the new row has to be on it. `kid` breaks the
+    /// `created_at` tie for `Account::search`'s reason — whole-second
+    /// timestamps would otherwise let two rows swap between pages, and one of
+    /// them would never be seen — and it breaks it **`DESC`**, following the
+    /// primary key rather than opposing it: a `kid` is a UUID v7, so an `ASC`
+    /// tiebreak would hand back the *oldest* of the credentials minted inside
+    /// one second, which is exactly the second the mint form re-renders in.
     pub async fn search(
         limit: i64,
         offset: i64,
@@ -176,7 +169,7 @@ impl Eab {
         );
         let rows = sqlx::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
-             ORDER BY created_at ASC, kid ASC LIMIT ? OFFSET ?;",
+             ORDER BY created_at DESC, kid DESC LIMIT ? OFFSET ?;",
         )
         .bind(limit)
         .bind(offset)
@@ -279,8 +272,8 @@ mod tests {
         );
     }
 
-    /// Every key comes back, in the order they were created, and an empty
-    /// table is empty rather than an error.
+    /// Every key comes back, newest first, and an empty table is empty rather
+    /// than an error.
     ///
     /// `created_at` is a whole second, so two keys minted in one test share it
     /// and the `kid` tie-break decides. That used to be a random uuid, and this
@@ -289,17 +282,21 @@ mod tests {
     /// observable `list_all_returns_every_user_and_empty_is_empty`
     /// (`sqlite::admin_user`) asserts, and for the same reason. It holds only
     /// for rows minted since that change, nothing having been backfilled.
+    ///
+    /// The direction is what `pages::eab::create_eab` rests on: it re-renders
+    /// the first page out of band, so a credential minted a moment ago has to
+    /// be its first row.
     #[tokio::test]
-    async fn list_all_returns_every_key_and_empty_is_empty() {
+    async fn search_returns_every_key_newest_first_and_empty_is_empty() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(Eab::list_all(&db).await.unwrap().is_empty());
+        assert!(Eab::search(50, 0, &db).await.unwrap().0.is_empty());
 
         let first = Eab::create(None, None, &db).await.unwrap();
         let second = Eab::create(None, None, &db).await.unwrap();
-        let all = Eab::list_all(&db).await.unwrap();
-        assert_eq!(all.len(), 2);
+        let (all, total) = Eab::search(50, 0, &db).await.unwrap();
+        assert_eq!((all.len(), total), (2, 2));
         let kids: Vec<String> = all.iter().map(|eab| eab.kid.to_string()).collect();
-        assert_eq!(kids, [first.kid.to_string(), second.kid.to_string()]);
+        assert_eq!(kids, [second.kid.to_string(), first.kid.to_string()]);
     }
 
     /// The window `GET /api/eab` hands down. Every row created inside one
@@ -343,33 +340,6 @@ mod tests {
                 "{kid} was not on exactly one page"
             );
         }
-    }
-
-    /// Oldest first, deliberately unlike `Account::search`/`Order::search`:
-    /// flipping it would make `/api/eab` disagree with `/ui/eab` and
-    /// `eab list`, which still read `list_all`.
-    #[tokio::test]
-    async fn search_reads_the_table_in_the_same_order_as_list_all() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        for _ in 0..3 {
-            Eab::create(None, None, &db).await.unwrap();
-        }
-
-        let unpaged: Vec<String> = Eab::list_all(&db)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|eab| eab.kid.to_string())
-            .collect();
-        let paged: Vec<String> = Eab::search(50, 0, &db)
-            .await
-            .unwrap()
-            .0
-            .into_iter()
-            .map(|eab| eab.kid.to_string())
-            .collect();
-
-        assert_eq!(paged, unpaged);
     }
 
     #[tokio::test]

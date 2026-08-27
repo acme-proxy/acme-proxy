@@ -26,6 +26,7 @@ use crate::admin::users::{self, UserError};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -56,8 +57,18 @@ pub enum AdminUserCommand {
         #[arg(long = "password-file")]
         password_file: Option<PathBuf>,
     },
-    /// List every operator. Never shows a password hash.
+    /// List operators, oldest first. Never shows a password hash.
     List {
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one operator, second factor included. Never shows a password hash.
+    Show {
+        username: String,
         #[arg(long)]
         json: bool,
     },
@@ -115,6 +126,10 @@ pub enum AdminSessionCommand {
         /// Only this operator's sessions.
         #[arg(long)]
         username: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
         #[arg(long)]
         json: bool,
     },
@@ -165,11 +180,38 @@ async fn run_user_command(
             // The id, not the password: nothing echoes a credential back.
             println!("Created admin user {} ({}).", user.username, user.id);
         }
-        AdminUserCommand::List { json } => {
-            let users = users::list_users(database).await?;
-            render::print_rows(&users, json, admin::render_admin_user_json, |user| {
-                render::render_admin_user_line(user, palette)
-            });
+        AdminUserCommand::List {
+            limit,
+            offset,
+            json,
+        } => {
+            let window = Window::resolve(limit, offset);
+            let (users, total) = users::list_users(window.limit, window.offset, database).await?;
+            render::print_page(
+                &users,
+                total,
+                window,
+                json,
+                admin::render_admin_user_json,
+                |user| render::render_admin_user_line(user, palette),
+            );
+        }
+        AdminUserCommand::Show { username, json } => {
+            // The same pair `totp status` reads, for the reason
+            // `render_admin_user_detail_json` records: the enrolment state and
+            // the code count are what a listing cannot carry, and they are the
+            // half of an operator's row that decides whether they can sign in.
+            let user = find_user(&username, database.clone()).await?;
+            let remaining = mfa::recovery_codes_remaining(user.id, database).await?;
+
+            if json {
+                println!("{}", admin::render_admin_user_detail_json(&user, remaining));
+            } else {
+                print!(
+                    "{}",
+                    render::render_admin_user_detail_text(&user, remaining, palette)
+                );
+            }
         }
         AdminUserCommand::Passwd {
             username,
@@ -305,7 +347,12 @@ async fn run_session_command(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
-        AdminSessionCommand::List { username, json } => {
+        AdminSessionCommand::List {
+            username,
+            limit,
+            offset,
+            json,
+        } => {
             // Resolved to an id first: `admin_sessions` carries the user id,
             // and an unknown name must say so rather than quietly listing
             // every session on the server.
@@ -317,9 +364,13 @@ async fn run_session_command(
                 },
             };
 
-            let sessions = AdminSession::list_all(user_id, &database).await?;
-            render::print_rows(
+            let window = Window::resolve(limit, offset);
+            let (sessions, total) =
+                AdminSession::search(user_id, window.limit, window.offset, &database).await?;
+            render::print_page(
                 &sessions,
+                total,
+                window,
                 json,
                 admin::render_admin_session_json,
                 |session| render::render_admin_session_line(session, palette),
@@ -619,13 +670,109 @@ mod tests {
         assert_eq!(error, CliError("no such admin user: nobody".to_string()));
     }
 
+    /// The detail an operator's row could not carry: the enrolment state and
+    /// the recovery-code count. Both shapes, and an unknown name refused in
+    /// words rather than answered with an empty object.
+    #[tokio::test]
+    async fn show_reports_the_row_and_the_second_factor() {
+        let db = db().await;
+        run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+
+        let show = |username: &str, json: bool| AdminCommand::User {
+            command: AdminUserCommand::Show {
+                username: username.to_string(),
+                json,
+            },
+        };
+        for json in [true, false] {
+            run(show("alice", json), "", db.clone()).await.unwrap();
+        }
+        assert_eq!(
+            run(show("nobody", false), "", db.clone())
+                .await
+                .unwrap_err(),
+            CliError("no such admin user: nobody".to_string())
+        );
+
+        // The three states the detail shape distinguishes, walked in order: no
+        // factor, enrolment started, confirmed. `totpEnabled` alone cannot tell
+        // the first two apart, which is why `enrolmentPending` is on this shape
+        // and not on the listing's.
+        let user = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        let rendered = admin::render_admin_user_detail_json(&user, 0);
+        assert_eq!(rendered["totpEnabled"], false);
+        assert_eq!(rendered["enrolmentPending"], false);
+        assert_eq!(rendered["recoveryCodesRemaining"], 0);
+        // The listing shape carries neither, and that is the point.
+        let listed = admin::render_admin_user_json(&user);
+        assert!(listed.get("enrolmentPending").is_none());
+        assert!(listed.get("recoveryCodesRemaining").is_none());
+
+        let enrolled = enrol("alice", db.clone()).await;
+        let rendered = admin::render_admin_user_detail_json(&enrolled, 10);
+        assert_eq!(rendered["totpEnabled"], true);
+        assert_eq!(rendered["recoveryCodesRemaining"], 10);
+        run(show("alice", true), "", db).await.unwrap();
+    }
+
+    /// The window three listings grew when the bare array went. `admin user
+    /// list` is the one listing in the binary that is oldest first, so the first
+    /// page holds the operator created first -- the bootstrap one.
+    #[tokio::test]
+    async fn the_user_listing_pages_oldest_first() {
+        let db = db().await;
+        for name in ["alice", "bob", "carol"] {
+            run(create(name), &format!("{GOOD}\n"), db.clone())
+                .await
+                .unwrap();
+        }
+
+        let (first, total) = users::list_users(2, 0, db.clone()).await.unwrap();
+        let (second, also_total) = users::list_users(2, 2, db.clone()).await.unwrap();
+        assert_eq!((total, also_total), (3, 3), "the total is the table");
+        let walked: Vec<&str> = first
+            .iter()
+            .chain(second.iter())
+            .map(|user| user.username.as_str())
+            .collect();
+        assert_eq!(walked, ["alice", "bob", "carol"]);
+
+        // A nonsense window is clamped rather than refused, `Window::resolve`'s
+        // rule -- `LIMIT -1` is SQLite's "no limit", the one answer a page must
+        // never accidentally give.
+        for (limit, offset) in [(0, 0), (-5, -5)] {
+            run(
+                AdminCommand::User {
+                    command: AdminUserCommand::List {
+                        limit,
+                        offset,
+                        json: true,
+                    },
+                },
+                "",
+                db.clone(),
+            )
+            .await
+            .unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn list_renders_in_both_formats_and_is_empty_when_there_are_none() {
         let db = db().await;
         for json in [true, false] {
             run(
                 AdminCommand::User {
-                    command: AdminUserCommand::List { json },
+                    command: AdminUserCommand::List {
+                        limit: DEFAULT_LIMIT,
+                        offset: 0,
+                        json,
+                    },
                 },
                 "",
                 db.clone(),
@@ -640,7 +787,11 @@ mod tests {
         for json in [true, false] {
             run(
                 AdminCommand::User {
-                    command: AdminUserCommand::List { json },
+                    command: AdminUserCommand::List {
+                        limit: DEFAULT_LIMIT,
+                        offset: 0,
+                        json,
+                    },
                 },
                 "",
                 db.clone(),
@@ -786,7 +937,12 @@ mod tests {
         ] {
             run(
                 AdminCommand::Session {
-                    command: AdminSessionCommand::List { username, json },
+                    command: AdminSessionCommand::List {
+                        username,
+                        limit: DEFAULT_LIMIT,
+                        offset: 0,
+                        json,
+                    },
                 },
                 "",
                 db.clone(),
@@ -800,6 +956,8 @@ mod tests {
                 AdminCommand::Session {
                     command: AdminSessionCommand::List {
                         username: Some("nobody".to_string()),
+                        limit: DEFAULT_LIMIT,
+                        offset: 0,
                         json: false,
                     },
                 },

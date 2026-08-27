@@ -133,22 +133,6 @@ keeps its corpses stops being read.
       server could not do it", and every code past those two is a surface that
       has to be documented and then kept, under the same pre-1.0 rule as the
       rest of the CLI.
-- [ ] **The last few asymmetries**, one entry because each is a line of work and
-      they share a shape — a thing one front end does that its twin cannot.
-      `admin user show`: the only listable object with no detail command. The
-      issued chain on stdout: `GET /ui/orders/{id}/chain.pem` has no CLI twin,
-      so a host holding the database goes through a browser for a PEM it
-      already has. A nonce count:
-      `GET /api/nonces` reports one, where the shell can only sweep. And
-      `profile list`: `GET /api/profiles` names the endpoints actually mounted,
-      and nothing on the host can ask. Paging the listings left two more of the
-      same shape: `eab list`, `admin user list` and `admin session list` are the
-      three CLI listings still answering a **bare array** with no window, and
-      `/ui/eab` is unpaged where `GET /api/eab` now windows — `Eab::search`
-      exists, so that page is a `PageParams` plus the `pager` the accounts and
-      orders templates already use. Each is defensible alone (an operator mints
-      those rows by hand, a few at a time) and indefensible as a set, which is
-      the argument for doing them together or not at all.
 
 ## Both surfaces
 

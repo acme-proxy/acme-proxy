@@ -6,7 +6,7 @@
 //! `render_eab_json`, and `Eab::to_json` has no such member. A lost credential
 //! is replaced, never recovered.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
@@ -15,10 +15,11 @@ use serde_json::{Map, Value};
 use crate::admin;
 use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
+use crate::webadmin::handlers::paging::{Page, PageParams};
 use crate::webadmin::handlers::params::non_empty;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
+use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateForm {
@@ -32,20 +33,28 @@ pub struct CreateForm {
     pub profile: String,
 }
 
-/// `GET /ui/eab`
+/// `GET /ui/eab?limit=&offset=`
 ///
-/// Unpaginated, over `Eab::list_all`: an operator mints these by hand, a few at
-/// a time, so the whole table is a page. `GET /api/eab` is the one that windows
-/// -- it answers the envelope every list endpoint in that API answers, and a
-/// script has no scroll bar to reach the rest with. Both read the table in the
-/// same order (oldest first), which is what keeps the two surfaces describing
-/// one listing.
+/// Paged over `Eab::search`, the same query `GET /api/eab` and `eab list` read
+/// -- one listing, three surfaces, so none of them can come to describe the
+/// credential set differently. It was unpaged over an `Eab::list_all` that no
+/// longer exists, on the argument that an operator mints these by hand a few at
+/// a time; that is true of how the table fills and says nothing about how long
+/// it has been filling.
 pub async fn list_eab(
     State(state): State<AdminState>,
+    Query(params): Query<PageParams>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
+    let page = params.resolve(&state.config);
+    let (items, total) = rows(page, &state).await?;
+
     let mut context = chrome(&session, "eab", "External Account Binding");
-    context.insert("items".to_string(), Value::Array(rows(&state).await?));
+    context.insert("page".to_string(), page_value(items, total));
+    context.insert(
+        "pager".to_string(),
+        pager(page, total, "/ui/eab", &[], "#eab-table"),
+    );
     context.insert(
         "profiles".to_string(),
         Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
@@ -108,9 +117,22 @@ pub async fn create_eab(
                    kid = %eab.kid,
                    username = %session.auth.user.username);
 
+    // The **first** page, whatever page the form was posted from, and the
+    // reason `Eab::search` is newest first: a credential minted a moment ago is
+    // its first row, so the refreshed table below the form is guaranteed to
+    // contain the row the secret above it belongs to. Re-rendering the
+    // operator's current page instead would show the new credential only when
+    // they happened to be on the right one.
+    let page = PageParams::default().resolve(&state.config);
+    let (items, total) = rows(page, &state).await?;
+
     let mut context = Map::new();
     context.insert("eab".to_string(), admin::render_eab_created_json(&eab));
-    context.insert("items".to_string(), Value::Array(rows(&state).await?));
+    context.insert("page".to_string(), page_value(items, total));
+    context.insert(
+        "pager".to_string(),
+        pager(page, total, "/ui/eab", &[], "#eab-table"),
+    );
     // Read by `eab/_table.html`'s root element: this response carries the table
     // as well as the new credential, and htmx matches an out-of-band swap on
     // the id of the element carrying the attribute.
@@ -155,12 +177,9 @@ pub async fn revoke_eab(
     respond_fragment(&state, "eab/_card.html", context)
 }
 
-async fn rows(state: &AdminState) -> Result<Vec<Value>, PageError> {
-    Ok(Eab::list_all(&state.database)
-        .await?
-        .iter()
-        .map(admin::render_eab_json)
-        .collect())
+async fn rows(page: Page, state: &AdminState) -> Result<(Vec<Value>, i64), PageError> {
+    let (keys, total) = Eab::search(page.limit, page.offset, &state.database).await?;
+    Ok((keys.iter().map(admin::render_eab_json).collect(), total))
 }
 
 async fn load(kid: &str, state: &AdminState) -> Result<Value, PageError> {

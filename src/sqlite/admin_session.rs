@@ -423,6 +423,12 @@ impl AdminSession {
     }
 
     /// Every session, or every session of one user, newest first.
+    ///
+    /// A **scan**, not a listing: its one caller is
+    /// `admin::users::confirm_delete_user`, which counts what the delete will
+    /// cascade to so the prompt can name it. Nothing renders it -- see
+    /// [`AdminUser::list_all`](crate::sqlite::admin_user::AdminUser::list_all)
+    /// for why that is what lets it sit beside [`AdminSession::search`].
     pub async fn list_all(
         user_id: Option<Uuid>,
         database: &Database,
@@ -451,6 +457,66 @@ impl AdminSession {
         };
 
         rows.into_iter().map(AdminSession::from_row).collect()
+    }
+
+    /// One page of the same listing, plus the total those filters match
+    /// unpaged.
+    ///
+    /// `admin session list`'s window. Newest first like [`Self::list_all`], and
+    /// tie-broken on `token_hash` for the same reason `Eab::search` breaks on
+    /// `kid`: `created_at` is a whole second, and a browser signing in twice
+    /// lands two rows inside one.
+    pub async fn search(
+        user_id: Option<Uuid>,
+        limit: i64,
+        offset: i64,
+        database: &Database,
+    ) -> Result<(Vec<AdminSession>, i64), sqlx::Error> {
+        // Two literal statements rather than one built up, [`Self::list_all`]'s
+        // reason: `sqlx::query` takes only `&'static str`, which is what stops
+        // a column list or a predicate ever being interpolated in.
+        let (rows, total) = match user_id {
+            Some(id) => (
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM admin_sessions WHERE user_id = ? \
+                     ORDER BY created_at DESC, token_hash ASC LIMIT ? OFFSET ?;"
+                ))
+                .bind(id)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&database.pool)
+                .await?,
+                sqlx::query("SELECT COUNT(*) FROM admin_sessions WHERE user_id = ?;")
+                    .bind(id)
+                    .fetch_one(&database.pool)
+                    .await?
+                    .try_get::<i64, _>(0)?,
+            ),
+            None => (
+                sqlx::query(concat!(
+                    "SELECT ",
+                    columns!(),
+                    " FROM admin_sessions ORDER BY created_at DESC, token_hash ASC \
+                     LIMIT ? OFFSET ?;"
+                ))
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(&database.pool)
+                .await?,
+                sqlx::query("SELECT COUNT(*) FROM admin_sessions;")
+                    .fetch_one(&database.pool)
+                    .await?
+                    .try_get::<i64, _>(0)?,
+            ),
+        };
+
+        let sessions = rows
+            .into_iter()
+            .map(AdminSession::from_row)
+            .collect::<Result<_, _>>()?;
+        Ok((sessions, total))
     }
 
     /// The reaper's sweep: everything past its absolute deadline, plus
@@ -717,6 +783,52 @@ mod tests {
         let alices = AdminSession::list_all(Some(alice.id), &db).await.unwrap();
         assert_eq!(alices.len(), 1);
         assert_eq!(alices[0].token_hash, "a1");
+    }
+
+    /// `admin session list`'s window, in both of its forms: the whole table, and
+    /// one operator's. The **total narrows with the filter** -- a page of one
+    /// user's sessions reporting the whole table's count would be a page control
+    /// promising rows it will never show.
+    #[tokio::test]
+    async fn search_pages_each_filter_and_counts_what_that_filter_matches() {
+        let (db, alice) = db_with_user().await;
+        assert_eq!(AdminSession::search(None, 50, 0, &db).await.unwrap().1, 0);
+
+        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        for token in ["a1", "a2", "a3"] {
+            session(db.clone(), &alice, token).await;
+        }
+        session(db.clone(), &bob, "b1").await;
+
+        let (_, all) = AdminSession::search(None, 50, 0, &db).await.unwrap();
+        assert_eq!(all, 4);
+
+        let (first, total) = AdminSession::search(Some(alice.id), 2, 0, &db)
+            .await
+            .unwrap();
+        let (second, also_total) = AdminSession::search(Some(alice.id), 2, 2, &db)
+            .await
+            .unwrap();
+        assert_eq!((total, also_total), (3, 3), "alice's rows, not the table's");
+        assert_eq!((first.len(), second.len()), (2, 1));
+
+        // Newest first, and the pages are alice's sessions exactly once. All
+        // three tie on `created_at`, so the `token_hash ASC` tiebreak is what
+        // keeps a row from swapping between the two pages.
+        let walked: Vec<&str> = first
+            .iter()
+            .chain(second.iter())
+            .map(|s| s.token_hash.as_str())
+            .collect();
+        assert_eq!(walked.len(), 3);
+        for token in ["a1", "a2", "a3"] {
+            assert_eq!(
+                walked.iter().filter(|seen| **seen == token).count(),
+                1,
+                "{token} was not on exactly one page"
+            );
+        }
+        assert!(!walked.contains(&"b1"), "bob's session is not alice's page");
     }
 
     #[tokio::test]

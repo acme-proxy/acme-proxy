@@ -142,7 +142,7 @@ it that needs a session bounces to `/ui/login`.
 | `/ui/` | Counts for accounts, orders, EAB credentials and nonces, plus the mounted endpoints |
 | `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
 | `/ui/orders` | Every order, filterable by profile, status and account; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
-| `/ui/eab` | Credentials, minting (the secret is shown **once**) and revocation |
+| `/ui/eab` | Credentials, paged; minting (the secret is shown **once**) and revocation |
 | `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by profile and window, with a control to hide the replaced ones. **Read-only** |
 | `/ui/audit` | The CA's audit trail — every issuance and every refusal, filterable, with a detail page per row. **Read-only**: there is no route here that prunes it |
 | `/ui/nonces` | The table size, and a manual sweep |
@@ -210,16 +210,16 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
 | `DELETE` | `/api/orders/{id}` | |
-| `GET` | `/api/eab?limit=&offset=` | never shows a secret; oldest first |
+| `GET` | `/api/eab?limit=&offset=` | never shows a secret |
 | `POST` | `/api/eab` | `{label, profile}` — **returns the secret, once** |
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |
 | `GET` | `/api/expiring?profile=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
 | `GET` | `/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
 | `GET` | `/api/audit/{id}` | one row |
-| `GET` | `/api/nonces` | `{count, ttlSeconds}` |
+| `GET` | `/api/nonces` | `{count, ttlSeconds}`, the shape `nonce count --json` prints |
 | `POST` | `/api/nonces/cleanup` | `{ttlSeconds}` optional |
-| `GET` | `/api/profiles` | the endpoints actually mounted |
+| `GET` | `/api/profiles` | the endpoints actually mounted; `profile list`'s document |
 | `GET` | `/api/profiles/{name}/filter` | one endpoint's resolved access policy; read-only |
 | `GET` | `/health` | unauthenticated, no database access |
 
@@ -231,7 +231,9 @@ match *unpaged*, which is what a page control needs:
 ```
 
 `limit` defaults to 50 and is clamped to `admin.page_size_max` rather than
-refused.
+refused. Every listing on the CLI answers the same four members
+([Admin CLI → Paging](cli.md#paging)), so a script learns one shape rather than
+two.
 
 `POST /api/session` for an operator with a second factor answers `200` with
 `{"mfaRequired": true, "step": "verify"}` and **no `user` member** — a
@@ -256,6 +258,10 @@ signed POST-as-GET only, so it is there for completeness rather than as a link.
 fifty orders would otherwise carry fifty chains for a column no list shows. An
 order that never reached issuance has neither the field nor the download, and
 the route answers `404` rather than an empty file.
+
+On a host holding the database, `acme-proxy order chain <id>` prints the same
+bytes on stdout under the same rule — see
+[Admin CLI → Order management](cli.md#order-management).
 
 The card names the leaf two more ways, and both are on the listing shape as
 well since each is one short string: `certSerial`, which is what an abuse

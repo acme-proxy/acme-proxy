@@ -243,7 +243,7 @@ pub fn render_eab_created_json(eab: &Eab) -> Value {
     Value::Object(object)
 }
 
-/// `admin user list --json` / `admin user show --json`.
+/// `admin user list --json`.
 ///
 /// A straight pass-through: unlike an account or an order, an operator has no
 /// ACME wire form to augment -- [`AdminUser::to_json`] is already the only
@@ -253,10 +253,117 @@ pub fn render_admin_user_json(user: &AdminUser) -> Value {
     user.to_json()
 }
 
+/// `admin user show --json`: the listing shape plus the two members that cost a
+/// query.
+///
+/// [`render_order_detail_json`]'s arrangement, and for its reason.
+/// `enrolmentPending` distinguishes the state a listing cannot show --
+/// "enrolment started, never confirmed" behaves exactly like "no factor" at the
+/// login prompt, so an operator who believes they enrolled has no other way to
+/// find out -- and `recoveryCodesRemaining` is a `COUNT` on a second table,
+/// which a page of fifty operators should not pay fifty times.
+#[must_use]
+pub fn render_admin_user_detail_json(user: &AdminUser, recovery_codes_remaining: i64) -> Value {
+    let mut object = render_admin_user_json(user)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    object.insert(
+        "enrolmentPending".to_string(),
+        Value::Bool(user.has_pending_totp()),
+    );
+    object.insert(
+        "recoveryCodesRemaining".to_string(),
+        Value::from(recovery_codes_remaining),
+    );
+    Value::Object(object)
+}
+
 /// `admin session list --json`.
 #[must_use]
 pub fn render_admin_session_json(session: &AdminSession) -> Value {
     session.to_json()
+}
+
+/// `nonce count --json` and `GET /api/nonces`.
+///
+/// A count and nothing else: a nonce is a bearer credential until it is
+/// consumed, so listing values would put live ones on a screen. The count is
+/// the useful part -- it should sit near the request rate times the TTL, and a
+/// number far above that says the reaper is not running, which is why the TTL
+/// travels beside it rather than leaving the reader to go and look it up.
+#[must_use]
+pub fn render_nonce_stats_json(count: i64, ttl_seconds: u64) -> Value {
+    serde_json::json!({
+        "count": count,
+        "ttlSeconds": ttl_seconds,
+    })
+}
+
+/// One ACME endpoint, as every surface describes it.
+///
+/// The two front ends reach this from opposite directions, and the difference
+/// is real rather than an implementation detail. `GET /api/profiles` and
+/// `/ui/profiles` build it from a **mounted** [`crate::Profile`], so they
+/// describe what this process is actually serving; `acme-proxy profile list`
+/// builds it from the configuration, because the alternative is
+/// `Profile::build_all`, which constructs signer backends -- generating a CA
+/// key and contacting a relay upstream for a read-only listing. That is
+/// `filter show`'s split exactly: the panel serves the live thing, the terminal
+/// rebuilds one, and between an edit and its `SIGHUP` the two legitimately
+/// disagree.
+pub struct ProfileSummary {
+    pub name: String,
+    pub base_url: String,
+    pub challenge_bypass: bool,
+    pub eab_enabled: bool,
+}
+
+impl ProfileSummary {
+    /// An endpoint this process is serving.
+    #[must_use]
+    pub fn mounted(profile: &crate::Profile) -> Self {
+        Self {
+            name: profile.name.clone(),
+            base_url: profile.base_url.clone(),
+            challenge_bypass: profile.challenges.is_bypassed(),
+            eab_enabled: profile.eab.enabled,
+        }
+    }
+
+    /// An endpoint this configuration would mount.
+    ///
+    /// `Config::resolve_profiles` has already dropped anything `enabled = false`
+    /// on the caller's behalf, so this needs no filter of its own -- the list it
+    /// is mapped over is already the mounted set, minus the fact of being
+    /// mounted.
+    #[must_use]
+    pub fn configured(base_url: &str, profile: &crate::config::ProfileConfig) -> Self {
+        Self {
+            name: profile.name.clone(),
+            base_url: profile_base_url(base_url, &profile.name),
+            challenge_bypass: profile.sections.challenge.bypass,
+            eab_enabled: profile.sections.eab.enabled,
+        }
+    }
+
+    /// Where a client fetches this endpoint's directory (RFC 8555 §7.1.1).
+    #[must_use]
+    pub fn directory_url(&self) -> String {
+        format!("{}{}", self.base_url, crate::routes::DIRECTORY)
+    }
+}
+
+/// `profile list --json`, `GET /api/profiles` and `/ui/profiles`.
+#[must_use]
+pub fn render_profile_json(profile: &ProfileSummary) -> Value {
+    serde_json::json!({
+        "name": profile.name,
+        "baseUrl": profile.base_url,
+        "directory": profile.directory_url(),
+        "challengeBypass": profile.challenge_bypass,
+        "eabEnabled": profile.eab_enabled,
+    })
 }
 
 #[cfg(test)]

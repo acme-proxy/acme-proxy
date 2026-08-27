@@ -1,13 +1,12 @@
-{#- The swap target of the EAB list.
-
-    `Eab::list_all` is unpaginated (an operator mints these by hand, a few at a
-    time), so there is no pager here -- unlike accounts and orders. `GET
-    /api/eab` does window, over `Eab::search`; a script has no scroll bar.
+{#- The swap target of the EAB list: the table and its pager, so a page step
+    replaces exactly this and nothing else -- `accounts/_table.html`'s shape.
 
     `oob` is set only by `_created.html`, which returns this table alongside the
     new credential so the list refreshes without a reload. The attribute has to
     sit on this element rather than on a wrapper, because htmx matches an
-    out-of-band swap by the id of the element carrying it. -#}
+    out-of-band swap by the id of the element carrying it. That response always
+    renders the *first* page, which is where `Eab::search`'s newest-first
+    ordering puts a credential minted a moment ago. -#}
 <div id="eab-table" {% if oob %}hx-swap-oob="true"{% endif %}>
   <div class="panel table-scroll">
     <table>
@@ -21,7 +20,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for eab in items %}
+        {% for eab in page.items %}
           <tr>
             <td><a href="/ui/eab/{{ eab.kid }}"><code>{{ eab.kid }}</code></a></td>
             <td>
@@ -47,4 +46,5 @@
       </tbody>
     </table>
   </div>
+  {% include "partials/_pager.html" %}
 </div>

@@ -43,7 +43,7 @@ pub async fn get_index(
         &state.database,
     )
     .await?;
-    let eab = Eab::list_all(&state.database).await?.len();
+    let (_, eab) = Eab::search(1, 0, &state.database).await?;
     let nonces = Nonce::count(&state.database).await?;
 
     let mut context = chrome(&session, "index", "Overview");

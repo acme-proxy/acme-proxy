@@ -1278,6 +1278,79 @@ async fn deactivating_an_account_swaps_the_card_and_deleting_it_redirects() {
     );
 }
 
+/// The page grew a window when `Eab::list_all` went, so all three surfaces
+/// read one query. The regression that matters is the pairing at the end: the
+/// mint form re-renders the **first** page out of band, and the ordering is
+/// what puts the credential just minted on it.
+#[tokio::test]
+async fn the_eab_list_pages_and_a_new_credential_lands_on_the_refreshed_page() {
+    let mut config = admin_config();
+    config.admin.page_size_max = 200;
+    let (app, database, session) = test_admin_app_logged_in(config).await;
+
+    let mut minted = Vec::new();
+    for _ in 0..3 {
+        minted.push(
+            acme_proxy::sqlite::eab::Eab::create(None, None, &database)
+                .await
+                .unwrap()
+                .kid
+                .to_string(),
+        );
+    }
+
+    // Newest first, so the first page of one holds the credential minted last.
+    let first = html_body(admin_page(&app, "/ui/eab?limit=1", Some(&session), false).await).await;
+    assert!(first.contains(minted[2].as_str()), "{first}");
+    assert!(!first.contains(minted[0].as_str()), "{first}");
+    assert!(first.contains("1–1 of 3"), "{first}");
+    // The pager's links carry the window forward, and it is a page step rather
+    // than a reload: `#eab-table` is the swap target, so the form above it and
+    // the secret beside it survive.
+    // The path is HTML-escaped by minijinja (`&#x2f;`), so the window is what
+    // this asserts on -- the part a dropped filter or a miscomputed offset
+    // would break.
+    assert!(first.contains("?limit=1&amp;offset=1"), "{first}");
+    assert!(first.contains(r##"hx-target="#eab-table""##), "{first}");
+
+    let last =
+        html_body(admin_page(&app, "/ui/eab?limit=1&offset=2", Some(&session), false).await).await;
+    assert!(last.contains(minted[0].as_str()), "{last}");
+    assert!(last.contains("3–3 of 3"), "{last}");
+
+    // The fragment form, chosen off `HX-Request` like every other list route.
+    let fragment = html_body(admin_page(&app, "/ui/eab", Some(&session), true).await).await;
+    assert!(
+        fragment.trim_start().starts_with("<div id=\"eab-table\""),
+        "{fragment}"
+    );
+
+    // Minting from the *last* page still refreshes a table holding the new row:
+    // the response renders page one whatever page the form was posted from,
+    // which is only the right answer because the listing is newest first.
+    let created = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/eab",
+        Some(&session),
+        Some(&[("label", "fresh"), ("profile", "")]),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = html_body(created).await;
+    let kid = body
+        .split("<dt>Key ID</dt><dd><code>")
+        .nth(1)
+        .and_then(|rest| rest.split("</code>").next())
+        .expect("the created panel must name the kid")
+        .to_string();
+    assert!(
+        body.contains(&format!(r#"href="/ui/eab/{kid}""#)),
+        "the refreshed table must hold the row the secret above it belongs to"
+    );
+    assert!(body.contains("1–4 of 4"), "{body}");
+}
+
 #[tokio::test]
 async fn an_eab_secret_is_shown_once_and_the_list_refreshes_out_of_band() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;

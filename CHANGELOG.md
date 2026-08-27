@@ -96,6 +96,35 @@ migrated configuration before restarting.
   keep whatever their `dns_name`/`hostname` permits and lose the rest, so the
   symptom is a refused `newOrder` rather than a startup failure.
 
+- **`eab list`, `admin user list` and `admin session list` answer a page, not
+  a bare array.** All three now take `--limit`/`--offset`, print the
+  `N of M row(s)` footer, and under `--json` answer the
+  `{items, total, limit, offset}` envelope every other listing — and the admin
+  API — already answers. A script reading `acme-proxy eab list --json | jq '.[]'`
+  reads `jq '.items[]'` instead.
+
+  They were the last three bare arrays, kept that way on the argument that an
+  operator mints those rows by hand a few at a time. That was true of how the
+  tables fill and said nothing about how long they have been filling; what it
+  cost was a script learning one shape for the shell and another for `/api`.
+  `render::print_rows`, the renderer that produced the bare shape, is gone with
+  them: `print_page` is now the only listing shape in the binary.
+
+  `admin user list` stays **oldest first** and is the one listing that is: the
+  bootstrap operator, created before there was a panel to sign in to, is
+  precisely the row whose position should not move as colleagues are added.
+
+- **`GET /api/eab` is newest first.** It was oldest first, and the reason
+  recorded at the query was that flipping it would make the API disagree with
+  `/ui/eab` and `eab list`, which both still read an unpaged `Eab::list_all`.
+  Both read `Eab::search` now, so that reason expired, and what settles the
+  direction instead is the mint form: `POST /ui/eab` re-renders the first page
+  out of band so a new credential appears without a reload — which is only the
+  right page if the listing puts it on top. The `created_at` tie-break moved to
+  `kid DESC` for the same reason, a `kid` being a UUID v7: ascending, it handed
+  back the *oldest* of the credentials minted inside one second, which is
+  exactly the second the form re-renders in.
+
 ### Added
 
 - **`--log-level <off|error|warn|info|debug|trace>`**, a third global CLI flag
@@ -108,6 +137,45 @@ migrated configuration before restarting.
   reaches further. It survives a `SIGHUP`, and `server_logging_filter_overridden`
   gains a `source` field naming which of the two overrode an edited
   `logging.filter`.
+
+- **The last few asymmetries between the two front ends are closed.** Four
+  commands, each of them a thing one surface could do and its twin could not:
+
+  - **`acme-proxy admin user show <username> [--json]`** — an operator was the
+    only listable object in the binary with no detail command. It carries the
+    two things a row cannot: whether enrolment was *started and never
+    confirmed*, and how many recovery codes are left. The first matters because
+    "pending" and "no factor" behave identically at the login prompt, so an
+    operator who believes they enrolled has no other way to find out.
+    `admin user totp status` still says the same thing about the factor alone.
+  - **`acme-proxy order chain <id>`** — the issued chain, as PEM, and nothing
+    else, so it pipes: `order chain <id> > web.example.com.pem`. The panel has
+    offered `GET /ui/orders/{id}/chain.pem` since 0.3.0, so a host holding the
+    database was going through a browser for bytes it already had. It keeps
+    that route's rule that an order which never reached issuance is an error
+    rather than an empty file — zero bytes named `.pem` read as a broken
+    certificate, not an absent one.
+  - **`acme-proxy nonce count [--json]`** — the table size and the window a
+    nonce is fresh for, `GET /api/nonces`'s exact `{count, ttlSeconds}` from the
+    one renderer both now call. The shell could sweep the table and not look at
+    it. Neither surface ever lists *values*: a nonce is a bearer credential
+    until it is consumed.
+  - **`acme-proxy profile list [--json]`** — the ACME endpoints this
+    configuration mounts, name-sorted, each with its directory URL and whether
+    it bypasses challenge validation or requires EAB. It renders the same
+    document `GET /api/profiles` does, from the opposite direction: the API
+    reads the *mounted* profiles, where the CLI resolves the configuration,
+    because building the real thing constructs signer backends — generating a
+    CA key and contacting a relay's upstream for a read-only listing. That is
+    `filter show`'s split, with its two consequences: the panel is right about
+    what is running, and only the terminal can be pointed at a configuration
+    the server would refuse to start on.
+
+- **`/ui/eab` is paged.** It read the whole table; it now reads the same
+  windowed query `GET /api/eab` and `eab list` do, so the three cannot come to
+  describe the credential set differently. The `/ui/` overview's EAB count
+  stops loading every row to call `.len()` on it, which the comment above it
+  already claimed it did not.
 
 ### Fixed
 

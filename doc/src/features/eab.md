@@ -111,4 +111,7 @@ acme-proxy eab list --json
 acme-proxy eab show <kid>
 ```
 
-Neither ever renders the secret.
+Neither ever renders the secret. `eab list` is newest first and paged
+([Admin CLI → Paging](../operations/cli.md#paging)); it reads the same query
+`GET /api/eab` and the panel's `/ui/eab` do, so the three cannot come to
+describe the credential set differently.

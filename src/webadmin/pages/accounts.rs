@@ -20,7 +20,7 @@ use crate::webadmin::handlers::orders::render_orders;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
-use crate::webadmin::pages::{chrome, flash, pager, respond, respond_fragment};
+use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 
 /// The contact editor posts a textarea, not a JSON array.
 #[derive(Debug, Deserialize)]
@@ -250,12 +250,6 @@ async fn load(id: &str, state: &AdminState) -> Result<Value, PageError> {
         &account,
         &state.config.server.base_url,
     ))
-}
-
-/// The `{items, total}` half of the list context; the window itself is in
-/// `pager`.
-fn page_value(items: Vec<Value>, total: i64) -> Value {
-    serde_json::json!({ "items": items, "total": total })
 }
 
 fn not_found(id: &str) -> PageError {

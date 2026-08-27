@@ -299,8 +299,19 @@ cookie has been taken.
 ```console
 $ acme-proxy admin user list
 alice                 active    totp=on   2026-08-08T13:21:18Z  2026-08-08T15:07:17Z
+1 of 1 row(s).
 
 $ acme-proxy admin user list --json
+
+$ acme-proxy admin user show alice
+id             bac6a47e-711b-4e8e-858e-417da905dab9
+username       alice
+status         active
+totp           enabled
+recovery_codes 7
+created        2026-08-08T13:21:18Z
+updated        2026-08-08T15:07:17Z
+last_login     2026-08-08T15:07:17Z
 
 $ acme-proxy admin user passwd alice --password-file /run/secrets/new
 Password changed for alice. Every session they held was revoked.
@@ -312,6 +323,14 @@ $ acme-proxy admin user enable alice
 
 $ acme-proxy admin user delete alice          # asks first; -y skips
 ```
+
+`admin user list` is paged like every other listing
+([Admin CLI → Paging](cli.md#paging)) and is the one that is **oldest first**:
+the bootstrap operator is the row whose position should not move as colleagues
+are added. `admin user show` adds the two things a row cannot carry — whether
+enrolment was started and never confirmed, and how many recovery codes are
+left. The first matters because "pending" and "no factor" behave identically at
+the login prompt.
 
 Usernames are stored lowercased, so `Alice` and `alice` cannot become two logins
 that read as one in a log line.
@@ -325,6 +344,7 @@ change in name only. Disabling does the same.
 ```console
 $ acme-proxy admin session list
 01234567  bac6a47e-…  active  2026-08-08T15:07:17Z  expires=2026-08-09T03:07:17Z  192.0.2.1
+1 of 1 row(s).
 
 $ acme-proxy admin session list --username alice --json
 

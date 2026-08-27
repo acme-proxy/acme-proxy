@@ -199,6 +199,16 @@ pub(crate) fn flash_error(code: &str, message: impl Into<String>) -> Value {
     json!({ "kind": "error", "message": message.into(), "code": code })
 }
 
+/// The `{items, total}` half of a list context; the window itself is [`pager`].
+///
+/// Every paged fragment template reads `page.items` and the pager reads the
+/// window, so the two halves are built separately and land in the context under
+/// their own names.
+#[must_use]
+pub(crate) fn page_value(items: Vec<Value>, total: i64) -> Value {
+    json!({ "items": items, "total": total })
+}
+
 /// The offset-pagination controls for a list fragment.
 ///
 /// Built here rather than in the template because the previous and next URLs

@@ -48,6 +48,8 @@ pub enum OrderCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print the issued certificate chain, as PEM, on stdout.
+    Chain { id: String },
     /// Hard-delete the order and everything under it.
     Delete { id: String },
     /// Revoke the order's issued certificate.
@@ -167,6 +169,27 @@ pub async fn run_order_command(
             }
             Some(detail) => print!("{}", render::render_order_detail_text(&detail, palette)),
         },
+        OrderCommand::Chain { id } => {
+            // The whole of stdout, so it pipes: `order chain <id> > cert.pem`.
+            // Deliberately not a flag on `show` -- a flag that discards the rest
+            // of its command's output is a mode wearing a flag's clothes. The
+            // JSON side already had this as `certificatePem` on
+            // `render_order_detail_json`; what was missing was the raw bytes.
+            let Some(order) = Order::find_by_id(&id, &database).await? else {
+                return Err(not_found(&id));
+            };
+            // Refused rather than answered with zero bytes, the rule
+            // `GET /ui/orders/{id}/chain.pem` already keeps: an empty file named
+            // `.pem` reads as a broken certificate rather than an absent one.
+            let Some(pem) = order.certificate else {
+                return Err(CliError(format!(
+                    "order {id} has no certificate: it has not been finalized"
+                )));
+            };
+            // `print!`: the stored chain already ends in a newline, and a second
+            // one would make the output differ from the file the panel serves.
+            print!("{pem}");
+        }
         OrderCommand::Delete { id } => {
             match admin::confirm_delete_order(&id, yes, reader, database).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
@@ -448,6 +471,9 @@ mod tests {
                 id: "ord-nope".to_string(),
                 json: false,
             },
+            OrderCommand::Chain {
+                id: "ord-nope".to_string(),
+            },
             OrderCommand::Delete {
                 id: "ord-nope".to_string(),
             },
@@ -470,6 +496,66 @@ mod tests {
             .expect_err("an unknown order must fail");
             assert_eq!(error, expected);
         }
+    }
+
+    /// The PEM on stdout, and the refusal that keeps it honest: an order that
+    /// never reached issuance is an error, not an empty file --
+    /// `GET /ui/orders/{id}/chain.pem`'s own rule, since zero bytes named
+    /// `.pem` read as a broken certificate rather than an absent one.
+    #[tokio::test]
+    async fn chain_prints_the_issued_pem_and_refuses_an_order_with_none() {
+        let dir = temp_dir();
+        let config = config_in(&dir, "default");
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let mut order = seed_order(&database, "default").await;
+
+        let mut reader: &[u8] = &[];
+        let error = run_order_command(
+            OrderCommand::Chain {
+                id: order.id.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .expect_err("an order with no certificate has no chain to print");
+        assert_eq!(
+            error,
+            CliError(format!(
+                "order {} has no certificate: it has not been finalized",
+                order.id
+            ))
+        );
+
+        issue_onto(&mut order, &config, database.clone()).await;
+
+        // What the command prints is the column, verbatim -- the same string
+        // `render_order_detail_json`'s `certificatePem` and the panel's download
+        // both hand over.
+        let stored = Order::find_by_id(order.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .certificate
+            .expect("finalize stored the chain");
+        assert!(stored.starts_with("-----BEGIN CERTIFICATE-----"));
+
+        let mut reader: &[u8] = &[];
+        run_order_command(
+            OrderCommand::Chain {
+                id: order.id.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database,
+        )
+        .await
+        .unwrap();
     }
 
     /// `revoke` needs the endpoint that signed the certificate. A profile the

@@ -1728,10 +1728,15 @@ async fn accounts_list_pages_and_reports_the_total() {
 #[tokio::test]
 async fn the_eab_list_pages_and_reports_the_total() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let mut minted = Vec::new();
     for _ in 0..5 {
-        acme_proxy::sqlite::eab::Eab::create(None, None, &database)
-            .await
-            .unwrap();
+        minted.push(
+            acme_proxy::sqlite::eab::Eab::create(None, None, &database)
+                .await
+                .unwrap()
+                .kid
+                .to_string(),
+        );
     }
 
     let body =
@@ -1766,6 +1771,21 @@ async fn the_eab_list_pages_and_reports_the_total() {
     assert_eq!(bare["limit"], 50);
     assert_eq!(bare["offset"], 0);
     assert_eq!(bare["total"], 5);
+
+    // **Newest first**, like every other listing on this API. It was oldest
+    // first while `/ui/eab` and `eab list` still read an unpaged `list_all`
+    // that could not have agreed with any other direction; all three read
+    // `Eab::search` now, and the direction the mint form needs is this one --
+    // `POST /ui/eab` re-renders the first page, and the credential just minted
+    // has to be on it.
+    let order: Vec<&str> = bare["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["kid"].as_str().unwrap())
+        .collect();
+    minted.reverse();
+    assert_eq!(order, minted);
 }
 
 #[tokio::test]
@@ -2344,6 +2364,24 @@ async fn profiles_reports_the_endpoints_actually_mounted() {
     assert_eq!(profiles[0]["name"], PROFILE);
     assert_eq!(profiles[0]["baseUrl"], BASE);
     assert_eq!(profiles[0]["directory"], format!("{BASE}/directory"));
+
+    // Equal to the shared document, not merely compatible with it.
+    // `acme-proxy profile list` renders `render_profile_json` too, from a
+    // `ProfileSummary` built out of the *configuration* rather than out of a
+    // mounted profile — building the real thing constructs signer backends —
+    // so a member this route added or dropped on its own would be the panel and
+    // the terminal describing one endpoint differently.
+    assert_eq!(
+        profiles[0],
+        acme_proxy::admin::render_profile_json(&acme_proxy::admin::ProfileSummary {
+            name: PROFILE.to_string(),
+            base_url: BASE.to_string(),
+            // The harness's `ChallengeRegistry::default()`, which bypasses:
+            // there is no `http-01` responder on port 80 in a test.
+            challenge_bypass: true,
+            eab_enabled: false,
+        })
+    );
 }
 
 /// `filter show`, behind a session — and the live policy rather than a rebuilt

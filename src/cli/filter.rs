@@ -100,7 +100,7 @@ pub async fn run_filter_command(
 
 /// Both `--json` shapes, printed the one way.
 ///
-/// Pretty rather than the compact `println!` [`crate::cli::render::print_rows`]
+/// Pretty rather than the compact `println!` [`crate::cli::render::print_page`]
 /// uses: that one prints a *listing*, and these two print one object each — and
 /// the two subcommands of `filter` should not differ in how they hand it over.
 ///

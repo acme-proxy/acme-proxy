@@ -186,6 +186,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 | --- | --- |
 | `order list` | `--profile <name>`, `--account-id <id>`, `--status <status>`, `--expiring-in <days>`, `--hide-superseded`, `--limit <n>`, `--offset <n>`, `--json` |
 | `order show <id>` | `--json` |
+| `order chain <id>` | — |
 | `order delete <id>` | *(prompts)* |
 | `order revoke <id>` | `--reason <n>` |
 
@@ -214,6 +215,17 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   and the ACME `certificate` URL, which is reachable only by signed
   POST-as-GET) are likewise `--json`'s alone — the indented authorization tree
   is what a terminal reads instead.
+- `order chain <id>` prints that chain and nothing else, so it pipes:
+
+  ```console
+  $ acme-proxy order chain 0198f3b1-... > web.example.com.pem
+  ```
+
+  It is the terminal's spelling of the panel's
+  `GET /ui/orders/{id}/chain.pem` download, and it keeps that route's rule: an
+  order that never reached issuance is an error, not an empty file, because
+  zero bytes named `.pem` read as a broken certificate rather than an absent
+  one. There is no `--json` — the PEM *is* the output.
 - `order revoke` is the operator-side equivalent of `POST /revokeCert`, for an
   out-of-band compromise report a client cannot or will not act on. It calls the
   signer's own `revoke` hook, so a local CA's CRL genuinely reflects it. It is
@@ -243,13 +255,20 @@ The web admin can read this trail but not prune it — see
 
 ## Paging
 
-`account list`, `order list` (both of its queries) and `audit list` take
-`--limit <n>` and `--offset <n>`, defaulting to **50 rows**. `orders` and
-`audit_log` each grow a row per issuance for the life of the deployment, so
-there is deliberately no "everything" spelling and `--limit 0` is not a way
-around it: on a year-old CA that is a terminal full of scrollback and a table
-loaded into memory. A nonsense window is corrected rather than refused — a
-`--limit 0` becomes one row, a negative `--offset` becomes zero.
+**Every listing in this binary is paged.** `account list`, `order list` (both
+of its queries), `audit list`, `eab list`, `admin user list` and
+`admin session list` all take `--limit <n>` and `--offset <n>`, defaulting to
+**50 rows**. `orders` and `audit_log` each grow a row per issuance for the life
+of the deployment, so there is deliberately no "everything" spelling and
+`--limit 0` is not a way around it: on a year-old CA that is a terminal full of
+scrollback and a table loaded into memory. A nonsense window is corrected rather
+than refused — a `--limit 0` becomes one row, a negative `--offset` becomes
+zero.
+
+The last three used to answer a bare JSON array with no window, on the argument
+that an operator mints those rows by hand a few at a time. That was true of how
+the tables fill and said nothing about how long they have been filling — and it
+made a script learn one shape for the shell and another for `/api`.
 
 Every paged listing ends with a count, always and not only when the page is
 short:
@@ -264,6 +283,10 @@ $ acme-proxy order list --limit 2
 page of it. Page with `--offset`; the listings are ordered newest first,
 tie-broken on the row id, so a row cannot swap between pages and go unseen.
 
+**`admin user list` is the one exception, and is oldest first.** The bootstrap
+operator — created before there was a panel to sign in to — is precisely the
+row whose position should not move as colleagues are added.
+
 `order list --expiring-in` adds a third number when `--hide-superseded` drops
 rows, because supersession is decided per row and cannot become part of the
 query — so the total counts the *window*, not the rows printed under it:
@@ -272,6 +295,14 @@ query — so the total counts the *window*, not the rows printed under it:
 $ acme-proxy order list --expiring-in 30 --hide-superseded --limit 20
 ...
 6 of 8 row(s), 2 superseded hidden.
+```
+
+Under `--json` every one of them answers the same envelope the admin API
+returns, member for member:
+
+```console
+$ acme-proxy eab list --limit 2 --json
+{"items":[…],"total":37,"limit":2,"offset":0}
 ```
 
 The window is not clamped to `admin.page_size_max`. That key is a ceiling on
@@ -374,11 +405,56 @@ run".
 
 | Command | Flags |
 | --- | --- |
+| `nonce count` | `--json` |
 | `nonce cleanup` | `--ttl-seconds <n>` |
 
-Deletes expired nonces. The server already sweeps them on an interval for the
-life of the process, so this is mainly a debugging tool. `--ttl-seconds`
-defaults to the configured `nonce.ttl_seconds`.
+`nonce cleanup` deletes expired nonces. The server already sweeps them on an
+interval for the life of the process, so this is mainly a debugging tool.
+`--ttl-seconds` defaults to the configured `nonce.ttl_seconds`.
+
+`nonce count` reports the table size and the window a nonce is fresh for — the
+terminal's spelling of `GET /api/nonces`, answering the same
+`{count, ttlSeconds}` under `--json`:
+
+```console
+$ acme-proxy nonce count
+1284 nonce(s), ttl 300s.
+```
+
+The two numbers are only meaningful together. The count should sit near the
+request rate times the TTL; one far above that says the reaper is not running.
+Values are never listed, on either surface: a nonce is a bearer credential
+until it is consumed, so a listing would put live ones on a screen.
+
+## Profiles
+
+| Command | Flags |
+| --- | --- |
+| `profile list` | `--json` |
+
+The ACME endpoints this configuration mounts, name-sorted, each with the two
+facts that decide whether it is safe to expose and then its directory URL —
+last, because it is the only field here with no bounded width, and any column
+after it would be ragged:
+
+```console
+$ acme-proxy profile list
+internal              challenges=bypassed   eab=off  https://ca.example.com/profile/internal/directory
+le                    challenges=validated  eab=on   https://ca.example.com/profile/le/directory
+```
+
+`challenges=bypassed` is painted as a warning, because it is one: an endpoint
+that marks a challenge `valid` without checking anything is an open CA wherever
+`[filter]` is empty. A profile parked with `enabled = false` is absent, which is
+the honest answer to "what does this mount".
+
+Like `filter show`, this **builds** the answer the way startup does rather than
+reading a file back, so a configuration `serve` would refuse is refused here
+too — which makes it a pre-restart check as well as a listing. The panel's
+`GET /api/profiles` and `/ui/profiles` render the identical document from the
+*mounted* profiles instead, so between an edit and its `SIGHUP` the two
+legitimately disagree, and only this one can be pointed at a configuration the
+server would not start on.
 
 ## Upstream account management
 
@@ -408,7 +484,7 @@ extension. Only that first startup ever contacts the upstream.
 | Command | Flags |
 | --- | --- |
 | `eab create` | `--label <text>`, `--profile <name>`, `--json` |
-| `eab list` | `--json` |
+| `eab list` | `--limit <n>`, `--offset <n>`, `--json` |
 | `eab show <kid>` | `--json` |
 | `eab revoke <kid>` | — |
 
@@ -419,6 +495,9 @@ extension. Only that first startup ever contacts the upstream.
   is usually not what you want in a multi-tenant deployment.
 - `eab revoke` takes effect immediately, with no restart: credentials are read
   from the live database on every `newAccount`.
+- `eab list` is **newest first** and paged; see [Paging](#paging). It reads the
+  same query `GET /api/eab` and `/ui/eab` do, so the three cannot come to
+  describe the credential set differently.
 
 See [External Account Binding](../features/eab.md) for the protocol side.
 
@@ -431,14 +510,15 @@ is running.
 | Command | Flags |
 | --- | --- |
 | `admin user create <username>` | `--password-file <path>` |
-| `admin user list` | `--json` |
+| `admin user list` | `--limit <n>`, `--offset <n>`, `--json` |
+| `admin user show <username>` | `--json` |
 | `admin user passwd <username>` | `--password-file <path>` |
 | `admin user delete <username>` | confirm-gated; `-y` skips |
 | `admin user disable\|enable <username>` | — |
 | `admin user totp status <username>` | `--json` |
 | `admin user totp reset <username>` | confirm-gated; `-y` skips |
 | `admin user totp recovery-codes <username>` | prints them once |
-| `admin session list` | `--username <u>`, `--json` |
+| `admin session list` | `--username <u>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `admin session revoke` | `--user <u>` **or** `--all` |
 
 ```console
@@ -465,7 +545,14 @@ Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9).
   an operator who has lost their authenticator gets back in. It asks first,
   because it removes a security control rather than tightening one, and it takes
   the recovery codes and every live session with it.
+- `admin user show` is the detail beside the listing, and adds the two things a
+  row cannot carry: whether enrolment was *started and never confirmed*, and how
+  many recovery codes are left. That first one matters because "enrolment
+  pending" and "no factor" behave identically at the login prompt — an operator
+  who believes they enrolled has no other way to find out.
+  `admin user totp status` says the same thing about the factor alone.
 - `admin session list` shows a fingerprint of the stored token hash, never the
-  hash itself.
+  hash itself. Both listings are paged; see [Paging](#paging), which also has
+  the reason `admin user list` is the one listing ordered oldest first.
 
 See [Web Admin — Users & Sessions](webadmin_users.md) for the full treatment.
