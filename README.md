@@ -16,7 +16,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 📖 **[Full documentation](https://acme-proxy.github.io/acme-proxy/)** — start with the
 [Quick Start](https://acme-proxy.github.io/acme-proxy/getting_started/quick_start.html).
 
-> **Current release: 0.3.0.** Before 1.0.0 the database schema is the *only*
+> **Current release: 0.4.0.** Before 1.0.0 the database schema is the *only*
 > compatibility guarantee: `migrations/` is append-only, so upgrading is a
 > matter of starting the new binary against the existing database. Everything
 > else — configuration keys, profile names, the JSON admin API, log event names,

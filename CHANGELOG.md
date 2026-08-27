@@ -31,6 +31,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-27
+
 ### Breaking
 
 - **Row ids are UUID version 7, stored as sixteen bytes rather than
@@ -1643,7 +1645,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/acme-proxy/acme-proxy/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/acme-proxy/acme-proxy/releases/tag/0.1.0
