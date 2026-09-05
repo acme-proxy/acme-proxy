@@ -18,7 +18,8 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::session::{
-    Authenticated, AuthenticatedWrite, EnrolWrite, PendingMfa, PendingMfaSubmit,
+    AdminWrite, Authenticated, AuthenticatedWrite, EnrolWrite, PendingMfa, PendingMfaSubmit,
+    SelfServiceWrite,
 };
 
 /// The header htmx sets on every request it issues.
@@ -79,6 +80,50 @@ impl FromRequestParts<AdminState> for PageSessionWrite {
         let hx = is_htmx(&parts.headers);
         match AuthenticatedWrite::from_request_parts(parts, state).await {
             Ok(AuthenticatedWrite(auth)) => Ok(Self { auth, hx }),
+            Err(error) => Err(to_page_error(error, hx)),
+        }
+    }
+}
+
+/// A signed-in **admin** on a page that manages other operators, with the
+/// origin and CSRF gates passed. Wraps [`AdminWrite`].
+pub struct PageAdminWrite {
+    pub auth: Authenticated,
+    pub hx: bool,
+}
+
+/// A signed-in operator of **any** role, on a page that only touches their own
+/// account. Wraps [`SelfServiceWrite`].
+pub struct PageSelfServiceWrite {
+    pub auth: Authenticated,
+    pub hx: bool,
+}
+
+impl FromRequestParts<AdminState> for PageAdminWrite {
+    type Rejection = PageError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        let hx = is_htmx(&parts.headers);
+        match AdminWrite::from_request_parts(parts, state).await {
+            Ok(AdminWrite(auth)) => Ok(Self { auth, hx }),
+            Err(error) => Err(to_page_error(error, hx)),
+        }
+    }
+}
+
+impl FromRequestParts<AdminState> for PageSelfServiceWrite {
+    type Rejection = PageError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        let hx = is_htmx(&parts.headers);
+        match SelfServiceWrite::from_request_parts(parts, state).await {
+            Ok(SelfServiceWrite(auth)) => Ok(Self { auth, hx }),
             Err(error) => Err(to_page_error(error, hx)),
         }
     }

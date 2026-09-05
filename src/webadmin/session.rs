@@ -22,10 +22,14 @@
 //! plus an origin gate that also covers login (which by definition carries no
 //! session token yet).
 //!
-//! Enforcement is **structural**: [`AuthenticatedWrite`] is the only way for a
-//! mutating handler to reach a session, and constructing it runs the check.
-//! Same reasoning as hoisting the media-type/`crit`/`url`/nonce checks into
-//! `AcmeRequest` — a new endpoint cannot forget what it cannot express.
+//! Enforcement is **structural**: one of [`AuthenticatedWrite`],
+//! [`AdminWrite`] or [`SelfServiceWrite`] is the only way for a mutating
+//! handler to reach a session, and constructing any of them runs the origin
+//! and CSRF checks. The three differ only in the privilege tier they demand —
+//! `operator`+, `admin`, and none (own-account routes) — so a handler that
+//! forgets the role check cannot compile. Same reasoning as hoisting the
+//! media-type/`crit`/`url`/nonce checks into `AcmeRequest` — a new endpoint
+//! cannot forget what it cannot express.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -42,7 +46,7 @@ use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
+use crate::sqlite::admin_user::{AdminRole, AdminUser};
 use crate::sqlite::nonce::{fingerprint, now_secs};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
@@ -226,13 +230,32 @@ pub struct Authenticated {
     pub user: AdminUser,
 }
 
-/// [`Authenticated`], plus the CSRF token and the origin gate.
+/// [`Authenticated`], the origin gate and the CSRF check, **plus a privilege
+/// tier of at least [`AdminRole::Operator`]**.
 ///
-/// Every mutating handler takes this. The check cannot be forgotten, because
-/// this type is the only way a `POST`/`PATCH`/`DELETE` handler can reach a
-/// session at all.
+/// Every mutating handler that touches shared or CA state takes this. None of
+/// the three checks can be forgotten, because this type is the only way such a
+/// handler can reach a session at all. A `viewer` is refused here; the
+/// own-account routes a `viewer` may still use take [`SelfServiceWrite`]
+/// instead, and the colleague-management routes take [`AdminWrite`].
 #[derive(Debug)]
 pub struct AuthenticatedWrite(pub Authenticated);
+
+/// [`AuthenticatedWrite`], but requiring the full [`AdminRole::Admin`] tier.
+///
+/// The four `/operators/*` routes take this: disabling or re-enabling a
+/// colleague, resetting their second factor, revoking one of their sessions.
+#[derive(Debug)]
+pub struct AdminWrite(pub Authenticated);
+
+/// The origin gate, a live `active` session and the CSRF check -- **no
+/// privilege check**, so any role including `viewer` passes.
+///
+/// The own-account routes take this: change your own password, revoke your own
+/// sessions, manage your own second factor, log out. A `viewer` has to be able
+/// to do these or `admin.require_mfa` enrolment would be unreachable for them.
+#[derive(Debug)]
+pub struct SelfServiceWrite(pub Authenticated);
 
 impl FromRequestParts<AdminState> for Authenticated {
     type Rejection = AdminError;
@@ -245,6 +268,28 @@ impl FromRequestParts<AdminState> for Authenticated {
     }
 }
 
+/// The origin gate + live `active` session + CSRF check the three write
+/// extractors share. Each then adds (or omits) its own privilege check.
+async fn resolve_write(parts: &Parts, state: &AdminState) -> Result<Authenticated, AdminError> {
+    // The origin gate first: it is free, and it refuses a cross-origin
+    // request before a database lookup happens on its behalf.
+    check_origin(&parts.headers, &state.config.admin.base_url)?;
+    let authenticated = resolve_session(parts, state).await?;
+    check_csrf(&parts.headers, &authenticated.session.csrf_token)?;
+    Ok(authenticated)
+}
+
+/// The privilege gate. `role()` resolves a `NULL` column to
+/// [`AdminRole::Admin`], so an operator that predates the `role` column is
+/// unaffected.
+fn require_role(user: &AdminUser, minimum: AdminRole) -> Result<(), AdminError> {
+    if user.role() >= minimum {
+        Ok(())
+    } else {
+        Err(AdminError::insufficient_role())
+    }
+}
+
 impl FromRequestParts<AdminState> for AuthenticatedWrite {
     type Rejection = AdminError;
 
@@ -252,12 +297,33 @@ impl FromRequestParts<AdminState> for AuthenticatedWrite {
         parts: &mut Parts,
         state: &AdminState,
     ) -> Result<Self, Self::Rejection> {
-        // The origin gate first: it is free, and it refuses a cross-origin
-        // request before a database lookup happens on its behalf.
-        check_origin(&parts.headers, &state.config.admin.base_url)?;
-        let authenticated = resolve_session(parts, state).await?;
-        check_csrf(&parts.headers, &authenticated.session.csrf_token)?;
+        let authenticated = resolve_write(parts, state).await?;
+        require_role(&authenticated.user, AdminRole::Operator)?;
         Ok(AuthenticatedWrite(authenticated))
+    }
+}
+
+impl FromRequestParts<AdminState> for AdminWrite {
+    type Rejection = AdminError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        let authenticated = resolve_write(parts, state).await?;
+        require_role(&authenticated.user, AdminRole::Admin)?;
+        Ok(AdminWrite(authenticated))
+    }
+}
+
+impl FromRequestParts<AdminState> for SelfServiceWrite {
+    type Rejection = AdminError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(SelfServiceWrite(resolve_write(parts, state).await?))
     }
 }
 

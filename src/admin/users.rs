@@ -1,5 +1,6 @@
-//! Operator management for the web admin: create, list, re-password, enable,
-//! disable, delete, and the password check the login path runs.
+//! Operator management for the web admin: create, list, re-password, set the
+//! privilege tier, enable, disable, delete, and the password check the login
+//! path runs.
 //!
 //! The operation layer, not a front end: no printing, no HTTP, no terminal.
 //! `src/cli/webadmin.rs` and `src/webadmin/handlers/session.rs` both dispatch
@@ -15,7 +16,7 @@ use crate::admin::ops::DeleteOutcome;
 use crate::admin::password::{self, PasswordContext};
 use crate::admin::prompt::confirm;
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
+use crate::sqlite::admin_user::{AdminRole, AdminUser};
 use crate::sqlite::db::Database;
 
 /// Why creating or re-passwording an operator failed.
@@ -58,11 +59,16 @@ pub enum AuthOutcome {
     Disabled(Box<AdminUser>),
 }
 
-/// Creates an operator.
+/// Creates an operator, at the full [`AdminRole::Admin`] tier.
 ///
 /// Order matters: the policy is checked before the duplicate lookup, and the
 /// duplicate lookup before the (expensive) hash, so a rejected request never
 /// pays 600 000 iterations.
+///
+/// A narrower tier is a follow-up [`set_role`]; `acme-proxy admin user create
+/// --role` does exactly that. `AdminUser::create` writes the row with `role`
+/// `NULL`, which reads as [`AdminRole::Admin`] -- the "hard-code the default,
+/// change it with a setter" shape `status` uses.
 pub async fn create_user(
     username: &str,
     plaintext: &str,
@@ -84,6 +90,28 @@ pub async fn create_user(
 
     let hash = password::hash_password(plaintext);
     Ok(AdminUser::create(&normalized, &hash, &database).await?)
+}
+
+/// Sets an operator's privilege tier and **revokes every session they hold**.
+///
+/// The revocation matches `set_status("disabled")` and `set_password`: a
+/// demotion that left a live `admin` session alive would take effect only when
+/// that cookie happened to expire. It is belt-and-braces rather than
+/// load-bearing -- the write extractors re-read `role` from `admin_users` on
+/// every request -- but this layer already holds that convention. `None` when
+/// there is no such user.
+pub async fn set_role(
+    username: &str,
+    role: AdminRole,
+    database: Arc<Database>,
+) -> Result<Option<AdminUser>, sqlx::Error> {
+    let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
+        return Ok(None);
+    };
+
+    user.set_role(role, &database).await?;
+    AdminSession::delete_for_user(user.id, &database).await?;
+    Ok(Some(user))
 }
 
 /// One page of the operators, oldest first, plus the total the table holds.
@@ -604,6 +632,46 @@ mod tests {
         assert!(reenabled.is_active());
         assert!(
             set_status("nobody", "disabled", db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn set_role_changes_the_tier_and_revokes_every_session() {
+        let db = db().await;
+        let user = user_with_cheap_password("alice", "pw", db.clone()).await;
+        assert_eq!(user.role(), AdminRole::Admin, "a fresh row reads as admin");
+        AdminSession::create(
+            NewSession {
+                user_id: user.id,
+                token_hash: "hash-a",
+                csrf_token: "csrf",
+                created_ip: None,
+                user_agent: None,
+            },
+            std::time::Duration::from_secs(60),
+            &db,
+        )
+        .await
+        .unwrap();
+
+        let updated = set_role("alice", AdminRole::Viewer, db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.role(), AdminRole::Viewer);
+        assert!(
+            AdminSession::list_all(Some(user.id), &db)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a demotion that left an admin session live would take effect only on expiry"
+        );
+
+        assert!(
+            set_role("nobody", AdminRole::Operator, db)
                 .await
                 .unwrap()
                 .is_none()

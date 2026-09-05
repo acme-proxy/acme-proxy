@@ -95,6 +95,18 @@ impl AdminError {
         Self::new(StatusCode::FORBIDDEN, "csrf_failed", message)
     }
 
+    /// `403` — the session is live, but the operator's role does not permit
+    /// this action (`src/sqlite/admin_user.rs`'s `AdminRole`). Not a `401`: the
+    /// answer is not "sign in again", so `to_page_error` renders it as a banner
+    /// rather than a redirect to the login form.
+    pub fn insufficient_role() -> Self {
+        Self::new(
+            StatusCode::FORBIDDEN,
+            "insufficient_role",
+            "your role does not permit this action",
+        )
+    }
+
     /// `404` — no such row.
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", message)

@@ -404,13 +404,17 @@ pub fn render_eab_created_text(eab: &Eab, palette: Palette) -> String {
     )
 }
 
-/// One line: `username  status  totp  created_at  last_login`.
+/// One line: `username  status  role  totp  created_at  last_login`.
+///
+/// `role` is rendered plain -- it is a privilege tier, not a status/verdict, and
+/// `--color` is semantic only.
 #[must_use]
 pub fn render_admin_user_line(user: &AdminUser, palette: Palette) -> String {
     format!(
-        "{:<20}  {}  totp={}  {}  {}",
+        "{:<20}  {}  {:<8}  totp={}  {}  {}",
         user.username,
         palette.status(&format!("{:<8}", user.status)),
+        user.role().as_str(),
         palette.status(&format!(
             "{:<3}",
             if user.has_totp() { "on" } else { "off" }
@@ -465,11 +469,12 @@ pub fn render_admin_user_detail_text(
     palette: Palette,
 ) -> String {
     let mut out = format!(
-        "id             {}\nusername       {}\nstatus         {}\ntotp           {}\n\
-         recovery_codes {}\ncreated        {}\nupdated        {}\n",
+        "id             {}\nusername       {}\nstatus         {}\nrole           {}\n\
+         totp           {}\nrecovery_codes {}\ncreated        {}\nupdated        {}\n",
         user.id,
         user.username,
         palette.status(&user.status),
+        user.role().as_str(),
         totp_state(user, palette),
         recovery_codes_remaining,
         rfc3339(user.created_at),
@@ -1393,6 +1398,31 @@ mod tests {
         let line = render_admin_user_line(&user, Palette::plain());
         assert!(line.contains("totp=on"));
         assert!(!line.contains("never"));
+    }
+
+    /// The privilege tier reaches both the line and the detail, with a `NULL`
+    /// column resolved to `admin`, and it survives stripping as plain text.
+    #[test]
+    fn the_operator_renderings_carry_the_role() {
+        let mut user = admin_user_fixture();
+        assert_eq!(user.role, None);
+        assert!(render_admin_user_line(&user, Palette::plain()).contains("admin"));
+        assert!(
+            render_admin_user_detail_text(&user, 0, Palette::plain())
+                .contains("role           admin")
+        );
+
+        user.role = Some("viewer".to_string());
+        let line = render_admin_user_line(&user, colour());
+        assert!(line.contains("viewer"), "{line}");
+        assert_eq!(
+            strip_ansi(&line),
+            render_admin_user_line(&user, Palette::plain())
+        );
+        assert!(
+            render_admin_user_detail_text(&user, 0, Palette::plain())
+                .contains("role           viewer")
+        );
     }
 
     /// An operator with no second factor is a state worth noticing in a

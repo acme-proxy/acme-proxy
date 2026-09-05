@@ -24,7 +24,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::verify_current_password;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::session::{AdminClientIp, Authenticated, AuthenticatedWrite, clearing_cookie};
+use crate::webadmin::session::{AdminClientIp, Authenticated, SelfServiceWrite, clearing_cookie};
 
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordRequest {
@@ -43,7 +43,7 @@ pub struct ChangePasswordRequest {
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    SelfServiceWrite(auth): SelfServiceWrite,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = auth.user;
@@ -106,7 +106,7 @@ pub async fn list_own_sessions(
 pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    SelfServiceWrite(auth): SelfServiceWrite,
 ) -> Result<Response, AdminError> {
     let session = AdminSession::find_by_user_and_fingerprint(auth.user.id, &id, &state.database)
         .await?

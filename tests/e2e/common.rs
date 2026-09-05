@@ -23,7 +23,10 @@ fn container_runtime() -> &'static str {
     // message naming `systemctl --user start podman.socket`.
     //
     // A shim still reports success here, so the daemon is asked as well: only a
-    // real docker daemon answers `docker info`.
+    // real docker daemon answers with a server version. `docker info` alone is
+    // not enough — recent Docker CLIs (29.x) print the "cannot connect"
+    // diagnostic to stderr but still exit 0, so `--format '{{.ServerVersion}}'`
+    // is what actually fails when no daemon is listening.
     let spawned_ok = |program: &str, args: &[&str]| {
         std::process::Command::new(program)
             .args(args)
@@ -32,7 +35,9 @@ fn container_runtime() -> &'static str {
             .status()
             .is_ok_and(|status| status.success())
     };
-    if spawned_ok("docker", &["--version"]) && spawned_ok("docker", &["info"]) {
+    if spawned_ok("docker", &["--version"])
+        && spawned_ok("docker", &["info", "--format", "{{.ServerVersion}}"])
+    {
         return "docker";
     }
     "podman"

@@ -128,6 +128,17 @@ There is also an origin gate: a request whose `Origin` does not match
 is what covers sign-in itself, which by definition carries no session token yet.
 Both headers are checked only when present, so a script or `curl` is unaffected.
 
+### Roles
+
+A session also carries the operator's **role**
+([Users → Roles](webadmin_users.md#roles)). A mutating request is refused with
+`403 insufficient_role` unless the role permits it: a CA action (revoke, delete
+an account or order, EAB, nonce sweep) needs `operator` or `admin`; the
+`/operators/*` and `/ui/operators/*` colleague-management routes need `admin`;
+the own-account routes (password, own sessions, own second factor, sign-out)
+need only a live session. Reads are open to every role. An operator whose row
+predates the feature is `admin`.
+
 > `SameSite=Strict` also means clicking a link *into* the panel from another
 > site will not carry your session. For an admin panel that is a feature, but it
 > surprises people.

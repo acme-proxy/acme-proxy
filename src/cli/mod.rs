@@ -2121,7 +2121,8 @@ mod tests {
                 command: AdminCommand::User {
                     command: crate::cli::webadmin::AdminUserCommand::Create {
                         username,
-                        password_file: None
+                        password_file: None,
+                        role: _
                     }
                 }
             }) if username == "alice"

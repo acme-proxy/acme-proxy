@@ -1,0 +1,14 @@
+-- A privilege tier for a web-admin operator, so a session that only reads is
+-- not a session that revokes a certificate or deletes an account (ASVS 5.0
+-- V7.5.3 / V8.4.2). Three values, validated in Rust rather than by a CHECK
+-- (`AdminRole`, src/sqlite/admin_user.rs): `admin` (everything, including the
+-- colleague-management surface), `operator` (every CA mutation, but not
+-- `/operators/*`), `viewer` (read-only bar own-account self-service).
+--
+-- A plain nullable ADD COLUMN, the shape 20260728120000_add_cert_revocation.sql
+-- established (`revocation_reason` is the precedent for range-checking a column
+-- in code, not by constraint): no CHECK/UNIQUE/FK, so no table rebuild. NULL is
+-- read as `admin` -- an operator created before this column existed keeps the
+-- full authority they already had, and the bootstrap operator is never locked
+-- out of the panel they are the only way into.
+ALTER TABLE admin_users ADD COLUMN role TEXT;

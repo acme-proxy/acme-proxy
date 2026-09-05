@@ -1805,6 +1805,87 @@ async fn every_api_route_needs_a_session() {
     }
 }
 
+/// The privilege tiers, exhaustively over `mutating_endpoints()`.
+///
+/// A `viewer` is refused every shared/CA mutation with `403 insufficient_role`
+/// but keeps the own-account routes; an `operator` keeps those too but is
+/// refused the `/operators/*` colleague-management surface; an `admin` is
+/// refused none of it. Every entry in the table falls into exactly one of
+/// those three buckets, so a mutating route added without a considered
+/// classification fails here.
+#[tokio::test]
+async fn role_gates_every_mutating_endpoint() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database) = test_admin_app(admin_config()).await;
+    for (name, role) in [
+        ("adam", None),
+        ("olga", Some(AdminRole::Operator)),
+        ("vera", Some(AdminRole::Viewer)),
+    ] {
+        acme_proxy::admin::users::create_user(
+            name,
+            ADMIN_PASSWORD,
+            &PasswordContext::empty(),
+            database.clone(),
+        )
+        .await
+        .unwrap();
+        if let Some(role) = role {
+            acme_proxy::admin::users::set_role(name, role, database.clone())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+    let adam = admin_login(&app, "adam", ADMIN_PASSWORD).await;
+    let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
+    let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
+
+    // The own-account routes any role may reach.
+    let self_service = |path: &str| {
+        path.starts_with("/api/session")
+            || path.starts_with("/api/mfa/")
+            || path.starts_with("/api/account/")
+    };
+    // The colleague-management routes only an `admin` may reach.
+    let admin_only = |path: &str| path.starts_with("/api/operators/");
+
+    for (method, path) in mutating_endpoints() {
+        // `DELETE /api/session` is logout: sent with a live session it really
+        // signs that session out, which would 401 every later row. It is
+        // self-service by construction (`SelfServiceWrite`) and covered by the
+        // logout suite; skip it here.
+        if method == Method::DELETE && path == "/api/session" {
+            continue;
+        }
+        for (who, session, at_least_operator, is_admin) in [
+            ("admin", &adam, true, true),
+            ("operator", &olga, true, false),
+            ("viewer", &vera, false, false),
+        ] {
+            let response =
+                admin_request(&app, method.clone(), path, Some(session), Some(json!({}))).await;
+            let status = response.status();
+            let refused_for_role = status == StatusCode::FORBIDDEN
+                && json_body(response).await["error"] == "insufficient_role";
+
+            let expect_refused = if self_service(path) {
+                false
+            } else if admin_only(path) {
+                !is_admin
+            } else {
+                !at_least_operator
+            };
+
+            assert_eq!(
+                refused_for_role, expect_refused,
+                "{who} {method} {path} (status {status})"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------

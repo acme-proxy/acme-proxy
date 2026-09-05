@@ -21,7 +21,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::handlers::mfa::check_step_up;
 use crate::webadmin::handlers::operators::{find, refuse_self_target};
 use crate::webadmin::handlers::paging::{Page, PageParams};
-use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
+use crate::webadmin::pages::auth::{PageAdminWrite, PageSession};
 use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 use crate::webadmin::session::AdminClientIp;
@@ -92,7 +92,7 @@ pub async fn disable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageAdminWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -124,7 +124,7 @@ pub async fn enable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageAdminWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -150,7 +150,7 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageAdminWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let mut target = find(&username, &state).await?;
@@ -188,7 +188,7 @@ pub async fn revoke_operator_session(
     State(state): State<AdminState>,
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageAdminWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -219,7 +219,7 @@ pub async fn revoke_operator_session(
 /// live and the page is the right page, only this one action was refused.
 async fn refuse_without_step_up(
     state: &AdminState,
-    session: &PageSessionWrite,
+    session: &PageAdminWrite,
     target: &AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
@@ -249,7 +249,7 @@ async fn refuse_without_step_up(
 
 async fn respond_card(
     state: &AdminState,
-    session: &PageSessionWrite,
+    session: &PageAdminWrite,
     target: &AdminUser,
     banner: Value,
 ) -> Result<Response, PageError> {

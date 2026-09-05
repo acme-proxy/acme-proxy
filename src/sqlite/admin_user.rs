@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -7,6 +9,97 @@ use uuid::Uuid;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
+
+/// What a web-admin operator's live sessions are allowed to do.
+///
+/// A privilege tier, not an authentication state (that is `admin_sessions.state`
+/// and the `pending_mfa` / `active` split). Stored in `admin_users.role` as one
+/// of the [`AdminRole::as_str`] spellings, with **`NULL` read as [`Admin`]** --
+/// an operator created before the column existed keeps the authority they had,
+/// and so does the bootstrap operator, who is the only way into the panel.
+///
+/// Variants are declared low privilege to high, so `role >= AdminRole::Operator`
+/// is the gate the write extractors run (`src/webadmin/session.rs`).
+///
+/// [`Admin`]: AdminRole::Admin
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AdminRole {
+    /// Reads every page and API route; may still act on their **own** account
+    /// (password, sessions, second factor, logout). Refused every shared or CA
+    /// mutation.
+    Viewer,
+    /// [`Viewer`], plus every CA mutation: revoke a certificate, deactivate or
+    /// delete an ACME account, delete an order, mint or revoke EAB credentials,
+    /// run a nonce sweep. Refused the colleague-management surface.
+    ///
+    /// [`Viewer`]: AdminRole::Viewer
+    Operator,
+    /// [`Operator`], plus `/operators/*` -- disabling or re-enabling a
+    /// colleague, resetting their second factor, revoking one of their
+    /// sessions. Everything.
+    ///
+    /// [`Operator`]: AdminRole::Operator
+    Admin,
+}
+
+impl AdminRole {
+    /// Every value, low privilege to high -- the order the variants are
+    /// declared in, and the one an error message lists them in.
+    pub const ALL: &'static [Self] = &[Self::Viewer, Self::Operator, Self::Admin];
+
+    /// The exact string stored in `admin_users.role`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Viewer => "viewer",
+            Self::Operator => "operator",
+            Self::Admin => "admin",
+        }
+    }
+
+    /// Reads the column back. **Infallible**: `NULL` and `"admin"` are [`Admin`],
+    /// and anything unrecognised is [`Viewer`] -- the least-privilege direction,
+    /// the same fail-closed choice [`AdminUser::is_active`] makes for a `status`
+    /// outside its `CHECK`. A garbage value can only arrive by a hand-edit of
+    /// the database; every write path here goes through a canonical
+    /// [`AdminRole::as_str`].
+    ///
+    /// [`Admin`]: AdminRole::Admin
+    /// [`Viewer`]: AdminRole::Viewer
+    #[must_use]
+    pub fn from_storage(raw: Option<&str>) -> Self {
+        match raw {
+            None | Some("admin") => Self::Admin,
+            Some("operator") => Self::Operator,
+            _ => Self::Viewer,
+        }
+    }
+}
+
+impl std::fmt::Display for AdminRole {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AdminRole {
+    type Err = String;
+
+    /// For operator input (`admin user create --role`, `admin user role`). An
+    /// unknown value is refused **by name** listing the alternatives -- the
+    /// `--status` / `--event` rule, since a silent fallback would be a privilege
+    /// decision made by a typo.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "viewer" => Ok(Self::Viewer),
+            "operator" => Ok(Self::Operator),
+            "admin" => Ok(Self::Admin),
+            other => Err(format!(
+                "unknown role `{other}` (expected one of: viewer, operator, admin)"
+            )),
+        }
+    }
+}
 
 /// An operator of the web admin interface.
 ///
@@ -19,7 +112,9 @@ use crate::sqlite::order::rfc3339;
 /// - `create`: persist a new operator, `active`
 /// - `find_by_id` / `find_by_username`: lookup (the latter is the login path)
 /// - `list_all`: every operator, oldest first
-/// - `set_password_hash` / `set_status` / `mark_logged_in`: in-place updates
+/// - `set_password_hash` / `set_status` / `set_role` / `mark_logged_in`:
+///   in-place updates
+/// - `role`: the privilege tier, `NULL` resolved to [`AdminRole::Admin`]
 /// - `set_totp_pending` / `confirm_totp` / `clear_totp` / `claim_totp_step`:
 ///   the second factor's lifecycle, and RFC 6238 §5.2's replay guard
 /// - `delete`: remove, cascading to the operator's sessions and recovery codes
@@ -33,6 +128,10 @@ pub struct AdminUser {
     /// The encoded KDF output -- see `crate::admin::password`. Never rendered.
     pub password_hash: String,
     pub status: String,
+    /// The privilege tier, raw from the column. `None` is a row that predates
+    /// the `role` column and reads as [`AdminRole::Admin`]; use
+    /// [`AdminUser::role`] rather than matching this directly.
+    pub role: Option<String>,
     /// Set once the owner has proven a code against a pending enrolment.
     /// `None` means no second factor is configured.
     pub totp_secret: Option<Vec<u8>>,
@@ -53,7 +152,7 @@ pub struct AdminUser {
 /// *literal*, which is what `sqlx::query`'s `SqlSafeStr` bound requires.
 macro_rules! columns {
     () => {
-        "id, username, password_hash, status, totp_secret, totp_pending_secret, \
+        "id, username, password_hash, status, role, totp_secret, totp_pending_secret, \
          totp_last_step, created_at, updated_at, last_login_at"
     };
 }
@@ -65,6 +164,7 @@ impl AdminUser {
             username: row.try_get("username")?,
             password_hash: row.try_get("password_hash")?,
             status: row.try_get("status")?,
+            role: row.try_get("role")?,
             totp_secret: row.try_get("totp_secret")?,
             totp_pending_secret: row.try_get("totp_pending_secret")?,
             totp_last_step: row.try_get("totp_last_step")?,
@@ -81,6 +181,12 @@ impl AdminUser {
     /// `password_hash` is already encoded by `crate::admin::password`: this
     /// layer never sees a plaintext password and cannot hash one.
     ///
+    /// The row is written with `role` left `NULL`, which reads as
+    /// [`AdminRole::Admin`] -- the safe default for the bootstrap operator, and
+    /// the same "hard-code the default, change it with a setter" shape `status`
+    /// uses. `admin::users::create_user` calls [`AdminUser::set_role`]
+    /// afterwards when a narrower tier was asked for.
+    ///
     /// A duplicate username surfaces as the UNIQUE violation it is; the caller
     /// (`admin::users::create_user`) checks first and reports it in words.
     pub async fn create(
@@ -94,6 +200,7 @@ impl AdminUser {
             username: username.trim().to_lowercase(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
+            role: None,
             totp_secret: None,
             totp_pending_secret: None,
             totp_last_step: None,
@@ -269,6 +376,29 @@ impl AdminUser {
         Ok(())
     }
 
+    /// Sets the privilege tier. Callers revoke the operator's sessions --
+    /// `admin::users::set_role` does, matching a `disable` and a password
+    /// change; the write extractors also re-read `role` every request, so a
+    /// demotion takes effect on the next call regardless.
+    pub async fn set_role(
+        &mut self,
+        role: AdminRole,
+        database: &Database,
+    ) -> Result<(), sqlx::Error> {
+        let now = now_secs();
+        sqlx::query("UPDATE admin_users SET role = ?, updated_at = ? WHERE id = ?;")
+            .bind(role.as_str())
+            .bind(now)
+            .bind(self.id)
+            .execute(&database.pool)
+            .await?;
+
+        self.role = Some(role.as_str().to_string());
+        self.updated_at = now;
+        info!(event = "db_admin_user_role_changed", outcome = "success", user_id = %self.id, username = %self.username, role = %role);
+        Ok(())
+    }
+
     /// Stores an enrolment the owner has not yet proven a code against.
     ///
     /// Not a usable second factor: [`AdminUser::has_totp`] stays `false` until
@@ -420,6 +550,13 @@ impl AdminUser {
         self.status == "active"
     }
 
+    /// The privilege tier, with `NULL` resolved to [`AdminRole::Admin`]. Match
+    /// on this, never on the raw [`AdminUser::role`] field.
+    #[must_use]
+    pub fn role(&self) -> AdminRole {
+        AdminRole::from_storage(self.role.as_deref())
+    }
+
     /// Whether a confirmed second factor is configured. A pending enrolment
     /// does not count -- it has never been proven against a code.
     #[must_use]
@@ -447,6 +584,7 @@ impl AdminUser {
             "id": self.id,
             "username": self.username,
             "status": self.status,
+            "role": self.role().as_str(),
             "totpEnabled": self.has_totp(),
             "createdAt": rfc3339(self.created_at),
             "updatedAt": rfc3339(self.updated_at),
@@ -640,6 +778,70 @@ mod tests {
 
         let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert!(!reloaded.is_active());
+    }
+
+    #[test]
+    fn admin_role_maps_storage_both_ways() {
+        // NULL and "admin" are the full tier; every unknown value is the
+        // least-privilege one, the fail-closed direction.
+        assert_eq!(AdminRole::from_storage(None), AdminRole::Admin);
+        assert_eq!(AdminRole::from_storage(Some("admin")), AdminRole::Admin);
+        assert_eq!(
+            AdminRole::from_storage(Some("operator")),
+            AdminRole::Operator
+        );
+        assert_eq!(AdminRole::from_storage(Some("viewer")), AdminRole::Viewer);
+        assert_eq!(AdminRole::from_storage(Some("root")), AdminRole::Viewer);
+        assert_eq!(AdminRole::from_storage(Some("")), AdminRole::Viewer);
+
+        for role in AdminRole::ALL {
+            assert_eq!(
+                AdminRole::from_storage(Some(role.as_str())),
+                *role,
+                "as_str and from_storage must round-trip"
+            );
+        }
+
+        // Declared low to high, so `>=` is a usable gate.
+        assert!(AdminRole::Viewer < AdminRole::Operator);
+        assert!(AdminRole::Operator < AdminRole::Admin);
+    }
+
+    #[test]
+    fn admin_role_from_str_refuses_an_unknown_value_by_name() {
+        assert_eq!("operator".parse::<AdminRole>(), Ok(AdminRole::Operator));
+        let error = "supervisor".parse::<AdminRole>().unwrap_err();
+        assert!(error.contains("supervisor"), "{error}");
+        assert!(error.contains("viewer, operator, admin"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_row_with_no_role_reads_as_admin() {
+        let db = db().await;
+        let user = AdminUser::create("alice", "h", &db).await.unwrap();
+        assert_eq!(user.role, None);
+        assert_eq!(user.role(), AdminRole::Admin);
+
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.role, None);
+        assert_eq!(reloaded.role(), AdminRole::Admin);
+    }
+
+    #[tokio::test]
+    async fn set_role_persists_and_syncs_in_memory() {
+        let db = db().await;
+        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+
+        user.set_role(AdminRole::Viewer, &db).await.unwrap();
+        assert_eq!(user.role(), AdminRole::Viewer);
+
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.role.as_deref(), Some("viewer"));
+        assert_eq!(reloaded.role(), AdminRole::Viewer);
+
+        user.set_role(AdminRole::Operator, &db).await.unwrap();
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.role(), AdminRole::Operator);
     }
 
     #[tokio::test]

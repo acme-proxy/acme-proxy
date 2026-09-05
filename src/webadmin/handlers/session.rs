@@ -16,8 +16,8 @@ use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::session::{
-    AdminClientIp, Authenticated, AuthenticatedWrite, MfaStep, PENDING_MFA_TTL, PendingMfa,
-    PendingMfaSubmit, check_origin, clearing_cookie, cookie_value, hash_token, log_login,
+    AdminClientIp, Authenticated, MfaStep, PENDING_MFA_TTL, PendingMfa, PendingMfaSubmit,
+    SelfServiceWrite, check_origin, clearing_cookie, cookie_value, hash_token, log_login,
     mint_csrf_token, mint_token, session_cookie,
 };
 
@@ -414,7 +414,7 @@ pub async fn get_session(auth: Authenticated) -> Json<serde_json::Value> {
 pub async fn delete_session(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    SelfServiceWrite(auth): SelfServiceWrite,
 ) -> Result<Response, AdminError> {
     let scope = if query.all {
         AdminSession::delete_for_user(auth.user.id, &state.database).await?;

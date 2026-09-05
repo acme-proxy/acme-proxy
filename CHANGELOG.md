@@ -33,6 +33,23 @@ migrated configuration before restarting.
 
 ### Security
 
+- **Web-admin operators now have a role** — ASVS 5.0 V7.5.3 and V8.4.2. Three
+  tiers on `admin_users.role`: `viewer` reads every page and API route and may
+  still act on its own account (password, sessions, second factor, logout) but
+  is refused every shared or CA mutation; `operator` adds every CA action
+  (revoke a certificate, deactivate or delete an ACME account, delete an order,
+  mint or revoke EAB, run a nonce sweep) but not the `/operators/*`
+  colleague-management surface; `admin` is refused nothing. Enforced in the
+  three write-side session extractors (`AuthenticatedWrite` → `operator`+,
+  `AdminWrite` → `admin`, `SelfServiceWrite` → any), so a mutating route cannot
+  reach a session without stating a tier. **A `NULL` column reads as `admin`**,
+  so upgrading changes no existing operator's authority and the bootstrap
+  operator is never locked out. Set from the host: `acme-proxy admin user
+  create --role admin|operator|viewer` (default `admin`) and a new `admin user
+  role <username> <tier>` (which revokes the operator's sessions, like `passwd`
+  and `disable`). The CLI itself enforces no tier — the host shell is the
+  trusted plane, the same as it already is for `status`.
+
 - **A panicking handler now answers a document instead of dropping the
   connection** — ASVS 5.0 V16.5.4. A `tower_http` `CatchPanicLayer` on each
   listener catches an unexpected panic in a route handler, logs it once as
@@ -57,10 +74,9 @@ migrated configuration before restarting.
   create`/`passwd` stay host-only, unchanged: those mint a credential, which
   is where "no sign-up page" already draws the line.
 
-  Without a role on `admin_users`, this means any signed-in operator can
-  disable or reset the factor of any other — a risk already present via the
-  CLI/host shell, now reachable from an authenticated web session too. See
-  the TODO for the tracked follow-up.
+  Until the role column landed (above), any signed-in operator could disable
+  or reset the factor of any other; that surface is now `admin`-only, and a
+  `viewer` cannot reach it at all.
 
 - **An operator can now change their own password from the panel**, not only
   from `acme-proxy admin user passwd` on the host — ASVS 5.0 V6.2.2. The route

@@ -20,7 +20,7 @@ use crate::admin::{mfa, totp};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::session::finish_enrolment;
-use crate::webadmin::session::{AdminClientIp, Authenticated, AuthenticatedWrite, EnrolWrite};
+use crate::webadmin::session::{AdminClientIp, Authenticated, EnrolWrite, SelfServiceWrite};
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmRequest {
@@ -257,7 +257,7 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    SelfServiceWrite(auth): SelfServiceWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     if state.config.admin.require_mfa {
@@ -293,7 +293,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    SelfServiceWrite(auth): SelfServiceWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     if !auth.user.has_totp() {
@@ -324,6 +324,7 @@ mod tests {
             username: "alice".to_string(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
+            role: None,
             totp_secret: totp.map(<[u8]>::to_vec),
             totp_pending_secret: None,
             totp_last_step: None,

@@ -25,7 +25,7 @@ use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
 use crate::webadmin::handlers::paging::PageParams;
-use crate::webadmin::pages::auth::{PageEnrolWrite, PageSession, PageSessionWrite};
+use crate::webadmin::pages::auth::{PageEnrolWrite, PageSelfServiceWrite, PageSession};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond, respond_fragment};
 use crate::webadmin::session::{AdminClientIp, clearing_cookie};
@@ -230,7 +230,7 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if state.config.admin.require_mfa {
@@ -291,7 +291,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if !session.auth.user.has_totp() {
@@ -397,7 +397,7 @@ async fn refuse_without_current_password(
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    session: PageSessionWrite,
+    session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<ChangePasswordForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
@@ -470,7 +470,7 @@ pub async fn change_password(
 pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    session: PageSessionWrite,
+    session: PageSelfServiceWrite,
 ) -> Result<Response, PageError> {
     let target =
         AdminSession::find_by_user_and_fingerprint(session.auth.user.id, &id, &state.database)

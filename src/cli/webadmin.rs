@@ -29,7 +29,7 @@ use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
+use crate::sqlite::admin_user::{AdminRole, AdminUser};
 use crate::sqlite::db::Database;
 
 #[derive(Subcommand)]
@@ -56,6 +56,11 @@ pub enum AdminUserCommand {
         /// trailing newline is stripped.
         #[arg(long = "password-file")]
         password_file: Option<PathBuf>,
+        /// Privilege tier for this operator's web sessions: `admin`
+        /// (everything), `operator` (every CA action but not managing other
+        /// operators), or `viewer` (read-only bar their own account).
+        #[arg(long, default_value = "admin")]
+        role: String,
     },
     /// List operators, oldest first. Never shows a password hash.
     List {
@@ -77,6 +82,12 @@ pub enum AdminUserCommand {
         username: String,
         #[arg(long = "password-file")]
         password_file: Option<PathBuf>,
+    },
+    /// Change an operator's privilege tier, revoking every session they hold.
+    Role {
+        username: String,
+        /// The new tier: `admin`, `operator` or `viewer`.
+        role: String,
     },
     /// Delete an operator and every session of theirs.
     Delete { username: String },
@@ -171,14 +182,41 @@ async fn run_user_command(
         AdminUserCommand::Create {
             username,
             password_file,
+            role,
         } => {
+            let role: AdminRole = role
+                .parse()
+                .map_err(|error| CliError(format!("--role: {error}")))?;
             let password = read_password(password_file.as_deref(), reader)?;
             let context = PasswordContext::from_config(config, &username);
-            let user = users::create_user(&username, &password, &context, database)
+            let user = users::create_user(&username, &password, &context, database.clone())
                 .await
                 .map_err(user_error)?;
+            // `create_user` writes the full tier; narrow it if a lesser one was
+            // asked for. A fresh operator holds no sessions, so the revoke
+            // `set_role` also does is a no-op here.
+            if role != AdminRole::Admin {
+                users::set_role(&user.username, role, database)
+                    .await?
+                    .ok_or_else(|| not_found(&user.username))?;
+            }
             // The id, not the password: nothing echoes a credential back.
-            println!("Created admin user {} ({}).", user.username, user.id);
+            println!(
+                "Created admin user {} ({}), role {role}.",
+                user.username, user.id
+            );
+        }
+        AdminUserCommand::Role { username, role } => {
+            let role: AdminRole = role
+                .parse()
+                .map_err(|error| CliError(format!("role: {error}")))?;
+            match users::set_role(&username, role, database).await? {
+                None => return Err(not_found(&username)),
+                Some(user) => println!(
+                    "Role of {} set to {role}. Every session they held was revoked.",
+                    user.username
+                ),
+            }
         }
         AdminUserCommand::List {
             limit,
@@ -502,10 +540,15 @@ mod tests {
     }
 
     fn create(username: &str) -> AdminCommand {
+        create_with_role(username, "admin")
+    }
+
+    fn create_with_role(username: &str, role: &str) -> AdminCommand {
         AdminCommand::User {
             command: AdminUserCommand::Create {
                 username: username.to_string(),
                 password_file: None,
+                role: role.to_string(),
             },
         }
     }
@@ -540,6 +583,7 @@ mod tests {
                 command: AdminUserCommand::Create {
                     username: "alice".to_string(),
                     password_file: Some(path),
+                    role: "admin".to_string(),
                 },
             },
             "",
@@ -567,6 +611,7 @@ mod tests {
                 command: AdminUserCommand::Create {
                     username: "alice".to_string(),
                     password_file: Some(PathBuf::from("/nonexistent/pw")),
+                    role: "admin".to_string(),
                 },
             },
             "",
@@ -843,6 +888,118 @@ mod tests {
                 CliError("no such admin user: nobody".to_string())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn create_writes_the_requested_role_and_refuses_an_unknown_one() {
+        let db = db().await;
+
+        run(
+            create_with_role("reader", "viewer"),
+            &format!("{GOOD}\n"),
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        let user = AdminUser::find_by_username("reader", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.role(), AdminRole::Viewer);
+
+        // The default is the full tier.
+        run(create("boss"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            AdminUser::find_by_username("boss", &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .role(),
+            AdminRole::Admin
+        );
+
+        let error = run(
+            create_with_role("nope", "supervisor"),
+            &format!("{GOOD}\n"),
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.0.contains("--role"), "{}", error.0);
+        assert!(error.0.contains("supervisor"), "{}", error.0);
+        assert!(
+            AdminUser::find_by_username("nope", &db)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused role must not create a row"
+        );
+    }
+
+    #[tokio::test]
+    async fn role_changes_the_tier_revokes_sessions_and_refuses_an_unknown_user() {
+        use crate::sqlite::admin_session::{AdminSession, NewSession};
+
+        let db = db().await;
+        run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+        let user = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        AdminSession::create(
+            NewSession {
+                user_id: user.id,
+                token_hash: "hash",
+                csrf_token: "csrf",
+                created_ip: None,
+                user_agent: None,
+            },
+            std::time::Duration::from_secs(60),
+            &db,
+        )
+        .await
+        .unwrap();
+
+        let role = |username: &str, role: &str| AdminCommand::User {
+            command: AdminUserCommand::Role {
+                username: username.to_string(),
+                role: role.to_string(),
+            },
+        };
+
+        run(role("alice", "operator"), "", db.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            AdminUser::find_by_username("alice", &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .role(),
+            AdminRole::Operator
+        );
+        assert!(
+            AdminSession::list_all(Some(user.id), &db)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a role change revokes the operator's sessions"
+        );
+
+        assert_eq!(
+            run(role("nobody", "viewer"), "", db.clone())
+                .await
+                .unwrap_err(),
+            CliError("no such admin user: nobody".to_string())
+        );
+
+        let error = run(role("alice", "root"), "", db).await.unwrap_err();
+        assert!(error.0.contains("role"), "{}", error.0);
+        assert!(error.0.contains("root"), "{}", error.0);
     }
 
     #[tokio::test]

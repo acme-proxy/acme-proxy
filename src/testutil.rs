@@ -614,6 +614,7 @@ pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
         username: "alice".to_string(),
         password_hash: "pbkdf2-sha256$600000$c2FsdA$aGFzaA".to_string(),
         status: "active".to_string(),
+        role: None,
         totp_secret: None,
         totp_pending_secret: None,
         totp_last_step: None,

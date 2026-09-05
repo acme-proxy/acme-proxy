@@ -1006,6 +1006,80 @@ async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
     }
 }
 
+/// The `/ui` twin of `admin_api.rs`'s `role_gates_every_mutating_endpoint`.
+///
+/// A `viewer` is refused every shared/CA `/ui` mutation with a `403` page
+/// carrying `insufficient_role`, keeps the own-account routes; an `operator`
+/// keeps those and every CA route but is refused `/ui/operators/*`; an `admin`
+/// is refused none. Every row of `mutating_page_endpoints()` falls into exactly
+/// one bucket.
+#[tokio::test]
+async fn role_gates_every_mutating_page_endpoint() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database, _session) = test_admin_app_logged_in(admin_config()).await;
+    for (name, role) in [
+        ("adam", None),
+        ("olga", Some(AdminRole::Operator)),
+        ("vera", Some(AdminRole::Viewer)),
+    ] {
+        acme_proxy::admin::users::create_user(
+            name,
+            ADMIN_PASSWORD,
+            &PasswordContext::empty(),
+            database.clone(),
+        )
+        .await
+        .unwrap();
+        if let Some(role) = role {
+            acme_proxy::admin::users::set_role(name, role, database.clone())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+    let adam = admin_login(&app, "adam", ADMIN_PASSWORD).await;
+    let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
+    let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
+
+    let self_service =
+        |path: &str| path.starts_with("/ui/logout") || path.starts_with("/ui/account/");
+    let admin_only = |path: &str| path.starts_with("/ui/operators/");
+
+    for (method, path) in mutating_page_endpoints() {
+        // `POST /ui/logout` really ends the session it is sent with, which
+        // would redirect every later row to sign-in. Self-service by
+        // construction; covered by the logout suite.
+        if path == "/ui/logout" {
+            continue;
+        }
+        for (who, session, at_least_operator, is_admin) in [
+            ("admin", &adam, true, true),
+            ("operator", &olga, true, false),
+            ("viewer", &vera, false, false),
+        ] {
+            let response =
+                admin_form_request(&app, method.clone(), path, Some(session), Some(&[])).await;
+            let status = response.status();
+            let refused_for_role = status == StatusCode::FORBIDDEN
+                && html_body(response).await.contains("insufficient_role");
+
+            let expect_refused = if self_service(path) {
+                false
+            } else if admin_only(path) {
+                !is_admin
+            } else {
+                !at_least_operator
+            };
+
+            assert_eq!(
+                refused_for_role, expect_refused,
+                "{who} {method} {path} (status {status})"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_cross_origin_page_write_is_refused_before_anything_else() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;

@@ -41,7 +41,7 @@ pub mod orders;
 pub mod session;
 pub mod templates;
 
-pub use auth::{PageSession, PageSessionWrite};
+pub use auth::{PageAdminWrite, PageSelfServiceWrite, PageSession, PageSessionWrite};
 pub use error::PageError;
 
 use axum::Router;

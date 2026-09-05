@@ -319,11 +319,48 @@ the session that submitted it stays signed in, and every *other* session of
 that operator is revoked. Rotating a credential from inside a session you are
 already trusted on need not sign you out of the tab that did it.
 
+## Roles
+
+Every operator has one of three roles, stored in `admin_users.role` and
+governing what that operator's **web sessions** may do. The CLI is unaffected —
+a shell on the host runs every subcommand whatever the row says, the same way
+it already ignores `disabled` for read commands.
+
+| Role | Can do |
+| --- | --- |
+| `viewer` | Read every page and API route. Act on **their own** account only: change their password, revoke their own sessions, manage their own second factor, sign out. |
+| `operator` | Everything a `viewer` can, plus every CA action: revoke a certificate, deactivate or delete an ACME account, delete an order, mint or revoke an EAB credential, run a nonce sweep. |
+| `admin` | Everything an `operator` can, plus managing other operators — disable, enable, reset a colleague's second factor, revoke one of their sessions. |
+
+A web session that tries something above its role gets `403 insufficient_role`
+(a banner in the panel, a JSON error from the API); the request never reaches
+the operation.
+
+**An operator whose row predates this feature has role `admin`.** The column is
+`NULL` for them, which reads as `admin`, so an upgrade changes nobody's
+authority and the first operator — the only way into the panel — is never
+locked out of it.
+
+Set the role when you create the operator, or change it later:
+
+```console
+$ acme-proxy admin user create noc --role viewer --password-file /run/secrets/pw
+Created admin user noc (…), role viewer.
+
+$ acme-proxy admin user role noc operator
+Role of noc set to operator. Every session they held was revoked.
+```
+
+`--role` defaults to `admin` and an unknown value is refused by name.
+`admin user role` revokes the operator's sessions, the same as `passwd` and
+`disable` — a demotion that left a live `admin` session alive would take effect
+only when that cookie expired.
+
 ## Managing operators
 
 ```console
 $ acme-proxy admin user list
-alice                 active    totp=on   2026-08-08T13:21:18Z  2026-08-08T15:07:17Z
+alice                 active    admin     totp=on   2026-08-08T13:21:18Z  2026-08-08T15:07:17Z
 1 of 1 row(s).
 
 $ acme-proxy admin user list --json
@@ -332,6 +369,7 @@ $ acme-proxy admin user show alice
 id             bac6a47e-711b-4e8e-858e-417da905dab9
 username       alice
 status         active
+role           admin
 totp           enabled
 recovery_codes 7
 created        2026-08-08T13:21:18Z
@@ -367,8 +405,9 @@ change in name only. Disabling does the same.
 ### From the panel
 
 Also from the **Operators** page, not only from the host — for the operations
-that do not mint a credential. Sign in, open **Operators**, and pick a
-colleague:
+that do not mint a credential. The page and its actions need the `admin` role
+([Roles](#roles)); an `operator` or `viewer` session is refused it. Sign in,
+open **Operators**, and pick a colleague:
 
 ```text
 bob                   active    off    2026-08-08T13:21:18Z  2026-08-08T15:07:17Z

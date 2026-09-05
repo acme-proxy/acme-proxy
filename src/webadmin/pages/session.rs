@@ -19,7 +19,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::handlers::session::{
     LoginRequest, LogoutQuery, MfaRequest, finish_enrolment, finish_mfa, sign_in,
 };
-use crate::webadmin::pages::auth::{PageMfaPending, PageMfaSubmit, PageSessionWrite};
+use crate::webadmin::pages::auth::{PageMfaPending, PageMfaSubmit, PageSelfServiceWrite};
 use crate::webadmin::pages::error::{LOGIN_PATH, PageError, redirect};
 use crate::webadmin::pages::templates;
 use crate::webadmin::session::{AdminClientIp, MfaStep, PendingMfa, clearing_cookie};
@@ -206,7 +206,7 @@ async fn confirm_enrolment(
 pub async fn post_logout(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
-    session: PageSessionWrite,
+    session: PageSelfServiceWrite,
 ) -> Result<Response, PageError> {
     let scope = if query.all {
         AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;

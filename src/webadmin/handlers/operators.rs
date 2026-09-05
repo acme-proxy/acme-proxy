@@ -29,7 +29,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::{StepUpRequest, check_step_up};
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::session::{AdminClientIp, Authenticated, AuthenticatedWrite};
+use crate::webadmin::session::{AdminClientIp, AdminWrite, Authenticated};
 
 /// `GET /api/operators?limit=&offset=` — every operator, oldest first.
 ///
@@ -87,7 +87,7 @@ pub async fn disable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    AdminWrite(auth): AdminWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let target = find(&username, &state).await?;
@@ -113,7 +113,7 @@ pub async fn enable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    AdminWrite(auth): AdminWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let target = find(&username, &state).await?;
@@ -141,7 +141,7 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    AdminWrite(auth): AdminWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let mut target = find(&username, &state).await?;
@@ -170,7 +170,7 @@ pub async fn revoke_operator_session(
     State(state): State<AdminState>,
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
-    AuthenticatedWrite(auth): AuthenticatedWrite,
+    AdminWrite(auth): AdminWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let target = find(&username, &state).await?;

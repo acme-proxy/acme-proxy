@@ -65,23 +65,6 @@ keeps its corpses stops being read.
       reloading. The fragment route exists already (`HX-Request` picks it);
       what needs deciding is when polling **stops**, so a tab left open on a
       terminal order does not poll for ever.
-- [ ] **A role on `admin_users`, so a session that reads is not a session that
-      revokes.** ASVS **V7.5.3** and **V8.4.2** both land here: revocation and
-      account deletion take a live session and nothing further. There is one
-      kind of operator, and every live session can
-      delete an account and revoke a certificate as readily as it can read the
-      audit trail. `20260808120000_add_admin_users.sql` already says what the
-      column would look like — "a later nullable `ALTER TABLE`, the shape
-      `20260728120000_add_cert_revocation.sql` already established" — so the
-      schema half is one migration file, and the enforcement half is one branch
-      in `AuthenticatedWrite`/`PageSessionWrite`/`EnrolWrite`, the three
-      extractors every mutating route already passes through, rather than a
-      check per handler. What needs deciding is what a role means to the
-      **CLI**, which answers to a shell on the host and holds no session at
-      all: either it is a panel-only concept and `admin user list` grows a
-      column nothing enforces, or it is not, and a root shell is being asked to
-      respect it.
-
 ## Admin CLI
 
 - [ ] **Exit codes that distinguish.** `src/main.rs` exits `1` for a

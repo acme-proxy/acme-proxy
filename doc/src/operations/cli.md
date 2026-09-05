@@ -509,10 +509,11 @@ is running.
 
 | Command | Flags |
 | --- | --- |
-| `admin user create <username>` | `--password-file <path>` |
+| `admin user create <username>` | `--password-file <path>`, `--role admin\|operator\|viewer` (default `admin`) |
 | `admin user list` | `--limit <n>`, `--offset <n>`, `--json` |
 | `admin user show <username>` | `--json` |
 | `admin user passwd <username>` | `--password-file <path>` |
+| `admin user role <username> <admin\|operator\|viewer>` | revokes the operator's sessions |
 | `admin user delete <username>` | confirm-gated; `-y` skips |
 | `admin user disable\|enable <username>` | — |
 | `admin user totp status <username>` | `--json` |
@@ -523,7 +524,7 @@ is running.
 
 ```console
 $ printf '%s' "$PASSWORD" | acme-proxy admin user create alice
-Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9).
+Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9), role admin.
 ```
 
 - **The password never goes in argv.** There is no `--password` flag and `clap`
@@ -535,6 +536,13 @@ Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9).
 - `admin user passwd` and `admin user disable` both **revoke every session that
   user holds**. A password changed because it may have leaked, that left the
   leaked session alive, would be a change in name only.
+- **`--role` / `admin user role`** set the operator's privilege tier, which
+  scopes what their *web sessions* may do — `viewer` reads only, `operator`
+  adds every CA action, `admin` adds managing other operators. It does **not**
+  restrict the CLI: the host is the trusted plane. An unknown value is refused
+  by name, and `admin user role` revokes the operator's sessions so a demotion
+  takes effect at once. A row that predates the feature reads as `admin`. See
+  [Web Admin — Roles](webadmin_users.md#roles).
 - Usernames are stored lowercased, so `Alice` and `alice` cannot become two
   logins that read as one in a log line.
 - There is deliberately **no `admin user totp enrol`**. Enrolling happens in the
