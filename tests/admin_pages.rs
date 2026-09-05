@@ -919,6 +919,14 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str)> {
         (Method::POST, "/ui/account/mfa/totp/disable"),
         (Method::POST, "/ui/account/mfa/recovery-codes"),
         (Method::POST, "/ui/account/password"),
+        (Method::POST, "/ui/account/sessions/some-id/revoke"),
+        (Method::POST, "/ui/operators/some-username/disable"),
+        (Method::POST, "/ui/operators/some-username/enable"),
+        (Method::POST, "/ui/operators/some-username/totp/reset"),
+        (
+            Method::POST,
+            "/ui/operators/some-username/sessions/some-id/revoke",
+        ),
         // `POST /ui/login/mfa` is deliberately absent. It is a plain form on a
         // page that has no CSRF token — the same trade `POST /ui/login` makes,
         // argued on `webadmin::session::PendingMfaSubmit` — so with an active
@@ -2701,5 +2709,340 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
             .await
             .status(),
         StatusCode::BAD_REQUEST
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Own sessions -- the sessions card on `/ui/account`
+// ---------------------------------------------------------------------------
+
+/// The card `account/index.html` gained: every one of the caller's own live
+/// sessions, the current one labelled, and a working "Revoke" on the others.
+#[tokio::test]
+async fn the_account_page_lists_sessions_and_can_revoke_a_non_current_one() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    let _other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let body = html_body(admin_page(&app, "/ui/account", Some(&session), false).await).await;
+    assert!(body.contains("Sessions"));
+    assert!(body.contains("this session"));
+    // Two rows: the header's own `<tr>` plus one per session, so count the
+    // per-row action button instead.
+    assert_eq!(body.matches(r#"class="danger""#).count(), 2, "{body}");
+
+    let listed = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/account/sessions",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let other_id = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == false)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = admin_form_request(
+        &app,
+        Method::POST,
+        &format!("/ui/account/sessions/{other_id}/revoke"),
+        Some(&session),
+        Some(&[]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = html_body(response).await;
+    assert!(body.contains(r#"id="account-sessions""#), "{body}");
+    assert!(body.contains("Session revoked"));
+    // One row left: the current session.
+    assert_eq!(body.matches(r#"class="danger""#).count(), 1, "{body}");
+
+    // The revoking session is still perfectly usable.
+    assert_eq!(
+        admin_page(&app, "/ui/account", Some(&session), false)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+/// Revoking the session making the request behaves exactly like
+/// `POST /ui/logout` without `?all=true` — the
+/// `signing_out_clears_the_cookie_and_redirects_both_kinds_of_caller` shape,
+/// reached through the sessions card instead of the sign-out button.
+#[tokio::test]
+async fn revoking_the_current_session_from_the_account_page_signs_out() {
+    for hx in [false, true] {
+        let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+        let listed = json_body(
+            admin_request(
+                &app,
+                Method::GET,
+                "/api/account/sessions",
+                Some(&session),
+                None,
+            )
+            .await,
+        )
+        .await;
+        let own_id = listed["items"][0]["id"].as_str().unwrap().to_string();
+
+        let mut builder = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri(format!("/ui/account/sessions/{own_id}/revoke"))
+            .header(
+                header::COOKIE,
+                format!("__Host-acme_admin_session={}", session.cookie),
+            )
+            .header("x-csrf-token", &session.csrf)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        if hx {
+            builder = builder.header("hx-request", "true");
+        }
+        let response = send_from(
+            &app,
+            builder.body(axum::body::Body::empty()).unwrap(),
+            "127.0.0.1:40000",
+        )
+        .await;
+
+        if hx {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert_eq!(response.headers()["hx-redirect"], "/ui/login");
+        } else {
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            assert_eq!(response.headers()[header::LOCATION], "/ui/login");
+        }
+        assert!(
+            response.headers()[header::SET_COOKIE]
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0"),
+            "hx={hx}"
+        );
+
+        let after = admin_page(&app, "/ui/accounts", Some(&session), false).await;
+        assert_eq!(after.status(), StatusCode::SEE_OTHER, "hx={hx}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The operators surface -- `/ui/operators`
+// ---------------------------------------------------------------------------
+
+async fn app_with_bob() -> (axum::Router, AdminSessionHandle, AdminSessionHandle) {
+    let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+    (app, alice, bob)
+}
+
+#[tokio::test]
+async fn the_operators_page_lists_every_operator_and_badges_the_callers_own_row() {
+    let (app, alice, _bob) = app_with_bob().await;
+    let body = html_body(admin_page(&app, "/ui/operators", Some(&alice), false).await).await;
+    assert!(body.contains("alice"));
+    assert!(body.contains("bob"));
+    assert!(body.contains(">you<"), "{body}");
+    assert!(body.contains(r#"href="/ui/account""#));
+    assert!(body.contains(r#"href="/ui/operators/bob""#));
+}
+
+/// Managing yourself stays on `/ui/account` — this is what stops the
+/// operators page from growing a half-disabled copy of it.
+#[tokio::test]
+async fn the_operator_detail_page_redirects_the_caller_to_their_own_account_page() {
+    for hx in [false, true] {
+        let (app, alice, _bob) = app_with_bob().await;
+        let response = admin_page(&app, "/ui/operators/alice", Some(&alice), hx).await;
+        if hx {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert_eq!(response.headers()["hx-redirect"], "/ui/account");
+        } else {
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            assert_eq!(response.headers()[header::LOCATION], "/ui/account");
+        }
+    }
+}
+
+/// The whole feature, end to end, through the page: disable, enable, reset a
+/// second factor, and revoke one session — all on a colleague's account, all
+/// re-rendering the one `#operator-detail` fragment, and all refused with a
+/// banner rather than a page when the step-up password is missing or wrong.
+#[tokio::test]
+async fn the_operator_detail_page_manages_another_operator_end_to_end() {
+    let (app, database, alice_seed) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let _bob_seed = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+    // Give bob a second live session so the revoke case has something to leave
+    // behind.
+    let bob_second = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+
+    // Alice enrols a factor, so every mutation below is genuinely gated.
+    let secret = enrol_totp(database.clone(), "alice").await;
+    let alice = admin_login_mfa(&app, database.clone(), "alice", ADMIN_PASSWORD, &secret).await;
+    let _ = alice_seed; // superseded by the MFA-promoted session above
+
+    let body = html_body(admin_page(&app, "/ui/operators/bob", Some(&alice), false).await).await;
+    assert!(body.contains("bob"));
+    assert!(body.contains(r#"id="operator-detail""#));
+    assert!(body.contains(r#"id="operator-step-up-password""#));
+
+    // Missing the step-up password: a banner on the same fragment, not an
+    // error page.
+    let refused = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/disable",
+        Some(&alice),
+        Some(&[]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    let body = html_body(refused).await;
+    assert!(body.contains("That password is not correct"));
+    assert!(body.contains(r#"id="operator-detail""#));
+
+    // With it, disable really disables and revokes bob's sessions.
+    let disabled = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/disable",
+        Some(&alice),
+        Some(&[("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::OK);
+    let body = html_body(disabled).await;
+    assert!(body.contains("Operator disabled"));
+    assert!(body.contains("badge disabled"));
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob_second), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Enable, the other direction.
+    let enabled = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/enable",
+        Some(&alice),
+        Some(&[("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(enabled.status(), StatusCode::OK);
+    assert!(html_body(enabled).await.contains("badge active"));
+
+    // A fresh session to revoke individually, and one to prove untouched.
+    let bob_a = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+    let bob_b = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+    let sessions = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/operators/bob/sessions",
+            Some(&alice),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(sessions["total"], 2);
+    let target_id = sessions["items"][0]["id"].as_str().unwrap().to_string();
+
+    let revoked = admin_form_request(
+        &app,
+        Method::POST,
+        &format!("/ui/operators/bob/sessions/{target_id}/revoke"),
+        Some(&alice),
+        Some(&[("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert!(html_body(revoked).await.contains("Session revoked"));
+    let remaining = [
+        admin_request(&app, Method::GET, "/api/session", Some(&bob_a), None)
+            .await
+            .status(),
+        admin_request(&app, Method::GET, "/api/session", Some(&bob_b), None)
+            .await
+            .status(),
+    ];
+    assert_eq!(
+        remaining.iter().filter(|s| **s == StatusCode::OK).count(),
+        1,
+        "exactly one of bob's two sessions must survive"
+    );
+
+    // Second factor reset, on bob's own factor.
+    enrol_totp(database.clone(), "bob").await;
+    let reset = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/totp/reset",
+        Some(&alice),
+        Some(&[("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(reset.status(), StatusCode::OK);
+    assert!(
+        html_body(reset)
+            .await
+            .contains("second factor and recovery codes were removed")
+    );
+}
+
+/// The route exists and is refused, even though nothing in the panel's own
+/// navigation would ever construct this URL for the caller's own username —
+/// `get_operator` redirects self away before any button could be rendered.
+#[tokio::test]
+async fn the_operators_page_refuses_to_target_the_caller() {
+    let (app, alice, _bob) = app_with_bob().await;
+
+    for (method, path) in [
+        (Method::POST, "/ui/operators/alice/disable"),
+        (Method::POST, "/ui/operators/alice/enable"),
+        (Method::POST, "/ui/operators/alice/totp/reset"),
+    ] {
+        let response =
+            admin_form_request(&app, method.clone(), path, Some(&alice), Some(&[])).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{method} {path}"
+        );
+    }
+
+    assert_eq!(
+        admin_page(&app, "/ui/account", Some(&alice), false)
+            .await
+            .status(),
+        StatusCode::OK,
+        "alice's own account must be untouched"
     );
 }

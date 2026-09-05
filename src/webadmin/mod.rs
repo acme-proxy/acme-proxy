@@ -186,6 +186,37 @@ pub fn build_admin_app_with_logins(
             post(handlers::regenerate_recovery_codes),
         )
         .route("/account/password", post(handlers::change_password))
+        .route("/account/sessions", get(handlers::list_own_sessions))
+        .route(
+            "/account/sessions/{id}/revoke",
+            post(handlers::revoke_own_session),
+        )
+        // The operators surface: every operator this process has, and acting
+        // on one *other* than the caller — see `handlers::operators`. Every
+        // mutating route here sits behind `check_step_up`, unlike the
+        // `/account/*` routes just above.
+        .route("/operators", get(handlers::list_operators))
+        .route("/operators/{username}", get(handlers::get_operator))
+        .route(
+            "/operators/{username}/sessions",
+            get(handlers::list_operator_sessions),
+        )
+        .route(
+            "/operators/{username}/disable",
+            post(handlers::disable_operator),
+        )
+        .route(
+            "/operators/{username}/enable",
+            post(handlers::enable_operator),
+        )
+        .route(
+            "/operators/{username}/totp/reset",
+            post(handlers::reset_operator_totp),
+        )
+        .route(
+            "/operators/{username}/sessions/{id}/revoke",
+            post(handlers::revoke_operator_session),
+        )
         .route("/accounts", get(handlers::list_accounts))
         .route(
             "/accounts/{id}",

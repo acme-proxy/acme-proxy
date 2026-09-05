@@ -9,10 +9,13 @@
 {% block content %}
   <h1>Your account</h1>
   <p class="muted small">
-    Operators are managed from a shell on the host —
-    <code>acme-proxy admin user …</code>. What you can change here is your own
-    password and second factor.
+    What you can change here is your own password, your second factor, and
+    your own sessions. Creating an operator or resetting someone else's
+    password still needs a shell on the host (<code>acme-proxy admin user
+    …</code>) — but every other operator, and their sessions, can be managed
+    from the <a href="/ui/operators">Operators</a> page.
   </p>
   {% include "account/_password.html" %}
   {% include "account/_mfa.html" %}
+  {% include "account/_sessions.html" %}
 {% endblock %}

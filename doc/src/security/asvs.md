@@ -69,7 +69,7 @@ reported for information.
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
 | V6 Authentication | 26 | 1 | 0 | 8 | 6 / 3 / 3 |
-| V7 Session Management | 14 | 2 | 0 | 2 | 0 / 1 / 0 |
+| V7 Session Management | 15 | 1 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
 | V11 Cryptography | 10 | 3 | 0 | 1 | 5 / 2 / 3 |
@@ -78,7 +78,7 @@ reported for information.
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 0 / 1 / 0 |
-| **Total** | **164** | **16** | **1** | **36** | **43 / 21 / 16** |
+| **Total** | **165** | **15** | **1** | **36** | **43 / 21 / 16** |
 
 The short version. **There is no L1 gap**, and at **L2 there is one**:
 V15.1.2, an SBOM artifact. The four password-policy requirements that used to
@@ -314,9 +314,9 @@ carries its own signature and its own nonce.
 | 7.4.2 | All sessions terminated when an account is disabled or deleted | 1 | met | `set_status("disabled")` and `set_password` both call `AdminSession::delete_for_user`; the liveness check also refuses a session whose owner is no longer active |
 | 7.4.3 | Option to terminate other sessions after a factor changes | 2 | met | `confirm_totp_enrolment` and `disable_totp` both call `revoke_other_sessions`; a password change revokes every session unconditionally |
 | 7.4.4 | Visible logout on every authenticated page | 2 | met | A "Sign out" control in `templates/layout.html`, which every page extends |
-| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list` and `admin session revoke [--all]` |
+| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke [--all]` on the host, plus the panel's [Operators](../operations/webadmin_users.md#managing-operators) page — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one of them individually, gated by `check_step_up`. That individual form is new: the CLI's own `revoke` only ever takes `--user` (every session of one operator) or `--all` |
 | 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`src/webadmin/handlers/mfa.rs`) |
-| 7.5.2 | Users can view and terminate their own sessions | 2 | partial | "Sign out everywhere" exists in the panel; **listing** one's own sessions is `admin session list` on the host only |
+| 7.5.2 | Users can view and terminate their own sessions | 2 | met | The account page's Sessions card (`GET /api/account/sessions`, `/ui/account`) lists every one of the caller's own live sessions and terminates one individually (`POST /api/account/sessions/{id}/revoke`) or all at once ("Sign out everywhere") — closing the gap between nothing and everything the panel used to leave → [Sessions](../operations/webadmin_users.md#sessions) |
 | 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`. Certificate revocation and account deletion are not — a live session is sufficient authority for both |
 | 7.6.1 | Federated re-authentication behaviour | 2 | n/a | No federation |
 | 7.6.2 | Session creation requires explicit user action | 2 | met | A session exists only after a submitted sign-in form |

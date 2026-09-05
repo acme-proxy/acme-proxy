@@ -1,0 +1,79 @@
+{#- One operator, plus their live sessions. The swap target of every mutation
+    on this page: disable/enable, a second-factor reset, and revoking one of
+    their sessions all re-render this whole fragment, since any of them can
+    change what the summary panel above the sessions table says too. -#}
+<div id="operator-detail">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <dl class="fields">
+      <dt>Username</dt><dd><code>{{ operator.username }}</code></dd>
+      <dt>Status</dt><dd><span class="badge {{ operator.status }}">{{ operator.status }}</span></dd>
+      <dt>Second factor</dt>
+      <dd>
+        {%- if operator.totpEnabled -%}
+          <span class="badge">on</span>
+        {%- elif operator.enrolmentPending -%}
+          <span class="badge">enrolment unconfirmed</span>
+        {%- else -%}
+          <span class="muted">off</span>
+        {%- endif -%}
+      </dd>
+      {% if operator.totpEnabled %}
+        <dt>Recovery codes</dt>
+        <dd>{{ operator.recoveryCodesRemaining }} unused</dd>
+      {% endif %}
+      <dt>Last login</dt>
+      <dd>
+        {%- if operator.lastLoginAt -%}
+          {{ operator.lastLoginAt }}
+        {%- else -%}
+          <span class="muted">never</span>
+        {%- endif -%}
+      </dd>
+      <dt>Created</dt><dd>{{ operator.createdAt }}</dd>
+    </dl>
+
+    {#- Every button below re-proves your own password before it runs, the
+        same reasoning `account/_card.html` documents for a live factor: this
+        is a much larger blast radius than a change to your own account, and
+        a live session alone is not sufficient authority for it. -#}
+    <div class="field">
+      <label for="operator-step-up-password">Confirm your password to change any of this</label>
+      <input id="operator-step-up-password" type="password" name="password"
+             autocomplete="current-password" required>
+    </div>
+    <div class="actions">
+      {% if operator.status == "disabled" %}
+        <button hx-post="/ui/operators/{{ operator.username }}/enable"
+                hx-target="#operator-detail"
+                hx-include="#operator-step-up-password"
+                hx-confirm="Enable {{ operator.username }}?">
+          Enable
+        </button>
+      {% else %}
+        <button class="danger"
+                hx-post="/ui/operators/{{ operator.username }}/disable"
+                hx-target="#operator-detail"
+                hx-include="#operator-step-up-password"
+                hx-confirm="Disable {{ operator.username }}? Their sessions are revoked immediately.">
+          Disable
+        </button>
+      {% endif %}
+      {% if operator.totpEnabled or operator.enrolmentPending %}
+        <button class="danger"
+                hx-post="/ui/operators/{{ operator.username }}/totp/reset"
+                hx-target="#operator-detail"
+                hx-include="#operator-step-up-password"
+                hx-confirm="Remove {{ operator.username }}'s second factor and every recovery code, and revoke their sessions?">
+          Reset second factor
+        </button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Sessions</h2>
+    {% include "partials/_sessions_table.html" %}
+  </div>
+</div>

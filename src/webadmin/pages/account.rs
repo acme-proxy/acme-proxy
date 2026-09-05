@@ -1,26 +1,34 @@
-//! `/ui/account` — the operator's own page, which is only ever about their
-//! second factor.
+//! `/ui/account` — the operator's own page: password, second factor, and
+//! their own live sessions.
 //!
 //! Everything here acts on whoever is holding the cookie, which is why no path
-//! carries an id. Managing *other* operators stays a shell command on the host:
-//! this panel has no sign-up page and no user administration, deliberately.
+//! carries an id — the one apparent exception, `/ui/account/sessions/{id}`,
+//! still names only *which session*, never a different account. Managing
+//! *another* operator is `pages::operators`, not this module: the two are kept
+//! apart because every route there sits behind a password re-entry
+//! (`check_step_up`) this operator's own actions never need. `create`/`passwd`
+//! stay a shell command on the host either way — this panel has no sign-up
+//! page, and minting a credential is where that line is drawn.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::admin;
 use crate::admin::password::PasswordContext;
 use crate::admin::users::{self, UserError};
 use crate::admin::{mfa, totp};
+use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
+use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond, respond_fragment};
-use crate::webadmin::session::AdminClientIp;
+use crate::webadmin::session::{AdminClientIp, clearing_cookie};
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmForm {
@@ -75,7 +83,8 @@ async fn refuse_without_password(
     ))
 }
 
-/// `GET /ui/account` — the second-factor status card.
+/// `GET /ui/account` — the second-factor status card, the password card, and
+/// this operator's own live sessions.
 pub async fn get_account(
     State(state): State<AdminState>,
     session: PageSession,
@@ -91,6 +100,7 @@ pub async fn get_account(
         "min_password_length".to_string(),
         json!(crate::admin::password::MIN_PASSWORD_LEN),
     );
+    insert_own_sessions(&mut context, &state, &session.auth).await?;
 
     Ok(respond(
         &state,
@@ -446,6 +456,95 @@ pub async fn change_password(
             Err(PageError::internal())
         }
     }
+}
+
+/// `POST /ui/account/sessions/{id}/revoke` — end one of this operator's own
+/// sessions.
+///
+/// No step-up: the same trust level as `/ui/logout` (sign out here, or
+/// everywhere), not the operators surface's "act on someone else's account".
+/// Revoking the session making *this* request is not a special case to guard
+/// against — it behaves exactly like `/ui/logout` without `?all=true`, landing
+/// back on the sign-in page with the cookie cleared, rather than re-rendering a
+/// fragment for a session that no longer exists.
+pub async fn revoke_own_session(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    session: PageSessionWrite,
+) -> Result<Response, PageError> {
+    let target =
+        AdminSession::find_by_user_and_fingerprint(session.auth.user.id, &id, &state.database)
+            .await?
+            .ok_or_else(|| session_not_found(&id))?;
+    let was_current = target.token_hash == session.auth.session.token_hash;
+    AdminSession::delete(&target.token_hash, &state.database).await?;
+
+    tracing::info!(event = "admin_session_revoked",
+                   outcome = "success",
+                   surface = "ui",
+                   scope = "self",
+                   username = %session.auth.user.username,
+                   session_fp = %id);
+
+    if was_current {
+        let mut response = crate::webadmin::pages::error::redirect(
+            crate::webadmin::pages::error::LOGIN_PATH,
+            session.hx,
+        );
+        if let Ok(value) = axum::http::HeaderValue::from_str(&clearing_cookie()) {
+            response
+                .headers_mut()
+                .insert(axum::http::header::SET_COOKIE, value);
+        }
+        return Ok(response);
+    }
+
+    let mut context = Map::new();
+    context.insert(
+        "csrf_token".to_string(),
+        Value::String(session.auth.session.csrf_token.clone()),
+    );
+    insert_own_sessions(&mut context, &state, &session.auth).await?;
+    context.insert("flash".to_string(), super::flash("ok", "Session revoked."));
+    Ok(respond_fragment(&state, "account/_sessions.html", context)?.into_response())
+}
+
+fn session_not_found(id: &str) -> PageError {
+    PageError::not_found(format!("no such session: {id}"))
+}
+
+/// Everything `partials/_sessions_table.html` reads for this operator's own
+/// sessions -- newest first, each marked whether it is the one making the
+/// current request (see [`admin::render_admin_session_detail_json`]), and no
+/// step-up prefix: revoking one's own session sits at "sign out" trust level,
+/// not the operators surface's.
+///
+/// One page's worth: an operator accumulates a handful of browser sessions,
+/// never enough to need the pager the CLI's unbounded `admin session list`
+/// does.
+async fn insert_own_sessions(
+    context: &mut Map<String, Value>,
+    state: &AdminState,
+    auth: &crate::webadmin::session::Authenticated,
+) -> Result<(), PageError> {
+    let page = PageParams::default().resolve(&state.config);
+    let (sessions, _total) =
+        AdminSession::search(Some(auth.user.id), page.limit, page.offset, &state.database).await?;
+    let rows: Vec<Value> = sessions
+        .iter()
+        .map(|s| admin::render_admin_session_detail_json(s, &auth.session.token_hash))
+        .collect();
+
+    context.insert("sessions".to_string(), Value::Array(rows));
+    context.insert(
+        "sessions_revoke_prefix".to_string(),
+        Value::String("/ui/account/sessions".to_string()),
+    );
+    context.insert(
+        "sessions_target".to_string(),
+        Value::String("#account-sessions".to_string()),
+    );
+    Ok(())
 }
 
 /// What `GET /api/mfa` answers, for the template.

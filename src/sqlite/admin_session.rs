@@ -16,13 +16,21 @@ use crate::sqlite::order::rfc3339;
 /// hashed from `webadmin::session`, which is the only place the plaintext
 /// exists: it goes into a `Set-Cookie` and is never written down. A read of
 /// this table -- a backup, a `.dump`, an injection -- therefore yields nothing
-/// that can be replayed. That is also why there is no `find_by_id`: the hash
-/// *is* the lookup key, and knowing it means already holding the token.
+/// that can be replayed. That is also why there is no bare `find_by_id`: the
+/// hash *is* the lookup key, and knowing it means already holding the token.
+///
+/// [`AdminSession::find_by_user_and_fingerprint`] is not that: it resolves the
+/// *displayed* fingerprint (see `to_json`'s `id`) back to a row, but only
+/// within one caller-supplied `user_id` -- so reaching a row still requires
+/// already being authorized to see that user's sessions, the web panel's
+/// "revoke one of these" buttons being the only reason it exists.
 ///
 /// ## Methods
 ///
 /// - `create`: persist a session for a user
 /// - `find_by_token_hash`: the per-request resolution path
+/// - `find_by_user_and_fingerprint`: resolve a displayed `id` back to a row,
+///   scoped to the one user it can belong to -- see the note there
 /// - `touch`: advance the idle deadline
 /// - `delete` / `delete_for_user` / `delete_for_user_except`: logout, revoke all,
 ///   and the "keep the session doing the changing" case a password change needs
@@ -333,6 +341,29 @@ impl AdminSession {
         .await?;
 
         row.map(AdminSession::from_row).transpose()
+    }
+
+    /// Resolves a session's displayed fingerprint (`to_json`'s `id`) back to a
+    /// row, scoped to `user_id` -- the web panel's "revoke this session"
+    /// button, for either the caller's own sessions or, on the operators
+    /// surface, another operator's.
+    ///
+    /// Scoping to one user rather than searching every session by fingerprint
+    /// is the whole security property: a caller who has not already been
+    /// authorized to act on `user_id` cannot reach a row this way even by
+    /// observing its fingerprint elsewhere. Built over [`Self::list_all`]
+    /// rather than a dedicated query -- one operator's live sessions are a
+    /// small scan, and the fingerprint is derived, not a column, so there is
+    /// nothing for SQL to compare it against directly.
+    pub async fn find_by_user_and_fingerprint(
+        user_id: Uuid,
+        fingerprint_id: &str,
+        database: &Database,
+    ) -> Result<Option<AdminSession>, sqlx::Error> {
+        let sessions = Self::list_all(Some(user_id), database).await?;
+        Ok(sessions
+            .into_iter()
+            .find(|session| fingerprint(&session.token_hash) == fingerprint_id))
     }
 
     /// Advances the idle deadline. Callers rate-limit this -- see
@@ -783,6 +814,41 @@ mod tests {
         let alices = AdminSession::list_all(Some(alice.id), &db).await.unwrap();
         assert_eq!(alices.len(), 1);
         assert_eq!(alices[0].token_hash, "a1");
+    }
+
+    /// The web panel's "revoke this session" lookup: found within the owning
+    /// user, absent for a fingerprint that belongs to someone else's session or
+    /// to none at all.
+    #[tokio::test]
+    async fn find_by_user_and_fingerprint_is_scoped_to_the_named_user() {
+        let (db, alice) = db_with_user().await;
+        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        let alices = session(db.clone(), &alice, "alice-token-hash").await;
+        session(db.clone(), &bob, "bob-token-hash").await;
+
+        let alice_fp = fingerprint(&alices.token_hash);
+        let found = AdminSession::find_by_user_and_fingerprint(alice.id, alice_fp, &db)
+            .await
+            .unwrap()
+            .expect("alice's own session must resolve under her own id");
+        assert_eq!(found.token_hash, alices.token_hash);
+
+        // The same fingerprint, scoped to a *different* user, resolves to
+        // nothing -- the property the whole method exists for.
+        assert!(
+            AdminSession::find_by_user_and_fingerprint(bob.id, alice_fp, &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // An unknown fingerprint, even under the right user, is `None` too.
+        assert!(
+            AdminSession::find_by_user_and_fingerprint(alice.id, "00000000", &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// `admin session list`'s window, in both of its forms: the whole table, and

@@ -1621,6 +1621,14 @@ fn mutating_endpoints() -> Vec<(Method, &'static str)> {
         (Method::DELETE, "/api/mfa/totp"),
         (Method::POST, "/api/mfa/recovery-codes"),
         (Method::POST, "/api/account/password"),
+        (Method::POST, "/api/account/sessions/some-id/revoke"),
+        (Method::POST, "/api/operators/some-username/disable"),
+        (Method::POST, "/api/operators/some-username/enable"),
+        (Method::POST, "/api/operators/some-username/totp/reset"),
+        (
+            Method::POST,
+            "/api/operators/some-username/sessions/some-id/revoke",
+        ),
     ]
 }
 
@@ -3546,4 +3554,448 @@ async fn a_blank_filter_is_absent_on_every_list() {
     )
     .await;
     assert_eq!(padded["total"], 3);
+}
+
+// ---------------------------------------------------------------------------
+// Own sessions -- the caller's own live sessions, `/api/account/sessions`
+// ---------------------------------------------------------------------------
+
+/// The literal "nothing in between" the panel had before this: individually
+/// listing and revoking one of the caller's own sessions, alongside
+/// `DELETE /api/session?all=true`.
+#[tokio::test]
+async fn own_sessions_are_listed_with_the_current_one_marked() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    // A second, independent session for the same operator.
+    let _other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let body = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/account/sessions",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["total"], 2);
+    let items = body["items"].as_array().unwrap();
+    // Exactly one row is "this session" -- the one that just asked.
+    assert_eq!(items.iter().filter(|s| s["current"] == true).count(), 1);
+    assert_eq!(items.iter().filter(|s| s["current"] == false).count(), 1);
+    // Never the hash or the CSRF token, `render_admin_session_json`'s rule.
+    let rendered = body.to_string();
+    assert!(!rendered.contains(&session.csrf));
+}
+
+/// Revoking a session that is not the one making the request removes exactly
+/// that row and leaves the caller signed in.
+#[tokio::test]
+async fn revoking_a_non_current_own_session_removes_only_that_one() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let listed = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/account/sessions",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let other_id = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == false)
+        .expect("the second session must be listed and not current")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/account/sessions/{other_id}/revoke"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    // No cookie clearing -- this session did not touch itself.
+    assert!(response.headers().get(header::SET_COOKIE).is_none());
+
+    // The revoking session still works; the other one does not.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&session), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&other), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// Revoking the *current* session behaves exactly like `DELETE /api/session`
+/// without `?all=true`: the cookie is cleared and the session that just
+/// answered stops working.
+#[tokio::test]
+async fn revoking_the_current_own_session_signs_it_out() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    let listed = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/account/sessions",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let own_id = listed["items"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(listed["items"][0]["current"], true);
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/account/sessions/{own_id}/revoke"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let set_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(set_cookie.contains("Max-Age=0"));
+
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&session), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// A session id scoped to *another* operator is not reachable through this
+/// route, even by an authenticated caller who knows it -- `404`, identical to
+/// one that never existed, and the other operator's session survives.
+#[tokio::test]
+async fn own_sessions_route_cannot_reach_another_operators_session() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+
+    let bob_sessions = json_body(
+        admin_request(&app, Method::GET, "/api/account/sessions", Some(&bob), None).await,
+    )
+    .await;
+    let bob_session_id = bob_sessions["items"][0]["id"].as_str().unwrap().to_string();
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/account/sessions/{bob_session_id}/revoke"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Bob's session is untouched.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The operators surface -- `/api/operators`, acting on *another* operator
+// ---------------------------------------------------------------------------
+
+/// Creates `bob` and signs him in once, handing back the database, the caller
+/// (`alice`, from `test_admin_app_logged_in`) and bob's own session handle.
+async fn app_with_bob() -> (
+    axum::Router,
+    std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    common::AdminSessionHandle,
+    common::AdminSessionHandle,
+) {
+    let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+    (app, database, alice, bob)
+}
+
+#[tokio::test]
+async fn operators_are_listed_oldest_first() {
+    let (app, _database, alice, _bob) = app_with_bob().await;
+    let body =
+        json_body(admin_request(&app, Method::GET, "/api/operators", Some(&alice), None).await)
+            .await;
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["items"][0]["username"], "alice");
+    assert_eq!(body["items"][1]["username"], "bob");
+}
+
+#[tokio::test]
+async fn an_operator_detail_reports_status_and_totp_state() {
+    let (app, _database, alice, _bob) = app_with_bob().await;
+    let body =
+        json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
+            .await;
+    assert_eq!(body["username"], "bob");
+    assert_eq!(body["status"], "active");
+    assert_eq!(body["totpEnabled"], false);
+    assert_eq!(body["enrolmentPending"], false);
+
+    let missing = admin_request(
+        &app,
+        Method::GET,
+        "/api/operators/nobody",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+/// The whole point: disabling another operator through the panel, not only
+/// from a shell. Revokes their sessions too, the CLI's own rule.
+#[tokio::test]
+async fn disabling_and_enabling_an_operator_round_trips_and_revokes_their_sessions() {
+    let (app, _database, alice, bob) = app_with_bob().await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/disable",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let detail =
+        json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
+            .await;
+    assert_eq!(detail["status"], "disabled");
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "a disabled operator's sessions must be revoked immediately"
+    );
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/enable",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let detail =
+        json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
+            .await;
+    assert_eq!(detail["status"], "active");
+}
+
+/// The web twin of `acme-proxy admin user totp reset`: removes the factor,
+/// the recovery codes, and every session -- on someone *else's* account.
+#[tokio::test]
+async fn resetting_an_operators_totp_clears_it_and_their_sessions() {
+    let (app, database, alice, bob) = app_with_bob().await;
+    enrol_totp(database.clone(), "bob").await;
+    let bob_detail_before =
+        json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
+            .await;
+    assert_eq!(bob_detail_before["totpEnabled"], true);
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/totp/reset",
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let bob_detail_after =
+        json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
+            .await;
+    assert_eq!(bob_detail_after["totpEnabled"], false);
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// Revoking one of another operator's sessions leaves their other sessions
+/// alone -- the granularity that is the whole point of this surface, since
+/// the CLI's `admin session revoke` only ever takes `--user` (every session)
+/// or `--all` (the whole server).
+#[tokio::test]
+async fn revoking_one_of_another_operators_sessions_leaves_the_rest() {
+    let (app, _database, alice, bob) = app_with_bob().await;
+    let bob_second = admin_login(&app, "bob", ADMIN_PASSWORD).await;
+
+    let sessions = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/operators/bob/sessions",
+            Some(&alice),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(sessions["total"], 2);
+    let target_id = sessions["items"][0]["id"].as_str().unwrap().to_string();
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/operators/bob/sessions/{target_id}/revoke"),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let remaining = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/operators/bob/sessions",
+            Some(&alice),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(remaining["total"], 1);
+
+    // Exactly one of bob's two sessions is gone; the other still works.
+    let statuses = [
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        admin_request(&app, Method::GET, "/api/session", Some(&bob_second), None)
+            .await
+            .status(),
+    ];
+    assert_eq!(statuses.iter().filter(|s| **s == StatusCode::OK).count(), 1);
+}
+
+/// Every mutating route on this surface refuses a `username` that resolves to
+/// the caller -- self-management stays on `/api/account`, which already owns
+/// it. Checked before step-up, so this operator (who has no factor) is
+/// refused with no password prompt either.
+#[tokio::test]
+async fn the_operators_surface_refuses_to_target_the_caller() {
+    let (app, _database, alice, _bob) = app_with_bob().await;
+
+    for (method, path) in [
+        (Method::POST, "/api/operators/alice/disable"),
+        (Method::POST, "/api/operators/alice/enable"),
+        (Method::POST, "/api/operators/alice/totp/reset"),
+        (Method::POST, "/api/operators/alice/sessions/some-id/revoke"),
+    ] {
+        let response = admin_request(&app, method.clone(), path, Some(&alice), None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{method} {path} must refuse to target the caller"
+        );
+    }
+
+    // Untouched: alice is still active with a live session.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&alice), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+}
+
+/// The blast radius on this surface is a colleague's whole account, not the
+/// caller's own -- so every mutating route re-proves the caller's password
+/// once they have a factor, `changing_a_live_factor_requires_the_password_again`'s
+/// shape applied to acting on someone else.
+#[tokio::test]
+async fn operators_mutations_require_the_callers_password_once_they_have_a_factor() {
+    let (app, database, _seed_alice, bob) = app_with_bob().await;
+    let secret = enrol_totp(database.clone(), "alice").await;
+    let alice = admin_login_mfa(&app, database.clone(), "alice", ADMIN_PASSWORD, &secret).await;
+
+    let mut attempt = 0;
+    for body in [json!({}), json!({ "password": "not-the-password" })] {
+        attempt += 1;
+        let refused = admin_request_from(
+            &app,
+            Method::POST,
+            "/api/operators/bob/disable",
+            Some(&alice),
+            Some(body),
+            &format!("192.0.2.{attempt}:1234"),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json_body(refused).await["error"], "invalid_credentials");
+    }
+
+    // Bob is untouched by either failed attempt.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    // With the right password, the same call goes through.
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/disable",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }

@@ -36,6 +36,7 @@ pub mod error;
 pub mod expiring;
 pub mod filter;
 pub mod misc;
+pub mod operators;
 pub mod orders;
 pub mod session;
 pub mod templates;
@@ -86,7 +87,33 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             post(account::regenerate_recovery_codes),
         )
         .route("/ui/account/password", post(account::change_password))
+        .route(
+            "/ui/account/sessions/{id}/revoke",
+            post(account::revoke_own_session),
+        )
         .route("/ui/logout", post(session::post_logout))
+        // The operators surface: every operator this process has, and acting
+        // on one *other* than the caller — see `pages::operators`. Every
+        // mutating route here sits behind `check_step_up`, unlike the
+        // `/ui/account/*` routes just above.
+        .route("/ui/operators", get(operators::list_operators))
+        .route("/ui/operators/{username}", get(operators::get_operator))
+        .route(
+            "/ui/operators/{username}/disable",
+            post(operators::disable_operator),
+        )
+        .route(
+            "/ui/operators/{username}/enable",
+            post(operators::enable_operator),
+        )
+        .route(
+            "/ui/operators/{username}/totp/reset",
+            post(operators::reset_operator_totp),
+        )
+        .route(
+            "/ui/operators/{username}/sessions/{id}/revoke",
+            post(operators::revoke_operator_session),
+        )
         .route("/ui/accounts", get(accounts::list_accounts))
         .route(
             "/ui/accounts/{id}",

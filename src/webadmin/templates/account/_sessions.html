@@ -1,0 +1,22 @@
+{#-
+  The swap target of every mutation on this operator's own sessions --
+  `_mfa.html`'s shape, alongside the password and second-factor cards on the
+  same page.
+-#}
+<div id="account-sessions">
+  {% include "partials/_flash.html" %}
+  <div class="panel">
+    <h2>Sessions</h2>
+    <p class="muted small">
+      Every browser currently signed in as you. Revoke one you don't
+      recognise, or sign out of every one of them at once below.
+    </p>
+    {% include "partials/_sessions_table.html" %}
+    <div class="actions">
+      <button hx-post="/ui/logout?all=true"
+              hx-confirm="Sign out of every session, including this one? You will be sent back to sign in.">
+        Sign out everywhere
+      </button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,55 @@
+{#- The swap target of the operators list: the table and its pager, so a page
+    step replaces exactly this and nothing else -- `accounts/_table.html`'s
+    shape.
+
+    `user` is `chrome`'s own context member (the caller), not a row -- used
+    only to badge and link the caller's own row differently, since acting on
+    it belongs on `/ui/account` and not on this page. -#}
+<div id="operators-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Status</th>
+          <th>Second factor</th>
+          <th>Last login</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for operator in page.items %}
+          <tr>
+            <td>
+              {% if operator.id == user.id %}
+                <a href="/ui/account"><code>{{ operator.username }}</code></a>
+                <span class="badge">you</span>
+              {% else %}
+                <a href="/ui/operators/{{ operator.username }}"><code>{{ operator.username }}</code></a>
+              {% endif %}
+            </td>
+            <td><span class="badge {{ operator.status }}">{{ operator.status }}</span></td>
+            <td>
+              {%- if operator.totpEnabled -%}
+                <span class="badge">on</span>
+              {%- else -%}
+                <span class="muted">off</span>
+              {%- endif -%}
+            </td>
+            <td class="small">
+              {%- if operator.lastLoginAt -%}
+                {{ operator.lastLoginAt }}
+              {%- else -%}
+                <span class="muted">never</span>
+              {%- endif -%}
+            </td>
+            <td class="small">{{ operator.createdAt }}</td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="5">No operator exists.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

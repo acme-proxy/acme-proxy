@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Operator <code>{{ operator.username }}</code></h1>
+  <p class="small"><a href="/ui/operators">← All operators</a></p>
+
+  {% include "operators/_card.html" %}
+{% endblock %}

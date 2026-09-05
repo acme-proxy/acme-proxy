@@ -1,0 +1,14 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Operators</h1>
+  <p class="muted small">
+    Everyone who can sign in to this panel. Disabling one, resetting their
+    second factor, or revoking one of their sessions asks for your own
+    password again — see each operator's own page. Creating an operator or
+    replacing their password still needs a shell on the host
+    (<code>acme-proxy admin user create|passwd</code>); your own account is
+    managed from <a href="/ui/account">Account</a>, not from here.
+  </p>
+
+  {% include "operators/_table.html" %}
+{% endblock %}

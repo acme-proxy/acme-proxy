@@ -285,6 +285,28 @@ pub fn render_admin_session_json(session: &AdminSession) -> Value {
     session.to_json()
 }
 
+/// A session listing plus one member no CLI rendering needed: whether this row
+/// *is* the caller's own live session.
+///
+/// [`render_admin_user_detail_json`]'s arrangement -- the listing shape, cloned
+/// and extended, never the reverse. `current_token_hash` is the caller's own
+/// session (never a session being looked *at*, which never has this member's
+/// answer be true of itself in a useful way), so the web panel's own sessions
+/// card can badge or relabel the row that revoking would sign the viewer out
+/// of, without teaching [`AdminSession`] anything about who is asking.
+#[must_use]
+pub fn render_admin_session_detail_json(session: &AdminSession, current_token_hash: &str) -> Value {
+    let mut object = render_admin_session_json(session)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    object.insert(
+        "current".to_string(),
+        Value::Bool(session.token_hash == current_token_hash),
+    );
+    Value::Object(object)
+}
+
 /// `nonce count --json` and `GET /api/nonces`.
 ///
 /// A count and nothing else: a nonce is a bearer credential until it is
@@ -544,5 +566,17 @@ mod tests {
         assert!(!rendered.contains("the-csrf-token"));
         assert_eq!(json["id"], "01234567");
         assert_eq!(json["state"], "active");
+    }
+
+    #[test]
+    fn render_admin_session_detail_json_marks_only_the_matching_hash() {
+        let session = admin_session_fixture();
+        let mine = render_admin_session_detail_json(&session, &session.token_hash);
+        assert_eq!(mine["current"], true);
+        // Everything the listing shape carries is still there.
+        assert_eq!(mine["id"], "01234567");
+
+        let someone_elses = render_admin_session_detail_json(&session, "a-different-hash");
+        assert_eq!(someone_elses["current"], false);
     }
 }

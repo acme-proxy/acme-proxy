@@ -364,6 +364,42 @@ that read as one in a log line.
 because it may have leaked, that left the leaked session alive, would be a
 change in name only. Disabling does the same.
 
+### From the panel
+
+Also from the **Operators** page, not only from the host — for the operations
+that do not mint a credential. Sign in, open **Operators**, and pick a
+colleague:
+
+```text
+bob                   active    off    2026-08-08T13:21:18Z  2026-08-08T15:07:17Z
+```
+
+Their page shows the same status and second-factor summary `admin user show`
+does, plus their own live sessions (see [Sessions](#sessions) below), and three
+buttons: **Disable**, **Reset second factor**, and, per session, **Revoke**.
+Every one of them asks for *your own* password again first — the same
+`check_step_up` gate a live second-factor change already runs through, since
+disabling a colleague's account or ending one of their sessions is a much
+larger blast radius than anything on your own account page, and a stolen
+cookie alone should not be sufficient authority for it.
+
+```console
+$ curl -X POST https://admin.example.com/api/operators/bob/disable \
+    -H 'Cookie: __Host-acme_admin_session=…' -H 'X-CSRF-Token: …' \
+    -d '{"password": "…"}'
+```
+
+Two things this surface deliberately does **not** do, both already settled
+above: **`create` and `passwd` stay on the host.** Minting a credential is
+where "no sign-up page" already draws the line, and everything the Operators
+page offers only ever *tightens* an existing account — it can disable one,
+reset its factor, or end a session, never set a password or bring one into
+being. And **an operator can never target themself here** — `GET
+/ui/operators/{your own username}` redirects straight to
+[Your account](#changing-your-own-password), which already owns every one of
+those actions for yourself, so there is exactly one page an operator manages
+their own account from.
+
 ## Sessions
 
 ```console
@@ -401,6 +437,39 @@ explicitly signed out of.
 compared against the live request: pinning a session to an address breaks every
 mobile and CGNAT operator, and pinning it to a User-Agent breaks on the next
 browser update.
+
+### From the panel
+
+The CLI's `revoke` only ever takes a whole operator (`--user`) or the whole
+server (`--all`) — before this there was no single-session form at all, on
+either front end. The panel now has one, at two different trust levels:
+
+**Your own sessions.** Sign in, open your username in the top-right corner,
+and scroll to **Sessions**: every browser currently signed in as you, the one
+answering this request labelled, and a **Revoke** beside each of the others.
+No password re-entry — this is the same trust level as **Sign out
+everywhere**, which sits right below it and is now a button rather than only
+an API route nothing linked to.
+
+```console
+$ curl https://admin.example.com/api/account/sessions \
+    -H 'Cookie: __Host-acme_admin_session=…'
+```
+
+Revoking the session making the request behaves exactly like signing out of
+just this browser: the cookie is cleared and you land back on the sign-in
+page. Revoking another one of your own ends it immediately, wherever it is
+signed in.
+
+**Another operator's sessions.** Reached from their page under
+[Operators](#managing-operators) — the "colleague's laptop went missing"
+answer that used to require SSH. Listing and revoking there behaves the same
+way, with one difference: it asks for your own password first, the same gate
+described [above](#managing-operators). A session id is a fingerprint of the
+stored token hash either way — printing the hash would put every live
+session's lookup key on a terminal — and it only ever resolves within the one
+operator it was listed under, so an id copied from one operator's page can
+never revoke another's session by accident or by guessing.
 
 ## What the log says
 
@@ -443,3 +512,16 @@ WARN event="admin_password_hash_unreadable" username="alice"
 
 A corrupt `admin_users` row refuses the sign-in rather than erroring the
 endpoint, and the account stays unusable until the password is rewritten.
+
+Revoking a single session, and every mutation on the Operators page, each
+leave their own line — `surface` says which front end it came through and
+`target_username` is absent on the self-service one, since there is nothing to
+distinguish it from:
+
+```text
+INFO event="admin_session_revoked"         surface="ui"  username="alice"
+INFO event="admin_operator_disabled"       surface="api" username="alice" target_username="bob"
+INFO event="admin_operator_enabled"        surface="ui"  username="alice" target_username="bob"
+INFO event="admin_operator_totp_reset"     surface="api" username="alice" target_username="bob"
+INFO event="admin_operator_session_revoked" surface="ui" username="alice" target_username="bob"
+```

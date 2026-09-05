@@ -1,0 +1,71 @@
+{#-
+  A list of live `admin_sessions` rows, shared by `account/_sessions.html`
+  (the caller's own) and `operators/_card.html` (another operator's).
+
+  Read from the ambient context rather than passed with `with` (minijinja
+  `include` carries the caller's context whole, the rest of this tree's
+  convention):
+
+  - `sessions`: the rows, `render_admin_session_json`/`_detail_json` shaped.
+    Only the self view sets `current` on any of them.
+  - `sessions_revoke_prefix`: e.g. `/ui/account/sessions` or
+    `/ui/operators/alice/sessions` -- `{{ sessions_revoke_prefix }}/{id}/revoke`
+    is the row's own action.
+  - `sessions_target`: the enclosing swap target, e.g. `#account-sessions`.
+  - `sessions_step_up`: present only on the operators surface, where every
+    mutation re-proves the caller's password -- see `hx-include` below.
+-#}
+<div class="panel table-scroll">
+  <table>
+    <thead>
+      <tr>
+        <th>Session</th>
+        <th>Created</th>
+        <th>Last active</th>
+        <th>Expires</th>
+        <th>From</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in sessions %}
+        <tr>
+          <td>
+            <code>{{ row.id }}</code>
+            {%- if row.current %} <span class="badge">this session</span>{% endif -%}
+          </td>
+          <td class="small">{{ row.createdAt }}</td>
+          <td class="small">{{ row.lastSeenAt }}</td>
+          <td class="small">{{ row.expiresAt }}</td>
+          <td class="small wrap-anywhere">
+            {%- if row.createdIp -%}
+              <code>{{ row.createdIp }}</code>
+            {%- else -%}
+              <span class="muted">—</span>
+            {%- endif -%}
+          </td>
+          <td>
+            {% if row.current %}
+              <button class="danger"
+                      hx-post="{{ sessions_revoke_prefix }}/{{ row.id }}/revoke"
+                      hx-target="{{ sessions_target }}"
+                      hx-confirm="Sign out of this session? You will be sent back to sign in.">
+                Sign out
+              </button>
+            {% else %}
+              <button class="danger"
+                      hx-post="{{ sessions_revoke_prefix }}/{{ row.id }}/revoke"
+                      hx-target="{{ sessions_target }}"
+                      {% if sessions_step_up %}hx-include="{{ sessions_step_up }}"{% endif %}
+                      hx-confirm="Revoke this session? Whoever is signed in on it is signed out immediately.">
+                Revoke
+              </button>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td class="empty" colspan="6">No live session.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

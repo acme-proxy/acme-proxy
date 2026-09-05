@@ -91,23 +91,6 @@ keeps its corpses stops being read.
       all: either it is a panel-only concept and `admin user list` grows a
       column nothing enforces, or it is not, and a root shell is being asked to
       respect it.
-- [ ] **Operators and sessions, in the panel** — also ASVS **V7.5.2**, which
-      wants an operator able to *see* their own live sessions and not only end
-      them all at once. `admin user
-      list|disable|enable|totp reset` and `admin session list|revoke` are
-      shell-only; the panel manages the *current* operator's own factor and
-      offers "sign out everywhere", with nothing in between — so the answer to
-      a colleague's laptop going missing is an SSH session, at the moment
-      somebody is trying to move quickly. `render_admin_session_json` already
-      exists with exactly one consumer, and the token-hash fingerprint it
-      prints rather than the hash is what a page would show too. **Create and
-      `passwd` deliberately stay on the host**: those mint a credential, which
-      is where the "no sign-up page" rule already draws the line, and
-      everything proposed here only ever *tightens*. Each route goes behind
-      `check_step_up` (`src/webadmin/handlers/mfa.rs`) and into
-      `mutating_endpoints()`/`mutating_page_endpoints()`. The open question is
-      whether it should wait for the role above: without one, this is every
-      operator able to disable every other.
 
 ## Admin CLI
 
@@ -121,6 +104,14 @@ keeps its corpses stops being read.
       server could not do it", and every code past those two is a surface that
       has to be documented and then kept, under the same pre-1.0 rule as the
       rest of the CLI.
+- [ ] **`admin session revoke --session <id>`.** The panel's Operators and
+      Account pages can now revoke one session individually
+      (`AdminSession::find_by_user_and_fingerprint`); the CLI's `revoke` still
+      only takes `--user` (every session of one operator) or `--all` (every
+      session on the server), which is coarser than what the web surface can
+      do. Cheap to add — the model method already exists — and worth doing
+      only if an operator working from a shell turns out to want the same
+      granularity a browser now has.
 
 ## Both surfaces
 

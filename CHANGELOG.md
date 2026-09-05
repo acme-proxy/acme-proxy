@@ -33,6 +33,25 @@ migrated configuration before restarting.
 
 ### Security
 
+- **The panel can now list and revoke sessions, and manage other operators**
+  — ASVS 5.0 V7.5.2 and V7.4.5. The account page gains a Sessions card: every
+  one of the caller's own live sessions, the current one labelled, each
+  individually revocable, plus "Sign out everywhere" (previously an unlinked
+  API route). A new **Operators** page lists every operator and lets one act
+  on a *colleague's* account — disable, enable, reset their second factor,
+  and revoke one of their sessions individually, which the CLI's own
+  `admin session revoke` still cannot do (only `--user`, every session of
+  one operator, or `--all`). Every mutation there re-proves the caller's own
+  password (`check_step_up`) and refuses to target the caller — managing
+  yourself stays on the account page, which already owns it. `admin user
+  create`/`passwd` stay host-only, unchanged: those mint a credential, which
+  is where "no sign-up page" already draws the line.
+
+  Without a role on `admin_users`, this means any signed-in operator can
+  disable or reset the factor of any other — a risk already present via the
+  CLI/host shell, now reachable from an authenticated web session too. See
+  the TODO for the tracked follow-up.
+
 - **An operator can now change their own password from the panel**, not only
   from `acme-proxy admin user passwd` on the host — ASVS 5.0 V6.2.2. The route
   takes the *current* password and verifies it before writing a new one
