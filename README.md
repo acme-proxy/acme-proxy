@@ -160,8 +160,12 @@ Or build the container image — the repository ships a `Containerfile`:
 
 ```bash
 podman build -t acme-proxy .      # or: docker build -t acme-proxy .
-podman run --rm -p 3000:3000 -v ./data:/data acme-proxy
+podman run --rm -p 3000:3000 -v ./data:/data:U acme-proxy   # runs as non-root
 ```
+
+The image runs as a non-root user, so the mounted directory has to be writable
+by it — `:U` above is the rootless-Podman shortcut; the deployment guide covers
+Docker.
 
 See [Installation](https://acme-proxy.github.io/acme-proxy/getting_started/installation.html)
 and [Deployment](https://acme-proxy.github.io/acme-proxy/getting_started/deployment.html)

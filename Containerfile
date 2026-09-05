@@ -1,4 +1,5 @@
-# Builds the acme-proxy server for the e2e lab (tests/e2e/).
+# Builds the acme-proxy server image, used two ways: by the e2e lab (tests/e2e/)
+# and as the deployment image documented in doc/src/getting_started/deployment.md.
 # Not used by CI's `test` job — the lab is a manual check, plus the nightly `e2e`
 # job in .github/workflows/ci.yml.
 #
@@ -61,6 +62,19 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates openssl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/acme-proxy /usr/local/bin/acme-proxy
+# Run as a non-root account that owns only its data directory (ASVS V13.2.2).
+# Everything the server writes — sqlite.db and its WAL siblings, the CA key
+# material, the CRL and its JSON ledger, a generated TLS cert, a mounted
+# config.toml — lands in WORKDIR, so that is the one path this user needs. The
+# uid/gid is fixed at 1000 (unused in debian:trixie-slim) so a bind-mounted host
+# directory can be chowned to a predictable owner — see
+# doc/src/getting_started/deployment.md.
+RUN groupadd --gid 1000 acme-proxy \
+    && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /data \
+       --shell /usr/sbin/nologin acme-proxy \
+    && mkdir -p /data \
+    && chown acme-proxy:acme-proxy /data
 WORKDIR /data
+USER acme-proxy
 ENTRYPOINT ["acme-proxy"]
 CMD ["serve"]

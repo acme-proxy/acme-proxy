@@ -74,11 +74,11 @@ reported for information.
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
 | V11 Cryptography | 10 | 3 | 0 | 1 | 5 / 2 / 3 |
 | V12 Secure Communication | 6 | 1 | 0 | 2 | 0 / 2 / 1 |
-| V13 Configuration | 8 | 5 | 0 | 0 | 4 / 4 / 0 |
+| V13 Configuration | 9 | 4 | 0 | 0 | 4 / 4 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **166** | **15** | **0** | **36** | **44 / 20 / 16** |
+| **Total** | **167** | **14** | **0** | **36** | **44 / 20 / 16** |
 
 The short version. **There is no L1 or L2 gap.** The four password-policy
 requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
@@ -409,7 +409,7 @@ is a reference token and is assessed under V7.
 | 13.1.3 | Documented resource-management strategy per external system | 3 | partial | Timeouts are documented per subsystem and every outbound call has one. **Retry policy** is documented for the job runner but not stated as a policy for the IPAM and webhook clients |
 | 13.1.4 | Documented critical secrets and a rotation schedule | 3 | **gap** | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); no rotation schedule is given for any of them |
 | 13.2.1 | Authenticated backend communication with non-shared credentials | 2 | partial | The relay upstream authenticates by account key and the IPAM clients by API token, both per-deployment. The database is a local file governed by file mode, not by a credential |
-| 13.2.2 | Least privilege for backend accounts | 2 | partial | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`src/script_hook.rs`); the systemd unit in [Deployment](../getting_started/deployment.md) runs as a dedicated `acme-proxy` user; the IPAM token needs read access only. The repository `Containerfile` sets **no `USER`** — see [Gaps](#gaps) |
+| 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`src/script_hook.rs`); the systemd unit in [Deployment](../getting_started/deployment.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only |
 | 13.2.3 | No default service credentials | 2 | met | Nothing ships with a credential. Every secret is either operator-supplied or generated on first start |
 | 13.2.4 | Allowlist of external systems the application may contact | 2 | partial | The relay upstream, the IPAM host and the webhook URL are each a single configured destination — an allowlist of one. The `http-01` validator is the exception, and deliberately so |
 | 13.2.5 | Server-level allowlist of destinations | 2 | partial | Same. The containment for `http-01` is scheme, port and hop count rather than destination |
@@ -564,23 +564,15 @@ non-feature. It is stated as such in the
 
 ## Gaps
 
-Open shortfalls against the L1/L2 bar, worst first. Each is also an entry in
-`TODO.md`.
+Open shortfalls, worst first — both L3 now that the container-image item is
+closed, though the first carries an L2 consequence (V11.1.1). Each is also an
+entry in `TODO.md`.
 
 **No documented secret rotation schedule** — *V13.1.4 (L3), reaching V11.1.1 at
 L2.* Every secret is named and classified by what its compromise buys, and each
 one *can* be rotated — EAB credentials without a restart, the CA key by
 re-issuing an intermediate. What no page states is how often any of them
 should be.
-
-**The container image runs as root** — *V13.2.2 (L2).* The repository
-`Containerfile` sets no `USER`, so a container built from it runs the server as
-uid 0 inside the namespace. The systemd path documented in
-[Deployment](../getting_started/deployment.md) does the right thing — a
-dedicated `acme-proxy` user — and the file's own header says it exists for the
-e2e lab, but [Deployment](../getting_started/deployment.md) points container
-users at it all the same. A `USER` directive and an ownership pass over the
-data directory would close it.
 
 **No notification on authentication events** — *V6.3.5, V6.3.7 (L3).* Every
 attempt and every credential change is logged; nothing reaches the operator.

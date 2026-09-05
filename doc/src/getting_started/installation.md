@@ -109,12 +109,14 @@ podman build -t acme-proxy:latest .
 The image's working directory is `/data` and its entrypoint is the `acme-proxy`
 binary, so mount a volume there for the SQLite database, the configuration and
 the CA key material — all of which default to paths relative to the working
-directory.
+directory. The image runs as a non-root user, so the mounted directory must be
+writable by it — the `:U` flag below is the rootless-Podman way; see
+[Deployment](deployment.md#container-deployments-docker--podman) for Docker.
 
 ```bash
 podman run -d \
   -p 3000:3000 \
-  -v ./data:/data \
+  -v ./data:/data:U \
   acme-proxy:latest
 ```
 
@@ -125,7 +127,7 @@ the [Quick Start](quick_start.md)), or configure the container entirely through
 ```bash
 podman run -d \
   -p 3000:3000 \
-  -v ./data:/data \
+  -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
   acme-proxy:latest

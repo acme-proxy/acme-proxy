@@ -33,7 +33,21 @@ migrated configuration before restarting.
 
 ### Security
 
-- **A CycloneDX SBOM now ships with the source** — ASVS 5.0 V15.1.2, the last
+- **The container image now runs as a non-root user** — ASVS 5.0 V13.2.2, the
+  last open L1/L2 gap in the [ASVS
+  assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html). The
+  `Containerfile`'s final stage now adds an `acme-proxy` user (uid/gid `1000`)
+  that owns `/data` and nothing else, plus a `USER` line — everything the
+  server writes (the database, the CA key material, the CRL and its ledger, a
+  generated TLS cert, a mounted `config.toml`) already lands in that one
+  directory. This is the image the e2e lab builds *and* the one
+  [Deployment](https://acme-proxy.github.io/acme-proxy/getting_started/deployment.html)
+  points container users at, so it is hardened rather than demoted to
+  lab-only. **On upgrade**, a bind-mounted data directory must be writable by
+  uid `1000`: add `:U` to the mount under rootless Podman (`-v ./data:/data:U`),
+  or `chown 1000:1000 ./data` for Docker.
+
+- **A CycloneDX SBOM now ships with the source** — ASVS 5.0 V15.1.2, another
   open L1/L2 gap in the [ASVS
   assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html).
   `sbom.cdx.json` at the repository root is a committed CycloneDX 1.5 inventory

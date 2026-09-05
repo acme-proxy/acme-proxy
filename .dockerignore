@@ -1,4 +1,5 @@
-# Build context for the root `Containerfile` (the e2e lab's acme-proxy image).
+# Build context for the root `Containerfile` (the acme-proxy image, used by the
+# e2e lab and as the deployment image).
 #
 # An allowlist, not a blocklist. The blocklist this replaced named nine paths and
 # was wrong in both directions: it let `doc/` (12 MB), `CHANGELOG.md`, `CLAUDE.md`,

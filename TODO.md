@@ -144,17 +144,6 @@ keeps its corpses stops being read.
 
 ## Packaging & supply chain
 
-- [ ] **The `Containerfile` sets no `USER`** — ASVS **V13.2.2**. It says on its
-      first line that it builds the image for the e2e lab, and for that purpose
-      root is unremarkable; but
-      [Deployment](doc/src/getting_started/deployment.md) points container
-      deployments at the same file, and the systemd path right beside it goes to
-      the trouble of a dedicated `acme-proxy` user. A `USER` directive plus
-      ownership of the data directory closes it. The decision that comes first
-      is whether the root `Containerfile` is a lab artifact that the docs should
-      stop recommending, or a deployment artifact that should be hardened —
-      not both.
-
 - [ ] **No rotation schedule for any secret** — ASVS **V13.1.4**, and the reason
       **V11.1.1** is only half met. [The security
       model](doc/src/security/index.md) names every secret and what its
