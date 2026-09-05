@@ -723,3 +723,81 @@ async fn an_order_naming_more_identifiers_than_the_limit_is_refused() {
     let res = order_naming(&app, &signer, &account_url, &names[..limit]).await;
     assert_eq!(res.status(), StatusCode::CREATED);
 }
+
+/// A panic in a handler used to abort the connection with no response at all —
+/// the client got a transport error where every other refusal is a document.
+/// `CatchPanicLayer` on each listener now turns it into that listener's own
+/// error shape (ASVS V16.5.4). The layers are exercised here over a route that
+/// panics on purpose, since the real app has none.
+#[tokio::test]
+async fn a_panicking_acme_handler_answers_a_problem_document() {
+    use axum::routing::get;
+
+    async fn boom() -> &'static str {
+        panic!("boom")
+    }
+
+    let app = Router::new()
+        .route("/boom", get(boom))
+        .layer(acme_proxy::catch_panic_acme());
+
+    let res = app
+        .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json"),
+    );
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:serverInternal");
+}
+
+/// The admin listener splits by surface: a `/api` panic stays JSON for a
+/// script, a page panic is HTML for a browser — the same reason `AdminError`
+/// and `PageError` are separate types.
+#[tokio::test]
+async fn a_panicking_admin_handler_answers_in_the_right_shape_per_surface() {
+    use axum::body::to_bytes;
+    use axum::routing::get;
+
+    async fn boom() -> &'static str {
+        panic!("boom")
+    }
+
+    let api = Router::new()
+        .route("/boom", get(boom))
+        .layer(acme_proxy::webadmin::catch_panic_admin_api());
+    let res = api
+        .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+    );
+    let body = body_json(res).await;
+    assert_eq!(body["error"], "internal");
+
+    let pages = Router::new()
+        .route("/boom", get(boom))
+        .layer(acme_proxy::webadmin::catch_panic_admin_pages());
+    let res = pages
+        .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    assert!(
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .starts_with("<!doctype html>"),
+    );
+}

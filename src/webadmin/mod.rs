@@ -25,15 +25,17 @@ pub use error::AdminError;
 pub use pages::PageError;
 pub use session::LoginLimiter;
 
+use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::bail;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::Redirect;
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Router, middleware};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{info, warn};
 
@@ -276,6 +278,11 @@ pub fn build_admin_app_with_logins(
         // admin error shape on the paths a script uses.
         .fallback(|| async { PageError::not_found("no such page") })
         .with_state(state)
+        // Innermost layer: a panic in any page handler (or the `/api` nest, if
+        // its own catch layer somehow did not fire) becomes an HTML 500 rather
+        // than an aborted connection, and the header layers and the access line
+        // above still see a real response. ASVS V16.5.4.
+        .layer(catch_panic_admin_pages())
         .layer(DefaultBodyLimit::max(config.admin.max_body_bytes))
         // `no-store` is not decoration: account contacts and a freshly minted
         // EAB secret must not sit in a disk cache after the operator closes
@@ -336,7 +343,56 @@ fn api_with_fallbacks(api: Router<AdminState>) -> Router<AdminState> {
                 "that method is not allowed on this resource",
             )
         })
-        .fallback(|| async { AdminError::not_found("no such admin API resource") }),
+        .fallback(|| async { AdminError::not_found("no such admin API resource") })
+        // A panic below here answers a script in the JSON admin error shape,
+        // not the HTML page the outer router's own catch layer produces —
+        // the same split `AdminError` and `PageError` exist for. ASVS V16.5.4.
+        .layer(catch_panic_admin_api()),
+    )
+}
+
+/// The response a caught panic produces on the admin **API** surface: the JSON
+/// `{"error":"internal", ...}` shape a script gets everywhere else on `/api`,
+/// never the HTML document a browser gets. The panic message goes to the log
+/// only (ASVS V16.5.1). Relies on `panic = "unwind"`.
+fn admin_api_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
+    tracing::error!(
+        event = "request_handler_panicked",
+        outcome = "failure",
+        listener = "admin",
+        surface = "api",
+        error = %crate::panic_message(err.as_ref()),
+    );
+    AdminError::internal().into_response()
+}
+
+/// The response a caught panic produces on every other admin surface (`/ui`,
+/// `/`, the HTML fallback): a standalone HTML error document, matching the outer
+/// router's own `.fallback()`. The panic message goes to the log only.
+fn admin_page_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
+    tracing::error!(
+        event = "request_handler_panicked",
+        outcome = "failure",
+        listener = "admin",
+        surface = "page",
+        error = %crate::panic_message(err.as_ref()),
+    );
+    PageError::internal().into_response()
+}
+
+/// The last-resort panic layer for the admin `/api` nest — see
+/// [`admin_api_panic_response`].
+pub fn catch_panic_admin_api() -> CatchPanicLayer<fn(Box<dyn Any + Send + 'static>) -> Response> {
+    CatchPanicLayer::custom(
+        admin_api_panic_response as fn(Box<dyn Any + Send + 'static>) -> Response,
+    )
+}
+
+/// The last-resort panic layer for the admin pages and the HTML fallback — see
+/// [`admin_page_panic_response`]. `pub` on the same terms as [`build_admin_app`].
+pub fn catch_panic_admin_pages() -> CatchPanicLayer<fn(Box<dyn Any + Send + 'static>) -> Response> {
+    CatchPanicLayer::custom(
+        admin_page_panic_response as fn(Box<dyn Any + Send + 'static>) -> Response,
     )
 }
 
@@ -630,5 +686,76 @@ mod tests {
         config.admin.tls.enabled = true;
         // Still http://, which the CSRF origin check will compare against.
         check_config(&config).expect("a scheme mismatch is a warning, not a refusal");
+    }
+
+    mod catch_panic {
+        use super::*;
+        use axum::body::{Body, to_bytes};
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        async fn boom() -> &'static str {
+            panic!("this handler panics on purpose")
+        }
+
+        /// An `/api` panic keeps the JSON admin error shape a script gets
+        /// everywhere else — never the HTML document, never an ACME URN.
+        #[tokio::test]
+        async fn an_api_panic_is_the_json_admin_error() {
+            let response = admin_api_panic_response(Box::new("secret internal detail"));
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/json"),
+            );
+            let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"], "internal");
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(!text.contains("urn:ietf:params:acme"));
+            assert!(
+                !text.contains("secret internal detail"),
+                "the panic message must not reach the client",
+            );
+        }
+
+        /// A page panic is a standalone HTML document, matching the outer
+        /// router's own `.fallback()`.
+        #[tokio::test]
+        async fn a_page_panic_is_an_html_document() {
+            let response = admin_page_panic_response(Box::new(String::from("boom")));
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(text.starts_with("<!doctype html>"), "got: {text}");
+            assert!(text.contains("internal"));
+        }
+
+        #[tokio::test]
+        async fn each_layer_catches_a_panicking_route() {
+            for layer_name in ["api", "pages"] {
+                let router: Router = if layer_name == "api" {
+                    Router::new()
+                        .route("/boom", get(boom))
+                        .layer(catch_panic_admin_api())
+                } else {
+                    Router::new()
+                        .route("/boom", get(boom))
+                        .layer(catch_panic_admin_pages())
+                };
+                let response = router
+                    .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the {layer_name} layer must catch the panic",
+                );
+            }
+        }
     }
 }

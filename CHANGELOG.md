@@ -33,6 +33,16 @@ migrated configuration before restarting.
 
 ### Security
 
+- **A panicking handler now answers a document instead of dropping the
+  connection** — ASVS 5.0 V16.5.4. A `tower_http` `CatchPanicLayer` on each
+  listener catches an unexpected panic in a route handler, logs it once as
+  `request_handler_panicked` (`error`, with a `listener` / `surface` field),
+  and returns that listener's own error shape: an ACME `serverInternal` problem
+  document on the ACME listener, and — split by surface, the way the `/api`
+  and page fallbacks already are — the JSON admin error on `/api` or the HTML
+  error document on `/ui`. The panic message goes to the log only, never the
+  response body. `panic = "abort"` remains unset so the layer can unwind.
+
 - **The panel can now list and revoke sessions, and manage other operators**
   — ASVS 5.0 V7.5.2 and V7.4.5. The account page gains a Sessions card: every
   one of the caller's own live sessions, the current one labelled, each

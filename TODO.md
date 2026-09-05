@@ -34,16 +34,6 @@ keeps its corpses stops being read.
       parameter outright; the seam is already one function, and the eleven
       callers named in `src/CLAUDE.md` are the whole of what depends on it.
 
-- [ ] **A last-resort handler for a panicking handler** — ASVS **V16.5.4**. A
-      panic in a route aborts that connection's task with no response at all;
-      the process survives (`panic = "abort"` is deliberately not set) and the
-      panic is logged, but the client sees a transport error where every other
-      refusal this server makes is an `application/problem+json` document.
-      `tower_http`'s `CatchPanicLayer` is the shape, and the open question is
-      the same one `build_router`'s two fallbacks already answered: the ACME
-      listener needs a problem document and the admin listener needs its own
-      error shape, so it is one layer per router and not one shared constructor.
-
 ## Observability
 
 - [ ] **Histograms — request latency, and issuance latency.** The one thing a

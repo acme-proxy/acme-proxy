@@ -227,6 +227,7 @@
 //! }
 //! ```
 
+use std::any::Any;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -236,9 +237,10 @@ use axum::{
     extract::DefaultBodyLimit,
     middleware,
     middleware::Next,
-    response::Redirect,
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{Span, info};
 
@@ -851,6 +853,48 @@ pub(crate) fn security_headers() -> (
     )
 }
 
+/// The human-readable message a panic payload carries, or a fixed fallback.
+///
+/// `std::panic::panic_any` can carry any `'static` type; the two shapes that
+/// actually occur are `panic!("literal")` (`&'static str`) and `panic!("{x}")`
+/// (`String`). Anything else is reported as the fallback — the message only
+/// reaches the log, never a response body (ASVS V16.5.1).
+pub(crate) fn panic_message(err: &(dyn Any + Send)) -> &str {
+    err.downcast_ref::<&'static str>()
+        .copied()
+        .or_else(|| err.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a handler panicked")
+}
+
+/// The response a caught panic produces on the ACME listener.
+///
+/// Without this a panic in a handler aborts the connection with no reply, where
+/// every other refusal this server makes is an `application/problem+json`
+/// document — the reason [`middlewares::admission`]'s deadline is a hand-written
+/// `from_fn` returning [`Problem`] rather than `tower_http`'s timeout layer. The
+/// panic message goes to the log only, never the body.
+///
+/// Relies on `panic = "unwind"`: [`CatchPanicLayer`] is inert under
+/// `panic = "abort"`, which `Cargo.toml` deliberately does not set.
+fn acme_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
+    tracing::error!(
+        event = "request_handler_panicked",
+        outcome = "failure",
+        listener = "acme",
+        error = %panic_message(err.as_ref()),
+    );
+    Problem::server_internal("Internal server error").into_response()
+}
+
+/// The last-resort panic layer for the ACME listener — see [`acme_panic_response`].
+///
+/// `pub` on the same terms as [`build_app`]: the library exists so the tests and
+/// `main.rs` can reach it, and `tests/security.rs` drives this layer over a
+/// deliberately panicking route.
+pub fn catch_panic_acme() -> CatchPanicLayer<fn(Box<dyn Any + Send + 'static>) -> Response> {
+    CatchPanicLayer::custom(acme_panic_response as fn(Box<dyn Any + Send + 'static>) -> Response)
+}
+
 pub fn build_app(
     database: Arc<Database>,
     config: Arc<Config>,
@@ -928,6 +972,14 @@ pub fn build_app(
     // filter and nonce layers are deliberately *not* here: both are ACME
     // concerns and live inside each profile's own router.
     let app = root.merge(acme);
+
+    // Innermost of the server-wide stack: a panic anywhere below here — a
+    // handler, the admission layer, a nested profile router — is turned into a
+    // 500 problem document instead of an aborted connection. Under the metrics
+    // and access layers on purpose, so the counter still sees `status = "500"`
+    // and the access line still emits (`request_completed`, with the profile
+    // span field already recorded). ASVS V16.5.4.
+    let app = app.layer(catch_panic_acme());
 
     // Counting sits here even though the exposition is served on a *different*
     // socket (see `metrics_app`): this is the only router that sees an ACME
@@ -1278,5 +1330,87 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    mod catch_panic {
+        use super::*;
+        use axum::body::to_bytes;
+        use axum::http::StatusCode;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        /// Every panic-payload shape resolves to a message; an odd one falls
+        /// back rather than panicking the panic handler.
+        #[test]
+        fn panic_message_covers_every_payload_shape() {
+            assert_eq!(panic_message(&"boom"), "boom");
+            assert_eq!(panic_message(&String::from("boom")), "boom");
+            assert_eq!(panic_message(&0u8), "a handler panicked");
+        }
+
+        /// `acme_panic_response` is a 500 problem document whatever the payload,
+        /// and the panic text never reaches the body.
+        #[tokio::test]
+        async fn acme_panic_response_is_a_problem_document() {
+            let response = acme_panic_response(Box::new("secret internal detail"));
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/problem+json"),
+            );
+            let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(problem["type"], "urn:ietf:params:acme:error:serverInternal");
+            assert_eq!(problem["status"], 500);
+            assert!(
+                !body_contains(&body, "secret internal detail"),
+                "the panic message must not reach the client",
+            );
+        }
+
+        fn body_contains(bytes: &[u8], needle: &str) -> bool {
+            std::str::from_utf8(bytes)
+                .map(|s| s.contains(needle))
+                .unwrap_or(false)
+        }
+
+        async fn boom() -> &'static str {
+            panic!("this handler panics on purpose")
+        }
+
+        fn app() -> Router {
+            Router::new()
+                .route("/ok", get(|| async { "ok" }))
+                .route("/boom", get(boom))
+                .layer(catch_panic_acme())
+        }
+
+        #[tokio::test]
+        async fn a_panicking_route_answers_a_problem_document() {
+            let response = app()
+                .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("application/problem+json"),
+            );
+        }
+
+        #[tokio::test]
+        async fn the_layer_is_transparent_on_the_happy_path() {
+            let response = app()
+                .oneshot(Request::get("/ok").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
     }
 }

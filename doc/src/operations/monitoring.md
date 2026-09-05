@@ -238,6 +238,7 @@ The events worth building alerts on:
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |
+| `request_handler_panicked` | error | A route handler panicked. The client got a `500` in the listener's normal error shape rather than a dropped connection, and the process is unaffected — but a handler panic is always a bug. Alert on it. The `listener` (`acme` / `admin`) and, for the panel, `surface` (`api` / `page`) fields say where; the panic message is in `error`. |
 | `filter_request_blocked`, `filter_denied` | warn | The filter policy refused a request. Expected in normal operation; a spike is either an attack or a policy change that broke a legitimate client. |
 | `filter_rule_warned` | warn | A `mode = "warn"` rule matched and did **not** decide. This is the line a dry-run rollout is watched on: when it stops appearing for legitimate clients, the rule is safe to switch to `enforce`. |
 | `challenge_validation_failed`, `challenge_failed`, `challenge_validation_timeout` | warn | Domain-control validation did not pass. The most useful signal that clients are misconfigured — or that egress to them is blocked. The `timeout` variant means nothing answered within `challenge.timeout_ms` at all. |

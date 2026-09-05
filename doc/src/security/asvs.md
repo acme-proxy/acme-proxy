@@ -77,8 +77,8 @@ reported for information.
 | V13 Configuration | 8 | 5 | 0 | 0 | 4 / 4 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
-| V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 0 / 1 / 0 |
-| **Total** | **165** | **15** | **1** | **36** | **43 / 21 / 16** |
+| V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
+| **Total** | **165** | **15** | **1** | **36** | **44 / 20 / 16** |
 
 The short version. **There is no L1 gap**, and at **L2 there is one**:
 V15.1.2, an SBOM artifact. The four password-policy requirements that used to
@@ -491,7 +491,7 @@ is a reference token and is assessed under V7.
 | 16.5.1 | Generic message to the consumer on unexpected errors | 2 | met | Every ACME refusal is an RFC 8555 problem document with a fixed type; internal detail goes to the log and not the body. The `http-01` validator's fetched body is **never** echoed into a client-visible error, precisely because it is attacker-chosen |
 | 16.5.2 | Secure operation when external resources fail | 2 | met | A check that cannot reach its authority answers *undecided* rather than "allow", so an IPAM outage degrades to a retryable `500` instead of failing open — the property [Filters](../filters/policy.md) is built around |
 | 16.5.3 | Fail gracefully and securely; no fail-open | 2 | met | Startup **refuses** rather than degrading: a non-loopback `admin.bind_address` without TLS, an unknown challenge type, a deadline below `challenge.timeout_ms`. `tests/security.rs` is the regression set for the request-path equivalents |
-| 16.5.4 | A last-resort handler for unhandled exceptions | 3 | gap | There is no `CatchPanicLayer`. A panic in a handler aborts that connection's task without a response; the process survives, and `panic = "abort"` is deliberately not set |
+| 16.5.4 | A last-resort handler for unhandled exceptions | 3 | met | A `CatchPanicLayer` on each listener catches a handler panic, logs `request_handler_panicked`, and answers with that listener's own error shape — an ACME problem document, or the admin JSON (`/api`) / HTML (`/ui`) error — instead of the aborted connection it used to be. `panic = "abort"` stays unset so the layer can unwind; the panic message goes to the log only |
 
 ## Documented deviations
 
@@ -593,10 +593,6 @@ data directory would close it.
 attempt and every credential change is logged; nothing reaches the operator.
 `src/notify/` exists but addresses certificate lifecycle, and an operator has
 no contact address recorded anywhere.
-
-**No last-resort panic handler** — *V16.5.4 (L3).* A panic in a handler drops
-the connection without a response. The process survives and the panic is
-logged, but the client sees a transport error rather than a problem document.
 
 **Lower-priority L3 items**, recorded without a `TODO.md` entry: no CSP
 violation-report endpoint (V3.4.7), no `Cross-Origin-Opener-Policy` (V3.4.8),
