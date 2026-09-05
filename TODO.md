@@ -109,18 +109,6 @@ keeps its corpses stops being read.
       whether it should wait for the role above: without one, this is every
       operator able to disable every other.
 
-- [ ] **No password change in the panel** — ASVS **V6.2.2** (L1). `admin user
-      passwd` on the host is the only path, so an operator with no shell cannot
-      rotate their own password, and "create and `passwd` deliberately stay on
-      the host" was a rule about *minting* a credential rather than about
-      rotating one you already hold. Two things come with it, and neither is
-      optional: the route goes behind `check_step_up` like the second-factor
-      routes, and it must take the **current** password as well as the new one
-      (**V6.2.3**) — the CLI does not, and does not need to, because it answers
-      to a process that can already rewrite the row. `users::set_password`
-      already revokes every session of that user, which is the half that is
-      easy to forget.
-
 ## Admin CLI
 
 - [ ] **Exit codes that distinguish.** `src/main.rs` exits `1` for a

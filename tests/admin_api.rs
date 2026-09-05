@@ -1362,6 +1362,165 @@ async fn the_mfa_step_routes_refuse_a_completed_session() {
 }
 
 // ---------------------------------------------------------------------------
+// Password change
+// ---------------------------------------------------------------------------
+
+const NEW_PASSWORD: &str = "a-different-long-password";
+
+/// The self-service counterpart to `acme-proxy admin user passwd`. Unlike
+/// every MFA step-up route this checks the current password even with no
+/// second factor enrolled -- there is no `has_totp()` exemption to inherit
+/// from `check_step_up` here, since ASVS V6.2.3 applies to every password
+/// change. The session making the request survives; every other one of this
+/// operator's does not.
+#[tokio::test]
+async fn password_change_updates_the_hash_keeps_the_session_and_revokes_every_other() {
+    let (app, database) = test_admin_app(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+
+    // Neither session has a second factor -- the case `check_step_up` would
+    // have skipped entirely.
+    let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+    let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/password",
+        Some(&session),
+        Some(json!({
+            "current_password": ADMIN_PASSWORD,
+            "new_password": NEW_PASSWORD,
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // The calling session still works...
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&session), None)
+            .await
+            .status(),
+        StatusCode::OK,
+        "the session that made the change must not sign itself out"
+    );
+    // ...and the other one does not.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&other), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED,
+        "a password changed that left another session alive is a change in name only"
+    );
+
+    // The new password signs in; the old one no longer does.
+    let login = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": NEW_PASSWORD })),
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn password_change_refuses_the_wrong_current_password() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/password",
+        Some(&session),
+        Some(json!({
+            "current_password": "not the password",
+            "new_password": NEW_PASSWORD,
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["error"], "invalid_credentials");
+
+    // Refused, and the session that tried is still the calling session's own
+    // -- nothing was revoked over a failed attempt.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&session), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::OK,
+        "the old password must still work: nothing was written"
+    );
+}
+
+/// The new password still has to satisfy `check_password_policy` -- refused
+/// with the same message and code `admin user passwd` would give, and nothing
+/// is written.
+#[tokio::test]
+async fn password_change_refuses_a_new_password_that_fails_the_policy() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/password",
+        Some(&session),
+        Some(json!({
+            "current_password": ADMIN_PASSWORD,
+            "new_password": "short",
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"], "bad_request");
+    assert!(body["message"].as_str().unwrap().contains("at least 12"));
+
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::OK,
+        "the old password still works"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // CSRF
 // ---------------------------------------------------------------------------
 
@@ -1461,6 +1620,7 @@ fn mutating_endpoints() -> Vec<(Method, &'static str)> {
         (Method::POST, "/api/mfa/totp/confirm"),
         (Method::DELETE, "/api/mfa/totp"),
         (Method::POST, "/api/mfa/recovery-codes"),
+        (Method::POST, "/api/account/password"),
     ]
 }
 

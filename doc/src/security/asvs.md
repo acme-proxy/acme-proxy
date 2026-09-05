@@ -68,7 +68,7 @@ reported for information.
 | V3 Web Frontend Security | 16 | 1 | 0 | 2 | 6 / 4 / 2 |
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
-| V6 Authentication | 24 | 3 | 0 | 8 | 6 / 3 / 3 |
+| V6 Authentication | 26 | 1 | 0 | 8 | 6 / 3 / 3 |
 | V7 Session Management | 14 | 2 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
@@ -78,14 +78,17 @@ reported for information.
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 0 / 1 / 0 |
-| **Total** | **162** | **18** | **1** | **36** | **43 / 21 / 16** |
+| **Total** | **164** | **16** | **1** | **36** | **43 / 21 / 16** |
 
 The short version. **There is no L1 gap**, and at **L2 there is one**:
 V15.1.2, an SBOM artifact. The four password-policy requirements that used to
 sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 / V6.2.12 at L2 — were one
 missing control seen from four angles, and closed as one:
 `check_password_policy` now refuses a password that names this deployment, or
-that appears in a compiled-in corpus of common passwords.
+that appears in a compiled-in corpus of common passwords. V6.2.2 and V6.2.3,
+both L1, closed the same way: one self-service password-change route on the
+account page, gated the way the second-factor routes already were, rather than
+two separate fixes.
 
 Everything else that falls short of *met* is either a **partial** — a control
 that exists but does not reach everywhere the requirement asks — or a
@@ -247,11 +250,11 @@ assessed under V9.
 | 6.1.2 | Documented list of context-specific words barred from passwords | 2 | met | Derived and documented: [Password policy](../operations/webadmin_users.md#the-context-specific-word-list) |
 | 6.1.3 | Multiple authentication pathways documented together | 2 | met | There are two — a panel session and a shell on the host — and [Users & Sessions](../operations/webadmin_users.md) states which operations belong to which and why create and `passwd` stay on the host |
 | 6.2.1 | Passwords at least 8 characters | 1 | met | `MIN_PASSWORD_LEN = 12`, counted in characters rather than bytes (`src/admin/password.rs`) |
-| 6.2.2 | Users can change their password | 1 | partial | Only through `acme-proxy admin user passwd` on the host. An operator with no shell cannot rotate their own password |
-| 6.2.3 | Password change requires current and new password | 1 | partial | `admin user passwd` takes only the new password. It answers to a shell that can already read and rewrite the database, so no password would add authority — but it does mean no *self-service* change path exists that could require one |
+| 6.2.2 | Users can change their password | 1 | met | The panel's own account page carries a password card (`POST /ui/account/password`, `POST /api/account/password`) beside `acme-proxy admin user passwd`, so an operator with no shell can rotate their own → [Users & Sessions](../operations/webadmin_users.md#changing-your-own-password) |
+| 6.2.3 | Password change requires current and new password | 1 | met | `handlers::mfa::verify_current_password` (`src/webadmin/handlers/mfa.rs`) checks the current password before `admin::users::change_own_password` writes a new one — unconditionally, unlike the second-factor step-up it was split out of, since this requirement has no "nothing yet to protect" exemption. `admin user passwd` still takes only the new one, answering as it does to a process that can already rewrite the row |
 | 6.2.4 | Check against the top 3000 passwords | 1 | met | 13 918 entries compiled in (`src/admin/corpus/`); every shorter entry is already refused on length |
 | 6.2.5 | No composition rules | 1 | met | Deliberately none. The three rules are about length, this deployment's own words and known-common passwords — none dictates shape (`src/admin/password.rs`) |
-| 6.2.6 | Password fields use `type=password` | 1 | met | `templates/login.html` and the step-up field in `templates/account/_card.html` |
+| 6.2.6 | Password fields use `type=password` | 1 | met | `templates/login.html`, the step-up field in `templates/account/_card.html`, and the two fields in `templates/account/_password_card.html` |
 | 6.2.7 | Paste and password managers permitted | 1 | met | Standard inputs with `autocomplete="username"` / `"current-password"`; nothing blocks paste |
 | 6.2.8 | Password verified exactly as received | 1 | met | `verify_password` hashes the bytes as received: no trimming, no case folding, and an over-long password is *rejected* rather than truncated. The policy check folds a copy to compare against the corpus and the word list, and never touches what is stored |
 | 6.2.9 | Passwords of at least 64 characters permitted | 2 | met | `MAX_PASSWORD_LEN = 1024` bytes, a denial-of-service bound rather than a policy |
@@ -576,13 +579,6 @@ L2.* Every secret is named and classified by what its compromise buys, and each
 one *can* be rotated — EAB credentials without a restart, the CA key by
 re-issuing an intermediate. What no page states is how often any of them
 should be.
-
-**Password change is host-only, and takes no current password** — *V6.2.2,
-V6.2.3 (L1).* There is no self-service change in the panel, so an operator
-without a shell cannot rotate their own password. `admin user passwd` answers
-to a process that can already rewrite the database, so requiring the old
-password there would add no authority — but any panel path that is added must
-require it, and must go behind `check_step_up` like the second-factor routes.
 
 **The container image runs as root** — *V13.2.2 (L2).* The repository
 `Containerfile` sets no `USER`, so a container built from it runs the server as

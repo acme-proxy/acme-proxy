@@ -11,7 +11,8 @@
   <p class="muted small">
     Operators are managed from a shell on the host —
     <code>acme-proxy admin user …</code>. What you can change here is your own
-    second factor.
+    password and second factor.
   </p>
+  {% include "account/_password.html" %}
   {% include "account/_mfa.html" %}
 {% endblock %}

@@ -7,6 +7,7 @@
 //! already opens the request span, and the attribute moves a handler body into
 //! a generated async block that reports almost no coverage (see CLAUDE.md).
 
+pub mod account;
 pub mod accounts;
 pub mod audit;
 pub mod eab;
@@ -19,6 +20,7 @@ pub mod paging;
 pub mod params;
 pub mod session;
 
+pub use account::*;
 pub use accounts::*;
 pub use audit::*;
 pub use eab::*;

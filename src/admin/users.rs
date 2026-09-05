@@ -121,6 +121,35 @@ pub async fn set_password(
     Ok(Some(user))
 }
 
+/// Changes an operator's own password, keeping the session that requested it
+/// alive and revoking every other one.
+///
+/// The self-service counterpart to [`set_password`]: that one is the CLI's,
+/// trusted because it already runs as the process that can rewrite the row,
+/// and it revokes *every* session including any the operator is currently
+/// using elsewhere. This one is reached over a live session, so the caller's
+/// own session must survive the change or the panel would sign its own
+/// operator out from under them mid-edit -- the `confirm_totp_enrolment`/
+/// `disable_totp` shape, not `set_password`'s.
+///
+/// Does **not** verify the current password: that check (ASVS V6.2.3) happens
+/// one layer up, in the web handler, where the rate limiter and the client
+/// address live.
+pub async fn change_own_password(
+    user: &mut AdminUser,
+    new_password: &str,
+    context: &PasswordContext,
+    keep_session: &str,
+    database: Arc<Database>,
+) -> Result<(), UserError> {
+    password::check_password_policy(new_password, context).map_err(UserError::Policy)?;
+
+    let hash = password::hash_password(new_password);
+    user.set_password_hash(&hash, &database).await?;
+    AdminSession::delete_for_user_except(user.id, keep_session, &database).await?;
+    Ok(())
+}
+
 /// Moves an operator between `active` and `disabled`.
 ///
 /// Disabling also drops their sessions: leaving them live would mean a
@@ -430,6 +459,96 @@ mod tests {
             password::verify_password(&reloaded.password_hash, GOOD),
             Ok(true)
         );
+    }
+
+    /// The self-service counterpart to `set_password_revokes_every_session_of_that_user`:
+    /// the same revocation, except the caller's own session is the one
+    /// exemption. A panel that signed its own operator out mid-edit would be
+    /// indistinguishable from a bug in the form.
+    #[tokio::test]
+    async fn change_own_password_keeps_the_calling_session_and_drops_every_other() {
+        let db = db().await;
+        let mut user = user_with_cheap_password("alice", "old-password", db.clone()).await;
+
+        let kept = AdminSession::create(
+            NewSession {
+                user_id: user.id,
+                token_hash: "kept-hash",
+                csrf_token: "csrf",
+                created_ip: None,
+                user_agent: None,
+            },
+            std::time::Duration::from_secs(3600),
+            &db,
+        )
+        .await
+        .unwrap();
+        AdminSession::create(
+            NewSession {
+                user_id: user.id,
+                token_hash: "other-hash",
+                csrf_token: "csrf",
+                created_ip: None,
+                user_agent: None,
+            },
+            std::time::Duration::from_secs(3600),
+            &db,
+        )
+        .await
+        .unwrap();
+
+        change_own_password(
+            &mut user,
+            GOOD,
+            &PasswordContext::empty(),
+            &kept.token_hash,
+            db.clone(),
+        )
+        .await
+        .unwrap();
+
+        let live = AdminSession::list_all(Some(user.id), &db).await.unwrap();
+        assert_eq!(live.len(), 1, "every other session must be revoked");
+        assert_eq!(live[0].token_hash, "kept-hash");
+
+        let reloaded = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            password::verify_password(&reloaded.password_hash, GOOD),
+            Ok(true)
+        );
+        assert_eq!(
+            password::verify_password(&reloaded.password_hash, "old-password"),
+            Ok(false)
+        );
+    }
+
+    /// The policy still runs, and a rejected password writes nothing -- the
+    /// same rule `set_password` and `create_user` both hold.
+    #[tokio::test]
+    async fn change_own_password_checks_the_policy() {
+        let db = db().await;
+        let mut user = user_with_cheap_password("alice", "old-password", db.clone()).await;
+        let before = user.password_hash.clone();
+
+        let error = change_own_password(
+            &mut user,
+            "short",
+            &PasswordContext::empty(),
+            "kept-hash",
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, UserError::Policy(_)));
+
+        let reloaded = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.password_hash, before);
     }
 
     #[tokio::test]

@@ -185,6 +185,7 @@ pub fn build_admin_app_with_logins(
             "/mfa/recovery-codes",
             post(handlers::regenerate_recovery_codes),
         )
+        .route("/account/password", post(handlers::change_password))
         .route("/accounts", get(handlers::list_accounts))
         .route(
             "/accounts/{id}",

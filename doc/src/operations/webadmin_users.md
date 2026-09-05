@@ -294,6 +294,31 @@ anywhere, so each address buys its own `admin.login_max_attempts`. Rotate the
 password and run `acme-proxy admin session revoke --all` if you believe a
 cookie has been taken.
 
+## Changing your own password
+
+Also from the panel, not only from the host. Sign in, open your username in the
+top-right corner, and use the **Password** card: current password, then the
+new one.
+
+The current password is asked for unconditionally — unlike the second-factor
+controls above, this runs whether or not you have TOTP enrolled. ASVS 5.0
+V6.2.3 is why: a live cookie is not proof you still know the password, only
+that you did at sign-in. Guessing it is bounded the same way and shares the
+same budget as [What it costs an attacker](#what-it-costs-an-attacker) — five
+wrong attempts lock the address out. The new one still has to satisfy
+[Password policy](#password-policy).
+
+```console
+$ acme-proxy admin user passwd alice --password-file /run/secrets/new
+Password changed for alice. Every session they held was revoked.
+```
+
+That command, run from the host, still ends **every** session — there was no
+request to preserve. The panel's own change is different in exactly one way:
+the session that submitted it stays signed in, and every *other* session of
+that operator is revoked. Rotating a credential from inside a session you are
+already trusted on need not sign you out of the tab that did it.
+
 ## Managing operators
 
 ```console

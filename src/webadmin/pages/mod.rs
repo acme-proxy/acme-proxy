@@ -85,6 +85,7 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             "/ui/account/mfa/recovery-codes",
             post(account::regenerate_recovery_codes),
         )
+        .route("/ui/account/password", post(account::change_password))
         .route("/ui/logout", post(session::post_logout))
         .route("/ui/accounts", get(accounts::list_accounts))
         .route(

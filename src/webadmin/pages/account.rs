@@ -11,10 +11,12 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::admin::password::PasswordContext;
+use crate::admin::users::{self, UserError};
 use crate::admin::{mfa, totp};
 use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
-use crate::webadmin::handlers::mfa::check_step_up;
+use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond, respond_fragment};
@@ -85,6 +87,10 @@ pub async fn get_account(
         Value::Bool(state.config.admin.require_mfa),
     );
     context.insert("period".to_string(), json!(totp::PERIOD_SECONDS));
+    context.insert(
+        "min_password_length".to_string(),
+        json!(crate::admin::password::MIN_PASSWORD_LEN),
+    );
 
     Ok(respond(
         &state,
@@ -313,6 +319,133 @@ pub async fn regenerate_recovery_codes(
     context.insert("recovery_codes".to_string(), json!(codes));
 
     Ok(respond_fragment(&state, "account/_codes.html", context)?.into_response())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordForm {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Everything `account/_password_card.html` reads. Unlike [`card_context`]
+/// there is no second-factor state to report, but the `csrf_token` rule is
+/// the same: a fragment rendered standalone cannot inherit `<body>`'s
+/// `hx-headers`, so this card's own form carries it explicitly.
+fn password_card_context(csrf_token: &str) -> Map<String, Value> {
+    let mut context = Map::new();
+    context.insert(
+        "csrf_token".to_string(),
+        Value::String(csrf_token.to_string()),
+    );
+    // A client-side hint only -- `check_password_policy` is what actually
+    // enforces it, so tying the two together is about the message staying
+    // true rather than about anything security-relevant.
+    context.insert(
+        "min_password_length".to_string(),
+        json!(crate::admin::password::MIN_PASSWORD_LEN),
+    );
+    context
+}
+
+/// [`verify_current_password`] with the refusal rendered as the password
+/// card's own banner. Unlike [`refuse_without_password`] this runs
+/// unconditionally: ASVS V6.2.3 asks for the current password on every
+/// change of it, whether or not a second factor exists, so there is no
+/// `has_totp()` exemption to inherit from `check_step_up` here.
+async fn refuse_without_current_password(
+    state: &AdminState,
+    csrf_token: &str,
+    user: &AdminUser,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+) -> Result<Option<Response>, PageError> {
+    let Err(error) = verify_current_password(user, password, client, &state.logins) else {
+        return Ok(None);
+    };
+    let message = if error.status == StatusCode::UNAUTHORIZED {
+        "That password is not correct.".to_string()
+    } else {
+        error.message.clone()
+    };
+    let mut context = password_card_context(csrf_token);
+    context.insert("flash".to_string(), super::flash_error(error.code, message));
+    Ok(Some(
+        (
+            error.status,
+            respond_fragment(state, "account/_password.html", context)?,
+        )
+            .into_response(),
+    ))
+}
+
+/// `POST /ui/account/password` — change this operator's own password.
+///
+/// Takes the current password ([`refuse_without_current_password`]) and the
+/// new one; on success every *other* session of this operator is revoked
+/// ([`users::change_own_password`]) and the one making this request stays
+/// signed in.
+pub async fn change_password(
+    State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
+    session: PageSessionWrite,
+    axum::Form(body): axum::Form<ChangePasswordForm>,
+) -> Result<Response, PageError> {
+    let mut user = session.auth.user;
+    let csrf_token = session.auth.session.csrf_token.clone();
+
+    if let Some(refusal) =
+        refuse_without_current_password(&state, &csrf_token, &user, &body.current_password, client)
+            .await?
+    {
+        return Ok(refusal);
+    }
+
+    let context = PasswordContext::from_config(&state.config, &user.username);
+    let mut fragment_context = password_card_context(&csrf_token);
+
+    match users::change_own_password(
+        &mut user,
+        &body.new_password,
+        &context,
+        &session.auth.session.token_hash,
+        state.database.clone(),
+    )
+    .await
+    {
+        Ok(()) => {
+            fragment_context.insert(
+                "flash".to_string(),
+                super::flash(
+                    "ok",
+                    "Your password was changed. Every other session of yours was signed out.",
+                ),
+            );
+            Ok(
+                respond_fragment(&state, "account/_password.html", fragment_context)?
+                    .into_response(),
+            )
+        }
+        Err(UserError::Policy(message)) => {
+            // Same code the API answers for the identical policy failure
+            // (`AdminError::bad_request`), so the two front ends never
+            // describe one refusal differently.
+            fragment_context.insert(
+                "flash".to_string(),
+                super::flash_error("bad_request", message),
+            );
+            Ok((
+                StatusCode::BAD_REQUEST,
+                respond_fragment(&state, "account/_password.html", fragment_context)?,
+            )
+                .into_response())
+        }
+        Err(UserError::Database(error)) => Err(error.into()),
+        Err(UserError::DuplicateUsername(_)) => {
+            // `change_own_password` never constructs this variant; the arm
+            // exists only because `UserError` is shared with `create_user`.
+            Err(PageError::internal())
+        }
+    }
 }
 
 /// What `GET /api/mfa` answers, for the template.

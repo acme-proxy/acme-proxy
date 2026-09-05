@@ -15,6 +15,7 @@ use acme_proxy::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use acme_proxy::sqlite::audit::AuditEntry;
 use axum::http::{Method, StatusCode, header};
 use common::*;
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Sign-in
@@ -650,6 +651,130 @@ async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
     );
 }
 
+/// The `/ui` twin of `admin_api.rs`'s password-change suite: current password
+/// checked -- even with no second factor enrolled, unlike the MFA cards'
+/// step-up -- new one through the policy, the calling session survives and
+/// every other one does not.
+#[tokio::test]
+async fn the_password_card_changes_the_password_keeps_the_session_and_revokes_every_other() {
+    let (app, database) = test_admin_app(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+
+    let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+    let session = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    const NEW_PASSWORD: &str = "a-different-long-password";
+    let response = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/password",
+        Some(&session),
+        Some(&[
+            ("current_password", ADMIN_PASSWORD),
+            ("new_password", NEW_PASSWORD),
+        ]),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = html_body(response).await;
+    assert!(body.contains("Your password was changed"));
+    assert!(
+        body.contains(r#"id="account-password""#),
+        "the success message is this card's own banner, not a redirect"
+    );
+
+    assert_eq!(
+        admin_page(&app, "/ui/account", Some(&session), false)
+            .await
+            .status(),
+        StatusCode::OK,
+        "the session that made the change must not sign itself out"
+    );
+    assert_eq!(
+        admin_page(&app, "/ui/account", Some(&other), false)
+            .await
+            .status(),
+        StatusCode::SEE_OTHER,
+        "a password changed that left another session alive is a change in name only"
+    );
+
+    let login = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": NEW_PASSWORD })),
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+}
+
+/// A wrong current password is this card's own banner, not an error page —
+/// the same rule the MFA step-up cards follow.
+#[tokio::test]
+async fn the_password_card_reports_a_wrong_current_password_as_a_banner() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let refused = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/password",
+        Some(&session),
+        Some(&[
+            ("current_password", "not the password"),
+            ("new_password", "a-different-long-password"),
+        ]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    let body = html_body(refused).await;
+    assert!(body.contains("That password is not correct"));
+    assert!(body.contains(r#"id="account-password""#));
+
+    // Nothing was written: the old password still signs in.
+    let login = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+}
+
+/// The policy failure reaches the same card, with the same code the JSON API
+/// answers (`bad_request`) so the two front ends never describe one refusal
+/// differently.
+#[tokio::test]
+async fn the_password_card_reports_a_weak_new_password_as_a_banner() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let refused = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/password",
+        Some(&session),
+        Some(&[
+            ("current_password", ADMIN_PASSWORD),
+            ("new_password", "short"),
+        ]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = html_body(refused).await;
+    assert!(body.contains("at least 12"));
+    assert!(body.contains(r#"id="account-password""#));
+    assert!(body.contains("(bad_request)"));
+}
+
 /// The sign-out button is `hx-post`, so the htmx branch is the one a browser
 /// takes — but the route has to answer a plain client too, and the cookie must
 /// be cleared either way.
@@ -793,6 +918,7 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str)> {
         (Method::POST, "/ui/account/mfa/totp/confirm"),
         (Method::POST, "/ui/account/mfa/totp/disable"),
         (Method::POST, "/ui/account/mfa/recovery-codes"),
+        (Method::POST, "/ui/account/password"),
         // `POST /ui/login/mfa` is deliberately absent. It is a plain form on a
         // page that has no CSRF token — the same trade `POST /ui/login` makes,
         // argued on `webadmin::session::PendingMfaSubmit` — so with an active

@@ -63,7 +63,24 @@ pub(crate) fn check_step_up(
     if !user.has_totp() {
         return Ok(());
     }
+    verify_current_password(user, password, client, logins)
+}
 
+/// The part of step-up that always applies: proves the caller still knows the
+/// account password, rate-limited against the sign-in bucket.
+///
+/// [`check_step_up`] adds "only once there is something to protect" on top of
+/// this for the MFA routes, where a first enrolment protects nothing. A
+/// password change carries no such exemption -- ASVS V6.2.3 asks for the
+/// current password on *every* change of it, whether or not a second factor
+/// exists -- so `handlers::account::change_password` and its `/ui` twin call
+/// this directly instead of `check_step_up`.
+pub(crate) fn verify_current_password(
+    user: &crate::sqlite::admin_user::AdminUser,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+    logins: &crate::webadmin::session::LoginLimiter,
+) -> Result<(), AdminError> {
     // Checked **before** the KDF, which is `sign_in`'s reasoning verbatim: 600 000
     // PBKDF2 iterations is a denial-of-service lever, and until this ran here an
     // authenticated caller could pull it as fast as it could send requests.
@@ -343,6 +360,24 @@ mod tests {
         let logins = limiter();
         assert!(check_step_up(&user, "", client(), &logins).is_ok());
         assert!(check_step_up(&user, "anything", client(), &logins).is_ok());
+    }
+
+    /// The inverse of the test above: `verify_current_password` carries no
+    /// `has_totp()` exemption, since a password change needs the current
+    /// password proven whether or not a second factor exists.
+    #[test]
+    fn verify_current_password_runs_even_for_a_factorless_operator() {
+        let hash = cheap_hash("correct horse battery staple");
+        let user = user_with(&hash, None);
+        let logins = limiter();
+
+        assert!(
+            verify_current_password(&user, "correct horse battery staple", client(), &logins)
+                .is_ok()
+        );
+        let error = verify_current_password(&user, "wrong", client(), &logins)
+            .expect_err("a wrong password must refuse even with no factor enrolled");
+        assert_eq!(error.code, AdminError::invalid_credentials().code);
     }
 
     #[test]

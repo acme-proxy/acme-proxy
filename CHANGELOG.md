@@ -31,6 +31,28 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Security
+
+- **An operator can now change their own password from the panel**, not only
+  from `acme-proxy admin user passwd` on the host — ASVS 5.0 V6.2.2. The route
+  takes the *current* password and verifies it before writing a new one
+  (V6.2.3), which the CLI command never needed to: it already runs as the
+  process trusted to rewrite the row, where a web request is not. That check
+  runs unconditionally, even for an operator with no second factor — unlike
+  the existing step-up gate on the TOTP routes, which is deliberately skipped
+  when there is nothing yet to protect.
+
+  Guessing the current password is bounded by the same rate limiter and the
+  same bucket the second-factor step-up and sign-in itself share, so a fourth
+  call site buys no extra budget. The new password still goes through
+  `check_password_policy`, the same rules `admin user create`/`passwd`
+  enforce.
+
+  Unlike the CLI command, which revokes every session the operator holds, the
+  panel's own change keeps the session that made it signed in and revokes
+  every *other* one — the same shape the second-factor routes already use, so
+  the panel does not sign its own operator out mid-edit.
+
 ## [0.4.0] — 2026-08-27
 
 ### Breaking
