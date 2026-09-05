@@ -144,15 +144,6 @@ keeps its corpses stops being read.
 
 ## Packaging & supply chain
 
-- [ ] **No SBOM ships with a release** — ASVS **V15.1.2**. The substance is
-      already there: `Cargo.lock` pins every transitive dependency and the
-      `Advisories, licenses & sources` CI job runs `cargo deny` over licences,
-      advisories and registries with `all-features = true`. What is missing is
-      the artifact, so a consumer asking "is this build affected by RUSTSEC-…"
-      has to reconstruct the graph from the tree. `cargo cyclonedx` or
-      `cargo sbom` in the release workflow, attached to the GitHub release
-      beside the binary, is the whole job.
-
 - [ ] **The `Containerfile` sets no `USER`** — ASVS **V13.2.2**. It says on its
       first line that it builds the image for the e2e lab, and for that purpose
       root is unremarkable; but

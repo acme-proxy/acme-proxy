@@ -52,6 +52,9 @@ cargo test --doc          # llvm-cov skips doc-tests
 cargo deny check          # supply-chain audit, against deny.toml
 ```
 
+The `sbom` job additionally regenerates `sbom.cdx.json` and fails if it differs
+from the commit — see [Changing dependencies](#changing-dependencies).
+
 Note the coverage floor is enforced, so new code generally needs new tests.
 `cargo test --doc` is the only thing that compiles the startup example in
 `src/lib.rs`.
@@ -135,6 +138,37 @@ ever had. What such a change owes:
   `LIST_KEYS`; an unregistered one fails as an opaque serde error instead.
 - **No alias, no dual syntax, no legacy lowering.** Delete the old shape. The
   refusals themselves are one-line diagnostics and go away at 1.0.0.
+
+## Changing dependencies
+
+`sbom.cdx.json` at the repository root is a committed [CycloneDX
+1.5](https://cyclonedx.org/) inventory of the dependency closure that ships in
+the binary — the artifact ASVS 5.0 V15.1.2 asks for, alongside the `cargo deny`
+gate. It is scoped `--all-features --target all`, so the `hsm`/`cryptoki` path
+and every platform-gated crate are covered; dev-dependencies are excluded, since
+they cannot reach a released build.
+
+Regenerate it after any change to `Cargo.toml` or `Cargo.lock`, and when cutting
+a release (it records the crate version). The `sbom` CI job runs the same recipe
+and fails on any difference:
+
+```bash
+export SOURCE_DATE_EPOCH=0
+cargo metadata --locked --format-version 1 >/dev/null
+cargo cyclonedx --all-features --target all --spec-version 1.5 \
+  --format json --override-filename sbom.cdx -q
+jq --arg from "path+file://$PWD" --arg to "path+file:///acme-proxy" \
+  'walk(if type == "string" and startswith($from) then $to + .[($from | length):] else . end) | del(.metadata.timestamp)' \
+  sbom.cdx.json > sbom.cdx.json.tmp
+mv sbom.cdx.json.tmp sbom.cdx.json
+```
+
+`cargo install cargo-cyclonedx@0.5.9 --locked` provides the generator; keep the
+version in step with the pin in `.github/workflows/ci.yml`, since it is written
+into the document. `SOURCE_DATE_EPOCH` makes the output reproducible (it also
+suppresses the otherwise-random `serialNumber`); the `jq` pass drops the
+wall-clock timestamp and rewrites the single absolute path the tool embeds in
+its `bom-ref` values.
 
 ## Submitting a pull request
 

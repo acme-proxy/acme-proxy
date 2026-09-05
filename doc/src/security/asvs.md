@@ -76,16 +76,15 @@ reported for information.
 | V12 Secure Communication | 6 | 1 | 0 | 2 | 0 / 2 / 1 |
 | V13 Configuration | 8 | 5 | 0 | 0 | 4 / 4 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
-| V15 Secure Coding and Architecture | 10 | 1 | 1 | 1 | 8 / 0 / 0 |
+| V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **165** | **15** | **1** | **36** | **44 / 20 / 16** |
+| **Total** | **166** | **15** | **0** | **36** | **44 / 20 / 16** |
 
-The short version. **There is no L1 gap**, and at **L2 there is one**:
-V15.1.2, an SBOM artifact. The four password-policy requirements that used to
-sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 / V6.2.12 at L2 — were one
-missing control seen from four angles, and closed as one:
-`check_password_policy` now refuses a password that names this deployment, or
-that appears in a compiled-in corpus of common passwords. V6.2.2 and V6.2.3,
+The short version. **There is no L1 or L2 gap.** The four password-policy
+requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
+V6.2.12 at L2 — were one missing control seen from four angles, and closed as
+one: `check_password_policy` now refuses a password that names this deployment,
+or that appears in a compiled-in corpus of common passwords. V6.2.2 and V6.2.3,
 both L1, closed the same way: one self-service password-change route on the
 account page, gated the way the second-factor routes already were, rather than
 two separate fixes.
@@ -450,7 +449,7 @@ is a reference token and is assessed under V7.
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | 15.1.1 | Documented remediation time frames for vulnerable components | 1 | partial | [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) states that fixes land on `main` and in the next release, and `cargo deny` runs advisories on every CI run and on a schedule. No numeric time frame is committed to |
-| 15.1.2 | An SBOM or equivalent inventory is maintained | 2 | **gap** | `Cargo.lock` is committed and `cargo deny check` gates licences, advisories and sources — but no SBOM artifact (CycloneDX or SPDX) is produced or published with a release |
+| 15.1.2 | An SBOM or equivalent inventory is maintained | 2 | met | `sbom.cdx.json` is a committed CycloneDX 1.5 inventory of the shipped dependency closure (`--all-features --target all`, dev-dependencies excluded), regenerated and diffed by the `sbom` CI job and carried in the published crate; `cargo deny check` gates that same closure |
 | 15.1.3 | Documented resource-demanding functionality | 2 | met | The expensive paths are named and bounded: `http-01` and `dns-01` validation have timeouts, the PBKDF2 cost is documented as a denial-of-service lever with the limiter placed before it, and the admission limiter's shed-versus-queue reasoning is written out in `src/middlewares/admission.rs` |
 | 15.1.4 | Risky third-party libraries highlighted | 3 | met | `deny.toml` is the allow list, run with `all-features = true`, and the rationale for *refusing* dependencies is recorded where the refusal was made — `src/admin/password.rs` on Argon2id, `TODO.md` on `webauthn-rs` |
 | 15.1.5 | Dangerous functionality highlighted | 3 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names the three request-forgery surfaces, and [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) lists the behaviour that looks alarming and is deliberate |
@@ -567,12 +566,6 @@ non-feature. It is stated as such in the
 
 Open shortfalls against the L1/L2 bar, worst first. Each is also an entry in
 `TODO.md`.
-
-**No SBOM** — *V15.1.2 (L2).* `Cargo.lock` pins everything and `cargo deny
-check` gates advisories, licences and registries on every CI run — the
-*substance* of the requirement is met. What is missing is the artifact: no
-CycloneDX or SPDX document is generated or attached to a release, so a consumer
-cannot answer "is this affected" without the tree.
 
 **No documented secret rotation schedule** — *V13.1.4 (L3), reaching V11.1.1 at
 L2.* Every secret is named and classified by what its compromise buys, and each

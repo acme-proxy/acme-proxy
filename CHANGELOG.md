@@ -33,6 +33,19 @@ migrated configuration before restarting.
 
 ### Security
 
+- **A CycloneDX SBOM now ships with the source** — ASVS 5.0 V15.1.2, the last
+  open L1/L2 gap in the [ASVS
+  assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html).
+  `sbom.cdx.json` at the repository root is a committed CycloneDX 1.5 inventory
+  of the dependency closure that ships in the binary (`--all-features --target
+  all`, so the `hsm`/`cryptoki` path and every platform-gated crate are
+  covered; dev-dependencies excluded). It is carried in the published crate,
+  and a new `sbom` CI job regenerates it and fails on any drift from
+  `Cargo.lock`, the same ratchet as the coverage floor. `cargo deny check`
+  already gated that closure for advisories, licences and sources; this
+  publishes it, so "is this build affected by RUSTSEC-…" no longer means
+  reconstructing the graph from the tree.
+
 - **Web-admin operators now have a role** — ASVS 5.0 V7.5.3 and V8.4.2. Three
   tiers on `admin_users.role`: `viewer` reads every page and API route and may
   still act on its own account (password, sessions, second factor, logout) but
