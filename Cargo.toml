@@ -195,7 +195,7 @@ cryptoki = { version = "0.12", optional = true }
 [dev-dependencies]
 # `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
 tower = { version = "0.5", features = ["util"] }
-testcontainers = "0.27.3"
+testcontainers = "0.28"
 
 [profile.release]
 lto = true
