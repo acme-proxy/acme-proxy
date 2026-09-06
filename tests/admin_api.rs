@@ -1612,6 +1612,8 @@ fn mutating_endpoints() -> Vec<(Method, &'static str)> {
         (Method::DELETE, "/api/accounts/some-id"),
         (Method::POST, "/api/orders/some-id/revoke"),
         (Method::DELETE, "/api/orders/some-id"),
+        (Method::POST, "/api/jobs/some-id/cancel"),
+        (Method::POST, "/api/jobs/some-id/run"),
         (Method::POST, "/api/eab"),
         (Method::POST, "/api/eab/some-kid/revoke"),
         (Method::POST, "/api/nonces/cleanup"),
@@ -3294,6 +3296,306 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
     );
 }
 
+/// Epoch seconds — the crate's own `now_secs` is `pub(crate)`.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// Seeds an order on `PROFILE`, an `upstream_orders` row for it, and a
+/// `signer_relay_issue` job keyed on the order id — the in-flight-relay shape.
+async fn seed_relay_job(
+    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+) -> (String, String) {
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::job::{Job, NewJob};
+    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        &[9u8, 9],
+        Vec::new(),
+        &ClientContext::default(),
+        database,
+    )
+    .await
+    .unwrap();
+    let order = Order::create(
+        PROFILE,
+        account.id,
+        vec![Identifier::dns("relay.example.com")],
+        now_secs() + 3600,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    UpstreamOrder::create(
+        order.id.to_string().as_str(),
+        "https://up.example/o/1",
+        None,
+        b"csr",
+        database,
+    )
+    .await
+    .unwrap();
+    let job_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: job_id,
+            kind: "signer_relay_issue",
+            dedup_key: &order.id.to_string(),
+            payload: &json!({ "order_id": order.id.to_string(), "profile": PROFILE }),
+            run_at: now_secs(),
+            deadline: Some(order.expires),
+            max_attempts: 5,
+        },
+        database,
+    )
+    .await
+    .unwrap();
+    (job_id.to_string(), order.id.to_string())
+}
+
+/// `GET /api/jobs` lists; the two mutations cancel and run; a relay-job cancel
+/// abandons the ACME order with an operator-attributed audit row.
+#[tokio::test]
+async fn the_jobs_api_lists_cancels_and_runs() {
+    use acme_proxy::sqlite::job::{Job, NewJob};
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    // A plain ready sweep job, plus an in-flight relay job.
+    let sweep_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: sweep_id,
+            kind: "nonce_sweep",
+            dedup_key: "nonce_sweep",
+            payload: &json!({}),
+            run_at: now_secs() + 3600,
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    let (relay_job_id, order_id) = seed_relay_job(&database).await;
+
+    // List sees both.
+    let body =
+        json_body(admin_request(&app, Method::GET, "/api/jobs", Some(&session), None).await).await;
+    assert_eq!(body["total"], 2);
+
+    // Detail of the relay job carries the upstream cross-link.
+    let detail = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/jobs/{relay_job_id}"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(detail["kind"], "signer_relay_issue");
+    assert_eq!(detail["upstreamOrder"]["orderId"], order_id);
+
+    // Cancel the sweep job: cancelled, no order touched, no audit row.
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{sweep_id}/cancel"),
+        Some(&session),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["status"], "cancelled");
+    assert_eq!(
+        json_body(admin_request(&app, Method::GET, "/api/audit", Some(&session), None).await).await
+            ["total"],
+        0
+    );
+
+    // Cancel the relay job: order invalid, one certificate_issue_failed row.
+    let response = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{relay_job_id}/cancel"),
+        Some(&session),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let order = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/orders/{order_id}"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(order["order"]["status"], "invalid");
+    let audit =
+        json_body(admin_request(&app, Method::GET, "/api/audit", Some(&session), None).await).await;
+    assert_eq!(audit["total"], 1);
+    assert_eq!(audit["items"][0]["event"], "certificate_issue_failed");
+    assert_eq!(audit["items"][0]["actorKind"], "admin");
+
+    // run-now: a done job is refused, a failed one is revived to max-1.
+    let done_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: done_id,
+            kind: "nonce_sweep",
+            dedup_key: "done-key",
+            payload: &json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
+        .bind(done_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{done_id}/run"),
+        Some(&session),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(refused).await["error"], "job_not_runnable");
+
+    let failed_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: failed_id,
+            kind: "nonce_sweep",
+            dedup_key: "failed-key",
+            payload: &json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET status = 'failed', attempts = 5 WHERE id = ?;")
+        .bind(failed_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let revived = json_body(
+        admin_request(
+            &app,
+            Method::POST,
+            &format!("/api/jobs/{failed_id}/run"),
+            Some(&session),
+            Some(json!({})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(revived["status"], "ready");
+    assert_eq!(revived["attempts"], 4);
+}
+
+/// `GET /api/upstream-orders` lists and resolves one row; every mutating verb
+/// on both paths is unroutable.
+#[tokio::test]
+async fn the_upstream_orders_api_is_read_only() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (_job_id, order_id) = seed_relay_job(&database).await;
+
+    let body = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/upstream-orders",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["orderId"], order_id);
+    assert_eq!(body["items"][0]["status"], "processing");
+    // Never the CSR bytes.
+    assert!(!body.to_string().contains("csrDer"));
+
+    // Status filter refused by name.
+    let bad = admin_request(
+        &app,
+        Method::GET,
+        "/api/upstream-orders?status=nope",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    // One row by its local order id, cross-linked to the job.
+    let one = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/upstream-orders/{order_id}"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(one["orderId"], order_id);
+    assert_eq!(one["job"]["kind"], "signer_relay_issue");
+
+    let missing = admin_request(
+        &app,
+        Method::GET,
+        "/api/upstream-orders/nope",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    for (method, path) in [
+        (Method::POST, "/api/upstream-orders"),
+        (Method::DELETE, "/api/upstream-orders/1"),
+        (Method::POST, "/api/upstream-orders/1/cancel"),
+        (Method::PATCH, "/api/upstream-orders/1"),
+    ] {
+        let response =
+            admin_request(&app, method.clone(), path, Some(&session), Some(json!({}))).await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} {path} answered {}",
+            response.status()
+        );
+    }
+}
+
 /// One issued order on `PROFILE` whose leaf expires at `not_after`.
 ///
 /// The chain is a placeholder rather than a real signature: the identifier
@@ -3574,6 +3876,12 @@ async fn a_blank_filter_is_absent_on_every_list() {
             "/api/audit",
             "/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=",
             2,
+        ),
+        ("/api/jobs", "/api/jobs?kind=&status=", 0),
+        (
+            "/api/upstream-orders",
+            "/api/upstream-orders?profile=&status=",
+            0,
         ),
     ] {
         let response = admin_request(&app, Method::GET, blank, Some(&session), None).await;

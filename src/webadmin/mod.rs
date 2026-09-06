@@ -240,6 +240,17 @@ pub fn build_admin_app_with_logins(
         .route("/eab", get(handlers::list_eab).post(handlers::create_eab))
         .route("/eab/{kid}", get(handlers::get_eab))
         .route("/eab/{kid}/revoke", post(handlers::revoke_eab))
+        // The background job queue. `list`/`get` read; `cancel`/`run` are in
+        // `mutating_endpoints()` and demand `operator`+.
+        .route("/jobs", get(handlers::list_jobs))
+        .route("/jobs/{id}", get(handlers::get_job))
+        .route("/jobs/{id}/cancel", post(handlers::cancel_job))
+        .route("/jobs/{id}/run", post(handlers::run_job))
+        // Read-only, and therefore absent from `mutating_endpoints()`:
+        // abandoning an in-flight relay is `POST /api/jobs/{id}/cancel` on the
+        // `signer_relay_issue` job, which owns the state machine.
+        .route("/upstream-orders", get(handlers::list_upstream_orders))
+        .route("/upstream-orders/{id}", get(handlers::get_upstream_order))
         // Read-only, and therefore absent from `mutating_endpoints()`: there
         // is no route here that writes an audit row, by design. The trail is
         // pruned from the host (`acme-proxy audit cleanup`) or by

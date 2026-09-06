@@ -18,12 +18,14 @@ use base64::prelude::*;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::admin::ops::{ExpiringEntry, OrderDetail};
+use crate::admin::ops::{ExpiringEntry, JobDetail, OrderDetail, UpstreamOrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::eab::Eab;
+use crate::sqlite::job::Job;
 use crate::sqlite::order::{Order, rfc3339};
+use crate::sqlite::upstream_order::UpstreamOrderRow;
 
 /// The public base URL of one endpoint, as the server itself derives it.
 ///
@@ -165,6 +167,154 @@ pub fn render_order_detail_json(detail: &OrderDetail, base_url: &str) -> Value {
     root.insert("order".to_string(), order);
     root.insert("authorizations".to_string(), Value::Array(authorizations));
     Value::Object(root)
+}
+
+/// One background job, for `acme-proxy jobs list/show` and `GET /api/jobs`.
+///
+/// `payload` is echoed verbatim — it is the subject's identity (an order id, a
+/// profile name), never a secret, which the migration guarantees so an operator
+/// can read the table with `sqlite3`. Every optional member is **omitted** when
+/// absent, never nulled; `lastError` is text a far end wrote, so a web surface
+/// must escape it (the `.html` templates do).
+#[must_use]
+pub fn render_job_json(job: &Job) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("id".to_string(), Value::String(job.id.to_string()));
+    object.insert("kind".to_string(), Value::String(job.kind.clone()));
+    object.insert("dedupKey".to_string(), Value::String(job.dedup_key.clone()));
+    object.insert("payload".to_string(), job.payload.clone());
+    object.insert("status".to_string(), Value::String(job.status.clone()));
+    object.insert("runAt".to_string(), Value::String(rfc3339(job.run_at)));
+    object.insert("attempts".to_string(), Value::from(job.attempts));
+    object.insert("maxAttempts".to_string(), Value::from(job.max_attempts));
+    if let Some(deadline) = job.deadline {
+        object.insert("deadline".to_string(), Value::String(rfc3339(deadline)));
+    }
+    if let Some(lease_until) = job.lease_until {
+        object.insert(
+            "leaseUntil".to_string(),
+            Value::String(rfc3339(lease_until)),
+        );
+    }
+    if let Some(owner) = job.lease_owner.as_ref() {
+        object.insert("leaseOwner".to_string(), Value::String(owner.clone()));
+    }
+    if let Some(error) = job.last_error.as_ref() {
+        object.insert("lastError".to_string(), Value::String(error.clone()));
+    }
+    object.insert(
+        "createdAt".to_string(),
+        Value::String(rfc3339(job.created_at)),
+    );
+    object.insert(
+        "updatedAt".to_string(),
+        Value::String(rfc3339(job.updated_at)),
+    );
+    Value::Object(object)
+}
+
+/// One relay `upstream_orders` row joined to its local order, for
+/// `acme-proxy upstream order list/show` and `GET /api/upstream-orders`.
+///
+/// **Never carries `csrDer`** — `UpstreamOrderRow` has no such field by
+/// design. `error` and `userAgent` are untrusted (the upstream CA and the
+/// finalize client wrote them); every optional member is omitted when absent.
+#[must_use]
+pub fn render_upstream_order_json(row: &UpstreamOrderRow) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "orderId".to_string(),
+        Value::String(row.order_id.to_string()),
+    );
+    object.insert("profile".to_string(), Value::String(row.profile.clone()));
+    object.insert(
+        "accountId".to_string(),
+        Value::String(row.account_id.to_string()),
+    );
+    object.insert("status".to_string(), Value::String(row.status.clone()));
+    object.insert(
+        "localStatus".to_string(),
+        Value::String(row.local_status.as_str().to_string()),
+    );
+    object.insert(
+        "localExpires".to_string(),
+        Value::String(rfc3339(row.local_expires)),
+    );
+    object.insert(
+        "identifiers".to_string(),
+        serde_json::to_value(&row.identifiers).unwrap_or(Value::Null),
+    );
+    object.insert(
+        "upstreamOrderUrl".to_string(),
+        Value::String(row.upstream_order_url.clone()),
+    );
+    if let Some(url) = row.upstream_finalize_url.as_ref() {
+        object.insert(
+            "upstreamFinalizeUrl".to_string(),
+            Value::String(url.clone()),
+        );
+    }
+    if let Some(url) = row.upstream_certificate_url.as_ref() {
+        object.insert(
+            "upstreamCertificateUrl".to_string(),
+            Value::String(url.clone()),
+        );
+    }
+    if let Some(error) = row.error.as_ref() {
+        object.insert("error".to_string(), Value::String(error.clone()));
+    }
+    if let Some(ip) = row.client_ip.as_ref() {
+        object.insert("clientIp".to_string(), Value::String(ip.clone()));
+    }
+    if let Some(ptr) = row.client_ptr.as_ref() {
+        object.insert("clientPtr".to_string(), Value::String(ptr.clone()));
+    }
+    if let Some(ua) = row.user_agent.as_ref() {
+        object.insert("userAgent".to_string(), Value::String(ua.clone()));
+    }
+    if let Some(request_id) = row.request_id.as_ref() {
+        object.insert("requestId".to_string(), Value::String(request_id.clone()));
+    }
+    object.insert(
+        "createdAt".to_string(),
+        Value::String(rfc3339(row.created_at)),
+    );
+    object.insert(
+        "updatedAt".to_string(),
+        Value::String(rfc3339(row.updated_at)),
+    );
+    Value::Object(object)
+}
+
+/// `jobs show --json` / `GET /api/jobs/{id}` — the job plus, for a relay
+/// issuance, the `upstream_orders` row it drives.
+#[must_use]
+pub fn render_job_detail_json(detail: &JobDetail) -> Value {
+    let mut object = render_job_json(&detail.job)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(upstream) = detail.upstream_order.as_ref() {
+        object.insert(
+            "upstreamOrder".to_string(),
+            render_upstream_order_json(upstream),
+        );
+    }
+    Value::Object(object)
+}
+
+/// `upstream order show --json` / `GET /api/upstream-orders/{id}` — the row
+/// plus the most recent relay job for it, live or terminal.
+#[must_use]
+pub fn render_upstream_order_detail_json(detail: &UpstreamOrderDetail) -> Value {
+    let mut object = render_upstream_order_json(&detail.upstream_order)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(job) = detail.job.as_ref() {
+        object.insert("job".to_string(), render_job_json(job));
+    }
+    Value::Object(object)
 }
 
 /// One row of the expiry list: `GET /api/expiring`, `/ui/expiring` and
@@ -401,7 +551,7 @@ mod tests {
     use crate::sqlite::status::OrderStatus;
     use crate::testutil::{
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, client_context,
-        order_fixture,
+        job_fixture, order_fixture, upstream_order_row_fixture,
     };
 
     #[tokio::test]
@@ -578,5 +728,87 @@ mod tests {
 
         let someone_elses = render_admin_session_detail_json(&session, "a-different-hash");
         assert_eq!(someone_elses["current"], false);
+    }
+
+    // --- the job queue surface -------------------------------------------
+
+    #[test]
+    fn render_job_json_carries_the_payload_and_omits_absent_optionals() {
+        let mut job = job_fixture();
+        job.deadline = None;
+        job.lease_until = None;
+        job.lease_owner = None;
+        job.last_error = None;
+
+        let json = render_job_json(&job);
+        assert_eq!(json["kind"], "signer_relay_issue");
+        assert_eq!(json["dedupKey"], "order-1");
+        assert_eq!(json["payload"]["order_id"], "order-1");
+        assert_eq!(json["attempts"], 3);
+        assert_eq!(json["maxAttempts"], 5);
+        let object = json.as_object().unwrap();
+        for absent in ["deadline", "leaseUntil", "leaseOwner", "lastError"] {
+            assert!(!object.contains_key(absent), "{absent} should be omitted");
+        }
+    }
+
+    #[test]
+    fn render_upstream_order_json_never_carries_the_csr_and_omits_absent_optionals() {
+        let mut row = upstream_order_row_fixture();
+        row.upstream_finalize_url = None;
+        row.upstream_certificate_url = None;
+        row.error = None;
+        row.user_agent = None;
+
+        let json = render_upstream_order_json(&row);
+        let rendered = json.to_string();
+        assert!(!rendered.contains("csr"), "no csrDer, ever: {rendered}");
+        assert!(!rendered.contains("csrDer"));
+        assert_eq!(json["orderId"], row.order_id.to_string());
+        assert_eq!(json["localStatus"], "processing");
+        assert_eq!(json["identifiers"][0]["value"], "a.example.com");
+        let object = json.as_object().unwrap();
+        for absent in [
+            "upstreamFinalizeUrl",
+            "upstreamCertificateUrl",
+            "error",
+            "userAgent",
+        ] {
+            assert!(!object.contains_key(absent), "{absent} should be omitted");
+        }
+    }
+
+    #[test]
+    fn render_job_detail_json_attaches_the_upstream_cross_link() {
+        let detail = JobDetail {
+            job: job_fixture(),
+            upstream_order: Some(upstream_order_row_fixture()),
+        };
+        let json = render_job_detail_json(&detail);
+        assert_eq!(json["kind"], "signer_relay_issue");
+        assert_eq!(json["upstreamOrder"]["status"], "invalid");
+
+        let bare = JobDetail {
+            job: job_fixture(),
+            upstream_order: None,
+        };
+        assert!(
+            !render_job_detail_json(&bare)
+                .as_object()
+                .unwrap()
+                .contains_key("upstreamOrder")
+        );
+    }
+
+    #[test]
+    fn render_upstream_order_detail_json_attaches_the_job() {
+        let detail = UpstreamOrderDetail {
+            upstream_order: upstream_order_row_fixture(),
+            job: Some(job_fixture()),
+        };
+        let json = render_upstream_order_detail_json(&detail);
+        assert_eq!(json["status"], "invalid");
+        assert_eq!(json["job"]["kind"], "signer_relay_issue");
+        assert!(!json.to_string().contains("csrDer"));
     }
 }

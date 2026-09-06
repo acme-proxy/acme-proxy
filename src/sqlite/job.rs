@@ -76,6 +76,50 @@ pub struct NewJob<'a> {
     pub max_attempts: i64,
 }
 
+/// The filters and page window [`Job::search`] applies.
+///
+/// `JobQuery { limit, offset, .. }` alone is "the newest page across every
+/// kind". `status` is a [`JobStatus`] because both front ends refuse an unknown
+/// `--status` / `?status=` by name before this layer is reached; `kind` stays a
+/// free `String` because a job kind is an open set (the migration puts no
+/// `CHECK` on the column on purpose), so a value matching nothing is an
+/// acceptable answer rather than one worth an error.
+///
+/// [`JobStatus`]: crate::sqlite::status::JobStatus
+#[derive(Debug, Clone, Default)]
+pub struct JobQuery {
+    pub kind: Option<String>,
+    pub status: Option<crate::sqlite::status::JobStatus>,
+    /// The caller clamps this (`admin.page_size_max` on the HTTP side, the CLI
+    /// window otherwise); this layer takes what it is given.
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl JobQuery {
+    /// Appends the `WHERE` clause shared by the page query and the count — one
+    /// function so a filter applied to only one cannot report a total the rows
+    /// disagree with. Every value goes through `push_bind`.
+    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+        let mut separator = " WHERE ";
+        for (column, value) in [
+            ("kind = ", self.kind.as_deref()),
+            (
+                "status = ",
+                self.status.map(crate::sqlite::status::JobStatus::as_str),
+            ),
+        ] {
+            if let Some(value) = value {
+                builder
+                    .push(separator)
+                    .push(column)
+                    .push_bind(value.to_string());
+                separator = " AND ";
+            }
+        }
+    }
+}
+
 impl Job {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let payload_json: String = row.try_get("payload")?;
@@ -398,6 +442,166 @@ impl Job {
         .fetch_one(&database.pool)
         .await?;
         Ok(count)
+    }
+
+    /// One page of jobs matching `query`, plus the total the same predicates
+    /// match unpaged. The only cross-kind listing this model offers, for the
+    /// operator surface (`acme-proxy jobs list`, `GET /api/jobs`).
+    ///
+    /// Built with a [`sqlx::QueryBuilder`] rather than `sqlx::query`, which
+    /// takes only `&'static str` and so cannot be handed the shared `COLUMNS`
+    /// — the same reason [`Self::find_by_id`] does. Every value goes through
+    /// `push_bind`, so nothing operator-supplied is interpolated.
+    ///
+    /// **No index covers `WHERE kind = ? AND status = ? ORDER BY created_at`.**
+    /// This table stays small by construction: [`Self::cleanup`] deletes
+    /// terminal rows past `jobs.retention_days`, and the partial identity index
+    /// admits at most one live row per `(kind, dedup_key)`. A dedicated
+    /// `(kind, created_at)` index is a future migration if a deployment ever
+    /// says otherwise — the `Order::find_expiring` tradeoff exactly.
+    pub async fn search(
+        query: &JobQuery,
+        database: &Database,
+    ) -> Result<(Vec<Self>, i64), sqlx::Error> {
+        debug!(
+            event = "db_job_search_started",
+            outcome = "progress",
+            job_kind = ?query.kind,
+            status = ?query.status,
+            limit = query.limit,
+            offset = query.offset,
+        );
+
+        let mut page = sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM jobs"));
+        query.push_predicates(&mut page);
+        // Newest first, `id` breaking the tie: `created_at` is whole seconds,
+        // and a v7 id sorts chronologically within one, so two jobs written in
+        // the same second cannot swap between pages.
+        page.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        page.push_bind(query.limit);
+        page.push(" OFFSET ");
+        page.push_bind(query.offset);
+
+        let rows = page.build().fetch_all(&database.pool).await?;
+        let jobs: Vec<Self> = rows
+            .into_iter()
+            .map(Self::from_row)
+            .collect::<Result<_, _>>()?;
+
+        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM jobs");
+        query.push_predicates(&mut count);
+        let total: i64 = count
+            .build()
+            .fetch_one(&database.pool)
+            .await?
+            .try_get::<i64, _>(0)?;
+
+        Ok((jobs, total))
+    }
+
+    /// The most recent job for `(kind, dedup_key)` whatever its status.
+    ///
+    /// [`Self::find_live`]'s counterpart for a cross-link that must still
+    /// resolve after the job reached a terminal state — a relay job's
+    /// `dedup_key` is the local order id, and the operator surface links a
+    /// `done`/`failed` relay job to its `upstream_orders` row and back.
+    pub async fn find_latest_by_dedup(
+        kind: &str,
+        dedup_key: &str,
+        database: &Database,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let mut query =
+            sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM jobs WHERE kind = "));
+        query.push_bind(kind);
+        query.push(" AND dedup_key = ");
+        query.push_bind(dedup_key);
+        query.push(" ORDER BY created_at DESC, id DESC LIMIT 1");
+        let row = query.build().fetch_optional(&database.pool).await?;
+        row.map(Self::from_row).transpose()
+    }
+
+    /// Retires a job at an operator's request: `ready`/`failed` → `cancelled`.
+    ///
+    /// `Ok(Some(job))` is the row as it now stands; `Ok(None)` means it was not
+    /// in a cancellable state (`running`, `done`, or already `cancelled`) — the
+    /// guard decided, not a read-then-write. A `running` job is deliberately
+    /// excluded: a runner owns it, and its lease will expire or it will settle.
+    pub async fn cancel_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+        let sql = format!(
+            "UPDATE jobs \
+             SET status = 'cancelled', updated_at = ?, lease_owner = NULL, lease_until = NULL \
+             WHERE id = ? AND status IN ('ready', 'failed') \
+             RETURNING {COLUMNS};"
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(now_secs())
+            .bind(id)
+            .fetch_optional(&database.pool)
+            .await?;
+        let job = row.map(Self::from_row).transpose()?;
+        if job.is_some() {
+            info!(event = "db_job_cancelled", outcome = "success", job_id = %id);
+        }
+        Ok(job)
+    }
+
+    /// Pulls a live `ready` job's `run_at` forward to now. `Ok(None)` if it is
+    /// not `ready`. The runner picks the change up within `jobs.poll_interval_ms`
+    /// — this does not wake it.
+    pub async fn advance_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+        let now = now_secs();
+        let sql = format!(
+            "UPDATE jobs SET run_at = ?, updated_at = ? \
+             WHERE id = ? AND status = 'ready' RETURNING {COLUMNS};"
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(now)
+            .bind(now)
+            .bind(id)
+            .fetch_optional(&database.pool)
+            .await?;
+        let job = row.map(Self::from_row).transpose()?;
+        if job.is_some() {
+            info!(event = "db_job_advanced", outcome = "success", job_id = %id);
+        }
+        Ok(job)
+    }
+
+    /// Revives a permanently-failed job for exactly one more attempt: `failed`
+    /// → `ready`, `run_at` now, `attempts` set to `max_attempts - 1`.
+    /// `Ok(None)` if the row is not `failed`.
+    ///
+    /// `max_attempts - 1` rather than `0` is the whole point: the operator is
+    /// asking for one retry, not a fresh budget — if that attempt also fails
+    /// the job is `failed` again and stays there without another nudge.
+    /// `last_error` is left in place as the record of why it stopped, until the
+    /// next claim overwrites it. `MAX(…, 0)` guards a `max_attempts = 0` row
+    /// (the column carries no `CHECK`).
+    pub async fn revive_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+        let now = now_secs();
+        let sql = format!(
+            "UPDATE jobs \
+             SET status = 'ready', run_at = ?, updated_at = ?, \
+                 attempts = MAX(max_attempts - 1, 0), \
+                 lease_owner = NULL, lease_until = NULL \
+             WHERE id = ? AND status = 'failed' RETURNING {COLUMNS};"
+        );
+        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(now)
+            .bind(now)
+            .bind(id)
+            .fetch_optional(&database.pool)
+            .await?;
+        let job = row.map(Self::from_row).transpose()?;
+        if let Some(job) = &job {
+            info!(
+                event = "db_job_revived",
+                outcome = "success",
+                job_id = %id,
+                attempts = job.attempts,
+            );
+        }
+        Ok(job)
     }
 
     /// Deletes terminal rows settled before `cutoff`, returning how many went.
@@ -826,5 +1030,374 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("CHECK constraint failed"));
+    }
+
+    // --- the operator surface: `JobQuery`/`search` and the guarded mutations --
+
+    use crate::sqlite::status::JobStatus;
+
+    /// Queues one job of a named kind with `max_attempts` and `run_at` chosen.
+    async fn enqueue_kind(
+        id: Uuid,
+        kind: &str,
+        key: &str,
+        run_at: i64,
+        max_attempts: i64,
+        database: &Database,
+    ) -> bool {
+        Job::enqueue(
+            NewJob {
+                id,
+                kind,
+                dedup_key: key,
+                payload: &json!({}),
+                run_at,
+                deadline: None,
+                max_attempts,
+            },
+            database,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// One job at `failed` with `max_attempts`, `attempts = 1` and a
+    /// `last_error` — the state the runner leaves after a single failed
+    /// attempt. A direct `UPDATE` rather than claim+abandon because a test
+    /// seeding several jobs of one kind cannot say *which* one `claim_next`
+    /// takes (it takes the oldest); `abandon`'s own path is covered by
+    /// `abandon_is_terminal_and_records_why`.
+    async fn failed_job_max(
+        id: Uuid,
+        kind: &str,
+        key: &str,
+        max_attempts: i64,
+        database: &Database,
+    ) -> Job {
+        assert!(enqueue_kind(id, kind, key, now_secs(), max_attempts, database).await);
+        sqlx::query(
+            "UPDATE jobs SET status = 'failed', attempts = 1, \
+             last_error = 'upstream said no', updated_at = ? WHERE id = ?;",
+        )
+        .bind(now_secs())
+        .bind(id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        Job::find_by_id(id, database).await.unwrap().unwrap()
+    }
+
+    async fn failed_job(id: Uuid, kind: &str, key: &str, database: &Database) -> Job {
+        failed_job_max(id, kind, key, 3, database).await
+    }
+
+    #[tokio::test]
+    async fn search_filters_kind_and_status_and_pages_without_overlap() {
+        let database = db().await;
+        // Three `relay` jobs, two `sweep` jobs; drive one relay job to `failed`.
+        for i in 0..3 {
+            assert!(
+                enqueue_kind(
+                    job_id(&format!("relay-{i}")),
+                    "relay",
+                    &format!("ord-{i}"),
+                    now_secs() - i64::from(10 - i),
+                    3,
+                    &database,
+                )
+                .await
+            );
+        }
+        for i in 0..2 {
+            assert!(
+                enqueue_kind(
+                    job_id(&format!("sweep-{i}")),
+                    "sweep",
+                    &format!("s-{i}"),
+                    now_secs(),
+                    3,
+                    &database,
+                )
+                .await
+            );
+        }
+        failed_job(job_id("relay-failed"), "relay", "ord-f", &database).await;
+
+        // Kind narrows page and total together.
+        let (rows, total) = Job::search(
+            &JobQuery {
+                kind: Some("relay".to_string()),
+                limit: 50,
+                ..JobQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 4);
+        assert_eq!(rows.len(), 4);
+
+        // Kind + status together.
+        let (rows, total) = Job::search(
+            &JobQuery {
+                kind: Some("relay".to_string()),
+                status: Some(JobStatus::Failed),
+                limit: 50,
+                offset: 0,
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, job_id("relay-failed"));
+
+        // Three single-row pages over the four `relay` jobs see each once, and
+        // the total stays unpaged on every page.
+        let mut seen = std::collections::BTreeSet::new();
+        for offset in 0..4 {
+            let (rows, total) = Job::search(
+                &JobQuery {
+                    kind: Some("relay".to_string()),
+                    limit: 1,
+                    offset,
+                    ..JobQuery::default()
+                },
+                &database,
+            )
+            .await
+            .unwrap();
+            assert_eq!(total, 4);
+            assert_eq!(rows.len(), 1);
+            assert!(seen.insert(rows[0].id), "a row appeared on two pages");
+        }
+        assert_eq!(seen.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_kind_filter_value_is_bound_not_interpolated() {
+        let database = db().await;
+        assert!(enqueue_kind(job_id("job-1"), "relay", "k", now_secs(), 3, &database).await);
+        let (rows, total) = Job::search(
+            &JobQuery {
+                kind: Some("' OR 1=1 --".to_string()),
+                limit: 50,
+                ..JobQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
+        // The table is still there.
+        assert!(
+            Job::find_by_id(job_id("job-1"), &database)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_row_moves_ready_and_failed_and_refuses_the_rest() {
+        let database = db().await;
+
+        // ready -> cancelled.
+        assert!(enqueue_kind(job_id("ready"), "test", "a", now_secs(), 3, &database).await);
+        let cancelled = Job::cancel_row(job_id("ready"), &database)
+            .await
+            .unwrap()
+            .expect("a ready job cancels");
+        assert_eq!(cancelled.status, "cancelled");
+        // A second cancel finds nothing to do.
+        assert!(
+            Job::cancel_row(job_id("ready"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // failed -> cancelled.
+        failed_job(job_id("failed"), "test", "b", &database).await;
+        assert!(
+            Job::cancel_row(job_id("failed"), &database)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // running is refused, row untouched.
+        assert!(enqueue_kind(job_id("running"), "test", "c", now_secs(), 3, &database).await);
+        Job::claim_next("r", &["test"], now_secs() + 60, now_secs(), &database)
+            .await
+            .unwrap();
+        assert!(
+            Job::cancel_row(job_id("running"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            Job::find_by_id(job_id("running"), &database)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+
+        // done is refused.
+        assert!(enqueue_kind(job_id("done"), "test", "d", now_secs(), 3, &database).await);
+        let job = Job::claim_next("r", &["test"], now_secs() + 60, now_secs(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        Job::complete(job.id, "r", &database).await.unwrap();
+        assert!(
+            Job::cancel_row(job_id("done"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn advance_row_nudges_a_ready_job_and_refuses_a_running_one() {
+        let database = db().await;
+        assert!(
+            enqueue_kind(
+                job_id("ready"),
+                "test",
+                "a",
+                now_secs() + 3_600,
+                3,
+                &database
+            )
+            .await
+        );
+        let advanced = Job::advance_row(job_id("ready"), &database)
+            .await
+            .unwrap()
+            .expect("a ready job advances");
+        assert!(advanced.run_at <= now_secs() + 1);
+        assert_eq!(advanced.attempts, 0, "advancing does not spend an attempt");
+
+        // running / failed / done all refuse.
+        Job::claim_next("r", &["test"], now_secs() + 60, now_secs(), &database)
+            .await
+            .unwrap();
+        assert!(
+            Job::advance_row(job_id("ready"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        failed_job(job_id("failed"), "test", "b", &database).await;
+        assert!(
+            Job::advance_row(job_id("failed"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn revive_row_sets_attempts_to_max_minus_one_and_refuses_a_live_job() {
+        let database = db().await;
+
+        let failed = failed_job(job_id("failed"), "test", "a", &database).await;
+        assert_eq!(failed.max_attempts, 3);
+        let revived = Job::revive_row(job_id("failed"), &database)
+            .await
+            .unwrap()
+            .expect("a failed job revives");
+        assert_eq!(revived.status, "ready");
+        assert_eq!(revived.attempts, 2, "exactly one attempt left");
+        assert!(revived.run_at <= now_secs() + 1);
+        assert_eq!(
+            revived.last_error.as_deref(),
+            Some("upstream said no"),
+            "the last error stays as the record of why it stopped"
+        );
+
+        // A live `ready` job is refused.
+        assert!(enqueue_kind(job_id("ready"), "test", "b", now_secs(), 3, &database).await);
+        assert!(
+            Job::revive_row(job_id("ready"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // max_attempts = 1 -> attempts back to 0 (a full single attempt).
+        let one = failed_job_max(job_id("one"), "test", "c", 1, &database).await;
+        assert_eq!(one.max_attempts, 1);
+        let revived = Job::revive_row(job_id("one"), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(revived.attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn find_latest_by_dedup_sees_a_settled_job_where_find_live_does_not() {
+        let database = db().await;
+        assert!(enqueue_kind(job_id("job-1"), "relay", "ord-1", now_secs(), 3, &database).await);
+        let job = Job::claim_next("r", &["relay"], now_secs() + 60, now_secs(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        Job::complete(job.id, "r", &database).await.unwrap();
+
+        assert!(
+            Job::find_live("relay", "ord-1", &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let latest = Job::find_latest_by_dedup("relay", "ord-1", &database)
+            .await
+            .unwrap()
+            .expect("the settled job is still resolvable");
+        assert_eq!(latest.id, job_id("job-1"));
+        assert_eq!(latest.status, "done");
+    }
+
+    #[tokio::test]
+    async fn revive_then_a_second_failure_stays_failed_without_another_nudge() {
+        let database = db().await;
+        failed_job(job_id("j"), "test", "a", &database).await;
+        Job::revive_row(job_id("j"), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        // Claim (attempts -> 3 = max) and abandon again.
+        let job = Job::claim_next("r", &["test"], now_secs() + 60, now_secs(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.attempts, 3);
+        Job::abandon(job.id, "r", "again", &database).await.unwrap();
+
+        let after = Job::find_by_id(job_id("j"), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status, "failed");
+        // advance_row does nothing to a failed job; revive still works.
+        assert!(
+            Job::advance_row(job_id("j"), &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Job::revive_row(job_id("j"), &database)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

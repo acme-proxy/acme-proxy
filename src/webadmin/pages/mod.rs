@@ -35,11 +35,13 @@ pub mod eab;
 pub mod error;
 pub mod expiring;
 pub mod filter;
+pub mod jobs;
 pub mod misc;
 pub mod operators;
 pub mod orders;
 pub mod session;
 pub mod templates;
+pub mod upstream_orders;
 
 pub use auth::{PageAdminWrite, PageSelfServiceWrite, PageSession, PageSessionWrite};
 pub use error::PageError;
@@ -140,6 +142,19 @@ pub(crate) fn pages_router() -> Router<AdminState> {
         // A `GET`, so it is absent from `mutating_page_endpoints()` by right
         // rather than by omission.
         .route("/ui/orders/{id}/chain.pem", get(orders::download_chain))
+        .route("/ui/jobs", get(jobs::list_jobs))
+        .route("/ui/jobs/{id}", get(jobs::get_job))
+        .route("/ui/jobs/{id}/cancel", post(jobs::cancel_job))
+        .route("/ui/jobs/{id}/run", post(jobs::run_job))
+        // Read-only, absent from `mutating_page_endpoints()` by design.
+        .route(
+            "/ui/upstream-orders",
+            get(upstream_orders::list_upstream_orders),
+        )
+        .route(
+            "/ui/upstream-orders/{id}",
+            get(upstream_orders::get_upstream_order),
+        )
         .route("/ui/eab", get(eab::list_eab).post(eab::create_eab))
         .route("/ui/eab/{kid}", get(eab::get_eab))
         .route("/ui/eab/{kid}/revoke", post(eab::revoke_eab))

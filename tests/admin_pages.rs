@@ -842,6 +842,8 @@ fn authenticated_pages() -> Vec<&'static str> {
         // is public once issued, *which orders exist* is not.
         "/ui/orders/some-id/chain.pem",
         "/ui/expiring",
+        "/ui/jobs",
+        "/ui/upstream-orders",
         "/ui/audit",
         "/ui/audit/1",
         "/ui/eab",
@@ -910,6 +912,8 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str)> {
         (Method::DELETE, "/ui/accounts/some-id"),
         (Method::POST, "/ui/orders/some-id/revoke"),
         (Method::DELETE, "/ui/orders/some-id"),
+        (Method::POST, "/ui/jobs/some-id/cancel"),
+        (Method::POST, "/ui/jobs/some-id/run"),
         (Method::POST, "/ui/eab"),
         (Method::POST, "/ui/eab/some-kid/revoke"),
         (Method::POST, "/ui/nonces/cleanup"),
@@ -2479,6 +2483,375 @@ async fn the_audit_page_lists_rows_escapes_them_and_offers_nothing_to_write() {
     }
 }
 
+/// Epoch seconds — the crate's own `now_secs` is `pub(crate)`.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// An order, an `upstream_orders` row for it, and a `signer_relay_issue` job.
+/// Returns `(job_id, order_id)`.
+async fn seed_relay_job(
+    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+) -> (String, String) {
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::job::{Job, NewJob};
+    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        &[7u8, 7],
+        Vec::new(),
+        &acme_proxy::audit::ClientContext::default(),
+        database,
+    )
+    .await
+    .unwrap();
+    let order = Order::create(
+        PROFILE,
+        account.id,
+        vec![Identifier::dns("relay.example.com")],
+        now_secs() + 3600,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    UpstreamOrder::create(
+        order.id.to_string().as_str(),
+        "https://up.example/o/1",
+        None,
+        b"csr",
+        database,
+    )
+    .await
+    .unwrap();
+    let job_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: job_id,
+            kind: "signer_relay_issue",
+            dedup_key: &order.id.to_string(),
+            payload: &serde_json::json!({ "order_id": order.id.to_string(), "profile": PROFILE }),
+            run_at: now_secs(),
+            deadline: Some(order.expires),
+            max_attempts: 5,
+        },
+        database,
+    )
+    .await
+    .unwrap();
+    (job_id.to_string(), order.id.to_string())
+}
+
+/// `/ui/jobs` lists, shows, and offers cancel + run on the detail card only;
+/// `last_error` is escaped; a `viewer` is refused the mutations.
+#[tokio::test]
+async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
+    use acme_proxy::sqlite::job::{Job, NewJob};
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    // A failed job whose last error is a stored-XSS payload.
+    let failed_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: failed_id,
+            kind: "nonce_sweep",
+            dedup_key: "x",
+            payload: &serde_json::json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET status = 'failed', attempts = 1, last_error = ? WHERE id = ?;")
+        .bind("<script>alert(1)</script>")
+        .bind(failed_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let (relay_job_id, _order_id) = seed_relay_job(&database).await;
+
+    // The list document, and its fragment.
+    let body = html_body(admin_page(&app, "/ui/jobs", Some(&session), false).await).await;
+    assert!(body.contains("nonce_sweep"), "{body}");
+    assert!(body.contains("signer_relay_issue"), "{body}");
+    assert!(body.contains(r#"hx-get="/ui/jobs""#), "{body}");
+    // The XSS payload is escaped on the list.
+    assert!(!body.contains("<script>alert(1)</script>"), "{body}");
+    assert!(body.contains("&lt;script&gt;"), "{body}");
+
+    let fragment = html_body(admin_page(&app, "/ui/jobs", Some(&session), true).await).await;
+    assert!(
+        fragment.trim_start().starts_with("<div id=\"jobs-table\""),
+        "{fragment}"
+    );
+    // The rows carry no mutation control — those are on the detail card.
+    assert!(!fragment.contains("hx-post"), "{fragment}");
+    assert!(!fragment.contains("hx-delete"), "{fragment}");
+
+    // The failed job's detail: escaped error, and the danger zone renders
+    // (status is `failed`, so cancel + run are offered).
+    let detail = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/jobs/{failed_id}"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert!(!detail.contains("<script>alert(1)</script>"), "{detail}");
+    assert!(detail.contains("&lt;script&gt;"), "{detail}");
+    assert!(
+        detail.contains(r#"hx-post="/ui/jobs/"#),
+        "the danger zone renders: {detail}"
+    );
+
+    // The relay job's detail carries the upstream cross-link panel.
+    let relay_detail = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/jobs/{relay_job_id}"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert!(relay_detail.contains("Upstream order"), "{relay_detail}");
+    assert!(
+        relay_detail.contains("/ui/upstream-orders/"),
+        "{relay_detail}"
+    );
+
+    // A 409 (job not cancellable) is a banner beside the still-present card.
+    let running_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: running_id,
+            kind: "nonce_sweep",
+            dedup_key: "r",
+            payload: &serde_json::json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?;")
+        .bind(running_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        &format!("/ui/jobs/{running_id}/cancel"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::OK);
+    let refused_body = html_body(refused).await;
+    assert!(refused_body.contains(r#"id="job-card""#), "{refused_body}");
+    assert!(
+        refused_body.contains("job_not_cancellable"),
+        "{refused_body}"
+    );
+
+    // run-now on the failed job: a banner, and the card re-rendered ready.
+    let run = admin_request(
+        &app,
+        Method::POST,
+        &format!("/ui/jobs/{failed_id}/run"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(run.status(), StatusCode::OK);
+    let run_body = html_body(run).await;
+    assert!(run_body.contains("one more attempt"), "{run_body}");
+    assert!(run_body.contains(r#"id="job-card""#), "{run_body}");
+
+    // run-now on a done job: a `job_not_runnable` banner beside the card.
+    let done_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: done_id,
+            kind: "nonce_sweep",
+            dedup_key: "d",
+            payload: &serde_json::json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
+        .bind(done_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let refused_run = admin_request(
+        &app,
+        Method::POST,
+        &format!("/ui/jobs/{done_id}/run"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(refused_run.status(), StatusCode::OK);
+    assert!(html_body(refused_run).await.contains("job_not_runnable"));
+
+    // A mutation on an unknown job is a 404 page.
+    let missing = admin_request(
+        &app,
+        Method::POST,
+        "/ui/jobs/00000000-0000-7000-8000-000000000000/cancel",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    // Cancelling the relay job through the UI abandons its order.
+    let abandoned = admin_request(
+        &app,
+        Method::POST,
+        &format!("/ui/jobs/{relay_job_id}/cancel"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(abandoned.status(), StatusCode::OK);
+    assert!(html_body(abandoned).await.contains("marked invalid"));
+
+    // A `viewer` is refused the mutation.
+    acme_proxy::admin::users::create_user(
+        "vic",
+        ADMIN_PASSWORD,
+        &acme_proxy::admin::password::PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    acme_proxy::admin::users::set_role(
+        "vic",
+        acme_proxy::sqlite::admin_user::AdminRole::Viewer,
+        database.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let viewer = admin_login(&app, "vic", ADMIN_PASSWORD).await;
+    let denied = admin_request(
+        &app,
+        Method::POST,
+        &format!("/ui/jobs/{failed_id}/run"),
+        Some(&viewer),
+        None,
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+}
+
+/// `/ui/upstream-orders` is read-only, and the untrusted `error` / `user_agent`
+/// columns are escaped.
+#[tokio::test]
+async fn the_upstream_orders_page_is_read_only_and_escapes_untrusted_text() {
+    use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (_job_id, order_id) = seed_relay_job(&database).await;
+    UpstreamOrder::mark_invalid(&order_id, "<script>alert('e')</script>", &database)
+        .await
+        .unwrap();
+    UpstreamOrder::set_client(
+        &order_id,
+        &acme_proxy::audit::ClientContext {
+            user_agent: Some("<script>alert('ua')</script>".to_string()),
+            ..acme_proxy::audit::ClientContext::default()
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+
+    let list =
+        html_body(admin_page(&app, "/ui/upstream-orders", Some(&session), false).await).await;
+    assert!(list.contains(&order_id), "{list}");
+    assert!(list.contains(r#"hx-get="/ui/upstream-orders""#), "{list}");
+
+    let fragment =
+        html_body(admin_page(&app, "/ui/upstream-orders", Some(&session), true).await).await;
+    assert!(
+        fragment
+            .trim_start()
+            .starts_with("<div id=\"upstream-orders-table\""),
+        "{fragment}"
+    );
+    // Genuinely read-only — no mutation attribute anywhere.
+    assert!(!fragment.contains("hx-post"), "{fragment}");
+    assert!(!fragment.contains("hx-delete"), "{fragment}");
+
+    let detail = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/upstream-orders/{order_id}"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert!(!detail.contains("<script>alert('e')</script>"), "{detail}");
+    assert!(!detail.contains("<script>alert('ua')</script>"), "{detail}");
+    assert!(detail.contains("&lt;script&gt;"), "{detail}");
+    assert!(
+        detail.contains("Relay job"),
+        "cross-linked to the job: {detail}"
+    );
+    assert!(!detail.contains("csrDer"), "{detail}");
+
+    // A missing local order is a 404, and every mutating verb is unroutable.
+    assert_eq!(
+        admin_page(&app, "/ui/upstream-orders/nope", Some(&session), false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for method in [Method::POST, Method::DELETE] {
+        let response = admin_request(
+            &app,
+            method.clone(),
+            "/ui/upstream-orders",
+            Some(&session),
+            None,
+        )
+        .await;
+        assert!(
+            response.status() == StatusCode::METHOD_NOT_ALLOWED
+                || response.status() == StatusCode::NOT_FOUND,
+            "{method} answered {}",
+            response.status()
+        );
+    }
+}
+
 /// The `/ui` surface fails closed too — and is never mistaken for signed out.
 ///
 /// `admin_api.rs`'s twin covers the JSON API. The page layer is the half that
@@ -2733,6 +3106,11 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
             "/ui/audit",
             "/ui/audit?profile=&event=&outcome=&accountId=&certSerial=",
         ),
+        ("/ui/jobs", "/ui/jobs?kind=&status="),
+        (
+            "/ui/upstream-orders",
+            "/ui/upstream-orders?profile=&status=",
+        ),
     ] {
         let response = admin_page(&app, blank, Some(&session), true).await;
         assert_eq!(response.status(), StatusCode::OK, "{blank}");
@@ -2783,6 +3161,20 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
             .await
             .status(),
         StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        admin_page(&app, "/ui/jobs?status=typo", Some(&session), true)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    // `?kind=typo` is *not* refused — kinds are an open set — it just matches
+    // nothing.
+    assert_eq!(
+        admin_page(&app, "/ui/jobs?kind=typo", Some(&session), true)
+            .await
+            .status(),
+        StatusCode::OK
     );
 }
 

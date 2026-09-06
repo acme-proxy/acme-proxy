@@ -1,0 +1,37 @@
+{#- The swap target of the upstream orders list. Read-only: no mutation
+    control anywhere on this surface. -#}
+<div id="upstream-orders-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Local order</th>
+          <th>Profile</th>
+          <th>Upstream</th>
+          <th>Local</th>
+          <th>Identifiers</th>
+          <th>Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in page.items %}
+          <tr>
+            <td><a href="/ui/upstream-orders/{{ row.orderId }}"><code>{{ row.orderId }}</code></a></td>
+            <td><code>{{ row.profile }}</code></td>
+            <td><span class="badge {{ row.status }}">{{ row.status }}</span></td>
+            <td><span class="badge {{ row.localStatus }}">{{ row.localStatus }}</span></td>
+            <td class="wrap-anywhere">
+              {%- for identifier in row.identifiers -%}
+                {% if not loop.first %}, {% endif %}{{ identifier.value }}
+              {%- endfor -%}
+            </td>
+            <td class="small">{{ row.updatedAt }}</td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="6">No upstream order matches.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

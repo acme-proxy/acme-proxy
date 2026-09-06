@@ -169,10 +169,10 @@ impl Palette {
         // wrapped, which is the whole point (see the module doc).
         let role = match text.trim() {
             "valid" | "ready" | "active" | "enabled" | "success" | "on" | "allow" | "allowed"
-            | "pass" => Role::Good,
+            | "pass" | "done" => Role::Good,
             "invalid" | "revoked" | "deactivated" | "expired" | "disabled" | "off" | "failure"
-            | "deny" | "denied" | "fail" => Role::Bad,
-            "pending" | "processing" | "pending_mfa" => Role::Busy,
+            | "deny" | "denied" | "fail" | "failed" | "cancelled" => Role::Bad,
+            "pending" | "processing" | "pending_mfa" | "running" => Role::Busy,
             "unknown" | "undecided" => Role::Unknown,
             _ => return text.to_string(),
         };
@@ -245,7 +245,9 @@ mod tests {
     #[test]
     fn the_status_vocabulary_maps_every_domains_words() {
         let colour = Palette::resolve(ColorChoice::Always, false, None);
-        for good in ["valid", "ready", "active", "enabled", "success", "on"] {
+        for good in [
+            "valid", "ready", "active", "enabled", "success", "on", "done",
+        ] {
             assert_eq!(colour.status(good), format!("\x1b[32m{good}\x1b[0m"));
         }
         for bad in [
@@ -256,10 +258,12 @@ mod tests {
             "disabled",
             "off",
             "failure",
+            "failed",
+            "cancelled",
         ] {
             assert_eq!(colour.status(bad), format!("\x1b[31m{bad}\x1b[0m"));
         }
-        for busy in ["pending", "processing", "pending_mfa"] {
+        for busy in ["pending", "processing", "pending_mfa", "running"] {
             assert_eq!(colour.status(busy), format!("\x1b[33m{busy}\x1b[0m"));
         }
     }

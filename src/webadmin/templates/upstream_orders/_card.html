@@ -1,0 +1,65 @@
+{#- One upstream order and its relay job. Read-only: no control. `detail` is
+    `admin::render_upstream_order_detail_json` verbatim — `render_upstream_order_json`
+    fields plus an optional `job`. Never `csrDer`. -#}
+<div id="upstream-order-card">
+  <div class="panel">
+    <dl class="fields">
+      <dt>Local order</dt>
+      <dd><a href="/ui/orders/{{ detail.orderId }}"><code>{{ detail.orderId }}</code></a></dd>
+      <dt>Profile</dt><dd><code>{{ detail.profile }}</code></dd>
+      <dt>Account</dt>
+      <dd><a href="/ui/accounts/{{ detail.accountId }}"><code>{{ detail.accountId }}</code></a></dd>
+      <dt>Upstream status</dt>
+      <dd><span class="badge {{ detail.status }}">{{ detail.status }}</span></dd>
+      <dt>Local status</dt>
+      <dd><span class="badge {{ detail.localStatus }}">{{ detail.localStatus }}</span></dd>
+      <dt>Local expires</dt><dd>{{ detail.localExpires }}</dd>
+      <dt>Identifiers</dt>
+      <dd class="wrap-anywhere">
+        {%- for identifier in detail.identifiers -%}
+          {% if not loop.first %}, {% endif %}<code>{{ identifier.value }}</code>
+        {%- endfor -%}
+      </dd>
+      <dt>Upstream order URL</dt>
+      <dd class="wrap-anywhere"><code>{{ detail.upstreamOrderUrl }}</code></dd>
+      {% if detail.upstreamFinalizeUrl %}
+        <dt>Finalize URL</dt>
+        <dd class="wrap-anywhere"><code>{{ detail.upstreamFinalizeUrl }}</code></dd>
+      {% endif %}
+      {% if detail.upstreamCertificateUrl %}
+        <dt>Certificate URL</dt>
+        <dd class="wrap-anywhere"><code>{{ detail.upstreamCertificateUrl }}</code></dd>
+      {% endif %}
+      {% if detail.error %}
+        <dt>Upstream error</dt>
+        <dd class="wrap-anywhere">{{ detail.error }}</dd>
+      {% endif %}
+      {% if detail.clientIp %}<dt>Client IP</dt><dd><code>{{ detail.clientIp }}</code></dd>{% endif %}
+      {% if detail.clientPtr %}<dt>Client PTR</dt><dd><code>{{ detail.clientPtr }}</code></dd>{% endif %}
+      {% if detail.userAgent %}
+        <dt>User-Agent</dt><dd class="wrap-anywhere">{{ detail.userAgent }}</dd>
+      {% endif %}
+      {% if detail.requestId %}<dt>Request id</dt><dd><code>{{ detail.requestId }}</code></dd>{% endif %}
+      <dt>Created</dt><dd>{{ detail.createdAt }}</dd>
+      <dt>Updated</dt><dd>{{ detail.updatedAt }}</dd>
+    </dl>
+  </div>
+
+  {% if detail.job %}
+    <div class="panel">
+      <h2>Relay job</h2>
+      <dl class="fields">
+        <dt>Job</dt>
+        <dd><a href="/ui/jobs/{{ detail.job.id }}"><code>{{ detail.job.id }}</code></a></dd>
+        <dt>Status</dt>
+        <dd><span class="badge {{ detail.job.status }}">{{ detail.job.status }}</span></dd>
+        <dt>Attempts</dt><dd>{{ detail.job.attempts }} / {{ detail.job.maxAttempts }}</dd>
+        <dt>Run at</dt><dd>{{ detail.job.runAt }}</dd>
+        {% if detail.job.lastError %}
+          <dt>Last error</dt>
+          <dd class="wrap-anywhere">{{ detail.job.lastError }}</dd>
+        {% endif %}
+      </dl>
+    </div>
+  {% endif %}
+</div>

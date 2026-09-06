@@ -7,13 +7,16 @@ use uuid::Uuid;
 use crate::admin::prompt::confirm;
 use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use crate::config::Config;
+use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
 use crate::signer::{SignerBackend, SignerError};
 use crate::sqlite::account::Account;
 use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::sqlite::authz::{Authorization, Challenge};
 use crate::sqlite::db::Database;
+use crate::sqlite::job::Job;
 use crate::sqlite::nonce::{Nonce, now_secs};
 use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
 
 /// Outcome of a confirm-gated hard delete.
 ///
@@ -382,6 +385,252 @@ pub async fn load_order_detail(
         order,
         authorizations,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// The job queue operator surface
+//
+// Read (`load_job_detail`, `load_upstream_order_detail`) and two mutations
+// (`cancel_job`, `run_job_now`). Both front ends call `Job::search` /
+// `UpstreamOrder::search` directly — only the composed detail loaders and the
+// mutations, which have a relay special case and an audit row, live here.
+// ---------------------------------------------------------------------------
+
+/// A job plus, when it is a relay issuance, the `upstream_orders` row it drives
+/// — the cross-link the detail view renders as a panel.
+#[derive(Debug)]
+pub struct JobDetail {
+    pub job: Job,
+    pub upstream_order: Option<UpstreamOrderRow>,
+}
+
+/// An `upstream_orders` row plus, when one exists, the relay job that drives
+/// (or last drove) it — the reverse cross-link.
+#[derive(Debug)]
+pub struct UpstreamOrderDetail {
+    pub upstream_order: UpstreamOrderRow,
+    pub job: Option<Job>,
+}
+
+/// The `jobs.kind` values whose handler re-enqueues itself on a cadence
+/// (`Reschedule`). Cancelling one stops that sweep until the server restarts,
+/// which the CLI/UI warns about — a retired periodic job does not come back.
+const PERIODIC_JOB_KINDS: &[&str] = &[
+    crate::jobs::sweep::RETENTION_JOB_KIND,
+    crate::jobs::sweep::NONCE_SWEEP_KIND,
+    crate::jobs::sweep::AUDIT_SWEEP_KIND,
+    crate::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
+    crate::jobs::sweep::ORDER_SWEEP_KIND,
+    crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
+    crate::notify::expiry::EXPIRY_JOB_KIND,
+];
+
+/// Whether cancelling a job of this kind silently stops a periodic sweep.
+#[must_use]
+pub fn is_periodic_job_kind(kind: &str) -> bool {
+    PERIODIC_JOB_KINDS.contains(&kind)
+}
+
+/// Loads a job by id, attaching its `upstream_orders` row when it is a relay
+/// issuance. `None` for a junk id or an unknown job.
+pub async fn load_job_detail(
+    id: &str,
+    database: Arc<Database>,
+) -> Result<Option<JobDetail>, sqlx::Error> {
+    let Some(job_id) = crate::sqlite::id::parse(id) else {
+        return Ok(None);
+    };
+    let Some(job) = Job::find_by_id(job_id, &database).await? else {
+        return Ok(None);
+    };
+    let upstream_order = if job.kind == RELAY_JOB_KIND {
+        UpstreamOrder::find_row_by_order_id(&job.dedup_key, &database).await?
+    } else {
+        None
+    };
+    Ok(Some(JobDetail {
+        job,
+        upstream_order,
+    }))
+}
+
+/// Loads an `upstream_orders` row by its local order id, attaching the most
+/// recent relay job for it (live or terminal). `None` for a junk id or an
+/// order no relay was opened for.
+pub async fn load_upstream_order_detail(
+    order_id: &str,
+    database: Arc<Database>,
+) -> Result<Option<UpstreamOrderDetail>, sqlx::Error> {
+    let Some(upstream_order) = UpstreamOrder::find_row_by_order_id(order_id, &database).await?
+    else {
+        return Ok(None);
+    };
+    let job = Job::find_latest_by_dedup(
+        RELAY_JOB_KIND,
+        &upstream_order.order_id.to_string(),
+        &database,
+    )
+    .await?;
+    Ok(Some(UpstreamOrderDetail {
+        upstream_order,
+        job,
+    }))
+}
+
+/// Outcome of [`cancel_job`] / [`confirm_cancel_job`].
+#[derive(Debug)]
+pub enum CancelJobOutcome {
+    NotFound,
+    /// `running`, `done`, or already `cancelled` — the guard refused. Carries
+    /// the current status so the caller can name it.
+    NotCancellable(String),
+    /// Cancelled. The job row is the one the guard returned.
+    Cancelled(Box<Job>),
+    /// Cancelled, and because it was an in-flight relay issuance the local
+    /// order was marked `invalid` and the upstream mapping abandoned so
+    /// recovery will not resurrect it.
+    CancelledAndOrderAbandoned {
+        job: Box<Job>,
+        order_id: String,
+    },
+}
+
+/// Outcome of [`run_job_now`].
+#[derive(Debug)]
+pub enum RunJobNowOutcome {
+    NotFound,
+    /// `running`, `done`, or `cancelled`: run-now is meaningless. Carries the
+    /// status.
+    Refused(String),
+    /// A live `ready` job whose `run_at` was pulled forward.
+    Nudged(Box<Job>),
+    /// A `failed`/exhausted job revived for exactly one more attempt.
+    Revived(Box<Job>),
+}
+
+/// Why [`cancel_job`] failed irrecoverably.
+#[derive(Debug, thiserror::Error)]
+pub enum CancelJobError {
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+/// Cancels a job. For an in-flight `signer_relay_issue` job this also abandons
+/// the ACME order — `Order::mark_invalid` (generic problem document, so the
+/// client stops polling), `UpstreamOrder::mark_invalid` (so `RelayJob::recover`
+/// does not resurrect it), and one `certificate_issue_failed` audit row
+/// attributed to `actor`/`client`.
+///
+/// `actor`/`client` come from the caller, exactly as [`revoke_order`]: the CLI
+/// supplies [`Actor::cli`] with an empty context, the web admin
+/// [`Actor::admin`] with the operator's own address.
+///
+/// **The job row is cancelled first, then the order is abandoned.** The guard
+/// (`status IN ('ready', 'failed')`) means at most one caller wins a race with
+/// another operator or with the runner claiming the row; a loser touches
+/// nothing else. Abandoning the order first and then finding the job already
+/// `running` would invalidate a client's order out from under a runner that
+/// might still succeed.
+pub async fn cancel_job(
+    id: &str,
+    actor: Actor,
+    client: ClientContext,
+    database: Arc<Database>,
+) -> Result<CancelJobOutcome, CancelJobError> {
+    let Some(job_id) = crate::sqlite::id::parse(id) else {
+        return Ok(CancelJobOutcome::NotFound);
+    };
+
+    let Some(job) = Job::cancel_row(job_id, &database).await? else {
+        // The guard matched nothing: say whether that is "no such job" or "not
+        // in a cancellable state".
+        return Ok(match Job::find_by_id(job_id, &database).await? {
+            None => CancelJobOutcome::NotFound,
+            Some(job) => CancelJobOutcome::NotCancellable(job.status),
+        });
+    };
+
+    if job.kind != RELAY_JOB_KIND {
+        return Ok(CancelJobOutcome::Cancelled(Box::new(job)));
+    }
+
+    // A relay job: abandon the order it was driving. Its `dedup_key` is the
+    // local order id.
+    let order_id = job.dedup_key.clone();
+    if let Some(mut order) = Order::find_by_id(&order_id, &database).await? {
+        abandon_relayed_order(
+            &mut order,
+            "issuance cancelled by operator",
+            actor,
+            client,
+            &database,
+            None,
+        )
+        .await?;
+    }
+    Ok(CancelJobOutcome::CancelledAndOrderAbandoned {
+        job: Box::new(job),
+        order_id,
+    })
+}
+
+/// [`cancel_job`] with a confirmation prompt. `Ok(None)` when the operator
+/// declined — the `confirm_cleanup_*` shape.
+pub async fn confirm_cancel_job(
+    id: &str,
+    assume_yes: bool,
+    reader: &mut impl BufRead,
+    actor: Actor,
+    client: ClientContext,
+    database: Arc<Database>,
+) -> Result<Option<CancelJobOutcome>, CancelJobError> {
+    // A prompt that names the kind, whether an order goes with it, and whether
+    // a periodic sweep stops.
+    let prompt =
+        match Job::find_by_id(crate::sqlite::id::parse(id).unwrap_or_default(), &database).await? {
+            Some(job) if job.kind == RELAY_JOB_KIND => format!(
+                "Cancel relay job {id}? Order {} will be marked invalid.",
+                job.dedup_key
+            ),
+            Some(job) if is_periodic_job_kind(&job.kind) => format!(
+                "Cancel job {id} ({})? This periodic sweep will not run again until \
+             the server restarts.",
+                job.kind
+            ),
+            Some(job) => format!("Cancel job {id} ({})?", job.kind),
+            None => format!("Cancel job {id}?"),
+        };
+    if !confirm(&prompt, assume_yes, reader) {
+        return Ok(None);
+    }
+    Ok(Some(cancel_job(id, actor, client, database).await?))
+}
+
+/// Makes a job eligible to run immediately: a live `ready` job's `run_at` is
+/// pulled forward; a `failed`/exhausted one is revived for exactly one more
+/// attempt (`attempts` set to `max_attempts - 1`). Refused on
+/// `running`/`done`/`cancelled`.
+///
+/// The runner picks the change up within `jobs.poll_interval_ms` — this does
+/// not wake it (the CLI has no runner; the web admin's `AdminState` holds no
+/// `JobQueue`).
+pub async fn run_job_now(
+    id: &str,
+    database: Arc<Database>,
+) -> Result<RunJobNowOutcome, sqlx::Error> {
+    let Some(job_id) = crate::sqlite::id::parse(id) else {
+        return Ok(RunJobNowOutcome::NotFound);
+    };
+    if let Some(job) = Job::advance_row(job_id, &database).await? {
+        return Ok(RunJobNowOutcome::Nudged(Box::new(job)));
+    }
+    if let Some(job) = Job::revive_row(job_id, &database).await? {
+        return Ok(RunJobNowOutcome::Revived(Box::new(job)));
+    }
+    Ok(match Job::find_by_id(job_id, &database).await? {
+        None => RunJobNowOutcome::NotFound,
+        Some(job) => RunJobNowOutcome::Refused(job.status),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,6 +1688,360 @@ mod tests {
         assert_eq!(detail.authorizations[0].0.id, authz.id);
         assert_eq!(detail.authorizations[0].1.len(), 1);
         assert_eq!(detail.authorizations[0].1[0].typ, "http-01");
+    }
+
+    // --- the job queue operator surface ------------------------------------
+
+    use crate::sqlite::job::{Job, NewJob};
+
+    /// An order, an `upstream_orders` row for it, and a `signer_relay_issue`
+    /// job keyed on the order id — the in-flight-relay shape.
+    async fn relay_job(db: &Arc<Database>) -> (Order, Job) {
+        let acct = account_id(db).await;
+        let order = Order::create(
+            "default",
+            acct,
+            vec![Identifier::dns("example.com")],
+            now_secs() + 3600,
+            None,
+            None,
+            db,
+        )
+        .await
+        .unwrap();
+        UpstreamOrder::create(
+            order.id.to_string().as_str(),
+            "https://up.example/o/1",
+            None,
+            b"csr",
+            db,
+        )
+        .await
+        .unwrap();
+        let id = crate::sqlite::id::mint();
+        Job::enqueue(
+            NewJob {
+                id,
+                kind: RELAY_JOB_KIND,
+                dedup_key: &order.id.to_string(),
+                payload: &serde_json::json!({ "order_id": order.id.to_string(), "profile": "default" }),
+                run_at: now_secs(),
+                deadline: Some(order.expires),
+                max_attempts: 5,
+            },
+            db,
+        )
+        .await
+        .unwrap();
+        let job = Job::find_by_id(id, db).await.unwrap().unwrap();
+        (order, job)
+    }
+
+    /// A plain `ready` sweep job.
+    async fn sweep_job(db: &Arc<Database>) -> Job {
+        let id = crate::sqlite::id::mint();
+        Job::enqueue(
+            NewJob {
+                id,
+                kind: "nonce_sweep",
+                dedup_key: "nonce_sweep",
+                payload: &serde_json::json!({}),
+                run_at: now_secs() + 3600,
+                deadline: None,
+                max_attempts: 5,
+            },
+            db,
+        )
+        .await
+        .unwrap();
+        Job::find_by_id(id, db).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn load_job_detail_attaches_the_upstream_order_only_for_a_relay_job() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+
+        let detail = load_job_detail(job.id.to_string().as_str(), db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.job.id, job.id);
+        assert_eq!(detail.upstream_order.as_ref().unwrap().order_id, order.id);
+
+        let sweep = sweep_job(&db).await;
+        let detail = load_job_detail(sweep.id.to_string().as_str(), db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(detail.upstream_order.is_none());
+
+        // Junk id and unknown id.
+        assert!(load_job_detail("nope", db.clone()).await.unwrap().is_none());
+        assert!(
+            load_job_detail(crate::sqlite::id::mint().to_string().as_str(), db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn load_job_detail_resolves_the_cross_link_after_the_job_is_done() {
+        let db = db().await;
+        let (_order, job) = relay_job(&db).await;
+        // Drive the job to `done` without touching the upstream row.
+        sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
+            .bind(job.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let detail = load_job_detail(job.id.to_string().as_str(), db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(detail.upstream_order.is_some());
+    }
+
+    #[tokio::test]
+    async fn load_upstream_order_detail_finds_the_latest_job_even_when_terminal() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+        sqlx::query("UPDATE jobs SET status = 'failed' WHERE id = ?;")
+            .bind(job.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let detail = load_upstream_order_detail(order.id.to_string().as_str(), db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.upstream_order.order_id, order.id);
+        assert_eq!(detail.job.as_ref().unwrap().id, job.id);
+
+        assert!(
+            load_upstream_order_detail("nope", db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_job_on_a_ready_sweep_writes_no_order_changes_and_no_audit_row() {
+        let db = db().await;
+        let sweep = sweep_job(&db).await;
+
+        let outcome = cancel_job(
+            sweep.id.to_string().as_str(),
+            cli_actor(),
+            ClientContext::default(),
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, CancelJobOutcome::Cancelled(_)));
+        assert_eq!(
+            Job::find_by_id(sweep.id, &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        assert!(audit_rows(&db).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_job_on_a_ready_relay_job_abandons_the_order_and_audits_the_operator() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+
+        let outcome = cancel_job(
+            job.id.to_string().as_str(),
+            Actor::admin("root"),
+            ClientContext {
+                ip: Some("203.0.113.7".to_string()),
+                ..ClientContext::default()
+            },
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        let CancelJobOutcome::CancelledAndOrderAbandoned { order_id, .. } = outcome else {
+            panic!("expected CancelledAndOrderAbandoned, got {outcome:?}");
+        };
+        assert_eq!(order_id, order.id.to_string());
+
+        assert_eq!(
+            Job::find_by_id(job.id, &db).await.unwrap().unwrap().status,
+            "cancelled"
+        );
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.status.as_str(), "invalid");
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.status, "invalid");
+
+        let rows = audit_rows(&db).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "certificate_issue_failed");
+        assert_eq!(rows[0].actor_kind, "admin");
+        assert_eq!(rows[0].actor_id.as_deref(), Some("root"));
+        assert_eq!(rows[0].client_ip.as_deref(), Some("203.0.113.7"));
+    }
+
+    #[tokio::test]
+    async fn cancel_job_refuses_a_running_job_and_leaves_the_order_alone() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+        sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?;")
+            .bind(job.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let outcome = cancel_job(
+            job.id.to_string().as_str(),
+            cli_actor(),
+            ClientContext::default(),
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            CancelJobOutcome::NotCancellable(s) if s == "running"
+        ));
+        // The order is untouched — cancel of a `running` job abandons nothing.
+        assert_ne!(
+            Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .status
+                .as_str(),
+            "invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_job_not_found_versus_not_cancellable() {
+        let db = db().await;
+        assert!(matches!(
+            cancel_job("nope", cli_actor(), ClientContext::default(), db.clone())
+                .await
+                .unwrap(),
+            CancelJobOutcome::NotFound
+        ));
+        assert!(matches!(
+            cancel_job(
+                crate::sqlite::id::mint().to_string().as_str(),
+                cli_actor(),
+                ClientContext::default(),
+                db.clone()
+            )
+            .await
+            .unwrap(),
+            CancelJobOutcome::NotFound
+        ));
+
+        let sweep = sweep_job(&db).await;
+        sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
+            .bind(sweep.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            cancel_job(sweep.id.to_string().as_str(), cli_actor(), ClientContext::default(), db)
+                .await
+                .unwrap(),
+            CancelJobOutcome::NotCancellable(s) if s == "done"
+        ));
+    }
+
+    #[tokio::test]
+    async fn confirm_cancel_job_declined_leaves_the_job() {
+        let db = db().await;
+        let sweep = sweep_job(&db).await;
+        let mut reader = b"n\n".as_slice();
+        assert!(
+            confirm_cancel_job(
+                sweep.id.to_string().as_str(),
+                false,
+                &mut reader,
+                cli_actor(),
+                ClientContext::default(),
+                db.clone(),
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert_eq!(
+            Job::find_by_id(sweep.id, &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_job_now_nudges_ready_revives_failed_and_refuses_the_rest() {
+        let db = db().await;
+
+        // ready -> Nudged.
+        let sweep = sweep_job(&db).await; // run_at far future
+        let outcome = run_job_now(sweep.id.to_string().as_str(), db.clone())
+            .await
+            .unwrap();
+        let RunJobNowOutcome::Nudged(job) = outcome else {
+            panic!("expected Nudged, got {outcome:?}");
+        };
+        assert!(job.run_at <= now_secs() + 1);
+
+        // failed -> Revived, exactly one more attempt.
+        let (_order, relay) = relay_job(&db).await;
+        sqlx::query(
+            "UPDATE jobs SET status = 'failed', attempts = 5, last_error = 'boom' WHERE id = ?;",
+        )
+        .bind(relay.id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let outcome = run_job_now(relay.id.to_string().as_str(), db.clone())
+            .await
+            .unwrap();
+        let RunJobNowOutcome::Revived(job) = outcome else {
+            panic!("expected Revived, got {outcome:?}");
+        };
+        assert_eq!(job.status, "ready");
+        assert_eq!(job.attempts, 4, "max_attempts - 1");
+
+        // done -> Refused.
+        sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
+            .bind(sweep.id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run_job_now(sweep.id.to_string().as_str(), db.clone()).await.unwrap(),
+            RunJobNowOutcome::Refused(s) if s == "done"
+        ));
+
+        assert!(matches!(
+            run_job_now("nope", db).await.unwrap(),
+            RunJobNowOutcome::NotFound
+        ));
     }
 
     #[test]

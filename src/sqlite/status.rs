@@ -133,6 +133,33 @@ statuses! {
         Valid => "valid",
         Invalid => "invalid",
     }
+
+    /// A background job's lifecycle (`migrations/20260815120000_add_jobs.sql`).
+    ///
+    /// The runner drives `ready`/`running`/`done`/`failed`; `cancelled` has
+    /// been in the `CHECK` since the table was added and is written only by the
+    /// operator surface (`acme-proxy jobs cancel`, `POST /api/jobs/{id}/cancel`).
+    /// This enum is a front-end concern only — `Job::status` stays a `String`
+    /// so an older binary still renders a row a newer one wrote.
+    JobStatus("job status") {
+        Ready => "ready",
+        Running => "running",
+        Done => "done",
+        Failed => "failed",
+        Cancelled => "cancelled",
+    }
+
+    /// A relay `upstream_orders` row's lifecycle
+    /// (`migrations/20260730120000_add_upstream_orders.sql`).
+    ///
+    /// Same Rust-side-only treatment as [`JobStatus`]: `UpstreamOrder::status`
+    /// stays a `String`, and this exists so `upstream order list --status` and
+    /// `GET /api/upstream-orders?status=` refuse an unknown value by name.
+    UpstreamOrderStatus("upstream order status") {
+        Processing => "processing",
+        Valid => "valid",
+        Invalid => "invalid",
+    }
 }
 
 /// Reads a status column, turning an unrecognised value into a decode error.
@@ -167,6 +194,15 @@ mod tests {
         for status in ChallengeStatus::ALL {
             assert_eq!(status.as_str().parse::<ChallengeStatus>().unwrap(), *status);
         }
+        for status in JobStatus::ALL {
+            assert_eq!(status.as_str().parse::<JobStatus>().unwrap(), *status);
+        }
+        for status in UpstreamOrderStatus::ALL {
+            assert_eq!(
+                status.as_str().parse::<UpstreamOrderStatus>().unwrap(),
+                *status
+            );
+        }
     }
 
     /// The stored spellings are the compatibility surface, so they are asserted
@@ -193,6 +229,14 @@ mod tests {
             ChallengeStatus::SPELLINGS,
             &["pending", "processing", "valid", "invalid"]
         );
+        assert_eq!(
+            JobStatus::SPELLINGS,
+            &["ready", "running", "done", "failed", "cancelled"]
+        );
+        assert_eq!(
+            UpstreamOrderStatus::SPELLINGS,
+            &["processing", "valid", "invalid"]
+        );
     }
 
     #[test]
@@ -218,6 +262,16 @@ mod tests {
         assert!("deactivated".parse::<ChallengeStatus>().is_err());
         // ...but each machine's own values still parse.
         assert!("deactivated".parse::<AuthzStatus>().is_ok());
+
+        // `JobStatus` and `UpstreamOrderStatus` share spellings with the ACME
+        // machines (`ready`, `valid`, `invalid`, `processing`) but are still
+        // their own types.
+        assert!("pending".parse::<JobStatus>().is_err());
+        assert!("processing".parse::<JobStatus>().is_err());
+        assert!("running".parse::<UpstreamOrderStatus>().is_err());
+        assert!("ready".parse::<UpstreamOrderStatus>().is_err());
+        assert!("cancelled".parse::<JobStatus>().is_ok());
+        assert!("processing".parse::<UpstreamOrderStatus>().is_ok());
     }
 
     #[test]

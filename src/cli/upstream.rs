@@ -17,12 +17,20 @@
 
 use std::io::BufRead;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Subcommand;
 
+use crate::admin;
+use crate::cli::render;
+use crate::cli::style::Palette;
+use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::cli::{CliError, resolve_profile};
 use crate::config::Config;
 use crate::signer::relay;
+use crate::sqlite::db::Database;
+use crate::sqlite::status::UpstreamOrderStatus;
+use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderQuery};
 
 #[derive(Subcommand)]
 pub enum UpstreamCommand {
@@ -51,6 +59,38 @@ pub enum UpstreamCommand {
         #[arg(long)]
         profile: Option<String>,
     },
+    /// The relay backend's per-order upstream state. Read-only — abandoning an
+    /// in-flight relay is done through `acme-proxy jobs cancel` on the
+    /// `signer_relay_issue` job, which owns the state machine.
+    Order {
+        #[command(subcommand)]
+        command: UpstreamOrderCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum UpstreamOrderCommand {
+    /// List upstream orders, optionally filtered.
+    List {
+        /// Restrict to one ACME endpoint (the local order's profile).
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_LIMIT)]
+        limit: i64,
+        #[arg(long, default_value_t = 0)]
+        offset: i64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one upstream order by its **local** order id, cross-linked to its
+    /// relay job.
+    Show {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Resolves which profile's `[signer.relay]` a command should act on.
@@ -64,7 +104,9 @@ pub enum UpstreamCommand {
 pub async fn run_upstream_command(
     command: UpstreamCommand,
     reader: &mut impl BufRead,
+    palette: Palette,
     config: &Config,
+    database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
         UpstreamCommand::Register {
@@ -137,6 +179,50 @@ pub async fn run_upstream_command(
                 }
             }
         }
+
+        UpstreamCommand::Order { command } => match command {
+            UpstreamOrderCommand::List {
+                profile,
+                status,
+                limit,
+                offset,
+                json,
+            } => {
+                let status = status
+                    .map(|value| value.parse::<UpstreamOrderStatus>())
+                    .transpose()
+                    .map_err(|error| CliError(format!("--status: {error}")))?;
+                let window = Window::resolve(limit, offset);
+                let query = UpstreamOrderQuery {
+                    profile,
+                    status,
+                    limit: window.limit,
+                    offset: window.offset,
+                };
+                let (rows, total) = UpstreamOrder::search(&query, &database).await?;
+                render::print_page(
+                    &rows,
+                    total,
+                    window,
+                    json,
+                    admin::render_upstream_order_json,
+                    |row| render::render_upstream_order_line(row, palette),
+                );
+            }
+            UpstreamOrderCommand::Show { id, json } => {
+                let Some(detail) = admin::load_upstream_order_detail(&id, database).await? else {
+                    return Err(CliError(format!("no upstream order for local order {id}")));
+                };
+                if json {
+                    println!("{}", admin::render_upstream_order_detail_json(&detail));
+                } else {
+                    print!(
+                        "{}",
+                        render::render_upstream_order_detail_text(&detail, palette)
+                    );
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -340,7 +426,9 @@ mod tests {
                 profile: None,
             },
             &mut reader,
+            Palette::plain(),
             &config,
+            test_db().await,
         )
         .await
         .expect_err("there is no upstream to register with");
@@ -376,7 +464,9 @@ mod tests {
                 profile: None,
             },
             &mut reader,
+            Palette::plain(),
             &config,
+            test_db().await,
         )
         .await
         .expect_err("nothing is listening on that port");
@@ -401,10 +491,78 @@ mod tests {
                     profile: None,
                 },
                 &mut reader,
+                Palette::plain(),
                 &config,
+                test_db().await,
             )
             .await
             .unwrap();
         }
+    }
+
+    async fn test_db() -> Arc<Database> {
+        Arc::new(Database::connect_in_memory().await.unwrap())
+    }
+
+    /// `upstream order list` renders both ways, and `--status` is refused by
+    /// name.
+    #[tokio::test]
+    async fn upstream_order_list_and_show() {
+        let config = config_from("[profiles.default]\n");
+        let db = test_db().await;
+        for json in [true, false] {
+            run_upstream_command(
+                UpstreamCommand::Order {
+                    command: UpstreamOrderCommand::List {
+                        profile: None,
+                        status: None,
+                        limit: 50,
+                        offset: 0,
+                        json,
+                    },
+                },
+                &mut &b""[..],
+                Palette::plain(),
+                &config,
+                db.clone(),
+            )
+            .await
+            .unwrap();
+        }
+
+        let err = run_upstream_command(
+            UpstreamCommand::Order {
+                command: UpstreamOrderCommand::List {
+                    profile: None,
+                    status: Some("bogus".to_string()),
+                    limit: 50,
+                    offset: 0,
+                    json: false,
+                },
+            },
+            &mut &b""[..],
+            Palette::plain(),
+            &config,
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("--status"), "{err}");
+
+        let err = run_upstream_command(
+            UpstreamCommand::Order {
+                command: UpstreamOrderCommand::Show {
+                    id: "nope".to_string(),
+                    json: false,
+                },
+            },
+            &mut &b""[..],
+            Palette::plain(),
+            &config,
+            db,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("no upstream order"), "{err}");
     }
 }

@@ -341,33 +341,18 @@ impl JobHandler for RelayJob {
             }
         };
 
-        // Counted from the same value that is about to be written, so the
-        // metric and the audit row cannot disagree — the property
-        // `Metrics::record_audit` exists for. Spelled out here rather than
-        // folded into `write` because this path has no `Auditor`, which is the
-        // very reason the free function exists.
-        let record = relay_record(
-            crate::audit::AuditEvent::CertificateIssueFailed,
-            &order,
-            inner,
+        let (actor, client) = relay_actor_and_client(&order, &inner.database).await;
+        if let Err(error) = abandon_relayed_order(
+            &mut order,
+            reason,
+            actor,
+            client,
+            &inner.database,
+            Some(&inner.metrics),
         )
         .await
-        .with_reason("serverInternal")
-        .with_detail(reason);
-        inner.metrics.record_audit(&record);
-        crate::audit::write(record, &inner.database).await;
-
-        // The client sees a generic problem document; the real reason is
-        // operator-only, on the mapping row and in the log above.
-        let problem = Problem::server_internal("Upstream certificate issuance failed");
-        if let Err(error) = order
-            .mark_invalid(problem.to_value(), &inner.database)
-            .await
         {
             error!(event = "upstream_relay_mark_invalid_failed", outcome = "failure", order_id = %order_id, error = %error);
-        }
-        if let Err(error) = UpstreamOrder::mark_invalid(order_id, reason, &inner.database).await {
-            warn!(event = "upstream_order_mark_invalid_failed", outcome = "failure", error = %error);
         }
     }
 
@@ -1002,13 +987,27 @@ async fn relay_record(
     order: &Order,
     inner: &Inner,
 ) -> crate::audit::AuditRecord {
-    let mapping = UpstreamOrder::find_by_order_id(&order.id.to_string(), &inner.database)
+    let (actor, client) = relay_actor_and_client(order, &inner.database).await;
+    crate::audit::AuditRecord::new(event, &order.profile, actor)
+        .with_order(order)
+        .with_client(client)
+}
+
+/// Who a settle-time relay audit row names, and from where: the account that
+/// asked plus the finalize request's own address (off the mapping row), or
+/// `system` with no address when there is no mapping. Shared by [`relay_record`]
+/// and [`RelayJob::abandon`].
+async fn relay_actor_and_client(
+    order: &Order,
+    database: &Database,
+) -> (crate::audit::Actor, crate::audit::ClientContext) {
+    let mapping = UpstreamOrder::find_by_order_id(&order.id.to_string(), database)
         .await
         .unwrap_or_else(|error| {
             warn!(event = "upstream_order_client_context_lookup_failed", outcome = "failure", order_id = %order.id, error = %error);
             None
         });
-    let (actor, client) = match &mapping {
+    match &mapping {
         Some(mapping) => (
             crate::audit::Actor::acme(order.account_id.to_string()),
             mapping.client(),
@@ -1017,15 +1016,166 @@ async fn relay_record(
             crate::audit::Actor::system(),
             crate::audit::ClientContext::default(),
         ),
-    };
-    crate::audit::AuditRecord::new(event, &order.profile, actor)
-        .with_order(order)
-        .with_client(client)
+    }
+}
+
+/// Marks a relayed order permanently failed on both the local order
+/// (client-visible generic problem document) and the mapping row
+/// (operator-visible `reason`), and writes one audit row.
+///
+/// Shared by [`RelayJob::abandon`] — the runner retiring a job for good — and
+/// the operator-cancel path in `crate::admin::ops::cancel_job`. The two differ
+/// only in *who* the audit row names: the runner attributes it to the account
+/// that asked (with the finalize request's own address, via
+/// [`relay_actor_and_client`]); an operator cancel attributes it to the
+/// operator and passes no metrics handle.
+///
+/// Non-transactional by design — three `&Database` calls, each also syncing an
+/// in-memory struct, matching the sequence this was lifted from. A crash
+/// between them leaves recovery able to sort it out: a cancelled job frees its
+/// `(kind, dedup_key)` identity, so `recover` re-enqueues a fresh one and
+/// issuance completes normally, where the runner's own `abandon` has no such
+/// safety net.
+pub(crate) async fn abandon_relayed_order(
+    order: &mut Order,
+    reason: &str,
+    actor: crate::audit::Actor,
+    client: crate::audit::ClientContext,
+    database: &Database,
+    metrics: Option<&Arc<crate::metrics::Metrics>>,
+) -> Result<(), sqlx::Error> {
+    // Counted from the same value about to be written, so the metric and the
+    // audit row cannot disagree — the property `Metrics::record_audit` exists
+    // for. Spelled out here rather than folded into `write` because neither
+    // caller path is guaranteed an `Auditor`.
+    let record = crate::audit::AuditRecord::new(
+        crate::audit::AuditEvent::CertificateIssueFailed,
+        &order.profile,
+        actor,
+    )
+    .with_order(order)
+    .with_client(client)
+    .with_reason("serverInternal")
+    .with_detail(reason);
+    if let Some(metrics) = metrics {
+        metrics.record_audit(&record);
+    }
+    crate::audit::write(record, database).await;
+
+    // The client sees a generic problem document; the real reason is
+    // operator-only, on the mapping row.
+    let problem = Problem::server_internal("Upstream certificate issuance failed");
+    order.mark_invalid(problem.to_value(), database).await?;
+    UpstreamOrder::mark_invalid(&order.id.to_string(), reason, database).await?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `abandon_relayed_order` produces the same row shape whether the runner
+    /// or an operator calls it — only the actor differs. Driven here with an
+    /// admin actor, the operator-cancel path.
+    #[tokio::test]
+    async fn abandon_relayed_order_marks_both_rows_and_writes_one_row() {
+        use crate::sqlite::account::Account;
+        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+        use crate::sqlite::db::Database;
+        use crate::sqlite::order::Identifier;
+
+        let database = Database::connect_in_memory().await.unwrap();
+        let (account, _) = Account::find_or_create(
+            "default",
+            &crate::random::random_bytes::<16>(),
+            Vec::new(),
+            &crate::audit::ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+        let mut order = Order::create(
+            "default",
+            account.id,
+            vec![Identifier::dns("a.example.com")],
+            crate::sqlite::nonce::now_secs() + 3600,
+            None,
+            None,
+            &database,
+        )
+        .await
+        .unwrap();
+        UpstreamOrder::create(
+            order.id.to_string().as_str(),
+            "https://up.example/o/1",
+            None,
+            b"csr",
+            &database,
+        )
+        .await
+        .unwrap();
+
+        abandon_relayed_order(
+            &mut order,
+            "cancelled by operator",
+            crate::audit::Actor::admin("root"),
+            crate::audit::ClientContext {
+                ip: Some("203.0.113.9".to_string()),
+                ..crate::audit::ClientContext::default()
+            },
+            &database,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Local order: invalid, generic problem document (not the raw reason).
+        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.status.as_str(), "invalid");
+        assert!(
+            reloaded
+                .error
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("Upstream certificate issuance failed")
+        );
+        assert!(
+            !reloaded
+                .error
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("cancelled by operator")
+        );
+
+        // Mapping row: invalid, with the operator-visible reason.
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.status, "invalid");
+        assert_eq!(mapping.error.as_deref(), Some("cancelled by operator"));
+
+        // Exactly one audit row, naming the operator.
+        let (rows, _) = AuditEntry::search(
+            &AuditQuery {
+                limit: 50,
+                ..AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "certificate_issue_failed");
+        assert_eq!(rows[0].actor_kind, "admin");
+        assert_eq!(rows[0].actor_id.as_deref(), Some("root"));
+        assert_eq!(rows[0].client_ip.as_deref(), Some("203.0.113.9"));
+    }
 
     /// The classification table, one row per way the upstream can fail.
     ///

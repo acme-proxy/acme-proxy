@@ -1,0 +1,85 @@
+{#- One job, its upstream cross-link (for a relay job), and the two mutations.
+    The swap target of both. `detail` is `admin::render_job_detail_json`
+    verbatim: `render_job_json` fields plus an optional `upstreamOrder`. -#}
+<div id="job-card">
+  {% include "partials/_flash.html" %}
+
+  <div class="panel">
+    <dl class="fields">
+      <dt>Job</dt><dd><code>{{ detail.id }}</code></dd>
+      <dt>Kind</dt><dd><code>{{ detail.kind }}</code></dd>
+      <dt>Dedup key</dt><dd class="wrap-anywhere"><code>{{ detail.dedupKey }}</code></dd>
+      <dt>Status</dt><dd><span class="badge {{ detail.status }}">{{ detail.status }}</span></dd>
+      <dt>Attempts</dt><dd>{{ detail.attempts }} / {{ detail.maxAttempts }}</dd>
+      <dt>Run at</dt><dd>{{ detail.runAt }}</dd>
+      {% if detail.deadline %}<dt>Deadline</dt><dd>{{ detail.deadline }}</dd>{% endif %}
+      {% if detail.leaseUntil %}<dt>Lease until</dt><dd>{{ detail.leaseUntil }}</dd>{% endif %}
+      {% if detail.leaseOwner %}<dt>Lease owner</dt><dd><code>{{ detail.leaseOwner }}</code></dd>{% endif %}
+      {% if detail.lastError %}
+        <dt>Last error</dt>
+        <dd class="wrap-anywhere">{{ detail.lastError }}</dd>
+      {% endif %}
+      <dt>Created</dt><dd>{{ detail.createdAt }}</dd>
+      <dt>Updated</dt><dd>{{ detail.updatedAt }}</dd>
+      <dt>Payload</dt>
+      <dd><pre class="pem">{{ detail.payload | tojson }}</pre></dd>
+    </dl>
+  </div>
+
+  {% if detail.upstreamOrder %}
+    {% set u = detail.upstreamOrder %}
+    <div class="panel">
+      <h2>Upstream order</h2>
+      <dl class="fields">
+        <dt>Local order</dt>
+        <dd><a href="/ui/upstream-orders/{{ u.orderId }}"><code>{{ u.orderId }}</code></a></dd>
+        <dt>Profile</dt><dd><code>{{ u.profile }}</code></dd>
+        <dt>Upstream status</dt>
+        <dd><span class="badge {{ u.status }}">{{ u.status }}</span></dd>
+        <dt>Local status</dt>
+        <dd><span class="badge {{ u.localStatus }}">{{ u.localStatus }}</span></dd>
+        <dt>Identifiers</dt>
+        <dd class="wrap-anywhere">
+          {%- for identifier in u.identifiers -%}
+            {% if not loop.first %}, {% endif %}<code>{{ identifier.value }}</code>
+          {%- endfor -%}
+        </dd>
+        <dt>Upstream order URL</dt>
+        <dd class="wrap-anywhere"><code>{{ u.upstreamOrderUrl }}</code></dd>
+        {% if u.upstreamFinalizeUrl %}
+          <dt>Finalize URL</dt>
+          <dd class="wrap-anywhere"><code>{{ u.upstreamFinalizeUrl }}</code></dd>
+        {% endif %}
+        {% if u.upstreamCertificateUrl %}
+          <dt>Certificate URL</dt>
+          <dd class="wrap-anywhere"><code>{{ u.upstreamCertificateUrl }}</code></dd>
+        {% endif %}
+        {% if u.error %}
+          <dt>Upstream error</dt>
+          <dd class="wrap-anywhere">{{ u.error }}</dd>
+        {% endif %}
+        {% if u.requestId %}<dt>Request id</dt><dd><code>{{ u.requestId }}</code></dd>{% endif %}
+      </dl>
+    </div>
+  {% endif %}
+
+  {% if detail.status == "ready" or detail.status == "failed" %}
+    <div class="panel">
+      <h2>Danger zone</h2>
+      <div class="actions">
+        <button class="danger"
+                hx-post="/ui/jobs/{{ detail.id }}/run"
+                hx-target="#job-card" hx-swap="outerHTML"
+                hx-confirm="Run this job now? A failed job gets exactly one more attempt.">
+          Run now
+        </button>
+        <button class="danger"
+                hx-post="/ui/jobs/{{ detail.id }}/cancel"
+                hx-target="#job-card" hx-swap="outerHTML"
+                hx-confirm="Cancel this job? A relay issuance also marks its ACME order invalid; a periodic sweep will not run again until restart.">
+          Cancel
+        </button>
+      </div>
+    </div>
+  {% endif %}
+</div>

@@ -19,6 +19,8 @@ use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
+use crate::sqlite::order::Identifier;
+use crate::sqlite::status::{self, OrderStatus, UpstreamOrderStatus};
 
 /// The most rows [`UpstreamOrder::list_processing`] returns in one call.
 ///
@@ -272,6 +274,197 @@ impl UpstreamOrder {
         }
         let rows = query.fetch_all(&database.pool).await?;
         rows.into_iter().map(UpstreamOrder::from_row).collect()
+    }
+}
+
+/// One `upstream_orders` row joined to its local order, for the operator
+/// surface (`acme-proxy upstream order list`, `GET /api/upstream-orders`).
+///
+/// **`csr_der` is deliberately not a field.** It is the end client's CSR, kept
+/// only so an interrupted relay can finalize; no operator view has a reason to
+/// render DER, and leaving it off the struct makes that structural rather than
+/// a rule a renderer has to remember. The relay flow keeps using
+/// [`UpstreamOrder`] (which carries it) via [`UpstreamOrder::find_by_order_id`].
+#[derive(Debug, Clone)]
+pub struct UpstreamOrderRow {
+    pub order_id: Uuid,
+    pub upstream_order_url: String,
+    pub upstream_finalize_url: Option<String>,
+    pub upstream_certificate_url: Option<String>,
+    pub status: String,
+    /// Text the upstream CA wrote — untrusted, HTML-escape it on any web
+    /// surface.
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub client_ip: Option<String>,
+    pub client_ptr: Option<String>,
+    /// The finalize request's `User-Agent` — caller-controlled, untrusted.
+    pub user_agent: Option<String>,
+    pub request_id: Option<String>,
+    // --- joined from `orders` ---
+    pub profile: String,
+    pub account_id: Uuid,
+    pub identifiers: Vec<Identifier>,
+    pub local_status: OrderStatus,
+    pub local_expires: i64,
+}
+
+impl UpstreamOrderRow {
+    /// Columns selected by [`UpstreamOrder::search`] and
+    /// [`UpstreamOrder::find_row_by_order_id`] — the same set or
+    /// [`Self::from_joined_row`] fails on whichever forgot one. `csr_der` is
+    /// deliberately absent.
+    const COLUMNS: &'static str = "u.order_id, u.upstream_order_url, u.upstream_finalize_url, \
+         u.upstream_certificate_url, u.status, u.error, u.created_at, u.updated_at, \
+         u.client_ip, u.client_ptr, u.user_agent, u.request_id, \
+         o.profile, o.account_id, o.identifiers, o.status AS local_status, \
+         o.expires AS local_expires";
+
+    fn from_joined_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+        let identifiers_json: String = row.try_get("identifiers")?;
+        let identifiers: Vec<Identifier> = serde_json::from_str(&identifiers_json)
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+
+        Ok(UpstreamOrderRow {
+            order_id: row.try_get("order_id")?,
+            upstream_order_url: row.try_get("upstream_order_url")?,
+            upstream_finalize_url: row.try_get("upstream_finalize_url")?,
+            upstream_certificate_url: row.try_get("upstream_certificate_url")?,
+            status: row.try_get("status")?,
+            error: row.try_get("error")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            client_ip: row.try_get("client_ip")?,
+            client_ptr: row.try_get("client_ptr")?,
+            user_agent: row.try_get("user_agent")?,
+            request_id: row.try_get("request_id")?,
+            profile: row.try_get("profile")?,
+            account_id: row.try_get("account_id")?,
+            identifiers,
+            local_status: status::from_column(row.try_get::<&str, _>("local_status")?)?,
+            local_expires: row.try_get("local_expires")?,
+        })
+    }
+
+    /// The stored finalize context, in the shape an audit row takes — the
+    /// [`UpstreamOrder::client`] equivalent for the joined row.
+    #[must_use]
+    pub fn client(&self) -> crate::audit::ClientContext {
+        crate::audit::ClientContext {
+            ip: self.client_ip.clone(),
+            ptr: self.client_ptr.clone(),
+            user_agent: self.user_agent.clone(),
+            request_id: self.request_id.clone(),
+        }
+    }
+}
+
+/// The filters and page window [`UpstreamOrder::search`] applies. `status` is a
+/// [`UpstreamOrderStatus`] because both front ends refuse an unknown value by
+/// name; `profile` is a free `String`, matched over the joined `orders.profile`.
+#[derive(Debug, Clone, Default)]
+pub struct UpstreamOrderQuery {
+    pub profile: Option<String>,
+    pub status: Option<UpstreamOrderStatus>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl UpstreamOrderQuery {
+    /// The `WHERE` shared by the page query and the count, over the aliases
+    /// `u` (`upstream_orders`) and `o` (`orders`). Every value is `push_bind`.
+    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+        let mut separator = " WHERE ";
+        for (column, value) in [
+            ("o.profile = ", self.profile.as_deref()),
+            ("u.status = ", self.status.map(UpstreamOrderStatus::as_str)),
+        ] {
+            if let Some(value) = value {
+                builder
+                    .push(separator)
+                    .push(column)
+                    .push_bind(value.to_string());
+                separator = " AND ";
+            }
+        }
+    }
+}
+
+impl UpstreamOrder {
+    /// One page of upstream orders matching `query`, plus the total the same
+    /// predicates match unpaged — the operator surface's cross-profile listing.
+    ///
+    /// An `INNER JOIN` to `orders`: `order_id` is a foreign key with
+    /// `ON DELETE CASCADE`, so a row with no local order cannot exist, and the
+    /// join is what carries the identifiers and local status a mapping row does
+    /// not. **Not** [`Self::list_processing`], which is `processing`-only,
+    /// `LIMIT 500`, oldest-first and profile-list-scoped for restart recovery.
+    ///
+    /// The one index on this table is `(status)`; `o.profile` and the
+    /// `ORDER BY` scan. The table is bounded by the cascade from `orders`
+    /// (`order.retention_days`), so this is the `Order::find_expiring` tradeoff
+    /// again — a dedicated index is a future migration if a deployment says so.
+    pub async fn search(
+        query: &UpstreamOrderQuery,
+        database: &Database,
+    ) -> Result<(Vec<UpstreamOrderRow>, i64), sqlx::Error> {
+        debug!(
+            event = "db_upstream_order_search_started",
+            outcome = "progress",
+            profile = ?query.profile,
+            status = ?query.status,
+            limit = query.limit,
+            offset = query.offset,
+        );
+
+        let mut page = sqlx::QueryBuilder::new(format!(
+            "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
+            UpstreamOrderRow::COLUMNS
+        ));
+        query.push_predicates(&mut page);
+        page.push(" ORDER BY u.created_at DESC, u.order_id DESC LIMIT ");
+        page.push_bind(query.limit);
+        page.push(" OFFSET ");
+        page.push_bind(query.offset);
+
+        let rows = page.build().fetch_all(&database.pool).await?;
+        let items: Vec<UpstreamOrderRow> = rows
+            .into_iter()
+            .map(UpstreamOrderRow::from_joined_row)
+            .collect::<Result<_, _>>()?;
+
+        let mut count = sqlx::QueryBuilder::new(
+            "SELECT COUNT(*) FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
+        );
+        query.push_predicates(&mut count);
+        let total: i64 = count
+            .build()
+            .fetch_one(&database.pool)
+            .await?
+            .try_get::<i64, _>(0)?;
+
+        Ok((items, total))
+    }
+
+    /// The joined row for one local order, or `None` — the operator-detail
+    /// counterpart to [`Self::find_by_order_id`] (which carries `csr_der` and
+    /// serves the relay flow).
+    pub async fn find_row_by_order_id(
+        order_id: &str,
+        database: &Database,
+    ) -> Result<Option<UpstreamOrderRow>, sqlx::Error> {
+        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+            return Ok(None);
+        };
+        let mut query = sqlx::QueryBuilder::new(format!(
+            "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id \
+             WHERE u.order_id = ",
+            UpstreamOrderRow::COLUMNS
+        ));
+        query.push_bind(order_id);
+        let row = query.build().fetch_optional(&database.pool).await?;
+        row.map(UpstreamOrderRow::from_joined_row).transpose()
     }
 }
 
@@ -535,6 +728,170 @@ mod tests {
         let db = database().await;
         assert!(
             UpstreamOrder::find_by_order_id("nope", &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    // --- the operator surface: `UpstreamOrderQuery` / `search` ---------------
+
+    use crate::sqlite::status::{OrderStatus, UpstreamOrderStatus};
+
+    async fn order_on(profile: &str, names: &[&str], database: &Database) -> Order {
+        let (account, _) = Account::find_or_create(
+            profile,
+            &crate::random::random_bytes::<16>(),
+            Vec::new(),
+            &ClientContext::default(),
+            database,
+        )
+        .await
+        .unwrap();
+        Order::create(
+            profile,
+            account.id,
+            names.iter().map(|n| Identifier::dns(*n)).collect(),
+            now_secs() + 3600,
+            None,
+            None,
+            database,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn search_joins_the_local_order_for_identifiers_and_status() {
+        let db = database().await;
+        let ord = order_on("default", &["a.example.com", "b.example.com"], &db).await;
+        UpstreamOrder::create(
+            ord.id.to_string().as_str(),
+            "https://up.example/order/1",
+            Some("https://up.example/order/1/finalize"),
+            b"secret-csr-bytes",
+            &db,
+        )
+        .await
+        .unwrap();
+
+        let (rows, total) = UpstreamOrder::search(
+            &UpstreamOrderQuery {
+                limit: 50,
+                ..UpstreamOrderQuery::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 1);
+        let row = &rows[0];
+        assert_eq!(row.order_id, ord.id);
+        assert_eq!(row.profile, "default");
+        assert_eq!(row.local_status, OrderStatus::Pending);
+        let names: Vec<&str> = row.identifiers.iter().map(|i| i.value.as_str()).collect();
+        assert_eq!(names, vec!["a.example.com", "b.example.com"]);
+        // The struct has no `csr_der` field, and the rendered JSON must never
+        // carry the bytes — see `render_upstream_order_json` tests.
+    }
+
+    #[tokio::test]
+    async fn search_filters_profile_and_status_together_and_pages() {
+        let db = database().await;
+        let a = order_on("default", &["a.example.com"], &db).await;
+        let b = order_on("default", &["b.example.com"], &db).await;
+        let c = order_on("other", &["c.example.com"], &db).await;
+        for ord in [&a, &b, &c] {
+            UpstreamOrder::create(
+                ord.id.to_string().as_str(),
+                "https://up.example/o",
+                None,
+                b"csr",
+                &db,
+            )
+            .await
+            .unwrap();
+        }
+        UpstreamOrder::mark_invalid(b.id.to_string().as_str(), "upstream said no", &db)
+            .await
+            .unwrap();
+
+        // Profile narrows page and total together.
+        let (rows, total) = UpstreamOrder::search(
+            &UpstreamOrderQuery {
+                profile: Some("default".to_string()),
+                limit: 50,
+                ..UpstreamOrderQuery::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(rows.len(), 2);
+
+        // Profile + status together.
+        let (rows, total) = UpstreamOrder::search(
+            &UpstreamOrderQuery {
+                profile: Some("default".to_string()),
+                status: Some(UpstreamOrderStatus::Invalid),
+                limit: 50,
+                offset: 0,
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].order_id, b.id);
+        assert_eq!(rows[0].error.as_deref(), Some("upstream said no"));
+
+        // A hostile profile value is bound, not interpolated.
+        let (rows, total) = UpstreamOrder::search(
+            &UpstreamOrderQuery {
+                profile: Some("' OR 1=1 --".to_string()),
+                limit: 50,
+                ..UpstreamOrderQuery::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
+
+        // Single-row pages over the three rows see each once; total stays 3.
+        let mut seen = std::collections::BTreeSet::new();
+        for offset in 0..3 {
+            let (rows, total) = UpstreamOrder::search(
+                &UpstreamOrderQuery {
+                    limit: 1,
+                    offset,
+                    ..UpstreamOrderQuery::default()
+                },
+                &db,
+            )
+            .await
+            .unwrap();
+            assert_eq!(total, 3);
+            assert!(seen.insert(rows[0].order_id));
+        }
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn find_row_by_order_id_is_none_for_junk_and_for_an_unrelayed_order() {
+        let db = database().await;
+        assert!(
+            UpstreamOrder::find_row_by_order_id("nope", &db)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let ord = order_on("default", &["a.example.com"], &db).await;
+        // The order exists but no relay was opened for it.
+        assert!(
+            UpstreamOrder::find_row_by_order_id(ord.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()

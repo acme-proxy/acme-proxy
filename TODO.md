@@ -88,27 +88,19 @@ keeps its corpses stops being read.
 
 ## Both surfaces
 
-- [ ] **An operator surface for the job queue, and for the relay's orders in
-      flight.** Neither front end mentions `jobs` at all — the grep is empty
-      outside `src/jobs/` — so "why is this order still `processing`?" ends at
-      `sqlite3`, on the one subsystem whose whole purpose is surviving the
-      failures an operator gets called about. `Job::find_by_id`, `find_live`,
-      `count_live` and `cleanup` exist; what is missing is a `JobQuery` plus
-      `Job::search` beside `Order::search` (kind, status, `dedup_key`, paged,
-      with the unpaged total), and then `job list|show`, `GET /api/jobs` and
-      `/ui/jobs`. `upstream_orders` is the same hole from the relay side and
-      belongs in the same entry: its `error`, `request_id` and upstream URLs
-      answer the other half of that question and are reachable from
-      `src/signer/relay/` alone. Two mutations need deciding, and neither is
-      obvious. **Run now** is a write to `run_at` and `status`, but `attempts`
-      increments at *claim*, so a job that has spent its budget stays spent
-      unless the button resets it — and resetting it is exactly what turns a
-      permanently failing job into one that loops for ever. **Cancel** the
-      schema is already waiting for: `20260815120000_add_jobs.sql` declares
-      `status = 'cancelled'` as "retired by an operator. Nothing writes it
-      yet", the `admin_sessions.state = 'pending_mfa'` treatment. `last_error`
-      is text the far end wrote, so it lands under the panel's stored-XSS
-      regression exactly as a `User-Agent` does.
+- [x] **An operator surface for the job queue, and for the relay's orders in
+      flight.** Done. `JobQuery` + `Job::search` (kind, status, paged, unpaged
+      total) plus the guarded `cancel_row`/`advance_row`/`revive_row` and
+      `find_latest_by_dedup`; `UpstreamOrderQuery` + `UpstreamOrder::search`
+      joined to `orders`; `acme-proxy jobs list|show|cancel|run-now` and
+      `upstream order list|show`; `GET /api/jobs` + `/ui/jobs` (with the two
+      mutations behind `AuthenticatedWrite`) and a read-only
+      `GET /api/upstream-orders` + `/ui/upstream-orders`. **Run-now** revives a
+      `failed` job to `attempts = max_attempts - 1` — exactly one more try, not
+      a fresh budget. **Cancel** writes `'cancelled'`; for a relay job it also
+      abandons the order through `flow::abandon_relayed_order`, shared with
+      `RelayJob::abandon`. `last_error` / upstream `error` / `user_agent` are
+      under the stored-XSS regression in `tests/admin_pages.rs`.
 - [ ] **Find the order from what the operator was handed.** Two questions
       neither surface answers: "which order covers `web.corp.example.com`", and
       "what is this serial out of an abuse report". `OrderQuery` filters

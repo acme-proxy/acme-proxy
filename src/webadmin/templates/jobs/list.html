@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Jobs</h1>
+  <p class="small">The durable background queue: relayed issuance, notification
+    delivery and the periodic sweeps.</p>
+
+  <div class="panel">
+    <form class="row" hx-get="/ui/jobs" hx-target="#jobs-table"
+          hx-push-url="true" hx-trigger="change, submit">
+      <div class="field">
+        <label for="kind">Kind</label>
+        <select id="kind" name="kind">
+          <option value="">every kind</option>
+          {% for kind in kinds %}
+            <option value="{{ kind }}"
+                    {% if filters.kind == kind %}selected{% endif %}>{{ kind }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label for="status">Status</label>
+        <select id="status" name="status">
+          <option value="">any status</option>
+          {% for status in ["ready", "running", "done", "failed", "cancelled"] %}
+            <option value="{{ status }}"
+                    {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </form>
+  </div>
+
+  {% include "jobs/_table.html" %}
+{% endblock %}

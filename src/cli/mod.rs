@@ -53,6 +53,7 @@ pub mod audit;
 pub mod eab;
 pub mod filter;
 pub mod generate;
+pub mod jobs;
 mod logging;
 
 /// Installs the `[logging]` configuration. Re-exported because `main.rs` is
@@ -73,6 +74,7 @@ pub mod window;
 pub use account::AccountCommand;
 pub use audit::AuditCommand;
 pub use eab::EabCommand;
+pub use jobs::JobsCommand;
 pub use nonce::NonceCommand;
 pub use order::OrderCommand;
 pub use profile::ProfileCommand;
@@ -127,6 +129,11 @@ pub enum Command {
     Audit {
         #[command(subcommand)]
         command: AuditCommand,
+    },
+    /// Inspect and manage the background job queue.
+    Jobs {
+        #[command(subcommand)]
+        command: JobsCommand,
     },
     /// Nonce table maintenance.
     Nonce {
@@ -253,6 +260,9 @@ pub async fn dispatch(
         Command::Audit { command } => {
             audit::run_audit_command(command, yes, palette, reader, database).await
         }
+        Command::Jobs { command } => {
+            jobs::run_jobs_command(command, yes, palette, reader, database).await
+        }
         Command::Nonce { command } => {
             nonce::run_nonce_command(command, yes, reader, config, database).await
         }
@@ -262,7 +272,7 @@ pub async fn dispatch(
         Command::Eab { command } => eab::run_eab_command(command, palette, database).await,
         Command::Filter { command } => filter::run_filter_command(command, palette, config).await,
         Command::Upstream { command } => {
-            upstream::run_upstream_command(command, reader, config).await
+            upstream::run_upstream_command(command, reader, palette, config, database).await
         }
         Command::Admin { command } => {
             webadmin::run_admin_command(command, yes, palette, reader, config, database).await
@@ -2329,6 +2339,15 @@ mod tests {
             Command::Eab {
                 command: EabCommand::List {
                     limit: 50,
+                    offset: 0,
+                    json: false,
+                },
+            },
+            Command::Jobs {
+                command: JobsCommand::List {
+                    kind: None,
+                    status: None,
+                    limit: window::DEFAULT_LIMIT,
                     offset: 0,
                     json: false,
                 },

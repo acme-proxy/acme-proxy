@@ -223,6 +223,36 @@ migrated configuration before restarting.
 
 ### Added
 
+- **An operator surface for the background job queue, and for the relay
+  signer's orders in flight.** Neither front end mentioned `jobs` at all, so
+  "why is this order still `processing`?" ended at `sqlite3` — on the one
+  subsystem whose whole purpose is surviving the failures an operator gets
+  paged about. New:
+
+  - **`acme-proxy jobs list|show|cancel|run-now`** — `list` filters by `--kind`
+    and `--status` (the latter refused by name), `show` cross-links a
+    `signer_relay_issue` job to its upstream order, `cancel` is confirm-gated,
+    `run-now` nudges a `ready` job's schedule or revives a `failed` one for
+    exactly one more attempt. On the web admin: `GET /api/jobs`,
+    `GET /api/jobs/{id}`, `POST /api/jobs/{id}/cancel`,
+    `POST /api/jobs/{id}/run`, and `/ui/jobs` with a detail card carrying the
+    two mutations and the upstream cross-link panel.
+  - **`acme-proxy upstream order list|show`** — the relay's `upstream_orders`
+    table (upstream URLs, the upstream's own error text, the finalize request's
+    `request_id`), read-only. On the web admin: `GET /api/upstream-orders`,
+    `GET /api/upstream-orders/{id}` and `/ui/upstream-orders`, cross-linked back
+    to the relay job. The stored CSR is never rendered.
+  - Cancelling an in-flight `signer_relay_issue` job **also abandons the ACME
+    order**: the local order is marked `invalid` (a generic problem document,
+    so the client stops polling), the upstream mapping is marked `invalid` so
+    restart recovery does not resurrect it, and one `certificate_issue_failed`
+    audit row is written attributed to the operator. This shares
+    `flow::abandon_relayed_order` with the runner's own `RelayJob::abandon`.
+  - `jobs.status = 'cancelled'` was a declared-but-unwritten value since the
+    table was added; it is now written, only by this surface. Cancelling a
+    periodic sweep job stops that sweep until the server restarts, which the
+    CLI and UI warn about.
+
 - **`--log-level <off|error|warn|info|debug|trace>`**, a third global CLI flag
   beside `--yes` and `--color`. It is how an admin command is asked for log
   records now that it emits none by default (below), and on `serve` it outranks

@@ -64,6 +64,7 @@ use account::provision;
 pub use account::{register_upstream_account, stored_kid};
 pub(crate) use eab::decode_secret;
 use flow::{OrderContext, relay_spec};
+pub(crate) use flow::{RELAY_JOB_KIND, abandon_relayed_order};
 use wire::{RenewalInfoView, UpstreamOrderView, parse_rfc3339, upstream_to_signer_error};
 
 /// How this proxy satisfies the *upstream's* domain-control requirement.

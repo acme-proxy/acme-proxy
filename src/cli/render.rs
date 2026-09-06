@@ -24,13 +24,15 @@ use base64::prelude::*;
 use super::style::Palette;
 use super::window::Window;
 use crate::admin::ProfileSummary;
-use crate::admin::ops::{ExpiringEntry, OrderDetail};
+use crate::admin::ops::{ExpiringEntry, JobDetail, OrderDetail, UpstreamOrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::audit::AuditEntry;
 use crate::sqlite::eab::Eab;
+use crate::sqlite::job::Job;
 use crate::sqlite::order::{Order, rfc3339};
+use crate::sqlite::upstream_order::UpstreamOrderRow;
 
 /// An address and the reverse name it had, as `ip (ptr)`.
 ///
@@ -269,6 +271,184 @@ pub fn render_expiring_line(entry: &ExpiringEntry, palette: Palette) -> String {
         )));
     }
     line
+}
+
+/// One line: `id  kind  status  attempts/max  run_at  dedup_key`, plus a
+/// painted `error=` suffix when the last attempt left one.
+#[must_use]
+pub fn render_job_line(job: &Job, palette: Palette) -> String {
+    let mut line = format!(
+        "{}  {:<22}  {}  {:>5}  {}  {}",
+        job.id,
+        job.kind,
+        palette.status(&format!("{:<10}", job.status)),
+        format!("{}/{}", job.attempts, job.max_attempts),
+        rfc3339(job.run_at),
+        job.dedup_key,
+    );
+    if let Some(error) = job.last_error.as_deref() {
+        line.push_str(&palette.bad(&format!("  error={}", truncate(error, 60))));
+    }
+    line
+}
+
+/// `jobs show`, one field per line, then — for a relay job — the upstream
+/// order block. Tracks [`crate::admin::render::render_job_detail_json`] member
+/// for member, omitting every field that was not recorded.
+#[must_use]
+pub fn render_job_detail_text(detail: &JobDetail, palette: Palette) -> String {
+    let job = &detail.job;
+    let mut out = String::new();
+    out.push_str(&format!("{:<13} {}\n", "id", job.id));
+    out.push_str(&format!("{:<13} {}\n", "kind", job.kind));
+    out.push_str(&format!("{:<13} {}\n", "dedup_key", job.dedup_key));
+    out.push_str(&format!(
+        "{:<13} {}\n",
+        "status",
+        palette.status(&job.status)
+    ));
+    out.push_str(&format!("{:<13} {}\n", "run_at", rfc3339(job.run_at)));
+    out.push_str(&format!(
+        "{:<13} {}/{}\n",
+        "attempts", job.attempts, job.max_attempts
+    ));
+    for (label, value) in [
+        ("deadline", job.deadline.map(rfc3339)),
+        ("lease_until", job.lease_until.map(rfc3339)),
+        ("lease_owner", job.lease_owner.clone()),
+        ("last_error", job.last_error.clone()),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!("{label:<13} {value}\n"));
+        }
+    }
+    out.push_str(&format!(
+        "{:<13} {}\n",
+        "created_at",
+        rfc3339(job.created_at)
+    ));
+    out.push_str(&format!(
+        "{:<13} {}\n",
+        "updated_at",
+        rfc3339(job.updated_at)
+    ));
+    out.push_str(&format!("{:<13} {}\n", "payload", job.payload));
+
+    if let Some(upstream) = detail.upstream_order.as_ref() {
+        out.push_str("\nUpstream order:\n");
+        out.push_str(&render_upstream_order_block(upstream, palette));
+    }
+    out
+}
+
+/// One line: `order_id  profile  status  local_status  identifiers  updated_at`.
+#[must_use]
+pub fn render_upstream_order_line(row: &UpstreamOrderRow, palette: Palette) -> String {
+    let identifiers = row
+        .identifiers
+        .iter()
+        .map(|i| i.value.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{}  {:<12}  {}  {:<10}  {}  {}",
+        row.order_id,
+        row.profile,
+        palette.status(&format!("{:<10}", row.status)),
+        row.local_status,
+        identifiers,
+        rfc3339(row.updated_at),
+    )
+}
+
+/// The indented field block shared by `render_upstream_order_detail_text` and
+/// the cross-link panel in `render_job_detail_text`. Never `csr_der` — the row
+/// carries none.
+fn render_upstream_order_block(row: &UpstreamOrderRow, palette: Palette) -> String {
+    let mut out = String::new();
+    let identifiers = row
+        .identifiers
+        .iter()
+        .map(|i| i.value.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    out.push_str(&format!("  {:<24} {}\n", "order_id", row.order_id));
+    out.push_str(&format!("  {:<24} {}\n", "profile", row.profile));
+    out.push_str(&format!(
+        "  {:<24} {}\n",
+        "status",
+        palette.status(&row.status)
+    ));
+    out.push_str(&format!("  {:<24} {}\n", "local_status", row.local_status));
+    out.push_str(&format!("  {:<24} {identifiers}\n", "identifiers"));
+    out.push_str(&format!(
+        "  {:<24} {}\n",
+        "upstream_order_url", row.upstream_order_url
+    ));
+    for (label, value) in [
+        ("upstream_finalize_url", row.upstream_finalize_url.clone()),
+        (
+            "upstream_certificate_url",
+            row.upstream_certificate_url.clone(),
+        ),
+        ("error", row.error.clone()),
+        ("client_ip", row.client_ip.clone()),
+        ("client_ptr", row.client_ptr.clone()),
+        ("user_agent", row.user_agent.clone()),
+        ("request_id", row.request_id.clone()),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!("  {label:<24} {value}\n"));
+        }
+    }
+    out.push_str(&format!(
+        "  {:<24} {}\n",
+        "created_at",
+        rfc3339(row.created_at)
+    ));
+    out.push_str(&format!(
+        "  {:<24} {}\n",
+        "updated_at",
+        rfc3339(row.updated_at)
+    ));
+    out
+}
+
+/// `upstream order show`: the row's fields, then — when one exists — the relay
+/// job driving it.
+#[must_use]
+pub fn render_upstream_order_detail_text(detail: &UpstreamOrderDetail, palette: Palette) -> String {
+    let mut out = render_upstream_order_block(&detail.upstream_order, palette);
+    if let Some(job) = detail.job.as_ref() {
+        out.push_str("\nRelay job:\n");
+        out.push_str(&format!("  {:<24} {}\n", "id", job.id));
+        out.push_str(&format!(
+            "  {:<24} {}\n",
+            "status",
+            palette.status(&job.status)
+        ));
+        out.push_str(&format!(
+            "  {:<24} {}/{}\n",
+            "attempts", job.attempts, job.max_attempts
+        ));
+        out.push_str(&format!("  {:<24} {}\n", "run_at", rfc3339(job.run_at)));
+        if let Some(error) = job.last_error.as_deref() {
+            out.push_str(&format!("  {:<24} {error}\n", "last_error"));
+        }
+    }
+    out
+}
+
+/// Trims `text` to `max` bytes on a char boundary, adding an ellipsis.
+fn truncate(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
 }
 
 /// The one-line summary of an order's stored problem document: its `detail`,
@@ -656,7 +836,7 @@ mod tests {
     use crate::sqlite::status::OrderStatus;
     use crate::testutil::{
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, audit_entry,
-        client_context, order_fixture,
+        client_context, job_fixture, order_fixture, upstream_order_row_fixture,
     };
 
     /// Colour forced on, whatever the stream — the only way these assertions
@@ -1582,6 +1762,62 @@ mod tests {
         assert_eq!(
             strip_ansi(&painted),
             render_expiring_line(&entry, Palette::plain())
+        );
+    }
+
+    // --- the job queue surface -------------------------------------------
+
+    #[test]
+    fn render_job_line_is_stable_and_colour_never_moves_it() {
+        let job = job_fixture();
+        let plain = render_job_line(&job, Palette::plain());
+        assert!(plain.contains("signer_relay_issue"));
+        assert!(plain.contains("3/5"));
+        assert!(plain.contains("error=upstream said no"));
+        assert_eq!(strip_ansi(&render_job_line(&job, colour())), plain);
+    }
+
+    #[test]
+    fn render_job_detail_text_omits_absent_fields_and_shows_the_upstream_block() {
+        let mut job = job_fixture();
+        job.deadline = None;
+        job.lease_owner = None;
+        let detail = JobDetail {
+            job,
+            upstream_order: Some(upstream_order_row_fixture()),
+        };
+        let text = render_job_detail_text(&detail, Palette::plain());
+        assert!(!text.contains("deadline"));
+        assert!(!text.contains("lease_owner"));
+        assert!(text.contains("last_error    upstream said no"));
+        assert!(text.contains("Upstream order:"));
+        assert!(text.contains("upstream_order_url"));
+        assert!(!text.contains("csr"), "no csr bytes ever: {text}");
+        assert_eq!(strip_ansi(&render_job_detail_text(&detail, colour())), text);
+    }
+
+    #[test]
+    fn render_upstream_order_line_and_detail_are_stable_under_colour() {
+        let row = upstream_order_row_fixture();
+        let plain = render_upstream_order_line(&row, Palette::plain());
+        assert!(plain.contains("invalid"));
+        assert!(plain.contains("processing")); // local status
+        assert!(plain.contains("a.example.com"));
+        assert_eq!(
+            strip_ansi(&render_upstream_order_line(&row, colour())),
+            plain
+        );
+
+        let detail = UpstreamOrderDetail {
+            upstream_order: row,
+            job: Some(job_fixture()),
+        };
+        let text = render_upstream_order_detail_text(&detail, Palette::plain());
+        assert!(text.contains("Relay job:"));
+        assert!(!text.contains("csr"), "{text}");
+        assert_eq!(
+            strip_ansi(&render_upstream_order_detail_text(&detail, colour())),
+            text
         );
     }
 }

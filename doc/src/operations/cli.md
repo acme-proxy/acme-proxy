@@ -232,6 +232,52 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   **not** confirm-gated, because revocation only ever tightens trust. See
   [Revocation & CRL](revocation.md).
 
+## Job queue
+
+The background queue (relayed issuance, notification delivery, the periodic
+sweeps) is what keeps an order `processing` through a transient upstream failure
+instead of failing it. When an order is stuck, this is where to look.
+
+| Command | Flags |
+| --- | --- |
+| `jobs list` | `--kind <k>`, `--status <s>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `jobs show <id>` | `--json` |
+| `jobs cancel <id>` | *(prompts)* |
+| `jobs run-now <id>` | — |
+
+- `jobs list` is paged like the other listings, newest first. `--status` is one
+  of `ready`, `running`, `done`, `failed`, `cancelled` and is **refused by
+  name** — passed to SQL an unknown value answers "no rows", which reads as
+  "nothing is in that state". `--kind` is **not** refused: a job kind is an
+  open set, so a typo simply matches nothing.
+- `jobs show` prints one field per line, and for a relay issuance job
+  (`kind = signer_relay_issue`) it appends the upstream order it drives — the
+  upstream URLs and the upstream's own error text. The stored CSR is never
+  shown.
+- **`jobs cancel`** retires a job (`status = cancelled`) and is confirm-gated.
+  Two things it will not do:
+  - A `running` job is refused — a runner owns it, and its lease will expire or
+    it will settle. Wait it out, then cancel the resulting `ready`/`failed`
+    row.
+  - Cancelling a **periodic sweep** job (`nonce_sweep`, `audit_sweep`,
+    `order_sweep`, …) stops that sweep until the server restarts. The prompt
+    says so.
+
+  Cancelling an in-flight `signer_relay_issue` job **also abandons the ACME
+  order**: the local order is marked `invalid` (so the client stops polling),
+  the upstream mapping is abandoned (so a restart does not resume it), and a
+  `certificate_issue_failed` audit row is written naming you. This is the
+  operator-side way to stop a relayed issuance that will never complete.
+- **`jobs run-now`** makes a job eligible immediately — it is picked up within
+  `jobs.poll_interval_ms` (it does not wake the runner). On a `ready` job it
+  just pulls `run_at` forward; on a `failed` job it grants **exactly one more
+  attempt** (`attempts` is set to `max_attempts - 1`), not a fresh budget,
+  because a full reset is what turns a permanently failing job into an infinite
+  retry loop. It is not confirm-gated.
+
+The web admin has the same surface at `/ui/jobs` (`GET /api/jobs`), with cancel
+and run-now behind an `operator`-or-higher session.
+
 ## Audit trail
 
 | Command | Flags |
@@ -464,11 +510,14 @@ Only relevant with `signer.backend = "relay"`.
 | --- | --- |
 | `upstream show` | `--profile <name>`, `--json` |
 | `upstream register` | `--profile <name>`, `--eab-kid <kid>`, `--eab-hmac-key-file <path>` |
+| `upstream order list` | `--profile <name>`, `--status <s>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `upstream order show <local-order-id>` | `--json` |
 
-**`--profile` is required whenever the configuration defines more than one
-profile.** `[signer]` is a per-profile section, so acting on "the upstream"
-without saying which one would be acting on nothing. It may be omitted only when
-exactly one profile exists.
+**`--profile` is required for `show`/`register` whenever the configuration
+defines more than one profile.** `[signer]` is a per-profile section, so acting
+on "the upstream" without saying which one would be acting on nothing. It may be
+omitted only when exactly one profile exists. `upstream order list` takes
+`--profile` as an ordinary filter and is cross-profile without it.
 
 `upstream register` performs this proxy's own `newAccount` at the upstream CA
 and stores the resulting account URL beside `account_key_path` with a `.kid`
@@ -478,6 +527,16 @@ extension. Only that first startup ever contacts the upstream.
 > prompted on **stdin**. It is deliberately not accepted as a command-line
 > argument, because argv is visible to every user on the host via `ps`. Omit
 > `--eab-kid` entirely when the upstream requires no External Account Binding.
+
+`upstream order list|show` reads the `upstream_orders` table — one row per local
+order this proxy relayed to its upstream. `--status` is `processing`, `valid`
+or `invalid`, refused by name. Each row carries the upstream order/finalize/
+certificate URLs, the upstream CA's **own** error text for a failed relay, and
+the finalize request's `request_id`; `show` takes the **local** order id and
+cross-links to the relay job. It is read-only — to stop an in-flight relay, use
+`jobs cancel` on the `signer_relay_issue` job (see [Job queue](#job-queue)),
+which abandons the local order too. The panel twins are
+`GET /api/upstream-orders` and `/ui/upstream-orders`.
 
 ## External Account Binding (EAB)
 

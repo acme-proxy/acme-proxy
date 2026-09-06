@@ -1,0 +1,35 @@
+{#- The swap target of the jobs list. Read-only: no control in the rows —
+    cancel and run-now live on the detail card. -#}
+<div id="jobs-table">
+  <div class="panel table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Job</th>
+          <th>Kind</th>
+          <th>Status</th>
+          <th>Attempts</th>
+          <th>Run at</th>
+          <th>Last error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in page.items %}
+          <tr>
+            <td><a href="/ui/jobs/{{ job.id }}"><code>{{ job.id }}</code></a></td>
+            <td><code>{{ job.kind }}</code></td>
+            <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
+            <td class="small">{{ job.attempts }}/{{ job.maxAttempts }}</td>
+            <td class="small">{{ job.runAt }}</td>
+            <td class="wrap-anywhere small">
+              {%- if job.lastError -%}{{ job.lastError }}{%- else -%}<span class="muted">—</span>{%- endif -%}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td class="empty" colspan="6">No job matches.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "partials/_pager.html" %}
+</div>

@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Job <code>{{ detail.id }}</code></h1>
+  <p class="small"><a href="/ui/jobs">← All jobs</a></p>
+
+  {% include "jobs/_card.html" %}
+{% endblock %}

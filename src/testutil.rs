@@ -598,6 +598,54 @@ pub(crate) fn audit_entry() -> crate::sqlite::audit::AuditEntry {
     }
 }
 
+/// One `signer_relay_issue` job with every optional column filled, so a
+/// renderer test can blank the ones it wants absent — the [`audit_entry`]
+/// shape. `#[cfg(test)]` and pure: no database.
+#[cfg(test)]
+pub(crate) fn job_fixture() -> crate::sqlite::job::Job {
+    crate::sqlite::job::Job {
+        id: uuid::uuid!("00000000-0000-7000-8000-00000000abcd"),
+        kind: "signer_relay_issue".to_string(),
+        dedup_key: "order-1".to_string(),
+        payload: serde_json::json!({ "order_id": "order-1", "profile": "le" }),
+        status: "failed".to_string(),
+        run_at: 1_700_000_000,
+        attempts: 3,
+        max_attempts: 5,
+        deadline: Some(1_700_600_000),
+        lease_until: Some(1_700_000_300),
+        lease_owner: Some("runner-1".to_string()),
+        last_error: Some("upstream said no".to_string()),
+        created_at: 1_699_990_000,
+        updated_at: 1_700_000_100,
+    }
+}
+
+/// One `invalid` `upstream_orders` row joined to its local order, every
+/// optional filled. `#[cfg(test)]` and pure.
+#[cfg(test)]
+pub(crate) fn upstream_order_row_fixture() -> crate::sqlite::upstream_order::UpstreamOrderRow {
+    crate::sqlite::upstream_order::UpstreamOrderRow {
+        order_id: uuid::uuid!("00000000-0000-7000-8000-00000000ee01"),
+        upstream_order_url: "https://acme.example/order/9".to_string(),
+        upstream_finalize_url: Some("https://acme.example/order/9/finalize".to_string()),
+        upstream_certificate_url: Some("https://acme.example/cert/9".to_string()),
+        status: "invalid".to_string(),
+        error: Some("urn:ietf:params:acme:error:rejectedIdentifier".to_string()),
+        created_at: 1_699_990_000,
+        updated_at: 1_700_000_100,
+        client_ip: Some("203.0.113.7".to_string()),
+        client_ptr: Some("host.example.com".to_string()),
+        user_agent: Some("lego/4".to_string()),
+        request_id: Some("req-9".to_string()),
+        profile: "le".to_string(),
+        account_id: uuid::uuid!("00000000-0000-7000-8000-0000000acc01"),
+        identifiers: vec![crate::sqlite::order::Identifier::dns("a.example.com")],
+        local_status: crate::sqlite::status::OrderStatus::Processing,
+        local_expires: 1_700_600_000,
+    }
+}
+
 /// An `active` operator with no second factor and no login yet.
 ///
 /// The id both admin fixtures carry, so the session keeps naming its user.
