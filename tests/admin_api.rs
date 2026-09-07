@@ -3517,7 +3517,8 @@ async fn the_jobs_api_lists_cancels_and_runs() {
     assert_eq!(detail["kind"], "signer_relay_issue");
     assert_eq!(detail["upstreamOrder"]["orderId"], order_id);
 
-    // Cancel the sweep job: cancelled, no order touched, no audit row.
+    // Cancel the sweep job: cancelled, no order touched, one plain
+    // `job_cancelled` administrative row (not a `certificate_*` one).
     let response = admin_request(
         &app,
         Method::POST,
@@ -3528,11 +3529,11 @@ async fn the_jobs_api_lists_cancels_and_runs() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_body(response).await["status"], "cancelled");
-    assert_eq!(
-        json_body(admin_request(&app, Method::GET, "/api/audit", Some(&session), None).await).await
-            ["total"],
-        0
-    );
+    let audit =
+        json_body(admin_request(&app, Method::GET, "/api/audit", Some(&session), None).await).await;
+    assert_eq!(audit["total"], 1);
+    assert_eq!(audit["items"][0]["event"], "job_cancelled");
+    assert_eq!(audit["items"][0]["actorKind"], "admin");
 
     // Cancel the relay job: order invalid, one certificate_issue_failed row.
     let response = admin_request(
@@ -3558,9 +3559,12 @@ async fn the_jobs_api_lists_cancels_and_runs() {
     assert_eq!(order["order"]["status"], "invalid");
     let audit =
         json_body(admin_request(&app, Method::GET, "/api/audit", Some(&session), None).await).await;
-    assert_eq!(audit["total"], 1);
+    // The earlier `job_cancelled` row, plus this relay cancel's own
+    // `certificate_issue_failed` — newest first.
+    assert_eq!(audit["total"], 2);
     assert_eq!(audit["items"][0]["event"], "certificate_issue_failed");
     assert_eq!(audit["items"][0]["actorKind"], "admin");
+    assert_eq!(audit["items"][1]["event"], "job_cancelled");
 
     // run-now: a done job is refused, a failed one is revived to max-1.
     let done_id = acme_proxy::sqlite::id::mint();

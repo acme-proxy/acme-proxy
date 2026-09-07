@@ -688,20 +688,22 @@ mod tests {
         assert_eq!(json["detail"], "nope");
     }
 
-    /// An `event` this build does not know still loads: the `CHECK` guards the
-    /// write, and a reader that refused an unrecognised value would make a
+    /// An `event` this build does not know still loads *and* still inserts:
+    /// `20260909120000` dropped the `event` `CHECK` (the Rust enum is the
+    /// authority), and a reader that refused an unrecognised value would make a
     /// newer server's rows unreadable by an older one.
     #[tokio::test]
     async fn an_unknown_event_string_still_loads_and_simply_does_not_parse() {
         let db = db().await;
+        // A value no `AuditEvent` variant spells — accepted by the schema now.
         sqlx::query(
             "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
-             VALUES (0, 'certificate_issued', 'success', 'le', 'acme');",
+             VALUES (0, 'certificate_renewed', 'success', 'le', 'acme');",
         )
         .execute(&db.pool)
         .await
         .unwrap();
-        let mut entry = AuditEntry::search(
+        let entry = AuditEntry::search(
             &AuditQuery {
                 limit: 1,
                 ..AuditQuery::default()
@@ -712,24 +714,20 @@ mod tests {
         .unwrap()
         .0
         .remove(0);
-        entry.event = "certificate_renewed".to_string();
+        assert_eq!(entry.event, "certificate_renewed");
         assert_eq!(entry.event(), None);
     }
 
-    /// The `CHECK` constraints are the schema's own guard on the two enums.
+    /// `outcome` and `actor_kind` keep their `CHECK`s — those two vocabularies
+    /// are closed. `event`'s was dropped by `20260909120000` (see above).
     #[tokio::test]
-    async fn the_schema_refuses_an_event_outcome_or_actor_it_does_not_know() {
+    async fn the_schema_refuses_an_outcome_or_actor_it_does_not_know() {
         let db = db().await;
-        for (event, outcome, actor) in [
-            ("certificate_renewed", "success", "acme"),
-            ("certificate_issued", "maybe", "acme"),
-            ("certificate_issued", "success", "robot"),
-        ] {
+        for (outcome, actor) in [("maybe", "acme"), ("success", "robot")] {
             let error = sqlx::query(
                 "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
-                 VALUES (0, ?, ?, 'le', ?);",
+                 VALUES (0, 'certificate_issued', ?, 'le', ?);",
             )
-            .bind(event)
             .bind(outcome)
             .bind(actor)
             .execute(&db.pool)
@@ -737,7 +735,7 @@ mod tests {
             .unwrap_err();
             assert!(
                 error.to_string().contains("CHECK constraint failed"),
-                "{event}/{outcome}/{actor} was accepted: {error}"
+                "{outcome}/{actor} was accepted: {error}"
             );
         }
     }

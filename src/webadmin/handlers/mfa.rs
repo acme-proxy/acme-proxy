@@ -219,6 +219,7 @@ pub async fn confirm_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     enrol: EnrolWrite,
+    request_context: crate::audit::RequestContext,
     Json(body): Json<ConfirmRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
@@ -232,6 +233,12 @@ pub async fn confirm_totp(
             "that code does not match the pending enrolment",
         ));
     };
+
+    state
+        .record_admin_action(&request_context, &user.username, |actor, ctx| {
+            crate::audit::admin::operator_totp_enrolled(actor, ctx, &user.username)
+        })
+        .await;
 
     state
         .notify_credential_change(
@@ -276,6 +283,7 @@ pub async fn disable_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     if state.config.admin.require_mfa {
@@ -298,6 +306,12 @@ pub async fn disable_totp(
         state.database.clone(),
     )
     .await?;
+
+    state
+        .record_admin_action(&request_context, &user.username, |actor, ctx| {
+            crate::audit::admin::operator_totp_disabled(actor, ctx, &user.username, false)
+        })
+        .await;
 
     state
         .notify_credential_change(
@@ -323,6 +337,7 @@ pub async fn regenerate_recovery_codes(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     if !auth.user.has_totp() {
@@ -339,6 +354,16 @@ pub async fn regenerate_recovery_codes(
     )?;
 
     let codes = mfa::regenerate_recovery_codes(&auth.user, state.database.clone()).await?;
+
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
+            crate::audit::admin::operator_recovery_codes_regenerated(
+                actor,
+                ctx,
+                &auth.user.username,
+            )
+        })
+        .await;
 
     state
         .notify_credential_change(

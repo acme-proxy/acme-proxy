@@ -115,6 +115,7 @@ pub async fn get_nonces(
 pub async fn cleanup_nonces(
     State(state): State<AdminState>,
     session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(form): axum::Form<CleanupForm>,
 ) -> Result<Html<String>, PageError> {
     let seconds = match form.ttl_seconds.trim() {
@@ -128,6 +129,13 @@ pub async fn cleanup_nonces(
 
     let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, client| crate::audit::admin::nonce_cleanup_completed(actor, client, removed),
+        )
+        .await;
     tracing::info!(event = "admin_nonces_cleaned",
                    outcome = "success",
                    surface = "ui",

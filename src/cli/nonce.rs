@@ -5,6 +5,7 @@ use std::time::Duration;
 use clap::Subcommand;
 
 use crate::admin;
+use crate::audit::admin as audit_admin;
 use crate::cli::CliError;
 use crate::config::Config;
 use crate::sqlite::db::Database;
@@ -34,9 +35,17 @@ pub async fn run_nonce_command(
     match command {
         NonceCommand::Cleanup { ttl_seconds } => {
             let ttl = Duration::from_secs(ttl_seconds.unwrap_or(config.nonce.ttl_seconds));
-            match admin::confirm_cleanup_nonces(ttl, yes, reader, database).await? {
+            match admin::confirm_cleanup_nonces(ttl, yes, reader, database.clone()).await? {
                 None => println!("Cancelled."),
-                Some(removed) => println!("Removed {removed} nonce(s)."),
+                Some(removed) => {
+                    let (actor, client) = audit_admin::cli_actor();
+                    crate::audit::write(
+                        audit_admin::nonce_cleanup_completed(actor, client, removed),
+                        &database,
+                    )
+                    .await;
+                    println!("Removed {removed} nonce(s).");
+                }
             }
         }
         NonceCommand::Count { json } => {

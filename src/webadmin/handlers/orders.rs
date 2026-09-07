@@ -204,10 +204,20 @@ pub async fn delete_order(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
+    let subject = Order::find_by_id(&id, &state.database).await?;
     let deleted = admin::delete_order(&id, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
+
+    if let Some(order) = subject {
+        state
+            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                crate::audit::admin::order_deleted(actor, client, &order, deleted.cascaded)
+            })
+            .await;
+    }
 
     tracing::info!(event = "admin_order_deleted",
                    outcome = "success",

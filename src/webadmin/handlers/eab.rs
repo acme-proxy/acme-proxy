@@ -62,6 +62,7 @@ pub async fn get_eab(
 pub async fn create_eab(
     State(state): State<AdminState>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
     body: Option<Json<CreateEab>>,
 ) -> Result<Response, AdminError> {
     let Json(body) = body.unwrap_or_default();
@@ -69,6 +70,17 @@ pub async fn create_eab(
     require_mounted_profile(&state, body.profile.as_deref(), "omit `profile`")?;
 
     let eab = Eab::create(body.label, body.profile, &state.database).await?;
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            crate::audit::admin::eab_created(
+                actor,
+                client,
+                &eab.kid.to_string(),
+                eab.profile.as_deref(),
+                eab.label.as_deref(),
+            )
+        })
+        .await;
     tracing::info!(event = "admin_eab_created",
                    outcome = "success",
                    surface = "api",
@@ -92,9 +104,20 @@ pub async fn revoke_eab(
     State(state): State<AdminState>,
     Path(kid): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<StatusCode, AdminError> {
+    let subject = Eab::find_any_by_kid(&kid, &state.database).await?;
     if !Eab::revoke(&kid, &state.database).await? {
         return Err(not_found(&kid));
+    }
+    // A repeat revoke changes nothing, so it records nothing.
+    if subject.as_ref().is_some_and(|eab| eab.status == "active") {
+        let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
+        state
+            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                crate::audit::admin::eab_revoked(actor, client, &kid, profile)
+            })
+            .await;
     }
     tracing::info!(event = "admin_eab_revoked", outcome = "success", surface = "api", kid = %kid, username = %auth.user.username);
     Ok(StatusCode::NO_CONTENT)

@@ -60,9 +60,9 @@ fn ip(value: &str) -> IpAddr {
     value.parse().unwrap()
 }
 
-/// The stored strings and the success/failure split are what the migration's
-/// two `CHECK` constraints are written against, so a rename here that is not
-/// mirrored there parks every row in a state SQLite refuses to insert.
+/// The stored strings are the `audit_log.event` vocabulary (no `CHECK` mirrors
+/// them any more — `AuditEvent` is the authority), and the success/failure
+/// split is what the `outcome` `CHECK` still guards.
 #[test]
 fn every_event_round_trips_through_its_stored_form_and_knows_its_outcome() {
     for event in ALL_AUDIT_EVENTS {
@@ -72,11 +72,20 @@ fn every_event_round_trips_through_its_stored_form_and_knows_its_outcome() {
             "{} did not round-trip",
             event.as_str()
         );
+        assert!(
+            matches!(event.outcome(), "success" | "failure"),
+            "{} has no outcome",
+            event.as_str()
+        );
     }
     assert_eq!(AuditEvent::CertificateIssued.outcome(), "success");
     assert_eq!(AuditEvent::CertificateRevoked.outcome(), "success");
     assert_eq!(AuditEvent::CertificateIssueFailed.outcome(), "failure");
     assert_eq!(AuditEvent::CertificateRevokeFailed.outcome(), "failure");
+    // Every administrative action is recorded only on success.
+    assert_eq!(AuditEvent::AccountDeleted.outcome(), "success");
+    assert_eq!(AuditEvent::OperatorDisabled.outcome(), "success");
+    assert_eq!(AuditEvent::SessionRevoked.outcome(), "success");
     assert_eq!(AuditEvent::parse("certificate_renewed"), None);
     assert_eq!(AuditEvent::parse(""), None);
 }

@@ -1,14 +1,15 @@
 # Audit Trail
 
 A certificate authority's most important record is not what it holds but what it
-did: who asked it to sign something, from where, and what it answered.
-`acme-proxy` writes that down in one append-only table and surfaces it in three
-places — the CLI, the JSON API and the panel.
+did: who asked it to sign or withdraw a certificate, who administered it, from
+where, and what it answered. `acme-proxy` writes that down in one append-only
+table and surfaces it in three places — the CLI, the JSON API and the panel.
 
 There is deliberately **no `audit.enabled`**. Recording who asked the CA to sign
-something is not a feature of this server, it is what a CA does. The only thing
-an operator can switch off is the reverse-DNS lookup, because that one costs a
-network round trip and there are estates where it can never succeed.
+something, and who changed its stored state, is not a feature of this server, it
+is what a CA does. The only thing an operator can switch off is the reverse-DNS
+lookup, because that one costs a network round trip and there are estates where
+it can never succeed.
 
 ## What gets recorded
 
@@ -21,7 +22,8 @@ Two different things, in two different places.
 | `accounts` | `created_ip` / `created_ptr` — where `newAccount` was called from, frozen at creation; `last_seen_at` / `last_seen_ip` / `last_seen_ptr` — where the key last authenticated a request |
 | `orders` | `created_ip` / `created_ptr` — where the order was opened from |
 
-**The audit log**, one row per CA action *and per refusal*:
+**The audit log**, one row per CA action *and per refusal*, plus one per
+successful administrative action:
 
 | Event | Written when |
 |---|---|
@@ -33,6 +35,34 @@ Two different things, in two different places.
 The refusals are the point. A stream of `certificate_revoke_failed` rows naming
 certificates that do not exist is somebody enumerating serials, which is exactly
 the question a trail exists to answer.
+
+### Administrative actions
+
+An operator (through the panel) or the host CLI changing stored state also
+leaves a row. These are recorded **only on success** — a not-found or refused
+admin operation is the operator being told the state of things, not the CA
+turning a remote party away — and each is attributed to `actor_kind = "admin"`
+(the operator's username and resolved address) or `"cli"` (the host).
+
+| Event | Written when |
+|---|---|
+| `account_deactivated` / `account_contact_updated` / `account_deleted` | an ACME account was deactivated, had its contact list rewritten, or was hard-deleted (the row names the account and its profile; `account_deleted` carries the cascade count) |
+| `order_deleted` | an order row was hard-deleted (names the order, account and identifiers) |
+| `eab_created` / `eab_revoked` | an External Account Binding credential was minted or revoked (the `detail` names the `kid`; the secret is never recorded) |
+| `operator_created` / `operator_deleted` | a web-admin operator was added or removed |
+| `operator_role_changed` / `operator_disabled` / `operator_enabled` | an operator's privilege tier or sign-in status changed |
+| `operator_password_changed` / `operator_contact_updated` | an operator's password or notification address changed (self-service or by an admin) |
+| `operator_totp_enrolled` / `operator_totp_disabled` / `operator_recovery_codes_regenerated` | an operator's second factor was enrolled, removed (including an admin reset), or its recovery codes reissued |
+| `session_revoked` | one session, all of an operator's sessions, or every session on the server was revoked (the `detail` says which) |
+| `job_cancelled` / `job_advanced` | a background job was cancelled or nudged/revived (`run-now`). A cancelled relay issuance instead writes `certificate_issue_failed` — it abandons a certificate order |
+| `nonce_cleanup_completed` / `audit_pruned` | the nonce table or the audit log itself was swept by hand (`audit_pruned` records its own action, so a manual prune always leaves the one row that says it happened) |
+
+The vocabulary is defined by `crate::audit::AuditEvent` in the binary, not by a
+database constraint, so a newer server writing a name an older one does not know
+still loads on the older one — it simply shows the raw string. The web audit
+surface stays **read-only**: a stolen session that could erase the trail would
+make the trail prove nothing, so pruning is `audit cleanup` on the host or
+`audit.retention_days` and nothing else.
 
 Two boundaries worth knowing:
 

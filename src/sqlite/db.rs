@@ -372,6 +372,158 @@ mod tests {
         }
     }
 
+    const AUDIT_LOG_ADMIN_ACTIONS: i64 = 20_260_909_120_000;
+
+    /// `20260909120000` rebuilds `audit_log` to drop the `event` `CHECK` (the
+    /// Rust `AuditEvent` enum is the authority now). A rebuild is where a
+    /// mistyped column list loses a row silently — `audit_log` has no foreign
+    /// keys, so this is the simple case, but the guard is the same: seed a row
+    /// with every column populated, apply the migration, and assert the row
+    /// came back whole, that an event name no enum variant spells now inserts,
+    /// and that the three indexes the `DROP` took were re-created.
+    #[tokio::test]
+    async fn the_audit_log_rebuild_keeps_every_row_and_relaxes_the_event_check() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str("sqlite::memory:")
+                    .unwrap()
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+
+        let mut converted = None;
+        for migration in MIGRATOR.iter() {
+            if migration.version == AUDIT_LOG_ADMIN_ACTIONS {
+                converted = Some(migration);
+                break;
+            }
+            sqlx::raw_sql(migration.sql.clone())
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let converted = converted.expect("the audit-log rebuild is in the embedded set");
+
+        sqlx::raw_sql(
+            "INSERT INTO audit_log \
+             (id, created_at, event, outcome, profile, actor_kind, actor_id, account_id, \
+              order_id, cert_serial, identifiers, client_ip, client_ptr, user_agent, \
+              request_id, reason, detail) VALUES \
+             (41812, 1700, 'certificate_revoked', 'success', 'le', 'admin', 'root', \
+              'acct-1', 'order-1', '0a0b', '[\"a.example\"]', '203.0.113.7', 'host.example', \
+              'certbot', 'req-9', '1', 'by operator');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(converted.sql.clone())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let row = sqlx::query(
+            "SELECT id, event, actor_id, account_id, order_id, cert_serial, identifiers, \
+             client_ip, user_agent, reason, detail FROM audit_log;",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        use sqlx::Row as _;
+        assert_eq!(
+            row.get::<i64, _>("id"),
+            41812,
+            "the id has to survive, `audit show <id>` uses it"
+        );
+        assert_eq!(row.get::<String, _>("event"), "certificate_revoked");
+        assert_eq!(
+            row.get::<Option<String>, _>("actor_id").as_deref(),
+            Some("root")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("account_id").as_deref(),
+            Some("acct-1")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("order_id").as_deref(),
+            Some("order-1")
+        );
+        assert_eq!(row.get::<String, _>("identifiers"), "[\"a.example\"]");
+        assert_eq!(
+            row.get::<Option<String>, _>("cert_serial").as_deref(),
+            Some("0a0b")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("client_ip").as_deref(),
+            Some("203.0.113.7")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("detail").as_deref(),
+            Some("by operator")
+        );
+
+        // `account_id` / `order_id` stay text — no FK, they name a row that may
+        // be gone (`every_id_column_is_declared_a_blob` also asserts this).
+        assert_eq!(
+            declared_type_on(&pool, "audit_log", "account_id").await,
+            "VARCHAR(36)"
+        );
+
+        // The dropped `event` CHECK: a value no `AuditEvent` variant spells now
+        // inserts. `outcome` and `actor_kind` keep theirs.
+        sqlx::raw_sql(
+            "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
+             VALUES (1701, 'operator_teleported', 'success', '', 'admin');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let bad_actor = sqlx::raw_sql(
+            "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
+             VALUES (1702, 'account_deleted', 'success', '', 'robot');",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            bad_actor.is_err(),
+            "the actor_kind CHECK still guards the column"
+        );
+
+        // The three indexes the DROP took, re-created by the migration.
+        let indexes: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index';")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for expected in [
+            "idx_audit_log_created_at",
+            "idx_audit_log_account_id",
+            "idx_audit_log_cert_serial",
+        ] {
+            assert!(
+                indexes.iter().any(|name| name == expected),
+                "{expected} was not re-created"
+            );
+        }
+    }
+
+    /// [`declared_type`] against a bare pool rather than a [`Database`].
+    async fn declared_type_on(pool: &sqlx::SqlitePool, table: &str, column: &str) -> String {
+        let columns: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, type FROM pragma_table_info(?);")
+                .bind(table)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        columns
+            .into_iter()
+            .find(|(name, _)| name == column)
+            .map(|(_, declared)| declared)
+            .unwrap_or_else(|| panic!("no column {table}.{column}"))
+    }
+
     /// One row per table, each carrying a UUID v4 in every id column — the
     /// shape a database written before `sqlite::id` existed holds.
     const SEED_V4_ROWS: &str = "\

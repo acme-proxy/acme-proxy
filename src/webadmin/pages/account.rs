@@ -175,6 +175,7 @@ pub async fn confirm_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageEnrolWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<ConfirmForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.enrol.user;
@@ -221,6 +222,12 @@ pub async fn confirm_totp(
     };
 
     state
+        .record_admin_action(&request_context, &user.username, |actor, ctx| {
+            crate::audit::admin::operator_totp_enrolled(actor, ctx, &user.username)
+        })
+        .await;
+
+    state
         .notify_credential_change(
             &user,
             crate::notify::AdminCredentialChange::SecondFactorEnabled,
@@ -244,6 +251,7 @@ pub async fn disable_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if state.config.admin.require_mfa {
@@ -285,6 +293,12 @@ pub async fn disable_totp(
     .await?;
 
     state
+        .record_admin_action(&request_context, &user.username, |actor, ctx| {
+            crate::audit::admin::operator_totp_disabled(actor, ctx, &user.username, false)
+        })
+        .await;
+
+    state
         .notify_credential_change(
             &user,
             crate::notify::AdminCredentialChange::SecondFactorDisabled,
@@ -316,6 +330,7 @@ pub async fn regenerate_recovery_codes(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if !session.auth.user.has_totp() {
@@ -348,6 +363,20 @@ pub async fn regenerate_recovery_codes(
     }
 
     let codes = mfa::regenerate_recovery_codes(&session.auth.user, state.database.clone()).await?;
+
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| {
+                crate::audit::admin::operator_recovery_codes_regenerated(
+                    actor,
+                    ctx,
+                    &session.auth.user.username,
+                )
+            },
+        )
+        .await;
 
     state
         .notify_credential_change(
@@ -434,6 +463,7 @@ pub async fn change_password(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<ChangePasswordForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
@@ -459,6 +489,11 @@ pub async fn change_password(
     .await
     {
         Ok(()) => {
+            state
+                .record_admin_action(&request_context, &user.username, |actor, ctx| {
+                    crate::audit::admin::operator_password_changed(actor, ctx, &user.username, true)
+                })
+                .await;
             state
                 .notify_credential_change(
                     &user,
@@ -517,6 +552,7 @@ pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let target =
         AdminSession::find_by_user_and_fingerprint(session.auth.user.id, &id, &state.database)
@@ -524,6 +560,19 @@ pub async fn revoke_own_session(
             .ok_or_else(|| session_not_found(&id))?;
     let was_current = target.token_hash == session.auth.session.token_hash;
     AdminSession::delete(&target.token_hash, &state.database).await?;
+
+    let scope = if was_current {
+        crate::audit::admin::SessionScope::OwnCurrent
+    } else {
+        crate::audit::admin::SessionScope::OwnOther
+    };
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| crate::audit::admin::session_revoked(actor, ctx, scope),
+        )
+        .await;
 
     tracing::info!(event = "admin_session_revoked",
                    outcome = "success",

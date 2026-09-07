@@ -551,6 +551,14 @@ pub async fn cancel_job(
     };
 
     if job.kind != RELAY_JOB_KIND {
+        // A relay job records `certificate_issue_failed` via
+        // `abandon_relayed_order` below; every other kind gets a plain
+        // administrative row here.
+        crate::audit::write(
+            crate::audit::admin::job_cancelled(actor, client, &job.kind, &job.id.to_string()),
+            &database,
+        )
+        .await;
         return Ok(CancelJobOutcome::Cancelled(Box::new(job)));
     }
 
@@ -1830,7 +1838,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_job_on_a_ready_sweep_writes_no_order_changes_and_no_audit_row() {
+    async fn cancel_job_on_a_ready_sweep_writes_a_plain_job_cancelled_row_and_no_order_change() {
         let db = db().await;
         let sweep = sweep_job(&db).await;
 
@@ -1851,7 +1859,16 @@ mod tests {
                 .status,
             "cancelled"
         );
-        assert!(audit_rows(&db).await.is_empty());
+
+        // One administrative row — `job_cancelled`, not a `certificate_*` one —
+        // and it names no order or account.
+        let rows = audit_rows(&db).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "job_cancelled");
+        assert_eq!(rows[0].outcome, "success");
+        assert_eq!(rows[0].actor_kind, "cli");
+        assert!(rows[0].order_id.is_none());
+        assert!(rows[0].account_id.is_none());
     }
 
     #[tokio::test]

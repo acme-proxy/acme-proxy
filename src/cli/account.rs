@@ -4,6 +4,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin::{self, DeleteOutcome};
+use crate::audit::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
@@ -11,6 +12,7 @@ use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
+use crate::sqlite::order::Order;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
@@ -82,22 +84,55 @@ pub async fn run_account_command(
             Some(account) => print!("{}", render::render_account_detail_text(&account, palette)),
         },
         AccountCommand::UpdateContact { id, contact } => {
-            match admin::update_account_contact(&id, contact, database).await? {
+            match admin::update_account_contact(&id, contact, database.clone()).await? {
                 None => return Err(not_found(&id)),
-                Some(account) => println!("{}", render::render_account_line(&account, palette)),
+                Some(account) => {
+                    let (actor, client) = audit_admin::cli_actor();
+                    crate::audit::write(
+                        audit_admin::account_contact_updated(
+                            actor,
+                            client,
+                            &account,
+                            &account.contact,
+                        ),
+                        &database,
+                    )
+                    .await;
+                    println!("{}", render::render_account_line(&account, palette));
+                }
             }
         }
         AccountCommand::Deactivate { id } => {
-            match admin::deactivate_account(&id, database).await? {
+            match admin::deactivate_account(&id, database.clone()).await? {
                 None => return Err(not_found(&id)),
-                Some(account) => println!("{}", render::render_account_line(&account, palette)),
+                Some(account) => {
+                    let (actor, client) = audit_admin::cli_actor();
+                    crate::audit::write(
+                        audit_admin::account_deactivated(actor, client, &account),
+                        &database,
+                    )
+                    .await;
+                    println!("{}", render::render_account_line(&account, palette));
+                }
             }
         }
         AccountCommand::Delete { id } => {
-            match admin::confirm_delete_account(&id, yes, reader, database).await? {
+            let doomed = Account::find_any_by_id(&id, &database).await?;
+            match admin::confirm_delete_account(&id, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
                 DeleteOutcome::Cancelled => println!("Cancelled."),
-                DeleteOutcome::Deleted => println!("Deleted account {id}."),
+                DeleteOutcome::Deleted => {
+                    if let Some(account) = doomed {
+                        let cascaded = Order::count_by_account(account.id, &database).await? as u64;
+                        let (actor, client) = audit_admin::cli_actor();
+                        crate::audit::write(
+                            audit_admin::account_deleted(actor, client, &account, cascaded),
+                            &database,
+                        )
+                        .await;
+                    }
+                    println!("Deleted account {id}.");
+                }
             }
         }
     }
@@ -151,6 +186,71 @@ mod tests {
             .expect_err("an unknown account must fail");
             assert_eq!(error, expected);
         }
+    }
+
+    /// A successful mutation leaves one `cli`-attributed audit row carrying the
+    /// account's own id and profile; a declined delete leaves none.
+    #[tokio::test]
+    async fn a_mutation_writes_an_audit_row_and_a_decline_does_not() {
+        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Config::default();
+        let (account, _) = Account::find_or_create(
+            "default",
+            &[3, 1, 4],
+            vec![],
+            &ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+
+        let mut reader: &[u8] = &[];
+        run_account_command(
+            AccountCommand::Deactivate {
+                id: account.id.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .unwrap();
+
+        let mut declined: &[u8] = b"n\n";
+        run_account_command(
+            AccountCommand::Delete {
+                id: account.id.to_string(),
+            },
+            false,
+            Palette::plain(),
+            &mut declined,
+            &config,
+            database.clone(),
+        )
+        .await
+        .unwrap();
+
+        let (rows, _) = AuditEntry::search(
+            &AuditQuery {
+                limit: 50,
+                ..AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1, "only the deactivation is a mutation");
+        assert_eq!(rows[0].event, "account_deactivated");
+        assert_eq!(rows[0].actor_kind, "cli");
+        assert_eq!(rows[0].profile, "default");
+        assert_eq!(
+            rows[0].account_id.as_deref(),
+            Some(account.id.to_string().as_str())
+        );
     }
 
     /// `delete` without `--yes` asks first, and a refusal is a success: the

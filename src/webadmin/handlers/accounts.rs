@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::admin;
+use crate::audit::admin as audit_admin;
 use crate::sqlite::account::Account;
 use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
@@ -112,7 +113,8 @@ pub async fn list_account_orders(
 pub async fn patch_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    AuthenticatedWrite(_auth): AuthenticatedWrite,
+    AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     if let Some(rejection) = crate::handlers::helpers::contact_shape_error(&body.contact) {
@@ -122,6 +124,11 @@ pub async fn patch_account(
     let account = admin::update_account_contact(&id, body.contact, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            audit_admin::account_contact_updated(actor, client, &account, &account.contact)
+        })
+        .await;
     Ok(Json(admin::render_account_json(
         &account,
         &state.config.server.base_url,
@@ -132,11 +139,17 @@ pub async fn patch_account(
 pub async fn deactivate_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    AuthenticatedWrite(_auth): AuthenticatedWrite,
+    AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     let account = admin::deactivate_account(&id, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            audit_admin::account_deactivated(actor, client, &account)
+        })
+        .await;
     Ok(Json(admin::render_account_json(
         &account,
         &state.config.server.base_url,
@@ -152,10 +165,22 @@ pub async fn delete_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
+    // Captured before the delete so the audit row can name the account's own
+    // profile and id; `delete_account` returns only the cascade count.
+    let subject = Account::find_any_by_id(&id, &state.database).await?;
     let deleted = admin::delete_account(&id, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
+
+    if let Some(account) = subject {
+        state
+            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
+            })
+            .await;
+    }
 
     tracing::info!(event = "admin_account_deleted",
                    outcome = "success",

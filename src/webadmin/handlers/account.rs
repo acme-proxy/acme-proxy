@@ -45,6 +45,7 @@ pub async fn change_password(
     AdminClientIp(client): AdminClientIp,
     headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = auth.user;
@@ -65,6 +66,12 @@ pub async fn change_password(
         }
         UserError::Database(_) | UserError::DuplicateUsername(_) => AdminError::internal(),
     })?;
+
+    state
+        .record_admin_action(&request_context, &user.username, |actor, ctx| {
+            crate::audit::admin::operator_password_changed(actor, ctx, &user.username, true)
+        })
+        .await;
 
     state
         .notify_credential_change(
@@ -120,12 +127,24 @@ pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let session = AdminSession::find_by_user_and_fingerprint(auth.user.id, &id, &state.database)
         .await?
         .ok_or_else(|| session_not_found(&id))?;
     let was_current = session.token_hash == auth.session.token_hash;
     AdminSession::delete(&session.token_hash, &state.database).await?;
+
+    let scope = if was_current {
+        crate::audit::admin::SessionScope::OwnCurrent
+    } else {
+        crate::audit::admin::SessionScope::OwnOther
+    };
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
+            crate::audit::admin::session_revoked(actor, ctx, scope)
+        })
+        .await;
 
     tracing::info!(event = "admin_session_revoked",
                    outcome = "success",

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::admin;
+use crate::audit::admin as audit_admin;
 use crate::sqlite::account::Account;
 use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
@@ -137,6 +138,7 @@ pub async fn post_account_contact(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(form): axum::Form<ContactForm>,
 ) -> Result<Html<String>, PageError> {
     let contact: Vec<String> = form
@@ -165,6 +167,15 @@ pub async fn post_account_contact(
         .await?
         .ok_or_else(|| not_found(&id))?;
 
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, client| {
+                audit_admin::account_contact_updated(actor, client, &account, &account.contact)
+            },
+        )
+        .await;
     tracing::info!(event = "admin_account_contact_updated",
                    outcome = "success",
                    account_id = %id,
@@ -179,11 +190,19 @@ pub async fn deactivate_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
     let account = admin::deactivate_account(&id, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
 
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, client| audit_admin::account_deactivated(actor, client, &account),
+        )
+        .await;
     tracing::info!(event = "admin_account_deactivated",
                    outcome = "success",
                    account_id = %id,
@@ -209,10 +228,24 @@ pub async fn delete_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
+    let subject = Account::find_any_by_id(&id, &state.database).await?;
     let deleted = admin::delete_account(&id, state.database.clone())
         .await?
         .ok_or_else(|| not_found(&id))?;
+
+    if let Some(account) = subject {
+        state
+            .record_admin_action(
+                &request_context,
+                &session.auth.user.username,
+                |actor, client| {
+                    audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
+                },
+            )
+            .await;
+    }
 
     tracing::info!(event = "admin_account_deleted",
                    outcome = "success",

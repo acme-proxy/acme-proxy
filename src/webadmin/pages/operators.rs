@@ -94,6 +94,7 @@ pub async fn disable_operator(
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
     session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -105,6 +106,15 @@ pub async fn disable_operator(
     }
 
     users::set_status(&target.username, "disabled", state.database.clone()).await?;
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| {
+                crate::audit::admin::operator_status_changed(actor, ctx, &target.username, false)
+            },
+        )
+        .await;
     tracing::info!(event = "admin_operator_disabled",
                    outcome = "success",
                    surface = "ui",
@@ -126,6 +136,7 @@ pub async fn enable_operator(
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
     session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -137,6 +148,15 @@ pub async fn enable_operator(
     }
 
     users::set_status(&target.username, "active", state.database.clone()).await?;
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| {
+                crate::audit::admin::operator_status_changed(actor, ctx, &target.username, true)
+            },
+        )
+        .await;
     tracing::info!(event = "admin_operator_enabled",
                    outcome = "success",
                    surface = "ui",
@@ -153,6 +173,7 @@ pub async fn reset_operator_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let mut target = find(&username, &state).await?;
@@ -166,6 +187,15 @@ pub async fn reset_operator_totp(
     // `None`: this is being done to a *different* operator's factor, from a
     // session that is not theirs.
     mfa::disable_totp(&mut target, None, state.database.clone()).await?;
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| {
+                crate::audit::admin::operator_totp_disabled(actor, ctx, &target.username, true)
+            },
+        )
+        .await;
     tracing::info!(event = "admin_operator_totp_reset",
                    outcome = "success",
                    surface = "ui",
@@ -201,6 +231,7 @@ pub async fn revoke_operator_session(
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
     session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
@@ -215,6 +246,19 @@ pub async fn revoke_operator_session(
         .await?
         .ok_or_else(|| session_not_found(&id))?;
     AdminSession::delete(&found.token_hash, &state.database).await?;
+    state
+        .record_admin_action(
+            &request_context,
+            &session.auth.user.username,
+            |actor, ctx| {
+                crate::audit::admin::session_revoked(
+                    actor,
+                    ctx,
+                    crate::audit::admin::SessionScope::OneOf(target.username.clone()),
+                )
+            },
+        )
+        .await;
 
     tracing::info!(event = "admin_operator_session_revoked",
                    outcome = "success",

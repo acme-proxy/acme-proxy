@@ -36,22 +36,58 @@ use crate::dns::{HickoryResolver, Resolver, resolver_addr};
 use crate::sqlite::audit::AuditEntry;
 use crate::sqlite::db::Database;
 
-/// The four things this trail records: each CA action, and its refusal.
+pub mod admin;
+
+/// What this trail records: every action the CA takes on a certificate and its
+/// refusal, plus every administrative action taken on the CA itself.
 ///
 /// A refusal is an audit record in its own right. "Who tried to revoke this
 /// certificate and was turned away" is the question the successes cannot
 /// answer, and it is the one asked after something has gone wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditEvent {
+    // The CA acting on a certificate, and each way that is refused. These four
+    // are also emitted as `tracing` events under the same names; the rest of
+    // the vocabulary below is not, and `as_str` is its own authority.
     CertificateIssued,
     CertificateIssueFailed,
     CertificateRevoked,
     CertificateRevokeFailed,
+    // The administration of the CA: an operator (or the host CLI) changing a
+    // stored account, credential, operator, session or queue entry. Recorded
+    // only on success — a refusal here is the operator being told the state of
+    // things, not the CA turning a remote party away. All map to `"success"`;
+    // the `outcome` match is deliberately exhaustive so a future `*_failed`
+    // admin event cannot be added without classifying it.
+    AccountDeactivated,
+    AccountContactUpdated,
+    AccountDeleted,
+    OrderDeleted,
+    EabCreated,
+    EabRevoked,
+    OperatorCreated,
+    OperatorRoleChanged,
+    OperatorContactUpdated,
+    OperatorPasswordChanged,
+    OperatorDisabled,
+    OperatorEnabled,
+    OperatorDeleted,
+    OperatorTotpEnrolled,
+    OperatorTotpDisabled,
+    OperatorRecoveryCodesRegenerated,
+    SessionRevoked,
+    JobCancelled,
+    JobAdvanced,
+    NonceCleanupCompleted,
+    AuditPruned,
 }
 
 impl AuditEvent {
-    /// The stored form, matching the `CHECK` in
-    /// `migrations/20260809120000_add_audit_log.sql`.
+    /// The stored form. This is the authority on the `audit_log.event`
+    /// vocabulary: `20260809120000_add_audit_log.sql`'s `CHECK (event IN (…))`
+    /// was dropped by a later rebuild precisely so this enum is the only place
+    /// the set is defined, and [`AuditEntry::insert`] binds this, never a free
+    /// string.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -59,6 +95,27 @@ impl AuditEvent {
             Self::CertificateIssueFailed => "certificate_issue_failed",
             Self::CertificateRevoked => "certificate_revoked",
             Self::CertificateRevokeFailed => "certificate_revoke_failed",
+            Self::AccountDeactivated => "account_deactivated",
+            Self::AccountContactUpdated => "account_contact_updated",
+            Self::AccountDeleted => "account_deleted",
+            Self::OrderDeleted => "order_deleted",
+            Self::EabCreated => "eab_created",
+            Self::EabRevoked => "eab_revoked",
+            Self::OperatorCreated => "operator_created",
+            Self::OperatorRoleChanged => "operator_role_changed",
+            Self::OperatorContactUpdated => "operator_contact_updated",
+            Self::OperatorPasswordChanged => "operator_password_changed",
+            Self::OperatorDisabled => "operator_disabled",
+            Self::OperatorEnabled => "operator_enabled",
+            Self::OperatorDeleted => "operator_deleted",
+            Self::OperatorTotpEnrolled => "operator_totp_enrolled",
+            Self::OperatorTotpDisabled => "operator_totp_disabled",
+            Self::OperatorRecoveryCodesRegenerated => "operator_recovery_codes_regenerated",
+            Self::SessionRevoked => "session_revoked",
+            Self::JobCancelled => "job_cancelled",
+            Self::JobAdvanced => "job_advanced",
+            Self::NonceCleanupCompleted => "nonce_cleanup_completed",
+            Self::AuditPruned => "audit_pruned",
         }
     }
 
@@ -67,26 +124,47 @@ impl AuditEvent {
     /// The column exists so "show me everything that was refused" is an index
     /// lookup rather than `event LIKE '%_failed'` written out in the CLI, the
     /// API and the page. Deriving it here rather than at each insert is what
-    /// stops the two columns ever disagreeing.
+    /// stops the two columns ever disagreeing. Exhaustive on purpose — no
+    /// catch-all — so an admin `*_failed` event added later is a compile error
+    /// until its author says which side it falls on.
     #[must_use]
     pub fn outcome(&self) -> &'static str {
         match self {
-            Self::CertificateIssued | Self::CertificateRevoked => "success",
             Self::CertificateIssueFailed | Self::CertificateRevokeFailed => "failure",
+            Self::CertificateIssued
+            | Self::CertificateRevoked
+            | Self::AccountDeactivated
+            | Self::AccountContactUpdated
+            | Self::AccountDeleted
+            | Self::OrderDeleted
+            | Self::EabCreated
+            | Self::EabRevoked
+            | Self::OperatorCreated
+            | Self::OperatorRoleChanged
+            | Self::OperatorContactUpdated
+            | Self::OperatorPasswordChanged
+            | Self::OperatorDisabled
+            | Self::OperatorEnabled
+            | Self::OperatorDeleted
+            | Self::OperatorTotpEnrolled
+            | Self::OperatorTotpDisabled
+            | Self::OperatorRecoveryCodesRegenerated
+            | Self::SessionRevoked
+            | Self::JobCancelled
+            | Self::JobAdvanced
+            | Self::NonceCleanupCompleted
+            | Self::AuditPruned => "success",
         }
     }
 
-    /// Parses the stored form back. `None` for anything the `CHECK` would have
-    /// refused, which is also how the CLI validates `--event`.
+    /// Parses the stored form back. `None` for anything this enum does not
+    /// define, which is also how the CLI validates `--event`.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "certificate_issued" => Self::CertificateIssued,
-            "certificate_issue_failed" => Self::CertificateIssueFailed,
-            "certificate_revoked" => Self::CertificateRevoked,
-            "certificate_revoke_failed" => Self::CertificateRevokeFailed,
-            _ => return None,
-        })
+        ALL_AUDIT_EVENTS
+            .iter()
+            .copied()
+            .find(|event| event.as_str() == value)
     }
 }
 
@@ -96,6 +174,27 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::CertificateIssueFailed,
     AuditEvent::CertificateRevoked,
     AuditEvent::CertificateRevokeFailed,
+    AuditEvent::AccountDeactivated,
+    AuditEvent::AccountContactUpdated,
+    AuditEvent::AccountDeleted,
+    AuditEvent::OrderDeleted,
+    AuditEvent::EabCreated,
+    AuditEvent::EabRevoked,
+    AuditEvent::OperatorCreated,
+    AuditEvent::OperatorRoleChanged,
+    AuditEvent::OperatorContactUpdated,
+    AuditEvent::OperatorPasswordChanged,
+    AuditEvent::OperatorDisabled,
+    AuditEvent::OperatorEnabled,
+    AuditEvent::OperatorDeleted,
+    AuditEvent::OperatorTotpEnrolled,
+    AuditEvent::OperatorTotpDisabled,
+    AuditEvent::OperatorRecoveryCodesRegenerated,
+    AuditEvent::SessionRevoked,
+    AuditEvent::JobCancelled,
+    AuditEvent::JobAdvanced,
+    AuditEvent::NonceCleanupCompleted,
+    AuditEvent::AuditPruned,
 ];
 
 /// Which front end acted.
@@ -308,6 +407,17 @@ impl AuditRecord {
             reason: None,
             detail: None,
         }
+    }
+
+    /// A record for an administrative action that is not scoped to one ACME
+    /// endpoint — an operator, a session, the nonce table, the audit log
+    /// itself. `profile` is stored empty (the column stays `NOT NULL`; `""`
+    /// reads as "no profile"), and the acting identity is [`Actor`] plus
+    /// whatever [`AuditRecord::with_detail`] carries. Account, EAB and order
+    /// actions keep [`AuditRecord::new`] with their real profile.
+    #[must_use]
+    pub fn admin(event: AuditEvent, actor: Actor) -> Self {
+        Self::new(event, String::new(), actor)
     }
 
     /// Fills in the subject from the order: its id, its account and the names

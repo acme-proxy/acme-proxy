@@ -38,6 +38,7 @@ pub async fn get_nonces(
 pub async fn cleanup_nonces(
     State(state): State<AdminState>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
+    request_context: crate::audit::RequestContext,
     body: Option<Json<CleanupRequest>>,
 ) -> Result<Json<Value>, AdminError> {
     let seconds = body
@@ -46,6 +47,11 @@ pub async fn cleanup_nonces(
 
     let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
+    state
+        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
+        })
+        .await;
     tracing::info!(event = "admin_nonces_cleaned",
                    outcome = "success",
                    surface = "api",

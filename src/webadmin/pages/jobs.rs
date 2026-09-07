@@ -164,6 +164,7 @@ pub async fn run_job(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
     let banner = match admin::run_job_now(&id, state.database.clone()).await? {
         RunJobNowOutcome::NotFound => return Err(not_found(&id)),
@@ -172,6 +173,11 @@ pub async fn run_job(
             format!("Job {id} is {status}; run-now applies to ready or failed jobs."),
         ),
         RunJobNowOutcome::Nudged(_) => {
+            state
+                .record_admin_action(&request_context, &session.auth.user.username, |a, c| {
+                    crate::audit::admin::job_advanced(a, c, &id, false)
+                })
+                .await;
             tracing::info!(event = "admin_job_advanced",
                            outcome = "success",
                            surface = "ui",
@@ -180,6 +186,11 @@ pub async fn run_job(
             flash("ok", "Job will run at the next queue poll.")
         }
         RunJobNowOutcome::Revived(job) => {
+            state
+                .record_admin_action(&request_context, &session.auth.user.username, |a, c| {
+                    crate::audit::admin::job_advanced(a, c, &id, true)
+                })
+                .await;
             tracing::info!(event = "admin_job_revived",
                            outcome = "success",
                            surface = "ui",

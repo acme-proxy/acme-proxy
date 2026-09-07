@@ -24,8 +24,9 @@ pub enum AuditCommand {
         order_id: Option<String>,
         #[arg(long = "cert-serial")]
         cert_serial: Option<String>,
-        /// One of `certificate_issued`, `certificate_issue_failed`,
-        /// `certificate_revoked`, `certificate_revoke_failed`.
+        /// An audit event name — `certificate_issued`, `account_deleted`,
+        /// `operator_disabled`, … An unknown value is refused by name and the
+        /// full list printed.
         #[arg(long)]
         event: Option<String>,
         /// `success` or `failure`.
@@ -136,9 +137,23 @@ pub async fn run_audit_command(
             }
         }
         AuditCommand::Cleanup { older_than } => {
-            match admin::confirm_cleanup_audit(older_than, yes, reader, database).await? {
+            match admin::confirm_cleanup_audit(older_than, yes, reader, database.clone()).await? {
                 None => println!("Cancelled."),
-                Some(removed) => println!("Removed {removed} audit row(s)."),
+                Some(removed) => {
+                    // Written after the sweep, so the prune records its own
+                    // action rather than being caught by it. Only when it
+                    // actually removed something — a no-op prune changed
+                    // nothing, the `RevokeOutcome::AlreadyRevoked` rule.
+                    if removed > 0 {
+                        let (actor, client) = crate::audit::admin::cli_actor();
+                        crate::audit::write(
+                            crate::audit::admin::audit_pruned(actor, client, removed, older_than),
+                            &database,
+                        )
+                        .await;
+                    }
+                    println!("Removed {removed} audit row(s).");
+                }
             }
         }
     }
@@ -351,7 +366,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             AuditEntry::count_older_than(i64::MAX, &db).await.unwrap(),
-            4
+            ALL_AUDIT_EVENTS.len() as i64
         );
 
         // Nothing is a year old, so an accepted sweep still removes nothing —
@@ -368,7 +383,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             AuditEntry::count_older_than(i64::MAX, &db).await.unwrap(),
-            4
+            ALL_AUDIT_EVENTS.len() as i64
         );
     }
 }

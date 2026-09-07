@@ -47,6 +47,28 @@ migrated configuration before restarting.
 
 ### Added
 
+- **The audit trail now records administrative actions, not just certificate
+  ones.** `audit_log` answered one question — who asked the CA to sign or
+  withdraw a certificate — in four event names. It now also records what an
+  operator (or the host CLI) does to the CA: an account deactivated, its
+  contact rewritten or the account deleted; an EAB credential minted or
+  revoked; an operator created, disabled, enabled, deleted, their role,
+  password or contact changed, their second factor enrolled, disabled or
+  reset, their recovery codes reissued; a session or every session revoked; a
+  background job cancelled or advanced; the nonce table or the audit log
+  itself pruned. Twenty-one new `AuditEvent` names, each recorded only on
+  success and attributed to `actor_kind = "admin"` (with the operator's
+  username and resolved address) from the web panel or `"cli"` from the host.
+  They appear in the same `acme-proxy audit list` / `GET /api/audit` /
+  `/ui/audit` surfaces, filter by `--event`, and are pruned by the same
+  `audit cleanup` / `audit.retention_days`; the web audit surface stays
+  read-only. A new migration
+  (`20260909120000_audit_log_admin_actions.sql`) rebuilds `audit_log` to drop
+  the `CHECK (event IN (…))` constraint — `crate::audit::AuditEvent` is the
+  vocabulary's sole authority now, the `admin_users.role` precedent — while
+  keeping the `outcome` and `actor_kind` checks. No configuration key: like
+  the rest of `[audit]`, recording who administered the CA is not optional.
+
 - **`order list` can be searched by identifier and by certificate serial** —
   the two questions an operator arrives with from an out-of-band report. `order
   list --identifier <name>` matches an order's identifier **exactly**

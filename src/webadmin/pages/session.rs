@@ -223,9 +223,27 @@ pub async fn post_logout(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
     session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let scope = if query.all {
         AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;
+        // "Sign out everywhere" ends sessions this request is not holding, so
+        // it is a revoke worth recording; a plain logout is not.
+        state
+            .record_admin_action(
+                &request_context,
+                &session.auth.user.username,
+                |actor, ctx| {
+                    crate::audit::admin::session_revoked(
+                        actor,
+                        ctx,
+                        crate::audit::admin::SessionScope::AllOf(
+                            session.auth.user.username.clone(),
+                        ),
+                    )
+                },
+            )
+            .await;
         "all"
     } else {
         AdminSession::delete(&session.auth.session.token_hash, &state.database).await?;

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin;
+use crate::audit::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
@@ -54,6 +55,18 @@ pub async fn run_eab_command(
             json,
         } => {
             let eab = Eab::create(label, profile, &database).await?;
+            let (actor, client) = audit_admin::cli_actor();
+            crate::audit::write(
+                audit_admin::eab_created(
+                    actor,
+                    client,
+                    &eab.kid.to_string(),
+                    eab.profile.as_deref(),
+                    eab.label.as_deref(),
+                ),
+                &database,
+            )
+            .await;
             if json {
                 println!("{}", admin::render_eab_created_json(&eab));
             } else {
@@ -77,8 +90,20 @@ pub async fn run_eab_command(
             Some(eab) => println!("{}", render::render_eab_line(&eab, palette)),
         },
         EabCommand::Revoke { kid } => {
+            let subject = Eab::find_any_by_kid(&kid, &database).await?;
             if !Eab::revoke(&kid, &database).await? {
                 return Err(not_found(&kid));
+            }
+            // A repeat revoke changes nothing, so it records nothing — the
+            // `RevokeOutcome::AlreadyRevoked` rule on the certificate side.
+            if subject.as_ref().is_some_and(|eab| eab.status == "active") {
+                let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
+                let (actor, client) = audit_admin::cli_actor();
+                crate::audit::write(
+                    audit_admin::eab_revoked(actor, client, &kid, profile),
+                    &database,
+                )
+                .await;
             }
             println!("Revoked EAB key {kid}.");
         }

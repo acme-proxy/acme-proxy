@@ -136,6 +136,7 @@ pub async fn cancel_job(
 pub async fn run_job(
     State(state): State<AdminState>,
     Path(id): Path<String>,
+    request_context: crate::audit::RequestContext,
     AuthenticatedWrite(auth): AuthenticatedWrite,
 ) -> Result<Json<Value>, AdminError> {
     match admin::run_job_now(&id, state.database.clone()).await? {
@@ -145,6 +146,11 @@ pub async fn run_job(
             format!("job {id} is {status}; run-now applies to ready or failed jobs"),
         )),
         RunJobNowOutcome::Nudged(job) => {
+            state
+                .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                    crate::audit::admin::job_advanced(actor, client, &id, false)
+                })
+                .await;
             tracing::info!(event = "admin_job_advanced",
                            outcome = "success",
                            surface = "api",
@@ -153,6 +159,11 @@ pub async fn run_job(
             Ok(Json(admin::render_job_json(&job)))
         }
         RunJobNowOutcome::Revived(job) => {
+            state
+                .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                    crate::audit::admin::job_advanced(actor, client, &id, true)
+                })
+                .await;
             tracing::info!(event = "admin_job_revived",
                            outcome = "success",
                            surface = "api",

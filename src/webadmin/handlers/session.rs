@@ -512,9 +512,21 @@ pub async fn delete_session(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
     SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let scope = if query.all {
         AdminSession::delete_for_user(auth.user.id, &state.database).await?;
+        // "Sign out everywhere" ends sessions the operator is not holding, so
+        // it is a revoke worth recording; a plain single logout is not.
+        state
+            .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
+                crate::audit::admin::session_revoked(
+                    actor,
+                    ctx,
+                    crate::audit::admin::SessionScope::AllOf(auth.user.username.clone()),
+                )
+            })
+            .await;
         "all"
     } else {
         AdminSession::delete(&auth.session.token_hash, &state.database).await?;

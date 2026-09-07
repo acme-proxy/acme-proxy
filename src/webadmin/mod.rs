@@ -127,6 +127,26 @@ impl AdminState {
         }
     }
 
+    /// Writes one administrative audit row (`src/audit/admin.rs`), attributed to
+    /// the signed-in operator and the address the shared
+    /// [`Auditor`](crate::audit::Auditor) resolves
+    /// from `request_context`. Call it **after** the operation has landed; a
+    /// failed write is swallowed, exactly as on the certificate paths, so it
+    /// cannot fail the request.
+    pub(crate) async fn record_admin_action(
+        &self,
+        request_context: &crate::audit::RequestContext,
+        username: &str,
+        build: impl FnOnce(
+            crate::audit::Actor,
+            crate::audit::ClientContext,
+        ) -> crate::audit::AuditRecord,
+    ) {
+        let actor = crate::audit::Actor::admin(username);
+        let client = self.audit.client(request_context).await;
+        crate::audit::write(build(actor, client), &self.database).await;
+    }
+
     /// Queues one web-admin security notification through the process-wide
     /// dispatcher, if one is configured. A no-op otherwise, and — like every
     /// [`NotifyDispatcher::dispatch`](crate::notify::NotifyDispatcher::dispatch)
