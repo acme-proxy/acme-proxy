@@ -1038,6 +1038,7 @@ pub(crate) fn build_generation(
                 config.clone(),
                 &profiles,
                 auditor.clone(),
+                assembly.notifiers.clone(),
                 previous_logins,
             );
             (Some(router), Some(logins))
@@ -2207,7 +2208,8 @@ mod tests {
                     command: crate::cli::webadmin::AdminUserCommand::Create {
                         username,
                         password_file: None,
-                        role: _
+                        role: _,
+                        contact: None,
                     }
                 }
             }) if username == "alice"

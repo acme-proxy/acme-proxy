@@ -65,44 +65,9 @@ keeps its corpses stops being read.
       reloading. The fragment route exists already (`HX-Request` picks it);
       what needs deciding is when polling **stops**, so a tab left open on a
       terminal order does not poll for ever.
-## Admin CLI
-
-- [ ] **Exit codes that distinguish.** `src/main.rs` exits `1` for a
-      configuration error, a database that will not open, and every `CliError`
-      alike, so a script cannot tell "no such order" from "the database is
-      gone" — and only the second is worth retrying. `CliError` carries a
-      message and nothing else, so this is a code on it plus one `match` in the
-      single place that exits. What needs deciding is how many: the cheap split
-      is "the operator asked for something that is not there" against "this
-      server could not do it", and every code past those two is a surface that
-      has to be documented and then kept, under the same pre-1.0 rule as the
-      rest of the CLI.
-- [ ] **`admin session revoke --session <id>`.** The panel's Operators and
-      Account pages can now revoke one session individually
-      (`AdminSession::find_by_user_and_fingerprint`); the CLI's `revoke` still
-      only takes `--user` (every session of one operator) or `--all` (every
-      session on the server), which is coarser than what the web surface can
-      do. Cheap to add — the model method already exists — and worth doing
-      only if an operator working from a shell turns out to want the same
-      granularity a browser now has.
 
 ## Both surfaces
 
-- [x] **Find the order from what the operator was handed.** Done. `OrderQuery`
-      grew `identifier` / `identifier_contains` / `cert_serial`, all predicates
-      on the shared `Order::search` `QueryBuilder` (page and count). The
-      identifier match is `EXISTS (json_each(orders.identifiers) …)` — **exact**
-      and case-folded for `identifier` (so a misissuance hunt for `example.com`
-      is not handed `evil-example.com`), `instr` (not `LIKE`) for the substring
-      form, the two `conflicts_with` each other. `cert_serial` is a bound
-      equality over the already-indexed column `find_by_cert_serial` and
-      `AuditQuery` use. **A scan, no migration** — SQLite has no expression
-      index over `json_each`, and a scan on an operator listing over a
-      retention-swept table is fine. Surfaced on `order list`
-      (`--identifier`/`--identifier-contains`/`--cert-serial`, all refused
-      beside `--expiring-in`), `GET /api/orders`
-      (`identifier`/`identifierContains`/`certSerial`, `400` on the identifier
-      conflict) and the `/ui/orders` filter form.
 - [ ] **An admin action trail.** `audit_log` answers one question — who asked
       the CA to sign or withdraw a certificate — and four event names are the
       whole vocabulary. An account deleted, an EAB credential minted or
@@ -145,22 +110,25 @@ keeps its corpses stops being read.
 ## Notifications
 
 - [ ] **Address expiry reminders to the account's own `contact`**, not only to
-      the operator. Every existing `NotifyEvent` goes wherever the backend is
-      configured to send; this would be the first whose recipient comes out of
-      the data, and `EmailNotifier` holds a fixed `to` with no per-event path.
-      Two things come with it: a contact is unverified text a client typed, so
-      an opt-in default and a domain allowlist are the price of turning it on;
-      and the digest shape means one mail **per account** listing that
-      account's own names, which is a different grouping from the
-      whole-profile digest an operator gets — not the same message resent to
-      everybody named in it.
+      the operator. `[admin.notify]` and the `admin_sign_in` /
+      `admin_credential_changed` events already solved the per-event-recipient
+      half (`NotifyEvent::recipient`, `EmailNotifier` sending there instead of
+      its configured `to`) — so what is left is the account-facing grouping: one
+      mail **per account** listing that account's own names, and, because a
+      `contact` is unverified text a client typed, an opt-in default and a
+      domain allowlist as the price of turning it on.
 
-- [ ] **Nothing ever tells an *operator* anything** — ASVS **V6.3.5** and
-      **V6.3.7**, both L3. Every sign-in, every failure, every second-factor
-      change is logged with its address and outcome, and none of it reaches the
-      person it happened to. The blocker is not the notifier, it is that
-      `admin_users` records no contact address at all — so this is a column and
-      a `MfaStep`-sized decision about what counts as suspicious, not a new
-      subsystem. The `NotifyEvent` enum is where the events would go, and the
-      per-account recipient problem is the same one the expiry-reminder item
-      above already has to solve.
+- [ ] **Web-admin CLI credential changes do not notify.** `admin user passwd`
+      and `admin user totp reset` on the host change an operator's
+      authentication details without an `admin_credential_changed`
+      notification — the web panel's routes do (V6.3.7), the CLI's do not,
+      because the CLI has no job runner and building an `[admin.notify]`
+      dispatcher there was judged disproportionate for a host-root operation.
+      Closing it means giving `run_admin_command` a `JobQueue` and an `Egress`
+      to build one from.
+- [ ] **A "new location" that is genuinely a location, not an address.**
+      `admin_users.known_login_ips` (last five distinct addresses) is what
+      raises `admin_sign_in` `succeeded_from_new_address`. An address changes
+      far more often than a location — a mobile operator on CGNAT trips it
+      daily. A coarser signal (ASN, or a geo lookup done out of process) would
+      be quieter, at the cost of a dependency or a script hook.

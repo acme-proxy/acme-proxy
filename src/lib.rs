@@ -693,7 +693,23 @@ impl Assembly {
         // `database`), so it is instead handed the whole `profile name ->
         // dispatcher` map and looks up the right one by `Order.profile` once an
         // issuance settles.
-        let dispatchers = notify::build_registry(resolved, egress.outbound(), &self.jobs)?;
+        let mut dispatchers = notify::build_registry(resolved, egress.outbound(), &self.jobs)?;
+        // The process-wide web-admin security dispatcher, registered under a
+        // reserved key that no profile name can collide with. Built only when
+        // the panel is on; `NotifyJob` routes a `notify_deliver` row naming it
+        // here with no special case, and a reload republishes it in this same
+        // map.
+        if config.admin.enabled {
+            dispatchers.insert(
+                notify::ADMIN_DISPATCHER_KEY.to_string(),
+                notify::from_config(
+                    notify::ADMIN_DISPATCHER_KEY,
+                    &config.admin.notify,
+                    egress.outbound(),
+                    &self.jobs,
+                )?,
+            );
+        }
         let previous = self
             .signers
             .lock()

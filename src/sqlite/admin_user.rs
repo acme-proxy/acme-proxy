@@ -143,6 +143,15 @@ pub struct AdminUser {
     pub created_at: i64,
     pub updated_at: i64,
     pub last_login_at: Option<i64>,
+    /// Where to send this operator security notifications (a completed sign-in
+    /// from an unfamiliar address, a refused second factor, a credential
+    /// change). `None` means none are sent -- the event is still logged.
+    pub contact_email: Option<String>,
+    /// The operator's recent distinct login addresses, most-recent-first,
+    /// capped at [`KNOWN_LOGIN_IPS`]. Compared against the live request, but
+    /// **only** to decide whether to notify -- never to authorise. Persisted as
+    /// a JSON array (the `accounts.contact` convention).
+    pub known_login_ips: Vec<String>,
 }
 
 /// Every column of `admin_users`, in one place: each read must select the same set
@@ -153,9 +162,18 @@ pub struct AdminUser {
 macro_rules! columns {
     () => {
         "id, username, password_hash, status, role, totp_secret, totp_pending_secret, \
-         totp_last_step, created_at, updated_at, last_login_at"
+         totp_last_step, created_at, updated_at, last_login_at, contact_email, known_login_ips"
     };
 }
+
+/// How many recent distinct login addresses [`AdminUser::known_login_ips`]
+/// keeps. A completed sign-in from an address outside this set (and only while
+/// the set is non-empty) is what raises the "unusual location" operator
+/// notification -- so the bound is a trade between an operator who moves
+/// between a few networks not being alerted on every switch, and a stale entry
+/// not masking a genuinely new address for too long. Not a config key: the
+/// right value does not depend on the deployment.
+pub const KNOWN_LOGIN_IPS: usize = 5;
 
 impl AdminUser {
     fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
@@ -171,6 +189,11 @@ impl AdminUser {
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             last_login_at: row.try_get("last_login_at")?,
+            contact_email: row.try_get("contact_email")?,
+            known_login_ips: {
+                let raw: String = row.try_get("known_login_ips")?;
+                serde_json::from_str(&raw).map_err(|e| sqlx::Error::Decode(Box::new(e)))?
+            },
         })
     }
 
@@ -207,6 +230,8 @@ impl AdminUser {
             created_at: now,
             updated_at: now,
             last_login_at: None,
+            contact_email: None,
+            known_login_ips: Vec::new(),
         };
 
         debug!(event = "db_admin_user_create_started", outcome = "progress", username = %user.username);
@@ -399,6 +424,29 @@ impl AdminUser {
         Ok(())
     }
 
+    /// Sets (or clears, with `None`) the address this operator receives security
+    /// notifications at. Not a credential -- no session is revoked. The address
+    /// shape is the caller's to validate (`admin::users::set_contact_email`);
+    /// this layer only stores what it is handed.
+    pub async fn set_contact_email(
+        &mut self,
+        email: Option<&str>,
+        database: &Database,
+    ) -> Result<(), sqlx::Error> {
+        let now = now_secs();
+        sqlx::query("UPDATE admin_users SET contact_email = ?, updated_at = ? WHERE id = ?;")
+            .bind(email)
+            .bind(now)
+            .bind(self.id)
+            .execute(&database.pool)
+            .await?;
+
+        self.contact_email = email.map(str::to_string);
+        self.updated_at = now;
+        info!(event = "db_admin_user_contact_changed", outcome = "success", user_id = %self.id, username = %self.username, cleared = email.is_none());
+        Ok(())
+    }
+
     /// Stores an enrolment the owner has not yet proven a code against.
     ///
     /// Not a usable second factor: [`AdminUser::has_totp`] stays `false` until
@@ -511,17 +559,50 @@ impl AdminUser {
         Ok(claimed)
     }
 
-    /// Stamps `last_login_at`. Advisory only -- nothing authorises on it.
+    /// Stamps `last_login_at`, and folds `client_ip` into `known_login_ips`
+    /// (move-to-front, deduplicated, capped at [`KNOWN_LOGIN_IPS`]). Advisory
+    /// only -- nothing authorises on either column; the address set exists so a
+    /// sign-in from an unfamiliar address can be noticed.
     ///
     /// Called when a login *completes*, which for an operator with a second
-    /// factor is one request later than the password being accepted.
-    pub async fn mark_logged_in(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    /// factor is one request later than the password being accepted. A caller
+    /// that needs the *pre-login* address set (to decide whether this sign-in
+    /// is from a new address) must read `known_login_ips` before calling.
+    pub async fn mark_logged_in(
+        &mut self,
+        client_ip: Option<&str>,
+        database: &Database,
+    ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET last_login_at = ? WHERE id = ?;")
+
+        if let Some(ip) = client_ip.filter(|ip| !ip.is_empty()) {
+            let mut known = Vec::with_capacity(KNOWN_LOGIN_IPS);
+            known.push(ip.to_string());
+            known.extend(
+                self.known_login_ips
+                    .iter()
+                    .filter(|seen| seen.as_str() != ip)
+                    .take(KNOWN_LOGIN_IPS - 1)
+                    .cloned(),
+            );
+            // `Vec<String>` serialization is infallible.
+            let known_json = Value::from(known.clone()).to_string();
+            sqlx::query(
+                "UPDATE admin_users SET last_login_at = ?, known_login_ips = ? WHERE id = ?;",
+            )
             .bind(now)
+            .bind(known_json)
             .bind(self.id)
             .execute(&database.pool)
             .await?;
+            self.known_login_ips = known;
+        } else {
+            sqlx::query("UPDATE admin_users SET last_login_at = ? WHERE id = ?;")
+                .bind(now)
+                .bind(self.id)
+                .execute(&database.pool)
+                .await?;
+        }
 
         self.last_login_at = Some(now);
         Ok(())
@@ -589,6 +670,8 @@ impl AdminUser {
             "createdAt": rfc3339(self.created_at),
             "updatedAt": rfc3339(self.updated_at),
             "lastLoginAt": self.last_login_at.map(rfc3339),
+            "contactEmail": self.contact_email,
+            "knownLoginIps": self.known_login_ips,
         })
     }
 }
@@ -928,11 +1011,69 @@ mod tests {
     async fn mark_logged_in_stamps_last_login_at() {
         let db = db().await;
         let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
-        user.mark_logged_in(&db).await.unwrap();
+        user.mark_logged_in(None, &db).await.unwrap();
         assert!(user.last_login_at.is_some());
 
         let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
         assert_eq!(reloaded.last_login_at, user.last_login_at);
+        assert!(
+            reloaded.known_login_ips.is_empty(),
+            "no address was supplied"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_logged_in_keeps_a_capped_move_to_front_address_set() {
+        let db = db().await;
+        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+
+        // Fill past the cap; the newest address is always at the front.
+        for n in 0..KNOWN_LOGIN_IPS + 2 {
+            user.mark_logged_in(Some(&format!("10.0.0.{n}")), &db)
+                .await
+                .unwrap();
+        }
+        assert_eq!(user.known_login_ips.len(), KNOWN_LOGIN_IPS);
+        assert_eq!(
+            user.known_login_ips[0],
+            format!("10.0.0.{}", KNOWN_LOGIN_IPS + 1)
+        );
+
+        // A known address moves back to the front rather than being appended.
+        let known = user.known_login_ips[3].clone();
+        user.mark_logged_in(Some(&known), &db).await.unwrap();
+        assert_eq!(user.known_login_ips.len(), KNOWN_LOGIN_IPS);
+        assert_eq!(user.known_login_ips[0], known);
+        assert_eq!(
+            user.known_login_ips
+                .iter()
+                .filter(|ip| **ip == known)
+                .count(),
+            1,
+            "deduplicated"
+        );
+
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.known_login_ips, user.known_login_ips);
+    }
+
+    #[tokio::test]
+    async fn set_contact_email_persists_and_syncs_and_clears() {
+        let db = db().await;
+        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        assert_eq!(user.contact_email, None);
+
+        user.set_contact_email(Some("alice@example.com"), &db)
+            .await
+            .unwrap();
+        assert_eq!(user.contact_email.as_deref(), Some("alice@example.com"));
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.contact_email.as_deref(), Some("alice@example.com"));
+
+        user.set_contact_email(None, &db).await.unwrap();
+        assert_eq!(user.contact_email, None);
+        let reloaded = AdminUser::find_by_id(user.id, &db).await.unwrap().unwrap();
+        assert_eq!(reloaded.contact_email, None);
     }
 
     #[tokio::test]
@@ -958,5 +1099,7 @@ mod tests {
         assert_eq!(json["status"], "active");
         assert_eq!(json["totpEnabled"], false);
         assert_eq!(json["lastLoginAt"], Value::Null);
+        assert_eq!(json["contactEmail"], Value::Null);
+        assert_eq!(json["knownLoginIps"], serde_json::json!([]));
     }
 }

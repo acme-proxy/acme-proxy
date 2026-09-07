@@ -180,12 +180,28 @@ async fn confirm_enrolment(
         return Ok((StatusCode::UNAUTHORIZED, render_challenge(state, context)?).into_response());
     };
 
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::SecondFactorEnabled,
+            true,
+            client,
+            pending.session.user_agent.clone(),
+        )
+        .await;
+
     // Completes the login, so it goes through the same function the API side
     // does -- promotion plus `mark_logged_in`, `record_success` and the
     // `admin_login_succeeded` line. Doing it by hand here is how the two front
     // ends drifted the first time.
-    let (_, cookie) =
-        finish_enrolment(state, client, &mut user, &pending.session.token_hash).await?;
+    let (_, cookie) = finish_enrolment(
+        state,
+        client,
+        &mut user,
+        &pending.session.token_hash,
+        pending.session.user_agent.clone(),
+    )
+    .await?;
 
     let mut context = Map::new();
     context.insert("recovery_codes".to_string(), serde_json::json!(codes));

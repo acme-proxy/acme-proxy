@@ -205,7 +205,12 @@ impl Default for CustomNotifyConfig {
 /// are approaching expiry. It reaches a backend only once
 /// `notify.expiry.lead_days` is non-zero, so listing it here does not start
 /// sending anything on its own.
-pub const ALL_NOTIFY_EVENTS: [&str; 7] = [
+///
+/// `admin_sign_in` and `admin_credential_changed` are the web-admin operator
+/// security events (ASVS V6.3.5 / V6.3.7). They fire only on the process-wide
+/// `[admin.notify]` dispatcher, never on a profile's, so listing either in a
+/// per-profile backend's `events` costs nothing.
+pub const ALL_NOTIFY_EVENTS: [&str; 9] = [
     "profile_mounted",
     "account_created",
     "account_deactivated",
@@ -213,6 +218,8 @@ pub const ALL_NOTIFY_EVENTS: [&str; 7] = [
     "certificate_revoked",
     "challenge_failed",
     "certificates_expiring",
+    "admin_sign_in",
+    "admin_credential_changed",
 ];
 
 fn all_notify_events() -> Vec<String> {

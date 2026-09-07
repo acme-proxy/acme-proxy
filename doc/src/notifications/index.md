@@ -1,7 +1,7 @@
 # Notifications
 
 The `notify` subsystem alerts operators on lifecycle events within the ACME
-server.
+server, and web-admin operators on security events on their own account.
 
 ## Supported events
 
@@ -14,17 +14,26 @@ server.
 | `certificate_revoked` | A certificate is revoked, via the ACME API or the admin CLI. |
 | `challenge_failed` | A domain-control validation attempt fails. |
 | `certificates_expiring` | The periodic expiry digest, one per profile. |
+| `admin_sign_in` | A web-admin sign-in from an unfamiliar address, a refused second factor after a correct password, or a lockout. |
+| `admin_credential_changed` | A web-admin operator's password or second factor changed. |
 
-These seven names are the only valid values wherever a backend's `events` list
+These nine names are the only valid values wherever a backend's `events` list
 is configured. An unrecognised name is a **startup error**, not a silently
 ignored entry.
 
-`certificates_expiring` is the one that is not a thing that just happened. The
-first six describe a single account, order or certificate, at the moment it
-changed; this one is a digest sent on a schedule, listing the certificates on
-one profile that expire inside a configured window. It sends nothing until
+`certificates_expiring` is the one that is not a thing that just happened.
+Every other event describes a single subject at the moment it changed; this one
+is a digest sent on a schedule, listing the certificates on one profile that
+expire inside a configured window. It sends nothing until
 [`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
 `events` list costs nothing.
+
+`admin_sign_in` and `admin_credential_changed` are the [web-admin
+operator](../operations/webadmin.md#security-notifications) security events
+(ASVS V6.3.5 / V6.3.7). They fire **only** on the process-wide `[admin.notify]`
+dispatcher — never on a profile's `[notify]` — so listing either in a
+per-profile backend's `events` costs nothing. Their email goes to the affected
+operator's own address rather than to `notify.email.to`.
 
 ## Backends
 

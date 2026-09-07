@@ -291,7 +291,29 @@ impl NotifyHarness {
         Self::over(Arc::new(RecordingNotifyBackend::failing())).await
     }
 
+    /// A harness keyed under [`acme_proxy::notify::ADMIN_DISPATCHER_KEY`], for
+    /// the web-admin security events, plus the `Notifiers` handle to hand to
+    /// `build_admin_app`.
+    pub async fn admin() -> (Self, acme_proxy::notify::Notifiers) {
+        let harness = Self::over_key(
+            acme_proxy::notify::ADMIN_DISPATCHER_KEY,
+            Arc::new(RecordingNotifyBackend::default()),
+        )
+        .await;
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            acme_proxy::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            harness.dispatcher.clone(),
+        );
+        let notifiers: acme_proxy::notify::Notifiers = Arc::new(map).into();
+        (harness, notifiers)
+    }
+
     async fn over(recorder: Arc<RecordingNotifyBackend>) -> Self {
+        Self::over_key(PROFILE, recorder).await
+    }
+
+    async fn over_key(key: &str, recorder: Arc<RecordingNotifyBackend>) -> Self {
         let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
             .iter()
             .map(|kind| (*kind).to_string())
@@ -309,14 +331,14 @@ impl NotifyHarness {
         let queue = JobQueue::new(database, &config);
 
         let dispatcher = Arc::new(NotifyDispatcher::new(
-            PROFILE,
+            key,
             vec![BackendSlot::new("recording", recorder.clone(), &every)],
             queue.clone(),
         ));
 
         let mut registry = JobRegistry::new();
         let mut dispatchers = std::collections::HashMap::new();
-        dispatchers.insert(PROFILE.to_string(), dispatcher.clone());
+        dispatchers.insert(key.to_string(), dispatcher.clone());
         registry
             .register(Arc::new(NotifyJob::new(Arc::new(dispatchers))))
             .unwrap();
@@ -694,6 +716,19 @@ async fn admin_app_with(
     config: Config,
     filter: Arc<FilterPolicy>,
 ) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
+    admin_app_with_notifiers(
+        config,
+        filter,
+        acme_proxy::notify::DispatcherMap::new().into(),
+    )
+    .await
+}
+
+async fn admin_app_with_notifiers(
+    config: Config,
+    filter: Arc<FilterPolicy>,
+    notifiers: acme_proxy::notify::Notifiers,
+) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let signer: Arc<dyn SignerBackend> =
@@ -710,8 +745,39 @@ async fn admin_app_with(
         Arc::new(config),
         &[profile],
         test_auditor(database.clone()),
+        notifiers,
     );
     (router, database, signer)
+}
+
+/// [`test_admin_app_logged_in`], with a recording web-admin security
+/// dispatcher wired in (under `ADMIN_DISPATCHER_KEY`) and a runner draining it,
+/// for the tests whose subject is the ASVS V6.3.5 / V6.3.7 notifications.
+pub async fn test_admin_app_logged_in_with_security_notify(
+    config: Config,
+) -> (Router, Arc<Database>, AdminSessionHandle, NotifyHarness) {
+    let (harness, notifiers) = NotifyHarness::admin().await;
+    let (app, database, _signer) =
+        admin_app_with_notifiers(config, Arc::new(FilterPolicy::default()), notifiers).await;
+    acme_proxy::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        database.clone(),
+    )
+    .await
+    .expect("the bootstrap operator must be creatable");
+    acme_proxy::admin::users::set_contact_email(
+        "alice",
+        Some("alice@example.com"),
+        database.clone(),
+    )
+    .await
+    .expect("a contact address must be settable");
+    // This first login seeds `known_login_ips` from the default peer address, so
+    // a later login from that same address is silent and only a *new* one fires.
+    let handle = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+    (app, database, handle, harness)
 }
 
 /// A `[filter]` policy with two checks and two rules, built the way the server

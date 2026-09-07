@@ -35,7 +35,8 @@ for the subject line and body.
 
 *(Available event names: `profile_mounted`, `account_created`,
 `account_deactivated`, `certificate_issued`, `certificate_revoked`,
-`challenge_failed`, `certificates_expiring`).*
+`challenge_failed`, `certificates_expiring`, `admin_sign_in`,
+`admin_credential_changed`).*
 
 A `webhook/<event>.j2` renders the **message**, not the payload: every
 `[notify.webhook.<name>]` entry then wraps it in its own `body` template. So a
@@ -134,3 +135,24 @@ anywhere in scope.
 The `superseded_by` test is what makes a digest readable: an operator scans for
 the entries without it. Rendering every row identically would bury the handful
 that nobody has renewed among the many that are already taken care of.
+
+### `admin_sign_in`
+A [web-admin operator](../operations/webadmin.md#security-notifications)
+sign-in worth flagging.
+- `profile` (String) — always `__admin__`
+- `username` (String) — the operator
+- `recipient` (Option) — the operator's own contact address; the `email`
+  backend sends there rather than to `notify.email.to`
+- `outcome` (String) — `succeeded_from_new_address`, `second_factor_refused` or
+  `locked_out`
+- `client_ip` (Option), `user_agent` (Option)
+- `at` (Integer) — epoch seconds
+
+### `admin_credential_changed`
+A web-admin operator's password or second factor changed.
+- `profile` (String) — always `__admin__`
+- `username`, `recipient` — as above
+- `change` (String) — `password`, `second_factor_enabled`,
+  `second_factor_disabled` or `recovery_codes_regenerated`
+- `by_self` (Boolean) — `false` when another administrator made the change
+- `client_ip` (Option), `user_agent` (Option), `at` (Integer)

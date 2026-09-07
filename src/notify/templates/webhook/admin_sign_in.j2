@@ -1,0 +1,7 @@
+{% if outcome == "succeeded_from_new_address" -%}
+Web-admin "{{ username }}" signed in from a new address{% if client_ip %} ({{ client_ip }}){% endif %}.
+{%- elif outcome == "second_factor_refused" -%}
+Web-admin "{{ username }}": correct password, refused second factor{% if client_ip %} from {{ client_ip }}{% endif %}. Sign-in not completed.
+{%- else -%}
+Web-admin "{{ username }}": sign-in locked out after too many second-factor attempts{% if client_ip %} from {{ client_ip }}{% endif %}.
+{%- endif %}

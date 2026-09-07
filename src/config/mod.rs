@@ -1135,7 +1135,9 @@ mod tests {
                 "certificate_issued",
                 "certificate_revoked",
                 "challenge_failed",
-                "certificates_expiring"
+                "certificates_expiring",
+                "admin_sign_in",
+                "admin_credential_changed"
             ]
         );
         assert!(config.notify.webhook_enabled.is_empty());

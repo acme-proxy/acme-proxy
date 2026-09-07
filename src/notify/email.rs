@@ -27,9 +27,16 @@ impl EmailNotifier {
     /// consistent with the rest of this codebase preferring to fail requests
     /// (or, here, individual deliveries) rather than startup on a transient
     /// network condition.
+    /// `allow_empty_to` is set only for the process-wide `[admin.notify]`
+    /// dispatcher, whose events carry their own recipient
+    /// ([`NotifyEvent::recipient`]): there, an empty `to` is a valid "deliver
+    /// to each operator's own `contact_email` and nowhere else". Every
+    /// per-profile dispatcher passes `false` and keeps the startup error, since
+    /// its events name no recipient and a `send` would have nowhere to go.
     pub fn from_config(
         cfg: &EmailNotifyConfig,
         env: Arc<minijinja::Environment<'static>>,
+        allow_empty_to: bool,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.smtp_host.trim().is_empty(),
@@ -40,7 +47,7 @@ impl EmailNotifier {
             "notify.email is enabled but notify.email.from is empty"
         );
         anyhow::ensure!(
-            !cfg.to.is_empty(),
+            allow_empty_to || !cfg.to.is_empty(),
             "notify.email is enabled but notify.email.to is empty"
         );
 
@@ -109,10 +116,29 @@ impl NotifyBackend for EmailNotifier {
         let subject = render(&self.env, &format!("email/{kind}.subject.j2"), event)?;
         let body = render(&self.env, &format!("email/{kind}.body.j2"), event)?;
 
+        // An event that names its own recipient (the web-admin security
+        // events, whose subject is one operator) goes there instead of the
+        // configured `to` -- the operator is the one who has to be told. A
+        // parse failure is permanent: the same string will not parse next
+        // time either.
+        let recipients: Vec<Mailbox> = match event.recipient() {
+            Some(address) => vec![address.parse().map_err(|error| {
+                NotifyError::permanent(format!(
+                    "recipient `{address}` is not a valid address: {error}"
+                ))
+            })?],
+            None => self.to.clone(),
+        };
+        if recipients.is_empty() {
+            // No per-event recipient and no configured fallback: there is
+            // nobody to deliver to. Not a failure -- the event is still logged.
+            return Ok(());
+        }
+
         let mut builder = Message::builder()
             .from(self.from.clone())
             .subject(subject.trim());
-        for to in &self.to {
+        for to in &recipients {
             builder = builder.to(to.clone());
         }
         // Permanent: an address or a header the builder refuses is a
@@ -152,7 +178,8 @@ mod tests {
             smtp_host: String::new(),
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("smtp_host is empty"));
     }
 
@@ -162,7 +189,8 @@ mod tests {
             to: Vec::new(),
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("to is empty"));
     }
 
@@ -172,7 +200,8 @@ mod tests {
             smtp_security: "smtps-but-typo".to_string(),
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("smtp_security"));
     }
 
@@ -182,7 +211,8 @@ mod tests {
             from: "not an address".to_string(),
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("notify.email.from"));
     }
 
@@ -194,7 +224,8 @@ mod tests {
             to: vec!["ops@example.com".to_string(), "not an address".to_string()],
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("notify.email.to"), "{error}");
     }
 
@@ -204,7 +235,8 @@ mod tests {
             from: String::new(),
             ..cfg()
         };
-        let error = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap_err();
+        let error =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap_err();
         assert!(error.to_string().contains("from is empty"), "{error}");
     }
 
@@ -221,7 +253,8 @@ mod tests {
             timeout_ms: 2000,
             ..cfg()
         };
-        let notifier = EmailNotifier::from_config(&cfg, Arc::new(build_environment(""))).unwrap();
+        let notifier =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap();
         assert_eq!(notifier.name(), "email");
 
         let error = notifier
@@ -240,7 +273,8 @@ mod tests {
 
     #[tokio::test]
     async fn renders_the_certificate_issued_template() {
-        let notifier = EmailNotifier::from_config(&cfg(), Arc::new(build_environment(""))).unwrap();
+        let notifier =
+            EmailNotifier::from_config(&cfg(), Arc::new(build_environment("")), false).unwrap();
         let event = NotifyEvent::CertificateIssued(CertificateIssuedData {
             profile: "le".to_string(),
             order_id: "ord-1".to_string(),
@@ -257,5 +291,94 @@ mod tests {
         let body = render(&notifier.env, "email/certificate_issued.body.j2", &event).unwrap();
         assert!(subject.contains("le"));
         assert!(body.contains("example.com"));
+    }
+
+    /// An empty `to` is only accepted with `allow_empty_to` — the shape the
+    /// process-wide `[admin.notify]` dispatcher passes, since its events carry
+    /// their own recipient.
+    #[test]
+    fn an_empty_to_is_accepted_only_when_allowed() {
+        let cfg = EmailNotifyConfig {
+            to: Vec::new(),
+            ..cfg()
+        };
+        assert!(EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).is_err());
+        assert!(EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), true).is_ok());
+    }
+
+    fn admin_sign_in(recipient: Option<&str>) -> NotifyEvent {
+        NotifyEvent::AdminSignIn(crate::notify::AdminSignInData {
+            profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            username: "alice".to_string(),
+            recipient: recipient.map(str::to_string),
+            outcome: crate::notify::AdminSignInOutcome::SucceededFromNewAddress,
+            client_ip: Some("203.0.113.9".to_string()),
+            user_agent: None,
+            at: 1_700_000_000,
+        })
+    }
+
+    /// A per-event recipient is used instead of the configured `to`. Delivery
+    /// against port 1 fails, but the failure names the *event's* address — so
+    /// the message was addressed there, not to `ops@example.com`.
+    #[tokio::test]
+    async fn a_per_event_recipient_replaces_the_configured_to() {
+        let cfg = EmailNotifyConfig {
+            smtp_host: "127.0.0.1".to_string(),
+            smtp_port: 1,
+            smtp_security: "none".to_string(),
+            timeout_ms: 2000,
+            ..cfg()
+        };
+        let notifier =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap();
+
+        // A recipient that will not parse is a permanent failure, and it names
+        // the address it tried — proof the per-event recipient was chosen.
+        let error = notifier
+            .send(&admin_sign_in(Some("not an address")))
+            .await
+            .expect_err("the recipient does not parse");
+        assert!(!error.retryable(), "a bad address is permanent");
+        assert!(error.to_string().contains("not an address"), "{error}");
+    }
+
+    /// No per-event recipient and an empty configured `to`: nobody to deliver
+    /// to, which is `Ok(())` rather than an error — the event is still logged.
+    #[tokio::test]
+    async fn no_recipient_and_no_fallback_is_a_silent_ok() {
+        let cfg = EmailNotifyConfig {
+            to: Vec::new(),
+            ..cfg()
+        };
+        let notifier =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), true).unwrap();
+        notifier
+            .send(&admin_sign_in(None))
+            .await
+            .expect("nowhere to send is not a failure");
+    }
+
+    /// With no per-event recipient, the configured `to` is still used — the
+    /// fallback for an operator with no `contact_email`.
+    #[tokio::test]
+    async fn without_a_recipient_the_configured_to_is_the_fallback() {
+        let cfg = EmailNotifyConfig {
+            smtp_host: "127.0.0.1".to_string(),
+            smtp_port: 1,
+            smtp_security: "none".to_string(),
+            timeout_ms: 2000,
+            ..cfg()
+        };
+        let notifier =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), true).unwrap();
+        let error = notifier
+            .send(&admin_sign_in(None))
+            .await
+            .expect_err("nothing is listening on port 1");
+        assert!(
+            error.to_string().contains("SMTP delivery failed"),
+            "{error}"
+        );
     }
 }

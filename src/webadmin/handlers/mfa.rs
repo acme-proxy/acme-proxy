@@ -10,7 +10,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -217,6 +217,7 @@ pub async fn begin_totp(
 pub async fn confirm_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     enrol: EnrolWrite,
     Json(body): Json<ConfirmRequest>,
 ) -> Result<Response, AdminError> {
@@ -232,6 +233,16 @@ pub async fn confirm_totp(
         ));
     };
 
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::SecondFactorEnabled,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     let body = json!({ "recoveryCodes": codes });
 
     if !enrol.pending {
@@ -241,8 +252,14 @@ pub async fn confirm_totp(
     // The `require_mfa` bootstrap: this confirmation completed the login, so it
     // owes everything the code path owes. `finish_enrolment` is the one place
     // that knows what, and the pages side calls the same function.
-    let (_, cookie) =
-        finish_enrolment(&state, client, &mut user, &enrol.session.token_hash).await?;
+    let (_, cookie) = finish_enrolment(
+        &state,
+        client,
+        &mut user,
+        &enrol.session.token_hash,
+        enrol.session.user_agent.clone(),
+    )
+    .await?;
     Ok((StatusCode::OK, [(header::SET_COOKIE, cookie)], Json(body)).into_response())
 }
 
@@ -257,6 +274,7 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
@@ -281,6 +299,16 @@ pub async fn disable_totp(
     )
     .await?;
 
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::SecondFactorDisabled,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -293,6 +321,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
@@ -309,7 +338,18 @@ pub async fn regenerate_recovery_codes(
         &state.logins,
     )?;
 
-    let codes = mfa::regenerate_recovery_codes(&auth.user, state.database).await?;
+    let codes = mfa::regenerate_recovery_codes(&auth.user, state.database.clone()).await?;
+
+    state
+        .notify_credential_change(
+            &auth.user,
+            crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     Ok(Json(json!({ "recoveryCodes": codes })))
 }
 
@@ -331,6 +371,8 @@ mod tests {
             created_at: 1_700_000_000,
             updated_at: 1_700_000_000,
             last_login_at: None,
+            contact_email: None,
+            known_login_ips: Vec::new(),
         }
     }
 

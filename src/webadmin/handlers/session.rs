@@ -127,16 +127,19 @@ pub(crate) async fn sign_in(
                 token_hash: &minted.token_hash,
                 csrf_token: &csrf_token,
                 created_ip,
-                user_agent,
+                user_agent: user_agent.clone(),
             },
             ttl,
             &state.database,
         )
         .await?;
 
-        user.mark_logged_in(&state.database).await?;
+        let known_before = user.known_login_ips.clone();
+        user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
+            .await?;
         state.logins.record_success(client);
         log_login(true, &user.username, client, "");
+        notify_sign_in_from_new_address(state, &user, &known_before, client, user_agent).await;
 
         return Ok(SignedIn {
             user,
@@ -243,6 +246,30 @@ pub(crate) async fn finish_mfa(
               username = %user.username,
               client_ip = ?client,
               reason = outcome.reason());
+
+        // Tell the operator: a correct password was entered against their
+        // account and only the second factor stopped it (V6.3.5). A lockout is
+        // its own, sharper signal.
+        let user_agent = pending.session.user_agent.clone();
+        notify_sign_in(
+            state,
+            &user,
+            crate::notify::AdminSignInOutcome::SecondFactorRefused,
+            client,
+            user_agent.clone(),
+        )
+        .await;
+        if spent {
+            notify_sign_in(
+                state,
+                &user,
+                crate::notify::AdminSignInOutcome::LockedOut,
+                client,
+                user_agent,
+            )
+            .await;
+        }
+
         // The same answer a wrong password gets, and for the same reason: a
         // wrong code, a spent recovery code and a replayed one are one refusal
         // to the client, and only the log says which. Exhausting the attempts
@@ -253,13 +280,23 @@ pub(crate) async fn finish_mfa(
 
     let (session, cookie) = promote_pending(state, &pending.session.token_hash).await?;
 
-    user.mark_logged_in(&state.database).await?;
+    let known_before = user.known_login_ips.clone();
+    user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
+        .await?;
     state.logins.record_success(client);
     info!(event = "admin_mfa_verified",
           outcome = "success",
           username = %user.username,
           method = via.as_str());
     log_login(true, &user.username, client, "");
+    notify_sign_in_from_new_address(
+        state,
+        &user,
+        &known_before,
+        client,
+        pending.session.user_agent.clone(),
+    )
+    .await;
 
     Ok(SignedIn {
         user,
@@ -323,13 +360,73 @@ pub(crate) async fn finish_enrolment(
     client: Option<std::net::IpAddr>,
     user: &mut crate::sqlite::admin_user::AdminUser,
     pending_token_hash: &str,
+    user_agent: Option<String>,
 ) -> Result<(AdminSession, String), AdminError> {
     let (session, cookie) = promote_pending(state, pending_token_hash).await?;
-    user.mark_logged_in(&state.database).await?;
+    let known_before = user.known_login_ips.clone();
+    user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
+        .await?;
     state.logins.record_success(client);
     info!(event = "admin_mfa_enrolled", outcome = "success", username = %user.username);
     log_login(true, &user.username, client, "");
+    notify_sign_in_from_new_address(state, user, &known_before, client, user_agent).await;
     Ok((session, cookie))
+}
+
+/// `Option<IpAddr>` -> the string form `known_login_ips` / the payloads carry.
+fn client_ip_str(client: Option<std::net::IpAddr>) -> Option<String> {
+    client.map(|ip| ip.to_string())
+}
+
+/// Queues one web-admin security notification about `outcome` for `user`.
+async fn notify_sign_in(
+    state: &AdminState,
+    user: &AdminUser,
+    outcome: crate::notify::AdminSignInOutcome,
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<String>,
+) {
+    state
+        .notify_security(crate::notify::NotifyEvent::AdminSignIn(
+            crate::notify::AdminSignInData {
+                profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+                username: user.username.clone(),
+                recipient: user.contact_email.clone(),
+                outcome,
+                client_ip: client_ip_str(client),
+                user_agent,
+                at: crate::sqlite::nonce::now_secs(),
+            },
+        ))
+        .await;
+}
+
+/// [`notify_sign_in`] for a completed login, but only when `client` is an
+/// address the operator's recent sign-ins did not come from. `known_before` is
+/// `known_login_ips` as it was *before* this login folded the current address
+/// in. A first-ever login (`known_before` empty) is silent — there is no
+/// baseline to be unusual against.
+async fn notify_sign_in_from_new_address(
+    state: &AdminState,
+    user: &AdminUser,
+    known_before: &[String],
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<String>,
+) {
+    let Some(ip) = client_ip_str(client) else {
+        return;
+    };
+    if known_before.is_empty() || known_before.contains(&ip) {
+        return;
+    }
+    notify_sign_in(
+        state,
+        user,
+        crate::notify::AdminSignInOutcome::SucceededFromNewAddress,
+        client,
+        user_agent,
+    )
+    .await;
 }
 
 /// `POST /api/session` — exchange a username and password for a session cookie.

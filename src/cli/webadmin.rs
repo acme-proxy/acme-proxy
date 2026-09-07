@@ -61,6 +61,11 @@ pub enum AdminUserCommand {
         /// operators), or `viewer` (read-only bar their own account).
         #[arg(long, default_value = "admin")]
         role: String,
+        /// Address to send this operator security notifications to (a sign-in
+        /// from an unfamiliar address, a refused second factor, a credential
+        /// change). Requires `[admin.notify]` to be configured.
+        #[arg(long)]
+        contact: Option<String>,
     },
     /// List operators, oldest first. Never shows a password hash.
     List {
@@ -88,6 +93,13 @@ pub enum AdminUserCommand {
         username: String,
         /// The new tier: `admin`, `operator` or `viewer`.
         role: String,
+    },
+    /// Set or clear the address an operator receives security notifications
+    /// at. Omit `--contact` (or pass an empty value) to clear it.
+    Contact {
+        username: String,
+        #[arg(long)]
+        contact: Option<String>,
     },
     /// Delete an operator and every session of theirs.
     Delete { username: String },
@@ -187,6 +199,7 @@ async fn run_user_command(
             username,
             password_file,
             role,
+            contact,
         } => {
             let role: AdminRole = role
                 .parse()
@@ -200,8 +213,14 @@ async fn run_user_command(
             // asked for. A fresh operator holds no sessions, so the revoke
             // `set_role` also does is a no-op here.
             if role != AdminRole::Admin {
-                users::set_role(&user.username, role, database)
+                users::set_role(&user.username, role, database.clone())
                     .await?
+                    .ok_or_else(|| not_found(&user.username))?;
+            }
+            if let Some(contact) = contact.as_deref() {
+                users::set_contact_email(&user.username, Some(contact), database)
+                    .await
+                    .map_err(user_error)?
                     .ok_or_else(|| not_found(&user.username))?;
             }
             // The id, not the password: nothing echoes a credential back.
@@ -209,6 +228,20 @@ async fn run_user_command(
                 "Created admin user {} ({}), role {role}.",
                 user.username, user.id
             );
+        }
+        AdminUserCommand::Contact { username, contact } => {
+            match users::set_contact_email(&username, contact.as_deref(), database)
+                .await
+                .map_err(user_error)?
+            {
+                None => return Err(not_found(&username)),
+                Some(user) => match user.contact_email {
+                    Some(address) => {
+                        println!("Contact address for {} set to {address}.", user.username)
+                    }
+                    None => println!("Contact address for {} cleared.", user.username),
+                },
+            }
         }
         AdminUserCommand::Role { username, role } => {
             let role: AdminRole = role
@@ -512,8 +545,9 @@ fn read_password(
 fn user_error(error: UserError) -> CliError {
     match error {
         UserError::Database(error) => CliError::from(error),
-        // A duplicate username or a policy rejection is the operator's to fix.
-        UserError::DuplicateUsername(_) | UserError::Policy(_) => {
+        // A duplicate username, a policy rejection or a malformed contact
+        // address is the operator's to fix.
+        UserError::DuplicateUsername(_) | UserError::Policy(_) | UserError::InvalidContact(_) => {
             CliError::bad_request(error.to_string())
         }
     }
@@ -571,11 +605,16 @@ mod tests {
     }
 
     fn create_with_role(username: &str, role: &str) -> AdminCommand {
+        create_full(username, role, None)
+    }
+
+    fn create_full(username: &str, role: &str, contact: Option<&str>) -> AdminCommand {
         AdminCommand::User {
             command: AdminUserCommand::Create {
                 username: username.to_string(),
                 password_file: None,
                 role: role.to_string(),
+                contact: contact.map(str::to_string),
             },
         }
     }
@@ -611,6 +650,7 @@ mod tests {
                     username: "alice".to_string(),
                     password_file: Some(path),
                     role: "admin".to_string(),
+                    contact: None,
                 },
             },
             "",
@@ -639,6 +679,7 @@ mod tests {
                     username: "alice".to_string(),
                     password_file: Some(PathBuf::from("/nonexistent/pw")),
                     role: "admin".to_string(),
+                    contact: None,
                 },
             },
             "",
@@ -693,6 +734,93 @@ mod tests {
         let db = db().await;
         let error = run(create("alice"), "", db).await.unwrap_err();
         assert_eq!(error, CliError::failed("no password supplied".to_string()));
+    }
+
+    fn contact(username: &str, address: Option<&str>) -> AdminCommand {
+        AdminCommand::User {
+            command: AdminUserCommand::Contact {
+                username: username.to_string(),
+                contact: address.map(str::to_string),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn create_with_contact_stores_the_address() {
+        let db = db().await;
+        run(
+            create_full("alice", "admin", Some("alice@example.com")),
+            &format!("{GOOD}\n"),
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        let user = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.contact_email.as_deref(), Some("alice@example.com"));
+    }
+
+    #[tokio::test]
+    async fn create_with_a_bad_contact_is_a_bad_request() {
+        let db = db().await;
+        let error = run(
+            create_full("alice", "admin", Some("not an address")),
+            &format!("{GOOD}\n"),
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
+        // The operator is still created; only the contact was rejected.
+        assert!(
+            AdminUser::find_by_username("alice", &db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn contact_sets_clears_and_refuses_an_unknown_user() {
+        let db = db().await;
+        run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+
+        run(contact("alice", Some("a@example.com")), "", db.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            AdminUser::find_by_username("alice", &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .contact_email
+                .as_deref(),
+            Some("a@example.com")
+        );
+
+        run(contact("alice", None), "", db.clone()).await.unwrap();
+        assert_eq!(
+            AdminUser::find_by_username("alice", &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .contact_email,
+            None
+        );
+
+        let error = run(contact("nobody", Some("a@example.com")), "", db.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
+
+        let error = run(contact("alice", Some("bad address")), "", db)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]

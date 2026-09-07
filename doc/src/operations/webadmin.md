@@ -398,6 +398,35 @@ An endpoint with no rules is a **state, not an error**: the answer carries
 `"active": false` and says the endpoint filters nothing, rather than a `404`.
 That is the one policy an operator most needs to be told about.
 
+### Security notifications
+
+Every web-admin sign-in and every second-factor change is logged, and — when
+`[admin.notify]` is configured — the operator it happened to is also told
+(ASVS V6.3.5 / V6.3.7). Two events fire:
+
+- **`admin_sign_in`** — a completed sign-in from an address not among the
+  operator's recent ones (`admin_users.known_login_ips` keeps the last five
+  distinct addresses; a first-ever sign-in has no baseline and is silent), a
+  correct password followed by a refused second factor, or a per-session
+  second-factor lockout.
+- **`admin_credential_changed`** — the operator's password changed, a second
+  factor was enrolled or removed, recovery codes were regenerated, or another
+  administrator reset this operator's second factor (`by_self = false`).
+
+`[admin.notify]` has exactly the shape of the per-profile [`[notify]`
+section](../notifications/index.md) — `enabled`, `email` / `webhook` / `custom`
+backends, `template_dir`, per-backend `events` — but is process-wide and built
+only while `[admin]` is enabled (`ACME_PROXY_ADMIN__NOTIFY__ENABLED`). Email
+delivery goes to each operator's own address rather than to `notify.email.to`:
+set it with `acme-proxy admin user create --contact <address>` or `admin user
+contact <username> --contact <address>`, stored in `admin_users.contact_email`.
+An operator with no address on file gets no message (the event is still
+logged); `[admin.notify.email].to`, if set, is the fallback for that case.
+
+Changes made from the **host CLI** (`admin user passwd`, `admin user totp
+reset`) are logged but do not notify — the CLI runs no background job queue,
+and the host is the trusted plane.
+
 ### Errors
 
 Not ACME problem documents. Every `Problem` type in this server is a hardcoded

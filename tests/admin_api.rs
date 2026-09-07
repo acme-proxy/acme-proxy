@@ -4502,3 +4502,80 @@ async fn operators_mutations_require_the_callers_password_once_they_have_a_facto
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
+
+// -- Web-admin operator security notifications (ASVS V6.3.5 / V6.3.7) --------
+
+/// A completed sign-in from an address not among the operator's recent ones
+/// queues an `admin_sign_in` notification for that operator; one from a known
+/// address is silent.
+#[tokio::test]
+async fn a_sign_in_from_a_new_address_notifies_the_operator() {
+    let (app, _database, _session, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+
+    // The bootstrap login in the harness came from 127.0.0.1:40000, so a second
+    // login from that same address must not fire.
+    let _ = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    // A login from a genuinely new address does.
+    let response = admin_request_from(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+        "203.0.113.77:5555",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let events = notify.recorded(1).await;
+    assert_eq!(events.len(), 1, "exactly the new-address login fired");
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminSignIn(data) => {
+            assert_eq!(data.username, "alice");
+            assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
+            assert_eq!(data.client_ip.as_deref(), Some("203.0.113.77"));
+            assert!(matches!(
+                data.outcome,
+                acme_proxy::notify::AdminSignInOutcome::SucceededFromNewAddress
+            ));
+        }
+        other => panic!("expected AdminSignIn, got {other:?}"),
+    }
+}
+
+/// Changing one's own password queues an `admin_credential_changed`
+/// notification, `by_self = true`.
+#[tokio::test]
+async fn a_password_change_notifies_the_operator() {
+    let (app, _database, session, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/password",
+        Some(&session),
+        Some(json!({
+            "current_password": ADMIN_PASSWORD,
+            "new_password": "another-long-enough-password",
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let events = notify.recorded(1).await;
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+            assert_eq!(data.username, "alice");
+            assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
+            assert!(data.by_self);
+            assert!(matches!(
+                data.change,
+                acme_proxy::notify::AdminCredentialChange::Password
+            ));
+        }
+        other => panic!("expected AdminCredentialChanged, got {other:?}"),
+    }
+}

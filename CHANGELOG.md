@@ -62,6 +62,25 @@ migrated configuration before restarting.
 
 ### Security
 
+- **The web admin now notifies an operator about security events on their own
+  account** — ASVS 5.0 **V6.3.5** and **V6.3.7**, the two open L3 gaps in the
+  [ASVS assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html)
+  for authentication notifications. A completed sign-in from an address the
+  operator's recent sign-ins did not come from, a correct password followed by
+  a refused second factor, a per-session second-factor lockout, and any change
+  to their password or second factor now send a message. Delivery is the same
+  durable, retrying `notify` pipeline every other event uses, configured under
+  the new **`[admin.notify]`** section (email / webhook / custom, the shape of
+  `[notify]`); email goes to each operator's own address, set with
+  `acme-proxy admin user create --contact` or `admin user contact` and stored
+  in the new nullable `admin_users.contact_email` column (a new migration). Two
+  `NotifyEvent` kinds carry it — `admin_sign_in` and
+  `admin_credential_changed` — bringing the total to nine. Credential changes
+  made from the **host CLI** (`admin user passwd`, `admin user totp reset`) are
+  still logged only; the host is the trusted plane. `admin_users` also gains a
+  `known_login_ips` column (the last five distinct login addresses, compared
+  only to decide whether to notify, never to authorise).
+
 - **The container image now runs as a non-root user** — ASVS 5.0 V13.2.2, the
   last open L1/L2 gap in the [ASVS
   assessment](https://acme-proxy.github.io/acme-proxy/security/asvs.html). The

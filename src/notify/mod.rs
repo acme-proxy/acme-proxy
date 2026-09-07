@@ -75,6 +75,16 @@ pub mod webhook;
 
 pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 
+/// The key the process-wide web-admin security dispatcher is registered under
+/// in a [`DispatcherMap`].
+///
+/// Not a profile: `[admin]` is process-wide and the web admin has no
+/// `Profile`. The underscores make it un-collidable with a real profile name
+/// (`^[a-z0-9-]+$`, `crate::PROFILE_PREFIX`), so [`NotifyJob`] routes a
+/// `notify_deliver` row naming it to this dispatcher with no special case, and
+/// a reload republishes it in the same map as every profile's.
+pub const ADMIN_DISPATCHER_KEY: &str = "__admin__";
+
 /// A pluggable notification channel.
 #[async_trait]
 pub trait NotifyBackend: Send + Sync {
@@ -273,6 +283,74 @@ pub struct CertificatesExpiringData {
     pub certificates: Vec<ExpiringCertificate>,
 }
 
+/// Which of the three notifiable web-admin sign-in situations
+/// [`NotifyEvent::AdminSignIn`] carries — most of the "what counts as
+/// suspicious" decision, kept deliberately small (ASVS V6.3.5).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminSignInOutcome {
+    /// A login completed from an address not among the operator's recent known
+    /// login addresses. A login from a known address, or before any address is
+    /// on file at all, is silent — there is no baseline to be unusual against.
+    SucceededFromNewAddress,
+    /// A correct password, then a refused second factor ("partially successful
+    /// authentication"). Always sent.
+    SecondFactorRefused,
+    /// The per-session second-factor attempt cap was hit and the
+    /// half-authenticated session destroyed ("several unsuccessful attempts").
+    /// Always sent.
+    LockedOut,
+}
+
+/// Payload of [`NotifyEvent::AdminSignIn`]: something happened at the web
+/// admin's sign-in that the operator it happened to should hear about.
+///
+/// The one email-bound event whose recipient comes out of the data
+/// (`recipient` = the operator's `admin_users.contact_email`) rather than the
+/// backend configuration — see [`NotifyEvent::recipient`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdminSignInData {
+    /// Always [`ADMIN_DISPATCHER_KEY`]. Carried as a field like every other
+    /// `*Data` struct so `NotifyEvent::profile` stays a uniform `&data.profile`
+    /// and the queued payload's `"profile"` member is present the usual way.
+    pub profile: String,
+    pub username: String,
+    /// The operator's contact address, `None` when none is on file.
+    pub recipient: Option<String>,
+    pub outcome: AdminSignInOutcome,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    /// When it happened, epoch seconds.
+    pub at: i64,
+}
+
+/// Which authentication detail changed, for [`NotifyEvent::AdminCredentialChanged`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminCredentialChange {
+    Password,
+    SecondFactorEnabled,
+    SecondFactorDisabled,
+    RecoveryCodesRegenerated,
+}
+
+/// Payload of [`NotifyEvent::AdminCredentialChanged`]: a web-admin operator's
+/// password or second factor was changed (ASVS V6.3.7).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdminCredentialChangeData {
+    /// Always [`ADMIN_DISPATCHER_KEY`] — see [`AdminSignInData::profile`].
+    pub profile: String,
+    pub username: String,
+    pub recipient: Option<String>,
+    pub change: AdminCredentialChange,
+    /// `false` when another operator made the change (an admin resetting this
+    /// operator's second factor), `true` when the operator changed their own.
+    pub by_self: bool,
+    pub client_ip: Option<String>,
+    pub user_agent: Option<String>,
+    pub at: i64,
+}
+
 /// One lifecycle event, carrying everything a template or `custom` script
 /// needs to describe it.
 ///
@@ -293,6 +371,8 @@ pub enum NotifyEvent {
     CertificateRevoked(CertificateRevokedData),
     ChallengeFailed(ChallengeFailedData),
     CertificatesExpiring(CertificatesExpiringData),
+    AdminSignIn(AdminSignInData),
+    AdminCredentialChanged(AdminCredentialChangeData),
 }
 
 impl NotifyEvent {
@@ -307,6 +387,8 @@ impl NotifyEvent {
             Self::CertificateRevoked(_) => "certificate_revoked",
             Self::ChallengeFailed(_) => "challenge_failed",
             Self::CertificatesExpiring(_) => "certificates_expiring",
+            Self::AdminSignIn(_) => "admin_sign_in",
+            Self::AdminCredentialChanged(_) => "admin_credential_changed",
         }
     }
 
@@ -320,6 +402,8 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => &data.profile,
             Self::ChallengeFailed(data) => &data.profile,
             Self::CertificatesExpiring(data) => &data.profile,
+            Self::AdminSignIn(data) => &data.profile,
+            Self::AdminCredentialChanged(data) => &data.profile,
         }
     }
 
@@ -333,6 +417,8 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => minijinja::Value::from_serialize(data),
             Self::ChallengeFailed(data) => minijinja::Value::from_serialize(data),
             Self::CertificatesExpiring(data) => minijinja::Value::from_serialize(data),
+            Self::AdminSignIn(data) => minijinja::Value::from_serialize(data),
+            Self::AdminCredentialChanged(data) => minijinja::Value::from_serialize(data),
         }
     }
 
@@ -360,6 +446,27 @@ impl NotifyEvent {
             Self::ChallengeFailed(data) => data.client_ip.as_deref(),
             // Generated by a sweep, with no request anywhere in scope.
             Self::CertificatesExpiring(_) => None,
+            Self::AdminSignIn(data) => data.client_ip.as_deref(),
+            Self::AdminCredentialChanged(data) => data.client_ip.as_deref(),
+        }
+    }
+
+    /// This event's delivery address, when it comes out of the *data* rather
+    /// than the backend configuration — the web-admin operator's own
+    /// `contact_email`. `None` for every other event and when the operator has
+    /// no address on file. Read only by the `email` backend, which sends there
+    /// instead of its configured `to`.
+    fn recipient(&self) -> Option<&str> {
+        match self {
+            Self::ProfileMounted(_)
+            | Self::AccountCreated(_)
+            | Self::AccountDeactivated(_)
+            | Self::CertificateIssued(_)
+            | Self::CertificateRevoked(_)
+            | Self::ChallengeFailed(_)
+            | Self::CertificatesExpiring(_) => None,
+            Self::AdminSignIn(data) => data.recipient.as_deref(),
+            Self::AdminCredentialChanged(data) => data.recipient.as_deref(),
         }
     }
 
@@ -376,6 +483,8 @@ impl NotifyEvent {
             // A digest spans however many accounts hold the expiring
             // certificates; the per-entry `account_id` is in the payload.
             Self::CertificatesExpiring(_) => None,
+            // An operator is not an ACME account.
+            Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
     }
 
@@ -394,6 +503,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => Some(&data.order_id),
             Self::ChallengeFailed(data) => Some(&data.order_id),
             Self::CertificatesExpiring(_) => None,
+            Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
     }
 
@@ -408,6 +518,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => Some(&data.cert_serial),
             Self::ChallengeFailed(_) => None,
             Self::CertificatesExpiring(_) => None,
+            Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
     }
 
@@ -422,6 +533,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(_) => String::new(),
             Self::ChallengeFailed(_) => String::new(),
             Self::CertificatesExpiring(_) => String::new(),
+            Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => String::new(),
         }
     }
 }
@@ -618,6 +730,14 @@ pub fn from_config(
     // an `Arc`-like handle to its loader internally) but not to construct.
     let env = Arc::new(build_environment(&cfg.template_dir));
 
+    // The process-wide admin dispatcher delivers `admin_sign_in` /
+    // `admin_credential_changed`, whose payloads name their own recipient
+    // (`NotifyEvent::recipient`), so its `notify.email.to` may legitimately be
+    // empty -- an operator with a `contact_email` is still reached. Every
+    // per-profile dispatcher keeps the "notify.email.to is empty" startup
+    // error, since its events carry no recipient.
+    let allow_empty_email_to = profile == ADMIN_DISPATCHER_KEY;
+
     let mut slots: Vec<BackendSlot> = Vec::with_capacity(cfg.enabled.len());
     for name in &cfg.enabled {
         let built: Vec<BackendSlot> = match name.as_str() {
@@ -625,7 +745,11 @@ pub fn from_config(
                 validate_events("notify.email.events", &cfg.email.events)?;
                 vec![BackendSlot::new(
                     "email",
-                    Arc::new(email::EmailNotifier::from_config(&cfg.email, env.clone())?),
+                    Arc::new(email::EmailNotifier::from_config(
+                        &cfg.email,
+                        env.clone(),
+                        allow_empty_email_to,
+                    )?),
                     &cfg.email.events,
                 )]
             }
@@ -852,6 +976,10 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("email/challenge_failed.body.j2"),
         embed!("email/certificates_expiring.subject.j2"),
         embed!("email/certificates_expiring.body.j2"),
+        embed!("email/admin_sign_in.subject.j2"),
+        embed!("email/admin_sign_in.body.j2"),
+        embed!("email/admin_credential_changed.subject.j2"),
+        embed!("email/admin_credential_changed.body.j2"),
         embed!("webhook/profile_mounted.j2"),
         embed!("webhook/account_created.j2"),
         embed!("webhook/account_deactivated.j2"),
@@ -859,6 +987,8 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("webhook/certificate_revoked.j2"),
         embed!("webhook/challenge_failed.j2"),
         embed!("webhook/certificates_expiring.j2"),
+        embed!("webhook/admin_sign_in.j2"),
+        embed!("webhook/admin_credential_changed.j2"),
     ])
 });
 
@@ -1040,6 +1170,25 @@ pub(crate) mod tests {
                     superseded_by: None,
                 }],
             }),
+            NotifyEvent::AdminSignIn(AdminSignInData {
+                profile: "p".to_string(),
+                username: "alice".to_string(),
+                recipient: Some("alice@example.com".to_string()),
+                outcome: AdminSignInOutcome::SucceededFromNewAddress,
+                client_ip: Some("203.0.113.5".to_string()),
+                user_agent: Some("curl/8".to_string()),
+                at: 1_700_000_000,
+            }),
+            NotifyEvent::AdminCredentialChanged(AdminCredentialChangeData {
+                profile: "p".to_string(),
+                username: "alice".to_string(),
+                recipient: Some("alice@example.com".to_string()),
+                change: AdminCredentialChange::Password,
+                by_self: true,
+                client_ip: Some("203.0.113.5".to_string()),
+                user_agent: Some("curl/8".to_string()),
+                at: 1_700_000_000,
+            }),
         ]
     }
 
@@ -1075,25 +1224,30 @@ pub(crate) mod tests {
             assert_eq!(payload.get("profile").and_then(|v| v.as_str()), Some("p"));
         }
 
-        // Two events name no account, order, certificate or client at all, and
-        // they bracket the list: `profile_mounted` happens at startup, outside
-        // any request, and `certificates_expiring` is a periodic digest about
-        // however many certificates across however many accounts — so its
-        // per-entry ids live in the payload, not on these accessors. Asserted
-        // as a pair rather than by index, because the ranged loops below
-        // otherwise silently start covering whichever one moved.
-        let subjectless = [&events[0], events.last().unwrap()];
+        // The events fall into three shapes, and the ranged assertions below
+        // rest on the order in `every_event()`:
+        //   [0]      profile_mounted     — no subject at all (startup, no request)
+        //   [1..=5]  the per-ACME-subject events (account/order/certificate)
+        //   [6]      certificates_expiring — a list digest, no scalar subject
+        //   [7..]    the web-admin security events — an operator, not an
+        //            ACME subject: no account/order/cert, but a real client_ip
+        //            and a recipient.
+        let admin_events_start = ALL_NOTIFY_EVENTS.len() - 2;
+
+        let subjectless = [&events[0], &events[6]];
         for event in subjectless {
             assert_eq!(event.client_ip(), None, "{}", event.kind());
             assert_eq!(event.account_id(), None, "{}", event.kind());
             assert_eq!(event.order_id(), None, "{}", event.kind());
             assert_eq!(event.cert_serial(), None, "{}", event.kind());
             assert_eq!(event.identifiers_joined(), "", "{}", event.kind());
+            assert_eq!(event.recipient(), None, "{}", event.kind());
         }
 
-        let per_subject = &events[1..events.len() - 1];
+        let per_subject = &events[1..=5];
         for event in per_subject {
             assert_eq!(event.account_id(), Some("acct-1"));
+            assert_eq!(event.recipient(), None, "{}", event.kind());
         }
         // A revocation reached through the admin CLI has no client address.
         assert_eq!(events[4].client_ip(), None);
@@ -1116,11 +1270,27 @@ pub(crate) mod tests {
         );
         assert_eq!(events[5].identifiers_joined(), "");
 
+        // The web-admin security events: no ACME subject, but a client address
+        // and their own recipient (the operator's contact address).
+        for event in &events[admin_events_start..] {
+            assert_eq!(event.account_id(), None, "{}", event.kind());
+            assert_eq!(event.order_id(), None, "{}", event.kind());
+            assert_eq!(event.cert_serial(), None, "{}", event.kind());
+            assert_eq!(event.identifiers_joined(), "", "{}", event.kind());
+            assert_eq!(event.client_ip(), Some("203.0.113.5"), "{}", event.kind());
+            assert_eq!(
+                event.recipient(),
+                Some("alice@example.com"),
+                "{}",
+                event.kind()
+            );
+        }
+
         // The digest is the one variant whose subject is a *list*, and the
         // accessors above can only say it has none of the scalars. This is
         // what it does carry, and it reaches a `custom` script through the
         // stdin payload rather than through an environment variable.
-        let digest = events.last().unwrap().payload();
+        let digest = events[6].payload();
         assert_eq!(digest["total"], 3);
         assert_eq!(digest["certificates"][0]["order_id"], "ord-1");
         assert_eq!(digest["certificates"][0]["days_remaining"], 6);

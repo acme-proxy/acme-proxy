@@ -11,7 +11,7 @@
 //! page, and minting a credential is where that line is drawn.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -172,6 +172,8 @@ pub async fn begin_totp(
 /// state is a banner, the server's problem is a page.
 pub async fn confirm_totp(
     State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageEnrolWrite,
     axum::Form(body): axum::Form<ConfirmForm>,
 ) -> Result<Response, PageError> {
@@ -218,6 +220,16 @@ pub async fn confirm_totp(
             .into_response());
     };
 
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::SecondFactorEnabled,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     let mut context = card_context(&state, &user, &session.enrol.session.csrf_token).await?;
     context.insert("recovery_codes".to_string(), json!(codes));
     Ok(respond_fragment(&state, "account/_codes.html", context)?.into_response())
@@ -230,6 +242,7 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -271,6 +284,16 @@ pub async fn disable_totp(
     )
     .await?;
 
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::SecondFactorDisabled,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     let mut context = card_context(&state, &user, &session.auth.session.csrf_token).await?;
     context.insert(
         "flash".to_string(),
@@ -291,6 +314,7 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -324,6 +348,17 @@ pub async fn regenerate_recovery_codes(
     }
 
     let codes = mfa::regenerate_recovery_codes(&session.auth.user, state.database.clone()).await?;
+
+    state
+        .notify_credential_change(
+            &session.auth.user,
+            crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     let mut context =
         card_context(&state, &session.auth.user, &session.auth.session.csrf_token).await?;
     context.insert("recovery_codes".to_string(), json!(codes));
@@ -397,6 +432,7 @@ async fn refuse_without_current_password(
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageSelfServiceWrite,
     axum::Form(body): axum::Form<ChangePasswordForm>,
 ) -> Result<Response, PageError> {
@@ -423,6 +459,15 @@ pub async fn change_password(
     .await
     {
         Ok(()) => {
+            state
+                .notify_credential_change(
+                    &user,
+                    crate::notify::AdminCredentialChange::Password,
+                    true,
+                    client,
+                    crate::webadmin::user_agent_of(&headers),
+                )
+                .await;
             fragment_context.insert(
                 "flash".to_string(),
                 super::flash(
@@ -450,9 +495,10 @@ pub async fn change_password(
                 .into_response())
         }
         Err(UserError::Database(error)) => Err(error.into()),
-        Err(UserError::DuplicateUsername(_)) => {
-            // `change_own_password` never constructs this variant; the arm
-            // exists only because `UserError` is shared with `create_user`.
+        Err(UserError::DuplicateUsername(_) | UserError::InvalidContact(_)) => {
+            // `change_own_password` never constructs either variant; the arm
+            // exists only because `UserError` is shared with `create_user` and
+            // `set_contact_email`.
             Err(PageError::internal())
         }
     }

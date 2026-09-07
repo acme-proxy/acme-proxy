@@ -188,6 +188,22 @@ page_size_max = 200                 # ACME_PROXY_ADMIN__PAGE_SIZE_MAX
 # Empty means the compiled-in defaults.
 template_dir = ""                   # ACME_PROXY_ADMIN__TEMPLATE_DIR
 
+# [admin.notify] — where web-admin operator security events go (a sign-in from
+# an unfamiliar address, a correct password then a refused second factor, a
+# lockout, a credential change — ASVS V6.3.5 / V6.3.7). Exactly the shape of the
+# per-profile [notify] section below (email / webhook / custom / template_dir /
+# per-backend events), but process-wide and built only when [admin] is enabled.
+# Email delivery goes to each operator's own contact address
+# (`acme-proxy admin user create --contact` / `admin user contact`), falling
+# back to notify.email.to when an operator has none; notify.email.to may
+# therefore be left empty here. Off (empty `enabled`) by default.
+#   [admin.notify]
+#   enabled = ["email"]              # ACME_PROXY_ADMIN__NOTIFY__ENABLED
+#   [admin.notify.email]
+#   smtp_host = "smtp.example.com"
+#   from = "acme-proxy@example.com"
+#   events = ["admin_sign_in", "admin_credential_changed"]
+
 [admin.tls]
 # HTTPS on admin.bind_address instead of cleartext — the same one-listener-not-
 # two shape as [server.tls], and the same load-or-generate provisioning. Anything
@@ -1193,9 +1209,12 @@ to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
 # here would silently mean "no events" the moment this is set to [].
 # "certificates_expiring" is the periodic digest below, which sends nothing
 # until notify.expiry.lead_days is set, so leaving it listed costs nothing.
+# "admin_sign_in" / "admin_credential_changed" fire only on the process-wide
+# [admin.notify] dispatcher (see below), never on a profile's, so listing them
+# on a per-profile backend costs nothing either.
 events = ["profile_mounted", "account_created", "account_deactivated",
           "certificate_issued", "certificate_revoked", "challenge_failed",
-          "certificates_expiring"]
+          "certificates_expiring", "admin_sign_in", "admin_credential_changed"]
                                      # ACME_PROXY_NOTIFY__EMAIL__EVENTS
 timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
 

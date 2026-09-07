@@ -95,6 +95,12 @@ about a list of certificates spanning however many accounts, so there is no one
 account, order or serial for a variable to hold. Read the list from the JSON on
 stdin, which is the channel that carries structure.
 
+On `admin_sign_in` / `admin_credential_changed` the only populated variables
+are `ACME_NOTIFY_HOOK`, `ACME_NOTIFY_PROFILE` (`__admin__`) and
+`ACME_NOTIFY_CLIENT_IP` (the web-admin client's address). The `username`,
+`recipient`, `outcome` / `change`, `by_self` and `user_agent` are on the stdin
+JSON — an operator is not an ACME subject, so it has no account or order id.
+
 > There is no `ACME_NOTIFY_EVENT`; the event name is `ACME_NOTIFY_HOOK`.
 
 ### JSON on stdin

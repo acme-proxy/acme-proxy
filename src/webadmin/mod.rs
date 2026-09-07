@@ -67,6 +67,11 @@ pub struct AdminState {
     /// than a second instance: an operator revoking through the panel writes
     /// into the one trail, and the reverse-lookup cache is worth sharing.
     pub audit: Arc<crate::audit::Auditor>,
+    /// The `profile name -> dispatcher` map, as a reload-stable handle — the
+    /// same type `NotifyJob` and the signer backends hold. Used only to reach
+    /// the process-wide security dispatcher under
+    /// [`crate::notify::ADMIN_DISPATCHER_KEY`] via [`AdminState::notify_security`].
+    pub notifiers: crate::notify::Notifiers,
 }
 
 impl AdminState {
@@ -81,8 +86,9 @@ impl AdminState {
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
         audit: Arc<crate::audit::Auditor>,
+        notifiers: crate::notify::Notifiers,
     ) -> Self {
-        Self::with_logins(database, config, profiles, audit, None)
+        Self::with_logins(database, config, profiles, audit, notifiers, None)
     }
 
     /// [`new`](Self::new), carrying the previous generation's login counters.
@@ -96,6 +102,7 @@ impl AdminState {
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
         audit: Arc<crate::audit::Auditor>,
+        notifiers: crate::notify::Notifiers,
         previous_logins: Option<&LoginLimiter>,
     ) -> Self {
         let by_name = profiles
@@ -116,8 +123,56 @@ impl AdminState {
             logins: Arc::new(logins),
             templates: Arc::new(templates),
             audit,
+            notifiers,
         }
     }
+
+    /// Queues one web-admin security notification through the process-wide
+    /// dispatcher, if one is configured. A no-op otherwise, and — like every
+    /// [`NotifyDispatcher::dispatch`](crate::notify::NotifyDispatcher::dispatch)
+    /// — it cannot fail the request that triggered it.
+    pub(crate) async fn notify_security(&self, event: crate::notify::NotifyEvent) {
+        if let Some(dispatcher) = self.notifiers.get(crate::notify::ADMIN_DISPATCHER_KEY) {
+            dispatcher.dispatch(event).await;
+        }
+    }
+
+    /// Queues an `admin_credential_changed` notification for the operator whose
+    /// authentication details changed (ASVS V6.3.7). `by_self` is `false` when
+    /// another operator made the change (an admin resetting a colleague's
+    /// second factor). Call it only after the change has actually landed.
+    pub(crate) async fn notify_credential_change(
+        &self,
+        user: &crate::sqlite::admin_user::AdminUser,
+        change: crate::notify::AdminCredentialChange,
+        by_self: bool,
+        client: Option<std::net::IpAddr>,
+        user_agent: Option<String>,
+    ) {
+        self.notify_security(crate::notify::NotifyEvent::AdminCredentialChanged(
+            crate::notify::AdminCredentialChangeData {
+                profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+                username: user.username.clone(),
+                recipient: user.contact_email.clone(),
+                change,
+                by_self,
+                client_ip: client.map(|ip| ip.to_string()),
+                user_agent,
+                at: crate::sqlite::nonce::now_secs(),
+            },
+        ))
+        .await;
+    }
+}
+
+/// The `User-Agent` header as an owned string, for the security-notification
+/// payloads. Its own function so the ~5 credential-change call sites spell it
+/// one way.
+pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
 }
 
 /// Builds the whole admin service: `/health`, then the JSON API under `/api`.
@@ -142,8 +197,9 @@ pub fn build_admin_app(
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
     audit: Arc<crate::audit::Auditor>,
+    notifiers: crate::notify::Notifiers,
 ) -> Router {
-    build_admin_app_with_logins(database, config, profiles, audit, None).0
+    build_admin_app_with_logins(database, config, profiles, audit, notifiers, None).0
 }
 
 /// [`build_admin_app`], carrying login counters across a configuration reload.
@@ -156,9 +212,17 @@ pub fn build_admin_app_with_logins(
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
     audit: Arc<crate::audit::Auditor>,
+    notifiers: crate::notify::Notifiers,
     previous_logins: Option<&LoginLimiter>,
 ) -> (Router, Arc<LoginLimiter>) {
-    let state = AdminState::with_logins(database, config.clone(), profiles, audit, previous_logins);
+    let state = AdminState::with_logins(
+        database,
+        config.clone(),
+        profiles,
+        audit,
+        notifiers,
+        previous_logins,
+    );
     let logins = state.logins.clone();
 
     let api = Router::new()

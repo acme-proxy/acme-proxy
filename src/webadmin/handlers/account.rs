@@ -43,6 +43,7 @@ pub struct ChangePasswordRequest {
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response, AdminError> {
@@ -59,9 +60,21 @@ pub async fn change_password(
     )
     .await
     .map_err(|error| match error {
-        UserError::Policy(message) => AdminError::bad_request(message),
+        UserError::Policy(message) | UserError::InvalidContact(message) => {
+            AdminError::bad_request(message)
+        }
         UserError::Database(_) | UserError::DuplicateUsername(_) => AdminError::internal(),
     })?;
+
+    state
+        .notify_credential_change(
+            &user,
+            crate::notify::AdminCredentialChange::Password,
+            true,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -32,6 +32,9 @@ pub enum UserError {
     /// operator reads a sentence rather than a UNIQUE violation.
     #[error("an admin user named `{0}` already exists")]
     DuplicateUsername(String),
+    /// A contact address that does not parse as a mailbox.
+    #[error("{0}")]
+    InvalidContact(String),
 }
 
 impl From<sqlx::Error> for UserError {
@@ -111,6 +114,36 @@ pub async fn set_role(
 
     user.set_role(role, &database).await?;
     AdminSession::delete_for_user(user.id, &database).await?;
+    Ok(Some(user))
+}
+
+/// Sets (`Some`) or clears (`None` / empty / whitespace) the address an
+/// operator receives security notifications at. `Some` is validated as a
+/// mailbox — the same parse [`crate::notify::email`] does before it sends —
+/// so a malformed address is refused here rather than becoming a permanent
+/// delivery failure later. Not a credential: sessions are left alone.
+///
+/// `None` when there is no such operator.
+pub async fn set_contact_email(
+    username: &str,
+    contact: Option<&str>,
+    database: Arc<Database>,
+) -> Result<Option<AdminUser>, UserError> {
+    let trimmed = contact.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(address) = trimmed {
+        address
+            .parse::<lettre::message::Mailbox>()
+            .map_err(|error| {
+                UserError::InvalidContact(format!(
+                    "`{address}` is not a valid email address: {error}"
+                ))
+            })?;
+    }
+
+    let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
+        return Ok(None);
+    };
+    user.set_contact_email(trimmed, &database).await?;
     Ok(Some(user))
 }
 
@@ -345,6 +378,47 @@ mod tests {
         AdminUser::create(username, &encoded, &database)
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn set_contact_email_stores_clears_and_validates() {
+        let db = db().await;
+        create_user("alice", GOOD, &PasswordContext::empty(), db.clone())
+            .await
+            .unwrap();
+
+        // Unknown operator -> None.
+        assert!(
+            set_contact_email("nobody", Some("x@example.com"), db.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // A malformed address is refused here, not on delivery.
+        let error = set_contact_email("alice", Some("not an address"), db.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, UserError::InvalidContact(_)), "{error}");
+
+        // A good address is stored and synced.
+        let user = set_contact_email("alice", Some("  alice@example.com  "), db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.contact_email.as_deref(), Some("alice@example.com"));
+
+        // An empty value clears it, as does `None`.
+        for cleared in [Some("  "), None] {
+            let user = set_contact_email("alice", cleared, db.clone())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(user.contact_email, None);
+            set_contact_email("alice", Some("alice@example.com"), db.clone())
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]

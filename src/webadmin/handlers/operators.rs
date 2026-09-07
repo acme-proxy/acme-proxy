@@ -17,7 +17,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
@@ -141,6 +141,7 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
@@ -162,6 +163,19 @@ pub async fn reset_operator_totp(
                    surface = "api",
                    username = %auth.user.username,
                    target_username = %target.username);
+
+    // The operator whose factor was reset should hear about it — the change was
+    // made from a session that is not theirs. `by_self = false`.
+    state
+        .notify_credential_change(
+            &target,
+            crate::notify::AdminCredentialChange::SecondFactorDisabled,
+            false,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
+
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

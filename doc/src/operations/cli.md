@@ -595,11 +595,12 @@ is running.
 
 | Command | Flags |
 | --- | --- |
-| `admin user create <username>` | `--password-file <path>`, `--role admin\|operator\|viewer` (default `admin`) |
+| `admin user create <username>` | `--password-file <path>`, `--role admin\|operator\|viewer` (default `admin`), `--contact <address>` |
 | `admin user list` | `--limit <n>`, `--offset <n>`, `--json` |
 | `admin user show <username>` | `--json` |
 | `admin user passwd <username>` | `--password-file <path>` |
 | `admin user role <username> <admin\|operator\|viewer>` | revokes the operator's sessions |
+| `admin user contact <username>` | `--contact <address>` (omit to clear) |
 | `admin user delete <username>` | confirm-gated; `-y` skips |
 | `admin user disable\|enable <username>` | — |
 | `admin user totp status <username>` | `--json` |
@@ -644,7 +645,16 @@ Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9), role admin.
   many recovery codes are left. That first one matters because "enrolment
   pending" and "no factor" behave identically at the login prompt — an operator
   who believes they enrolled has no other way to find out.
-  `admin user totp status` says the same thing about the factor alone.
+  `admin user totp status` says the same thing about the factor alone. It also
+  shows the operator's `contact` address and the recent login addresses that
+  raise a "new address" notification.
+- **`--contact` / `admin user contact`** set the address a web-admin operator
+  receives security notifications at (a sign-in from an unfamiliar address, a
+  refused second factor, a lockout, a credential change — see [Web Admin —
+  Security notifications](webadmin.md#security-notifications)). The address is
+  validated as a mailbox; a bad one is refused. `admin user contact` with no
+  `--contact` clears it. Notifications are delivered only when `[admin.notify]`
+  is configured, and changes made from this CLI are not themselves notified.
 - `admin session list` shows a fingerprint of the stored token hash, never the
   hash itself. That fingerprint is the `<id>` `admin session revoke --user <u>
   --session <id>` takes to end one session rather than all of an operator's —

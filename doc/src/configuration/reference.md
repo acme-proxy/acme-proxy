@@ -46,6 +46,7 @@ endpoints it mounts.
 | `[server]` | Listen socket, public URL, admission control | no | [below](#server) |
 | `[server.tls]` | HTTPS on the ACME listener | no | [below](#servertls) |
 | `[admin]` | The web admin listener and its sessions | no | [below](#admin) |
+| `[admin.notify]` | Operator security notifications | no | [below](#adminnotify) |
 | `[admin.tls]` | HTTPS on the admin listener | no | [below](#admintls) |
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
 | `[audit]` | Reverse lookups and retention for the trail | no | [below](#audit) |
@@ -248,6 +249,17 @@ other twenty at their defaults. Every template is compiled at startup, so a
 broken override refuses to start rather than serving a `500` later. Applies to
 the `/ui` pages only; the JSON API has nothing to template. See
 [Customizing the Panel](../operations/webadmin_templates.md).
+
+### `[admin.notify]`
+
+A whole `[notify]` section, process-wide, built only while `[admin]` is
+enabled. It delivers the `admin_sign_in` / `admin_credential_changed` operator
+security events (ASVS V6.3.5 / V6.3.7). Every key is the one documented for the
+per-profile [`[notify]`](../notifications/index.md) — under
+`ACME_PROXY_ADMIN__NOTIFY__…` — with one difference: `[admin.notify.email].to`
+may be empty, since each event carries the affected operator's own contact
+address as its recipient. See
+[Web Admin — Security notifications](../operations/webadmin.md#security-notifications).
 
 ### `[admin.tls]`
 

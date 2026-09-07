@@ -669,6 +669,8 @@ pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
         created_at: 1_700_000_000,
         updated_at: 1_700_000_000,
         last_login_at: None,
+        contact_email: None,
+        known_login_ips: Vec::new(),
     }
 }
 

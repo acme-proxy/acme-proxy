@@ -1,0 +1,21 @@
+{% if outcome == "succeeded_from_new_address" -%}
+Your web-admin account "{{ username }}" was signed into from an address it had
+not recently been used from.
+{%- elif outcome == "second_factor_refused" -%}
+Your web-admin account "{{ username }}" had a correct password entered, then a
+second factor that did not match. The sign-in did not complete.
+{%- else -%}
+Sign-in to your web-admin account "{{ username }}" was locked out after too many
+failed second-factor attempts. The half-finished session was discarded.
+{%- endif %}
+
+Time: {{ at }} (epoch seconds)
+{%- if client_ip %}
+Client IP: {{ client_ip }}
+{%- endif %}
+{%- if user_agent %}
+User agent: {{ user_agent }}
+{%- endif %}
+
+If this was you, no action is needed. If it was not, sign in and change your
+password, or ask another administrator to disable the account.

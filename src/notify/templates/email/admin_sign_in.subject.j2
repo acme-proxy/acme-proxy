@@ -1,0 +1,1 @@
+[acme-proxy] {% if outcome == "succeeded_from_new_address" %}sign-in from a new address{% elif outcome == "second_factor_refused" %}second factor refused after your password{% else %}sign-in locked out{% endif %} for "{{ username }}"

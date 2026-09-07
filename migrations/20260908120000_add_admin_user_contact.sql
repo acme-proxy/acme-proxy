@@ -1,0 +1,27 @@
+-- A contact address for a web-admin operator, and the addresses their recent
+-- sign-ins came from -- so a security-relevant event on their account (a
+-- sign-in from an unfamiliar address, a refused second factor after a correct
+-- password, a lockout, a credential change -- ASVS 5.0 V6.3.5 / V6.3.7) can
+-- actually reach the person it happened to. Until now every such event was
+-- logged and nothing else.
+--
+-- Two plain ADD COLUMNs, the shape 20260905120000_add_admin_user_role.sql and
+-- 20260728120000_add_cert_revocation.sql established: no CHECK/UNIQUE/FK, so no
+-- table rebuild (a literal DEFAULT on an ADD COLUMN is allowed in SQLite).
+--
+-- `contact_email` -- NULL means "no address recorded": the operator simply gets
+-- no notification (the log line is still written) and nothing is refused. The
+-- address shape is validated in Rust when it is set (a parseable mailbox),
+-- never by a constraint -- the `AdminRole` / `revocation_reason` precedent.
+--
+-- `known_login_ips` -- a JSON array of the operator's recent distinct login
+-- addresses, most-recent-first, capped in code (`KNOWN_LOGIN_IPS`). A completed
+-- sign-in from an address that is NOT in this set -- and only while the set is
+-- non-empty -- is what raises the "unusual location" notification. Unlike
+-- `admin_sessions.created_ip`, this column IS compared against the live
+-- request; but ONLY to decide whether to notify, never to allow or deny.
+-- Address pinning breaks CGNAT and mobile, so the alert is strictly advisory.
+-- `TEXT NOT NULL DEFAULT '[]'` follows `audit_log.identifiers`; the JSON-array
+-- <-> Vec<String> mapping follows `accounts.contact`.
+ALTER TABLE admin_users ADD COLUMN contact_email   TEXT;
+ALTER TABLE admin_users ADD COLUMN known_login_ips TEXT NOT NULL DEFAULT '[]';

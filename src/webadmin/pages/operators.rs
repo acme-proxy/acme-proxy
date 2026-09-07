@@ -9,6 +9,7 @@
 //! half-disabled copy of this page's own template.
 
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -150,6 +151,7 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageAdminWrite,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
@@ -169,6 +171,16 @@ pub async fn reset_operator_totp(
                    surface = "ui",
                    username = %session.auth.user.username,
                    target_username = %target.username);
+
+    state
+        .notify_credential_change(
+            &target,
+            crate::notify::AdminCredentialChange::SecondFactorDisabled,
+            false,
+            client,
+            crate::webadmin::user_agent_of(&headers),
+        )
+        .await;
 
     respond_card(
         &state,

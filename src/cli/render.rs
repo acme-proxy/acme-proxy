@@ -666,6 +666,15 @@ pub fn render_admin_user_detail_text(
     if let Some(last) = user.last_login_at {
         out.push_str(&format!("last_login     {}\n", rfc3339(last)));
     }
+    if let Some(contact) = &user.contact_email {
+        out.push_str(&format!("contact        {contact}\n"));
+    }
+    if !user.known_login_ips.is_empty() {
+        out.push_str(&format!(
+            "known_ips      {}\n",
+            user.known_login_ips.join(", ")
+        ));
+    }
     out
 }
 

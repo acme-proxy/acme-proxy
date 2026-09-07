@@ -143,6 +143,13 @@ pub struct AdminConfig {
     /// `notify.template_dir`. Empty means the compiled-in defaults.
     pub template_dir: String,
     pub tls: AdminTlsConfig,
+    /// Where web-admin operator security events (a sign-in from an unfamiliar
+    /// address, a refused second factor, a lockout, a credential change --
+    /// ASVS V6.3.5 / V6.3.7) are sent. Same shape as the per-profile
+    /// `[notify]`, but process-wide and email delivery goes to each operator's
+    /// own `contact_email`. Disabled (empty `enabled`) by default, and only
+    /// built at all when `admin.enabled`.
+    pub notify: super::NotifyConfig,
 }
 
 impl Default for AdminConfig {
@@ -160,6 +167,7 @@ impl Default for AdminConfig {
             page_size_max: 200,
             template_dir: String::new(),
             tls: AdminTlsConfig::default(),
+            notify: super::NotifyConfig::default(),
         }
     }
 }
