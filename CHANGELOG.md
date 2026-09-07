@@ -125,6 +125,18 @@ migrated configuration before restarting.
   every *other* one — the same shape the second-factor routes already use, so
   the panel does not sign its own operator out mid-edit.
 
+### Documentation
+
+- **A secret rotation schedule is now documented** — ASVS 5.0 V13.1.4, the last
+  open L3 configuration gap, and the reason V11.1.1 (documented key lifecycle)
+  sat at partial. A new [Secret
+  Rotation](https://acme-proxy.github.io/acme-proxy/security/rotation.html) page
+  gives a recommended interval and the early-rotation triggers for every secret
+  in the [security
+  model](https://acme-proxy.github.io/acme-proxy/security/index.html)'s
+  inventory, with the CA key called out as the one whose practice is structural
+  rather than scheduled. No code change.
+
 ## [0.4.0] — 2026-08-27
 
 ### Breaking

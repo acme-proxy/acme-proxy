@@ -134,18 +134,6 @@ keeps its corpses stops being read.
       second table. Either way it does not weaken the rule the surface rests
       on: still no route on that listener that deletes.
 
-## Packaging & supply chain
-
-- [ ] **No rotation schedule for any secret** — ASVS **V13.1.4**, and the reason
-      **V11.1.1** is only half met. [The security
-      model](doc/src/security/index.md) names every secret and what its
-      compromise buys, and each one *can* be rotated — an EAB credential without
-      a restart, the CA key by re-issuing an intermediate, a TSIG key in the
-      environment. No page says how often any of them should be. This is
-      documentation, not code, and it belongs beside the hardening checklist
-      rather than inside it: a checklist item is something you do once before
-      serving, and this is a cadence.
-
 ## Signers — local CA
 
 - [ ] **An OCSP responder** — by far the largest item here: a signed response

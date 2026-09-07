@@ -72,13 +72,13 @@ reported for information.
 | V7 Session Management | 15 | 1 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
-| V11 Cryptography | 10 | 3 | 0 | 1 | 5 / 2 / 3 |
+| V11 Cryptography | 11 | 2 | 0 | 1 | 5 / 2 / 3 |
 | V12 Secure Communication | 6 | 1 | 0 | 2 | 0 / 2 / 1 |
-| V13 Configuration | 9 | 4 | 0 | 0 | 4 / 4 / 0 |
+| V13 Configuration | 9 | 4 | 0 | 0 | 5 / 3 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **167** | **14** | **0** | **36** | **44 / 20 / 16** |
+| **Total** | **168** | **13** | **0** | **36** | **45 / 19 / 16** |
 
 The short version. **There is no L1 or L2 gap.** The four password-policy
 requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
@@ -358,7 +358,7 @@ is a reference token and is assessed under V7.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 11.1.1 | Documented key management policy and lifecycle | 2 | partial | [Security Model](index.md#what-each-secret-protects) names every secret, what its compromise buys and how it is stored, and [Hardening](hardening.md#the-ca-key) covers the CA key specifically. What is not written down is a **rotation schedule** — see 13.1.4 |
+| 11.1.1 | Documented key management policy and lifecycle | 2 | met | [Security Model](index.md#what-each-secret-protects) names every secret, what its compromise buys and how it is stored; [Secret Rotation](rotation.md) is the lifecycle half — a recommended interval and the early-rotation triggers for each — and [Hardening](hardening.md#the-ca-key) covers the CA key specifically |
 | 11.1.2 | Cryptographic inventory maintained | 2 | met | The table in [Security Model](index.md#what-each-secret-protects), plus the per-algorithm rationale carried in the module docs of `src/admin/password.rs`, `src/admin/totp.rs` and `src/eab.rs` |
 | 11.1.3 | Cryptographic discovery mechanisms | 3 | met | One backend: `ring`, plus `rustls` for TLS and `rcgen` for certificate construction. `grep -rn ring src/` is the discovery mechanism, and `cargo deny` fails the build on an unlisted crypto dependency |
 | 11.1.4 | Inventory includes a post-quantum migration path | 3 | gap | No PQC migration plan. The ACME wire algorithms are RFC 8555's to change first |
@@ -407,7 +407,7 @@ is a reference token and is assessed under V7.
 | 13.1.1 | All communication needs documented, including user-supplied destinations | 2 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names all three outbound surfaces and says which of them a client can steer |
 | 13.1.2 | Documented connection limits and behaviour at the limit | 3 | met | The SQLite pool size, the admission limiter's slots, its queue budget and its deadline are all in [Configuration Reference](../configuration/reference.md), and shedding at the limit is a `503` problem document |
 | 13.1.3 | Documented resource-management strategy per external system | 3 | partial | Timeouts are documented per subsystem and every outbound call has one. **Retry policy** is documented for the job runner but not stated as a policy for the IPAM and webhook clients |
-| 13.1.4 | Documented critical secrets and a rotation schedule | 3 | **gap** | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); no rotation schedule is given for any of them |
+| 13.1.4 | Documented critical secrets and a rotation schedule | 3 | met | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); [Secret Rotation](rotation.md) gives a recommended interval and the early-rotation triggers for each, with the CA key called out as structural rather than scheduled |
 | 13.2.1 | Authenticated backend communication with non-shared credentials | 2 | partial | The relay upstream authenticates by account key and the IPAM clients by API token, both per-deployment. The database is a local file governed by file mode, not by a credential |
 | 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`src/script_hook.rs`); the systemd unit in [Deployment](../getting_started/deployment.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only |
 | 13.2.3 | No default service credentials | 2 | met | Nothing ships with a credential. Every secret is either operator-supplied or generated on first start |
@@ -417,7 +417,7 @@ is a reference token and is assessed under V7.
 | 13.3.1 | A secrets management solution; no secrets in source or artifacts | 2 | partial | No secret is in the source tree or the image. Every secret can come from the environment rather than the file, and the CA key can live in a **PKCS#11 token** — which is the L3 hardware-backed form. There is no vault integration, and the database necessarily holds EAB and TOTP secrets in retrievable form |
 | 13.3.2 | Least privilege for secret access | 2 | met | Keys are created `0600` with `create_new` rather than chmod'ed afterwards (`src/pemfile.rs`); the database file mode is the documented boundary |
 | 13.3.3 | Cryptographic operations inside an isolated security module | 3 | partial | Available but not required: `--features hsm` puts the issuing key in a PKCS#11 token, where it can be used and not copied ([Hardware Keys](../signers/local_ca_hsm.md)) |
-| 13.3.4 | Secrets expire and rotate as documented | 3 | gap | Follows from 13.1.4. EAB credentials can be revoked without a restart; nothing expires on a schedule |
+| 13.3.4 | Secrets expire and rotate as documented | 3 | partial | Rotation is now documented per secret in [Secret Rotation](rotation.md). Sessions expire on their own and EAB credentials are revocable live; the CA key, the TSIG key and the API tokens rotate on an operator-run cadence, not a timer |
 | 13.4.1 | No source-control metadata deployed | 1 | met | `.dockerignore` is an **allowlist** — `*` then `!Cargo.toml`, `!Cargo.lock`, `!src/`, `!migrations/` — so `.git` never enters the build context, and the final stage copies only the compiled binary |
 | 13.4.2 | Debug modes disabled in production | 2 | met | Log level is configuration and defaults to `info`; there is no debug endpoint and no development mode. `challenge.bypass`, the one setting that genuinely weakens the server, is off by default and **warns on every startup** while on |
 | 13.4.3 | No directory listings | 2 | met | Nothing is served from a directory. `tower-http`'s `fs` feature is off and static assets are a two-arm `match` |
@@ -564,15 +564,8 @@ non-feature. It is stated as such in the
 
 ## Gaps
 
-Open shortfalls, worst first — both L3 now that the container-image item is
-closed, though the first carries an L2 consequence (V11.1.1). Each is also an
-entry in `TODO.md`.
-
-**No documented secret rotation schedule** — *V13.1.4 (L3), reaching V11.1.1 at
-L2.* Every secret is named and classified by what its compromise buys, and each
-one *can* be rotated — EAB credentials without a restart, the CA key by
-re-issuing an intermediate. What no page states is how often any of them
-should be.
+Open shortfalls, worst first. What remains is all L3: one item with a `TODO.md`
+entry, and a set of lower-priority ones recorded only here.
 
 **No notification on authentication events** — *V6.3.5, V6.3.7 (L3).* Every
 attempt and every credential change is logged; nothing reaches the operator.

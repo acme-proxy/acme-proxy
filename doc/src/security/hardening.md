@@ -136,6 +136,10 @@ Skip this section entirely if `admin.enabled` is `false`, which is the default.
 
 ## Ongoing
 
+- [ ] **decide — a rotation interval for each long-lived secret.** Nothing in
+      the server expires these on a timer; the page recommends one per secret
+      and names the events that force a rotation early.
+      → [Secret Rotation](rotation.md)
 - [ ] **Backups copy the WAL.** `sqlite.db` alone is missing every recent write;
       use `.backup`, or take all three files.
       → [Database Schema](../dev/database.md#reading-it-directly)

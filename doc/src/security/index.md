@@ -52,6 +52,9 @@ keys](../signers/local_ca_hsm.md), and for keeping an offline root and giving
 `acme-proxy` only an intermediate — see
 [Local CA](../signers/local_ca.md#multi-tier-pki-using-an-intermediate-ca).
 
+How often to roll each of these, and how, is
+[Secret Rotation](rotation.md).
+
 ## Two listeners, two exposure surfaces
 
 The ACME listener and the [web admin](../operations/webadmin.md) listener are
