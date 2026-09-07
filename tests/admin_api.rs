@@ -4369,9 +4369,9 @@ async fn resetting_an_operators_totp_clears_it_and_their_sessions() {
 }
 
 /// Revoking one of another operator's sessions leaves their other sessions
-/// alone -- the granularity that is the whole point of this surface, since
-/// the CLI's `admin session revoke` only ever takes `--user` (every session)
-/// or `--all` (the whole server).
+/// alone -- the granularity this surface has always had. The CLI's `admin
+/// session revoke` now matches it with `--user <u> --session <id>`; this
+/// surface stays the only one reachable without a host shell.
 #[tokio::test]
 async fn revoking_one_of_another_operators_sessions_leaves_the_rest() {
     let (app, _database, alice, bob) = app_with_bob().await;

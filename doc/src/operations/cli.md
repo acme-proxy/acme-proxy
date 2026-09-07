@@ -590,7 +590,7 @@ is running.
 | `admin user totp reset <username>` | confirm-gated; `-y` skips |
 | `admin user totp recovery-codes <username>` | prints them once |
 | `admin session list` | `--username <u>`, `--limit <n>`, `--offset <n>`, `--json` |
-| `admin session revoke` | `--user <u>` **or** `--all` |
+| `admin session revoke` | `--user <u>` (optionally `--session <id>`) **or** `--all` |
 
 ```console
 $ printf '%s' "$PASSWORD" | acme-proxy admin user create alice
@@ -630,7 +630,11 @@ Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9), role admin.
   who believes they enrolled has no other way to find out.
   `admin user totp status` says the same thing about the factor alone.
 - `admin session list` shows a fingerprint of the stored token hash, never the
-  hash itself. Both listings are paged; see [Paging](#paging), which also has
-  the reason `admin user list` is the one listing ordered oldest first.
+  hash itself. That fingerprint is the `<id>` `admin session revoke --user <u>
+  --session <id>` takes to end one session rather than all of an operator's —
+  the granularity the panel's Operators and Account pages already have.
+  `--session` needs `--user`, since the fingerprint only names a row within one
+  operator's sessions. Both listings are paged; see [Paging](#paging), which
+  also has the reason `admin user list` is the one listing ordered oldest first.
 
 See [Web Admin — Users & Sessions](webadmin_users.md) for the full treatment.

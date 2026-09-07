@@ -451,11 +451,16 @@ $ acme-proxy admin session list --username alice --json
 $ acme-proxy admin session revoke --user alice
 Revoked 2 session(s) for alice.
 
+$ acme-proxy admin session revoke --user alice --session 01234567
+Revoked session 01234567 for alice.
+
 $ acme-proxy admin session revoke --all
 ```
 
 The `id` shown is a fingerprint of the stored token hash, not the hash itself —
-printing the hash would put every live session's lookup key on a terminal.
+printing the hash would put every live session's lookup key on a terminal. It is
+what `revoke --session <id>` takes to end one session; `--session` needs
+`--user`, since the fingerprint only names a row within one operator's sessions.
 
 Two deadlines apply, and whichever comes first wins:
 

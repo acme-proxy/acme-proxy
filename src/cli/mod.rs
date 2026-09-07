@@ -2297,6 +2297,57 @@ mod tests {
             .is_err(),
             "--user and --all are mutually exclusive"
         );
+
+        // `--session` names one row within one operator's sessions, so it only
+        // means anything alongside `--user`, and never with `--all`.
+        assert!(
+            Cli::try_parse_from([
+                "acme-proxy",
+                "admin",
+                "session",
+                "revoke",
+                "--session",
+                "abc"
+            ])
+            .is_err(),
+            "--session requires --user"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "acme-proxy",
+                "admin",
+                "session",
+                "revoke",
+                "--all",
+                "--session",
+                "abc",
+            ])
+            .is_err(),
+            "--session and --all are mutually exclusive"
+        );
+        assert!(matches!(
+            Cli::try_parse_from([
+                "acme-proxy",
+                "admin",
+                "session",
+                "revoke",
+                "--user",
+                "alice",
+                "--session",
+                "abc",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Admin {
+                command: AdminCommand::Session {
+                    command: crate::cli::webadmin::AdminSessionCommand::Revoke {
+                        user: Some(user),
+                        all: false,
+                        session: Some(session),
+                    }
+                }
+            }) if user == "alice" && session == "abc"
+        ));
     }
 
     #[test]

@@ -144,13 +144,17 @@ pub enum AdminSessionCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Revoke sessions: one operator's, or everyone's.
+    /// Revoke sessions: one operator's (optionally just one of theirs), or everyone's.
     Revoke {
+        /// Revoke every session this operator holds (or just one, with `--session`).
         #[arg(long, conflicts_with = "all")]
         user: Option<String>,
         /// Revoke every session on the server.
         #[arg(long, conflicts_with = "user")]
         all: bool,
+        /// Revoke a single session of `--user`, by the id shown in `admin session list`.
+        #[arg(long, requires = "user", conflicts_with = "all")]
+        session: Option<String>,
     },
 }
 
@@ -414,18 +418,32 @@ async fn run_session_command(
                 |session| render::render_admin_session_line(session, palette),
             );
         }
-        AdminSessionCommand::Revoke { user, all } => match (user, all) {
-            (Some(username), _) => match users::revoke_sessions(&username, database).await? {
+        AdminSessionCommand::Revoke { user, all, session } => match (user, all, session) {
+            (Some(username), _, Some(fp)) => {
+                let Some(user) = AdminUser::find_by_username(&username, &database).await? else {
+                    return Err(not_found(&username));
+                };
+                match AdminSession::find_by_user_and_fingerprint(user.id, &fp, &database).await? {
+                    None => return Err(CliError(format!("no such session for {username}: {fp}"))),
+                    Some(target) => {
+                        AdminSession::delete(&target.token_hash, &database).await?;
+                        println!("Revoked session {fp} for {username}.");
+                    }
+                }
+            }
+            (Some(username), _, None) => match users::revoke_sessions(&username, database).await? {
                 None => return Err(not_found(&username)),
                 Some(count) => println!("Revoked {count} session(s) for {username}."),
             },
-            (None, true) => {
+            (None, true, _) => {
                 let count = AdminSession::delete_all(&database).await?;
                 println!("Revoked {count} session(s).");
             }
-            (None, false) => {
+            (None, false, _) => {
                 return Err(CliError(
-                    "say whose sessions to revoke: --user <username>, or --all".to_string(),
+                    "say whose sessions to revoke: --user <username> (optionally --session <id>), \
+                     or --all"
+                        .to_string(),
                 ));
             }
         },
@@ -1159,7 +1177,8 @@ mod tests {
                 AdminCommand::Session {
                     command: AdminSessionCommand::Revoke {
                         user: None,
-                        all: false
+                        all: false,
+                        session: None,
                     },
                 },
                 "",
@@ -1167,7 +1186,11 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError("say whose sessions to revoke: --user <username>, or --all".to_string())
+            CliError(
+                "say whose sessions to revoke: --user <username> (optionally --session <id>), \
+                 or --all"
+                    .to_string()
+            )
         );
 
         assert_eq!(
@@ -1175,7 +1198,8 @@ mod tests {
                 AdminCommand::Session {
                     command: AdminSessionCommand::Revoke {
                         user: Some("nobody".to_string()),
-                        all: false
+                        all: false,
+                        session: None,
                     },
                 },
                 "",
@@ -1191,6 +1215,7 @@ mod tests {
                 command: AdminSessionCommand::Revoke {
                     user: Some("alice".to_string()),
                     all: false,
+                    session: None,
                 },
             },
             "",
@@ -1206,6 +1231,7 @@ mod tests {
                 command: AdminSessionCommand::Revoke {
                     user: None,
                     all: true,
+                    session: None,
                 },
             },
             "",
@@ -1213,6 +1239,76 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// `--user <u> --session <id>` ends exactly one of that operator's sessions,
+    /// by the fingerprint `admin session list` prints, and leaves the rest.
+    #[tokio::test]
+    async fn session_revoke_targets_one_session_by_id() {
+        let db = db().await;
+        run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+        let alice = AdminUser::find_by_username("alice", &db)
+            .await
+            .unwrap()
+            .unwrap();
+        // Fingerprints are the first 8 characters of the token hash.
+        for hash in ["11111111aaaa", "22222222bbbb"] {
+            AdminSession::create(
+                NewSession {
+                    user_id: alice.id,
+                    token_hash: hash,
+                    csrf_token: "csrf",
+                    created_ip: None,
+                    user_agent: None,
+                },
+                std::time::Duration::from_secs(60),
+                &db,
+            )
+            .await
+            .unwrap();
+        }
+
+        let revoke = |user: Option<&str>, session: Option<&str>| {
+            let db = db.clone();
+            let command = AdminCommand::Session {
+                command: AdminSessionCommand::Revoke {
+                    user: user.map(str::to_string),
+                    all: false,
+                    session: session.map(str::to_string),
+                },
+            };
+            async move { run(command, "", db).await }
+        };
+
+        // An unknown fingerprint under a real user says so, and touches nothing.
+        assert_eq!(
+            revoke(Some("alice"), Some("deadbeef")).await.unwrap_err(),
+            CliError("no such session for alice: deadbeef".to_string())
+        );
+        // An unknown user is refused before the session lookup.
+        assert_eq!(
+            revoke(Some("nobody"), Some("11111111")).await.unwrap_err(),
+            CliError("no such admin user: nobody".to_string())
+        );
+
+        revoke(Some("alice"), Some("11111111")).await.unwrap();
+
+        assert!(
+            AdminSession::find_by_token_hash("11111111aaaa", &db)
+                .await
+                .unwrap()
+                .is_none(),
+            "the named session is gone"
+        );
+        assert!(
+            AdminSession::find_by_token_hash("22222222bbbb", &db)
+                .await
+                .unwrap()
+                .is_some(),
+            "the sibling session survives"
+        );
     }
 
     // --- Second factor ----------------------------------------------------
