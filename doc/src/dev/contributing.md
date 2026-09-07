@@ -158,7 +158,7 @@ cargo metadata --locked --format-version 1 >/dev/null
 cargo cyclonedx --all-features --target all --spec-version 1.5 \
   --format json --override-filename sbom.cdx -q
 jq --arg from "path+file://$PWD" --arg to "path+file:///acme-proxy" \
-  'walk(if type == "string" and startswith($from) then $to + .[($from | length):] else . end) | del(.metadata.timestamp)' \
+  'walk(if type == "string" then ((if startswith($from) then $to + .[($from | length):] else . end) | gsub("path\\+file:///acme-proxy#acme-proxy@"; "path+file:///acme-proxy#")) else . end) | del(.metadata.timestamp)' \
   sbom.cdx.json > sbom.cdx.json.tmp
 mv sbom.cdx.json.tmp sbom.cdx.json
 ```
@@ -167,8 +167,11 @@ mv sbom.cdx.json.tmp sbom.cdx.json
 version in step with the pin in `.github/workflows/ci.yml`, since it is written
 into the document. `SOURCE_DATE_EPOCH` makes the output reproducible (it also
 suppresses the otherwise-random `serialNumber`); the `jq` pass drops the
-wall-clock timestamp and rewrites the single absolute path the tool embeds in
-its `bom-ref` values.
+wall-clock timestamp and rewrites the `bom-ref` values the tool derives from
+the checkout path — both the absolute directory it embeds and the `name@`
+segment it drops when that directory's basename happens to equal the crate
+name, so the file is identical whether it was regenerated in a worktree named
+`acme-proxy` or anything else.
 
 ## Submitting a pull request
 

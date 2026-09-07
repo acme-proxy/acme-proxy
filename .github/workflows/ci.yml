@@ -342,7 +342,7 @@ jobs:
           cargo cyclonedx --all-features --target all --spec-version 1.5 \
             --format json --override-filename sbom.cdx -q
           jq --arg from "path+file://$PWD" --arg to "path+file:///acme-proxy" \
-            'walk(if type == "string" and startswith($from) then $to + .[($from | length):] else . end) | del(.metadata.timestamp)' \
+            'walk(if type == "string" then ((if startswith($from) then $to + .[($from | length):] else . end) | gsub("path\\+file:///acme-proxy#acme-proxy@"; "path+file:///acme-proxy#")) else . end) | del(.metadata.timestamp)' \
             sbom.cdx.json > sbom.cdx.json.tmp
           mv sbom.cdx.json.tmp sbom.cdx.json
 
