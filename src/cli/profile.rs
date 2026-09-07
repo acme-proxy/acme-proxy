@@ -46,7 +46,7 @@ pub async fn run_profile_command(
             // mounted set.
             let resolved = config
                 .resolve_profiles()
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
+                .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
             let profiles: Vec<ProfileSummary> = resolved
                 .iter()

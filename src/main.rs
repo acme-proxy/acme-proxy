@@ -3,9 +3,15 @@
 //! Everything here is process wiring: parse argv, load the configuration,
 //! install the subscriber, open the database, and turn whatever
 //! [`acme_proxy::cli::dispatch`] returns into an exit status. It is the **only**
-//! place in the project that prints to stderr and calls `std::process::exit`,
-//! which is why every command body in `src/cli/` returns a `CliError` instead —
-//! each of them stays a plain function a test can call and assert on.
+//! place in the project that prints to stderr and ends the process, which is
+//! why every command body in `src/cli/` returns a `CliError` instead — each of
+//! them stays a plain function a test can call and assert on.
+//!
+//! A dispatched command that fails exits with `CliError::exit_code`: `1` when
+//! the host could not carry out the request, `3` when the request itself could
+//! not be satisfied as written. The pre-dispatch failures below (a bad
+//! configuration, a database that will not open) are all the former, so they
+//! stay on a plain `std::process::exit(1)`.
 //!
 //! That is also why this file is excluded from the coverage floor: none of it
 //! is reachable from a test, because every failure branch here ends the
@@ -13,6 +19,7 @@
 //! in `cli::plan_logging` for that reason, and is called from here.
 
 use std::io::IsTerminal;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -25,7 +32,7 @@ use acme_proxy::config::Config;
 use acme_proxy::sqlite::db::Database;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     // Resolved against **stderr**, where these three messages go; `dispatch`
@@ -48,9 +55,9 @@ async fn main() {
     if let Some(command @ (Command::Completions { .. } | Command::Man)) = &cli.command {
         if let Err(error) = generate::write(command, &mut std::io::stdout().lock()) {
             eprintln!("{}", palette.bad(&error.to_string()));
-            std::process::exit(1);
+            return ExitCode::from(error.exit_code());
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
     let config = Arc::new(Config::load().unwrap_or_else(|error| {
@@ -112,6 +119,8 @@ async fn main() {
     .await
     {
         eprintln!("{}", palette.bad(&error.to_string()));
-        std::process::exit(1);
+        return ExitCode::from(error.exit_code());
     }
+
+    ExitCode::SUCCESS
 }

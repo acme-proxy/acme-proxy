@@ -67,7 +67,7 @@ fn check_filters(event: Option<&str>, outcome: Option<&str>) -> Result<(), CliEr
         && crate::audit::AuditEvent::parse(event).is_none()
     {
         let known: Vec<&str> = ALL_AUDIT_EVENTS.iter().map(|e| e.as_str()).collect();
-        return Err(CliError(format!(
+        return Err(CliError::bad_request(format!(
             "unknown --event `{event}`; known events are {}",
             known.join(", ")
         )));
@@ -75,7 +75,7 @@ fn check_filters(event: Option<&str>, outcome: Option<&str>) -> Result<(), CliEr
     if let Some(outcome) = outcome
         && !matches!(outcome, "success" | "failure")
     {
-        return Err(CliError(format!(
+        return Err(CliError::bad_request(format!(
             "unknown --outcome `{outcome}`; expected `success` or `failure`"
         )));
     }
@@ -127,7 +127,7 @@ pub async fn run_audit_command(
         }
         AuditCommand::Show { id, json } => {
             let Some(entry) = admin::find_audit(id, database).await? else {
-                return Err(CliError(format!("audit row {id} not found")));
+                return Err(CliError::bad_request(format!("audit row {id} not found")));
             };
             if json {
                 println!("{}", entry.to_json());
@@ -148,6 +148,7 @@ pub async fn run_audit_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::CliErrorKind;
     use acme_proxy_self::audit::{Actor, AuditRecord};
     use acme_proxy_self::sqlite::audit::AuditEntry;
     use acme_proxy_self::sqlite::db::Database;
@@ -180,15 +181,19 @@ mod tests {
         assert!(check_filters(Some("certificate_issued"), Some("success")).is_ok());
 
         let error = check_filters(Some("certificate_renewed"), None).unwrap_err();
-        assert!(error.0.contains("certificate_renewed"), "{error}");
+        assert!(error.message.contains("certificate_renewed"), "{error}");
         // The message lists what *is* accepted, so the operator can fix it
         // without reaching for the docs.
-        assert!(error.0.contains("certificate_issued"), "{error}");
-        assert!(error.0.contains("certificate_revoke_failed"), "{error}");
+        assert!(error.message.contains("certificate_issued"), "{error}");
+        assert!(
+            error.message.contains("certificate_revoke_failed"),
+            "{error}"
+        );
 
         let error = check_filters(None, Some("maybe")).unwrap_err();
-        assert!(error.0.contains("maybe"), "{error}");
-        assert!(error.0.contains("success"), "{error}");
+        assert!(error.message.contains("maybe"), "{error}");
+        assert!(error.message.contains("success"), "{error}");
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     /// `AuditCommand::List` is an enum variant, so there is no functional
@@ -292,7 +297,8 @@ mod tests {
         let error = run_audit_command(list_event("nope"), true, Palette::plain(), &mut reader, db)
             .await
             .unwrap_err();
-        assert!(error.0.contains("unknown --event"), "{error}");
+        assert!(error.message.contains("unknown --event"), "{error}");
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]
@@ -324,7 +330,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("9999"), "{error}");
+        assert!(error.message.contains("9999"), "{error}");
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     /// Declining leaves the trail alone; accepting prunes by age.

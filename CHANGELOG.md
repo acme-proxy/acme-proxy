@@ -31,6 +31,20 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Admin commands now distinguish two failure exit codes.** Every failure
+  previously exited `1`. Now `1` means *the host could not carry out the
+  request* (a database or signer error, an unreadable file, a socket that would
+  not bind, an unreachable upstream, invalid configuration) and `3` means *the
+  request cannot be satisfied as written* (no such id, a resource in the wrong
+  state, an unknown `--status`/`--event`/`--outcome`/`--role` value, or
+  contradictory flags) — a class where re-running the identical command cannot
+  succeed. `0` (success) and the argument parser's `2` (bad command line) are
+  unchanged. A script testing `if acme-proxy … ; then` is unaffected; one that
+  matched `$? -eq 1` for "not found" must now also accept `3`. Documented at
+  [Admin CLI → Exit codes](operations/cli.md).
+
 ### Added
 
 - **`order list` can be searched by identifier and by certificate serial** —

@@ -190,7 +190,7 @@ async fn run_user_command(
         } => {
             let role: AdminRole = role
                 .parse()
-                .map_err(|error| CliError(format!("--role: {error}")))?;
+                .map_err(|error| CliError::bad_request(format!("--role: {error}")))?;
             let password = read_password(password_file.as_deref(), reader)?;
             let context = PasswordContext::from_config(config, &username);
             let user = users::create_user(&username, &password, &context, database.clone())
@@ -213,7 +213,7 @@ async fn run_user_command(
         AdminUserCommand::Role { username, role } => {
             let role: AdminRole = role
                 .parse()
-                .map_err(|error| CliError(format!("role: {error}")))?;
+                .map_err(|error| CliError::bad_request(format!("role: {error}")))?;
             match users::set_role(&username, role, database).await? {
                 None => return Err(not_found(&username)),
                 Some(user) => println!(
@@ -352,7 +352,7 @@ async fn run_totp_command(
         AdminUserTotpCommand::RecoveryCodes { username } => {
             let user = find_user(&username, database.clone()).await?;
             if !user.has_totp() {
-                return Err(CliError(format!(
+                return Err(CliError::bad_request(format!(
                     "{} has no second factor, so recovery codes would recover nothing: \
                      enrol from the panel first",
                     user.username
@@ -424,7 +424,11 @@ async fn run_session_command(
                     return Err(not_found(&username));
                 };
                 match AdminSession::find_by_user_and_fingerprint(user.id, &fp, &database).await? {
-                    None => return Err(CliError(format!("no such session for {username}: {fp}"))),
+                    None => {
+                        return Err(CliError::bad_request(format!(
+                            "no such session for {username}: {fp}"
+                        )));
+                    }
                     Some(target) => {
                         AdminSession::delete(&target.token_hash, &database).await?;
                         println!("Revoked session {fp} for {username}.");
@@ -440,7 +444,7 @@ async fn run_session_command(
                 println!("Revoked {count} session(s).");
             }
             (None, false, _) => {
-                return Err(CliError(
+                return Err(CliError::bad_request(
                     "say whose sessions to revoke: --user <username> (optionally --session <id>), \
                      or --all"
                         .to_string(),
@@ -476,8 +480,9 @@ fn read_password(
 ) -> Result<String, CliError> {
     match path {
         Some(path) => {
-            let raw = std::fs::read_to_string(path)
-                .map_err(|error| CliError(format!("cannot read {}: {error}", path.display())))?;
+            let raw = std::fs::read_to_string(path).map_err(|error| {
+                CliError::failed(format!("cannot read {}: {error}", path.display()))
+            })?;
             Ok(raw.strip_suffix('\n').unwrap_or(&raw).to_string())
         }
         None => {
@@ -493,7 +498,7 @@ fn read_password(
             eprintln!("Enter the password, then press Enter:");
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                return Err(CliError("no password supplied".to_string()));
+                return Err(CliError::failed("no password supplied".to_string()));
             }
             // Only the line terminator, never surrounding whitespace: a
             // password may legitimately begin or end with a space.
@@ -507,17 +512,21 @@ fn read_password(
 fn user_error(error: UserError) -> CliError {
     match error {
         UserError::Database(error) => CliError::from(error),
-        other => CliError(other.to_string()),
+        // A duplicate username or a policy rejection is the operator's to fix.
+        UserError::DuplicateUsername(_) | UserError::Policy(_) => {
+            CliError::bad_request(error.to_string())
+        }
     }
 }
 
 fn not_found(username: &str) -> CliError {
-    CliError(format!("no such admin user: {username}"))
+    CliError::bad_request(format!("no such admin user: {username}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::CliErrorKind;
     use crate::sqlite::admin_session::NewSession;
     use crate::testutil::TempDir;
 
@@ -637,7 +646,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.starts_with("cannot read /nonexistent/pw"));
+        assert!(error.message.starts_with("cannot read /nonexistent/pw"));
     }
 
     /// The words the *configuration* produced have to reach the terminal, or
@@ -651,7 +660,12 @@ mod tests {
         let error = run(create("alice"), "passwordpassword\n", db.clone())
             .await
             .unwrap_err();
-        assert!(error.0.contains("commonly used"), "got: {}", error.0);
+        assert!(
+            error.message.contains("commonly used"),
+            "got: {}",
+            error.message
+        );
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
 
         let mut config = Config::default();
         config.server.base_url = "https://ca.contoso.example".to_string();
@@ -663,11 +677,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("contoso"), "got: {}", error.0);
+        assert!(error.message.contains("contoso"), "got: {}", error.message);
         assert!(
-            error.0.contains("names this deployment"),
+            error.message.contains("names this deployment"),
             "got: {}",
-            error.0
+            error.message
         );
 
         // Neither attempt created anything.
@@ -678,7 +692,7 @@ mod tests {
     async fn create_refuses_empty_stdin() {
         let db = db().await;
         let error = run(create("alice"), "", db).await.unwrap_err();
-        assert_eq!(error, CliError("no password supplied".to_string()));
+        assert_eq!(error, CliError::failed("no password supplied".to_string()));
     }
 
     #[tokio::test]
@@ -687,7 +701,12 @@ mod tests {
         let error = run(create("alice"), "short\n", db.clone())
             .await
             .unwrap_err();
-        assert!(error.0.contains("at least 12"), "got: {}", error.0);
+        assert!(
+            error.message.contains("at least 12"),
+            "got: {}",
+            error.message
+        );
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
 
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
             .await
@@ -697,7 +716,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error,
-            CliError("an admin user named `alice` already exists".to_string())
+            CliError::bad_request("an admin user named `alice` already exists".to_string())
         );
     }
 
@@ -730,7 +749,10 @@ mod tests {
         let error = run(passwd("nobody"), &format!("{GOOD}\n"), db)
             .await
             .unwrap_err();
-        assert_eq!(error, CliError("no such admin user: nobody".to_string()));
+        assert_eq!(
+            error,
+            CliError::bad_request("no such admin user: nobody".to_string())
+        );
     }
 
     /// The detail an operator's row could not carry: the enrolment state and
@@ -756,7 +778,7 @@ mod tests {
             run(show("nobody", false), "", db.clone())
                 .await
                 .unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
 
         // The three states the detail shape distinguishes, walked in order: no
@@ -903,7 +925,7 @@ mod tests {
         for command in [disable("nobody"), enable("nobody")] {
             assert_eq!(
                 run(command, "", db.clone()).await.unwrap_err(),
-                CliError("no such admin user: nobody".to_string())
+                CliError::bad_request("no such admin user: nobody".to_string())
             );
         }
     }
@@ -945,8 +967,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("--role"), "{}", error.0);
-        assert!(error.0.contains("supervisor"), "{}", error.0);
+        assert!(error.message.contains("--role"), "{}", error.message);
+        assert!(error.message.contains("supervisor"), "{}", error.message);
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
         assert!(
             AdminUser::find_by_username("nope", &db)
                 .await
@@ -1012,12 +1035,12 @@ mod tests {
             run(role("nobody", "viewer"), "", db.clone())
                 .await
                 .unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
 
         let error = run(role("alice", "root"), "", db).await.unwrap_err();
-        assert!(error.0.contains("role"), "{}", error.0);
-        assert!(error.0.contains("root"), "{}", error.0);
+        assert!(error.message.contains("role"), "{}", error.message);
+        assert!(error.message.contains("root"), "{}", error.message);
     }
 
     #[tokio::test]
@@ -1041,7 +1064,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
 
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
@@ -1141,7 +1164,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
     }
 
@@ -1186,7 +1209,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError(
+            CliError::bad_request(
                 "say whose sessions to revoke: --user <username> (optionally --session <id>), \
                  or --all"
                     .to_string()
@@ -1207,7 +1230,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
 
         run(
@@ -1285,12 +1308,12 @@ mod tests {
         // An unknown fingerprint under a real user says so, and touches nothing.
         assert_eq!(
             revoke(Some("alice"), Some("deadbeef")).await.unwrap_err(),
-            CliError("no such session for alice: deadbeef".to_string())
+            CliError::bad_request("no such session for alice: deadbeef".to_string())
         );
         // An unknown user is refused before the session lookup.
         assert_eq!(
             revoke(Some("nobody"), Some("11111111")).await.unwrap_err(),
-            CliError("no such admin user: nobody".to_string())
+            CliError::bad_request("no such admin user: nobody".to_string())
         );
 
         revoke(Some("alice"), Some("11111111")).await.unwrap();
@@ -1511,13 +1534,18 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("no second factor"), "{}", error.0);
+        assert!(
+            error.message.contains("no second factor"),
+            "{}",
+            error.message
+        );
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]
     async fn every_totp_arm_refuses_an_unknown_operator() {
         let db = db().await;
-        let expected = CliError("no such admin user: nobody".to_string());
+        let expected = CliError::bad_request("no such admin user: nobody".to_string());
 
         for command in [
             AdminUserTotpCommand::Status {

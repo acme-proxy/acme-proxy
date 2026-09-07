@@ -106,6 +106,22 @@ a bug report asks for, and the answer a checkout cannot give on a host where the
 binary was copied in. `--help` is its counterpart and works at every level:
 `acme-proxy audit --help` lists that group's subcommands.
 
+## Exit codes
+
+An admin command exits with one of these. A script can branch on the code
+without parsing stderr; the deciding question between `1` and `3` is whether
+re-running the identical command is worth it.
+
+| Code | Meaning | Examples |
+|------|---------|----------|
+| `0` | Success — the command did what was asked. | |
+| `1` | The host could not carry out the request. Worth retrying, or fixing the host and retrying. | A database that will not open, a signer or CA error, an unreadable `--password-file`, an unreachable upstream, a broken `[dns]`/`[proxy]` section, invalid configuration. |
+| `2` | The command line itself was rejected. Emitted by the argument parser. | An unknown flag or subcommand, a missing argument. |
+| `3` | The request cannot be satisfied as written. Re-running the identical command will not help. | No object with that id (`no such order …`); an object in the wrong state (`… is already revoked`, `only ready or failed jobs can be cancelled`); an unknown `--status`/`--event`/`--outcome`/`--role` value; contradictory flags (`--hide-superseded` without `--expiring-in`). |
+
+`serve` exits `1` for any startup failure and otherwise runs until it is
+signalled.
+
 ## Shell completions
 
 `acme-proxy completions <shell>` prints a completion script on stdout, for

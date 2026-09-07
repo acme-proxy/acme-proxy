@@ -515,3 +515,33 @@ async fn order_cli_lists_what_is_expiring() {
     .await
     .unwrap();
 }
+
+/// The two failure exit codes the CLI now distinguishes: a request that names
+/// something absent is `BadRequest` (exit 3), where the plumbing to answer it
+/// is the host's problem alone. Driven through `run_order_command` so the
+/// classification travels the whole runner, not just the `not_found` helper.
+#[tokio::test]
+async fn a_missing_order_is_a_bad_request_exit_code() {
+    use acme_proxy::cli::CliErrorKind;
+
+    let db = Arc::new(Database::connect_in_memory().await.unwrap());
+    let config = Config::default();
+    let mut reader: &[u8] = &[];
+
+    let error = run_order_command(
+        OrderCommand::Show {
+            id: "ord-nope".to_string(),
+            json: false,
+        },
+        false,
+        Palette::plain(),
+        &mut reader,
+        &config,
+        db,
+    )
+    .await
+    .expect_err("an unknown order id must fail");
+
+    assert_eq!(error.kind(), CliErrorKind::BadRequest);
+    assert_eq!(error.exit_code(), 3);
+}

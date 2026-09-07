@@ -105,7 +105,7 @@ pub async fn run_account_command(
 }
 
 fn not_found(id: &str) -> CliError {
-    CliError(format!("no such account: {id}"))
+    CliError::bad_request(format!("no such account: {id}"))
 }
 
 #[cfg(test)]
@@ -119,7 +119,7 @@ mod tests {
     async fn every_arm_refuses_an_unknown_account() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();
-        let expected = CliError("no such account: acct-nope".to_string());
+        let expected = CliError::bad_request("no such account: acct-nope".to_string());
 
         let commands = vec![
             AccountCommand::Show {

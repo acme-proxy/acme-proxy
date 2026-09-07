@@ -87,7 +87,7 @@ pub async fn run_eab_command(
 }
 
 fn not_found(kid: &str) -> CliError {
-    CliError(format!("no such EAB credential: {kid}"))
+    CliError::bad_request(format!("no such EAB credential: {kid}"))
 }
 
 #[cfg(test)]
@@ -97,7 +97,7 @@ mod tests {
     #[tokio::test]
     async fn show_and_revoke_refuse_an_unknown_kid() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let expected = CliError("no such EAB credential: kid-nope".to_string());
+        let expected = CliError::bad_request("no such EAB credential: kid-nope".to_string());
 
         for command in [
             EabCommand::Show {

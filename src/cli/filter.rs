@@ -110,7 +110,7 @@ fn print_json(value: &serde_json::Value) -> Result<(), CliError> {
     println!(
         "{}",
         serde_json::to_string_pretty(value)
-            .map_err(|error| CliError(format!("cannot render JSON: {error}")))?
+            .map_err(|error| CliError::failed(format!("cannot render JSON: {error}")))?
     );
     Ok(())
 }
@@ -134,9 +134,9 @@ fn build(
     let sections = &profile.sections;
 
     let resolver = crate::dns::HickoryResolver::from_system_uncached()
-        .map_err(|error| CliError(format!("cannot build a resolver: {error}")))?;
+        .map_err(|error| CliError::failed(format!("cannot build a resolver: {error}")))?;
     let proxies = crate::proxy::OutboundProxies::from_config(&config.proxy)
-        .map_err(|error| CliError(format!("configuration error: {error}")))?;
+        .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
     let inventory = crate::ipam::from_config(
         &sections.ipam,
@@ -145,7 +145,7 @@ fn build(
             std::sync::Arc::new(proxies),
         ),
     )
-    .map_err(|error| CliError(format!("profile `{}`: {error}", profile.name)))?;
+    .map_err(|error| CliError::failed(format!("profile `{}`: {error}", profile.name)))?;
 
     let policy = crate::filter::build::build(
         &sections.filter,
@@ -153,7 +153,7 @@ fn build(
         inventory,
         sections.eab.enabled,
     )
-    .map_err(|error| CliError(format!("profile `{}`: {error}", profile.name)))?;
+    .map_err(|error| CliError::failed(format!("profile `{}`: {error}", profile.name)))?;
 
     Ok((profile.name, policy))
 }
@@ -243,7 +243,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("no profile named `nope`"), "{}", error.0);
+        assert!(
+            error.message.contains("no profile named `nope`"),
+            "{}",
+            error.message
+        );
     }
 
     /// `--profile` is optional only when there is nothing to disambiguate,
@@ -265,7 +269,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("--profile"), "{}", error.0);
+        assert!(error.message.contains("--profile"), "{}", error.message);
     }
 
     /// The command builds the policy rather than reading it back, so every
@@ -297,7 +301,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(error.0.contains("at column"), "{}", error.0);
+            assert!(error.message.contains("at column"), "{}", error.message);
         }
     }
 

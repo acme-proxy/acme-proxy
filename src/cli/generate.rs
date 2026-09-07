@@ -83,7 +83,7 @@ pub fn write_man(out: &mut impl Write) -> Result<(), CliError> {
         man.render_version_section(out)
     };
 
-    render(out).map_err(|error| CliError(format!("cannot write the man page: {error}")))
+    render(out).map_err(|error| CliError::failed(format!("cannot write the man page: {error}")))
 }
 
 /// What `Config::load` and `main.rs` actually read from the environment.

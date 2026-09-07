@@ -189,17 +189,19 @@ pub(crate) fn resolve_profile(
 ) -> Result<crate::config::ProfileConfig, CliError> {
     let profiles = config
         .resolve_profiles()
-        .map_err(|error| CliError(format!("configuration error: {error}")))?;
+        .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
     match wanted {
         Some(name) => profiles
             .into_iter()
             .find(|profile| profile.name == name)
-            .ok_or_else(|| CliError(format!("no profile named `{name}` in this configuration"))),
+            .ok_or_else(|| {
+                CliError::bad_request(format!("no profile named `{name}` in this configuration"))
+            }),
         None if profiles.len() == 1 => Ok(profiles.into_iter().next().expect("length checked")),
         None => {
             let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
-            Err(CliError(format!(
+            Err(CliError::bad_request(format!(
                 "this configuration defines several profiles ({}); say which one with --profile",
                 names.join(", ")
             )))
@@ -207,19 +209,86 @@ pub(crate) fn resolve_profile(
     }
 }
 
-/// A command that could not complete, carrying the message to print.
+/// A command that could not complete, carrying the message to print and the
+/// [kind](CliErrorKind) that decides the process exit status.
 ///
 /// Every failing branch below returns one of these instead of calling
 /// `std::process::exit` where it stands: `main.rs` is the single place that
 /// prints and exits, so each command body stays a plain function a test can
 /// call and assert on.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct CliError(pub String);
+#[error("{message}")]
+pub struct CliError {
+    /// The line printed to stderr.
+    pub message: String,
+    /// What the process exits with.
+    pub kind: CliErrorKind,
+}
+
+/// Why a command failed, in the one distinction a script cares about: was it
+/// the host that could not carry out the request, or the request itself that
+/// could not be satisfied as written? Only the first is worth retrying.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CliErrorKind {
+    /// The host could not carry out the request — a database error, a signer
+    /// or CA failure, an unreadable file, a socket that would not bind, an
+    /// outbound network failure, invalid configuration. Exit `1`.
+    #[default]
+    Failed,
+    /// The request cannot be satisfied as written — no object with that id, an
+    /// object in the wrong state, an unknown `--status`/`--event`/`--role`
+    /// value, contradictory flags. Re-running the identical command will not
+    /// help. Exit `3`.
+    BadRequest,
+}
+
+impl CliError {
+    /// A `Failed` error — the host could not carry out the request.
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: CliErrorKind::Failed,
+        }
+    }
+
+    /// A `BadRequest` error — the request cannot be satisfied as written.
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: CliErrorKind::BadRequest,
+        }
+    }
+
+    /// The kind this error carries.
+    pub fn kind(&self) -> CliErrorKind {
+        self.kind
+    }
+
+    /// The process exit status for this error: `1` for [`CliErrorKind::Failed`],
+    /// `3` for [`CliErrorKind::BadRequest`]. `main.rs` is the only caller.
+    pub fn exit_code(&self) -> u8 {
+        match self.kind {
+            CliErrorKind::Failed => 1,
+            CliErrorKind::BadRequest => 3,
+        }
+    }
+}
+
+impl From<String> for CliError {
+    fn from(message: String) -> Self {
+        Self::failed(message)
+    }
+}
+
+impl From<&str> for CliError {
+    fn from(message: &str) -> Self {
+        Self::failed(message)
+    }
+}
 
 impl From<sqlx::Error> for CliError {
     fn from(error: sqlx::Error) -> Self {
-        Self(format!("database error: {error}"))
+        Self::failed(format!("database error: {error}"))
     }
 }
 
@@ -293,7 +362,7 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
         .await
         .map_err(|error| {
             error!(event = "server_socket_bind_failed", outcome = "failure", bind_address = %config.server.bind_address, error = %error);
-            CliError(format!(
+            CliError::failed(format!(
                 "cannot bind {}: {error}",
                 config.server.bind_address
             ))
@@ -309,11 +378,11 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
 
     let admin_listener = bind_admin(&config).await.map_err(|error| {
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
-        CliError(error.to_string())
+        CliError::failed(error.to_string())
     })?;
     let metrics_listener = bind_metrics(&config).await.map_err(|error| {
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
-        CliError(error.to_string())
+        CliError::failed(error.to_string())
     })?;
 
     serve_on_with_reloads(
@@ -328,7 +397,7 @@ pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), C
     .await
     .map_err(|error| {
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
-        CliError(error.to_string())
+        CliError::failed(error.to_string())
     })
 }
 
@@ -2354,6 +2423,38 @@ mod tests {
     fn a_database_error_renders_as_a_cli_error() {
         let error = CliError::from(sqlx::Error::PoolClosed);
         assert!(error.to_string().starts_with("database error: "), "{error}");
+        // A database error is the host's problem, not the request's.
+        assert_eq!(error.kind(), CliErrorKind::Failed);
+        assert_eq!(error.exit_code(), 1);
+    }
+
+    /// The one distinction `main.rs` turns into a process status: `Failed` is
+    /// exit `1` (the host could not carry out the request), `BadRequest` is
+    /// exit `3` (the request cannot be satisfied as written).
+    #[test]
+    fn the_kind_decides_the_exit_code() {
+        assert_eq!(CliError::failed("x").kind(), CliErrorKind::Failed);
+        assert_eq!(CliError::bad_request("x").kind(), CliErrorKind::BadRequest);
+        assert_eq!(CliError::failed("x").exit_code(), 1);
+        assert_eq!(CliError::bad_request("x").exit_code(), 3);
+        // The bare conversions default to `Failed` — a plain `?` on a DB call
+        // must keep exiting `1`.
+        assert_eq!(CliError::from("x").kind(), CliErrorKind::Failed);
+        assert_eq!(CliError::from("x".to_string()).kind(), CliErrorKind::Failed);
+    }
+
+    /// A configuration with no resolvable profiles is the host's to fix, so
+    /// `resolve_profile` reports it as `Failed` (exit 1). The `BadRequest`
+    /// branches — an unknown `--profile`, and none given where several exist —
+    /// are covered in `src/cli/filter.rs`, its other caller, where a
+    /// multi-profile configuration is already loadable.
+    #[test]
+    fn resolve_profile_reports_a_missing_profile_set_as_failed() {
+        let config = Config::default();
+        assert_eq!(
+            resolve_profile(&config, None).unwrap_err().kind(),
+            CliErrorKind::Failed
+        );
     }
 
     /// Every arm reaches its command handler. `Serve` is deliberately absent —
@@ -2464,7 +2565,11 @@ mod tests {
         )
         .await
         .expect_err("an unknown account must fail");
-        assert_eq!(error, CliError("no such account: acct-nope".to_string()));
+        assert_eq!(
+            error,
+            CliError::bad_request("no such account: acct-nope".to_string())
+        );
+        assert_eq!(error.exit_code(), 3);
     }
 
     mod serving {

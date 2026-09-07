@@ -117,7 +117,7 @@ pub async fn run_upstream_command(
             let resolved = resolve_profile(config, profile.as_deref())?;
             let cfg = &resolved.sections.signer.relay;
             if cfg.directory_url.is_empty() {
-                return Err(CliError(
+                return Err(CliError::failed(
                     "signer.relay.directory_url is not set: there is no upstream to register \
                      with"
                         .to_string(),
@@ -137,14 +137,16 @@ pub async fn run_upstream_command(
             // process-wide one.
             let resolver = crate::dns::resolver_addr(&config.dns)
                 .and_then(crate::challenge::build_resolver)
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
+                .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
             let proxies = crate::proxy::from_config(&config.proxy)
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
+                .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
             let outbound = crate::http_client::Outbound::new(resolver, proxies);
             match relay::register_upstream_account(cfg, outbound, eab).await {
                 Ok(kid) => println!("Registered. kid = {kid}"),
                 Err(error) => {
-                    return Err(CliError(format!("upstream registration failed: {error}")));
+                    return Err(CliError::failed(format!(
+                        "upstream registration failed: {error}"
+                    )));
                 }
             }
         }
@@ -191,7 +193,7 @@ pub async fn run_upstream_command(
                 let status = status
                     .map(|value| value.parse::<UpstreamOrderStatus>())
                     .transpose()
-                    .map_err(|error| CliError(format!("--status: {error}")))?;
+                    .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
                 let window = Window::resolve(limit, offset);
                 let query = UpstreamOrderQuery {
                     profile,
@@ -211,7 +213,9 @@ pub async fn run_upstream_command(
             }
             UpstreamOrderCommand::Show { id, json } => {
                 let Some(detail) = admin::load_upstream_order_detail(&id, database).await? else {
-                    return Err(CliError(format!("no upstream order for local order {id}")));
+                    return Err(CliError::bad_request(format!(
+                        "no upstream order for local order {id}"
+                    )));
                 };
                 if json {
                     println!("{}", admin::render_upstream_order_detail_json(&detail));
@@ -243,20 +247,21 @@ fn read_secret(
     reader: &mut impl BufRead,
 ) -> Result<Vec<u8>, CliError> {
     let raw = match path {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|error| CliError(format!("cannot read {}: {error}", path.display())))?,
+        Some(path) => std::fs::read_to_string(path).map_err(|error| {
+            CliError::failed(format!("cannot read {}: {error}", path.display()))
+        })?,
         None => {
             eprintln!("Enter the upstream EAB HMAC key (base64), then press Enter:");
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                return Err(CliError("no EAB key supplied".to_string()));
+                return Err(CliError::failed("no EAB key supplied".to_string()));
             }
             line
         }
     };
 
     relay::decode_secret(raw.trim())
-        .ok_or_else(|| CliError("the EAB key is not valid base64".to_string()))
+        .ok_or_else(|| CliError::bad_request("the EAB key is not valid base64".to_string()))
 }
 
 #[cfg(test)]
@@ -340,6 +345,8 @@ mod tests {
     use super::*;
     use base64::prelude::*;
 
+    use crate::cli::CliErrorKind;
+
     // `decode_secret`'s own decoding tests (base64url, standard base64, a
     // refused non-base64 value) live in `signer::relay::eab`, which now
     // owns the one implementation both this module and `provision()` call.
@@ -396,7 +403,7 @@ mod tests {
         let mut empty = std::io::Cursor::new(Vec::new());
         assert_eq!(
             read_secret(None, &mut empty),
-            Err(CliError("no EAB key supplied".to_string()))
+            Err(CliError::failed("no EAB key supplied".to_string()))
         );
     }
 
@@ -405,7 +412,9 @@ mod tests {
         let mut reader = std::io::Cursor::new(b"not base64!!!\n".to_vec());
         assert_eq!(
             read_secret(None, &mut reader),
-            Err(CliError("the EAB key is not valid base64".to_string()))
+            Err(CliError::bad_request(
+                "the EAB key is not valid base64".to_string()
+            ))
         );
     }
 
@@ -548,6 +557,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("--status"), "{err}");
+        assert_eq!(err.kind(), CliErrorKind::BadRequest);
 
         let err = run_upstream_command(
             UpstreamCommand::Order {
@@ -564,5 +574,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("no upstream order"), "{err}");
+        assert_eq!(err.kind(), CliErrorKind::BadRequest);
     }
 }

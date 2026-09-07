@@ -75,7 +75,7 @@ pub async fn run_jobs_command(
             let status = status
                 .map(|value| value.parse::<JobStatus>())
                 .transpose()
-                .map_err(|error| CliError(format!("--status: {error}")))?;
+                .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
             let window = Window::resolve(limit, offset);
             let query = JobQuery {
                 kind,
@@ -108,12 +108,12 @@ pub async fn run_jobs_command(
                 database,
             )
             .await
-            .map_err(|error| CliError(error.to_string()))?
+            .map_err(|error| CliError::failed(error.to_string()))?
             {
                 None => println!("Cancelled."),
                 Some(CancelJobOutcome::NotFound) => return Err(not_found(&id)),
                 Some(CancelJobOutcome::NotCancellable(status)) => {
-                    return Err(CliError(format!(
+                    return Err(CliError::bad_request(format!(
                         "job {id} is {status}: only ready or failed jobs can be cancelled"
                     )));
                 }
@@ -131,7 +131,7 @@ pub async fn run_jobs_command(
         JobsCommand::RunNow { id } => match admin::run_job_now(&id, database).await? {
             RunJobNowOutcome::NotFound => return Err(not_found(&id)),
             RunJobNowOutcome::Refused(status) => {
-                return Err(CliError(format!(
+                return Err(CliError::bad_request(format!(
                     "job {id} is {status}: run-now applies to ready or failed jobs"
                 )));
             }
@@ -150,12 +150,13 @@ pub async fn run_jobs_command(
 }
 
 fn not_found(id: &str) -> CliError {
-    CliError(format!("no such job: {id}"))
+    CliError::bad_request(format!("no such job: {id}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::CliErrorKind;
     use crate::sqlite::job::NewJob;
     use crate::sqlite::nonce::now_secs;
     use serde_json::json;
@@ -201,7 +202,8 @@ mod tests {
             let err = run_jobs_command(cmd, true, palette(), &mut &b""[..], db.clone())
                 .await
                 .unwrap_err();
-            assert!(err.0.contains("no such job"), "{}", err.0);
+            assert!(err.message.contains("no such job"), "{}", err.message);
+            assert_eq!(err.kind(), CliErrorKind::BadRequest);
         }
     }
 
@@ -247,13 +249,15 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.0.contains("--status"), "{}", err.0);
-        assert!(err.0.contains("halfway"), "{}", err.0);
+        assert!(err.message.contains("--status"), "{}", err.message);
+        assert!(err.message.contains("halfway"), "{}", err.message);
         assert!(
-            err.0.contains("ready, running, done, failed, cancelled"),
+            err.message
+                .contains("ready, running, done, failed, cancelled"),
             "{}",
-            err.0
+            err.message
         );
+        assert_eq!(err.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]
@@ -332,7 +336,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.0.contains("running"), "{}", err.0);
+        assert!(err.message.contains("running"), "{}", err.message);
+        assert_eq!(err.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]
@@ -392,7 +397,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.0.contains("done"), "{}", err.0);
+        assert!(err.message.contains("done"), "{}", err.message);
     }
 
     #[tokio::test]

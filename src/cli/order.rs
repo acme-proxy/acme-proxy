@@ -120,7 +120,7 @@ pub async fn run_order_command(
                 .await;
             }
             if hide_superseded {
-                return Err(CliError(
+                return Err(CliError::bad_request(
                     "--hide-superseded needs --expiring-in: it filters on the supersession \
                      annotation, which only the expiry listing carries"
                         .to_string(),
@@ -133,7 +133,7 @@ pub async fn run_order_command(
             let status = status
                 .map(|value| value.parse::<OrderStatus>())
                 .transpose()
-                .map_err(|error| CliError(format!("--status: {error}")))?;
+                .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
 
             // Filtered in SQL, by the same `Order::search` the web admin uses.
             // It used to load every order in the database and filter the three
@@ -202,7 +202,7 @@ pub async fn run_order_command(
             // `GET /ui/orders/{id}/chain.pem` already keeps: an empty file named
             // `.pem` reads as a broken certificate rather than an absent one.
             let Some(pem) = order.certificate else {
-                return Err(CliError(format!(
+                return Err(CliError::bad_request(format!(
                     "order {id} has no certificate: it has not been finalized"
                 )));
             };
@@ -225,9 +225,9 @@ pub async fn run_order_command(
             };
             let profiles = config
                 .resolve_profiles()
-                .map_err(|error| CliError(format!("configuration error: {error}")))?;
+                .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
             let Some(profile) = profiles.iter().find(|p| p.name == order.profile) else {
-                return Err(CliError(format!(
+                return Err(CliError::bad_request(format!(
                     "order {id} was issued by profile `{}`, which this configuration does not \
                      define — revoking it needs the endpoint that signed it",
                     order.profile
@@ -242,7 +242,7 @@ pub async fn run_order_command(
             // sections `serve` reads.
             let egress = Arc::new(
                 crate::Egress::from_config(config)
-                    .map_err(|error| CliError(format!("configuration error: {error}")))?,
+                    .map_err(|error| CliError::failed(format!("configuration error: {error}")))?,
             );
             // A queue nothing drains: this command revokes, which every backend
             // answers inline, so no job is ever enqueued. Handing over a live
@@ -266,7 +266,7 @@ pub async fn run_order_command(
                 // that exits when this command does.
                 &signer::CarriedState::new(),
             )
-            .map_err(|error| CliError(format!("signer error: {error}")))?;
+            .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
             // here, and the audit row says so rather than inventing an address.
             match admin::revoke_order(
@@ -278,14 +278,20 @@ pub async fn run_order_command(
                 signer,
             )
             .await
-            .map_err(|error| CliError(error.to_string()))?
-            {
+            // A bad `--reason` code is the operator's to fix (exit 3); every
+            // other revoke failure is the host's (a signer or database error).
+            .map_err(|error| match error {
+                admin::RevokeError::BadReason(_) => CliError::bad_request(error.to_string()),
+                other => CliError::failed(other.to_string()),
+            })? {
                 admin::RevokeOutcome::NotFound => return Err(not_found(&id)),
                 admin::RevokeOutcome::NotIssued => {
-                    return Err(CliError(format!("order {id} has no issued certificate")));
+                    return Err(CliError::bad_request(format!(
+                        "order {id} has no issued certificate"
+                    )));
                 }
                 admin::RevokeOutcome::AlreadyRevoked => {
-                    return Err(CliError(format!(
+                    return Err(CliError::bad_request(format!(
                         "order {id}'s certificate is already revoked"
                     )));
                 }
@@ -328,7 +334,7 @@ async fn run_expiring(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     if status.is_some() {
-        return Err(CliError(
+        return Err(CliError::bad_request(
             "--status does not apply with --expiring-in: the expiry listing is issued, \
              unrevoked certificates by definition, so a status filter here would mean \
              something other than it does everywhere else"
@@ -336,7 +342,7 @@ async fn run_expiring(
         ));
     }
     if account_id.is_some() {
-        return Err(CliError(
+        return Err(CliError::bad_request(
             "--account-id does not apply with --expiring-in: the expiry listing has no \
              account predicate, and answering as though it did would report one \
              subscriber's certificates as every subscriber's"
@@ -344,7 +350,7 @@ async fn run_expiring(
         ));
     }
     if identifier.is_some() || identifier_contains.is_some() || cert_serial.is_some() {
-        return Err(CliError(
+        return Err(CliError::bad_request(
             "--identifier, --identifier-contains and --cert-serial do not apply with \
              --expiring-in: the expiry listing is ordered by expiry over a fixed status \
              set, so a name or serial filter here would mean something other than it \
@@ -382,13 +388,14 @@ async fn run_expiring(
 }
 
 fn not_found(id: &str) -> CliError {
-    CliError(format!("no such order: {id}"))
+    CliError::bad_request(format!("no such order: {id}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audit::ClientContext;
+    use crate::cli::CliErrorKind;
     use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend};
     use crate::sqlite::account::Account;
 
@@ -496,7 +503,7 @@ mod tests {
     async fn every_arm_refuses_an_unknown_order() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();
-        let expected = CliError("no such order: ord-nope".to_string());
+        let expected = CliError::bad_request("no such order: ord-nope".to_string());
 
         let commands = vec![
             OrderCommand::Show {
@@ -556,7 +563,7 @@ mod tests {
         .expect_err("an order with no certificate has no chain to print");
         assert_eq!(
             error,
-            CliError(format!(
+            CliError::bad_request(format!(
                 "order {} has no certificate: it has not been finalized",
                 order.id
             ))
@@ -670,7 +677,7 @@ mod tests {
         .expect_err("there is nothing to revoke");
         assert_eq!(
             error,
-            CliError(format!("order {} has no issued certificate", order.id))
+            CliError::bad_request(format!("order {} has no issued certificate", order.id))
         );
     }
 
@@ -723,7 +730,7 @@ mod tests {
         .expect_err("a second revocation has nothing left to do");
         assert_eq!(
             error,
-            CliError(format!(
+            CliError::bad_request(format!(
                 "order {}'s certificate is already revoked",
                 order.id
             ))
@@ -755,6 +762,7 @@ mod tests {
         .await
         .expect_err("7 is not a defined CRLReason");
         assert!(error.to_string().contains('7'), "{error}");
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     /// A declined delete leaves the order in place and is not a failure.
@@ -890,12 +898,14 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error.0.contains("--status"), "{error}");
-        assert!(error.0.contains("`readyy`"), "{error}");
+        assert!(error.message.contains("--status"), "{error}");
+        assert!(error.message.contains("`readyy`"), "{error}");
+        // The operator typed it, so re-running it unchanged cannot help: exit 3.
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
         // ...and it names the alternatives, so the operator does not guess.
         assert!(
             error
-                .0
+                .message
                 .contains("pending, ready, processing, valid, invalid"),
             "{error}"
         );
@@ -1087,8 +1097,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("--status"), "{error}");
-        assert!(error.0.contains("--expiring-in"), "{error}");
+        assert!(error.message.contains("--status"), "{error}");
+        assert!(error.message.contains("--expiring-in"), "{error}");
+        // Contradictory flags are the operator's to fix: exit 3.
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
 
         let error = list_with(
             Some(30),
@@ -1103,8 +1115,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("--account-id"), "{error}");
-        assert!(error.0.contains("--expiring-in"), "{error}");
+        assert!(error.message.contains("--account-id"), "{error}");
+        assert!(error.message.contains("--expiring-in"), "{error}");
 
         let error = list_with(
             None,
@@ -1119,8 +1131,8 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.0.contains("--hide-superseded"), "{error}");
-        assert!(error.0.contains("--expiring-in"), "{error}");
+        assert!(error.message.contains("--hide-superseded"), "{error}");
+        assert!(error.message.contains("--expiring-in"), "{error}");
 
         // The name and serial filters are refused beside it too, each named.
         for (identifier, contains, serial, needle) in [
@@ -1141,8 +1153,8 @@ mod tests {
             )
             .await
             .unwrap_err();
-            assert!(error.0.contains(needle), "{error}");
-            assert!(error.0.contains("--expiring-in"), "{error}");
+            assert!(error.message.contains(needle), "{error}");
+            assert!(error.message.contains("--expiring-in"), "{error}");
         }
 
         // And the ordinary listing is untouched by any of it.
