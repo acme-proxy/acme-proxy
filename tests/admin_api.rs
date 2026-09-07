@@ -2285,6 +2285,116 @@ async fn orders_list_filters_by_account_and_status() {
     .await;
     assert_eq!(ready["total"], 0);
     assert!(ready["items"].as_array().unwrap().is_empty());
+
+    // `seed` names each order `host{index}.example.com`. An exact identifier
+    // match resolves the one; a fragment resolves all three; a name nothing
+    // holds is an empty page, not an error.
+    let exact = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?identifier=host1.example.com",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(exact["total"], 1);
+
+    let fragment = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?identifierContains=example.com",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(fragment["total"], 3);
+
+    let none = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?identifier=nothing.example.com",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(none["total"], 0);
+
+    // The two identifier spellings are one filter; asking for both is a `400`.
+    let conflict = admin_request(
+        &app,
+        Method::GET,
+        "/api/orders?identifier=a.example.com&identifierContains=example",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(conflict).await["error"],
+        "conflicting_identifier_filter"
+    );
+}
+
+/// `?certSerial=` resolves the order whose issued leaf carries that serial —
+/// the abuse-report lookup, cross-checked against `/api/audit?certSerial=`.
+#[tokio::test]
+async fn orders_list_filters_by_cert_serial() {
+    use acme_proxy::sqlite::order::Order;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let ids = seed(&database, 2).await;
+
+    let mut order = Order::find_by_account(ids[0].parse().unwrap(), &database)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\n...".to_string(),
+            "0a1b2c3d".to_string(),
+            vec![9, 9, 9],
+            None,
+            &database,
+        )
+        .await
+        .unwrap();
+
+    let hit = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?certSerial=0a1b2c3d",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(hit["total"], 1);
+    assert_eq!(hit["items"][0]["certSerial"], "0a1b2c3d");
+
+    let miss = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/orders?certSerial=ffffffff",
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(miss["total"], 0);
 }
 
 /// An unknown `status=` is a `400`, not an empty page.
@@ -3871,7 +3981,11 @@ async fn a_blank_filter_is_absent_on_every_list() {
     // control left blank — the exact query string the panel's form submits).
     for (bare, blank, expected) in [
         ("/api/accounts", "/api/accounts?profile=", 3),
-        ("/api/orders", "/api/orders?profile=&accountId=&status=", 3),
+        (
+            "/api/orders",
+            "/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=",
+            3,
+        ),
         (
             "/api/audit",
             "/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=",

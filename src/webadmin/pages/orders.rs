@@ -26,7 +26,7 @@ pub struct RevokeForm {
     pub reason: String,
 }
 
-/// `GET /ui/orders?profile=&accountId=&status=&limit=&offset=`
+/// `GET /ui/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
 pub async fn list_orders(
     State(state): State<AdminState>,
     Query(params): Query<OrderListParams>,
@@ -36,16 +36,25 @@ pub async fn list_orders(
     let profile = params.profile.clone().unwrap_or_default();
     let account_id = params.account_id.clone().unwrap_or_default();
     let status = params.status.clone().unwrap_or_default();
-    // Same refusal the API gives, rendered as a page rather than as JSON.
+    let identifier = params.identifier.clone().unwrap_or_default();
+    let identifier_contains = params.identifier_contains.clone().unwrap_or_default();
+    let cert_serial = params.cert_serial.clone().unwrap_or_default();
+    // Same refusals the API gives, rendered as a page rather than as JSON.
     let parsed = params
         .parsed_status()
         .map_err(|error| PageError::bad_request(error.to_string()))?;
+    params
+        .check_identifier_filters()
+        .map_err(|message| PageError::bad_request(message.to_string()))?;
 
     let (orders, total) = Order::search(
         &OrderQuery {
             profile: params.profile.clone(),
             account_id: params.account_id.clone(),
             status: parsed,
+            identifier: params.identifier.clone(),
+            identifier_contains: params.identifier_contains.clone(),
+            cert_serial: params.cert_serial.clone(),
             limit: page.limit,
             offset: page.offset,
         },
@@ -69,6 +78,9 @@ pub async fn list_orders(
                 ("profile", &profile),
                 ("status", &status),
                 ("accountId", &account_id),
+                ("identifier", &identifier),
+                ("identifierContains", &identifier_contains),
+                ("certSerial", &cert_serial),
             ],
             "#orders-table",
         ),
@@ -79,6 +91,9 @@ pub async fn list_orders(
             "profile": profile,
             "status": status,
             "accountId": account_id,
+            "identifier": identifier,
+            "identifierContains": identifier_contains,
+            "certSerial": cert_serial,
         }),
     );
     context.insert(

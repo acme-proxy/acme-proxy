@@ -88,35 +88,21 @@ keeps its corpses stops being read.
 
 ## Both surfaces
 
-- [x] **An operator surface for the job queue, and for the relay's orders in
-      flight.** Done. `JobQuery` + `Job::search` (kind, status, paged, unpaged
-      total) plus the guarded `cancel_row`/`advance_row`/`revive_row` and
-      `find_latest_by_dedup`; `UpstreamOrderQuery` + `UpstreamOrder::search`
-      joined to `orders`; `acme-proxy jobs list|show|cancel|run-now` and
-      `upstream order list|show`; `GET /api/jobs` + `/ui/jobs` (with the two
-      mutations behind `AuthenticatedWrite`) and a read-only
-      `GET /api/upstream-orders` + `/ui/upstream-orders`. **Run-now** revives a
-      `failed` job to `attempts = max_attempts - 1` — exactly one more try, not
-      a fresh budget. **Cancel** writes `'cancelled'`; for a relay job it also
-      abandons the order through `flow::abandon_relayed_order`, shared with
-      `RelayJob::abandon`. `last_error` / upstream `error` / `user_agent` are
-      under the stored-XSS regression in `tests/admin_pages.rs`.
-- [ ] **Find the order from what the operator was handed.** Two questions
-      neither surface answers: "which order covers `web.corp.example.com`", and
-      "what is this serial out of an abuse report". `OrderQuery` filters
-      profile, account and status. The identifier half is a predicate on
-      `Order::search`'s existing `QueryBuilder` over the `orders.identifiers`
-      JSON column — not a join to `authorizations`, which holds the same names
-      one row at a time. The serial half is nearly free, and its absence is the
-      odd part: `Order::find_by_cert_serial` already exists with no admin
-      caller, while `audit list --cert-serial` and `GET /api/audit?certSerial=`
-      both filter on exactly that value. What needs deciding on the identifier
-      side is exact match against substring — `LIKE '%example.com%'` also
-      matches `evil-example.com`, which is the wrong answer to give somebody
-      hunting a misissuance — and whether it earns an index: SQLite has no
-      expression index over `json_each`, so the honest options are a scan or a
-      generated column in a new migration, and a scan is defensible for a long
-      while.
+- [x] **Find the order from what the operator was handed.** Done. `OrderQuery`
+      grew `identifier` / `identifier_contains` / `cert_serial`, all predicates
+      on the shared `Order::search` `QueryBuilder` (page and count). The
+      identifier match is `EXISTS (json_each(orders.identifiers) …)` — **exact**
+      and case-folded for `identifier` (so a misissuance hunt for `example.com`
+      is not handed `evil-example.com`), `instr` (not `LIKE`) for the substring
+      form, the two `conflicts_with` each other. `cert_serial` is a bound
+      equality over the already-indexed column `find_by_cert_serial` and
+      `AuditQuery` use. **A scan, no migration** — SQLite has no expression
+      index over `json_each`, and a scan on an operator listing over a
+      retention-swept table is fine. Surfaced on `order list`
+      (`--identifier`/`--identifier-contains`/`--cert-serial`, all refused
+      beside `--expiring-in`), `GET /api/orders`
+      (`identifier`/`identifierContains`/`certSerial`, `400` on the identifier
+      conflict) and the `/ui/orders` filter form.
 - [ ] **An admin action trail.** `audit_log` answers one question — who asked
       the CA to sign or withdraw a certificate — and four event names are the
       whole vocabulary. An account deleted, an EAB credential minted or

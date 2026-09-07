@@ -27,6 +27,17 @@ pub enum OrderCommand {
         account_id: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        /// Only orders naming this identifier exactly (case-insensitive).
+        #[arg(long)]
+        identifier: Option<String>,
+        /// Only orders naming an identifier that contains this substring
+        /// (case-insensitive). Mutually exclusive with `--identifier`.
+        #[arg(long = "identifier-contains", conflicts_with = "identifier")]
+        identifier_contains: Option<String>,
+        /// Only the order whose issued certificate has this serial (hex, no
+        /// separators) -- the value an abuse report hands you.
+        #[arg(long = "cert-serial")]
+        cert_serial: Option<String>,
         /// Instead: the certificates lapsing within N days, soonest first,
         /// each annotated with whatever has already replaced it.
         #[arg(long = "expiring-in")]
@@ -73,6 +84,9 @@ pub async fn run_order_command(
             profile,
             account_id,
             status,
+            identifier,
+            identifier_contains,
+            cert_serial,
             expiring_in,
             hide_superseded,
             limit,
@@ -82,11 +96,11 @@ pub async fn run_order_command(
             let window = Window::resolve(limit, offset);
 
             // `--expiring-in` is a different question over a different query,
-            // and the three flags that do not compose with it are refused **by
-            // name** rather than ignored -- `--status`'s own rule, and for its
-            // reason: an argument silently dropped answers with rows that look
-            // like it was honoured. The window is not among them: it is the one
-            // flag that means the same thing on both queries, so it is passed
+            // and the flags that do not compose with it are refused **by name**
+            // rather than ignored -- `--status`'s own rule, and for its reason:
+            // an argument silently dropped answers with rows that look like it
+            // was honoured. The window is not among them: it is the one flag
+            // that means the same thing on both queries, so it is passed
             // straight through.
             if let Some(days) = expiring_in {
                 return run_expiring(
@@ -94,6 +108,9 @@ pub async fn run_order_command(
                     profile,
                     account_id.as_deref(),
                     status.as_deref(),
+                    identifier.as_deref(),
+                    identifier_contains.as_deref(),
+                    cert_serial.as_deref(),
                     hide_superseded,
                     window,
                     json,
@@ -126,6 +143,9 @@ pub async fn run_order_command(
                 profile,
                 account_id,
                 status,
+                identifier,
+                identifier_contains,
+                cert_serial,
                 limit: window.limit,
                 offset: window.offset,
             };
@@ -298,6 +318,9 @@ async fn run_expiring(
     profile: Option<String>,
     account_id: Option<&str>,
     status: Option<&str>,
+    identifier: Option<&str>,
+    identifier_contains: Option<&str>,
+    cert_serial: Option<&str>,
     hide_superseded: bool,
     window: Window,
     json: bool,
@@ -317,6 +340,15 @@ async fn run_expiring(
             "--account-id does not apply with --expiring-in: the expiry listing has no \
              account predicate, and answering as though it did would report one \
              subscriber's certificates as every subscriber's"
+                .to_string(),
+        ));
+    }
+    if identifier.is_some() || identifier_contains.is_some() || cert_serial.is_some() {
+        return Err(CliError(
+            "--identifier, --identifier-contains and --cert-serial do not apply with \
+             --expiring-in: the expiry listing is ordered by expiry over a fixed status \
+             set, so a name or serial filter here would mean something other than it \
+             does on the plain listing"
                 .to_string(),
         ));
     }
@@ -766,11 +798,41 @@ mod tests {
                 profile: Some("default".to_string()),
                 account_id: None,
                 status: None,
+                identifier: None,
+                identifier_contains: None,
+                cert_serial: None,
                 expiring_in: None,
                 hide_superseded: false,
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: true,
+            },
+            // The identifier and serial filters walk the same render paths.
+            OrderCommand::List {
+                profile: None,
+                account_id: None,
+                status: None,
+                identifier: Some("seeded.example.com".to_string()),
+                identifier_contains: None,
+                cert_serial: None,
+                expiring_in: None,
+                hide_superseded: false,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
+                json: true,
+            },
+            OrderCommand::List {
+                profile: None,
+                account_id: None,
+                status: None,
+                identifier: None,
+                identifier_contains: Some("example".to_string()),
+                cert_serial: Some("deadbeef".to_string()),
+                expiring_in: None,
+                hide_superseded: false,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
+                json: false,
             },
             OrderCommand::Show {
                 id: order.id.to_string(),
@@ -810,6 +872,9 @@ mod tests {
                 profile: None,
                 account_id: None,
                 status: Some("readyy".to_string()),
+                identifier: None,
+                identifier_contains: None,
+                cert_serial: None,
                 expiring_in: None,
                 hide_superseded: false,
                 limit: DEFAULT_LIMIT,
@@ -852,6 +917,9 @@ mod tests {
                     profile: None,
                     account_id: None,
                     status: Some(status.as_str().to_string()),
+                    identifier: None,
+                    identifier_contains: None,
+                    cert_serial: None,
                     expiring_in: None,
                     hide_superseded: false,
                     limit: DEFAULT_LIMIT,
@@ -871,10 +939,14 @@ mod tests {
 
     /// A helper for the expiry arm: `order list` with only the flags under
     /// test, run to completion.
+    #[allow(clippy::too_many_arguments)]
     async fn list_with(
         expiring_in: Option<u64>,
         account_id: Option<&str>,
         status: Option<&str>,
+        identifier: Option<&str>,
+        identifier_contains: Option<&str>,
+        cert_serial: Option<&str>,
         hide_superseded: bool,
         json: bool,
         database: Arc<Database>,
@@ -885,6 +957,9 @@ mod tests {
                 profile: None,
                 account_id: account_id.map(str::to_string),
                 status: status.map(str::to_string),
+                identifier: identifier.map(str::to_string),
+                identifier_contains: identifier_contains.map(str::to_string),
+                cert_serial: cert_serial.map(str::to_string),
                 expiring_in,
                 hide_superseded,
                 limit: DEFAULT_LIMIT,
@@ -912,13 +987,33 @@ mod tests {
         crate::testutil::issued_order(&database, "default", acct, &["a.example.com"], 90).await;
 
         for json in [false, true] {
-            list_with(Some(30), None, None, false, json, database.clone())
-                .await
-                .unwrap();
+            list_with(
+                Some(30),
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                json,
+                database.clone(),
+            )
+            .await
+            .unwrap();
             // ...and with the replaced row filtered out.
-            list_with(Some(30), None, None, true, json, database.clone())
-                .await
-                .unwrap();
+            list_with(
+                Some(30),
+                None,
+                None,
+                None,
+                None,
+                None,
+                true,
+                json,
+                database.clone(),
+            )
+            .await
+            .unwrap();
         }
     }
 
@@ -942,6 +1037,9 @@ mod tests {
                         profile: None,
                         account_id: None,
                         status: None,
+                        identifier: None,
+                        identifier_contains: None,
+                        cert_serial: None,
                         expiring_in,
                         hide_superseded: false,
                         limit,
@@ -964,12 +1062,13 @@ mod tests {
         }
     }
 
-    /// The three combinations refused **by name**.
+    /// The flag combinations refused **by name** beside `--expiring-in`.
     ///
-    /// `--status` and `--account-id` do not apply to the expiry query, and
-    /// `--hide-superseded` has no annotation to filter on without it. Each is
-    /// refused rather than ignored for `--status`'s own reason: an argument
-    /// silently dropped answers with rows that look like it was honoured.
+    /// `--status`, `--account-id`, `--identifier`, `--identifier-contains` and
+    /// `--cert-serial` do not apply to the expiry query, and `--hide-superseded`
+    /// has no annotation to filter on without it. Each is refused rather than
+    /// ignored for `--status`'s own reason: an argument silently dropped answers
+    /// with rows that look like it was honoured.
     #[tokio::test]
     async fn the_flags_that_do_not_compose_with_expiring_in_are_refused_by_name() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -979,6 +1078,9 @@ mod tests {
             Some(30),
             None,
             Some("valid"),
+            None,
+            None,
+            None,
             false,
             false,
             database.clone(),
@@ -992,6 +1094,9 @@ mod tests {
             Some(30),
             Some("acct-1"),
             None,
+            None,
+            None,
+            None,
             false,
             false,
             database.clone(),
@@ -1001,15 +1106,58 @@ mod tests {
         assert!(error.0.contains("--account-id"), "{error}");
         assert!(error.0.contains("--expiring-in"), "{error}");
 
-        let error = list_with(None, None, None, true, false, database.clone())
-            .await
-            .unwrap_err();
+        let error = list_with(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            false,
+            database.clone(),
+        )
+        .await
+        .unwrap_err();
         assert!(error.0.contains("--hide-superseded"), "{error}");
         assert!(error.0.contains("--expiring-in"), "{error}");
 
-        // And the ordinary listing is untouched by any of it.
-        list_with(None, None, Some("valid"), false, false, database)
+        // The name and serial filters are refused beside it too, each named.
+        for (identifier, contains, serial, needle) in [
+            (Some("a.example.com"), None, None, "--identifier"),
+            (None, Some("example"), None, "--identifier-contains"),
+            (None, None, Some("deadbeef"), "--cert-serial"),
+        ] {
+            let error = list_with(
+                Some(30),
+                None,
+                None,
+                identifier,
+                contains,
+                serial,
+                false,
+                false,
+                database.clone(),
+            )
             .await
-            .unwrap();
+            .unwrap_err();
+            assert!(error.0.contains(needle), "{error}");
+            assert!(error.0.contains("--expiring-in"), "{error}");
+        }
+
+        // And the ordinary listing is untouched by any of it.
+        list_with(
+            None,
+            None,
+            Some("valid"),
+            Some("a.example.com"),
+            None,
+            None,
+            false,
+            false,
+            database,
+        )
+        .await
+        .unwrap();
     }
 }

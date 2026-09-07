@@ -152,7 +152,7 @@ it that needs a session bounces to `/ui/login`.
 |---|---|
 | `/ui/` | Counts for accounts, orders, EAB credentials and nonces, plus the mounted endpoints |
 | `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
-| `/ui/orders` | Every order, filterable by profile, status and account; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
+| `/ui/orders` | Every order, filterable by profile, status, account, identifier (exact or substring) and certificate serial; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
 | `/ui/eab` | Credentials, paged; minting (the secret is shown **once**) and revocation |
 | `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by profile and window, with a control to hide the replaced ones. **Read-only** |
 | `/ui/jobs` | The background queue — relayed issuance, notification delivery, the periodic sweeps — filterable by kind and status. A detail page cross-links a relay job to its upstream order and carries **Cancel** and **Run now** (see below) |
@@ -219,7 +219,7 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `PATCH` | `/api/accounts/{id}` | `{contact: [...]}` |
 | `POST` | `/api/accounts/{id}/deactivate` | |
 | `DELETE` | `/api/accounts/{id}` | cascades to the account's orders |
-| `GET` | `/api/orders?profile=&accountId=&status=&limit=&offset=` | |
+| `GET` | `/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=` | `identifier` is exact, `identifierContains` a substring, the two mutually exclusive; `certSerial` is the issued leaf's serial |
 | `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
 | `DELETE` | `/api/orders/{id}` | |

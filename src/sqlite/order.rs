@@ -129,6 +129,18 @@ pub struct OrderQuery {
     pub profile: Option<String>,
     pub account_id: Option<String>,
     pub status: Option<OrderStatus>,
+    /// An order matches when one of its identifiers equals this name exactly
+    /// (case-folded). The answer a misissuance hunt needs — `web.corp.example.com`
+    /// must not match `evil-example.com`.
+    pub identifier: Option<String>,
+    /// An order matches when one of its identifiers *contains* this substring
+    /// (case-folded), for when only a fragment of the name is remembered. The
+    /// callers refuse it alongside [`OrderQuery::identifier`]; if both arrive
+    /// they simply both apply.
+    pub identifier_contains: Option<String>,
+    /// An order matches when its issued leaf's serial (hex, no separators)
+    /// equals this exactly — the value `audit list --cert-serial` filters on.
+    pub cert_serial: Option<String>,
     /// Rows per page. The caller clamps this (`admin.page_size_max`); this
     /// layer takes what it is given.
     pub limit: i64,
@@ -169,10 +181,50 @@ impl OrderQuery {
         // `search_binds_hostile_filters_as_values` asserts, and `profile` above
         // is still bound raw, so the injection vector it exists for is intact.
         if let Some(account_id) = self.account_id.as_deref() {
-            builder
-                .push(separator)
-                .push("account_id = ")
-                .push_bind(super::id::parse(account_id));
+            builder.push(separator).push("account_id = ");
+            builder.push_bind(super::id::parse(account_id));
+            separator = " AND ";
+        }
+
+        // `identifiers` is a JSON array of `{type, value}` objects, so a name
+        // match walks it with `json_each`. There is no expression index over
+        // that (SQLite has none), so this is a scan — defensible on an
+        // operator-driven listing over a retention-swept table. Both the needle
+        // and the stored value are folded to lower case: DNS names are
+        // case-insensitive and are stored already normalised.
+        //
+        // Exact match is the misissuance-hunt answer: `example.com` must not
+        // also return `evil-example.com`. The bind is a parameter like every
+        // other value here.
+        if let Some(identifier) = self.identifier.as_deref() {
+            builder.push(separator).push(
+                "EXISTS (SELECT 1 FROM json_each(orders.identifiers) \
+                 WHERE lower(json_extract(json_each.value, '$.value')) = ",
+            );
+            builder.push_bind(identifier.to_lowercase());
+            builder.push(")");
+            separator = " AND ";
+        }
+
+        // Substring match, for a half-remembered name. `instr`, not `LIKE`, so
+        // a `%` or `_` the operator typed is a literal rather than a wildcard.
+        if let Some(fragment) = self.identifier_contains.as_deref() {
+            builder.push(separator).push(
+                "EXISTS (SELECT 1 FROM json_each(orders.identifiers) \
+                 WHERE instr(lower(json_extract(json_each.value, '$.value')), ",
+            );
+            builder.push_bind(fragment.to_lowercase());
+            builder.push(") > 0)");
+            separator = " AND ";
+        }
+
+        // The issued leaf's serial. Raw passthrough, exact, bound — the
+        // `AuditQuery::cert_serial` shape, and indexed by
+        // `idx_orders_cert_serial (profile, cert_serial)` when a profile is
+        // named beside it.
+        if let Some(cert_serial) = self.cert_serial.as_deref() {
+            builder.push(separator).push("cert_serial = ");
+            builder.push_bind(cert_serial.to_string());
         }
     }
 }
@@ -487,6 +539,9 @@ impl Order {
                profile = ?query.profile,
                account_id = ?query.account_id,
                status = ?query.status,
+               identifier = ?query.identifier,
+               identifier_contains = ?query.identifier_contains,
+               cert_serial = ?query.cert_serial,
                limit = query.limit,
                offset = query.offset);
 
@@ -1820,8 +1875,7 @@ mod tests {
             profile: Some("default".to_string()),
             account_id: Some(acct.clone().to_string()),
             status: Some(OrderStatus::Pending),
-            limit: 50,
-            offset: 0,
+            ..window(50, 0)
         };
         let (rows, total) = Order::search(&combined, &db).await.unwrap();
         assert_eq!(rows.len(), 3);
@@ -1858,8 +1912,9 @@ mod tests {
     /// `status` used to be the vector here, and is no longer expressible: it is
     /// an [`OrderStatus`], so a hostile value cannot reach this layer at all —
     /// `Order::search` never sees one, because `--status` and `?status=` refuse
-    /// it by name first. `profile` and `account_id` are still free strings and
-    /// still go through `push_bind`, so the property is asserted on those.
+    /// it by name first. `profile`, `account_id`, `identifier`,
+    /// `identifier_contains` and `cert_serial` are all free strings and all go
+    /// through `push_bind`, so the property is asserted on those.
     #[tokio::test]
     async fn a_filter_value_is_bound_not_interpolated() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -1882,11 +1937,151 @@ mod tests {
             let (rows, total) = Order::search(&by_account, &db).await.unwrap();
             assert!(rows.is_empty(), "the value must be compared, not executed");
             assert_eq!(total, 0);
+
+            for query in [
+                OrderQuery {
+                    identifier: Some(hostile.to_string()),
+                    ..window(50, 0)
+                },
+                OrderQuery {
+                    identifier_contains: Some(hostile.to_string()),
+                    ..window(50, 0)
+                },
+                OrderQuery {
+                    cert_serial: Some(hostile.to_string()),
+                    ..window(50, 0)
+                },
+            ] {
+                let (rows, total) = Order::search(&query, &db).await.unwrap();
+                assert!(rows.is_empty(), "the value must be compared, not executed");
+                assert_eq!(total, 0);
+            }
         }
 
         // The table is still there, which is what the second vector is for.
         let (_, total) = Order::search(&window(50, 0), &db).await.unwrap();
         assert_eq!(total, 2);
+    }
+
+    /// Seeds one order per name, each on `profile`, and returns their ids as
+    /// strings newest-first — the shape `search` returns.
+    async fn seed_named(
+        db: &Arc<Database>,
+        profile: &str,
+        account_id: Uuid,
+        names: &[&str],
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        for name in names {
+            let order = Order::create(
+                profile,
+                account_id,
+                vec![Identifier::dns(*name)],
+                now_secs() + 3600,
+                None,
+                None,
+                db,
+            )
+            .await
+            .unwrap();
+            ids.push(order.id.to_string());
+        }
+        ids
+    }
+
+    /// `identifier` is an **exact** name match, folded for case. The whole
+    /// point: a misissuance hunt for `example.com` must not also surface
+    /// `evil-example.com` or `sub.example.com`.
+    #[tokio::test]
+    async fn search_filters_by_identifier_exactly() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let ids = seed_named(
+            &db,
+            "default",
+            acct,
+            &["example.com", "sub.example.com", "evil-example.com"],
+        )
+        .await;
+
+        for needle in ["example.com", "EXAMPLE.CoM"] {
+            let query = OrderQuery {
+                identifier: Some(needle.to_string()),
+                ..window(50, 0)
+            };
+            let (rows, total) = Order::search(&query, &db).await.unwrap();
+            assert_eq!(total, 1, "needle {needle}");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id.to_string(), ids[0]);
+        }
+
+        // A name no order holds is empty, not an error.
+        let query = OrderQuery {
+            identifier: Some("other.example.com".to_string()),
+            ..window(50, 0)
+        };
+        let (rows, total) = Order::search(&query, &db).await.unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    /// `identifier_contains` is a substring match, and it is `instr` rather than
+    /// `LIKE`, so a `%` the operator typed is a literal that matches nothing.
+    #[tokio::test]
+    async fn search_filters_by_identifier_substring() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        seed_named(
+            &db,
+            "default",
+            acct,
+            &[
+                "example.com",
+                "sub.example.com",
+                "evil-example.com",
+                "elsewhere.test",
+            ],
+        )
+        .await;
+
+        let query = OrderQuery {
+            identifier_contains: Some("example.com".to_string()),
+            ..window(50, 0)
+        };
+        let (_, total) = Order::search(&query, &db).await.unwrap();
+        assert_eq!(total, 3);
+
+        let query = OrderQuery {
+            identifier_contains: Some("%".to_string()),
+            ..window(50, 0)
+        };
+        let (rows, total) = Order::search(&query, &db).await.unwrap();
+        assert!(rows.is_empty(), "`%` is a literal here, not a wildcard");
+        assert_eq!(total, 0);
+    }
+
+    /// `cert_serial` resolves the order whose issued leaf carries that serial —
+    /// the abuse-report lookup, with no admin caller until now.
+    #[tokio::test]
+    async fn search_filters_by_cert_serial() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = finalized_order(db.clone(), "0a1b2c3d").await;
+
+        let query = OrderQuery {
+            cert_serial: Some("0a1b2c3d".to_string()),
+            ..window(50, 0)
+        };
+        let (rows, total) = Order::search(&query, &db).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].id, order.id);
+
+        let query = OrderQuery {
+            cert_serial: Some("ffffffff".to_string()),
+            ..window(50, 0)
+        };
+        let (rows, total) = Order::search(&query, &db).await.unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
     }
 
     /// A helper for the expiry suite: an issued order whose leaf expires at

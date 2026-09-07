@@ -3101,7 +3101,10 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
 
     for (path, blank) in [
         ("/ui/accounts", "/ui/accounts?profile="),
-        ("/ui/orders", "/ui/orders?profile=&status=&accountId="),
+        (
+            "/ui/orders",
+            "/ui/orders?profile=&status=&accountId=&identifier=&identifierContains=&certSerial=",
+        ),
         (
             "/ui/audit",
             "/ui/audit?profile=&event=&outcome=&accountId=&certSerial=",
@@ -3153,6 +3156,38 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
     )
     .await;
     assert!(!named.contains("host0.example.com"), "{named}");
+
+    // The identifier filter narrows to the one order and the form remembers
+    // what was typed.
+    let by_name = html_body(
+        admin_page(
+            &app,
+            "/ui/orders?identifier=host1.example.com",
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert!(by_name.contains("host1.example.com"), "{by_name}");
+    assert!(!by_name.contains("host0.example.com"), "{by_name}");
+    assert!(
+        by_name.contains(r#"value="host1.example.com""#),
+        "the identifier input keeps its value:\n{by_name}"
+    );
+
+    // The two identifier spellings together are a bad request, page-side too.
+    assert_eq!(
+        admin_page(
+            &app,
+            "/ui/orders?identifier=a.example.com&identifierContains=example",
+            Some(&session),
+            true,
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
 
     // And a genuinely unknown status is still refused by name, since that
     // refusal is what tells an operator a typo from an empty state.

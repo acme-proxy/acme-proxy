@@ -29,6 +29,20 @@ pub struct OrderListParams {
     pub account_id: Option<String>,
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub status: Option<String>,
+    /// Exact identifier match (case-insensitive).
+    #[serde(default, deserialize_with = "empty_is_absent")]
+    pub identifier: Option<String>,
+    /// Substring identifier match (case-insensitive). Mutually exclusive with
+    /// `identifier` — [`OrderListParams::check_identifier_filters`] rejects both.
+    #[serde(
+        rename = "identifierContains",
+        default,
+        deserialize_with = "empty_is_absent"
+    )]
+    pub identifier_contains: Option<String>,
+    /// Exact issued-certificate serial match (hex, no separators).
+    #[serde(rename = "certSerial", default, deserialize_with = "empty_is_absent")]
+    pub cert_serial: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -43,6 +57,26 @@ impl OrderListParams {
     pub fn parsed_status(&self) -> Result<Option<OrderStatus>, UnknownStatus> {
         self.status.as_deref().map(str::parse).transpose()
     }
+
+    /// `identifier` and `identifierContains` are two spellings of one filter and
+    /// asking for both at once is a caller mistake, not a narrower query. Both
+    /// front ends call this so `/api` and `/ui` refuse it the same way; the
+    /// message is returned bare so each can wrap it in its own error shape.
+    pub fn check_identifier_filters(&self) -> Result<(), &'static str> {
+        if self.identifier.is_some() && self.identifier_contains.is_some() {
+            return Err("give either identifier or identifierContains, not both");
+        }
+        Ok(())
+    }
+}
+
+/// Turns the `identifier`/`identifierContains` conflict into a `400`.
+fn bad_identifier_filters(message: &'static str) -> AdminError {
+    AdminError::with_code(
+        StatusCode::BAD_REQUEST,
+        "conflicting_identifier_filter",
+        message,
+    )
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -57,19 +91,25 @@ fn bad_status(error: UnknownStatus) -> AdminError {
     AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
 }
 
-/// `GET /api/orders?profile=&accountId=&status=&limit=&offset=`
+/// `GET /api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
 pub async fn list_orders(
     State(state): State<AdminState>,
     Query(params): Query<OrderListParams>,
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    // Parsed before the move, since the helper borrows `params`.
+    // Parsed before the move, since the helpers borrow `params`.
     let status = params.parsed_status().map_err(bad_status)?;
+    params
+        .check_identifier_filters()
+        .map_err(bad_identifier_filters)?;
     let query = OrderQuery {
         profile: params.profile,
         account_id: params.account_id,
         status,
+        identifier: params.identifier,
+        identifier_contains: params.identifier_contains,
+        cert_serial: params.cert_serial,
         limit: page.limit,
         offset: page.offset,
     };

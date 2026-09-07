@@ -32,6 +32,23 @@
         <input type="text" id="accountId" name="accountId"
                placeholder="account id" value="{{ filters.accountId | default('') }}">
       </div>
+      <div class="field">
+        <label for="identifier">Identifier</label>
+        <input type="text" id="identifier" name="identifier"
+               placeholder="exact name" value="{{ filters.identifier | default('') }}">
+      </div>
+      <div class="field">
+        <label for="identifierContains">Identifier contains</label>
+        <input type="text" id="identifierContains" name="identifierContains"
+               placeholder="name fragment"
+               value="{{ filters.identifierContains | default('') }}">
+      </div>
+      <div class="field">
+        <label for="certSerial">Certificate serial</label>
+        <input type="text" id="certSerial" name="certSerial"
+               placeholder="hex, no separators"
+               value="{{ filters.certSerial | default('') }}">
+      </div>
     </form>
   </div>
 

@@ -31,6 +31,21 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Added
+
+- **`order list` can be searched by identifier and by certificate serial** —
+  the two questions an operator arrives with from an out-of-band report. `order
+  list --identifier <name>` matches an order's identifier **exactly**
+  (case-insensitive), so a misissuance hunt for `example.com` is not answered
+  with `evil-example.com`; `--identifier-contains <text>` is the substring form
+  for a half-remembered name, and the two are mutually exclusive.
+  `--cert-serial <hex>` finds the order whose issued leaf carries that serial —
+  the value `audit list --cert-serial` already filters on. All three are also
+  query parameters on `GET /api/orders` (`identifier`, `identifierContains`,
+  `certSerial`) and filter controls on `/ui/orders`, and all three are refused
+  by name beside `--expiring-in`, which is a different query. No schema change:
+  the identifier match is a `json_each` scan over `orders.identifiers`.
+
 ### Security
 
 - **The container image now runs as a non-root user** — ASVS 5.0 V13.2.2, the
