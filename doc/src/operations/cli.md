@@ -117,7 +117,7 @@ re-running the identical command is worth it.
 | `0` | Success — the command did what was asked. | |
 | `1` | The host could not carry out the request. Worth retrying, or fixing the host and retrying. | A database that will not open, a signer or CA error, an unreadable `--password-file`, an unreachable upstream, a broken `[dns]`/`[proxy]` section, invalid configuration. |
 | `2` | The command line itself was rejected. Emitted by the argument parser. | An unknown flag or subcommand, a missing argument. |
-| `3` | The request cannot be satisfied as written. Re-running the identical command will not help. | No object with that id (`no such order …`); an object in the wrong state (`… is already revoked`, `only ready or failed jobs can be cancelled`); an unknown `--status`/`--event`/`--outcome`/`--role` value; contradictory flags (`--hide-superseded` without `--expiring-in`). |
+| `3` | The request cannot be satisfied as written. Re-running the identical command will not help. | No object with that id (`no such order …`); an object in the wrong state (`… is already revoked`, `only ready or failed jobs can be cancelled`); an unknown `--status`/`--event`/`--outcome`/`--role` value; contradictory flags (`--hide-superseded` without `--expiring-in`); nothing supplied on stdin where a password or an EAB key was asked for. |
 
 `serve` exits `1` for any startup failure and otherwise runs until it is
 signalled.
@@ -212,9 +212,16 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   `evil-example.com`, which is the wrong thing to hand somebody hunting a
   misissuance. `--identifier-contains <text>` is the substring form for when
   only a fragment of the name is remembered; the two are mutually exclusive.
+
+  A **wildcard** order stores the wildcard form, so `--identifier` matches
+  `*.example.com` and not `host.example.com` — "which order named this?" is not
+  "which certificate covers this?", and only the first is a question an exact
+  match can answer. `--identifier-contains example.com` spans both.
 - `--cert-serial <hex>` finds the order whose issued certificate carries that
-  serial (hex, no separators) — the value an abuse report hands you, and the
-  same one `audit list --cert-serial` filters on.
+  serial — the value an abuse report hands you, and the same one
+  `audit list --cert-serial` filters on. Case and separators do not matter:
+  what `openssl x509 -serial` prints (upper case) and what a report quotes
+  (often colon-separated) are both folded to the form the column holds.
 - `order list --expiring-in <days>` asks a different question over a different
   query: the certificates this CA issued that reach their notAfter inside the
   window, **soonest first**, each annotated with whatever has already replaced

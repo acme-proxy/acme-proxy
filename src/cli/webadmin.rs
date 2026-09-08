@@ -31,7 +31,7 @@ use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminUser};
+use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
 use crate::sqlite::db::Database;
 
 #[derive(Subcommand)]
@@ -208,29 +208,34 @@ async fn run_user_command(
                 .map_err(|error| CliError::bad_request(format!("--role: {error}")))?;
             let password = read_password(password_file.as_deref(), reader)?;
             let context = PasswordContext::from_config(config, &username);
-            let user = users::create_user(&username, &password, &context, database.clone())
-                .await
-                .map_err(user_error)?;
-            // `create_user` writes the full tier; narrow it if a lesser one was
-            // asked for. A fresh operator holds no sessions, so the revoke
-            // `set_role` also does is a no-op here.
-            if role != AdminRole::Admin {
-                users::set_role(&user.username, role, database.clone())
-                    .await?
-                    .ok_or_else(|| not_found(&user.username))?;
-            }
+            // The tier goes in with the row: one write, so there is no window
+            // in which an operator asked for as a `viewer` exists as an
+            // `admin`.
+            let user =
+                users::create_user(&username, &password, &context, Some(role), database.clone())
+                    .await
+                    .map_err(user_error)?;
+            // Recorded here rather than after the contact step below: that step
+            // validates the address and can fail, and an operator who exists
+            // must appear in the trail whether or not the address stuck.
+            audit_admin::record_cli_action(&database, |actor, client| {
+                audit_admin::operator_created(actor, client, &user.username, role.as_str())
+            })
+            .await;
             if let Some(contact) = contact.as_deref() {
                 users::set_contact_email(&user.username, Some(contact), database.clone())
                     .await
                     .map_err(user_error)?
                     .ok_or_else(|| not_found(&user.username))?;
+                // Its own row: `operator_created`'s detail names the tier and
+                // says nothing about an address, so a trail reader asking
+                // "when was this address set?" would otherwise find nothing
+                // for an operator created with one.
+                audit_admin::record_cli_action(&database, |actor, client| {
+                    audit_admin::operator_contact_updated(actor, client, &user.username, true)
+                })
+                .await;
             }
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
-                audit_admin::operator_created(actor, client, &user.username, role.as_str()),
-                &database,
-            )
-            .await;
             // The id, not the password: nothing echoes a credential back.
             println!(
                 "Created admin user {} ({}), role {role}.",
@@ -245,11 +250,9 @@ async fn run_user_command(
                 None => return Err(not_found(&username)),
                 Some(user) => {
                     let set = user.contact_email.is_some();
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
-                        audit_admin::operator_contact_updated(actor, client, &user.username, set),
-                        &database,
-                    )
+                    audit_admin::record_cli_action(&database, |actor, client| {
+                        audit_admin::operator_contact_updated(actor, client, &user.username, set)
+                    })
                     .await;
                     match user.contact_email {
                         Some(address) => {
@@ -264,22 +267,29 @@ async fn run_user_command(
             let role: AdminRole = role
                 .parse()
                 .map_err(|error| CliError::bad_request(format!("role: {error}")))?;
-            match users::set_role(&username, role, database.clone()).await? {
+            match users::set_role(&username, role, database.clone())
+                .await
+                .map_err(user_error)?
+            {
                 None => return Err(not_found(&username)),
-                Some(user) => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
+                Some((user, revoked)) => {
+                    audit_admin::record_cli_action(&database, |actor, client| {
                         audit_admin::operator_role_changed(
                             actor,
                             client,
                             &user.username,
                             role.as_str(),
-                        ),
+                        )
+                    })
+                    .await;
+                    revoked_sessions_row(
+                        SessionScope::AllOf(user.username.clone()),
+                        revoked,
                         &database,
                     )
                     .await;
                     println!(
-                        "Role of {} set to {role}. Every session they held was revoked.",
+                        "Role of {} set to {role}. Every session they held was revoked ({revoked}).",
                         user.username
                     );
                 }
@@ -329,20 +339,19 @@ async fn run_user_command(
                 .map_err(user_error)?
             {
                 None => return Err(not_found(&username)),
-                Some(user) => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
-                        audit_admin::operator_password_changed(
-                            actor,
-                            client,
-                            &user.username,
-                            false,
-                        ),
+                Some((user, revoked)) => {
+                    audit_admin::record_cli_action(&database, |actor, client| {
+                        audit_admin::operator_password_changed(actor, client, &user.username, false)
+                    })
+                    .await;
+                    revoked_sessions_row(
+                        SessionScope::AllOf(user.username.clone()),
+                        revoked,
                         &database,
                     )
                     .await;
                     println!(
-                        "Password changed for {}. Every session they held was revoked.",
+                        "Password changed for {}. Every session they held was revoked ({revoked}).",
                         user.username
                     );
                 }
@@ -352,35 +361,24 @@ async fn run_user_command(
             match users::confirm_delete_user(&username, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&username)),
                 DeleteOutcome::Cancelled => println!("Cancelled."),
-                DeleteOutcome::Deleted => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
-                        audit_admin::operator_deleted(actor, client, &username),
-                        &database,
-                    )
+                DeleteOutcome::Deleted(_) => {
+                    audit_admin::record_cli_action(&database, |actor, client| {
+                        audit_admin::operator_deleted(actor, client, &username)
+                    })
                     .await;
                     println!("Deleted admin user {username}.");
                 }
             }
         }
         AdminUserCommand::Disable { username } => {
-            set_status_or_not_found(&username, "disabled", database.clone()).await?;
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
-                audit_admin::operator_status_changed(actor, client, &username, false),
-                &database,
-            )
-            .await;
+            // Both audit rows -- the status change and the sessions it took --
+            // are written inside `set_status_or_not_found`, so a future caller
+            // cannot get one without the other.
+            set_status_or_not_found(&username, AdminStatus::Disabled, database).await?;
             println!("Disabled {username}. Their sessions were revoked.");
         }
         AdminUserCommand::Enable { username } => {
-            set_status_or_not_found(&username, "active", database.clone()).await?;
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
-                audit_admin::operator_status_changed(actor, client, &username, true),
-                &database,
-            )
-            .await;
+            set_status_or_not_found(&username, AdminStatus::Active, database).await?;
             println!("Enabled {username}.");
         }
         AdminUserCommand::Totp { command } => {
@@ -439,11 +437,9 @@ async fn run_totp_command(
             // `None`: this is a change made on the operator's behalf, from a
             // shell they are not signed in from, so there is no session to keep.
             mfa::disable_totp(&mut user, None, database.clone()).await?;
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
-                audit_admin::operator_totp_disabled(actor, client, &user.username, true),
-                &database,
-            )
+            audit_admin::record_cli_action(&database, |actor, client| {
+                audit_admin::operator_totp_disabled(actor, client, &user.username, true)
+            })
             .await;
             println!(
                 "Removed the second factor for {}. Their sessions were revoked; \
@@ -462,11 +458,9 @@ async fn run_totp_command(
             }
 
             let codes = mfa::regenerate_recovery_codes(&user, database.clone()).await?;
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
-                audit_admin::operator_recovery_codes_regenerated(actor, client, &user.username),
-                &database,
-            )
+            audit_admin::record_cli_action(&database, |actor, client| {
+                audit_admin::operator_recovery_codes_regenerated(actor, client, &user.username)
+            })
             .await;
             // The `eab create` treatment: printed once, stored one-way, and the
             // previous set is already dead by the time this prints.
@@ -539,7 +533,7 @@ async fn run_session_command(
                     }
                     Some(target) => {
                         AdminSession::delete(&target.token_hash, &database).await?;
-                        revoked_sessions_row(SessionScope::OneOf(username.clone()), &database)
+                        revoked_sessions_row(SessionScope::OneOf(username.clone()), 1, &database)
                             .await;
                         println!("Revoked session {fp} for {username}.");
                     }
@@ -549,15 +543,19 @@ async fn run_session_command(
                 match users::revoke_sessions(&username, database.clone()).await? {
                     None => return Err(not_found(&username)),
                     Some(count) => {
-                        revoked_sessions_row(SessionScope::AllOf(username.clone()), &database)
-                            .await;
+                        revoked_sessions_row(
+                            SessionScope::AllOf(username.clone()),
+                            count,
+                            &database,
+                        )
+                        .await;
                         println!("Revoked {count} session(s) for {username}.");
                     }
                 }
             }
             (None, true, _) => {
                 let count = AdminSession::delete_all(&database).await?;
-                revoked_sessions_row(SessionScope::Everyone, &database).await;
+                revoked_sessions_row(SessionScope::Everyone, count, &database).await;
                 println!("Revoked {count} session(s).");
             }
             (None, false, _) => {
@@ -572,22 +570,39 @@ async fn run_session_command(
     Ok(())
 }
 
-/// Records a `session_revoked` audit row for a host-CLI `admin session revoke`.
-async fn revoked_sessions_row(scope: SessionScope, database: &Database) {
-    let (actor, client) = audit_admin::cli_actor();
-    crate::audit::write(audit_admin::session_revoked(actor, client, scope), database).await;
+/// Records a `session_revoked` audit row for a host-CLI action that ended
+/// sessions -- `admin session revoke`, and the implicit revoke a `passwd`,
+/// `role` or `disable` change carries.
+///
+/// `count` is how many actually went: on the plural scopes the sentence alone
+/// cannot tell forty live cookies from none, which is what an operator reading
+/// the trail after an incident is asking.
+async fn revoked_sessions_row(scope: SessionScope, count: u64, database: &Database) {
+    audit_admin::record_cli_action(database, |actor, client| {
+        audit_admin::session_revoked(actor, client, scope, count)
+    })
+    .await;
 }
 
 async fn set_status_or_not_found(
     username: &str,
-    status: &str,
+    status: AdminStatus,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
-    if users::set_status(username, status, database)
-        .await?
-        .is_none()
-    {
+    let Some((user, revoked)) = users::set_status(username, status, database.clone()).await? else {
         return Err(not_found(username));
+    };
+    audit_admin::record_cli_action(&database, |actor, client| {
+        audit_admin::operator_status_changed(
+            actor,
+            client,
+            &user.username,
+            status == AdminStatus::Active,
+        )
+    })
+    .await;
+    if revoked > 0 {
+        revoked_sessions_row(SessionScope::AllOf(user.username), revoked, &database).await;
     }
     Ok(())
 }
@@ -620,8 +635,19 @@ fn read_password(
             }
             eprintln!("Enter the password, then press Enter:");
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                return Err(CliError::failed("no password supplied".to_string()));
+            // EOF with nothing on it is the operator having supplied nothing
+            // usable, which re-running the identical command cannot fix — exit
+            // `3`, the same class as the "say whose sessions to revoke" refusal
+            // above. A *read* failure is the host's, and stays exit `1`; the
+            // two used to be collapsed by an `unwrap_or(0)`.
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err(CliError::bad_request("no password supplied".to_string())),
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(CliError::failed(format!(
+                        "cannot read the password from stdin: {error}"
+                    )));
+                }
             }
             // Only the line terminator, never surrounding whitespace: a
             // password may legitimately begin or end with a space.
@@ -882,7 +908,13 @@ mod tests {
     async fn create_refuses_empty_stdin() {
         let db = db().await;
         let error = run(create("alice"), "", db).await.unwrap_err();
-        assert_eq!(error, CliError::failed("no password supplied".to_string()));
+        // Exit `3`: the operator supplied nothing usable, which is not the
+        // host failing to carry out the request.
+        assert_eq!(
+            error,
+            CliError::bad_request("no password supplied".to_string())
+        );
+        assert_eq!(error.exit_code(), 3);
     }
 
     fn contact(username: &str, address: Option<&str>) -> AdminCommand {
@@ -1262,6 +1294,11 @@ mod tests {
 
         let db = db().await;
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+        // A second admin, so demoting alice is not the last-admin refusal --
+        // `admin::users::demoting_the_last_admin_is_refused` covers that.
+        run(create("root"), &format!("{GOOD}\n"), db.clone())
             .await
             .unwrap();
         let user = AdminUser::find_by_username("alice", &db)

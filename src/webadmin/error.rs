@@ -19,7 +19,10 @@ use axum::response::{IntoResponse, Response};
 use tracing::error;
 
 /// A failed admin request.
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+/// `Clone` so `pages::refuse_with_card` can render a refusal *and* keep the
+/// borrowed original: it builds the response from `into_response`, which
+/// consumes, and the caller still owns the error it was handed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{code}: {message}")]
 pub struct AdminError {
     pub status: StatusCode,

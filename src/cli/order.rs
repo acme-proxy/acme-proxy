@@ -145,7 +145,10 @@ pub async fn run_order_command(
                 status,
                 identifier,
                 identifier_contains,
-                cert_serial,
+                // Folded here rather than bound raw: an operator pastes a
+                // serial out of `openssl` or an abuse report, and the column
+                // only ever holds lowercase unseparated hex.
+                cert_serial: cert_serial.as_deref().map(crate::cert::normalize_serial),
                 limit: window.limit,
                 offset: window.offset,
             };
@@ -211,10 +214,31 @@ pub async fn run_order_command(
             print!("{pem}");
         }
         OrderCommand::Delete { id } => {
-            match admin::confirm_delete_order(&id, yes, reader, database).await? {
+            // Read the order first, for its profile and identifiers: the audit
+            // row names them and the row is gone once the delete returns. Both
+            // web front ends already wrote `order_deleted`; this one hard-
+            // deleted an order and left the trail silent.
+            let doomed = Order::find_by_id(&id, &database).await?;
+            match admin::confirm_delete_order(&id, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
                 DeleteOutcome::Cancelled => println!("Cancelled."),
-                DeleteOutcome::Deleted => println!("Deleted order {id}."),
+                DeleteOutcome::Deleted(deleted) => {
+                    if let Some(order) = doomed {
+                        crate::audit::admin::record_cli_action(&database, |actor, client| {
+                            crate::audit::admin::order_deleted(
+                                actor,
+                                client,
+                                &order,
+                                deleted.cascaded,
+                            )
+                        })
+                        .await;
+                    }
+                    println!(
+                        "Deleted order {id} ({} authorization(s) cascaded).",
+                        deleted.cascaded
+                    );
+                }
             }
         }
         OrderCommand::Revoke { id, reason } => {
@@ -435,6 +459,75 @@ mod tests {
 
     fn temp_dir() -> crate::testutil::TempDir {
         crate::testutil::TempDir::new("cli-order")
+    }
+
+    /// `order delete` records what it removed.
+    ///
+    /// It recorded nothing at all: both web front ends wrote `order_deleted`,
+    /// and the CLI — the only front end that hard-deletes an order from a
+    /// shell — left the trail silent. A declined prompt still writes nothing,
+    /// which is the rule for this whole half of the vocabulary.
+    #[tokio::test]
+    async fn deleting_an_order_writes_a_row_and_a_decline_does_not() {
+        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Config::default();
+        let order = seed_order(&database, "default").await;
+        let id = order.id.to_string();
+
+        let mut declined: &[u8] = b"n\n";
+        run_order_command(
+            OrderCommand::Delete { id: id.clone() },
+            false,
+            Palette::plain(),
+            &mut declined,
+            &config,
+            database.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            AuditEntry::search(&AuditQuery::default(), &database)
+                .await
+                .unwrap()
+                .1,
+            0,
+            "a declined delete is not an administrative action"
+        );
+
+        let mut reader: &[u8] = &[];
+        run_order_command(
+            OrderCommand::Delete { id: id.clone() },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .unwrap();
+
+        let (rows, total) = AuditEntry::search(
+            &AuditQuery {
+                limit: 5,
+                ..AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].event, "order_deleted");
+        assert_eq!(rows[0].actor_kind, "cli");
+        assert_eq!(rows[0].profile, "default");
+        assert_eq!(rows[0].order_id.as_deref(), Some(id.as_str()));
+        // The row outlives the order it names — `audit_log` has no foreign
+        // keys, which is the whole reason it can record a deletion.
+        assert!(
+            Order::find_by_id(&id, &database).await.unwrap().is_none(),
+            "the order really went"
+        );
     }
 
     async fn seed_order(database: &Arc<Database>, profile: &str) -> Order {

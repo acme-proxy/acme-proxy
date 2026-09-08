@@ -17,16 +17,22 @@ use crate::webadmin::pages::{chrome, flash, flash_error, pager, respond, respond
 
 /// The kinds the filter `<select>` offers. A free-typed `?kind=` still filters
 /// — this is only the dropdown, and a job row's kind is a closed code set.
+///
+/// The **constants**, not their spellings: written out as literals this list
+/// agreed with `admin::ops::PERIODIC_JOB_KINDS` only until somebody renamed a
+/// kind, at which point the dropdown would silently stop matching anything
+/// while every test still passed. Nothing else in the crate spells a job kind
+/// twice.
 const KNOWN_KINDS: &[&str] = &[
-    "signer_relay_issue",
-    "notify_deliver",
-    "notify_expiry_digest",
-    "local_ca_crl_sweep",
-    "nonce_sweep",
-    "audit_sweep",
-    "admin_session_sweep",
-    "order_sweep",
-    "job_retention_sweep",
+    crate::signer::relay::RELAY_JOB_KIND,
+    crate::notify::job::NOTIFY_JOB_KIND,
+    crate::notify::expiry::EXPIRY_JOB_KIND,
+    crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
+    crate::jobs::sweep::NONCE_SWEEP_KIND,
+    crate::jobs::sweep::AUDIT_SWEEP_KIND,
+    crate::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
+    crate::jobs::sweep::ORDER_SWEEP_KIND,
+    crate::jobs::sweep::RETENTION_JOB_KIND,
 ];
 
 /// `GET /ui/jobs?kind=&status=&limit=&offset=`
@@ -120,6 +126,7 @@ pub async fn cancel_job(
         &id,
         crate::audit::Actor::admin(&session.auth.user.username),
         state.audit.client(&request_context).await,
+        state.audit.metrics(),
         state.database.clone(),
     )
     .await
@@ -166,18 +173,20 @@ pub async fn run_job(
     session: PageSessionWrite,
     request_context: crate::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
-    let banner = match admin::run_job_now(&id, state.database.clone()).await? {
+    let banner = match admin::run_job_now(
+        &id,
+        crate::audit::Actor::admin(&session.auth.user.username),
+        state.audit.client(&request_context).await,
+        state.database.clone(),
+    )
+    .await?
+    {
         RunJobNowOutcome::NotFound => return Err(not_found(&id)),
         RunJobNowOutcome::Refused(status) => flash_error(
             "job_not_runnable",
             format!("Job {id} is {status}; run-now applies to ready or failed jobs."),
         ),
         RunJobNowOutcome::Nudged(_) => {
-            state
-                .record_admin_action(&request_context, &session.auth.user.username, |a, c| {
-                    crate::audit::admin::job_advanced(a, c, &id, false)
-                })
-                .await;
             tracing::info!(event = "admin_job_advanced",
                            outcome = "success",
                            surface = "ui",
@@ -186,11 +195,6 @@ pub async fn run_job(
             flash("ok", "Job will run at the next queue poll.")
         }
         RunJobNowOutcome::Revived(job) => {
-            state
-                .record_admin_action(&request_context, &session.auth.user.username, |a, c| {
-                    crate::audit::admin::job_advanced(a, c, &id, true)
-                })
-                .await;
             tracing::info!(event = "admin_job_revived",
                            outcome = "success",
                            surface = "ui",

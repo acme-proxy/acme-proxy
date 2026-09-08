@@ -82,6 +82,45 @@ impl std::fmt::Display for AdminRole {
     }
 }
 
+/// Whether a web-admin operator may sign in at all.
+///
+/// The two values `admin_users.status`'s `CHECK` allows, as a type rather than
+/// as the free strings four call sites used to pass. The migration is frozen
+/// and its spellings are the compatibility surface, so [`AdminStatus::as_str`]
+/// answers the byte-identical value the column already holds -- the
+/// `src/sqlite/status.rs` treatment, kept here beside [`AdminRole`] because the
+/// two are read together and neither is a state machine the way an order's
+/// status is.
+///
+/// Deliberately no `from_storage`: [`AdminUser::is_active`] is the only reader
+/// and it already fails closed on a value outside the `CHECK`, which is the
+/// direction a hand-edited row should fall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AdminStatus {
+    /// May sign in.
+    Active,
+    /// May not. Setting this also revokes every session the operator holds --
+    /// a disabled account with a live cookie would be disabled in name only.
+    Disabled,
+}
+
+impl AdminStatus {
+    /// The exact string stored in `admin_users.status`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl std::fmt::Display for AdminStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl FromStr for AdminRole {
     type Err = String;
 
@@ -204,17 +243,20 @@ impl AdminUser {
     /// `password_hash` is already encoded by `crate::admin::password`: this
     /// layer never sees a plaintext password and cannot hash one.
     ///
-    /// The row is written with `role` left `NULL`, which reads as
-    /// [`AdminRole::Admin`] -- the safe default for the bootstrap operator, and
-    /// the same "hard-code the default, change it with a setter" shape `status`
-    /// uses. `admin::users::create_user` calls [`AdminUser::set_role`]
-    /// afterwards when a narrower tier was asked for.
+    /// `role` is written **in the same INSERT**. `None` leaves the column
+    /// `NULL`, which reads as [`AdminRole::Admin`] -- the safe default for the
+    /// bootstrap operator, and what every row created before the column existed
+    /// holds. It used to be the only option, with `admin::users::create_user`
+    /// calling [`AdminUser::set_role`] afterwards for a narrower tier; that made
+    /// `admin user create --role viewer` two writes, so a failure between them
+    /// left an operator at full `admin` with their password already set.
     ///
     /// A duplicate username surfaces as the UNIQUE violation it is; the caller
     /// (`admin::users::create_user`) checks first and reports it in words.
     pub async fn create(
         username: &str,
         password_hash: &str,
+        role: Option<AdminRole>,
         database: &Database,
     ) -> Result<AdminUser, sqlx::Error> {
         let now = now_secs();
@@ -223,7 +265,7 @@ impl AdminUser {
             username: username.trim().to_lowercase(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
-            role: None,
+            role: role.map(|role| role.as_str().to_string()),
             totp_secret: None,
             totp_pending_secret: None,
             totp_last_step: None,
@@ -236,13 +278,15 @@ impl AdminUser {
 
         debug!(event = "db_admin_user_create_started", outcome = "progress", username = %user.username);
         sqlx::query(
-            "INSERT INTO admin_users (id, username, password_hash, status, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?);",
+            "INSERT INTO admin_users \
+             (id, username, password_hash, status, role, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(user.id)
         .bind(&user.username)
         .bind(&user.password_hash)
         .bind(&user.status)
+        .bind(user.role.clone())
         .bind(user.created_at)
         .bind(user.updated_at)
         .execute(&database.pool)
@@ -688,7 +732,9 @@ mod tests {
     #[tokio::test]
     async fn create_persists_an_active_user_with_a_lowercased_username() {
         let db = db().await;
-        let user = AdminUser::create("  Alice  ", "hash", &db).await.unwrap();
+        let user = AdminUser::create("  Alice  ", "hash", None, &db)
+            .await
+            .unwrap();
         assert_eq!(user.username, "alice");
         assert_eq!(user.status, "active");
         assert!(user.is_active());
@@ -699,7 +745,7 @@ mod tests {
     #[tokio::test]
     async fn find_by_username_is_case_insensitive_and_round_trips() {
         let db = db().await;
-        let created = AdminUser::create("alice", "hash", &db).await.unwrap();
+        let created = AdminUser::create("alice", "hash", None, &db).await.unwrap();
         let found = AdminUser::find_by_username("ALICE", &db)
             .await
             .unwrap()
@@ -734,10 +780,12 @@ mod tests {
     #[tokio::test]
     async fn a_duplicate_username_is_refused_by_the_unique_constraint() {
         let db = db().await;
-        AdminUser::create("alice", "hash", &db).await.unwrap();
+        AdminUser::create("alice", "hash", None, &db).await.unwrap();
         // Also proves the normalization above is a real constraint, not a
         // near-miss: `Alice` collides with the stored `alice`.
-        let error = AdminUser::create("Alice", "other", &db).await.unwrap_err();
+        let error = AdminUser::create("Alice", "other", None, &db)
+            .await
+            .unwrap_err();
         assert!(
             error.to_string().to_lowercase().contains("unique"),
             "expected a UNIQUE violation, got: {error}"
@@ -749,8 +797,8 @@ mod tests {
         let db = db().await;
         assert!(AdminUser::list_all(&db).await.unwrap().is_empty());
 
-        AdminUser::create("a", "h", &db).await.unwrap();
-        AdminUser::create("b", "h", &db).await.unwrap();
+        AdminUser::create("a", "h", None, &db).await.unwrap();
+        AdminUser::create("b", "h", None, &db).await.unwrap();
         let all = AdminUser::list_all(&db).await.unwrap();
         assert_eq!(all.len(), 2);
         // Two users created in the same second tie on `created_at`, so the
@@ -773,7 +821,7 @@ mod tests {
         assert_eq!(AdminUser::search(50, 0, &db).await.unwrap().1, 0);
 
         for name in ["a", "b", "c", "d", "e"] {
-            AdminUser::create(name, "h", &db).await.unwrap();
+            AdminUser::create(name, "h", None, &db).await.unwrap();
         }
 
         let (first, total) = AdminUser::search(2, 0, &db).await.unwrap();
@@ -803,7 +851,7 @@ mod tests {
     async fn search_reads_the_table_in_the_same_order_as_the_scan() {
         let db = db().await;
         for name in ["a", "b", "c"] {
-            AdminUser::create(name, "h", &db).await.unwrap();
+            AdminUser::create(name, "h", None, &db).await.unwrap();
         }
 
         let scanned: Vec<String> = AdminUser::list_all(&db)
@@ -825,8 +873,8 @@ mod tests {
     #[tokio::test]
     async fn list_all_orders_oldest_first() {
         let db = db().await;
-        let older = AdminUser::create("older", "h", &db).await.unwrap();
-        let newer = AdminUser::create("newer", "h", &db).await.unwrap();
+        let older = AdminUser::create("older", "h", None, &db).await.unwrap();
+        let newer = AdminUser::create("newer", "h", None, &db).await.unwrap();
         // Backdate one so the two no longer tie and `created_at ASC` is what
         // decides, rather than the UUID tiebreak.
         sqlx::query("UPDATE admin_users SET created_at = ? WHERE id = ?;")
@@ -844,7 +892,7 @@ mod tests {
     #[tokio::test]
     async fn set_password_hash_persists_and_syncs_in_memory() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "old", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "old", None, &db).await.unwrap();
         user.set_password_hash("new", &db).await.unwrap();
         assert_eq!(user.password_hash, "new");
 
@@ -855,7 +903,7 @@ mod tests {
     #[tokio::test]
     async fn set_status_persists_and_disables() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         user.set_status("disabled", &db).await.unwrap();
         assert!(!user.is_active());
 
@@ -901,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn a_row_with_no_role_reads_as_admin() {
         let db = db().await;
-        let user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         assert_eq!(user.role, None);
         assert_eq!(user.role(), AdminRole::Admin);
 
@@ -913,7 +961,7 @@ mod tests {
     #[tokio::test]
     async fn set_role_persists_and_syncs_in_memory() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
 
         user.set_role(AdminRole::Viewer, &db).await.unwrap();
         assert_eq!(user.role(), AdminRole::Viewer);
@@ -930,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn the_totp_setters_persist_and_sync_in_memory() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
 
         user.set_totp_pending(b"secret-bytes", &db).await.unwrap();
         assert!(user.has_pending_totp());
@@ -964,7 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn confirming_with_nothing_pending_leaves_a_live_factor_alone() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         user.set_totp_pending(b"live", &db).await.unwrap();
         user.confirm_totp(&db).await.unwrap();
 
@@ -980,7 +1028,7 @@ mod tests {
     #[tokio::test]
     async fn claim_totp_step_refuses_a_step_it_has_already_seen() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
 
         assert!(user.claim_totp_step(100, &db).await.unwrap());
         assert_eq!(user.totp_last_step, Some(100));
@@ -1003,14 +1051,14 @@ mod tests {
     #[tokio::test]
     async fn the_status_check_refuses_a_value_outside_the_schema() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         assert!(user.set_status("banished", &db).await.is_err());
     }
 
     #[tokio::test]
     async fn mark_logged_in_stamps_last_login_at() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         user.mark_logged_in(None, &db).await.unwrap();
         assert!(user.last_login_at.is_some());
 
@@ -1025,7 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn mark_logged_in_keeps_a_capped_move_to_front_address_set() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
 
         // Fill past the cap; the newest address is always at the front.
         for n in 0..KNOWN_LOGIN_IPS + 2 {
@@ -1060,7 +1108,7 @@ mod tests {
     #[tokio::test]
     async fn set_contact_email_persists_and_syncs_and_clears() {
         let db = db().await;
-        let mut user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let mut user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         assert_eq!(user.contact_email, None);
 
         user.set_contact_email(Some("alice@example.com"), &db)
@@ -1079,7 +1127,7 @@ mod tests {
     #[tokio::test]
     async fn delete_reports_whether_a_row_existed() {
         let db = db().await;
-        let user = AdminUser::create("alice", "h", &db).await.unwrap();
+        let user = AdminUser::create("alice", "h", None, &db).await.unwrap();
         assert!(AdminUser::delete(user.id, &db).await.unwrap());
         assert!(!AdminUser::delete(user.id, &db).await.unwrap());
     }
@@ -1087,7 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn to_json_never_leaks_the_hash_or_the_totp_secret() {
         let db = db().await;
-        let user = AdminUser::create("alice", "super-secret-hash", &db)
+        let user = AdminUser::create("alice", "super-secret-hash", None, &db)
             .await
             .unwrap();
         let json = user.to_json();

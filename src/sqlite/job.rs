@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
+use crate::sqlite::status::JobStatus;
 
 /// One stored job row.
 ///
@@ -101,22 +102,14 @@ impl JobQuery {
     /// function so a filter applied to only one cannot report a total the rows
     /// disagree with. Every value goes through `push_bind`.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
-        let mut separator = " WHERE ";
-        for (column, value) in [
-            ("kind = ", self.kind.as_deref()),
-            (
-                "status = ",
-                self.status.map(crate::sqlite::status::JobStatus::as_str),
-            ),
-        ] {
-            if let Some(value) = value {
-                builder
-                    .push(separator)
-                    .push(column)
-                    .push_bind(value.to_string());
-                separator = " AND ";
-            }
-        }
+        crate::sqlite::query::push_equalities(
+            builder,
+            crate::sqlite::query::WHERE,
+            &[
+                ("kind = ", self.kind.as_deref()),
+                ("status = ", self.status.map(JobStatus::as_str)),
+            ],
+        );
     }
 }
 
@@ -520,27 +513,49 @@ impl Job {
         row.map(Self::from_row).transpose()
     }
 
-    /// Retires a job at an operator's request: `ready`/`failed` → `cancelled`.
+    /// Retires a job at an operator's request, **from one named status**:
+    /// `from` → `cancelled`.
     ///
     /// `Ok(Some(job))` is the row as it now stands; `Ok(None)` means it was not
-    /// in a cancellable state (`running`, `done`, or already `cancelled`) — the
-    /// guard decided, not a read-then-write. A `running` job is deliberately
-    /// excluded: a runner owns it, and its lease will expire or it will settle.
-    pub async fn cancel_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
+    /// in `from` — the guard decided, not a read-then-write. `running` is never
+    /// a legal `from`: a runner owns such a row, and its lease will expire or it
+    /// will settle.
+    ///
+    /// **The status is a parameter rather than the `IN ('ready','failed')` this
+    /// used to guard on**, and that is what lets the caller act on *which* of
+    /// the two it was. `RETURNING` hands back the row after the write, so a
+    /// single statement over both cannot say which state it came from — and the
+    /// difference matters exactly once: a `ready` relay job is in flight and
+    /// its order still has to be abandoned, while a `failed` one was already
+    /// abandoned by `runner::retire`, so repeating that would write a second
+    /// `certificate_issue_failed` row and overwrite `upstream_orders.error`
+    /// with a cancellation message, destroying the upstream's own diagnosis.
+    /// See `admin::ops::cancel_job`.
+    pub async fn cancel_row(
+        id: Uuid,
+        from: JobStatus,
+        database: &Database,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        debug_assert_ne!(
+            from,
+            JobStatus::Running,
+            "a running job is the runner's; cancelling it would strand a lease"
+        );
         let sql = format!(
             "UPDATE jobs \
              SET status = 'cancelled', updated_at = ?, lease_owner = NULL, lease_until = NULL \
-             WHERE id = ? AND status IN ('ready', 'failed') \
+             WHERE id = ? AND status = ? \
              RETURNING {COLUMNS};"
         );
         let row = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(now_secs())
             .bind(id)
+            .bind(from.as_str())
             .fetch_optional(&database.pool)
             .await?;
         let job = row.map(Self::from_row).transpose()?;
         if job.is_some() {
-            info!(event = "db_job_cancelled", outcome = "success", job_id = %id);
+            info!(event = "db_job_cancelled", outcome = "success", job_id = %id, from = from.as_str());
         }
         Ok(job)
     }
@@ -1205,14 +1220,14 @@ mod tests {
 
         // ready -> cancelled.
         assert!(enqueue_kind(job_id("ready"), "test", "a", now_secs(), 3, &database).await);
-        let cancelled = Job::cancel_row(job_id("ready"), &database)
+        let cancelled = Job::cancel_row(job_id("ready"), JobStatus::Ready, &database)
             .await
             .unwrap()
             .expect("a ready job cancels");
         assert_eq!(cancelled.status, "cancelled");
         // A second cancel finds nothing to do.
         assert!(
-            Job::cancel_row(job_id("ready"), &database)
+            Job::cancel_row(job_id("ready"), JobStatus::Ready, &database)
                 .await
                 .unwrap()
                 .is_none()
@@ -1221,7 +1236,7 @@ mod tests {
         // failed -> cancelled.
         failed_job(job_id("failed"), "test", "b", &database).await;
         assert!(
-            Job::cancel_row(job_id("failed"), &database)
+            Job::cancel_row(job_id("failed"), JobStatus::Failed, &database)
                 .await
                 .unwrap()
                 .is_some()
@@ -1233,7 +1248,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            Job::cancel_row(job_id("running"), &database)
+            Job::cancel_row(job_id("running"), JobStatus::Ready, &database)
                 .await
                 .unwrap()
                 .is_none()
@@ -1255,7 +1270,7 @@ mod tests {
             .unwrap();
         Job::complete(job.id, "r", &database).await.unwrap();
         assert!(
-            Job::cancel_row(job_id("done"), &database)
+            Job::cancel_row(job_id("done"), JobStatus::Ready, &database)
                 .await
                 .unwrap()
                 .is_none()

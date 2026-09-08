@@ -43,15 +43,18 @@ pub mod session;
 pub mod templates;
 pub mod upstream_orders;
 
-pub use auth::{PageAdminWrite, PageSelfServiceWrite, PageSession, PageSessionWrite};
+pub use auth::{
+    PageAdminRead, PageAdminWrite, PageAuth, PageSelfServiceWrite, PageSession, PageSessionWrite,
+};
 pub use error::PageError;
 
 use axum::Router;
-use axum::response::Html;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::{Map, Value, json};
 
 use crate::webadmin::AdminState;
+use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::Page;
 
 /// Everything under `/ui`, including the assets and the two unauthenticated
@@ -176,15 +179,20 @@ pub(crate) fn pages_router() -> Router<AdminState> {
 /// as an `hx-headers` attribute, and every mutating request htmx issues carries
 /// it back. A page rendered without it loses every write at once, which is the
 /// intended failure mode — a partial loss would be worse.
-pub(crate) fn chrome(session: &PageSession, nav: &'static str, title: &str) -> Map<String, Value> {
+pub(crate) fn chrome<S: PageAuth>(
+    session: &S,
+    nav: &'static str,
+    title: &str,
+) -> Map<String, Value> {
+    let auth = session.auth();
     let mut context = Map::new();
     context.insert(
         "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
+        Value::String(auth.session.csrf_token.clone()),
     );
     context.insert(
         "user".to_string(),
-        crate::admin::render_admin_user_json(&session.auth.user),
+        crate::admin::render_admin_user_json(&auth.user),
     );
     context.insert("nav".to_string(), Value::String(nav.to_string()));
     context.insert("title".to_string(), Value::String(title.to_string()));
@@ -240,6 +248,47 @@ pub(crate) fn flash(kind: &str, message: impl Into<String>) -> Value {
 #[must_use]
 pub(crate) fn flash_error(code: &str, message: impl Into<String>) -> Value {
     json!({ "kind": "error", "message": message.into(), "code": code })
+}
+
+/// A refusal rendered as a card's own banner, keeping the refusal's status and
+/// its headers.
+///
+/// The shape four handlers had each written out for themselves: an
+/// [`AdminError`] the caller judged worth *showing beside* the control rather
+/// than replacing the page with (a wrong password on a step-up, a `409` on a
+/// row whose state moved), rendered into the same fragment the success path
+/// re-renders.
+///
+/// One place rather than four, and the reason is the thing three of them
+/// dropped: `AdminError::rate_limited` sets a `Retry-After` header, and a
+/// hand-rebuilt `(status, body)` tuple loses it. Building from
+/// `error.into_response()` and swapping the body keeps every header the error
+/// carries, whatever a later constructor adds.
+///
+/// A `401` is reworded: on this path it means "that password is not correct",
+/// not "sign in again" — the session making the request is perfectly live, and
+/// the API's own wording would read as a bounce.
+pub(crate) fn refuse_with_card(
+    state: &AdminState,
+    fragment: &str,
+    mut context: Map<String, Value>,
+    error: &AdminError,
+) -> Result<Response, PageError> {
+    let message = if error.status == axum::http::StatusCode::UNAUTHORIZED {
+        "That password is not correct.".to_string()
+    } else {
+        error.message.clone()
+    };
+    context.insert("flash".to_string(), flash_error(error.code, message));
+    let body = respond_fragment(state, fragment, context)?;
+
+    let mut response = error.clone().into_response();
+    *response.body_mut() = body.into_response().into_body();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    Ok(response)
 }
 
 /// The `{items, total}` half of a list context; the window itself is [`pager`].

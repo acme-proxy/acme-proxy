@@ -3588,16 +3588,16 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
       "author": "Kris Price <kris@krisprice.nz>",
       "name": "ipnet",
-      "version": "2.12.1",
+      "version": "2.12.2",
       "description": "Provides types and useful methods for working with IPv4 and IPv6 network addresses, commonly called IP prefixes. The new `IpNet`, `Ipv4Net`, and `Ipv6Net` types build on the existing `IpAddr`, `Ipv4Addr`, and `Ipv6Addr` types already provided in Rust's standard library and align to their design to stay consistent. The module also provides useful traits that extend `Ipv4Addr` and `Ipv6Addr` with methods for `Add`, `Sub`, `BitAnd`, and `BitOr` operations. The module only uses stable feature so it is guaranteed to compile using the stable toolchain.",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
+          "content": "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
         }
       ],
       "licenses": [
@@ -3605,7 +3605,7 @@
           "expression": "MIT OR Apache-2.0"
         }
       ],
-      "purl": "pkg:cargo/ipnet@2.12.1",
+      "purl": "pkg:cargo/ipnet@2.12.2",
       "externalReferences": [
         {
           "type": "documentation",
@@ -5657,15 +5657,15 @@
     },
     {
       "type": "library",
-      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.43",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.44",
       "name": "rustls",
-      "version": "0.23.43",
+      "version": "0.23.44",
       "description": "Rustls is a modern TLS library written in Rust.",
       "scope": "required",
       "hashes": [
         {
           "alg": "SHA-256",
-          "content": "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+          "content": "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
         }
       ],
       "licenses": [
@@ -5673,7 +5673,7 @@
           "expression": "Apache-2.0 OR ISC OR MIT"
         }
       ],
-      "purl": "pkg:cargo/rustls@0.23.43",
+      "purl": "pkg:cargo/rustls@0.23.44",
       "externalReferences": [
         {
           "type": "website",
@@ -9462,14 +9462,14 @@
         "registry+https://github.com/rust-lang/crates.io-index#http-body-util@0.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
         "registry+https://github.com/rust-lang/crates.io-index#hyper-util@0.1.20",
-        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#lettre@0.11.23",
         "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
         "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
         "registry+https://github.com/rust-lang/crates.io-index#rcgen@0.14.10",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
-        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.43",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.44",
         "registry+https://github.com/rust-lang/crates.io-index#rustls-pki-types@1.15.1",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
@@ -10086,7 +10086,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#futures-util@0.3.34",
         "registry+https://github.com/rust-lang/crates.io-index#hickory-proto@0.26.2",
         "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
-        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#jni@0.22.4",
         "registry+https://github.com/rust-lang/crates.io-index#rand@0.10.2",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
@@ -10102,7 +10102,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.1",
         "registry+https://github.com/rust-lang/crates.io-index#data-encoding@2.11.1",
         "registry+https://github.com/rust-lang/crates.io-index#idna@1.1.0",
-        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#jni@0.22.4",
         "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
         "registry+https://github.com/rust-lang/crates.io-index#prefix-trie@0.8.4",
@@ -10124,7 +10124,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#hickory-net@0.26.2",
         "registry+https://github.com/rust-lang/crates.io-index#hickory-proto@0.26.2",
         "registry+https://github.com/rust-lang/crates.io-index#ipconfig@0.3.4",
-        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#jni@0.22.4",
         "registry+https://github.com/rust-lang/crates.io-index#moka@0.12.16",
         "registry+https://github.com/rust-lang/crates.io-index#ndk-context@0.1.1",
@@ -10320,7 +10320,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229"
       ]
@@ -10395,7 +10395,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#nom@8.0.0",
         "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
         "registry+https://github.com/rust-lang/crates.io-index#quoted_printable@0.5.2",
-        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.43",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.44",
         "registry+https://github.com/rust-lang/crates.io-index#socket2@0.6.5",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
         "registry+https://github.com/rust-lang/crates.io-index#tokio-rustls@0.26.5",
@@ -10606,7 +10606,7 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#prefix-trie@0.8.4",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#either@1.18.0",
-        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19"
       ]
     },
@@ -10720,7 +10720,7 @@
       ]
     },
     {
-      "ref": "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.43",
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.44",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#log@0.4.34",
         "registry+https://github.com/rust-lang/crates.io-index#once_cell@1.21.4",
@@ -11178,7 +11178,7 @@
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#tokio-rustls@0.26.5",
       "dependsOn": [
-        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.43",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.44",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1"
       ]
     },

@@ -18,8 +18,8 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::session::{
-    AdminWrite, Authenticated, AuthenticatedWrite, EnrolWrite, PendingMfa, PendingMfaSubmit,
-    SelfServiceWrite,
+    AdminRead, AdminWrite, Authenticated, AuthenticatedWrite, EnrolWrite, PendingMfa,
+    PendingMfaSubmit, SelfServiceWrite,
 };
 
 /// The header htmx sets on every request it issues.
@@ -99,6 +99,38 @@ pub struct PageSelfServiceWrite {
     pub hx: bool,
 }
 
+/// A signed-in **admin** on a page that only *reads* other operators. Wraps
+/// [`AdminRead`], so there is no CSRF or origin gate — see that type for why
+/// the `/ui/operators` reads are tiered at all.
+pub struct PageAdminRead {
+    pub auth: Authenticated,
+    pub hx: bool,
+}
+
+/// What `pages::chrome` needs of a page extractor: the session and the operator
+/// behind it.
+///
+/// A trait rather than a concrete `&PageSession` parameter, because a read
+/// route may be gated on a tier ([`PageAdminRead`]) and still owe the same
+/// navigation, CSRF token and user card as an ungated one. Only the read-side
+/// extractors implement it — a write extractor never renders chrome, since its
+/// answer is a fragment or a redirect.
+pub trait PageAuth {
+    fn auth(&self) -> &Authenticated;
+}
+
+impl PageAuth for PageSession {
+    fn auth(&self) -> &Authenticated {
+        &self.auth
+    }
+}
+
+impl PageAuth for PageAdminRead {
+    fn auth(&self) -> &Authenticated {
+        &self.auth
+    }
+}
+
 impl FromRequestParts<AdminState> for PageAdminWrite {
     type Rejection = PageError;
 
@@ -109,6 +141,21 @@ impl FromRequestParts<AdminState> for PageAdminWrite {
         let hx = is_htmx(&parts.headers);
         match AdminWrite::from_request_parts(parts, state).await {
             Ok(AdminWrite(auth)) => Ok(Self { auth, hx }),
+            Err(error) => Err(to_page_error(error, hx)),
+        }
+    }
+}
+
+impl FromRequestParts<AdminState> for PageAdminRead {
+    type Rejection = PageError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        let hx = is_htmx(&parts.headers);
+        match AdminRead::from_request_parts(parts, state).await {
+            Ok(AdminRead(auth)) => Ok(Self { auth, hx }),
             Err(error) => Err(to_page_error(error, hx)),
         }
     }

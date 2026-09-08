@@ -16,6 +16,10 @@
     </div>
   </div>
 
+  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+      renders as the fragment following a mutation, and the caller there has
+      already passed a write extractor, so undefined means "show". -#}
+  {% if not user is defined or user.role != "viewer" %}
   <div class="panel">
     <h2>Sweep now</h2>
     <p class="muted small">
@@ -34,4 +38,5 @@
       </div>
     </form>
   </div>
+  {% endif %}
 </div>

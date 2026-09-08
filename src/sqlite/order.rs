@@ -154,22 +154,18 @@ impl OrderQuery {
     /// them would report a total that does not match the rows returned, which
     /// is the kind of bug a page control shows and nothing else does.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
-        let mut separator = " WHERE ";
         // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
-        // each contributes its own `&str` and the array stays one type. The
-        // bind is still a parameter, never interpolated SQL.
-        for (column, value) in [
-            ("profile = ", self.profile.as_deref()),
-            ("status = ", self.status.map(OrderStatus::as_str)),
-        ] {
-            if let Some(value) = value {
-                builder
-                    .push(separator)
-                    .push(column)
-                    .push_bind(value.to_string());
-                separator = " AND ";
-            }
-        }
+        // each contributes its own `&str` and the pair stays one type. The bind
+        // is still a parameter, never interpolated SQL. The returned separator
+        // is what the predicates below open with — see `sqlite::query`.
+        let mut separator = crate::sqlite::query::push_equalities(
+            builder,
+            crate::sqlite::query::WHERE,
+            &[
+                ("profile = ", self.profile.as_deref()),
+                ("status = ", self.status.map(OrderStatus::as_str)),
+            ],
+        );
 
         // `account_id` is the one predicate over a column holding bytes rather
         // than text, so it is the one that has to parse: a `String` bound
@@ -225,7 +221,13 @@ impl OrderQuery {
         if let Some(cert_serial) = self.cert_serial.as_deref() {
             builder.push(separator).push("cert_serial = ");
             builder.push_bind(cert_serial.to_string());
+            separator = " AND ";
         }
+
+        // Correct today because nothing follows, and assigned anyway: every
+        // other predicate above advances the separator, and a new one appended
+        // below a clause that did not would open with ` WHERE ` a second time.
+        let _ = separator;
     }
 }
 
@@ -2025,6 +2027,40 @@ mod tests {
         assert_eq!(total, 0);
     }
 
+    /// A **wildcard** order stores the wildcard form (`*.example.com`, the
+    /// storage convention in `src/CLAUDE.md`), so an exact hunt for a name it
+    /// covers does not return it, and one for the wildcard string does.
+    ///
+    /// Asserted rather than fixed. Widening `identifier` to also match
+    /// `'*.' || parent` would change what "exact" means, and the answer an
+    /// operator wants depends on the question — "which order named this?" is
+    /// not "which certificate covers this?". `--identifier-contains` is the
+    /// spelling that spans both, and `doc/src/operations/cli.md` says so.
+    #[tokio::test]
+    async fn an_exact_identifier_hunt_does_not_reach_through_a_wildcard() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        seed_named(&db, "default", acct, &["*.example.com"]).await;
+
+        let hunt = |needle: &str| {
+            let query = OrderQuery {
+                identifier: Some(needle.to_string()),
+                ..window(50, 0)
+            };
+            let db = db.clone();
+            async move { Order::search(&query, &db).await.unwrap().1 }
+        };
+        assert_eq!(hunt("host.example.com").await, 0, "exact means exact");
+        assert_eq!(hunt("*.example.com").await, 1, "the stored form matches");
+
+        // The substring form is what spans the two.
+        let query = OrderQuery {
+            identifier_contains: Some("example.com".to_string()),
+            ..window(50, 0)
+        };
+        assert_eq!(Order::search(&query, &db).await.unwrap().1, 1);
+    }
+
     /// `identifier_contains` is a substring match, and it is `instr` rather than
     /// `LIKE`, so a `%` the operator typed is a literal that matches nothing.
     #[tokio::test]
@@ -2082,6 +2118,23 @@ mod tests {
         let (rows, total) = Order::search(&query, &db).await.unwrap();
         assert!(rows.is_empty());
         assert_eq!(total, 0);
+
+        // The match is exact and case-sensitive **here**, deliberately: this
+        // layer compares what it is given. Folding an operator's paste into
+        // the stored form is `cert::normalize_serial`'s job at the four entry
+        // points, so that `POST /revokeCert` — which arrives with an already
+        // canonical value read out of a certificate — keeps matching exactly
+        // what it always did.
+        let query = OrderQuery {
+            cert_serial: Some("0A1B2C3D".to_string()),
+            ..window(50, 0)
+        };
+        assert_eq!(
+            Order::search(&query, &db).await.unwrap().1,
+            0,
+            "the model compares raw; the front ends normalize"
+        );
+        assert_eq!(crate::cert::normalize_serial("0A:1B:2C:3D"), "0a1b2c3d");
     }
 
     /// A helper for the expiry suite: an issued order whose leaf expires at

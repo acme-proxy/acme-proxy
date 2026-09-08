@@ -55,17 +55,15 @@ pub async fn run_eab_command(
             json,
         } => {
             let eab = Eab::create(label, profile, &database).await?;
-            let (actor, client) = audit_admin::cli_actor();
-            crate::audit::write(
+            audit_admin::record_cli_action(&database, |actor, client| {
                 audit_admin::eab_created(
                     actor,
                     client,
                     &eab.kid.to_string(),
                     eab.profile.as_deref(),
                     eab.label.as_deref(),
-                ),
-                &database,
-            )
+                )
+            })
             .await;
             if json {
                 println!("{}", admin::render_eab_created_json(&eab));
@@ -98,11 +96,9 @@ pub async fn run_eab_command(
             // `RevokeOutcome::AlreadyRevoked` rule on the certificate side.
             if subject.as_ref().is_some_and(|eab| eab.status == "active") {
                 let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
-                let (actor, client) = audit_admin::cli_actor();
-                crate::audit::write(
-                    audit_admin::eab_revoked(actor, client, &kid, profile),
-                    &database,
-                )
+                audit_admin::record_cli_action(&database, |actor, client| {
+                    audit_admin::eab_revoked(actor, client, &kid, profile)
+                })
                 .await;
             }
             println!("Revoked EAB key {kid}.");

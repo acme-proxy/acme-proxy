@@ -51,6 +51,7 @@ async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel()
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -86,6 +87,7 @@ async fn a_failed_form_login_re_renders_the_page_with_its_real_status() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -121,6 +123,7 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -161,6 +164,7 @@ async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() 
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -209,6 +213,7 @@ async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -290,6 +295,7 @@ async fn a_half_authenticated_cookie_reaches_no_page() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -320,6 +326,85 @@ async fn a_half_authenticated_cookie_reaches_no_page() {
     }
 }
 
+/// Finishing an enrolment through `/ui` leaves the **same two records** the
+/// `/api` twin does: an `operator_totp_enrolled` audit row and an
+/// `admin_credential_changed` notification.
+///
+/// It left only the notification. The two were adjacent calls at eleven sites
+/// and this is the one that had drifted — exactly what `finish_enrolment`'s own
+/// doc says it was extracted to prevent, one layer up. Nothing caught it
+/// because `tests/admin_pages.rs` never used the security-notification harness
+/// at all.
+#[tokio::test]
+async fn finishing_an_enrolment_from_the_page_records_the_row_and_the_message() {
+    use acme_proxy::sqlite::audit::{AuditEntry, AuditQuery};
+
+    let mut config = admin_config();
+    config.admin.require_mfa = true;
+    let (app, database, _session, notify) =
+        test_admin_app_logged_in_with_security_notify(config).await;
+
+    // The harness's `alice` already holds an active session; a *pending* one is
+    // what this path takes, so sign in again to mint it.
+    let started = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/login",
+        None,
+        Some(&[("username", "alice"), ("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(started.headers()[header::LOCATION], "/ui/login/mfa");
+    let pending = AdminSessionHandle {
+        cookie: session_cookie_token(&started).unwrap(),
+        csrf: String::new(),
+    };
+
+    let body = html_body(admin_page(&app, "/ui/login/mfa", Some(&pending), false).await).await;
+    let secret = base32_decode(&between(&body, r#"<pre class="secret">"#, "</pre>"));
+
+    let before = AuditEntry::search(&AuditQuery::default(), &database)
+        .await
+        .unwrap()
+        .1;
+    let confirmed = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/login/mfa",
+        Some(&pending),
+        Some(&[("code", &totp_code(&secret, 0))]),
+    )
+    .await;
+    assert_eq!(confirmed.status(), StatusCode::OK);
+
+    let (rows, after) = AuditEntry::search(
+        &AuditQuery {
+            limit: 1,
+            ..AuditQuery::default()
+        },
+        &database,
+    )
+    .await
+    .unwrap();
+    assert_eq!(after, before + 1, "the enrolment must leave a row");
+    assert_eq!(rows[0].event, "operator_totp_enrolled");
+    assert_eq!(rows[0].actor_id.as_deref(), Some("alice"));
+    assert_eq!(rows[0].client_ip.as_deref(), Some("127.0.0.1"));
+
+    let events = notify.recorded(1).await;
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+            assert_eq!(data.username, "alice");
+            assert!(data.by_self);
+            assert!(matches!(
+                data.change,
+                acme_proxy::notify::AdminCredentialChange::SecondFactorEnabled
+            ));
+        }
+        other => panic!("expected AdminCredentialChanged, got {other:?}"),
+    }
+}
+
 /// Under `require_mfa`, an operator with no factor finishes their login by
 /// *setting one up* — the whole reason the flag forces enrolment rather than
 /// refusing the login.
@@ -332,6 +417,7 @@ async fn require_mfa_turns_the_challenge_page_into_an_enrolment_page() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -567,6 +653,7 @@ async fn the_account_page_reports_its_refusals_as_banners() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -609,6 +696,7 @@ async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -640,6 +728,15 @@ async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
     )
     .await;
     assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    // The header, not only the sentence. This page rebuilt its response by hand
+    // from the error's status/code/message, which dropped every header the
+    // error carried — so a `429` said "retry in Ns" in prose and told a client
+    // nothing it could act on. `pages::refuse_with_card` builds from
+    // `into_response` and swaps the body, keeping them.
+    assert!(
+        limited.headers().contains_key(header::RETRY_AFTER),
+        "a rate-limited refusal keeps its Retry-After"
+    );
     let body = html_body(limited).await;
     assert!(
         body.contains(r#"id="account-mfa""#),
@@ -662,6 +759,7 @@ async fn the_password_card_changes_the_password_keeps_the_session_and_revokes_ev
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -905,31 +1003,51 @@ async fn an_expired_session_redirects_rather_than_answering_json() {
 /// handler cannot reach a session without it — but a new handler taking
 /// `PageSession` by mistake is exactly what this catches. **A `/ui` route added
 /// and not added here is a review catch.**
-fn mutating_page_endpoints() -> Vec<(Method, &'static str)> {
+/// The `/ui` twin of `admin_api.rs`'s `RequiredTier`, and declared per route
+/// for its reason: a prefix predicate auto-classifies a route added under an
+/// existing prefix, which is the one case the table exists to catch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequiredTier {
+    SelfService,
+    Operator,
+    Admin,
+}
+
+fn mutating_page_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
+    use RequiredTier::{Admin, Operator, SelfService};
     vec![
-        (Method::POST, "/ui/accounts/some-id/contact"),
-        (Method::POST, "/ui/accounts/some-id/deactivate"),
-        (Method::DELETE, "/ui/accounts/some-id"),
-        (Method::POST, "/ui/orders/some-id/revoke"),
-        (Method::DELETE, "/ui/orders/some-id"),
-        (Method::POST, "/ui/jobs/some-id/cancel"),
-        (Method::POST, "/ui/jobs/some-id/run"),
-        (Method::POST, "/ui/eab"),
-        (Method::POST, "/ui/eab/some-kid/revoke"),
-        (Method::POST, "/ui/nonces/cleanup"),
-        (Method::POST, "/ui/logout"),
-        (Method::POST, "/ui/account/mfa/totp"),
-        (Method::POST, "/ui/account/mfa/totp/confirm"),
-        (Method::POST, "/ui/account/mfa/totp/disable"),
-        (Method::POST, "/ui/account/mfa/recovery-codes"),
-        (Method::POST, "/ui/account/password"),
-        (Method::POST, "/ui/account/sessions/some-id/revoke"),
-        (Method::POST, "/ui/operators/some-username/disable"),
-        (Method::POST, "/ui/operators/some-username/enable"),
-        (Method::POST, "/ui/operators/some-username/totp/reset"),
+        (Method::POST, "/ui/accounts/some-id/contact", Operator),
+        (Method::POST, "/ui/accounts/some-id/deactivate", Operator),
+        (Method::DELETE, "/ui/accounts/some-id", Operator),
+        (Method::POST, "/ui/orders/some-id/revoke", Operator),
+        (Method::DELETE, "/ui/orders/some-id", Operator),
+        (Method::POST, "/ui/jobs/some-id/cancel", Operator),
+        (Method::POST, "/ui/jobs/some-id/run", Operator),
+        (Method::POST, "/ui/eab", Operator),
+        (Method::POST, "/ui/eab/some-kid/revoke", Operator),
+        (Method::POST, "/ui/nonces/cleanup", Operator),
+        (Method::POST, "/ui/logout", SelfService),
+        (Method::POST, "/ui/account/mfa/totp", SelfService),
+        (Method::POST, "/ui/account/mfa/totp/confirm", SelfService),
+        (Method::POST, "/ui/account/mfa/totp/disable", SelfService),
+        (Method::POST, "/ui/account/mfa/recovery-codes", SelfService),
+        (Method::POST, "/ui/account/password", SelfService),
+        (
+            Method::POST,
+            "/ui/account/sessions/some-id/revoke",
+            SelfService,
+        ),
+        (Method::POST, "/ui/operators/some-username/disable", Admin),
+        (Method::POST, "/ui/operators/some-username/enable", Admin),
+        (
+            Method::POST,
+            "/ui/operators/some-username/totp/reset",
+            Admin,
+        ),
         (
             Method::POST,
             "/ui/operators/some-username/sessions/some-id/revoke",
+            Admin,
         ),
         // `POST /ui/login/mfa` is deliberately absent. It is a plain form on a
         // page that has no CSRF token — the same trade `POST /ui/login` makes,
@@ -944,7 +1062,7 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str)> {
 async fn every_mutating_page_endpoint_refuses_a_missing_csrf_token() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    for (method, path) in mutating_page_endpoints() {
+    for (method, path, _tier) in mutating_page_endpoints() {
         // The cookie, but no `X-CSRF-Token`: `admin_page` sends exactly that.
         let request = axum::http::Request::builder()
             .method(method.clone())
@@ -977,13 +1095,14 @@ async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
     .unwrap();
     let other = admin_login(&app, "bob", ADMIN_PASSWORD).await;
 
-    for (method, path) in mutating_page_endpoints() {
+    for (method, path, _tier) in mutating_page_endpoints() {
         for (label, token) in [
             ("wrong", "not-the-token"),
             ("another session's", &*other.csrf),
@@ -1031,6 +1150,7 @@ async fn role_gates_every_mutating_page_endpoint() {
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
+            None,
             database.clone(),
         )
         .await
@@ -1046,21 +1166,17 @@ async fn role_gates_every_mutating_page_endpoint() {
     let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
     let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
 
-    let self_service =
-        |path: &str| path.starts_with("/ui/logout") || path.starts_with("/ui/account/");
-    let admin_only = |path: &str| path.starts_with("/ui/operators/");
-
-    for (method, path) in mutating_page_endpoints() {
+    for (method, path, tier) in mutating_page_endpoints() {
         // `POST /ui/logout` really ends the session it is sent with, which
         // would redirect every later row to sign-in. Self-service by
         // construction; covered by the logout suite.
         if path == "/ui/logout" {
             continue;
         }
-        for (who, session, at_least_operator, is_admin) in [
-            ("admin", &adam, true, true),
-            ("operator", &olga, true, false),
-            ("viewer", &vera, false, false),
+        for (who, session, held) in [
+            ("admin", &adam, AdminRole::Admin),
+            ("operator", &olga, AdminRole::Operator),
+            ("viewer", &vera, AdminRole::Viewer),
         ] {
             let response =
                 admin_form_request(&app, method.clone(), path, Some(session), Some(&[])).await;
@@ -1068,12 +1184,10 @@ async fn role_gates_every_mutating_page_endpoint() {
             let refused_for_role = status == StatusCode::FORBIDDEN
                 && html_body(response).await.contains("insufficient_role");
 
-            let expect_refused = if self_service(path) {
-                false
-            } else if admin_only(path) {
-                !is_admin
-            } else {
-                !at_least_operator
+            let expect_refused = match tier {
+                RequiredTier::SelfService => false,
+                RequiredTier::Operator => held < AdminRole::Operator,
+                RequiredTier::Admin => held < AdminRole::Admin,
             };
 
             assert_eq!(
@@ -1081,6 +1195,114 @@ async fn role_gates_every_mutating_page_endpoint() {
                 "{who} {method} {path} (status {status})"
             );
         }
+    }
+}
+
+/// A `viewer` reads every page and is offered no control it cannot use.
+///
+/// The gate is still the extractor — these are `{% if %}`s, not authorization —
+/// but a button that always answers `403` is a worse page than no button, and
+/// htmx swaps the refusal document straight into the element that was clicked.
+#[tokio::test]
+async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database, admin) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "vera",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        Some(AdminRole::Viewer),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
+    let ids = seed(&database, 1).await;
+
+    let account_page = format!("/ui/accounts/{}", ids[0]);
+    // (page, the control a viewer must not be offered)
+    let pages: [(&str, &str); 3] = [
+        ("/ui/eab", "hx-post=\"/ui/eab\""),
+        ("/ui/nonces", "/ui/nonces/cleanup"),
+        (&account_page, "/deactivate"),
+    ];
+    for (path, control) in pages {
+        let seen = html_body(admin_page(&app, path, Some(&admin), false).await).await;
+        let hidden = html_body(admin_page(&app, path, Some(&vera), false).await).await;
+        assert!(
+            seen.contains(control),
+            "{path} must offer {control} to an operator"
+        );
+        assert!(
+            !hidden.contains(control),
+            "{path} must not offer {control} to a viewer"
+        );
+    }
+
+    // Reading is untouched: the tier withholds the controls, not the page.
+    for path in ["/ui/", "/ui/accounts", "/ui/orders", "/ui/eab", "/ui/audit"] {
+        assert_eq!(
+            admin_page(&app, path, Some(&vera), false).await.status(),
+            StatusCode::OK,
+            "a viewer must still read {path}"
+        );
+    }
+}
+
+/// The `/ui` twin of `the_operators_reads_are_admin_only`, plus the half only
+/// a page has: a tier that may not act on the surface is not shown the way in.
+#[tokio::test]
+async fn the_operators_pages_are_admin_only_and_the_nav_entry_follows() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database, _seed) = test_admin_app_logged_in(admin_config()).await;
+    for (name, role) in [
+        ("adam", AdminRole::Admin),
+        ("olga", AdminRole::Operator),
+        ("vera", AdminRole::Viewer),
+    ] {
+        acme_proxy::admin::users::create_user(
+            name,
+            ADMIN_PASSWORD,
+            &PasswordContext::empty(),
+            Some(role),
+            database.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let adam = admin_login(&app, "adam", ADMIN_PASSWORD).await;
+    let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
+    let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
+
+    for path in ["/ui/operators", "/ui/operators/olga"] {
+        let allowed = admin_page(&app, path, Some(&adam), false).await;
+        assert_eq!(allowed.status(), StatusCode::OK, "an admin may read {path}");
+
+        for (who, session) in [("operator", &olga), ("viewer", &vera)] {
+            let refused = admin_page(&app, path, Some(session), false).await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::FORBIDDEN,
+                "a {who} must not read {path}"
+            );
+        }
+    }
+
+    // The nav entry is the other half: a link that always 403s is a worse
+    // answer than no link, and `chrome` already carries the caller's role.
+    let admin_home = html_body(admin_page(&app, "/ui/", Some(&adam), false).await).await;
+    assert!(
+        admin_home.contains("/ui/operators"),
+        "an admin is shown the way in"
+    );
+    for (who, session) in [("operator", &olga), ("viewer", &vera)] {
+        let home = html_body(admin_page(&app, "/ui/", Some(session), false).await).await;
+        assert!(
+            !home.contains("/ui/operators"),
+            "a {who} must not be offered a page they cannot open"
+        );
     }
 }
 
@@ -1642,6 +1864,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1816,6 +2039,7 @@ async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -2135,6 +2359,7 @@ async fn a_page_limit_over_the_ceiling_is_clamped_rather_than_refused() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -2745,6 +2970,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
         "vic",
         ADMIN_PASSWORD,
         &acme_proxy::admin::password::PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -3346,6 +3572,7 @@ async fn app_with_bob() -> (axum::Router, AdminSessionHandle, AdminSessionHandle
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -3393,6 +3620,7 @@ async fn the_operator_detail_page_manages_another_operator_end_to_end() {
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await

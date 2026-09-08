@@ -624,7 +624,7 @@ mod tests {
 
     async fn db_with_user() -> (Arc<Database>, AdminUser) {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let user = AdminUser::create("alice", "hash", &db).await.unwrap();
+        let user = AdminUser::create("alice", "hash", None, &db).await.unwrap();
         (db, user)
     }
 
@@ -743,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn delete_for_user_removes_every_session_of_that_user_only() {
         let (db, alice) = db_with_user().await;
-        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        let bob = AdminUser::create("bob", "hash", None, &db).await.unwrap();
         session(db.clone(), &alice, "a1").await;
         session(db.clone(), &alice, "a2").await;
         session(db.clone(), &bob, "b1").await;
@@ -806,7 +806,7 @@ mod tests {
         let (db, alice) = db_with_user().await;
         assert!(AdminSession::list_all(None, &db).await.unwrap().is_empty());
 
-        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        let bob = AdminUser::create("bob", "hash", None, &db).await.unwrap();
         session(db.clone(), &alice, "a1").await;
         session(db.clone(), &bob, "b1").await;
 
@@ -822,7 +822,7 @@ mod tests {
     #[tokio::test]
     async fn find_by_user_and_fingerprint_is_scoped_to_the_named_user() {
         let (db, alice) = db_with_user().await;
-        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        let bob = AdminUser::create("bob", "hash", None, &db).await.unwrap();
         let alices = session(db.clone(), &alice, "alice-token-hash").await;
         session(db.clone(), &bob, "bob-token-hash").await;
 
@@ -860,7 +860,7 @@ mod tests {
         let (db, alice) = db_with_user().await;
         assert_eq!(AdminSession::search(None, 50, 0, &db).await.unwrap().1, 0);
 
-        let bob = AdminUser::create("bob", "hash", &db).await.unwrap();
+        let bob = AdminUser::create("bob", "hash", None, &db).await.unwrap();
         for token in ["a1", "a2", "a3"] {
             session(db.clone(), &alice, token).await;
         }

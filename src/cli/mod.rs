@@ -1770,6 +1770,29 @@ async fn announce_admin_listener(config: &Arc<Config>, database: &Arc<Database>,
         );
     }
 
+    // Same treatment for a configured `[admin.notify]` whose messages have
+    // nowhere to go. An operator's security notifications are addressed to
+    // their own `contact_email`, which is settable only from this host
+    // (`admin user contact`) — so a panel-first deployment can have the whole
+    // section configured, believe it is covered by ASVS V6.3.5/V6.3.7, and be
+    // silently falling back to `notify.email.to` or to nothing.
+    if config.admin.notify.enabled.is_empty() {
+        // Nothing configured: no notifications were promised, so an operator
+        // without an address is not a gap.
+    } else if let Ok(count) =
+        crate::admin::users::operators_without_a_contact(database.clone()).await
+        && count > 0
+    {
+        warn!(
+            event = "admin_notify_contact_missing",
+            outcome = "advisory",
+            count = count,
+            "[admin.notify] is configured but some operators have no contact address: their \
+               security notifications fall back to notify.email.to, or are dropped if that is \
+               empty too — set one with `acme-proxy admin user contact <username> --contact <address>`"
+        );
+    }
+
     // Swept once now, then on an interval: sessions outlive a restart, so a
     // startup-only sweep would leak every one an operator never signed out of.
     let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);

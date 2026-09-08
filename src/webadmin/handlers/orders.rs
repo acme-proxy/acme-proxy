@@ -16,7 +16,7 @@ use crate::sqlite::status::{OrderStatus, UnknownStatus};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::handlers::params::empty_is_absent;
+use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
@@ -41,7 +41,11 @@ pub struct OrderListParams {
     )]
     pub identifier_contains: Option<String>,
     /// Exact issued-certificate serial match (hex, no separators).
-    #[serde(rename = "certSerial", default, deserialize_with = "empty_is_absent")]
+    #[serde(
+        rename = "certSerial",
+        default,
+        deserialize_with = "empty_is_absent_serial"
+    )]
     pub cert_serial: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

@@ -24,9 +24,31 @@ use crate::sqlite::order::Order;
 /// The actor and (empty) client context a host-CLI administrative action is
 /// attributed with. The web front end builds [`Actor::admin`] with the
 /// operator's username and a resolved address instead.
+///
+/// Prefer [`record_cli_action`], which pairs this with the write.
 #[must_use]
 pub fn cli_actor() -> (Actor, ClientContext) {
     (Actor::cli(), ClientContext::default())
+}
+
+/// Writes one administrative audit row attributed to the host CLI.
+///
+/// The terminal twin of `AdminState::record_admin_action`, and it exists for
+/// that helper's reason: every one of these rows is a *side effect of success*,
+/// so the pairing of "build the record" with "write it, after the operation
+/// returned success" wants one home rather than nineteen. Spelled out at each
+/// call site, the rule survived only as long as nobody forgot half of it — and
+/// `order delete` did, hard-deleting an order and leaving the trail silent.
+///
+/// Call it **after** the operation succeeded. A not-found or refused operation
+/// writes nothing, which is the whole difference between this half of the
+/// vocabulary and the certificate half.
+pub async fn record_cli_action(
+    database: &crate::sqlite::db::Database,
+    build: impl FnOnce(Actor, ClientContext) -> AuditRecord,
+) {
+    let (actor, client) = cli_actor();
+    crate::audit::write(build(actor, client), database).await;
 }
 
 fn base(
@@ -295,14 +317,29 @@ pub enum SessionScope {
     Everyone,
 }
 
+/// One `session_revoked` row. `count` is how many sessions actually went.
+///
+/// The count is not decoration: on the two plural scopes the detail alone
+/// cannot tell "all sessions of alice" over forty live cookies from the same
+/// sentence over none, and an operator reading the trail after an incident is
+/// asking exactly that. `nonce_cleanup_completed` and `audit_pruned` already
+/// carry theirs for the same reason. It is elided on the singular scopes, where
+/// it is always one and saying so would be noise.
 #[must_use]
-pub fn session_revoked(actor: Actor, client: ClientContext, scope: SessionScope) -> AuditRecord {
+pub fn session_revoked(
+    actor: Actor,
+    client: ClientContext,
+    scope: SessionScope,
+    count: u64,
+) -> AuditRecord {
     let detail = match scope {
         SessionScope::OwnCurrent => "own current session".to_string(),
         SessionScope::OwnOther => "own session".to_string(),
-        SessionScope::AllOf(username) => format!("all sessions of {username}"),
+        SessionScope::AllOf(username) => {
+            format!("all sessions of {username} ({count} session(s))")
+        }
         SessionScope::OneOf(username) => format!("one session of {username}"),
-        SessionScope::Everyone => "every session on the server".to_string(),
+        SessionScope::Everyone => format!("every session on the server ({count} session(s))"),
     };
     process_wide(AuditEvent::SessionRevoked, actor, client, detail)
 }
@@ -417,8 +454,9 @@ mod tests {
             actor.clone(),
             client.clone(),
             SessionScope::OneOf("a".into()),
+            1,
         );
-        let all = session_revoked(actor, client, SessionScope::AllOf("a".into()));
+        let all = session_revoked(actor, client, SessionScope::AllOf("a".into()), 7);
         assert_ne!(one.detail, all.detail);
     }
 }

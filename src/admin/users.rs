@@ -16,7 +16,7 @@ use crate::admin::ops::DeleteOutcome;
 use crate::admin::password::{self, PasswordContext};
 use crate::admin::prompt::confirm;
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminUser};
+use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
 use crate::sqlite::db::Database;
 
 /// Why creating or re-passwording an operator failed.
@@ -62,20 +62,49 @@ pub enum AuthOutcome {
     Disabled(Box<AdminUser>),
 }
 
-/// Creates an operator, at the full [`AdminRole::Admin`] tier.
+/// Whether a normalized username is one the web admin can address.
+///
+/// The panel routes every colleague operation at `/ui/operators/{username}/…`
+/// and builds those paths by interpolation, so a name holding `/`, `?`, `#` or
+/// a space produces a URL that matches no route — the operator is creatable
+/// from the host and then unmanageable from the panel. minijinja escapes HTML,
+/// not URL syntax, so the templates cannot rescue it either.
+///
+/// The same rule this tree already applies wherever a configured name becomes a
+/// path or an environment segment (`valid_profile_name`,
+/// `valid_config_key_name`), widened by `_` and `.` because an operator name is
+/// a person's, not a slug — `a.smith` and `a_smith` are ordinary and neither
+/// means anything to a URL.
+///
+/// Checked at creation only. An existing row is left alone: refusing to *load*
+/// a username would lock somebody out of a panel they are already using, which
+/// is the opposite of what this is for.
+#[must_use]
+pub fn valid_username(username: &str) -> bool {
+    !username.is_empty()
+        && username
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+}
+
+/// Creates an operator at `role`, or at [`AdminRole::Admin`] when none is
+/// named.
 ///
 /// Order matters: the policy is checked before the duplicate lookup, and the
 /// duplicate lookup before the (expensive) hash, so a rejected request never
 /// pays 600 000 iterations.
 ///
-/// A narrower tier is a follow-up [`set_role`]; `acme-proxy admin user create
-/// --role` does exactly that. `AdminUser::create` writes the row with `role`
-/// `NULL`, which reads as [`AdminRole::Admin`] -- the "hard-code the default,
-/// change it with a setter" shape `status` uses.
+/// **One write.** This used to create at `admin` and call [`set_role`]
+/// afterwards, which made `admin user create --role viewer` two statements: a
+/// failure between them left an operator at full authority with their password
+/// already set, and the second statement had to be exempted from `set_role`'s
+/// last-admin guard, since the row it was demoting was the admin it had just
+/// created.
 pub async fn create_user(
     username: &str,
     plaintext: &str,
     context: &PasswordContext,
+    role: Option<AdminRole>,
     database: Arc<Database>,
 ) -> Result<AdminUser, UserError> {
     password::check_password_policy(plaintext, context).map_err(UserError::Policy)?;
@@ -83,6 +112,12 @@ pub async fn create_user(
     let normalized = username.trim().to_lowercase();
     if normalized.is_empty() {
         return Err(UserError::Policy("username must not be empty".to_string()));
+    }
+    if !valid_username(&normalized) {
+        return Err(UserError::Policy(format!(
+            "invalid username `{normalized}`: use lowercase letters, digits, `-`, `_` and `.` \
+             (the name is a URL segment on the web admin)"
+        )));
     }
     if AdminUser::find_by_username(&normalized, &database)
         .await?
@@ -92,7 +127,7 @@ pub async fn create_user(
     }
 
     let hash = password::hash_password(plaintext);
-    Ok(AdminUser::create(&normalized, &hash, &database).await?)
+    Ok(AdminUser::create(&normalized, &hash, role, &database).await?)
 }
 
 /// Sets an operator's privilege tier and **revokes every session they hold**.
@@ -102,19 +137,41 @@ pub async fn create_user(
 /// that cookie happened to expire. It is belt-and-braces rather than
 /// load-bearing -- the write extractors re-read `role` from `admin_users` on
 /// every request -- but this layer already holds that convention. `None` when
-/// there is no such user.
+/// there is no such user; otherwise the operator and **how many sessions went
+/// with the change**, which the caller records as its own `session_revoked`
+/// audit row (this layer is front-end agnostic and does not know the actor).
+/// Demoting the **last** `admin` is refused: `/operators/*` is `admin`-only on
+/// both web surfaces, so a deployment with none has no way to manage operators
+/// from the panel at all. Recoverable from this host — which is why it is a
+/// refusal here rather than a `CHECK` — but the operator should hear about it
+/// before it happens rather than after.
 pub async fn set_role(
     username: &str,
     role: AdminRole,
     database: Arc<Database>,
-) -> Result<Option<AdminUser>, sqlx::Error> {
+) -> Result<Option<(AdminUser, u64)>, UserError> {
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(None);
     };
 
+    if user.role() == AdminRole::Admin && role != AdminRole::Admin {
+        let admins = AdminUser::list_all(&database)
+            .await?
+            .iter()
+            .filter(|other| other.role() == AdminRole::Admin)
+            .count();
+        if admins <= 1 {
+            return Err(UserError::Policy(format!(
+                "`{}` is the only admin: demoting them would leave the panel with no one who \
+                 can manage operators. Promote somebody else first.",
+                user.username
+            )));
+        }
+    }
+
     user.set_role(role, &database).await?;
-    AdminSession::delete_for_user(user.id, &database).await?;
-    Ok(Some(user))
+    let revoked = AdminSession::delete_for_user(user.id, &database).await?;
+    Ok(Some((user, revoked)))
 }
 
 /// Sets (`Some`) or clears (`None` / empty / whitespace) the address an
@@ -163,13 +220,14 @@ pub async fn list_users(
 ///
 /// The revocation is the point: a password changed because it may have leaked,
 /// that left the leaked session alive, would be a change in name only. Returns
-/// `None` when there is no such user.
+/// `None` when there is no such user; otherwise the operator and how many
+/// sessions the change took with it, for the caller's `session_revoked` row.
 pub async fn set_password(
     username: &str,
     plaintext: &str,
     context: &PasswordContext,
     database: Arc<Database>,
-) -> Result<Option<AdminUser>, UserError> {
+) -> Result<Option<(AdminUser, u64)>, UserError> {
     password::check_password_policy(plaintext, context).map_err(UserError::Policy)?;
 
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
@@ -178,8 +236,8 @@ pub async fn set_password(
 
     let hash = password::hash_password(plaintext);
     user.set_password_hash(&hash, &database).await?;
-    AdminSession::delete_for_user(user.id, &database).await?;
-    Ok(Some(user))
+    let revoked = AdminSession::delete_for_user(user.id, &database).await?;
+    Ok(Some((user, revoked)))
 }
 
 /// Changes an operator's own password, keeping the session that requested it
@@ -214,21 +272,51 @@ pub async fn change_own_password(
 /// Moves an operator between `active` and `disabled`.
 ///
 /// Disabling also drops their sessions: leaving them live would mean a
-/// disabled operator kept working until their cookie happened to expire.
+/// disabled operator kept working until their cookie happened to expire. That
+/// revocation is audited by the caller as a `session_revoked` row, since only
+/// the front end knows who asked for it.
+///
+/// Takes an [`AdminStatus`] rather than the `&str` five call sites used to
+/// spell by hand. `AdminUser::set_status` below this still takes a string, and
+/// deliberately: it is the raw column write, and the test that a value outside
+/// the migration's `CHECK` is refused by SQLite has to be able to pass one.
+/// This layer is where a typo should stop being expressible — a mistyped
+/// `"enable"` here would have written a status no `is_active` accepts, i.e. a
+/// permanent lockout dressed as a successful re-enable.
 pub async fn set_status(
     username: &str,
-    status: &str,
+    status: AdminStatus,
     database: Arc<Database>,
-) -> Result<Option<AdminUser>, sqlx::Error> {
+) -> Result<Option<(AdminUser, u64)>, sqlx::Error> {
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(None);
     };
 
-    user.set_status(status, &database).await?;
-    if status == "disabled" {
-        AdminSession::delete_for_user(user.id, &database).await?;
-    }
-    Ok(Some(user))
+    user.set_status(status.as_str(), &database).await?;
+    let revoked = if status == AdminStatus::Disabled {
+        AdminSession::delete_for_user(user.id, &database).await?
+    } else {
+        0
+    };
+    Ok(Some((user, revoked)))
+}
+
+/// How many operators have no `contact_email` on file.
+///
+/// The `[admin.notify]` security events (`admin_sign_in`,
+/// `admin_credential_changed`) name their own recipient, and for an operator
+/// with no address that recipient is `None` — the message then falls back to
+/// `notify.email.to` or, if that is empty too, goes nowhere at all. Both are
+/// legitimate configurations, and neither is visible from anywhere: the panel
+/// has no contact form and nothing warns. This is what
+/// `announce_admin_listener` counts to say so, the shape
+/// [`crate::admin::mfa::operators_without_a_factor`] already has.
+pub async fn operators_without_a_contact(database: Arc<Database>) -> Result<usize, sqlx::Error> {
+    Ok(AdminUser::list_all(&database)
+        .await?
+        .iter()
+        .filter(|user| user.contact_email.is_none())
+        .count())
 }
 
 /// Revokes every session one operator holds, without touching the account.
@@ -278,7 +366,9 @@ pub async fn confirm_delete_user(
         return Ok(DeleteOutcome::Cancelled);
     }
     AdminUser::delete(user.id, &database).await?;
-    Ok(DeleteOutcome::Deleted)
+    Ok(DeleteOutcome::Deleted(crate::admin::ops::Deleted {
+        cascaded: sessions as u64,
+    }))
 }
 
 /// Checks a username and password, re-hashing the stored digest if it was
@@ -375,7 +465,7 @@ mod tests {
             base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, salt),
             base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, digest),
         );
-        AdminUser::create(username, &encoded, &database)
+        AdminUser::create(username, &encoded, None, &database)
             .await
             .unwrap()
     }
@@ -383,7 +473,7 @@ mod tests {
     #[tokio::test]
     async fn set_contact_email_stores_clears_and_validates() {
         let db = db().await;
-        create_user("alice", GOOD, &PasswordContext::empty(), db.clone())
+        create_user("alice", GOOD, &PasswordContext::empty(), None, db.clone())
             .await
             .unwrap();
 
@@ -424,9 +514,15 @@ mod tests {
     #[tokio::test]
     async fn create_user_normalizes_and_hashes() {
         let db = db().await;
-        let user = create_user("  Alice ", GOOD, &PasswordContext::empty(), db.clone())
-            .await
-            .unwrap();
+        let user = create_user(
+            "  Alice ",
+            GOOD,
+            &PasswordContext::empty(),
+            None,
+            db.clone(),
+        )
+        .await
+        .unwrap();
         assert_eq!(user.username, "alice");
         assert!(user.is_active());
         // Stored one-way: the plaintext appears nowhere.
@@ -440,9 +536,15 @@ mod tests {
     #[tokio::test]
     async fn create_user_refuses_a_password_below_the_policy() {
         let db = db().await;
-        let error = create_user("alice", "short", &PasswordContext::empty(), db.clone())
-            .await
-            .unwrap_err();
+        let error = create_user(
+            "alice",
+            "short",
+            &PasswordContext::empty(),
+            None,
+            db.clone(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(error, UserError::Policy(_)));
         assert!(error.to_string().contains("at least 12"));
         // Nothing was written.
@@ -460,6 +562,7 @@ mod tests {
             "alice",
             "passwordpassword",
             &PasswordContext::empty(),
+            None,
             db.clone(),
         )
         .await
@@ -470,7 +573,7 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.server.base_url = "https://ca.example.com".to_string();
         let context = PasswordContext::from_config(&config, "alice");
-        let error = create_user("alice", "acmeproxy2026!!", &context, db.clone())
+        let error = create_user("alice", "acmeproxy2026!!", &context, None, db.clone())
             .await
             .unwrap_err();
         assert!(matches!(error, UserError::Policy(_)));
@@ -499,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn create_user_refuses_an_empty_username() {
         let db = db().await;
-        let error = create_user("   ", GOOD, &PasswordContext::empty(), db)
+        let error = create_user("   ", GOOD, &PasswordContext::empty(), None, db)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("username must not be empty"));
@@ -508,10 +611,10 @@ mod tests {
     #[tokio::test]
     async fn create_user_refuses_a_duplicate_in_words_not_a_unique_violation() {
         let db = db().await;
-        create_user("alice", GOOD, &PasswordContext::empty(), db.clone())
+        create_user("alice", GOOD, &PasswordContext::empty(), None, db.clone())
             .await
             .unwrap();
-        let error = create_user("ALICE", GOOD, &PasswordContext::empty(), db)
+        let error = create_user("ALICE", GOOD, &PasswordContext::empty(), None, db)
             .await
             .unwrap_err();
         assert!(matches!(error, UserError::DuplicateUsername(_)));
@@ -690,7 +793,9 @@ mod tests {
         .await
         .unwrap();
 
-        set_status("alice", "disabled", db.clone()).await.unwrap();
+        set_status("alice", AdminStatus::Disabled, db.clone())
+            .await
+            .unwrap();
         assert!(
             AdminSession::list_all(Some(user.id), &db)
                 .await
@@ -699,13 +804,13 @@ mod tests {
         );
 
         // Re-enabling is just a status change; there is nothing to drop.
-        let reenabled = set_status("alice", "active", db.clone())
+        let reenabled = set_status("alice", AdminStatus::Active, db.clone())
             .await
             .unwrap()
             .unwrap();
-        assert!(reenabled.is_active());
+        assert!(reenabled.0.is_active());
         assert!(
-            set_status("nobody", "disabled", db)
+            set_status("nobody", AdminStatus::Disabled, db)
                 .await
                 .unwrap()
                 .is_none()
@@ -717,6 +822,9 @@ mod tests {
         let db = db().await;
         let user = user_with_cheap_password("alice", "pw", db.clone()).await;
         assert_eq!(user.role(), AdminRole::Admin, "a fresh row reads as admin");
+        // A second admin, so demoting the first is not the last-admin case --
+        // that has its own test below.
+        user_with_cheap_password("root", "pw", db.clone()).await;
         AdminSession::create(
             NewSession {
                 user_id: user.id,
@@ -735,7 +843,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(updated.role(), AdminRole::Viewer);
+        assert_eq!(updated.0.role(), AdminRole::Viewer);
         assert!(
             AdminSession::list_all(Some(user.id), &db)
                 .await
@@ -750,6 +858,40 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// `/operators/*` is `admin`-only on both web surfaces, so a deployment
+    /// with no admin cannot manage operators from the panel at all. Demoting
+    /// the last one is refused rather than discovered.
+    #[tokio::test]
+    async fn demoting_the_last_admin_is_refused() {
+        let db = db().await;
+        user_with_cheap_password("alice", "pw", db.clone()).await;
+
+        let error = set_role("alice", AdminRole::Viewer, db.clone())
+            .await
+            .expect_err("the only admin cannot be demoted");
+        assert!(error.to_string().contains("only admin"), "{error}");
+        // And nothing moved.
+        assert_eq!(
+            AdminUser::find_by_username("alice", &db)
+                .await
+                .unwrap()
+                .unwrap()
+                .role(),
+            AdminRole::Admin
+        );
+
+        // With a colleague at the same tier, the same call goes through.
+        user_with_cheap_password("root", "pw", db.clone()).await;
+        let (updated, _) = set_role("alice", AdminRole::Viewer, db.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.role(), AdminRole::Viewer);
+
+        // Promoting is never refused, whoever is left.
+        assert!(set_role("alice", AdminRole::Admin, db).await.is_ok());
     }
 
     #[tokio::test]
@@ -816,7 +958,7 @@ mod tests {
             confirm_delete_user("alice", true, &mut empty, db.clone())
                 .await
                 .unwrap(),
-            DeleteOutcome::Deleted
+            DeleteOutcome::Deleted(crate::admin::ops::Deleted { cascaded: 0 })
         );
         assert!(
             AdminUser::find_by_username("alice", &db)
@@ -850,7 +992,9 @@ mod tests {
             AuthOutcome::UnknownUser
         ));
 
-        set_status("alice", "disabled", db.clone()).await.unwrap();
+        set_status("alice", AdminStatus::Disabled, db.clone())
+            .await
+            .unwrap();
         assert!(matches!(
             authenticate("alice", "the-password", db).await.unwrap(),
             AuthOutcome::Disabled(_)
@@ -897,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn a_corrupt_stored_hash_refuses_the_login_rather_than_erroring() {
         let db = db().await;
-        AdminUser::create("alice", "not-a-valid-encoded-hash", &db)
+        AdminUser::create("alice", "not-a-valid-encoded-hash", None, &db)
             .await
             .unwrap();
         // Not an Err: a mangled row must not take the whole login endpoint

@@ -12,7 +12,6 @@ use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
-use crate::sqlite::order::Order;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
@@ -87,16 +86,14 @@ pub async fn run_account_command(
             match admin::update_account_contact(&id, contact, database.clone()).await? {
                 None => return Err(not_found(&id)),
                 Some(account) => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
+                    audit_admin::record_cli_action(&database, |actor, client| {
                         audit_admin::account_contact_updated(
                             actor,
                             client,
                             &account,
                             &account.contact,
-                        ),
-                        &database,
-                    )
+                        )
+                    })
                     .await;
                     println!("{}", render::render_account_line(&account, palette));
                 }
@@ -106,32 +103,36 @@ pub async fn run_account_command(
             match admin::deactivate_account(&id, database.clone()).await? {
                 None => return Err(not_found(&id)),
                 Some(account) => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
-                        audit_admin::account_deactivated(actor, client, &account),
-                        &database,
-                    )
+                    audit_admin::record_cli_action(&database, |actor, client| {
+                        audit_admin::account_deactivated(actor, client, &account)
+                    })
                     .await;
                     println!("{}", render::render_account_line(&account, palette));
                 }
             }
         }
         AccountCommand::Delete { id } => {
+            // Read the account before the delete: the audit row names its
+            // profile, and the row is gone by the time the confirmation
+            // returns. The *count* comes back with the outcome for the same
+            // reason and a sharper one — counting afterwards counts the orders
+            // the `ON DELETE CASCADE` has already removed, which is zero every
+            // time.
             let doomed = Account::find_any_by_id(&id, &database).await?;
             match admin::confirm_delete_account(&id, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
                 DeleteOutcome::Cancelled => println!("Cancelled."),
-                DeleteOutcome::Deleted => {
+                DeleteOutcome::Deleted(deleted) => {
                     if let Some(account) = doomed {
-                        let cascaded = Order::count_by_account(account.id, &database).await? as u64;
-                        let (actor, client) = audit_admin::cli_actor();
-                        crate::audit::write(
-                            audit_admin::account_deleted(actor, client, &account, cascaded),
-                            &database,
-                        )
+                        audit_admin::record_cli_action(&database, |actor, client| {
+                            audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
+                        })
                         .await;
                     }
-                    println!("Deleted account {id}.");
+                    println!(
+                        "Deleted account {id} ({} order(s) cascaded).",
+                        deleted.cascaded
+                    );
                 }
             }
         }
@@ -250,6 +251,75 @@ mod tests {
         assert_eq!(
             rows[0].account_id.as_deref(),
             Some(account.id.to_string().as_str())
+        );
+    }
+
+    /// `account delete`'s audit row names how many orders went with the
+    /// account.
+    ///
+    /// It counted them *after* the delete, so the `ON DELETE CASCADE` had
+    /// already removed them and every row read `0 order(s) cascaded` however
+    /// many there were. The count now travels out of the confirmation, which is
+    /// where it was already computed to word the prompt.
+    #[tokio::test]
+    async fn deleting_an_account_records_what_actually_cascaded() {
+        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+        use crate::sqlite::order::{Identifier, Order};
+
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Config::default();
+        let (account, _) = Account::find_or_create(
+            "default",
+            &[2, 7, 1],
+            vec![],
+            &ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+        for name in ["a.example.com", "b.example.com"] {
+            Order::create(
+                "default",
+                account.id,
+                vec![Identifier::dns(name)],
+                crate::sqlite::nonce::now_secs() + 3600,
+                None,
+                None,
+                &database,
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut reader: &[u8] = &[];
+        run_account_command(
+            AccountCommand::Delete {
+                id: account.id.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .unwrap();
+
+        let (rows, _) = AuditEntry::search(
+            &AuditQuery {
+                limit: 5,
+                ..AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event, "account_deleted");
+        assert_eq!(
+            rows[0].detail.as_deref(),
+            Some("2 order(s) cascaded"),
+            "the count must be what the cascade actually took"
         );
     }
 

@@ -183,6 +183,62 @@ impl AdminState {
         ))
         .await;
     }
+
+    /// Records a credential change **both ways at once**: the audit row and the
+    /// notification to the operator it happened to.
+    ///
+    /// The two are one event with two audiences — the trail says what the CA
+    /// did, the message tells the person it was done to — and writing them as
+    /// two adjacent calls meant one could be forgotten. One was: the `/ui`
+    /// enrolment path notified and left no row, where its `/api` twin wrote
+    /// both, which is exactly the drift `finish_enrolment` was extracted to
+    /// prevent. Taking a single [`AdminCredentialChange`] and deriving the
+    /// event from it makes that unrepresentable.
+    ///
+    /// `by_self` is `false` when another operator made the change; `actor` is
+    /// whoever made it, which is not always `user`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_credential_change(
+        &self,
+        request_context: &crate::audit::RequestContext,
+        actor: &str,
+        user: &crate::sqlite::admin_user::AdminUser,
+        change: crate::notify::AdminCredentialChange,
+        by_self: bool,
+        client: Option<std::net::IpAddr>,
+        user_agent: Option<String>,
+    ) {
+        use crate::notify::AdminCredentialChange as Change;
+
+        self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
+            Change::Password => crate::audit::admin::operator_password_changed(
+                audit_actor,
+                ctx,
+                &user.username,
+                by_self,
+            ),
+            Change::SecondFactorEnabled => {
+                crate::audit::admin::operator_totp_enrolled(audit_actor, ctx, &user.username)
+            }
+            Change::SecondFactorDisabled => crate::audit::admin::operator_totp_disabled(
+                audit_actor,
+                ctx,
+                &user.username,
+                !by_self,
+            ),
+            Change::RecoveryCodesRegenerated => {
+                crate::audit::admin::operator_recovery_codes_regenerated(
+                    audit_actor,
+                    ctx,
+                    &user.username,
+                )
+            }
+        })
+        .await;
+
+        self.notify_credential_change(user, change, by_self, client, user_agent)
+            .await;
+    }
 }
 
 /// The `User-Agent` header as an owned string, for the security-notification
@@ -192,7 +248,18 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::USER_AGENT)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
+        .map(|value| {
+            // Capped exactly as `audit::RequestContext` caps it, and for the
+            // same reason plus one: the value is attacker-controlled, and here
+            // it is written by an *unauthenticated* caller (the login route)
+            // into a durable `notify_deliver` payload and rendered into an
+            // email body. Uncapped, the sender decides how large those get.
+            value
+                .chars()
+                .take(crate::audit::USER_AGENT_MAX)
+                .collect::<String>()
+        })
+        .filter(|value| !value.is_empty())
 }
 
 /// Builds the whole admin service: `/health`, then the JSON API under `/api`.
@@ -469,7 +536,7 @@ fn admin_page_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         event = "request_handler_panicked",
         outcome = "failure",
         listener = "admin",
-        surface = "page",
+        surface = "ui",
         error = %crate::panic_message(err.as_ref()),
     );
     PageError::internal().into_response()

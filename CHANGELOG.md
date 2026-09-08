@@ -43,7 +43,33 @@ migrated configuration before restarting.
   succeed. `0` (success) and the argument parser's `2` (bad command line) are
   unchanged. A script testing `if acme-proxy … ; then` is unaffected; one that
   matched `$? -eq 1` for "not found" must now also accept `3`. Documented at
-  [Admin CLI → Exit codes](operations/cli.md).
+  [Admin CLI → Exit codes](operations/cli.md). Supplying nothing on stdin where
+  a password or an EAB key was asked for is in the second class, beside the
+  unusable-value refusal next to it.
+
+- **A web-admin operator's username must match `^[a-z0-9._-]+$`.** It is a URL
+  segment on the panel (`/ui/operators/{username}/…`), so a name holding `/`,
+  `?`, `#` or a space produced links and routes that could never match — the
+  operator was creatable from the host and then unmanageable from the panel.
+  Refused by name at `acme-proxy admin user create`; existing rows are
+  untouched, since refusing to *load* a username would lock somebody out of a
+  panel they are already using.
+
+- **Reading the `/operators` surface now requires the `admin` tier**, matching
+  its writes. `GET /api/operators`, `/api/operators/{username}`,
+  `/api/operators/{username}/sessions` and the two `/ui` pages answered any
+  signed-in operator, which let a `viewer` read every colleague's role and
+  contact address, the addresses each recently signed in from, and every live
+  session's fingerprint and address. The Operators nav entry is hidden below
+  `admin`, and the per-row controls on the other pages are hidden from a
+  `viewer` — the gate is still the extractor, but a button that always answers
+  `403` is a worse page than no button.
+
+- **Demoting the last `admin` is refused.** `/operators/*` is `admin`-only on
+  both web surfaces, so a deployment with none cannot manage operators from the
+  panel at all. `acme-proxy admin user role <them> viewer` now says so instead
+  of leaving it to be discovered; promoting somebody else first is the fix, and
+  the host CLI can always undo it either way.
 
 ### Added
 
@@ -82,7 +108,78 @@ migrated configuration before restarting.
   by name beside `--expiring-in`, which is a different query. No schema change:
   the identifier match is a `json_each` scan over `orders.identifiers`.
 
+### Fixed
+
+- **Every audit row the web admin wrote carried no client address.**
+  `record_admin_action` reads the address from the `ClientIp` request
+  extension, which is inserted by the ACME filter middleware — a layer the
+  admin listener deliberately does not run. So all ~25 administrative events
+  from the panel stored `NULL` for both the address and its reverse name, while
+  `CHANGELOG`, `CLAUDE.md` and the ASVS assessment all said they carried them.
+  The extension is now seeded by the server-wide access middleware from the
+  peer address it already resolves for the request span, and the filter
+  middleware still overwrites it on the ACME side with the `ProxyPolicy`
+  answer.
+
+- **`acme-proxy order delete` wrote no audit row**, alone among the three front
+  ends that can hard-delete an order.
+
+- **`acme-proxy account delete`'s audit row always said `0 order(s)
+  cascaded`.** It counted the account's orders *after* the delete, by which
+  point the `ON DELETE CASCADE` had removed them. The count now travels out of
+  the confirmation, where it was already computed to word the prompt.
+
+- **Finishing a second-factor enrolment from `/ui` wrote no
+  `operator_totp_enrolled` row**, where the identical action through
+  `POST /api/mfa/totp/confirm` wrote one. The audit row and the operator
+  notification are now emitted by a single call, so one cannot be written
+  without the other.
+
+- **`acme-proxy jobs cancel` on an already-`failed` relay job re-abandoned its
+  order**, writing a second `certificate_issue_failed` row for one issuance and
+  overwriting `upstream_orders.error` — the upstream CA's own message, and the
+  reason `upstream order show` exists — with "issuance cancelled by operator".
+  A `failed` relay job was already abandoned when the runner retired it, so
+  cancelling one is now an ordinary `job_cancelled`. Cancelling a relay job
+  whose order has been swept likewise no longer reports an abandonment that did
+  not happen, and does write the `job_cancelled` row it previously skipped.
+
+- **`--cert-serial` and `?certSerial=` were case-sensitive** against a column
+  that only ever holds lowercase unseparated hex, so a serial pasted from
+  `openssl x509 -serial` or an abuse report answered with a silent empty page.
+  Uppercase, colon- and space-separated forms are now folded at the four
+  operator entry points.
+
+- **`[admin.notify]`'s environment variables did not work.** None of its five
+  list-valued keys was registered for list parsing, so the documented
+  `ACME_PROXY_ADMIN__NOTIFY__ENABLED=email` (and every sibling) failed to
+  deserialize instead of configuring anything.
+
+- **A rate-limited step-up on `/ui` lost its `Retry-After` header.** The page
+  rebuilt the response from the error's status, code and message, which dropped
+  every header the error carried.
+
+- Session revocations that ride along with a change — a password, a role, a
+  disable — now leave their own `session_revoked` row, carrying how many
+  sessions went; `SessionScope`'s own documentation already said they did.
+  `nonce cleanup` no longer writes a row for a sweep that removed nothing,
+  matching `audit cleanup`. The admin page-panic log line carries
+  `surface = "ui"` like every other page-side event rather than `"page"`, and
+  `user_agent_of` applies the same 256-character cap the audit path does to a
+  header an unauthenticated caller supplies.
+
 ### Security
+
+- **The `/operators` surface asks for the caller's password even when they have
+  no second factor.** It ran `check_step_up`, which passes unconditionally for
+  an operator with no factor — correct on the MFA routes, where a first
+  enrolment protects nothing, and wrong here: this surface's blast radius is a
+  *colleague's* account, which exists either way. A password-only `admin`
+  holding a stolen cookie could disable every other admin and wipe their second
+  factors without typing anything, while the panel rendered a `required`
+  "Confirm your password" field that was ignored. The four routes now call
+  `verify_current_password`, the unconditional check
+  `account::change_password` already used for its own ASVS V6.2.3 reason.
 
 - **The web admin now notifies an operator about security events on their own
   account** — ASVS 5.0 **V6.3.5** and **V6.3.7**, the two open L3 gaps in the

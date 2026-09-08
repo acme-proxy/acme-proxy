@@ -442,7 +442,7 @@ mod tests {
     #[tokio::test]
     async fn the_admin_session_sweep_removes_expired_rows() {
         let (database, _queue) = setup().await;
-        crate::sqlite::admin_user::AdminUser::create("ops", "hash", &database)
+        crate::sqlite::admin_user::AdminUser::create("ops", "hash", None, &database)
             .await
             .unwrap();
         let user = crate::sqlite::admin_user::AdminUser::find_by_username("ops", &database)

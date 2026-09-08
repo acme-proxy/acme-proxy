@@ -253,8 +253,18 @@ fn read_secret(
         None => {
             eprintln!("Enter the upstream EAB HMAC key (base64), then press Enter:");
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                return Err(CliError::failed("no EAB key supplied".to_string()));
+            // `bad_request` for the same reason the unparseable-key refusal two
+            // lines below is one: nothing usable was supplied, and re-running
+            // the identical command will not change that. A read failure is the
+            // host's problem and stays `failed`.
+            match reader.read_line(&mut line) {
+                Ok(0) => return Err(CliError::bad_request("no EAB key supplied".to_string())),
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(CliError::failed(format!(
+                        "cannot read the EAB key from stdin: {error}"
+                    )));
+                }
             }
             line
         }
@@ -400,10 +410,13 @@ mod tests {
     /// or reading an empty secret would both be worse than saying so.
     #[test]
     fn an_empty_stdin_is_reported() {
+        // `bad_request` (exit 3), not `failed` (exit 1): nothing usable was
+        // supplied, and re-running the identical command cannot change that --
+        // the same class as the unparseable key below.
         let mut empty = std::io::Cursor::new(Vec::new());
         assert_eq!(
             read_secret(None, &mut empty),
-            Err(CliError::failed("no EAB key supplied".to_string()))
+            Err(CliError::bad_request("no EAB key supplied".to_string()))
         );
     }
 

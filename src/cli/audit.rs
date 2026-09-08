@@ -109,7 +109,9 @@ pub async fn run_audit_command(
                 profile,
                 account_id,
                 order_id,
-                cert_serial,
+                // See `order list --cert-serial`: the same fold, for the same
+                // reason, on the same column.
+                cert_serial: cert_serial.as_deref().map(crate::cert::normalize_serial),
                 event,
                 outcome,
                 since: since_days.map(admin::audit_cutoff),
@@ -145,11 +147,9 @@ pub async fn run_audit_command(
                     // actually removed something — a no-op prune changed
                     // nothing, the `RevokeOutcome::AlreadyRevoked` rule.
                     if removed > 0 {
-                        let (actor, client) = crate::audit::admin::cli_actor();
-                        crate::audit::write(
-                            crate::audit::admin::audit_pruned(actor, client, removed, older_than),
-                            &database,
-                        )
+                        crate::audit::admin::record_cli_action(&database, |actor, client| {
+                            crate::audit::admin::audit_pruned(actor, client, removed, older_than)
+                        })
                         .await;
                     }
                     println!("Removed {removed} audit row(s).");

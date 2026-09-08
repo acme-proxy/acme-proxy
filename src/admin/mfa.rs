@@ -326,7 +326,9 @@ mod tests {
     }
 
     async fn operator(database: Arc<Database>) -> AdminUser {
-        AdminUser::create("alice", "hash", &database).await.unwrap()
+        AdminUser::create("alice", "hash", None, &database)
+            .await
+            .unwrap()
     }
 
     /// An operator with a confirmed factor, returning the secret so a test can
@@ -651,7 +653,7 @@ mod tests {
     async fn the_startup_count_sees_only_confirmed_factors() {
         let db = db().await;
         let mut alice = operator(db.clone()).await;
-        AdminUser::create("bob", "hash", &db).await.unwrap();
+        AdminUser::create("bob", "hash", None, &db).await.unwrap();
         assert_eq!(operators_without_a_factor(db.clone()).await.unwrap(), 2);
 
         // A pending enrolment is not a factor, so it does not clear the count.

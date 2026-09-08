@@ -47,11 +47,15 @@ pub async fn cleanup_nonces(
 
     let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
-    state
-        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-            crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
-        })
-        .await;
+    // Only when it removed something, the rule `audit cleanup` follows: a
+    // sweep that changed nothing is not an administrative action worth a row.
+    if removed > 0 {
+        state
+            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+                crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
+            })
+            .await;
+    }
     tracing::info!(event = "admin_nonces_cleaned",
                    outcome = "success",
                    surface = "api",

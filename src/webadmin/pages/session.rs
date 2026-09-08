@@ -108,6 +108,7 @@ pub async fn get_login_mfa(
 pub async fn post_login_mfa(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
+    request_context: crate::audit::RequestContext,
     session: PageMfaSubmit,
     Form(body): Form<MfaRequest>,
 ) -> Result<Response, PageError> {
@@ -115,7 +116,14 @@ pub async fn post_login_mfa(
     // *setting one up* rather than by proving one — so this same URL confirms an
     // enrolment. Which of the two is `step`, and nothing else.
     if session.pending.step == MfaStep::Enrol {
-        return confirm_enrolment(&state, client, session.pending, &body.code).await;
+        return confirm_enrolment(
+            &state,
+            client,
+            &request_context,
+            session.pending,
+            &body.code,
+        )
+        .await;
     }
 
     // Kept for the re-render: `finish_mfa` consumes the pending session.
@@ -158,6 +166,7 @@ pub async fn post_login_mfa(
 async fn confirm_enrolment(
     state: &AdminState,
     client: Option<std::net::IpAddr>,
+    request_context: &crate::audit::RequestContext,
     pending: PendingMfa,
     code: &str,
 ) -> Result<Response, PageError> {
@@ -180,8 +189,13 @@ async fn confirm_enrolment(
         return Ok((StatusCode::UNAUTHORIZED, render_challenge(state, context)?).into_response());
     };
 
+    // Both halves, through the one call that cannot write only one of them:
+    // this path notified and left no audit row, where its `/api` twin
+    // (`handlers::mfa::confirm_totp`) wrote both.
     state
-        .notify_credential_change(
+        .record_credential_change(
+            request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::SecondFactorEnabled,
             true,
@@ -226,7 +240,7 @@ pub async fn post_logout(
     request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let scope = if query.all {
-        AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;
+        let revoked = AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;
         // "Sign out everywhere" ends sessions this request is not holding, so
         // it is a revoke worth recording; a plain logout is not.
         state
@@ -240,6 +254,7 @@ pub async fn post_logout(
                         crate::audit::admin::SessionScope::AllOf(
                             session.auth.user.username.clone(),
                         ),
+                        revoked,
                     )
                 },
             )

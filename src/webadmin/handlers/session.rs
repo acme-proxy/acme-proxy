@@ -515,7 +515,7 @@ pub async fn delete_session(
     request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let scope = if query.all {
-        AdminSession::delete_for_user(auth.user.id, &state.database).await?;
+        let revoked = AdminSession::delete_for_user(auth.user.id, &state.database).await?;
         // "Sign out everywhere" ends sessions the operator is not holding, so
         // it is a revoke worth recording; a plain single logout is not.
         state
@@ -524,6 +524,7 @@ pub async fn delete_session(
                     actor,
                     ctx,
                     crate::audit::admin::SessionScope::AllOf(auth.user.username.clone()),
+                    revoked,
                 )
             })
             .await;

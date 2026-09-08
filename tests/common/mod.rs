@@ -763,6 +763,7 @@ pub async fn test_admin_app_logged_in_with_security_notify(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -884,6 +885,7 @@ pub async fn test_admin_app_logged_in_with_filter(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await

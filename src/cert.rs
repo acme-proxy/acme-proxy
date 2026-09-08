@@ -120,6 +120,34 @@ impl AriCertId {
     }
 }
 
+/// Folds an operator-supplied certificate serial into the form the column
+/// holds: lowercase hex, no separators.
+///
+/// Every serial this server stores comes from [`AriCertId::serial_hex`], i.e.
+/// `hex::encode`, which is lowercase and unseparated. Operators do not arrive
+/// with that: `openssl x509 -serial` prints upper case, and an abuse report
+/// quotes whatever its own tooling printed, colons included. Bound raw, such a
+/// value matched nothing and the answer was a silent empty page — the failure
+/// mode `--status` and `--event` are refused *by name* to avoid, since "no
+/// rows" reads exactly like "nothing happened".
+///
+/// Applied at the operator entry points only (`order list --cert-serial`,
+/// `audit list --cert-serial` and their two `?certSerial=` twins), never in the
+/// models: `Order::find_by_cert_serial` is fed by `POST /revokeCert` from a
+/// parsed certificate, where the value is already canonical and widening what
+/// matches would be a change of answer wearing a refactor's clothes.
+///
+/// Only separators an operator would plausibly paste are stripped (`:`, `-`,
+/// whitespace). Anything else is left alone to match nothing, as it should.
+#[must_use]
+pub fn normalize_serial(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !matches!(character, ':' | '-') && !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// Parses an inbound certID (RFC 9773 §4.1).
 ///
 /// Strict on both halves, which is the point of doing it here rather than
@@ -292,5 +320,38 @@ mod tests {
         // Just verify they are reasonable unix timestamps
         assert!(not_before > 0);
         assert!(not_after > not_before);
+    }
+}
+
+#[cfg(test)]
+mod normalize_serial_tests {
+    use super::normalize_serial;
+
+    /// The shapes an operator actually arrives with. `openssl x509 -serial`
+    /// prints upper case; an abuse report quotes whatever its tooling printed,
+    /// colons and all. The column only ever holds `hex::encode`'s output.
+    #[test]
+    fn the_shapes_an_operator_pastes_all_fold_to_the_stored_form() {
+        for input in [
+            "0a1b2c3d",
+            "0A1B2C3D",
+            "0a:1b:2c:3d",
+            "0A:1B:2C:3D",
+            "0a 1b 2c 3d",
+            "0a-1b-2c-3d",
+            "  0A1B2C3D  ",
+        ] {
+            assert_eq!(normalize_serial(input), "0a1b2c3d", "{input}");
+        }
+    }
+
+    /// Only the separators a human pastes are stripped. Anything else is left
+    /// to match nothing, which is the right answer for a value that is not a
+    /// serial — folding it further would be guessing.
+    #[test]
+    fn nothing_else_is_touched() {
+        assert_eq!(normalize_serial(""), "");
+        assert_eq!(normalize_serial("0x0a1b"), "0x0a1b");
+        assert_eq!(normalize_serial("not/a/serial"), "not/a/serial");
     }
 }

@@ -68,13 +68,9 @@ pub async fn change_password(
     })?;
 
     state
-        .record_admin_action(&request_context, &user.username, |actor, ctx| {
-            crate::audit::admin::operator_password_changed(actor, ctx, &user.username, true)
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::Password,
             true,
@@ -142,7 +138,7 @@ pub async fn revoke_own_session(
     };
     state
         .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-            crate::audit::admin::session_revoked(actor, ctx, scope)
+            crate::audit::admin::session_revoked(actor, ctx, scope, 1)
         })
         .await;
 

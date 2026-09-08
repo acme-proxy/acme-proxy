@@ -62,25 +62,19 @@ async fn refuse_without_password(
     let Err(error) = check_step_up(user, password, client, &state.logins) else {
         return Ok(None);
     };
-    // The wrong-password case keeps this page's own wording: `AdminError`'s is
-    // "invalid username or password", which is a script's answer to a sign-in
-    // and names a field this card does not have. Every other refusal — today
-    // only the rate limit — carries its own message through, because that one
-    // says how long to wait and no fixed string here could.
-    let message = if error.status == StatusCode::UNAUTHORIZED {
-        "That password is not correct.".to_string()
-    } else {
-        error.message.clone()
-    };
-    let mut context = card_context(state, user, csrf_token).await?;
-    context.insert("flash".to_string(), super::flash_error(error.code, message));
-    Ok(Some(
-        (
-            error.status,
-            respond_fragment(state, "account/_mfa.html", context)?,
-        )
-            .into_response(),
-    ))
+    // `refuse_with_card` keeps this page's own wording for the wrong-password
+    // case (`AdminError`'s is "invalid username or password", a script's answer
+    // to a sign-in, naming a field this card does not have) and carries every
+    // other refusal's message through — today only the rate limit, which is the
+    // one that says how long to wait. It also keeps the error's *headers*,
+    // which this rebuilt its response without: a `429` lost its `Retry-After`.
+    let context = card_context(state, user, csrf_token).await?;
+    Ok(Some(super::refuse_with_card(
+        state,
+        "account/_mfa.html",
+        context,
+        &error,
+    )?))
 }
 
 /// `GET /ui/account` — the second-factor status card, the password card, and
@@ -222,13 +216,9 @@ pub async fn confirm_totp(
     };
 
     state
-        .record_admin_action(&request_context, &user.username, |actor, ctx| {
-            crate::audit::admin::operator_totp_enrolled(actor, ctx, &user.username)
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::SecondFactorEnabled,
             true,
@@ -293,13 +283,9 @@ pub async fn disable_totp(
     .await?;
 
     state
-        .record_admin_action(&request_context, &user.username, |actor, ctx| {
-            crate::audit::admin::operator_totp_disabled(actor, ctx, &user.username, false)
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::SecondFactorDisabled,
             true,
@@ -365,21 +351,9 @@ pub async fn regenerate_recovery_codes(
     let codes = mfa::regenerate_recovery_codes(&session.auth.user, state.database.clone()).await?;
 
     state
-        .record_admin_action(
+        .record_credential_change(
             &request_context,
             &session.auth.user.username,
-            |actor, ctx| {
-                crate::audit::admin::operator_recovery_codes_regenerated(
-                    actor,
-                    ctx,
-                    &session.auth.user.username,
-                )
-            },
-        )
-        .await;
-
-    state
-        .notify_credential_change(
             &session.auth.user,
             crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
             true,
@@ -436,20 +410,12 @@ async fn refuse_without_current_password(
     let Err(error) = verify_current_password(user, password, client, &state.logins) else {
         return Ok(None);
     };
-    let message = if error.status == StatusCode::UNAUTHORIZED {
-        "That password is not correct.".to_string()
-    } else {
-        error.message.clone()
-    };
-    let mut context = password_card_context(csrf_token);
-    context.insert("flash".to_string(), super::flash_error(error.code, message));
-    Ok(Some(
-        (
-            error.status,
-            respond_fragment(state, "account/_password.html", context)?,
-        )
-            .into_response(),
-    ))
+    Ok(Some(super::refuse_with_card(
+        state,
+        "account/_password.html",
+        password_card_context(csrf_token),
+        &error,
+    )?))
 }
 
 /// `POST /ui/account/password` — change this operator's own password.
@@ -490,12 +456,9 @@ pub async fn change_password(
     {
         Ok(()) => {
             state
-                .record_admin_action(&request_context, &user.username, |actor, ctx| {
-                    crate::audit::admin::operator_password_changed(actor, ctx, &user.username, true)
-                })
-                .await;
-            state
-                .notify_credential_change(
+                .record_credential_change(
+                    &request_context,
+                    &user.username,
                     &user,
                     crate::notify::AdminCredentialChange::Password,
                     true,
@@ -570,7 +533,7 @@ pub async fn revoke_own_session(
         .record_admin_action(
             &request_context,
             &session.auth.user.username,
-            |actor, ctx| crate::audit::admin::session_revoked(actor, ctx, scope),
+            |actor, ctx| crate::audit::admin::session_revoked(actor, ctx, scope, 1),
         )
         .await;
 

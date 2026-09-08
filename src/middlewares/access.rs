@@ -142,6 +142,22 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     // see. Seeding it is not redundant: `/health`, the http-01 responder and
     // every admission-control refusal sit outside all profile routers, so
     // without it the routes that never reach a filter would name nobody.
+    //
+    // The `ClientIp` *extension* is seeded from the same value and for the same
+    // reason, `middlewares::filter` likewise overwriting it. Its one reader is
+    // `audit::RequestContext::gather`, and until it was seeded here every row
+    // the web admin wrote carried no address and no reverse name at all: that
+    // listener deliberately runs no filter layer, so nothing ever inserted the
+    // extension on it. The peer is the right answer there — the admin listener
+    // trusts no forwarded header, which is the same choice `AdminClientIp`
+    // makes — and on the ACME side the filter still replaces it before any
+    // handler builds a record.
+    if peer.is_some() {
+        request
+            .extensions_mut()
+            .insert(crate::filter::ClientIp(peer));
+    }
+
     let span = info_span!(
         "request",
         method = %request.method(),

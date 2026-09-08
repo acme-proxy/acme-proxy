@@ -26,6 +26,7 @@ async fn login_sets_a_hardened_cookie_and_returns_a_csrf_token() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -72,6 +73,7 @@ async fn every_login_failure_is_indistinguishable_to_the_client() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -80,13 +82,18 @@ async fn every_login_failure_is_indistinguishable_to_the_client() {
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_status("bob", "disabled", database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::set_status(
+        "bob",
+        acme_proxy::sqlite::admin_user::AdminStatus::Disabled,
+        database,
+    )
+    .await
+    .unwrap();
 
     let mut bodies = Vec::new();
     for (username, password) in [
@@ -129,6 +136,7 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -326,9 +334,13 @@ async fn disabling_an_operator_stops_their_live_session() {
         StatusCode::OK
     );
 
-    acme_proxy::admin::users::set_status("alice", "disabled", database)
-        .await
-        .unwrap();
+    acme_proxy::admin::users::set_status(
+        "alice",
+        acme_proxy::sqlite::admin_user::AdminStatus::Disabled,
+        database,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         admin_request(&app, Method::GET, "/api/session", Some(&session), None)
             .await
@@ -353,6 +365,7 @@ async fn a_factorless_login_is_completely_unchanged() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -397,6 +410,7 @@ async fn a_factor_bearing_login_stops_half_way_and_says_so() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -448,6 +462,7 @@ async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -519,6 +534,7 @@ async fn a_code_cannot_be_spent_twice() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -571,6 +587,7 @@ async fn a_wrong_code_is_indistinguishable_from_a_wrong_password() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -623,6 +640,7 @@ async fn the_code_step_shares_the_login_limiter() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -695,6 +713,7 @@ async fn the_code_step_is_bounded_per_session_and_not_only_per_address() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -758,6 +777,7 @@ async fn the_password_step_does_not_clear_the_limiter_while_a_factor_is_outstand
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -811,6 +831,7 @@ async fn last_login_is_stamped_at_promotion_not_at_the_password() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -857,6 +878,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1013,6 +1035,7 @@ async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1076,6 +1099,7 @@ async fn recovery_codes_can_be_reissued_and_supersede_the_previous_set() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1150,6 +1174,7 @@ async fn require_mfa_makes_a_factorless_operator_enrol_before_the_session_works(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -1223,6 +1248,7 @@ async fn a_session_that_owes_a_code_cannot_enrol_its_way_past_it() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1264,6 +1290,7 @@ async fn disabling_the_factor_is_refused_while_require_mfa_is_on() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1290,6 +1317,7 @@ async fn disabling_the_factor_clears_the_codes_and_the_other_sessions() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1380,6 +1408,7 @@ async fn password_change_updates_the_hash_keeps_the_session_and_revokes_every_ot
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1551,6 +1580,7 @@ async fn the_mfa_step_endpoints_need_a_pending_session_and_the_origin_gate() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -1605,31 +1635,61 @@ async fn the_mfa_step_endpoints_need_a_pending_session_and_the_origin_gate() {
 /// The `/ui` pages have their own table, `mutating_page_endpoints()` in
 /// `tests/admin_pages.rs`, asserted HTML-shaped: a page answering in this
 /// suite's JSON error shape would be the bug, not the expectation.
-fn mutating_endpoints() -> Vec<(Method, &'static str)> {
+/// The tier a mutating route demands, **declared per route** rather than
+/// guessed from its path.
+///
+/// It was a path-prefix predicate inside the role test, which meant a new route
+/// under an existing prefix was silently auto-classified and the test still
+/// passed — while the design doc claimed an unclassified route would fail it.
+/// Stating the tier here makes that true: a row added to `mutating_endpoints()`
+/// has to say which bucket it is in, and the compiler asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequiredTier {
+    /// The caller's own account. Any role, `viewer` included — a `viewer` who
+    /// could not change their own password or enrol a factor would be locked
+    /// out of `admin.require_mfa`.
+    SelfService,
+    /// Every CA mutation. `operator` and above.
+    Operator,
+    /// Colleague management. `admin` only.
+    Admin,
+}
+
+fn mutating_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
+    use RequiredTier::{Admin, Operator, SelfService};
     vec![
-        (Method::PATCH, "/api/accounts/some-id"),
-        (Method::POST, "/api/accounts/some-id/deactivate"),
-        (Method::DELETE, "/api/accounts/some-id"),
-        (Method::POST, "/api/orders/some-id/revoke"),
-        (Method::DELETE, "/api/orders/some-id"),
-        (Method::POST, "/api/jobs/some-id/cancel"),
-        (Method::POST, "/api/jobs/some-id/run"),
-        (Method::POST, "/api/eab"),
-        (Method::POST, "/api/eab/some-kid/revoke"),
-        (Method::POST, "/api/nonces/cleanup"),
-        (Method::DELETE, "/api/session"),
-        (Method::POST, "/api/mfa/totp"),
-        (Method::POST, "/api/mfa/totp/confirm"),
-        (Method::DELETE, "/api/mfa/totp"),
-        (Method::POST, "/api/mfa/recovery-codes"),
-        (Method::POST, "/api/account/password"),
-        (Method::POST, "/api/account/sessions/some-id/revoke"),
-        (Method::POST, "/api/operators/some-username/disable"),
-        (Method::POST, "/api/operators/some-username/enable"),
-        (Method::POST, "/api/operators/some-username/totp/reset"),
+        (Method::PATCH, "/api/accounts/some-id", Operator),
+        (Method::POST, "/api/accounts/some-id/deactivate", Operator),
+        (Method::DELETE, "/api/accounts/some-id", Operator),
+        (Method::POST, "/api/orders/some-id/revoke", Operator),
+        (Method::DELETE, "/api/orders/some-id", Operator),
+        (Method::POST, "/api/jobs/some-id/cancel", Operator),
+        (Method::POST, "/api/jobs/some-id/run", Operator),
+        (Method::POST, "/api/eab", Operator),
+        (Method::POST, "/api/eab/some-kid/revoke", Operator),
+        (Method::POST, "/api/nonces/cleanup", Operator),
+        (Method::DELETE, "/api/session", SelfService),
+        (Method::POST, "/api/mfa/totp", SelfService),
+        (Method::POST, "/api/mfa/totp/confirm", SelfService),
+        (Method::DELETE, "/api/mfa/totp", SelfService),
+        (Method::POST, "/api/mfa/recovery-codes", SelfService),
+        (Method::POST, "/api/account/password", SelfService),
+        (
+            Method::POST,
+            "/api/account/sessions/some-id/revoke",
+            SelfService,
+        ),
+        (Method::POST, "/api/operators/some-username/disable", Admin),
+        (Method::POST, "/api/operators/some-username/enable", Admin),
+        (
+            Method::POST,
+            "/api/operators/some-username/totp/reset",
+            Admin,
+        ),
         (
             Method::POST,
             "/api/operators/some-username/sessions/some-id/revoke",
+            Admin,
         ),
     ]
 }
@@ -1638,7 +1698,7 @@ fn mutating_endpoints() -> Vec<(Method, &'static str)> {
 async fn every_mutating_endpoint_refuses_a_missing_csrf_token() {
     let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
 
-    for (method, path) in mutating_endpoints() {
+    for (method, path, _tier) in mutating_endpoints() {
         // The cookie, but no `X-CSRF-Token`.
         let request = axum::http::Request::builder()
             .method(method.clone())
@@ -1667,7 +1727,7 @@ async fn every_mutating_endpoint_refuses_a_wrong_or_foreign_csrf_token() {
     // A second, legitimate session — its token must not work here either.
     let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
 
-    for (method, path) in mutating_endpoints() {
+    for (method, path, _tier) in mutating_endpoints() {
         for (label, token) in [
             ("wrong", "not-the-token"),
             ("another session's", &*other.csrf),
@@ -1790,12 +1850,29 @@ async fn every_api_route_needs_a_session() {
         (Method::GET, "/api/eab/some-kid"),
         (Method::GET, "/api/nonces"),
         (Method::GET, "/api/profiles"),
+        (Method::GET, "/api/profiles/default/filter"),
+        // The surfaces added since this table was written. Each was reachable
+        // only through an extractor that refuses a missing session, but that
+        // was nobody's assertion until now.
+        (Method::GET, "/api/operators"),
+        (Method::GET, "/api/operators/some-username"),
+        (Method::GET, "/api/operators/some-username/sessions"),
+        (Method::GET, "/api/account/sessions"),
+        (Method::GET, "/api/jobs"),
+        (Method::GET, "/api/jobs/some-id"),
+        (Method::GET, "/api/upstream-orders"),
+        (Method::GET, "/api/upstream-orders/some-id"),
+        (Method::GET, "/api/expiring"),
         // Refuses a *missing* session for the same reason as the rest, and an
         // `active` one besides — see `the_mfa_step_routes_refuse_a_completed_session`.
         (Method::GET, "/api/session/mfa"),
         (Method::GET, "/api/mfa"),
     ];
-    routes.extend(mutating_endpoints());
+    routes.extend(
+        mutating_endpoints()
+            .into_iter()
+            .map(|(method, path, _tier)| (method, path)),
+    );
 
     for (method, path) in routes {
         let response = admin_request(&app, method.clone(), path, None, Some(json!({}))).await;
@@ -1829,6 +1906,7 @@ async fn role_gates_every_mutating_endpoint() {
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
+            None,
             database.clone(),
         )
         .await
@@ -1844,27 +1922,18 @@ async fn role_gates_every_mutating_endpoint() {
     let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
     let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
 
-    // The own-account routes any role may reach.
-    let self_service = |path: &str| {
-        path.starts_with("/api/session")
-            || path.starts_with("/api/mfa/")
-            || path.starts_with("/api/account/")
-    };
-    // The colleague-management routes only an `admin` may reach.
-    let admin_only = |path: &str| path.starts_with("/api/operators/");
-
-    for (method, path) in mutating_endpoints() {
+    for (method, path, tier) in mutating_endpoints() {
         // `DELETE /api/session` is logout: sent with a live session it really
         // signs that session out, which would 401 every later row. It is
-        // self-service by construction (`SelfServiceWrite`) and covered by the
-        // logout suite; skip it here.
+        // self-service by construction (`SelfServiceWrite`) and asserted for
+        // every tier by `logout_is_reachable_by_every_role` below.
         if method == Method::DELETE && path == "/api/session" {
             continue;
         }
-        for (who, session, at_least_operator, is_admin) in [
-            ("admin", &adam, true, true),
-            ("operator", &olga, true, false),
-            ("viewer", &vera, false, false),
+        for (who, session, held) in [
+            ("admin", &adam, AdminRole::Admin),
+            ("operator", &olga, AdminRole::Operator),
+            ("viewer", &vera, AdminRole::Viewer),
         ] {
             let response =
                 admin_request(&app, method.clone(), path, Some(session), Some(json!({}))).await;
@@ -1872,12 +1941,10 @@ async fn role_gates_every_mutating_endpoint() {
             let refused_for_role = status == StatusCode::FORBIDDEN
                 && json_body(response).await["error"] == "insufficient_role";
 
-            let expect_refused = if self_service(path) {
-                false
-            } else if admin_only(path) {
-                !is_admin
-            } else {
-                !at_least_operator
+            let expect_refused = match tier {
+                RequiredTier::SelfService => false,
+                RequiredTier::Operator => held < AdminRole::Operator,
+                RequiredTier::Admin => held < AdminRole::Admin,
             };
 
             assert_eq!(
@@ -1885,6 +1952,110 @@ async fn role_gates_every_mutating_endpoint() {
                 "{who} {method} {path} (status {status})"
             );
         }
+    }
+}
+
+/// **Reading the operators surface is `admin`-only too.**
+///
+/// It was gated on a live session alone, which let a `viewer` read every
+/// colleague's role and contact address, the addresses each has recently signed
+/// in from, and every live session's fingerprint, address and last-seen time.
+/// The writes were already `admin`; leaving the reads open made the tier a
+/// control over what somebody could *do* and not over what they could learn,
+/// which is not what a `viewer` tier is for.
+#[tokio::test]
+async fn the_operators_reads_are_admin_only() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database) = test_admin_app(admin_config()).await;
+    for (name, role) in [
+        ("adam", AdminRole::Admin),
+        ("olga", AdminRole::Operator),
+        ("vera", AdminRole::Viewer),
+    ] {
+        acme_proxy::admin::users::create_user(
+            name,
+            ADMIN_PASSWORD,
+            &PasswordContext::empty(),
+            Some(role),
+            database.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let adam = admin_login(&app, "adam", ADMIN_PASSWORD).await;
+    let olga = admin_login(&app, "olga", ADMIN_PASSWORD).await;
+    let vera = admin_login(&app, "vera", ADMIN_PASSWORD).await;
+
+    let reads = [
+        "/api/operators",
+        "/api/operators/olga",
+        "/api/operators/olga/sessions",
+    ];
+    for path in reads {
+        let allowed = admin_request(&app, Method::GET, path, Some(&adam), None).await;
+        assert_eq!(allowed.status(), StatusCode::OK, "an admin may read {path}");
+
+        for (who, session) in [("operator", &olga), ("viewer", &vera)] {
+            let refused = admin_request(&app, Method::GET, path, Some(session), None).await;
+            assert_eq!(
+                refused.status(),
+                StatusCode::FORBIDDEN,
+                "a {who} must not read {path}"
+            );
+            assert_eq!(json_body(refused).await["error"], "insufficient_role");
+        }
+    }
+
+    // The caller's *own* account stays reachable at every tier — that is the
+    // line this gate must not cross.
+    for (who, session) in [("operator", &olga), ("viewer", &vera)] {
+        assert_eq!(
+            admin_request(
+                &app,
+                Method::GET,
+                "/api/account/sessions",
+                Some(session),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK,
+            "a {who} keeps their own account"
+        );
+    }
+}
+
+/// `DELETE /api/session` is the one row the table above has to skip — it ends
+/// the session it is sent with — so its "any role may reach it" half is
+/// asserted here instead of being unasserted.
+#[tokio::test]
+async fn logout_is_reachable_by_every_role() {
+    use acme_proxy::sqlite::admin_user::AdminRole;
+
+    let (app, database) = test_admin_app(admin_config()).await;
+    for (name, role) in [
+        ("adam", AdminRole::Admin),
+        ("olga", AdminRole::Operator),
+        ("vera", AdminRole::Viewer),
+    ] {
+        acme_proxy::admin::users::create_user(
+            name,
+            ADMIN_PASSWORD,
+            &PasswordContext::empty(),
+            Some(role),
+            database.clone(),
+        )
+        .await
+        .unwrap();
+        let session = admin_login(&app, name, ADMIN_PASSWORD).await;
+        let response =
+            admin_request(&app, Method::DELETE, "/api/session", Some(&session), None).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NO_CONTENT,
+            "{name} ({role}) must be able to sign out"
+        );
     }
 }
 
@@ -2937,6 +3108,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -3049,6 +3221,7 @@ async fn changing_a_live_factor_requires_the_password_again() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -3129,6 +3302,7 @@ async fn a_first_enrolment_asks_for_no_password() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -3250,6 +3424,7 @@ async fn an_oversized_admin_request_body_is_refused() {
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database,
     )
     .await
@@ -3416,6 +3591,29 @@ fn now_secs() -> i64 {
 
 /// Seeds an order on `PROFILE`, an `upstream_orders` row for it, and a
 /// `signer_relay_issue` job keyed on the order id — the in-flight-relay shape.
+/// A plain periodic sweep job — the kind whose cancellation is an ordinary
+/// administrative action rather than an abandoned issuance.
+async fn seed_sweep_job(database: &std::sync::Arc<acme_proxy::sqlite::db::Database>) -> String {
+    use acme_proxy::sqlite::job::{Job, NewJob};
+
+    let job_id = acme_proxy::sqlite::id::mint();
+    Job::enqueue(
+        NewJob {
+            id: job_id,
+            kind: "nonce_sweep",
+            dedup_key: "nonce_sweep",
+            payload: &json!({}),
+            run_at: now_secs(),
+            deadline: None,
+            max_attempts: 5,
+        },
+        database,
+    )
+    .await
+    .unwrap();
+    job_id.to_string()
+}
+
 async fn seed_relay_job(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
 ) -> (String, String) {
@@ -4207,6 +4405,7 @@ async fn own_sessions_route_cannot_reach_another_operators_session() {
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
@@ -4255,12 +4454,198 @@ async fn app_with_bob() -> (
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
+        None,
         database.clone(),
     )
     .await
     .unwrap();
     let bob = admin_login(&app, "bob", ADMIN_PASSWORD).await;
     (app, database, alice, bob)
+}
+
+/// **Every administrative mutation leaves a row in the trail, and that row
+/// names where it came from.**
+///
+/// The third table-driven guard beside the CSRF and role ones, and the one that
+/// was missing: 19 of the 21 `AuditEvent` names the panel writes had no
+/// integration coverage at all, so three separate defects shipped —
+/// `record_admin_action` recorded no client address on *any* of them (the
+/// `ClientIp` extension is inserted by the ACME filter middleware, which this
+/// listener deliberately does not run), the `/ui` enrolment path wrote no row
+/// where its `/api` twin did, and `order delete` wrote none from the CLI.
+///
+/// Each row is driven to **success** — a refused or not-found operation
+/// deliberately writes nothing, which is the whole difference between this half
+/// of the vocabulary and the certificate half, and is why the CSRF and role
+/// tables cannot double as this one.
+#[tokio::test]
+async fn every_mutation_writes_one_audit_row_naming_the_operator_and_the_address() {
+    use acme_proxy::sqlite::audit::{AuditEntry, AuditQuery};
+
+    let (app, database, alice, bob) = app_with_bob().await;
+    let accounts = seed(&database, 2).await;
+    let eab: String = json_body(
+        admin_request(
+            &app,
+            Method::POST,
+            "/api/eab",
+            Some(&alice),
+            Some(json!({ "label": "for-the-trail" })),
+        )
+        .await,
+    )
+    .await["kid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A *sweep* job, not a relay one: cancelling a relay job in flight writes
+    // `certificate_issue_failed` through `abandon_relayed_order` instead, which
+    // is its own case below.
+    let sweep_job = seed_sweep_job(&database).await;
+    let (relay_job, _) = seed_relay_job(&database).await;
+    // A third operator, so the session revoked below is not one the
+    // disable/enable cases have already dropped.
+    acme_proxy::admin::users::create_user(
+        "carol",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let _carol = admin_login(&app, "carol", ADMIN_PASSWORD).await;
+    let carol_session = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            "/api/operators/carol/sessions",
+            Some(&alice),
+            None,
+        )
+        .await,
+    )
+    .await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let step_up = || Some(json!({ "password": ADMIN_PASSWORD }));
+    // (method, path, body, the events the rows must carry — newest first).
+    //
+    // Usually one. `disable` is two, and deliberately: dropping the sessions is
+    // a second thing that happened, and the status change alone does not say
+    // how much access was withdrawn.
+    let cases: Vec<(Method, String, Option<serde_json::Value>, &[&str])> = vec![
+        (
+            Method::PATCH,
+            format!("/api/accounts/{}", accounts[0]),
+            Some(json!({ "contact": ["mailto:new@example.com"] })),
+            &["account_contact_updated"],
+        ),
+        (
+            Method::POST,
+            format!("/api/accounts/{}/deactivate", accounts[0]),
+            None,
+            &["account_deactivated"],
+        ),
+        (
+            Method::DELETE,
+            format!("/api/accounts/{}", accounts[1]),
+            None,
+            &["account_deleted"],
+        ),
+        (
+            Method::POST,
+            format!("/api/eab/{eab}/revoke"),
+            None,
+            &["eab_revoked"],
+        ),
+        (
+            Method::POST,
+            format!("/api/jobs/{sweep_job}/cancel"),
+            None,
+            &["job_cancelled"],
+        ),
+        (
+            Method::POST,
+            format!("/api/jobs/{relay_job}/cancel"),
+            None,
+            &["certificate_issue_failed"],
+        ),
+        (
+            Method::POST,
+            "/api/operators/bob/disable".to_string(),
+            step_up(),
+            &["session_revoked", "operator_disabled"],
+        ),
+        (
+            Method::POST,
+            "/api/operators/bob/enable".to_string(),
+            step_up(),
+            &["operator_enabled"],
+        ),
+        (
+            Method::POST,
+            format!("/api/operators/carol/sessions/{carol_session}/revoke"),
+            step_up(),
+            &["session_revoked"],
+        ),
+        (
+            Method::POST,
+            "/api/operators/bob/totp/reset".to_string(),
+            step_up(),
+            &["operator_totp_disabled"],
+        ),
+    ];
+
+    // Bob's session is revoked partway through, which is the point of the row —
+    // it must not make the later cases fail for an unrelated reason.
+    let _ = &bob;
+
+    for (method, path, body, events) in cases {
+        let before = AuditEntry::search(&AuditQuery::default(), &database)
+            .await
+            .unwrap()
+            .1;
+
+        let response = admin_request(&app, method.clone(), &path, Some(&alice), body).await;
+        assert!(
+            response.status().is_success(),
+            "{method} {path} must succeed for this test to say anything: {}",
+            response.status()
+        );
+
+        let (rows, after) = AuditEntry::search(
+            &AuditQuery {
+                limit: 5,
+                ..AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            after,
+            before + events.len() as i64,
+            "{method} {path} must leave exactly {} new audit row(s)",
+            events.len()
+        );
+
+        for (row, event) in rows.iter().zip(events) {
+            assert_eq!(&row.event, event, "{method} {path}");
+            assert_eq!(row.actor_kind, "admin", "{method} {path}");
+            assert_eq!(row.actor_id.as_deref(), Some("alice"), "{method} {path}");
+            // The regression: the panel's rows carried no address at all,
+            // because nothing inserted the extension `RequestContext` reads on
+            // a listener that runs no filter chain.
+            assert_eq!(
+                row.client_ip.as_deref(),
+                Some("127.0.0.1"),
+                "{method} {path} ({event}) must record the address it came from"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -4307,7 +4692,7 @@ async fn disabling_and_enabling_an_operator_round_trips_and_revokes_their_sessio
         Method::POST,
         "/api/operators/bob/disable",
         Some(&alice),
-        None,
+        Some(json!({ "password": ADMIN_PASSWORD })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -4329,7 +4714,7 @@ async fn disabling_and_enabling_an_operator_round_trips_and_revokes_their_sessio
         Method::POST,
         "/api/operators/bob/enable",
         Some(&alice),
-        None,
+        Some(json!({ "password": ADMIN_PASSWORD })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -4355,7 +4740,7 @@ async fn resetting_an_operators_totp_clears_it_and_their_sessions() {
         Method::POST,
         "/api/operators/bob/totp/reset",
         Some(&alice),
-        None,
+        Some(json!({ "password": ADMIN_PASSWORD })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -4400,7 +4785,7 @@ async fn revoking_one_of_another_operators_sessions_leaves_the_rest() {
         Method::POST,
         &format!("/api/operators/bob/sessions/{target_id}/revoke"),
         Some(&alice),
-        None,
+        Some(json!({ "password": ADMIN_PASSWORD })),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -4465,6 +4850,61 @@ async fn the_operators_surface_refuses_to_target_the_caller() {
 /// caller's own -- so every mutating route re-proves the caller's password
 /// once they have a factor, `changing_a_live_factor_requires_the_password_again`'s
 /// shape applied to acting on someone else.
+#[tokio::test]
+async fn operators_mutations_require_the_callers_password_even_with_no_factor() {
+    // The regression this test exists for: `check_step_up` passes
+    // unconditionally for an operator with no second factor -- correct on the
+    // MFA routes, where a first enrolment protects nothing, and wrong here,
+    // where the blast radius is a *colleague's* account and exists whether or
+    // not the caller has enrolled. A password-only admin holding a stolen
+    // cookie could disable every other admin and wipe their factors without
+    // typing anything, while the panel rendered a `required` "Confirm your
+    // password" field that was ignored.
+    // `app_with_bob` enrols no factor for either operator, which is the state
+    // under test: alice signs in with a password alone.
+    let (app, _database, alice, bob) = app_with_bob().await;
+
+    for (attempt, body) in [json!({}), json!({ "password": "not-the-password" })]
+        .into_iter()
+        .enumerate()
+    {
+        let refused = admin_request_from(
+            &app,
+            Method::POST,
+            "/api/operators/bob/disable",
+            Some(&alice),
+            Some(body),
+            &format!("198.51.100.{}:1234", attempt + 1),
+        )
+        .await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::UNAUTHORIZED,
+            "a factorless admin must still prove their password here"
+        );
+        assert_eq!(json_body(refused).await["error"], "invalid_credentials");
+    }
+
+    // Bob is untouched by either attempt.
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    // The correct password gets through.
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/disable",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
 #[tokio::test]
 async fn operators_mutations_require_the_callers_password_once_they_have_a_factor() {
     let (app, database, _seed_alice, bob) = app_with_bob().await;
@@ -4578,6 +5018,147 @@ async fn a_password_change_notifies_the_operator() {
             assert!(matches!(
                 data.change,
                 acme_proxy::notify::AdminCredentialChange::Password
+            ));
+        }
+        other => panic!("expected AdminCredentialChanged, got {other:?}"),
+    }
+}
+
+/// The two **silent** branches, which are the ones a "did it fire?" test cannot
+/// reach: a first-ever sign-in has no recent addresses to be unfamiliar to, and
+/// an operator with no `contact_email` names no recipient.
+///
+/// Both are must-not-fire assertions, so they wait for the queue to settle
+/// rather than for a count that will never arrive.
+#[tokio::test]
+async fn a_first_sign_in_and_a_contactless_operator_are_silent() {
+    let (app, database, _session, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+
+    // A brand-new operator with no contact address, signing in for the first
+    // time from an address nobody has used.
+    acme_proxy::admin::users::create_user(
+        "quiet",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    let response = admin_request_from(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "quiet", "password": ADMIN_PASSWORD })),
+        "203.0.113.99:5555",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert!(
+        notify.settled().await.is_empty(),
+        "a first-ever sign-in has no 'usual' address to differ from, and an \
+         operator with no contact address names no recipient"
+    );
+}
+
+/// A correct password followed by a refused second factor is the case the
+/// operator most needs told about: somebody has their password.
+#[tokio::test]
+async fn a_refused_second_factor_notifies_the_operator() {
+    let (app, database, _session, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+    enrol_totp(database.clone(), "alice").await;
+
+    // The password step succeeds and mints a `pending_mfa` session.
+    let pending = admin_request(
+        &app,
+        Method::POST,
+        "/api/session",
+        None,
+        Some(json!({ "username": "alice", "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(pending.status(), StatusCode::OK);
+    let cookie = session_cookie_token(&pending).expect("a pending session cookie");
+
+    let refused = send_from(
+        &app,
+        axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/api/session/mfa")
+            .header(
+                header::COOKIE,
+                format!("__Host-acme_admin_session={cookie}"),
+            )
+            .header(header::ORIGIN, "http://localhost:3001")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({ "code": "000000" }).to_string(),
+            ))
+            .unwrap(),
+        "127.0.0.1:40000",
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+
+    let events = notify.recorded(1).await;
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminSignIn(data) => {
+            assert_eq!(data.username, "alice");
+            assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
+            assert!(matches!(
+                data.outcome,
+                acme_proxy::notify::AdminSignInOutcome::SecondFactorRefused
+            ));
+        }
+        other => panic!("expected AdminSignIn, got {other:?}"),
+    }
+}
+
+/// A colleague resetting somebody's second factor notifies **them**, with
+/// `by_self = false` — the variant an operator most needs, since the change was
+/// made from a session that is not theirs.
+#[tokio::test]
+async fn resetting_a_colleagues_factor_notifies_them_as_not_self() {
+    let (app, database, alice, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    acme_proxy::admin::users::set_contact_email("bob", Some("bob@example.com"), database.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    enrol_totp(database.clone(), "bob").await;
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/totp/reset",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let events = notify.recorded(1).await;
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+            assert_eq!(data.username, "bob", "the message goes to the subject");
+            assert_eq!(data.recipient.as_deref(), Some("bob@example.com"));
+            assert!(!data.by_self, "somebody else made this change");
+            assert!(matches!(
+                data.change,
+                acme_proxy::notify::AdminCredentialChange::SecondFactorDisabled
             ));
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),

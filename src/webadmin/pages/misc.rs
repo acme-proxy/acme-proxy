@@ -129,13 +129,18 @@ pub async fn cleanup_nonces(
 
     let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, client| crate::audit::admin::nonce_cleanup_completed(actor, client, removed),
-        )
-        .await;
+    // See the `/api` twin: a sweep that removed nothing writes no row.
+    if removed > 0 {
+        state
+            .record_admin_action(
+                &request_context,
+                &session.auth.user.username,
+                |actor, client| {
+                    crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
+                },
+            )
+            .await;
+    }
     tracing::info!(event = "admin_nonces_cleaned",
                    outcome = "success",
                    surface = "ui",

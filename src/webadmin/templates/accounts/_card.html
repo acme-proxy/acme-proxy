@@ -35,6 +35,10 @@
     </dl>
   </div>
 
+  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+      renders as the fragment following a mutation, and the caller there has
+      already passed a write extractor, so undefined means "show". -#}
+  {% if not user is defined or user.role != "viewer" %}
   <div class="panel">
     <h2>Contact</h2>
     {#- One `mailto:` URI per line. Validated by the same
@@ -51,7 +55,12 @@
       </div>
     </form>
   </div>
+  {% endif %}
 
+  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+      renders as the fragment following a mutation, and the caller there has
+      already passed a write extractor, so undefined means "show". -#}
+  {% if not user is defined or user.role != "viewer" %}
   <div class="panel">
     <h2>Danger zone</h2>
     <div class="actions">
@@ -80,4 +89,5 @@
       certificate already issued.
     </p>
   </div>
+  {% endif %}
 </div>

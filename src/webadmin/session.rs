@@ -257,6 +257,22 @@ pub struct AdminWrite(pub Authenticated);
 #[derive(Debug)]
 pub struct SelfServiceWrite(pub Authenticated);
 
+/// [`Authenticated`] **plus a privilege tier of [`AdminRole::Admin`]** -- the
+/// read-side sibling of [`AdminWrite`], with no CSRF or origin gate, since a
+/// `GET` changes nothing.
+///
+/// The `/operators` read routes take this. What they render is every
+/// colleague's role and contact address, the last addresses each signed in
+/// from, and every live session's fingerprint, address and last-seen time --
+/// "who else is an admin here, and from where do they work" is exactly the
+/// reconnaissance a `viewer` tier exists to withhold, so the reads are gated to
+/// the same tier as the writes rather than to a live session alone.
+///
+/// Nothing else on this listener needs it: every other read is either the
+/// caller's own (`/account/*`) or CA state a `viewer` is meant to see.
+#[derive(Debug)]
+pub struct AdminRead(pub Authenticated);
+
 impl FromRequestParts<AdminState> for Authenticated {
     type Rejection = AdminError;
 
@@ -287,6 +303,22 @@ fn require_role(user: &AdminUser, minimum: AdminRole) -> Result<(), AdminError> 
         Ok(())
     } else {
         Err(AdminError::insufficient_role())
+    }
+}
+
+impl FromRequestParts<AdminState> for AdminRead {
+    type Rejection = AdminError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AdminState,
+    ) -> Result<Self, Self::Rejection> {
+        // No `resolve_write`: there is no body to forge and no state change to
+        // ride, so the origin and CSRF gates buy nothing on a read. The tier is
+        // the whole of what this adds over `Authenticated`.
+        let authenticated = resolve_session(parts, state).await?;
+        require_role(&authenticated.user, AdminRole::Admin)?;
+        Ok(AdminRead(authenticated))
     }
 }
 

@@ -43,6 +43,21 @@ where
     Ok(raw.as_deref().and_then(non_empty))
 }
 
+/// [`empty_is_absent`], then folded into the form `cert_serial` is stored in.
+///
+/// The `?certSerial=` filter is the one whose value an operator does not type
+/// from memory: it is pasted out of `openssl x509 -serial` or an abuse report,
+/// in whatever case and separator style that tool used, against a column that
+/// only ever holds lowercase unseparated hex. See
+/// [`crate::cert::normalize_serial`] for why an un-normalized value was worse
+/// than a refusal.
+pub(crate) fn empty_is_absent_serial<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(empty_is_absent(deserializer)?.map(|value| crate::cert::normalize_serial(&value)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +68,40 @@ mod tests {
     struct Filters {
         #[serde(default, deserialize_with = "empty_is_absent")]
         profile: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct SerialFilter {
+        #[serde(
+            rename = "certSerial",
+            default,
+            deserialize_with = "empty_is_absent_serial"
+        )]
+        cert_serial: Option<String>,
+    }
+
+    /// The shape an operator actually pastes: upper case, colon-separated —
+    /// what `openssl x509 -serial` and most abuse reports print. Bound raw it
+    /// matched nothing and the page came back empty, which reads as "no such
+    /// certificate" rather than "you typed it in the other case".
+    #[test]
+    fn a_pasted_serial_is_folded_to_the_stored_form() {
+        let parse = |query: &str| {
+            let uri: Uri = format!("/api/orders{query}").parse().expect("a valid URI");
+            Query::<SerialFilter>::try_from_uri(&uri)
+                .expect("the query string parses")
+                .0
+                .cert_serial
+        };
+
+        assert_eq!(parse("?certSerial=0A1B2C"), Some("0a1b2c".to_string()));
+        assert_eq!(parse("?certSerial=0a:1b:2c"), Some("0a1b2c".to_string()));
+        assert_eq!(parse("?certSerial=0a1b2c"), Some("0a1b2c".to_string()));
+        // Still absent when blank, and still whatever it was when it is not a
+        // serial at all — a value that matches nothing should match nothing.
+        assert_eq!(parse("?certSerial="), None);
+        assert_eq!(parse(""), None);
+        assert_eq!(parse("?certSerial=zzz"), Some("zzz".to_string()));
     }
 
     /// Through the real extractor, not a hand-rolled parse: what this module

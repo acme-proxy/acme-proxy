@@ -169,6 +169,17 @@ impl AuditEvent {
 }
 
 /// Every [`AuditEvent`], for the CLI's `--event` help text and the page's filter.
+///
+/// **[`AuditEvent::parse`] is implemented over this array**, so a variant added
+/// to the enum and forgotten here does not merely go unlisted: it stops
+/// parsing, for ever, which means `audit list --event <name>` refuses a name the
+/// server is actively writing and the page's filter cannot select it. Nothing
+/// would fail — the round-trip test iterates *this* array, so it would be
+/// vacuously satisfied.
+///
+/// `EVENT_COUNT` plus the exhaustive `match` in `event_count_is_exhaustive`
+/// below is the guard: adding a variant is a compile error until both move.
+/// `ALL_NOTIFY_EVENTS` keeps the same kind of assertion for the same reason.
 pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::CertificateIssued,
     AuditEvent::CertificateIssueFailed,
@@ -196,6 +207,52 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::NonceCleanupCompleted,
     AuditEvent::AuditPruned,
 ];
+
+/// How many variants [`AuditEvent`] has, asserted against
+/// [`ALL_AUDIT_EVENTS`] at compile time.
+const EVENT_COUNT: usize = 25;
+
+const _: () = assert!(
+    ALL_AUDIT_EVENTS.len() == EVENT_COUNT,
+    "ALL_AUDIT_EVENTS and EVENT_COUNT disagree: a variant was added to one and not the other"
+);
+
+/// Ties [`EVENT_COUNT`] to the enum itself.
+///
+/// An exhaustive `match` with no catch-all, so a new variant is a compile error
+/// here; the arms count up to `EVENT_COUNT`, which the `const` assertion above
+/// ties back to [`ALL_AUDIT_EVENTS`]. Between them, a variant cannot reach
+/// production without appearing in the array [`AuditEvent::parse`] reads.
+#[allow(dead_code)]
+const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
+    match event {
+        AuditEvent::CertificateIssued => 1,
+        AuditEvent::CertificateIssueFailed => 2,
+        AuditEvent::CertificateRevoked => 3,
+        AuditEvent::CertificateRevokeFailed => 4,
+        AuditEvent::AccountDeactivated => 5,
+        AuditEvent::AccountContactUpdated => 6,
+        AuditEvent::AccountDeleted => 7,
+        AuditEvent::OrderDeleted => 8,
+        AuditEvent::EabCreated => 9,
+        AuditEvent::EabRevoked => 10,
+        AuditEvent::OperatorCreated => 11,
+        AuditEvent::OperatorRoleChanged => 12,
+        AuditEvent::OperatorContactUpdated => 13,
+        AuditEvent::OperatorPasswordChanged => 14,
+        AuditEvent::OperatorDisabled => 15,
+        AuditEvent::OperatorEnabled => 16,
+        AuditEvent::OperatorDeleted => 17,
+        AuditEvent::OperatorTotpEnrolled => 18,
+        AuditEvent::OperatorTotpDisabled => 19,
+        AuditEvent::OperatorRecoveryCodesRegenerated => 20,
+        AuditEvent::SessionRevoked => 21,
+        AuditEvent::JobCancelled => 22,
+        AuditEvent::JobAdvanced => 23,
+        AuditEvent::NonceCleanupCompleted => 24,
+        AuditEvent::AuditPruned => EVENT_COUNT,
+    }
+}
 
 /// Which front end acted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,7 +381,11 @@ pub struct RequestContext {
 /// Longest `User-Agent` kept. Real ones are well under this; the header is
 /// attacker-controlled and ends up in a database column and an HTML page, so it
 /// gets a ceiling rather than trust.
-const USER_AGENT_MAX: usize = 256;
+///
+/// `pub(crate)` for `webadmin::user_agent_of`, which caps the *same* header on
+/// the way into a notification payload. One constant, so the two answers to
+/// "how much of this do we keep?" cannot drift.
+pub(crate) const USER_AGENT_MAX: usize = 256;
 
 impl RequestContext {
     /// Reads the address the filter middleware resolved, plus the two headers.
@@ -615,6 +676,21 @@ impl Auditor {
     pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
         self.metrics = Some(metrics);
         self
+    }
+
+    /// The registry this auditor counts into, for the one caller that writes a
+    /// record through the free [`write()`] rather than through [`Auditor::record`]
+    /// and so has to carry the counter itself.
+    ///
+    /// That caller is `signer::relay::abandon_relayed_order`, which is shared
+    /// with a background task holding no `Auditor` at all — see its own note on
+    /// why the count is spelled out there. Handing the registry over keeps the
+    /// operator-cancel path counting into the same place the runner's does, so
+    /// `/metrics` and `acme-proxy audit list` cannot disagree about how many
+    /// issuances failed.
+    #[must_use]
+    pub fn metrics(&self) -> Option<&Arc<crate::metrics::Metrics>> {
+        self.metrics.as_ref()
     }
 
     /// Writes one row, and counts it.

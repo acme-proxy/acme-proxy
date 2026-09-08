@@ -38,12 +38,15 @@ pub async fn run_nonce_command(
             match admin::confirm_cleanup_nonces(ttl, yes, reader, database.clone()).await? {
                 None => println!("Cancelled."),
                 Some(removed) => {
-                    let (actor, client) = audit_admin::cli_actor();
-                    crate::audit::write(
-                        audit_admin::nonce_cleanup_completed(actor, client, removed),
-                        &database,
-                    )
-                    .await;
+                    // Only when it actually removed something, the rule
+                    // `audit cleanup` already follows: a sweep that changed
+                    // nothing is not an administrative action worth a row.
+                    if removed > 0 {
+                        audit_admin::record_cli_action(&database, |actor, client| {
+                            audit_admin::nonce_cleanup_completed(actor, client, removed)
+                        })
+                        .await;
+                    }
                     println!("Removed {removed} nonce(s).");
                 }
             }

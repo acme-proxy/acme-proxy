@@ -25,6 +25,10 @@
     </dl>
   </div>
 
+  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+      renders as the fragment following a mutation, and the caller there has
+      already passed a write extractor, so undefined means "show". -#}
+  {% if not user is defined or user.role != "viewer" %}
   <div class="panel">
     <h2>Danger zone</h2>
     <div class="actions">
@@ -41,4 +45,5 @@
       use than a missing row, and the HMAC secret was never readable anyway.
     </p>
   </div>
+  {% endif %}
 </div>

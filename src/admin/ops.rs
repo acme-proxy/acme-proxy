@@ -16,6 +16,7 @@ use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::nonce::{Nonce, now_secs};
 use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use crate::sqlite::status::JobStatus;
 use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
 
 /// Outcome of a confirm-gated hard delete.
@@ -27,7 +28,15 @@ use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
 pub enum DeleteOutcome {
     NotFound,
     Cancelled,
-    Deleted,
+    /// Deleted, carrying what went with it.
+    ///
+    /// The count travels **out of** the confirmation rather than being read
+    /// back afterwards, and that is the point: it is already computed here to
+    /// word the prompt, and by the time the caller returns, the
+    /// `ON DELETE CASCADE` has removed the very rows a second count would
+    /// count. `acme-proxy account delete` did exactly that, so every one of its
+    /// audit rows read `0 order(s) cascaded` however many there were.
+    Deleted(Deleted),
 }
 
 /// What a hard delete took with it.
@@ -135,7 +144,9 @@ pub async fn confirm_delete_account(
         return Ok(DeleteOutcome::Cancelled);
     }
     Account::delete(id, &database).await?;
-    Ok(DeleteOutcome::Deleted)
+    Ok(DeleteOutcome::Deleted(Deleted {
+        cascaded: order_count as u64,
+    }))
 }
 
 /// Hard-deletes an order. `None` when there is no such order; otherwise how
@@ -170,7 +181,9 @@ pub async fn confirm_delete_order(
         return Ok(DeleteOutcome::Cancelled);
     }
     Order::delete(id, &database).await?;
-    Ok(DeleteOutcome::Deleted)
+    Ok(DeleteOutcome::Deleted(Deleted {
+        cascaded: authz_count as u64,
+    }))
 }
 
 /// Runs [`Nonce::cleanup`], returning how many were removed.
@@ -525,6 +538,13 @@ pub enum CancelJobError {
 /// supplies [`Actor::cli`] with an empty context, the web admin
 /// [`Actor::admin`] with the operator's own address.
 ///
+/// `metrics` is the registry the `certificate_issue_failed` row on the relay
+/// branch is also counted into, so `/metrics` and `acme-proxy audit list`
+/// cannot disagree about how many issuances failed — the property
+/// `Metrics::record_audit` exists for. The web admin passes its process
+/// registry; **the CLI passes `None` and legitimately so**, since a `serve`-less
+/// invocation has no registry and no exposition to keep honest.
+///
 /// **The job row is cancelled first, then the order is abandoned.** The guard
 /// (`status IN ('ready', 'failed')`) means at most one caller wins a race with
 /// another operator or with the runner claiming the row; a loser touches
@@ -535,51 +555,73 @@ pub async fn cancel_job(
     id: &str,
     actor: Actor,
     client: ClientContext,
+    metrics: Option<&Arc<crate::metrics::Metrics>>,
     database: Arc<Database>,
 ) -> Result<CancelJobOutcome, CancelJobError> {
     let Some(job_id) = crate::sqlite::id::parse(id) else {
         return Ok(CancelJobOutcome::NotFound);
     };
 
-    let Some(job) = Job::cancel_row(job_id, &database).await? else {
-        // The guard matched nothing: say whether that is "no such job" or "not
-        // in a cancellable state".
-        return Ok(match Job::find_by_id(job_id, &database).await? {
-            None => CancelJobOutcome::NotFound,
-            Some(job) => CancelJobOutcome::NotCancellable(job.status),
-        });
+    // `ready` first, then `failed`: two guarded statements rather than one over
+    // both, because only the first is a job still in flight. A `failed` relay
+    // job has already been through `runner::retire`, which called
+    // `RelayJob::abandon` — its order is `invalid`, its mapping row is
+    // `invalid`, and its `certificate_issue_failed` row is written. Abandoning
+    // it a second time would add a duplicate row for one issuance and overwrite
+    // `upstream_orders.error`, which is the upstream CA's own message and the
+    // whole reason the operator is looking at the row.
+    let (job, was_in_flight) = match Job::cancel_row(job_id, JobStatus::Ready, &database).await? {
+        Some(job) => (job, true),
+        None => match Job::cancel_row(job_id, JobStatus::Failed, &database).await? {
+            Some(job) => (job, false),
+            None => {
+                // Neither guard matched: say whether that is "no such job" or
+                // "not in a cancellable state".
+                return Ok(match Job::find_by_id(job_id, &database).await? {
+                    None => CancelJobOutcome::NotFound,
+                    Some(job) => CancelJobOutcome::NotCancellable(job.status),
+                });
+            }
+        },
     };
 
-    if job.kind != RELAY_JOB_KIND {
-        // A relay job records `certificate_issue_failed` via
-        // `abandon_relayed_order` below; every other kind gets a plain
-        // administrative row here.
-        crate::audit::write(
-            crate::audit::admin::job_cancelled(actor, client, &job.kind, &job.id.to_string()),
-            &database,
-        )
-        .await;
-        return Ok(CancelJobOutcome::Cancelled(Box::new(job)));
+    if job.kind == RELAY_JOB_KIND && was_in_flight {
+        // An in-flight relay job: abandon the order it was driving. Its
+        // `dedup_key` is the local order id.
+        //
+        // The order row may be gone — `order.retention_days` sweeps expired
+        // orders — and then there is nothing to abandon and nothing to say
+        // about one. That case falls through to the plain administrative row
+        // below rather than reporting an abandonment that did not happen.
+        let order_id = job.dedup_key.clone();
+        if let Some(mut order) = Order::find_by_id(&order_id, &database).await? {
+            abandon_relayed_order(
+                &mut order,
+                "issuance cancelled by operator",
+                actor,
+                client,
+                &database,
+                metrics,
+            )
+            .await?;
+            return Ok(CancelJobOutcome::CancelledAndOrderAbandoned {
+                job: Box::new(job),
+                order_id,
+            });
+        }
     }
 
-    // A relay job: abandon the order it was driving. Its `dedup_key` is the
-    // local order id.
-    let order_id = job.dedup_key.clone();
-    if let Some(mut order) = Order::find_by_id(&order_id, &database).await? {
-        abandon_relayed_order(
-            &mut order,
-            "issuance cancelled by operator",
-            actor,
-            client,
-            &database,
-            None,
-        )
-        .await?;
-    }
-    Ok(CancelJobOutcome::CancelledAndOrderAbandoned {
-        job: Box::new(job),
-        order_id,
-    })
+    // Everything else — every non-relay kind, a relay job that was already
+    // `failed`, and one whose order has been swept — gets a plain
+    // administrative row. `abandon_relayed_order` writes the
+    // `certificate_issue_failed` row on the branch above; this one is the only
+    // record the rest of them leave, so it must not be skipped.
+    crate::audit::write(
+        crate::audit::admin::job_cancelled(actor, client, &job.kind, &job.id.to_string()),
+        &database,
+    )
+    .await;
+    Ok(CancelJobOutcome::Cancelled(Box::new(job)))
 }
 
 /// [`cancel_job`] with a confirmation prompt. `Ok(None)` when the operator
@@ -592,26 +634,40 @@ pub async fn confirm_cancel_job(
     client: ClientContext,
     database: Arc<Database>,
 ) -> Result<Option<CancelJobOutcome>, CancelJobError> {
+    // Resolve the subject before prompting, the shape `confirm_delete_account`
+    // and `confirm_delete_order` already keep: an id that is not one at all
+    // used to be parsed as `Uuid::nil()`, so the operator was asked
+    // "Cancel job nope?" and only told there was no such job after answering.
+    let Some(job_id) = crate::sqlite::id::parse(id) else {
+        return Ok(Some(CancelJobOutcome::NotFound));
+    };
+    let Some(job) = Job::find_by_id(job_id, &database).await? else {
+        return Ok(Some(CancelJobOutcome::NotFound));
+    };
+
     // A prompt that names the kind, whether an order goes with it, and whether
-    // a periodic sweep stops.
-    let prompt =
-        match Job::find_by_id(crate::sqlite::id::parse(id).unwrap_or_default(), &database).await? {
-            Some(job) if job.kind == RELAY_JOB_KIND => format!(
-                "Cancel relay job {id}? Order {} will be marked invalid.",
-                job.dedup_key
-            ),
-            Some(job) if is_periodic_job_kind(&job.kind) => format!(
-                "Cancel job {id} ({})? This periodic sweep will not run again until \
+    // a periodic sweep stops. Only a job that is still `ready` will abandon an
+    // order — a `failed` one was abandoned when it was retired — so the prompt
+    // says so rather than promising a second invalidation.
+    let prompt = if job.kind == RELAY_JOB_KIND && job.status == JobStatus::Ready.as_str() {
+        format!(
+            "Cancel relay job {id}? Order {} will be marked invalid.",
+            job.dedup_key
+        )
+    } else if is_periodic_job_kind(&job.kind) {
+        format!(
+            "Cancel job {id} ({})? This periodic sweep will not run again until \
              the server restarts.",
-                job.kind
-            ),
-            Some(job) => format!("Cancel job {id} ({})?", job.kind),
-            None => format!("Cancel job {id}?"),
-        };
+            job.kind
+        )
+    } else {
+        format!("Cancel job {id} ({})?", job.kind)
+    };
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(None);
     }
-    Ok(Some(cancel_job(id, actor, client, database).await?))
+    // No metrics registry: the host CLI serves no `/metrics`.
+    Ok(Some(cancel_job(id, actor, client, None, database).await?))
 }
 
 /// Makes a job eligible to run immediately: a live `ready` job's `run_at` is
@@ -622,17 +678,37 @@ pub async fn confirm_cancel_job(
 /// The runner picks the change up within `jobs.poll_interval_ms` — this does
 /// not wake it (the CLI has no runner; the web admin's `AdminState` holds no
 /// `JobQueue`).
+///
+/// Takes `actor`/`client` and writes its own `job_advanced` audit row, the
+/// shape [`cancel_job`] and [`revoke_order`] already keep. It did not, and the
+/// three front ends each wrote that row for themselves — five call sites for
+/// one operation, on the opposite side of this layer from its sibling's, for no
+/// reason anybody had written down. Nothing is recorded when the job is not
+/// found or the transition is refused: an administrative row is a side effect
+/// of success.
 pub async fn run_job_now(
     id: &str,
+    actor: Actor,
+    client: ClientContext,
     database: Arc<Database>,
 ) -> Result<RunJobNowOutcome, sqlx::Error> {
     let Some(job_id) = crate::sqlite::id::parse(id) else {
         return Ok(RunJobNowOutcome::NotFound);
     };
     if let Some(job) = Job::advance_row(job_id, &database).await? {
+        crate::audit::write(
+            crate::audit::admin::job_advanced(actor, client, &job.id.to_string(), false),
+            &database,
+        )
+        .await;
         return Ok(RunJobNowOutcome::Nudged(Box::new(job)));
     }
     if let Some(job) = Job::revive_row(job_id, &database).await? {
+        crate::audit::write(
+            crate::audit::admin::job_advanced(actor, client, &job.id.to_string(), true),
+            &database,
+        )
+        .await;
         return Ok(RunJobNowOutcome::Revived(Box::new(job)));
     }
     Ok(match Job::find_by_id(job_id, &database).await? {
@@ -1163,7 +1239,7 @@ mod tests {
             confirm_delete_account(acct.to_string().as_str(), true, &mut reader, db.clone())
                 .await
                 .unwrap();
-        assert_eq!(outcome, DeleteOutcome::Deleted);
+        assert!(matches!(outcome, DeleteOutcome::Deleted(_)));
         assert!(
             Account::find_by_id("default", acct.to_string().as_str(), &db)
                 .await
@@ -1251,7 +1327,7 @@ mod tests {
             confirm_delete_order(order.id.to_string().as_str(), true, &mut reader, db.clone())
                 .await
                 .unwrap();
-        assert_eq!(outcome, DeleteOutcome::Deleted);
+        assert!(matches!(outcome, DeleteOutcome::Deleted(_)));
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
@@ -1846,6 +1922,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
+            None,
             db.clone(),
         )
         .await
@@ -1883,6 +1960,7 @@ mod tests {
                 ip: Some("203.0.113.7".to_string()),
                 ..ClientContext::default()
             },
+            None,
             db.clone(),
         )
         .await
@@ -1915,6 +1993,119 @@ mod tests {
         assert_eq!(rows[0].client_ip.as_deref(), Some("203.0.113.7"));
     }
 
+    /// A relay job that already **failed** was abandoned when `runner::retire`
+    /// retired it: its order is `invalid`, its mapping row is `invalid`, and
+    /// its `certificate_issue_failed` row is written. Cancelling it — the
+    /// obvious way to tidy a stuck-looking failure — must not do any of that
+    /// again.
+    ///
+    /// It did, and the damage was not the duplicate row: `UpstreamOrder::
+    /// mark_invalid` is unguarded, so the second pass overwrote
+    /// `upstream_orders.error` with "issuance cancelled by operator",
+    /// destroying the upstream CA's own message — the whole reason
+    /// `upstream order show` exists.
+    #[tokio::test]
+    async fn cancel_job_on_a_failed_relay_job_keeps_the_upstream_error_and_writes_one_row() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+
+        // Retire it the way the runner does: the order and mapping already
+        // invalid, with the upstream's own reason recorded.
+        crate::signer::relay::abandon_relayed_order(
+            &mut Order::find_by_id(order.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .unwrap(),
+            "urn:ietf:params:acme:error:rejectedIdentifier from the upstream",
+            Actor::cli(),
+            ClientContext::default(),
+            &db,
+            None,
+        )
+        .await
+        .unwrap();
+        // Claim it the way the runner does, then retire it: `abandon` is
+        // guarded on `status = 'running' AND lease_owner = ?`.
+        Job::claim_next(
+            "runner-a",
+            &[RELAY_JOB_KIND],
+            now_secs() + 60,
+            now_secs(),
+            &db,
+        )
+        .await
+        .unwrap()
+        .expect("the relay job is claimable");
+        assert!(
+            Job::abandon(job.id, "runner-a", "gave up", &db)
+                .await
+                .unwrap()
+        );
+        let rows_before = audit_rows(&db).await.len();
+
+        let outcome = cancel_job(
+            job.id.to_string().as_str(),
+            Actor::admin("root"),
+            ClientContext::default(),
+            None,
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, CancelJobOutcome::Cancelled(_)),
+            "a failed relay job has nothing left to abandon: {outcome:?}"
+        );
+
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            mapping.error.as_deref(),
+            Some("urn:ietf:params:acme:error:rejectedIdentifier from the upstream"),
+            "the upstream's own reason must survive the cancellation"
+        );
+
+        let rows = audit_rows(&db).await;
+        assert_eq!(
+            rows.len(),
+            rows_before + 1,
+            "one issuance, one certificate_issue_failed row"
+        );
+        assert_eq!(rows[0].event, "job_cancelled");
+    }
+
+    /// A relay job whose order has been swept: there is nothing to abandon, so
+    /// the outcome must not claim one was, and the cancellation still leaves a
+    /// row — `job_cancelled` is the only record this branch produces.
+    #[tokio::test]
+    async fn cancel_job_on_a_relay_job_with_no_order_says_so_and_still_audits() {
+        let db = db().await;
+        let (order, job) = relay_job(&db).await;
+        Order::delete(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap();
+
+        let outcome = cancel_job(
+            job.id.to_string().as_str(),
+            Actor::admin("root"),
+            ClientContext::default(),
+            None,
+            db.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(outcome, CancelJobOutcome::Cancelled(_)),
+            "nothing was abandoned, so nothing may say it was: {outcome:?}"
+        );
+
+        let rows = audit_rows(&db).await;
+        assert_eq!(rows.len(), 1, "the cancellation is still an admin action");
+        assert_eq!(rows[0].event, "job_cancelled");
+    }
+
     #[tokio::test]
     async fn cancel_job_refuses_a_running_job_and_leaves_the_order_alone() {
         let db = db().await;
@@ -1929,6 +2120,7 @@ mod tests {
             job.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
+            None,
             db.clone(),
         )
         .await
@@ -1953,9 +2145,15 @@ mod tests {
     async fn cancel_job_not_found_versus_not_cancellable() {
         let db = db().await;
         assert!(matches!(
-            cancel_job("nope", cli_actor(), ClientContext::default(), db.clone())
-                .await
-                .unwrap(),
+            cancel_job(
+                "nope",
+                cli_actor(),
+                ClientContext::default(),
+                None,
+                db.clone()
+            )
+            .await
+            .unwrap(),
             CancelJobOutcome::NotFound
         ));
         assert!(matches!(
@@ -1963,6 +2161,7 @@ mod tests {
                 crate::sqlite::id::mint().to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
+                None,
                 db.clone()
             )
             .await
@@ -1977,7 +2176,13 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            cancel_job(sweep.id.to_string().as_str(), cli_actor(), ClientContext::default(), db)
+            cancel_job(
+                sweep.id.to_string().as_str(),
+                cli_actor(),
+                ClientContext::default(),
+                None,
+                db,
+            )
                 .await
                 .unwrap(),
             CancelJobOutcome::NotCancellable(s) if s == "done"
@@ -2018,9 +2223,14 @@ mod tests {
 
         // ready -> Nudged.
         let sweep = sweep_job(&db).await; // run_at far future
-        let outcome = run_job_now(sweep.id.to_string().as_str(), db.clone())
-            .await
-            .unwrap();
+        let outcome = run_job_now(
+            sweep.id.to_string().as_str(),
+            Actor::cli(),
+            ClientContext::default(),
+            db.clone(),
+        )
+        .await
+        .unwrap();
         let RunJobNowOutcome::Nudged(job) = outcome else {
             panic!("expected Nudged, got {outcome:?}");
         };
@@ -2035,9 +2245,14 @@ mod tests {
         .execute(&db.pool)
         .await
         .unwrap();
-        let outcome = run_job_now(relay.id.to_string().as_str(), db.clone())
-            .await
-            .unwrap();
+        let outcome = run_job_now(
+            relay.id.to_string().as_str(),
+            Actor::cli(),
+            ClientContext::default(),
+            db.clone(),
+        )
+        .await
+        .unwrap();
         let RunJobNowOutcome::Revived(job) = outcome else {
             panic!("expected Revived, got {outcome:?}");
         };
@@ -2051,12 +2266,19 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            run_job_now(sweep.id.to_string().as_str(), db.clone()).await.unwrap(),
+            run_job_now(
+            sweep.id.to_string().as_str(),
+            Actor::cli(),
+            ClientContext::default(),
+            db.clone(),
+        ).await.unwrap(),
             RunJobNowOutcome::Refused(s) if s == "done"
         ));
 
         assert!(matches!(
-            run_job_now("nope", db).await.unwrap(),
+            run_job_now("nope", Actor::cli(), ClientContext::default(), db)
+                .await
+                .unwrap(),
             RunJobNowOutcome::NotFound
         ));
     }

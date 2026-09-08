@@ -330,11 +330,27 @@ it already ignores `disabled` for read commands.
 | --- | --- |
 | `viewer` | Read every page and API route. Act on **their own** account only: change their password, revoke their own sessions, manage their own second factor, sign out. |
 | `operator` | Everything a `viewer` can, plus every CA action: revoke a certificate, deactivate or delete an ACME account, delete an order, mint or revoke an EAB credential, run a nonce sweep. |
-| `admin` | Everything an `operator` can, plus managing other operators — disable, enable, reset a colleague's second factor, revoke one of their sessions. |
+| `admin` | Everything an `operator` can, plus the Operators surface — **reading** it as well as acting on it: disable, enable, reset a colleague's second factor, revoke one of their sessions. |
 
 A web session that tries something above its role gets `403 insufficient_role`
-(a banner in the panel, a JSON error from the API); the request never reaches
-the operation.
+(an error document in the panel, a JSON error from the API); the request never
+reaches the operation.
+
+The panel does not offer what a role cannot reach: a lower tier is shown no
+Operators nav entry, and the per-row Delete/Revoke/Deactivate controls are
+hidden from a `viewer`. That is presentation, not authorization — the write
+extractors decide either way — but a control that always answers `403` is a
+worse page than no control.
+
+**Demoting the last `admin` is refused**, since the Operators surface is
+`admin`-only on both front ends and a deployment with none could not manage
+operators from the panel at all. Promote somebody else first. Nothing is
+unrecoverable: this host can always set a role back.
+
+**A username must match `^[a-z0-9._-]+$`.** It is a URL segment on the panel,
+so a name holding `/`, `?`, `#` or a space would produce links and routes that
+never match. Existing operators are unaffected — the rule is checked when one
+is created, never when one signs in.
 
 **An operator whose row predates this feature has role `admin`.** The column is
 `NULL` for them, which reads as `admin`, so an upgrade changes nobody's
@@ -416,11 +432,14 @@ bob                   active    off    2026-08-08T13:21:18Z  2026-08-08T15:07:17
 Their page shows the same status and second-factor summary `admin user show`
 does, plus their own live sessions (see [Sessions](#sessions) below), and three
 buttons: **Disable**, **Reset second factor**, and, per session, **Revoke**.
-Every one of them asks for *your own* password again first — the same
-`check_step_up` gate a live second-factor change already runs through, since
-disabling a colleague's account or ending one of their sessions is a much
-larger blast radius than anything on your own account page, and a stolen
-cookie alone should not be sufficient authority for it.
+Every one of them asks for *your own* password again first, **whether or not
+you have a second factor**. Disabling a colleague's account or ending one of
+their sessions is a much larger blast radius than anything on your own account
+page, and a stolen cookie alone should not be sufficient authority for it —
+which is true of an operator who has enrolled no factor exactly as it is of one
+who has. (The second-factor routes on your own account page make the opposite
+trade, and deliberately: a *first* enrolment protects nothing, and a password
+prompt there would stand in front of the `admin.require_mfa` bootstrap.)
 
 ```console
 $ curl -X POST https://admin.example.com/api/operators/bob/disable \

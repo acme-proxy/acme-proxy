@@ -375,19 +375,14 @@ impl UpstreamOrderQuery {
     /// The `WHERE` shared by the page query and the count, over the aliases
     /// `u` (`upstream_orders`) and `o` (`orders`). Every value is `push_bind`.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
-        let mut separator = " WHERE ";
-        for (column, value) in [
-            ("o.profile = ", self.profile.as_deref()),
-            ("u.status = ", self.status.map(UpstreamOrderStatus::as_str)),
-        ] {
-            if let Some(value) = value {
-                builder
-                    .push(separator)
-                    .push(column)
-                    .push_bind(value.to_string());
-                separator = " AND ";
-            }
-        }
+        crate::sqlite::query::push_equalities(
+            builder,
+            crate::sqlite::query::WHERE,
+            &[
+                ("o.profile = ", self.profile.as_deref()),
+                ("u.status = ", self.status.map(UpstreamOrderStatus::as_str)),
+            ],
+        );
     }
 }
 

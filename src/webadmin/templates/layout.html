@@ -45,7 +45,13 @@
         <a href="/ui/upstream-orders" {% if nav == "upstream_orders" %}class="active"{% endif %}>Upstream</a>
         <a href="/ui/audit" {% if nav == "audit" %}class="active"{% endif %}>Audit</a>
         <a href="/ui/eab" {% if nav == "eab" %}class="active"{% endif %}>EAB</a>
+        {#- Admins only, because the page is: `/ui/operators` takes
+            `PageAdminRead` and every control on it takes `PageAdminWrite`, so
+            for a lower tier this link only ever leads to a 403. A nav entry
+            that always refuses is a worse answer than no entry. -#}
+        {% if user.role == "admin" %}
         <a href="/ui/operators" {% if nav == "operators" %}class="active"{% endif %}>Operators</a>
+        {% endif %}
         <a href="/ui/nonces" {% if nav == "nonces" %}class="active"{% endif %}>Nonces</a>
         <a href="/ui/profiles" {% if nav == "profiles" %}class="active"{% endif %}>Profiles</a>
       </nav>

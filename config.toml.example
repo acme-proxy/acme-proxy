@@ -203,6 +203,12 @@ template_dir = ""                   # ACME_PROXY_ADMIN__TEMPLATE_DIR
 #   smtp_host = "smtp.example.com"
 #   from = "acme-proxy@example.com"
 #   events = ["admin_sign_in", "admin_credential_changed"]
+#                                    # ACME_PROXY_ADMIN__NOTIFY__EMAIL__EVENTS
+#
+# Set an operator's address with `acme-proxy admin user contact <name>
+# --contact <address>`; startup warns (`admin_notify_contact_missing`) while
+# this section is enabled and some operator has none, since their messages then
+# fall back to notify.email.to — or nowhere, if that is empty too.
 
 [admin.tls]
 # HTTPS on admin.bind_address instead of cleartext — the same one-listener-not-

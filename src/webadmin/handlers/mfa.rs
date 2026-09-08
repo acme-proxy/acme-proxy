@@ -235,13 +235,9 @@ pub async fn confirm_totp(
     };
 
     state
-        .record_admin_action(&request_context, &user.username, |actor, ctx| {
-            crate::audit::admin::operator_totp_enrolled(actor, ctx, &user.username)
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::SecondFactorEnabled,
             true,
@@ -308,13 +304,9 @@ pub async fn disable_totp(
     .await?;
 
     state
-        .record_admin_action(&request_context, &user.username, |actor, ctx| {
-            crate::audit::admin::operator_totp_disabled(actor, ctx, &user.username, false)
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &user.username,
             &user,
             crate::notify::AdminCredentialChange::SecondFactorDisabled,
             true,
@@ -356,17 +348,9 @@ pub async fn regenerate_recovery_codes(
     let codes = mfa::regenerate_recovery_codes(&auth.user, state.database.clone()).await?;
 
     state
-        .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-            crate::audit::admin::operator_recovery_codes_regenerated(
-                actor,
-                ctx,
-                &auth.user.username,
-            )
-        })
-        .await;
-
-    state
-        .notify_credential_change(
+        .record_credential_change(
+            &request_context,
+            &auth.user.username,
             &auth.user,
             crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
             true,

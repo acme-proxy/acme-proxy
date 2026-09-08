@@ -31,5 +31,6 @@ pub mod id;
 pub mod job;
 pub mod nonce;
 pub mod order;
+pub mod query;
 pub mod status;
 pub mod upstream_order;

@@ -19,10 +19,12 @@ use crate::admin::{mfa, users};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
-use crate::webadmin::handlers::mfa::check_step_up;
-use crate::webadmin::handlers::operators::{find, refuse_self_target};
+use crate::webadmin::handlers::mfa::verify_current_password;
+use crate::webadmin::handlers::operators::{
+    OperatorAction, apply_operator_action, find, refuse_self_target,
+};
 use crate::webadmin::handlers::paging::{Page, PageParams};
-use crate::webadmin::pages::auth::{PageAdminWrite, PageSession};
+use crate::webadmin::pages::auth::{PageAdminRead, PageAdminWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 use crate::webadmin::session::AdminClientIp;
@@ -40,7 +42,7 @@ pub struct StepUpForm {
 pub async fn list_operators(
     State(state): State<AdminState>,
     Query(params): Query<PageParams>,
-    session: PageSession,
+    session: PageAdminRead,
 ) -> Result<Html<String>, PageError> {
     let page = params.resolve(&state.config);
     let (operators, total) = rows(page, &state).await?;
@@ -66,7 +68,7 @@ pub async fn list_operators(
 pub async fn get_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
-    session: PageSession,
+    session: PageAdminRead,
 ) -> Result<Response, PageError> {
     let target = find(&username, &state).await?;
     if target.id == session.auth.user.id {
@@ -87,44 +89,25 @@ pub async fn get_operator(
     )?
     .into_response())
 }
-
 /// `POST /ui/operators/{username}/disable`
 pub async fn disable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    let target = find(&username, &state).await?;
-    refuse_self_target(&session.auth.user, &target)?;
-    if let Some(refusal) =
-        refuse_without_step_up(&state, &session, &target, &body.password, client).await?
-    {
-        return Ok(refusal);
-    }
-
-    users::set_status(&target.username, "disabled", state.database.clone()).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, ctx| {
-                crate::audit::admin::operator_status_changed(actor, ctx, &target.username, false)
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_operator_disabled",
-                   outcome = "success",
-                   surface = "ui",
-                   username = %session.auth.user.username,
-                   target_username = %target.username);
-
-    respond_card(
+    act(
         &state,
         &session,
-        &target,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetStatus { active: false },
         flash("ok", "Operator disabled. Their sessions were revoked."),
     )
     .await
@@ -135,35 +118,23 @@ pub async fn enable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    let target = find(&username, &state).await?;
-    refuse_self_target(&session.auth.user, &target)?;
-    if let Some(refusal) =
-        refuse_without_step_up(&state, &session, &target, &body.password, client).await?
-    {
-        return Ok(refusal);
-    }
-
-    users::set_status(&target.username, "active", state.database.clone()).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, ctx| {
-                crate::audit::admin::operator_status_changed(actor, ctx, &target.username, true)
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_operator_enabled",
-                   outcome = "success",
-                   surface = "ui",
-                   username = %session.auth.user.username,
-                   target_username = %target.username);
-
-    respond_card(&state, &session, &target, flash("ok", "Operator enabled.")).await
+    act(
+        &state,
+        &session,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetStatus { active: true },
+        flash("ok", "Operator enabled."),
+    )
+    .await
 }
 
 /// `POST /ui/operators/{username}/totp/reset`
@@ -176,46 +147,15 @@ pub async fn reset_operator_totp(
     request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    let mut target = find(&username, &state).await?;
-    refuse_self_target(&session.auth.user, &target)?;
-    if let Some(refusal) =
-        refuse_without_step_up(&state, &session, &target, &body.password, client).await?
-    {
-        return Ok(refusal);
-    }
-
-    // `None`: this is being done to a *different* operator's factor, from a
-    // session that is not theirs.
-    mfa::disable_totp(&mut target, None, state.database.clone()).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, ctx| {
-                crate::audit::admin::operator_totp_disabled(actor, ctx, &target.username, true)
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_operator_totp_reset",
-                   outcome = "success",
-                   surface = "ui",
-                   username = %session.auth.user.username,
-                   target_username = %target.username);
-
-    state
-        .notify_credential_change(
-            &target,
-            crate::notify::AdminCredentialChange::SecondFactorDisabled,
-            false,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
-
-    respond_card(
+    act(
         &state,
         &session,
-        &target,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::ResetTotp,
         flash(
             "warn",
             "Their second factor and recovery codes were removed. They can \
@@ -230,100 +170,108 @@ pub async fn revoke_operator_session(
     State(state): State<AdminState>,
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: crate::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    let target = find(&username, &state).await?;
+    act(
+        &state,
+        &session,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::RevokeSession { fingerprint: &id },
+        flash("ok", "Session revoked."),
+    )
+    .await
+}
+
+/// The `/ui` spelling of the shared sequence — the twin of
+/// [`crate::webadmin::handlers::operators`]'s own `act`.
+///
+/// Identical up to two things, which is the whole of what separates the two
+/// front ends here: the password refusal is rendered as the operator card's own
+/// banner rather than returned as an error document, and success re-renders
+/// that card instead of answering `204`.
+#[allow(clippy::too_many_arguments)]
+async fn act(
+    state: &AdminState,
+    session: &PageAdminWrite,
+    username: &str,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
+    request_context: &crate::audit::RequestContext,
+    action: OperatorAction<'_>,
+    banner: Value,
+) -> Result<Response, PageError> {
+    let mut target = find(username, state).await?;
     refuse_self_target(&session.auth.user, &target)?;
     if let Some(refusal) =
-        refuse_without_step_up(&state, &session, &target, &body.password, client).await?
+        refuse_without_password(state, session, &target, password, client).await?
     {
         return Ok(refusal);
     }
 
-    let found = AdminSession::find_by_user_and_fingerprint(target.id, &id, &state.database)
-        .await?
-        .ok_or_else(|| session_not_found(&id))?;
-    AdminSession::delete(&found.token_hash, &state.database).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, ctx| {
-                crate::audit::admin::session_revoked(
-                    actor,
-                    ctx,
-                    crate::audit::admin::SessionScope::OneOf(target.username.clone()),
-                )
-            },
-        )
-        .await;
+    apply_operator_action(
+        state,
+        &session.auth.user,
+        &mut target,
+        action,
+        client,
+        headers,
+        request_context,
+        "ui",
+    )
+    .await?;
 
-    tracing::info!(event = "admin_operator_session_revoked",
-                   outcome = "success",
-                   surface = "ui",
-                   username = %session.auth.user.username,
-                   target_username = %target.username,
-                   session_fp = %id);
-
-    respond_card(&state, &session, &target, flash("ok", "Session revoked.")).await
+    respond_card(state, &target, banner).await
 }
 
-/// [`check_step_up`] with the refusal rendered as the operator card's own
-/// banner — the `account::refuse_without_password` shape: the session is
+/// [`verify_current_password`] with the refusal rendered as the operator card's
+/// own banner — the `account::refuse_without_password` shape: the session is
 /// live and the page is the right page, only this one action was refused.
-async fn refuse_without_step_up(
+///
+/// `verify_current_password`, not `check_step_up`: see
+/// [`crate::webadmin::handlers::operators`]'s module doc for why this surface
+/// asks even of a caller who has enrolled no second factor.
+async fn refuse_without_password(
     state: &AdminState,
     session: &PageAdminWrite,
     target: &AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
 ) -> Result<Option<Response>, PageError> {
-    let Err(error) = check_step_up(&session.auth.user, password, client, &state.logins) else {
+    let Err(error) = verify_current_password(&session.auth.user, password, client, &state.logins)
+    else {
         return Ok(None);
     };
-    let message = if error.status == axum::http::StatusCode::UNAUTHORIZED {
-        "That password is not correct.".to_string()
-    } else {
-        error.message.clone()
-    };
-    let mut context = detail_context(state, target).await?;
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
-    context.insert("flash".to_string(), super::flash_error(error.code, message));
-    Ok(Some(
-        (
-            error.status,
-            respond_fragment(state, "operators/_card.html", context)?,
-        )
-            .into_response(),
-    ))
+    let context = detail_context(state, target).await?;
+    Ok(Some(super::refuse_with_card(
+        state,
+        "operators/_card.html",
+        context,
+        &error,
+    )?))
 }
 
+/// Re-renders the operator card after a successful mutation.
+///
+/// Renders from the `target` [`apply_operator_action`] updated in place rather
+/// than re-reading the row: the two would agree, and the extra read is a second
+/// answer waiting to disagree. The sessions table inside it *is* re-read, since
+/// a disable or a revoke is exactly what changed it.
 async fn respond_card(
     state: &AdminState,
-    session: &PageAdminWrite,
     target: &AdminUser,
     banner: Value,
 ) -> Result<Response, PageError> {
-    // The row may have just changed under `target.username` (disable/enable
-    // do not rename it, but re-reading keeps this honest if that ever
-    // changes) -- reload rather than trust the caller's copy.
-    let reloaded = find(&target.username, state).await?;
-    let mut context = detail_context(state, &reloaded).await?;
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let mut context = detail_context(state, target).await?;
     context.insert("flash".to_string(), banner);
     Ok(respond_fragment(state, "operators/_card.html", context)?.into_response())
-}
-
-fn session_not_found(id: &str) -> PageError {
-    PageError::not_found(format!("no such session: {id}"))
 }
 
 async fn rows(page: Page, state: &AdminState) -> Result<(Vec<Value>, i64), PageError> {

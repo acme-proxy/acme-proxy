@@ -110,7 +110,11 @@ pub async fn run_jobs_command(
             .await
             .map_err(|error| CliError::failed(error.to_string()))?
             {
-                None => println!("Cancelled."),
+                // Not "Cancelled." — on a command named `cancel` that reads
+                // as "the job was cancelled", which is the opposite of what a
+                // declined prompt means. Every other confirm-gated command can
+                // use the idiom; this one cannot.
+                None => println!("Left the job alone."),
                 Some(CancelJobOutcome::NotFound) => return Err(not_found(&id)),
                 Some(CancelJobOutcome::NotCancellable(status)) => {
                     return Err(CliError::bad_request(format!(
@@ -128,7 +132,14 @@ pub async fn run_jobs_command(
                 }
             }
         }
-        JobsCommand::RunNow { id } => match admin::run_job_now(&id, database.clone()).await? {
+        JobsCommand::RunNow { id } => match admin::run_job_now(
+            &id,
+            Actor::cli(),
+            ClientContext::default(),
+            database.clone(),
+        )
+        .await?
+        {
             RunJobNowOutcome::NotFound => return Err(not_found(&id)),
             RunJobNowOutcome::Refused(status) => {
                 return Err(CliError::bad_request(format!(
@@ -136,11 +147,9 @@ pub async fn run_jobs_command(
                 )));
             }
             RunJobNowOutcome::Nudged(_) => {
-                job_advanced_row(&id, false, &database).await;
                 println!("Job {id} will run at the next queue poll (run_at set to now).");
             }
             RunJobNowOutcome::Revived(job) => {
-                job_advanced_row(&id, true, &database).await;
                 println!(
                     "Job {id} revived: status ready, attempts {}/{} (one more attempt).",
                     job.attempts, job.max_attempts
@@ -153,17 +162,6 @@ pub async fn run_jobs_command(
 
 fn not_found(id: &str) -> CliError {
     CliError::bad_request(format!("no such job: {id}"))
-}
-
-/// Records a `job_advanced` audit row for a host-CLI `run-now`. `cancel` is
-/// audited inside [`crate::admin::ops::cancel_job`].
-async fn job_advanced_row(id: &str, revived: bool, database: &Database) {
-    let (actor, client) = crate::audit::admin::cli_actor();
-    crate::audit::write(
-        crate::audit::admin::job_advanced(actor, client, id, revived),
-        database,
-    )
-    .await;
 }
 
 #[cfg(test)]

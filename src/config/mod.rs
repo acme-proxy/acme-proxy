@@ -208,6 +208,15 @@ const LIST_KEYS: &[&str] = &[
     "notify.email.events",
     "notify.webhook_enabled",
     "notify.custom_enabled",
+    // `[admin.notify]` is a whole `NotifyConfig` (see `AdminConfig::notify`),
+    // so every list field above has a twin here. Unregistered, the documented
+    // `ACME_PROXY_ADMIN__NOTIFY__…` spellings arrive as bare strings and fail
+    // to deserialize into a `Vec`.
+    "admin.notify.enabled",
+    "admin.notify.email.to",
+    "admin.notify.email.events",
+    "admin.notify.webhook_enabled",
+    "admin.notify.custom_enabled",
     "meta.caa_identities",
     "proxy.no_proxy",
 ];
@@ -237,6 +246,11 @@ impl Config {
             "notify.email.events" => &self.notify.email.events,
             "notify.webhook_enabled" => &self.notify.webhook_enabled,
             "notify.custom_enabled" => &self.notify.custom_enabled,
+            "admin.notify.enabled" => &self.admin.notify.enabled,
+            "admin.notify.email.to" => &self.admin.notify.email.to,
+            "admin.notify.email.events" => &self.admin.notify.email.events,
+            "admin.notify.webhook_enabled" => &self.admin.notify.webhook_enabled,
+            "admin.notify.custom_enabled" => &self.admin.notify.custom_enabled,
             "meta.caa_identities" => &self.meta.caa_identities,
             "proxy.no_proxy" => &self.proxy.no_proxy,
             _ => return None,
@@ -284,6 +298,11 @@ impl Config {
             ("filter.check", CHECK_LIST_KEYS),
             ("notify.custom", &["args", "events"]),
             ("notify.webhook", &["events"]),
+            // `[admin.notify]`'s twins. `env_segment` turns the dots into
+            // `__`, so `ACME_PROXY_ADMIN__NOTIFY__CUSTOM__<ENTRY>__ARGS` is
+            // scanned for exactly as the per-profile spelling is.
+            ("admin.notify.custom", &["args", "events"]),
+            ("admin.notify.webhook", &["events"]),
         ];
         let scopes = std::iter::once(None).chain(profiles_in_env.iter().map(Some));
         for profile in scopes {
@@ -1565,6 +1584,60 @@ mod tests {
         assert_eq!(config.filter.forwarded_header, "x-forwarded-for");
     }
 
+    /// `[admin.notify]` is a whole `NotifyConfig` hung off `[admin]`, and the
+    /// book, `config.toml.example` and `CLAUDE.md` all document its keys under
+    /// `ACME_PROXY_ADMIN__NOTIFY__…`. Every one of its list fields therefore
+    /// needs its own `LIST_KEYS` entry and its own `NAMED_TABLES` row — without
+    /// them the values arrive as bare strings and `Config::load` refuses them,
+    /// which is what happened until this test existed.
+    ///
+    /// Driven through the documented spellings rather than through `LIST_KEYS`,
+    /// so it fails for the named-table half too (which that registry does not
+    /// cover at all).
+    #[test]
+    fn the_admin_notify_section_parses_from_the_environment() {
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_ADMIN__NOTIFY__ENABLED", "email,webhook,custom"),
+            (
+                "ACME_PROXY_ADMIN__NOTIFY__EMAIL__EVENTS",
+                "admin_sign_in,admin_credential_changed",
+            ),
+            ("ACME_PROXY_ADMIN__NOTIFY__EMAIL__TO", "ops@example.com"),
+            ("ACME_PROXY_ADMIN__NOTIFY__WEBHOOK_ENABLED", "slack"),
+            ("ACME_PROXY_ADMIN__NOTIFY__CUSTOM_ENABLED", "pager"),
+            (
+                "ACME_PROXY_ADMIN__NOTIFY__WEBHOOK__SLACK__EVENTS",
+                "admin_sign_in",
+            ),
+            (
+                "ACME_PROXY_ADMIN__NOTIFY__CUSTOM__PAGER__ARGS",
+                "--now,--loud",
+            ),
+        ]);
+
+        let config = Config::load().expect("[admin.notify] must load from the environment");
+
+        assert_eq!(config.admin.notify.enabled, ["email", "webhook", "custom"]);
+        assert_eq!(
+            config.admin.notify.email.events,
+            ["admin_sign_in", "admin_credential_changed"]
+        );
+        assert_eq!(config.admin.notify.email.to, ["ops@example.com"]);
+        assert_eq!(config.admin.notify.webhook_enabled, ["slack"]);
+        assert_eq!(config.admin.notify.custom_enabled, ["pager"]);
+        assert_eq!(
+            config.admin.notify.webhook["slack"].events,
+            ["admin_sign_in"]
+        );
+        assert_eq!(
+            config.admin.notify.custom["pager"].args,
+            ["--now", "--loud"]
+        );
+
+        // The per-profile `[notify]` is untouched by any of it.
+        assert!(config.notify.enabled.is_empty());
+    }
+
     #[test]
     fn every_registered_list_key_round_trips_through_the_environment() {
         let known = LIST_KEYS
@@ -1578,7 +1651,7 @@ mod tests {
         );
         assert_eq!(
             LIST_KEYS.len(),
-            21,
+            26,
             "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
              config.toml.example and this count together"
         );

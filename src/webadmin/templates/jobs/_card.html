@@ -64,6 +64,10 @@
   {% endif %}
 
   {% if detail.status == "ready" or detail.status == "failed" %}
+    {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+        renders as the fragment following a mutation, and the caller there has
+        already passed a write extractor, so undefined means "show". -#}
+    {% if not user is defined or user.role != "viewer" %}
     <div class="panel">
       <h2>Danger zone</h2>
       <div class="actions">
@@ -81,5 +85,6 @@
         </button>
       </div>
     </div>
+    {% endif %}
   {% endif %}
 </div>

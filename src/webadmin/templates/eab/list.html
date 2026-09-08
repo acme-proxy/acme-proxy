@@ -8,6 +8,10 @@
     with it.
   </p>
 
+  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
+      renders as the fragment following a mutation, and the caller there has
+      already passed a write extractor, so undefined means "show". -#}
+  {% if not user is defined or user.role != "viewer" %}
   <div class="panel">
     <h2>Mint a credential</h2>
     <form class="row" hx-post="/ui/eab" hx-target="#eab-created">
@@ -29,6 +33,7 @@
       </div>
     </form>
   </div>
+  {% endif %}
 
   {#- Empty until a credential is minted; the response fills it and refreshes
       the table below out of band. -#}
