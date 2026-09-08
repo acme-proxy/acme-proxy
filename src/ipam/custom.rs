@@ -137,7 +137,12 @@ impl Ipam for CustomIpamBackend {
                 error @ (ScriptError::Spawn { .. }
                 | ScriptError::Serialize(_)
                 | ScriptError::Wait(_)
-                | ScriptError::Timeout(_)),
+                | ScriptError::Timeout(_)
+                // An `IpamError` like the rest, and for this module's central
+                // reason: only `AddressNames::Unknown` is inventory-sourced
+                // denial. A truncated name list read as "these are the names"
+                // would refuse names the inventory really does hold.
+                | ScriptError::OutputTooLarge { .. }),
             ) => return Err(IpamError(format!("custom IPAM script {error}"))),
         };
 

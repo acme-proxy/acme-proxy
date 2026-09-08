@@ -3,6 +3,39 @@
 //! The script is told which named check invoked it (`ACME_FILTER_CHECK_NAME`),
 //! so one script can serve several `[filter.check.<name>]` entries and branch
 //! on which one it is.
+//!
+//! ## `ACME_FILTER_IDENTIFIERS` carries structure, so its values are checked
+//!
+//! The identifier list reaches a script twice: as typed JSON on stdin, where
+//! each entry is its own object, and as `ACME_FILTER_IDENTIFIERS`, which is the
+//! values comma-joined into one string. The second has no escaping, so a value
+//! *containing* a comma reads to a script splitting on one as two names — and a
+//! value containing a newline does the same to a script reading the variable
+//! line-wise.
+//!
+//! At the `newOrder` stage that cannot happen: every identifier has been through
+//! `handlers::helpers::well_formed_name`, whose own doc comment names this
+//! variable as the reason it refuses delimiters. At the **CSR** stage it can:
+//! `csr_identifiers` projects the subject `CommonName` verbatim as a `cn` entry
+//! and renders an unreadable one with `format!("{:?}")` as an `other` entry, and
+//! neither is shape-checked — `check_csr_matches_order` only refuses a CN that
+//! *looks like* a DNS name, so one carrying a delimiter is waved through as an
+//! ordinary human label.
+//!
+//! [`delimiter_free`] is where that gap is closed, and it is closed **here**
+//! rather than at the boundary for three reasons: nothing changes for a
+//! deployment with no `custom` check, since the value stays intact for
+//! `filter::identifiers`' `deny` regexes (which reach `cn`) and for the JSON on
+//! stdin, which is typed and stays the contract for structured data; it covers
+//! the `Debug`-rendered `other` variant, which a rule on the CN text alone would
+//! miss; and it is fail-closed at the one sink that carries structure over a
+//! channel with no way to escape it.
+//!
+//! The other two comma-joined hook variables need no such guard, and it is worth
+//! knowing why rather than rediscovering it: `ACME_SIGNER_IDENTIFIERS`
+//! ([`crate::signer::custom`]) and `ACME_NOTIFY_IDENTIFIERS`
+//! ([`crate::notify::custom`]) are both joined from the *order*'s identifiers,
+//! which `well_formed_name` has already refused a delimiter in.
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -91,7 +124,12 @@ impl CustomScriptFilter {
                 error @ (ScriptError::Spawn { .. }
                 | ScriptError::Serialize(_)
                 | ScriptError::Wait(_)
-                | ScriptError::Timeout(_)),
+                | ScriptError::Timeout(_)
+                // A script that flooded its output decided nothing about this
+                // request either — it is a broken script, which is the server's
+                // problem and not the client's, so it joins the others rather
+                // than becoming a denial.
+                | ScriptError::OutputTooLarge { .. }),
             ) => return Verdict::Undecided(format!("custom filter {error}")),
         };
 
@@ -138,6 +176,13 @@ impl Check for CustomScriptFilter {
     }
 
     async fn check_identifiers(&self, context: &IdentifierContext<'_>) -> Verdict {
+        // Before the join, and before the script is spawned: a value the
+        // variable cannot express unambiguously is refused rather than handed
+        // over to be misread. See the module doc for why this is the sink's job.
+        if let Some(verdict) = delimiter_free(context.identifiers) {
+            return verdict;
+        }
+
         let client_ip_str = context
             .client_ip
             .map(|ip| super::canonical(ip).to_string())
@@ -169,6 +214,44 @@ impl Check for CustomScriptFilter {
 
         self.run_script(&envs, &payload).await
     }
+}
+
+/// [`Verdict::Fail`] naming the first identifier whose value cannot survive
+/// `ACME_FILTER_IDENTIFIERS`, or `None` when every value can.
+///
+/// Two characters, for the two ways a script reads that variable: a comma,
+/// which is the join separator, and any control character — which is a newline
+/// for a `while read` loop, and a `NUL` for the `execve` that would otherwise
+/// fail with an opaque `InvalidInput` and cost a retryable 500 instead of a
+/// clear refusal.
+///
+/// **The refusal names the identifier's type, never its value.** The value is
+/// caller-chosen text, and this string reaches an ACME `badCSR` problem document
+/// that goes back over the wire; a server that echoes arbitrary attacker text is
+/// a server whose error documents are worth crafting. The type (`cn`, `other`,
+/// `dns`) is enough for an operator, and the full identifier list is already in
+/// the `certificate_issue_failed` audit row `post_finalize` writes for this arm.
+///
+/// [`Verdict::Fail`] and not [`Verdict::Undecided`]: nothing failed to be
+/// evaluated here — this CSR asks for something the policy cannot express, which
+/// is a refusal the client can act on (`badCSR`, 400) rather than a server-side
+/// unknown it would retry against for ever.
+fn delimiter_free(identifiers: &[crate::sqlite::order::Identifier]) -> Option<Verdict> {
+    let offender = identifiers
+        .iter()
+        .find(|identifier| identifier.value.contains(',') || contains_control(&identifier.value))?;
+
+    Some(Verdict::Fail(format!(
+        "{} identifier carries a delimiter or a control character, which \
+         ACME_FILTER_IDENTIFIERS cannot express unambiguously",
+        offender.typ
+    )))
+}
+
+/// Whether `value` holds a character that would break a line- or NUL-delimited
+/// reading of it. Its own function so [`delimiter_free`] reads as the rule it is.
+fn contains_control(value: &str) -> bool {
+    value.chars().any(char::is_control)
 }
 
 #[cfg(test)]
@@ -428,5 +511,125 @@ exit 0
             !marker.exists(),
             "the script survived the timeout and continued executing"
         );
+    }
+
+    // --------------------------------------------- ACME_FILTER_IDENTIFIERS
+
+    /// An identifier list a script would misread is refused **before** the
+    /// script runs, so the misreading never happens.
+    ///
+    /// The reachable case is a CSR `CommonName`: `check_csr_matches_order`
+    /// refuses one shaped like a DNS name the order does not cover, but a CN
+    /// holding a comma is not shaped like a DNS name at all, so it passes as an
+    /// ordinary human label and lands in this list. Table-driven over the two
+    /// characters and the two identifier types that can carry them.
+    #[tokio::test]
+    async fn an_identifier_carrying_a_delimiter_is_refused_before_the_script_runs() {
+        let dir = TempDir::new("filter-custom");
+        // Exits 0: if the guard did not fire, this would answer `Pass` and the
+        // assertion below would fail on the verdict rather than on the message.
+        let cfg = write_script(&dir, "pass.sh", "#!/bin/sh\nexit 0\n");
+        let filter = CustomScriptFilter::from_settings("hook", &cfg).unwrap();
+
+        let cases = [
+            (
+                "a comma in a cn",
+                "cn",
+                "evil.example.com,other.example.com",
+            ),
+            (
+                "a newline in a cn",
+                "cn",
+                "ok.example.com\nevil.example.com",
+            ),
+            (
+                "a carriage return",
+                "cn",
+                "ok.example.com\revil.example.com",
+            ),
+            ("a NUL", "cn", "ok.example.com\0evil.example.com"),
+            // The `Debug`-rendered variant `csr_identifiers` produces for a
+            // CommonName it cannot read as text — a shape no rule on the CN
+            // string itself would ever see.
+            ("a comma in an other", "other", "BmpString(\"a\", \"b\")"),
+        ];
+
+        for (label, typ, value) in cases {
+            let identifiers = vec![Identifier::new(typ, value)];
+            let ctx = IdentifierContext {
+                client_ip: "127.0.0.1".parse().ok(),
+                account_id: "acc_1",
+                stage: IdentifierStage::Csr,
+                identifiers: &identifiers,
+                eab: None,
+            };
+
+            match filter.check_identifiers(&ctx).await {
+                Verdict::Fail(detail) => {
+                    assert!(detail.starts_with(typ), "case `{label}`: {detail}");
+                    // The value is caller-chosen and this string reaches a
+                    // `badCSR` problem document on the wire.
+                    assert!(
+                        !detail.contains("evil.example.com") && !detail.contains("BmpString"),
+                        "case `{label}` echoed the value back: {detail}"
+                    );
+                }
+                other => panic!("case `{label}`: expected Fail, got {other:?}"),
+            }
+        }
+    }
+
+    /// The other direction, and the one that decides whether this rule is worth
+    /// having: it must not become a de-facto "a CommonName has to be a DNS
+    /// name". rcgen's own default CN is a sentence with spaces in it, and a
+    /// certificate whose subject says `Example Corp Issuing CA` is entirely
+    /// ordinary — neither carries a delimiter, so neither is this check's
+    /// business.
+    #[tokio::test]
+    async fn an_ordinary_human_label_common_name_still_reaches_the_script() {
+        let dir = TempDir::new("filter-custom");
+        let cfg = write_script(&dir, "pass.sh", "#!/bin/sh\nexit 0\n");
+        let filter = CustomScriptFilter::from_settings("hook", &cfg).unwrap();
+
+        for value in [
+            "rcgen self signed cert",
+            "Example Corp Issuing CA",
+            "ok.example.com",
+            "a name with  double  spaces",
+        ] {
+            let identifiers = vec![
+                Identifier::dns("ok.example.com"),
+                Identifier::new("cn", value),
+            ];
+            let ctx = IdentifierContext {
+                client_ip: "127.0.0.1".parse().ok(),
+                account_id: "acc_1",
+                stage: IdentifierStage::Csr,
+                identifiers: &identifiers,
+                eab: None,
+            };
+            assert_eq!(
+                filter.check_identifiers(&ctx).await,
+                Verdict::Pass,
+                "`{value}` must still reach the script"
+            );
+        }
+    }
+
+    /// The unit beneath both: `None` is "every value survives the join".
+    #[test]
+    fn delimiter_free_answers_none_for_a_list_the_variable_can_carry() {
+        assert!(delimiter_free(&[]).is_none());
+        assert!(
+            delimiter_free(&[
+                Identifier::dns("a.example.com"),
+                Identifier::new("ip", "192.0.2.1"),
+                Identifier::new("cn", "Example Corp"),
+            ])
+            .is_none()
+        );
+        // A tab is a control character, so it is refused with the rest — a
+        // script reading fields off a line would split on it.
+        assert!(delimiter_free(&[Identifier::new("cn", "a\tb")]).is_some());
     }
 }

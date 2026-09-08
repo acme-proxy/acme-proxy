@@ -292,6 +292,16 @@ const MAX_DNS_LABEL: usize = 63;
 ///   on, where `[filter]` is the only access control there is, that is a
 ///   deny-list bypass.
 ///
+/// **This covers the *order*'s identifiers and only those.** It is applied by
+/// `post_new_order`, so it reaches everything derived from an order — including
+/// the `dns` entries [`csr_identifiers`] projects, which
+/// [`check_csr_matches_order`] has already required to equal them. It does *not*
+/// reach the `cn` and `other` entries that projection adds, which come from the
+/// CSR's subject and are arbitrary text by nature; the delimiter half of this
+/// rule is restated for them by `filter::custom::delimiter_free`, at the one
+/// sink that cares. The `http_01` half needs no such twin — a challenge is
+/// validated against an order identifier, never against a CSR subject.
+///
 /// `_` is deliberately allowed: this server exists to serve internal networks,
 /// where underscore labels are ordinary. The point is to reject delimiters and
 /// control characters, not to enforce a public CA's hostname policy.

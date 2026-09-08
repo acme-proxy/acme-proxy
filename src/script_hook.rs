@@ -10,10 +10,11 @@
 //!
 //! What they shared was a *security* contract — clear the environment so a
 //! script cannot read the RFC 2136 TSIG secret or the SMTP password, restore a
-//! minimal `PATH`, kill the child when its deadline passes — written out three
-//! times, token for token. That is exactly the kind of thing that has to exist
-//! once: a hardening applied to one copy is silently absent from the other two,
-//! and nobody reviewing one of them can tell.
+//! minimal `PATH`, kill the child when its deadline passes, and bound how much
+//! it may write ([`MAX_SCRIPT_OUTPUT_BYTES`]) — written out three times, token
+//! for token. That is exactly the kind of thing that has to exist once: a
+//! hardening applied to one copy is silently absent from the other two, and
+//! nobody reviewing one of them can tell.
 
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -28,6 +29,25 @@ use tracing::debug;
 /// `#!/usr/bin/env …` would not find its interpreter.
 pub(crate) const DEFAULT_PATH: &str =
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Most a script may write to one stream before it is refused.
+///
+/// Per stream, not combined, so a script that logs to stderr does not spend the
+/// budget its answer needs on stdout.
+///
+/// The value is generous on purpose — every legitimate answer is far below it. A
+/// signer's PEM chain is kilobytes; a megabyte of IPAM names is on the order of
+/// twenty thousand of them. What the ceiling exists for is the runaway case: a
+/// script in a loop, or one that `cat`s something it should not, whose output
+/// this process would otherwise buffer whole. The hook timeout bounds how *long*
+/// that goes on and says nothing about how large it gets, which on the `ipam`
+/// and `filter` hooks is a per-request cost.
+///
+/// Deliberately its own constant rather than `http_client::MAX_RESPONSE_BYTES`,
+/// which happens to carry the same number: that one is a ceiling on a remote
+/// party's HTTP body and this is a ceiling on a local child's pipe, and a future
+/// reason to move one is not a reason to move the other.
+pub(crate) const MAX_SCRIPT_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// An operator-supplied script, and the budget it runs under.
 #[derive(Debug, Clone)]
@@ -57,6 +77,14 @@ pub(crate) enum ScriptError {
     Wait(String),
     #[error("script timed out after {} ms", .0.as_millis())]
     Timeout(Duration),
+    /// The script wrote more than [`MAX_SCRIPT_OUTPUT_BYTES`] to one stream.
+    ///
+    /// An error rather than a silent truncation, and the `signer` hook is why:
+    /// a PEM chain cut off in the middle would arrive as an unparsable
+    /// certificate, and the operator would go looking at their CA instead of at
+    /// the script. A named refusal says which it was.
+    #[error("script wrote more than {limit} bytes to {stream}")]
+    OutputTooLarge { limit: usize, stream: &'static str },
 }
 
 /// What a script answered, plus whether it ever read the question.
@@ -139,6 +167,15 @@ impl ScriptHook {
             detail: error.to_string(),
         })?;
 
+        // Taken out of the child before anything awaits on it: `wait()` needs
+        // `&mut child`, and the reads below have to run *concurrently* with it
+        // rather than after. A script that fills a pipe buffer nobody is
+        // draining blocks in `write` and never exits, so reading only once the
+        // child had exited would deadlock until the timeout on exactly the
+        // output this function exists to collect.
+        let stdout_pipe = child.stdout.take();
+        let stderr_pipe = child.stderr.take();
+
         let mut stdin_error = None;
         if let ScriptStdin::Json(payload) = stdin {
             let bytes =
@@ -162,12 +199,39 @@ impl ScriptHook {
             }
         }
 
-        match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
+        // `wait_with_output()`'s job, minus its unbounded appetite: it collects
+        // both pipes with no ceiling, which on the `filter` and `ipam` hooks is
+        // a per-request allocation an operator script gets to choose the size
+        // of. The three futures are joined rather than sequenced for the reason
+        // given at the `take()` above.
+        let collect = async {
+            let (status, stdout, stderr) = tokio::try_join!(
+                async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| ScriptError::Wait(e.to_string()))
+                },
+                read_capped(stdout_pipe, "stdout"),
+                read_capped(stderr_pipe, "stderr"),
+            )?;
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        };
+
+        match tokio::time::timeout(self.timeout, collect).await {
             Ok(Ok(output)) => Ok(ScriptOutcome {
                 output,
                 stdin_error,
             }),
-            Ok(Err(error)) => Err(ScriptError::Wait(error.to_string())),
+            Ok(Err(error)) => Err(error),
+            // The child is killed here rather than left running: `kill_on_drop`
+            // is set above and `child` is dropped as this future is. That covers
+            // the `OutputTooLarge` arm too, where the script is very likely
+            // still writing into a pipe this side has stopped reading.
             Err(_) => Err(ScriptError::Timeout(self.timeout)),
         }
     }
@@ -199,6 +263,39 @@ impl ScriptHook {
             None => base,
         }
     }
+}
+
+/// Reads one of the child's pipes to EOF, refusing it past
+/// [`MAX_SCRIPT_OUTPUT_BYTES`].
+///
+/// `take(limit + 1)` rather than `take(limit)` is what makes "exactly at the
+/// limit" distinguishable from "over it": a reader capped at the limit hands
+/// back a full buffer in both cases and cannot tell whether more was waiting.
+///
+/// `None` — a pipe already taken, which cannot happen from [`ScriptHook::run`]
+/// since both are `Stdio::piped()` — reads as empty rather than as an error,
+/// matching what `wait_with_output` does with an absent pipe.
+async fn read_capped(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin>,
+    stream: &'static str,
+) -> Result<Vec<u8>, ScriptError> {
+    use tokio::io::AsyncReadExt;
+
+    let Some(pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+
+    let limit = MAX_SCRIPT_OUTPUT_BYTES;
+    let mut buffer = Vec::new();
+    pipe.take(limit as u64 + 1)
+        .read_to_end(&mut buffer)
+        .await
+        .map_err(|error| ScriptError::Wait(error.to_string()))?;
+
+    if buffer.len() > limit {
+        return Err(ScriptError::OutputTooLarge { limit, stream });
+    }
+    Ok(buffer)
 }
 
 #[cfg(test)]
@@ -384,5 +481,91 @@ mod tests {
             String::from_utf8_lossy(&outcome.output.stdout).trim(),
             "first|second"
         );
+    }
+
+    // ------------------------------------------------------- the output cap
+
+    /// A script that floods a stream is refused rather than buffered whole.
+    ///
+    /// Both streams, because they are read by two separate futures and a cap
+    /// applied to only one of them is exactly the shape this would regress into.
+    /// The generous timeout is deliberate: it must be the *size* that refuses
+    /// this, not the clock, or the test would pass against no cap at all.
+    #[tokio::test]
+    async fn a_script_that_floods_a_stream_is_refused_rather_than_buffered() {
+        let dir = TempDir::new("script-hook");
+        // `yes` is a tight loop with no sleep in it, so this reaches the cap in
+        // well under the timeout on any machine that can run the suite.
+        let cases = [
+            ("stdout", "#!/bin/sh\nyes 0123456789abcdef\n"),
+            ("stderr", "#!/bin/sh\nyes 0123456789abcdef >&2\n"),
+        ];
+
+        for (stream, body) in cases {
+            let script = write_script(&dir, &format!("flood-{stream}.sh"), body);
+            let error = hook(&script, 30_000)
+                .run(&[], ScriptStdin::Null)
+                .await
+                .unwrap_err();
+
+            match error {
+                ScriptError::OutputTooLarge { limit, stream: got } => {
+                    assert_eq!(limit, MAX_SCRIPT_OUTPUT_BYTES);
+                    assert_eq!(got, stream, "the wrong stream was named");
+                }
+                other => panic!("expected OutputTooLarge for {stream}, got {other:?}"),
+            }
+        }
+    }
+
+    /// The other side of the boundary, and the one that decides whether the cap
+    /// is usable: output an honest script produces must still arrive whole.
+    ///
+    /// A quarter of the ceiling is far more than any real hook writes — the
+    /// largest is a signer's PEM chain — so a cap that started truncating
+    /// legitimate answers would show up here.
+    #[tokio::test]
+    async fn output_under_the_cap_arrives_intact() {
+        let dir = TempDir::new("script-hook");
+        let count = MAX_SCRIPT_OUTPUT_BYTES / 4 / 16;
+        let script = write_script(
+            &dir,
+            "bulk.sh",
+            &format!("#!/bin/sh\nyes 0123456789abcde | head -n {count}\nexit 0\n"),
+        );
+
+        let outcome = hook(&script, 30_000).run(&[], ScriptStdin::Null).await;
+        let outcome = outcome.expect("output under the cap must not be refused");
+
+        assert!(outcome.output.status.success());
+        // 15 payload bytes plus a newline, per line.
+        assert_eq!(outcome.output.stdout.len(), count * 16);
+        assert!(outcome.output.stderr.is_empty());
+    }
+
+    /// The pipes are read *while* the child runs, not after it exits.
+    ///
+    /// This is what `wait_with_output` did for free and what taking the pipes
+    /// out by hand can quietly lose: a script writing more than one pipe buffer
+    /// (64 KiB on Linux) blocks in `write` until somebody drains it, so a
+    /// `wait()` that ran to completion first would deadlock here until the
+    /// timeout — and report `Timeout`, not this output.
+    #[tokio::test]
+    async fn a_script_writing_more_than_one_pipe_buffer_does_not_deadlock() {
+        let dir = TempDir::new("script-hook");
+        // 512 KiB, comfortably past any platform's pipe buffer and comfortably
+        // under the cap.
+        let count = 32_768;
+        let script = write_script(
+            &dir,
+            "chatty.sh",
+            &format!("#!/bin/sh\nyes 0123456789abcde | head -n {count}\nexit 0\n"),
+        );
+
+        let outcome = hook(&script, 10_000)
+            .run(&[], ScriptStdin::Null)
+            .await
+            .expect("a script filling the pipe buffer must not time out");
+        assert_eq!(outcome.output.stdout.len(), count * 16);
     }
 }

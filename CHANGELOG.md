@@ -170,6 +170,57 @@ migrated configuration before restarting.
 
 ### Security
 
+- **The `webhook` notifier caps the response body it reads.** It collected the
+  whole of whatever the receiving endpoint sent, to take a 200-character excerpt
+  off the front of it for an error message. Every other outbound client in the
+  tree already stops at `MAX_RESPONSE_BYTES` (1 MiB) — `ipam::http`,
+  `signer::relay::client`, `challenge::http_01` — and this one now does too,
+  reusing the shared `error_excerpt` while it is there. The delivery timeout
+  bounded how *long* a hostile or malfunctioning receiver could hold the
+  connection open and said nothing about how much memory it could spend, once
+  per attempt, across `jobs.max_concurrent` workers and `jobs.max_attempts`
+  retries. A body over the cap now reads as "no diagnosis available"; the
+  response status alone still decides the delivery outcome and the
+  retryable/permanent split, exactly as before.
+
+- **An identifier that would be misread by a `custom` filter script is now
+  refused.** `ACME_FILTER_IDENTIFIERS` comma-joins the identifier values into
+  one string with no escaping, and `well_formed_name` is documented as refusing
+  delimiters for exactly that reason — but it validates the *order*'s
+  identifiers, and the CSR stage passes a list that also carries the certificate
+  request's subject `CommonName`. A CN is arbitrary text and is checked only for
+  looking like a DNS name the order does not cover, so one holding a comma or a
+  newline went through as an ordinary human label and reached a script as extra
+  entries. Such a request is now `badCSR`, refused before the script is spawned;
+  the refusal names the identifier's *type* and never echoes its value. Nothing
+  changes without a `custom` check in the rule set: the value is untouched for
+  `filter.identifiers`' `deny` patterns and for the typed JSON on stdin.
+  `ACME_SIGNER_IDENTIFIERS` and `ACME_NOTIFY_IDENTIFIERS` needed no equivalent —
+  both join order identifiers, which are already validated.
+
+- **`pemfile::write_atomic` creates its scratch file with `O_EXCL`.** It opened
+  the path with `create(true)`, which applies the requested mode only when it
+  actually creates the file and which follows a symlink when it does not. A
+  leftover scratch file therefore decided the permissions of a file the function
+  documents as owner-controlled, and one planted as a symlink redirected the
+  write — which for the CRL means somebody able to write the server's data
+  directory but not read it could choose where relying parties' revocation data
+  went. The path is now unlinked and then created with `create_new`, so the mode
+  always applies and a link is removed rather than followed. A stale temporary
+  still does not wedge later writes, which is what the previous spelling was for.
+  (The two tests covering this pre-created `path.with_extension("tmp")`, which is
+  not the name the function uses — they were passing against a path nothing
+  touched, and now use the real one.)
+
+- **A `custom` hook's output is bounded.** `ScriptHook` read the child's stdout
+  and stderr with no ceiling, so a script in a loop cost memory limited only by
+  the hook timeout — on the `filter` and `ipam` hooks, once per request. Each
+  stream is now capped at 1 MiB and a script past it fails with a named error
+  rather than being silently truncated, which on the `signer` hook would have
+  surfaced as an unparsable certificate. The new `ScriptError::OutputTooLarge`
+  joins the existing variants at both call sites that match them one by one: a
+  retryable server-side failure, never a denial and never an inventory answer.
+
 - **The `/operators` surface asks for the caller's password even when they have
   no second factor.** It ran `check_step_up`, which passes unconditionally for
   an operator with no factor — correct on the MFA routes, where a first
@@ -293,6 +344,17 @@ migrated configuration before restarting.
   the panel does not sign its own operator out mid-edit.
 
 ### Documentation
+
+- **The HSTS scope of the web admin's own host is now spelled out.** Every
+  response carries `includeSubDomains`, which is what ASVS 3.4.1 asks for at L2
+  and is right when the panel has a host of its own — and is a wider commitment
+  than an operator may realise when `admin.base_url` names an apex, since it
+  then pins every sibling subdomain to HTTPS for a year and is not scoped by
+  port. The web admin page now says to give the panel a dedicated name and why
+  there is no configuration key for the header, and the ASVS row links to it. No
+  code change: gating the header on TLS would have removed only a header a
+  browser already ignores over plain HTTP, and would not have touched the case
+  that actually bites.
 
 - **A secret rotation schedule is now documented** — ASVS 5.0 V13.1.4, the last
   open L3 configuration gap, and the reason V11.1.1 (documented key lifecycle)

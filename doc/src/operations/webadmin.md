@@ -96,6 +96,29 @@ key is created `0600`. The paths default to `admin.pem`/`admin.key`, separate
 from the ACME listener's — the two answer to different names and should not
 share a certificate by accident.
 
+#### Give the panel its own host name
+
+Every response carries `Strict-Transport-Security: max-age=31536000;
+includeSubDomains`. Once a browser has seen that over HTTPS it will refuse plain
+HTTP **for the whole host, and for every name under it, for a year** — which is
+the point when the panel has a host of its own, and a trap when it does not.
+
+The scope is the host in `admin.base_url`, so
+`base_url = "https://admin.example.com:3001"` commits `admin.example.com` and
+anything below it, and nothing else. But
+`base_url = "https://example.com:3001"` commits every subdomain of
+`example.com`, including services that have nothing to do with this server and
+may not speak HTTPS at all. HSTS is not scoped by port, so running on `:3001`
+does not narrow it.
+
+Give the panel a name of its own. There is no configuration key for the header:
+weakening it for everyone is the wrong trade when a dedicated host name costs a
+DNS record.
+
+Nothing to worry about while `admin.tls.enabled` is `false` and the bind is
+loopback — a browser ignores the header entirely over plain HTTP (RFC 6797
+§7.2), which is why it is emitted unconditionally rather than gated.
+
 ## Authentication
 
 Sign-in exchanges a username and password for an opaque session token:

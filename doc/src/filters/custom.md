@@ -65,7 +65,23 @@ otherwise — the script is called for both.
 | `ACME_FILTER_CLIENT_IP` | As above |
 | `ACME_FILTER_ACCOUNT_ID` | The authenticated ACME account |
 | `ACME_FILTER_STAGE` | `newOrder` or `CSR` |
-| `ACME_FILTER_IDENTIFIERS` | Comma-joined identifier values |
+| `ACME_FILTER_IDENTIFIERS` | Comma-joined identifier values. Guaranteed free of commas and control characters — see below. |
+
+`ACME_FILTER_IDENTIFIERS` is safe to split on `,` and safe to read line by
+line. A request whose identifiers could not survive that join is refused before
+the script runs, with `badCSR`, so a script never has to defend against it.
+
+That guarantee needs stating because it is not free. At the `newOrder` stage
+every identifier is a DNS name the server has already validated. At the `CSR`
+stage the list also carries the certificate request's subject `CommonName`,
+which is arbitrary text — routinely a human label such as `Example Corp
+Issuing CA` rather than a host name, and therefore not validated as one. A
+`CommonName` holding a comma or a newline would otherwise reach the script as
+extra entries.
+
+The typed JSON on stdin has no such ambiguity and is the better source when a
+script cares which identifier is which: each entry is its own object with a
+`type`, so a `cn` is distinguishable from a `dns` there and not here.
 
 ### JSON on stdin
 

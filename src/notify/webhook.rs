@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper::header::{HeaderMap, HeaderName, HeaderValue};
 use hyper::{Method, Request};
@@ -44,7 +44,7 @@ use url::Url;
 use super::{NotifyBackend, NotifyError, NotifyEvent, render};
 use crate::config::WebhookNotifyConfig;
 
-use crate::http_client::MAX_ERROR_BODY_CHARS;
+use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 
 /// The methods a webhook may be called with.
 ///
@@ -320,18 +320,22 @@ async fn send_request(
     let status = response.status();
     // Drained either way, so the connection task completes cleanly; on a
     // refusal the first few words of it are the diagnosis.
-    let body = response
-        .into_body()
+    //
+    // Capped like every other outbound client here (`ipam::http`,
+    // `signer::relay::client`, `challenge::http_01`): only the first
+    // `MAX_ERROR_BODY_CHARS` of this are ever read, so buffering the rest is
+    // memory a remote endpoint gets to spend on this process's behalf — and the
+    // enclosing `timeout` bounds how long that goes on, not how large it gets.
+    // A body over the cap is `challenge::http_01`'s case, not `ipam::http`'s:
+    // there is nothing here to parse, so it reads as "no diagnosis" rather than
+    // as a failure of its own. `status` alone still decides retryable versus
+    // permanent, so a truncated 503 is retried and a truncated 400 is not.
+    let body = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
         .collect()
         .await
         .map(http_body_util::Collected::to_bytes)
         .unwrap_or_default();
-    let excerpt = String::from_utf8_lossy(&body)
-        .chars()
-        .take(MAX_ERROR_BODY_CHARS)
-        .collect::<String>()
-        .trim()
-        .to_string();
+    let excerpt = error_excerpt(&body).trim().to_string();
     Ok((status, excerpt))
 }
 
@@ -372,13 +376,18 @@ mod tests {
 
     /// A listener that answers `status` with `body` and hands back the one
     /// request it received.
+    ///
+    /// `body` is owned rather than `&'static str` so a caller can build one at
+    /// runtime — which the cap test does, since a body over
+    /// `MAX_RESPONSE_BYTES` is not something to write out as a literal.
     async fn serve_once(
         status: hyper::StatusCode,
-        body: &'static str,
+        body: impl Into<String>,
     ) -> (
         std::net::SocketAddr,
         tokio::sync::oneshot::Receiver<(String, HeaderMap, Bytes)>,
     ) {
+        let body = Bytes::from(body.into());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -389,6 +398,10 @@ mod tests {
             let tx = std::sync::Mutex::new(Some(tx));
             let service = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
                 let tx = tx.lock().unwrap().take();
+                // `Bytes` is a refcounted handle, so this is a pointer bump
+                // rather than a copy of the body — which matters, since the cap
+                // test's body is over a megabyte.
+                let body = body.clone();
                 async move {
                     let method = req.method().to_string();
                     let headers = req.headers().clone();
@@ -399,7 +412,7 @@ mod tests {
                     Ok::<_, std::convert::Infallible>(
                         hyper::Response::builder()
                             .status(status)
-                            .body(Full::new(Bytes::from_static(body.as_bytes())))
+                            .body(Full::new(body))
                             .unwrap(),
                     )
                 }
@@ -605,6 +618,64 @@ mod tests {
             !error.retryable(),
             "a 400 is the provider stating a reason, not a bad minute"
         );
+    }
+
+    /// The body is capped, so how much memory a refusal costs is this process's
+    /// decision rather than the receiving provider's.
+    ///
+    /// Only the first `MAX_ERROR_BODY_CHARS` of it are ever read, so a body past
+    /// the cap is refused without being buffered — and that refusal is *not* a
+    /// second answer: the status still decides the delivery outcome and the
+    /// retryable/permanent split exactly as it does under the cap. The
+    /// `challenge::http_01` reading, not `ipam::http`'s — there is nothing here
+    /// to parse, so an over-large body is "no diagnosis available", never a
+    /// failure of its own.
+    #[tokio::test]
+    async fn an_oversized_response_body_is_capped_without_changing_the_outcome() {
+        let oversized = "x".repeat(MAX_RESPONSE_BYTES + 1024);
+        let (addr, _rx) = serve_once(hyper::StatusCode::BAD_REQUEST, oversized).await;
+
+        let notifier = build(&WebhookNotifyConfig {
+            url: format!("http://{addr}/hooks/xyz"),
+            ..cfg()
+        })
+        .unwrap();
+
+        let error = notifier
+            .send(&mounted())
+            .await
+            .expect_err("400 is not a delivery");
+        assert!(error.to_string().contains("400"), "{error}");
+        assert!(
+            !error.to_string().contains("xxxxxxxx"),
+            "the body must not have been read past the cap: {error}"
+        );
+        assert!(
+            !error.retryable(),
+            "the cap must not turn a permanent 400 into a retry"
+        );
+    }
+
+    /// The other half of the same rule: a 5xx over the cap stays *retryable*.
+    /// Written out because the two directions fail differently — a cap that
+    /// accidentally produced its own error would most likely make everything
+    /// retryable, which the test above cannot see.
+    #[tokio::test]
+    async fn an_oversized_body_on_a_5xx_is_still_retryable() {
+        let oversized = "y".repeat(MAX_RESPONSE_BYTES + 1024);
+        let (addr, _rx) = serve_once(hyper::StatusCode::SERVICE_UNAVAILABLE, oversized).await;
+
+        let notifier = build(&WebhookNotifyConfig {
+            url: format!("http://{addr}/hooks/xyz"),
+            ..cfg()
+        })
+        .unwrap();
+
+        let error = notifier
+            .send(&mounted())
+            .await
+            .expect_err("503 is not a delivery");
+        assert!(error.retryable(), "a 503 is a bad minute: {error}");
     }
 
     /// The same transport failure twice over: a URL the transport cannot use is

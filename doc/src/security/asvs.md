@@ -170,7 +170,7 @@ this is exposed at all.
 | 3.3.3 | `__Host-` prefix unless shared with other hosts | 2 | met | Same as 3.3.1 |
 | 3.3.4 | `HttpOnly` for values scripts must not read | 2 | met | `HttpOnly` is set; the CSRF token travels in the page and the `x-csrf-token` request header, never in a readable cookie |
 | 3.3.5 | Cookie name and value under 4096 bytes | 3 | met | A 32-byte token, base64url-encoded, plus a fixed name |
-| 3.4.1 | HSTS on all responses, ≥ 1 year, `includeSubDomains` for L2 | 1 | met | `max-age=31536000; includeSubDomains`, applied by the shared `security_headers()` constructor to **both** listeners (`src/lib.rs`) |
+| 3.4.1 | HSTS on all responses, ≥ 1 year, `includeSubDomains` for L2 | 1 | met | `max-age=31536000; includeSubDomains`, applied by the shared `security_headers()` constructor to **both** listeners (`src/lib.rs`). Emitted unconditionally: a browser ignores it over plain HTTP (RFC 6797 §7.2), so gating it on TLS would remove only a header that is already inert. `includeSubDomains` makes the host in `admin.base_url` load-bearing — see [give the panel its own host name](../operations/webadmin.md#give-the-panel-its-own-host-name) |
 | 3.4.2 | CORS `Access-Control-Allow-Origin` fixed or allowlisted | 1 | met | No CORS layer exists on either listener, so no `Access-Control-Allow-Origin` is ever emitted |
 | 3.4.3 | CSP with `object-src 'none'` and `base-uri 'none'` | 2 | met | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` — no `unsafe-inline`, no `unsafe-eval` (`src/webadmin/mod.rs`). `object-src` falls back to `default-src 'none'` |
 | 3.4.4 | `X-Content-Type-Options: nosniff` | 2 | met | `security_headers()` |

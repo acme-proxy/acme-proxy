@@ -142,11 +142,32 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Resu
         temp.push(format!(".{}.tmp", std::process::id()));
         PathBuf::from(temp)
     };
-    // Not `create_new`: a leftover temporary from this pid's predecessor must
-    // not wedge every subsequent write. It is in a directory the server owns
-    // and its name is derived, not attacker-chosen.
+    // Unlink first, then `create_new` — i.e. `O_EXCL`, the same rule
+    // `write_private_key` above follows, and for two reasons rather than one.
+    //
+    // `mode` only applies to a file this call *creates*. Opening an existing
+    // path with `create(true)` leaves whatever permissions it already had, so a
+    // leftover scratch file — this pid's predecessor's, or one somebody planted
+    // — silently decides the mode of a file this function documents as
+    // owner-controlled. And an `open` of an existing path follows a symlink, so
+    // a planted one redirects the write somewhere else entirely; for the CRL
+    // that means an attacker who can write this directory but cannot read it
+    // chooses where relying parties' revocation data comes from.
+    //
+    // The unlink is what keeps the property the previous `create(true)` was
+    // there for: a leftover temporary must not wedge every subsequent write. It
+    // is removed rather than reused, and the `create_new` that follows then
+    // always creates, always applies `mode`, and never follows a link. Losing
+    // the race between the two — another writer creating the path in between —
+    // fails with `AlreadyExists`, which is the correct answer and not the silent
+    // follow it replaces.
+    //
+    // Deliberately not `custom_flags(O_NOFOLLOW)`: that constant differs per
+    // platform, so reaching it means a direct `libc` edge in a CA's dependency
+    // graph, for a case `create_new` already covers.
+    let _ = fs::remove_file(&temp);
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -381,15 +402,83 @@ mod tests {
         );
     }
 
+    /// The scratch path `write_atomic` actually uses, spelled the way it spells
+    /// it.
+    ///
+    /// Written out here because the tests below are worthless against any other
+    /// name: `path.with_extension("tmp")` is what this file used to write *and*
+    /// what these tests used to pre-create, so they exercised a path the
+    /// function never touched and passed for that reason.
+    fn scratch_of(path: &Path) -> PathBuf {
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(format!(".{}.tmp", std::process::id()));
+        PathBuf::from(temp)
+    }
+
     /// A leftover temporary from a previous crash must not wedge every later
-    /// write — which is why this deliberately does not use `create_new`.
+    /// write. `create_new` alone would refuse it; the `remove_file` before it is
+    /// what keeps this working.
     #[test]
-    fn write_atomic_overwrites_a_stale_temporary() {
+    fn write_atomic_replaces_a_stale_temporary() {
         let dir = TempDir::new("pemfile");
         let path = dir.join("ledger.json");
-        fs::write(path.with_extension("tmp"), b"leftover from a crash").unwrap();
+        let scratch = scratch_of(&path);
+        fs::write(&scratch, b"leftover from a crash").unwrap();
 
         write_atomic(&path, b"fresh", 0o600).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"fresh");
+        assert!(!scratch.exists(), "the scratch file must be renamed away");
+    }
+
+    /// A stale temporary must not get to decide the mode of the file that
+    /// replaces it.
+    ///
+    /// `mode` applies only to a file the open *creates*, so with `create(true)`
+    /// this wrote the ledger into an existing `0o666` scratch file and renamed
+    /// it into place still `0o666` — owner-controlled in the doc comment and
+    /// world-writable on disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_temporary_does_not_decide_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("pemfile");
+        let path = dir.join("ledger.json");
+        let scratch = scratch_of(&path);
+        fs::write(&scratch, b"leftover").unwrap();
+        fs::set_permissions(&scratch, fs::Permissions::from_mode(0o666)).unwrap();
+
+        write_atomic(&path, b"{}", 0o600).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "the requested mode must win over the leftover file's"
+        );
+    }
+
+    /// A symlink at the scratch path must not redirect the write.
+    ///
+    /// The reachable case is the CRL: an attacker who can write the server's
+    /// data directory but cannot read it would otherwise choose where the
+    /// revocation data relying parties fetch is written. `create_new` does not
+    /// follow a link, and the `remove_file` before it takes the link away rather
+    /// than failing on it.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_scratch_path_does_not_redirect_the_write() {
+        let dir = TempDir::new("pemfile");
+        let path = dir.join("ca.crl");
+        let elsewhere = dir.join("attacker-readable");
+        fs::write(&elsewhere, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, scratch_of(&path)).unwrap();
+
+        write_atomic(&path, b"the real CRL", 0o644).unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"the real CRL");
+        assert_eq!(
+            fs::read(&elsewhere).unwrap(),
+            b"untouched",
+            "the write followed the symlink"
+        );
     }
 }
