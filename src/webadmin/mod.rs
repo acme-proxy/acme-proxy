@@ -346,7 +346,7 @@ pub fn build_admin_app_with_logins(
         )
         // The operators surface: every operator this process has, and acting
         // on one *other* than the caller — see `handlers::operators`. Every
-        // mutating route here sits behind `check_step_up`, unlike the
+        // mutating route here sits behind `verify_current_password`, unlike the
         // `/account/*` routes just above.
         .route("/operators", get(handlers::list_operators))
         .route("/operators/{username}", get(handlers::get_operator))

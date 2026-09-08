@@ -99,7 +99,7 @@ pub(crate) fn pages_router() -> Router<AdminState> {
         .route("/ui/logout", post(session::post_logout))
         // The operators surface: every operator this process has, and acting
         // on one *other* than the caller — see `pages::operators`. Every
-        // mutating route here sits behind `check_step_up`, unlike the
+        // mutating route here sits behind `verify_current_password`, unlike the
         // `/ui/account/*` routes just above.
         .route("/ui/operators", get(operators::list_operators))
         .route("/ui/operators/{username}", get(operators::get_operator))

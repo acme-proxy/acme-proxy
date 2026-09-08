@@ -7,7 +7,7 @@ whose text is vendored under `rfc/asvs-5.0/` in this repository.
 - **Assessed at:** Level 2. Every L1 and L2 requirement in scope is given a
   status; L3 requirements are listed too, as information rather than as a bar
   being claimed.
-- **Assessed against:** the tree at release 0.4.0.
+- **Assessed against:** the tree at release 0.5.0.
 - **Method:** source review. The evidence column names a file, not a promise —
   for a control requirement, the documentation on this site is context and the
   code is the evidence.
@@ -68,7 +68,7 @@ reported for information.
 | V3 Web Frontend Security | 16 | 1 | 0 | 2 | 6 / 4 / 2 |
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
-| V6 Authentication | 26 | 1 | 0 | 8 | 6 / 3 / 3 |
+| V6 Authentication | 26 | 1 | 0 | 8 | 7 / 2 / 3 |
 | V7 Session Management | 15 | 1 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
@@ -78,7 +78,7 @@ reported for information.
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **168** | **13** | **0** | **36** | **45 / 19 / 16** |
+| **Total** | **168** | **13** | **0** | **36** | **46 / 18 / 16** |
 
 The short version. **There is no L1 or L2 gap.** The four password-policy
 requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
@@ -313,10 +313,10 @@ carries its own signature and its own nonce.
 | 7.4.2 | All sessions terminated when an account is disabled or deleted | 1 | met | `set_status("disabled")` and `set_password` both call `AdminSession::delete_for_user`; the liveness check also refuses a session whose owner is no longer active |
 | 7.4.3 | Option to terminate other sessions after a factor changes | 2 | met | `confirm_totp_enrolment` and `disable_totp` both call `revoke_other_sessions`; a password change revokes every session unconditionally |
 | 7.4.4 | Visible logout on every authenticated page | 2 | met | A "Sign out" control in `templates/layout.html`, which every page extends |
-| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke` on the host terminates globally (`--all`), one operator's (`--user <u>`), or one session (`--user <u> --session <id>`, the id being the fingerprint the listing prints); the panel's [Operators](../operations/webadmin_users.md#managing-operators) page does the individual form over HTTP — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one, gated by `check_step_up` |
+| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke` on the host terminates globally (`--all`), one operator's (`--user <u>`), or one session (`--user <u> --session <id>`, the id being the fingerprint the listing prints); the panel's [Operators](../operations/webadmin_users.md#managing-operators) page does the individual form over HTTP — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one, gated by `verify_current_password` |
 | 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`src/webadmin/handlers/mfa.rs`) |
 | 7.5.2 | Users can view and terminate their own sessions | 2 | met | The account page's Sessions card (`GET /api/account/sessions`, `/ui/account`) lists every one of the caller's own live sessions and terminates one individually (`POST /api/account/sessions/{id}/revoke`) or all at once ("Sign out everywhere") — closing the gap between nothing and everything the panel used to leave → [Sessions](../operations/webadmin_users.md#sessions) |
-| 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`. Certificate revocation and account deletion now require at least the `operator` role and the colleague-management surface requires `admin` (`admin_users.role`), but for an operator holding that role a live session is still sufficient authority — no password re-prompt |
+| 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`, and the whole `/operators` colleague-management surface by `verify_current_password`, which re-prompts even for an operator with no factor. Certificate revocation and account deletion require at least the `operator` role (`admin_users.role`), but for an operator holding it a live session is still sufficient authority — no password re-prompt on the CA mutations |
 | 7.6.1 | Federated re-authentication behaviour | 2 | n/a | No federation |
 | 7.6.2 | Session creation requires explicit user action | 2 | met | A session exists only after a submitted sign-in form |
 

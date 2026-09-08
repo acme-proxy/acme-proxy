@@ -29,7 +29,7 @@ Read this section before an upgrade, and `acme-proxy filter show` builds a
 `[filter]` policy exactly as startup does, so it is the cheapest way to check a
 migrated configuration before restarting.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-08
 
 ### Breaking
 
@@ -107,6 +107,16 @@ migrated configuration before restarting.
   `certSerial`) and filter controls on `/ui/orders`, and all three are refused
   by name beside `--expiring-in`, which is a different query. No schema change:
   the identifier match is a `json_each` scan over `orders.identifiers`.
+
+- **`acme-proxy admin session revoke` can end a single session**, not only
+  every session one operator holds or every session on the server. The new
+  `--session <id>` takes the fingerprint the listing prints and is scoped to
+  `--user`, which clap enforces (and excludes `--all`), since
+  `AdminSession::find_by_user_and_fingerprint` resolves a fingerprint only
+  within one operator's rows. It reuses the same model calls the panel's
+  "revoke this session" buttons already make, so the terminal and the two web
+  surfaces now revoke at the same grain. Not confirm-gated: revocation only
+  ever tightens, like `order revoke`.
 
 ### Fixed
 
@@ -311,11 +321,9 @@ migrated configuration before restarting.
   individually revocable, plus "Sign out everywhere" (previously an unlinked
   API route). A new **Operators** page lists every operator and lets one act
   on a *colleague's* account — disable, enable, reset their second factor,
-  and revoke one of their sessions individually, which the CLI's own
-  `admin session revoke` still cannot do (only `--user`, every session of
-  one operator, or `--all`). Every mutation there re-proves the caller's own
-  password (`check_step_up`) and refuses to target the caller — managing
-  yourself stays on the account page, which already owns it. `admin user
+  and revoke one of their sessions individually. Every mutation there
+  re-proves the caller's own password and refuses to target the caller —
+  managing yourself stays on the account page, which already owns it. `admin user
   create`/`passwd` stay host-only, unchanged: those mint a credential, which
   is where "no sign-up page" already draws the line.
 
@@ -2010,7 +2018,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/acme-proxy/acme-proxy/compare/0.1.0...0.2.0

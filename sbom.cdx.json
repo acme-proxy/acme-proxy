@@ -12,9 +12,9 @@
     ],
     "component": {
       "type": "application",
-      "bom-ref": "path+file:///acme-proxy#0.4.0",
+      "bom-ref": "path+file:///acme-proxy#0.5.0",
       "name": "acme-proxy",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "description": "An ACME (RFC 8555) server that issues from a local CA, relays to an upstream CA, or delegates to a script",
       "scope": "required",
       "licenses": [
@@ -22,7 +22,7 @@
           "expression": "MIT"
         }
       ],
-      "purl": "pkg:cargo/acme-proxy@0.4.0?download_url=file://.",
+      "purl": "pkg:cargo/acme-proxy@0.5.0?download_url=file://.",
       "externalReferences": [
         {
           "type": "documentation",
@@ -40,17 +40,17 @@
       "components": [
         {
           "type": "library",
-          "bom-ref": "path+file:///acme-proxy#0.4.0 bin-target-0",
+          "bom-ref": "path+file:///acme-proxy#0.5.0 bin-target-0",
           "name": "acme_proxy",
-          "version": "0.4.0",
-          "purl": "pkg:cargo/acme-proxy@0.4.0?download_url=file://.#src/lib.rs"
+          "version": "0.5.0",
+          "purl": "pkg:cargo/acme-proxy@0.5.0?download_url=file://.#src/lib.rs"
         },
         {
           "type": "application",
-          "bom-ref": "path+file:///acme-proxy#0.4.0 bin-target-1",
+          "bom-ref": "path+file:///acme-proxy#0.5.0 bin-target-1",
           "name": "acme-proxy",
-          "version": "0.4.0",
-          "purl": "pkg:cargo/acme-proxy@0.4.0?download_url=file://.#src/main.rs"
+          "version": "0.5.0",
+          "purl": "pkg:cargo/acme-proxy@0.5.0?download_url=file://.#src/main.rs"
         }
       ]
     },
@@ -9444,7 +9444,7 @@
   ],
   "dependencies": [
     {
-      "ref": "path+file:///acme-proxy#0.4.0",
+      "ref": "path+file:///acme-proxy#0.5.0",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
