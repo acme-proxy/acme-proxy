@@ -1,8 +1,11 @@
 # Introduction
 
 `acme-proxy` is an ACME server: the thing certbot, acme.sh, lego, Traefik and
-Caddy talk to when they ask for a certificate. It implements RFC 8555 in full,
-plus account key rollover (§7.3.5) and Renewal Information (RFC 9773).
+Caddy talk to when they ask for a certificate. It serves the whole RFC 8555 flow
+— account, order, authorization, challenge, finalize, certificate — plus
+revocation, account key rollover (§7.3.5) and Renewal Information (RFC 9773).
+What it deliberately does not implement is listed on
+[Protocol Support](features/index.md).
 
 What it does *behind* that interface is the point. Clients prove control of
 their names to `acme-proxy`, under whatever policy you configure, and it decides

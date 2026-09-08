@@ -159,8 +159,16 @@ A session also carries the operator's **role**
 an account or order, EAB, nonce sweep) needs `operator` or `admin`; the
 `/operators/*` and `/ui/operators/*` colleague-management routes need `admin`;
 the own-account routes (password, own sessions, own second factor, sign-out)
-need only a live session. Reads are open to every role. An operator whose row
-predates the feature is `admin`.
+need only a live session. An operator whose row predates the feature is `admin`.
+
+Reads are open to every role with one exception: the `/operators` surface needs
+`admin` to **read** as well as to act, on both front ends. A tier that gated
+only the writes would be a control over what a colleague can do and not over
+what they can learn — and that surface carries every operator's role and contact
+address, the addresses each recently signed in from, and every live session's
+fingerprint. So `GET /api/operators`, `/api/operators/{username}` and
+`/api/operators/{username}/sessions`, and the two `/ui/operators` pages, answer
+`403 insufficient_role` to an `operator` or a `viewer`.
 
 > `SameSite=Strict` also means clicking a link *into* the panel from another
 > site will not carry your session. For an admin panel that is a feature, but it

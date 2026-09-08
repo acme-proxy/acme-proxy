@@ -21,6 +21,12 @@ silently degrading at runtime. The log line names the problem in each case.
 | Upstream requires EAB, no `.kid` sidecar | The `relay` backend has never registered with the upstream. | Run `acme-proxy upstream register --profile <name> --eab-kid …`, or set `signer.relay.eab.kid`/`hmac_key` in configuration. |
 | `key_source = "pkcs11"` … `built without` | `signer.local_ca.key_source = "pkcs11"` on a binary with no PKCS#11 support. Deliberately fatal rather than falling back to the file key, which would silently leave the CA key on disk. | Rebuild with `cargo build --release --features hsm`. |
 | A PKCS#11 key that is not the certified one | The token key's public key does not match `cert_path` — almost always a wrong `key_label`. | See [Hardware Keys](../signers/local_ca_hsm.md#troubleshooting). |
+| `admin.bind_address … is not loopback while admin.tls.enabled is false` | The session cookie is always sent `Secure`, which a browser will not store over plain HTTP on anything but `localhost`. Refused rather than warned about, because the symptom is otherwise "signing in succeeds and then immediately signs you out" with nothing in any log to explain it. | Set `admin.tls.enabled = true`, or bind `127.0.0.1` and reach the panel through an SSH tunnel. |
+| `metrics.bind_address and … are both` | The metrics endpoint is a listener of its own and cannot share a socket with the ACME or admin one. Checked at startup **and** on every reload. | Give it its own port. |
+| `notify.webhook.<entry>.body is not a valid template` (likewise `.url`, `.method`, `.headers`) | Every webhook entry is compiled and validated at startup: the body template, the URL, a verb outside POST/PUT/PATCH, and a header name or value a wire format will not carry. Deliberately fatal — a broken entry would otherwise become a permanent delivery failure discovered on the first event that mattered. | Fix the entry. See [Webhook](../notifications/webhook.md). |
+| `admin.template_dir … is not a directory`, or a template that does not compile | The panel's per-file overrides are compiled at startup for the same reason, so a broken one refuses to start rather than serving a `500` later. | Point it at a directory, or leave it empty for the compiled-in defaults. See [Customizing the Panel](webadmin_templates.md). |
+| A `[proxy]` URL that is not `http://`, or a `no_proxy` entry with a port | `proxy.http_url` / `proxy.https_url` name the proxy to dial, which is spelled `http://host:port` even for HTTPS targets; there is no SOCKS support. A `no_proxy` entry matches a host or a network, never a port. | Drop the scheme to `http://`, and the port from the `no_proxy` entry. |
+| `ipam.phpipam.sources` naming `vip` or `fhrp` | phpIPAM records neither roles nor redundancy groups, so those two sources exist only for NetBox. Refused by name rather than silently returning nothing. | Use `dns_name`, `custom_field` or `device`. See [phpIPAM](../ipam/phpipam.md). |
 
 Failures specific to a hardware CA key — PIN, token, slot and mechanism problems
 — have their own table in
@@ -43,6 +49,32 @@ Failures specific to a hardware CA key — PIN, token, slot and mechanism proble
   `acme-proxy account deactivate`. Deactivation is permanent and blocks all
   issuance.
 - **Fix** — The client must register a new account.
+
+## An order sits in `processing` and never finishes
+
+- **Symptoms** — A client polls an order that reached `processing` and stays
+  there. Only the `relay` backend defers like this; `local_ca` and `custom`
+  answer `finalize` inline.
+- **Cause** — The issuance is a background job, and it is either waiting out a
+  backoff after a retryable upstream failure or has been retired for good. The
+  order object itself will not say which.
+- **Fix** — Ask the queue:
+
+```bash
+# What is the job doing, and how many attempts has it spent?
+acme-proxy jobs list --kind signer_relay_issue --limit 20
+
+# The upstream's own error text, and the URLs it was talking to.
+acme-proxy jobs show <job-id>
+```
+
+  A job still `ready` is waiting for its next attempt at the `run_at` it
+  prints — `acme-proxy jobs run-now <id>` pulls that forward. A `failed` one has
+  spent its budget: `run-now` grants exactly one more attempt, and
+  `acme-proxy jobs cancel <id>` abandons the ACME order so the client stops
+  polling and can order again. See [Job queue](cli.md#job-queue), and
+  `job_run_abandoned` in [Monitoring](monitoring.md#structured-events) for the
+  log line that says it happened.
 
 ## SQLite database locks
 

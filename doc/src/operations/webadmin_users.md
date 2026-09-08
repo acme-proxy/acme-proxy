@@ -328,7 +328,7 @@ it already ignores `disabled` for read commands.
 
 | Role | Can do |
 | --- | --- |
-| `viewer` | Read every page and API route. Act on **their own** account only: change their password, revoke their own sessions, manage their own second factor, sign out. |
+| `viewer` | Read every page and API route except the Operators surface, which is `admin`-only to read as well as to act. Act on **their own** account only: change their password, revoke their own sessions, manage their own second factor, sign out. |
 | `operator` | Everything a `viewer` can, plus every CA action: revoke a certificate, deactivate or delete an ACME account, delete an order, mint or revoke an EAB credential, run a nonce sweep. |
 | `admin` | Everything an `operator` can, plus the Operators surface — **reading** it as well as acting on it: disable, enable, reset a colleague's second factor, revoke one of their sessions. |
 

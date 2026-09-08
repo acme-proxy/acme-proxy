@@ -1,6 +1,6 @@
 # Core Concepts & Glossary
 
-Seven words carry most of the meaning in the rest of this book. This page
+Eight words carry most of the meaning in the rest of this book. This page
 defines them once, in the order you meet them, so that every other page can use
 them without re-explaining.
 
@@ -41,9 +41,15 @@ answer "may this client ask for this?", which challenge validation does not: a
 client can genuinely control a name and still have no business holding a
 certificate for it from you.
 
-All enabled filters must pass and the first denial wins. They act at two points
-— on the connection, and on the identifiers, the latter running again at
-`finalize` against the names in the CSR.
+`[filter]` is a small policy engine rather than a list of switches. A **check**
+is one named question about a request — "is this address in the management
+network?" — and a **rule** is a boolean expression over check names plus what a
+match means. `filter.rules` says which rules run and in what order, and the
+**first match wins**; a stage where a rule was applicable and none matched falls
+to `filter.default`.
+
+Rules act at two points — on the connection, and on the identifiers, the latter
+running again at `finalize` against the names in the CSR.
 
 See [Filters](../filters/index.md).
 
@@ -105,14 +111,32 @@ to demote it, or the order would be finalizable for a name no longer authorized.
 
 Two details are easy to trip on:
 
-- **`processing` only appears with a deferring backend.** The `relay` relay
+- **`processing` only appears with a deferring backend.** The `relay` backend
   answers `finalize` with `processing` and completes in the background;
   `local_ca` and `custom` answer inline, so an order under those backends goes
   straight from `ready` to `valid` and never passes through `processing`.
 - **Revocation is orthogonal to this machine.** RFC 8555 defines no "revoked"
   order status, so a revoked order's `status` stays `valid`. The revocation
-  timestamp and reason are recorded separately and are visible only through the
-  admin CLI — see [Revocation & CRL](../operations/revocation.md).
+  timestamp and reason are recorded separately, and both admin front ends show
+  them and can revoke — `acme-proxy order show`/`order revoke`, and the order
+  detail page in the panel. See [Revocation & CRL](../operations/revocation.md).
+
+## Job
+
+A **job** is one unit of work the server owes itself: a relayed issuance to
+finish, a notification to deliver, a table to sweep. Jobs are rows in the same
+SQLite file as everything else, drained by one runner per process, so they
+survive a restart and need no scheduler beside the server.
+
+What is worth carrying away is how a handler reports failure. `Retry` says the
+attempt decided nothing — a refused connection, a proxy, a `503` — and the job
+goes back in the queue under a growing backoff; `Failed` says the other side
+stated a reason and is believed at once. That split is what keeps a client's
+order `processing` through a five-second upstream blip rather than terminally
+`invalid`, and it is why an order that is not progressing is a question for
+`acme-proxy jobs list` before it is a question for anything else.
+
+See [Admin CLI → Job queue](../operations/cli.md#job-queue).
 
 ## Challenge
 
