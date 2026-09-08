@@ -1015,9 +1015,24 @@ mod tests {
         let job = claim("runner-a", &database).await.unwrap();
         Job::complete(job.id, "runner-a", &database).await.unwrap();
 
-        // The cutoff is `updated_at`, which `complete` has just stamped to now.
-        assert_eq!(Job::cleanup(now_secs(), &database).await.unwrap(), 0);
-        assert_eq!(Job::cleanup(now_secs() + 1, &database).await.unwrap(), 1);
+        // The cutoff is `updated_at`, which `complete` has just stamped. Read it
+        // back off the row rather than asking the clock again: a second boundary
+        // falling between the two makes `now_secs()` one past the stamp, and the
+        // row this line asserts is kept would be deleted.
+        let settled = Job::find_by_id(job_id("job-done"), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Job::cleanup(settled.updated_at, &database).await.unwrap(),
+            0
+        );
+        assert_eq!(
+            Job::cleanup(settled.updated_at + 1, &database)
+                .await
+                .unwrap(),
+            1
+        );
         assert!(
             Job::find_by_id(job_id("job-done"), &database)
                 .await

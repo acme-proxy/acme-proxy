@@ -614,17 +614,31 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let now = crate::sqlite::nonce::now_secs();
+        // The boundary comes off the oldest row rather than from a second clock
+        // read: `created_at` is whole seconds, so a boundary falling between the
+        // inserts and the read would put every row strictly before "now" and the
+        // assertions below would be pinning nothing. Rows come back newest
+        // first, so the last of the page is the oldest.
+        let (rows, _) = AuditEntry::search(
+            &AuditQuery {
+                limit: 50,
+                ..AuditQuery::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        let oldest = rows.last().unwrap().created_at;
 
         // Nothing is older than "an hour ago".
-        let past = now - 3600;
+        let past = oldest - 3600;
         assert_eq!(AuditEntry::count_older_than(past, &db).await.unwrap(), 0);
         assert_eq!(AuditEntry::cleanup(past, &db).await.unwrap(), 0);
 
         // Nor exactly at `created_at`: the predicate is `<`, not `<=`.
-        assert_eq!(AuditEntry::count_older_than(now, &db).await.unwrap(), 0);
+        assert_eq!(AuditEntry::count_older_than(oldest, &db).await.unwrap(), 0);
 
-        let future = now + 3600;
+        let future = oldest + 3600;
         assert_eq!(AuditEntry::count_older_than(future, &db).await.unwrap(), 3);
         assert_eq!(AuditEntry::cleanup(future, &db).await.unwrap(), 3);
         assert_eq!(AuditEntry::count_older_than(future, &db).await.unwrap(), 0);
