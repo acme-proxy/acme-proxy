@@ -88,6 +88,19 @@ migrated configuration before restarting.
   §2.5.4), and a challenge name outside `rfc2136.zone` is refused before any
   update is sent.
 - The RFC 2136 updater accepts a UDP answer only from the configured `server`.
+- **A refused RFC 2136 update names the server's TSIG error**: `BADKEY` points
+  at `tsig_key_name`/`tsig_algorithm`, `BADSIG` at `tsig_key_secret`, `BADTIME`
+  at the clock.
+
+### Security
+
+- **The RFC 2136 updater verifies the TSIG signature on a successful answer**
+  (RFC 8945 §5.3): an unsigned NOERROR, or one signed with another key, for
+  another request or outside the time window, is a failed update rather than a
+  published record. Refusals are still reported as they arrive, since a server
+  answers a key it does not know unsigned. A nameserver that does not sign its
+  answers to signed updates — none of BIND, Knot or PowerDNS — now fails every
+  update with a message saying so.
 
 ## [0.5.0] — 2026-09-08
 

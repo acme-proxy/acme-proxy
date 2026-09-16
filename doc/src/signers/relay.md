@@ -294,6 +294,13 @@ a TSIG-signed update readily exceeds 512 bytes, so the TCP path is a normal
 occurrence rather than an edge case.
 Only a UDP answer from `server` itself is accepted.
 
+A successful answer counts only when it is TSIG-signed by the configured key,
+for this update, within the server's time window (RFC 8945); anything else fails
+the update. A refusal is reported as the server sent it, with its TSIG error
+explained: `BADKEY` means the server does not know `tsig_key_name` under
+`tsig_algorithm`, `BADSIG` that `tsig_key_secret` does not match, and `BADTIME`
+that the two clocks disagree.
+
 ### `[signer.relay.eab]`
 
 An upstream External Account Binding credential supplied in configuration

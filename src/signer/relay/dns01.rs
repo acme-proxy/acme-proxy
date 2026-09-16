@@ -26,9 +26,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hickory_proto::op::{Message, update_message};
+use hickory_proto::op::{Message, ResponseCode, update_message};
 use hickory_proto::rr::rdata::TXT;
-use hickory_proto::rr::rdata::tsig::TsigAlgorithm;
+use hickory_proto::rr::rdata::tsig::{TSIG, TsigAlgorithm, TsigError};
 use hickory_proto::rr::{DNSClass, Name, RData, Record, RecordSet, RecordType, TSigner};
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use tokio::net::{TcpStream, UdpSocket};
@@ -161,39 +161,75 @@ impl Rfc2136Updater {
     }
 
     /// Signs and sends one update, returning an error unless the server
-    /// answers NOERROR.
+    /// answers NOERROR under the configured TSIG key.
     async fn send(&self, mut message: Message) -> Result<(), String> {
-        use hickory_proto::op::ResponseCode;
-
         // TSIG covers the whole message, so it must be applied last.
         let id = message.id;
-        message
+        let mut verifier = message
             .finalize(&self.signer, now_secs())
-            .map_err(|error| format!("signing the DNS update failed: {error}"))?;
+            .map_err(|error| format!("signing the DNS update failed: {error}"))?
+            .ok_or_else(|| "signing the DNS update produced no verifier".to_string())?;
 
         let bytes = message
             .to_bytes()
             .map_err(|error| format!("encoding the DNS update failed: {error}"))?;
 
-        let response = tokio::time::timeout(self.timeout, self.exchange(&bytes))
+        let answer = tokio::time::timeout(self.timeout, self.exchange(&bytes))
             .await
             .map_err(|_| format!("DNS update to {} timed out", self.server))??;
 
-        let response = Message::from_bytes(&response)
+        let response = Message::from_bytes(&answer)
             .map_err(|error| format!("decoding the DNS response failed: {error}"))?;
 
         if response.id != id {
             return Err("DNS response id did not match the request".to_string());
         }
+
+        // Only a success has to be authenticated (RFC 8945 §5.3). A forged
+        // failure achieves nothing a dropped packet does not, while a wrong key
+        // is answered *unsigned* — the server cannot sign with a key it does
+        // not know — so verifying before reading the rcode would turn the
+        // likeliest misconfiguration into an opaque signature error.
         match response.response_code {
-            ResponseCode::NoError => Ok(()),
-            other => Err(format!("DNS update refused: {other}")),
+            ResponseCode::NoError => verifier.verify(&answer).map(|_| ()).map_err(|error| {
+                format!(
+                    "DNS update answer from {} is not signed by the configured TSIG key: {error}",
+                    self.server
+                )
+            }),
+            other => Err(self.refusal(other, response.signature())),
         }
+    }
+
+    /// Words a refused update, naming the TSIG error the server attached.
+    ///
+    /// That error arrives unauthenticated, so it only ever adds a hint to a
+    /// failure; the key name and algorithm quoted come from this server's own
+    /// configuration, never from the answer.
+    fn refusal(&self, code: ResponseCode, tsig: Option<&Record<TSIG>>) -> String {
+        let hint = match tsig.and_then(|record| record.data.error) {
+            None => String::new(),
+            Some(TsigError::BadKey) => format!(
+                "; the server does not know TSIG key {} ({}) — check tsig_key_name and tsig_algorithm",
+                self.signer.signer_name(),
+                self.signer.algorithm().to_name(),
+            ),
+            Some(TsigError::BadSig) => {
+                "; the server rejected the TSIG signature — check tsig_key_secret".to_string()
+            }
+            Some(TsigError::BadTime) => {
+                "; the server's clock and this host's differ by more than the TSIG fudge"
+                    .to_string()
+            }
+            Some(other) => format!("; TSIG error {}", u16::from(other)),
+        };
+        format!("DNS update refused: {code}{hint}")
     }
 
     /// Sends over UDP, retrying on TCP when the answer is truncated — the
     /// ordinary DNS fallback, and necessary because a TSIG-signed update can
-    /// exceed 512 bytes.
+    /// exceed 512 bytes. A truncated answer is not verified: forging one only
+    /// sends the update to the same server over TCP, whose answer `send` checks.
     ///
     /// The UDP socket is connected, so the kernel drops datagrams from any
     /// address but the server's: otherwise anyone who guessed the 16-bit id
@@ -464,10 +500,11 @@ mod tests {
         /// What the stub should do with the UDP request it receives.
         #[derive(Clone, Copy)]
         pub(super) enum Udp {
-            /// Answer over UDP with this response code.
-            Answer(ResponseCode),
-            /// Answer with the truncation bit set, forcing a TCP retry.
-            Truncated,
+            /// Answer over UDP with this response code, signed this way.
+            Answer(ResponseCode, Sign),
+            /// Answer unsigned with the truncation bit set, forcing a TCP
+            /// retry whose NOERROR is signed this way.
+            Truncated(Sign),
             /// Answer with a mismatched id.
             WrongId,
             /// Answer with bytes that are not a DNS message at all.
@@ -497,9 +534,21 @@ mod tests {
 
                 let bytes = match udp {
                     Udp::Garbage => b"definitely not DNS".to_vec(),
-                    Udp::Answer(code) => reply(request.id, code, false),
-                    Udp::WrongId => reply(request.id.wrapping_add(1), ResponseCode::NoError, false),
-                    Udp::Truncated => reply(request.id, ResponseCode::NoError, true),
+                    Udp::Answer(code, sign) => reply(&request, request.id, code, false, sign),
+                    Udp::WrongId => reply(
+                        &request,
+                        request.id.wrapping_add(1),
+                        ResponseCode::NoError,
+                        false,
+                        Sign::Valid,
+                    ),
+                    Udp::Truncated(_) => reply(
+                        &request,
+                        request.id,
+                        ResponseCode::NoError,
+                        true,
+                        Sign::Unsigned,
+                    ),
                 };
                 socket.send_to(&bytes, peer).await.unwrap();
             });
@@ -516,8 +565,14 @@ mod tests {
                 if stream.read_exact(&mut request).await.is_err() {
                     return;
                 }
-                let id = Message::from_bytes(&request).map(|m| m.id).unwrap_or(0);
-                let bytes = reply(id, ResponseCode::NoError, false);
+                let Ok(request) = Message::from_bytes(&request) else {
+                    return;
+                };
+                let sign = match udp {
+                    Udp::Truncated(sign) => sign,
+                    _ => Sign::Valid,
+                };
+                let bytes = reply(&request, request.id, ResponseCode::NoError, false, sign);
                 let framed = u16::try_from(bytes.len()).unwrap().to_be_bytes();
                 let _ = stream.write_all(&framed).await;
                 let _ = stream.write_all(&bytes).await;
@@ -526,13 +581,88 @@ mod tests {
             Server { addr }
         }
 
-        fn reply(id: u16, code: ResponseCode, truncated: bool) -> Vec<u8> {
+        fn reply(
+            request: &Message,
+            id: u16,
+            code: ResponseCode,
+            truncated: bool,
+            sign: Sign,
+        ) -> Vec<u8> {
             let mut message = Message::response(id, OpCode::Update);
             message.metadata.message_type = MessageType::Response;
             message.metadata.response_code = code;
             message.metadata.truncation = truncated;
+            super::sign_reply(&mut message, request, sign);
             message.to_bytes().unwrap()
         }
+    }
+
+    /// How a stub answer carries (or fails to carry) its TSIG.
+    #[derive(Clone, Copy)]
+    enum Sign {
+        /// Signed as a real server signs: this key, this request's MAC, now.
+        Valid,
+        Unsigned,
+        /// Signed, but with a secret the updater does not hold.
+        OtherKey,
+        /// Signed, but chained to a MAC this request never carried.
+        OtherRequest,
+        /// Signed, but stamped well outside the fudge window.
+        Stale,
+        /// What a server sends for a key name it does not know: an empty
+        /// MAC and TSIG error BADKEY (RFC 8945 §5.2.1).
+        UnknownKey,
+        /// What a server sends when the MAC does not verify: an empty MAC
+        /// and TSIG error BADSIG (RFC 8945 §5.2.2).
+        BadSig,
+    }
+
+    /// Attaches the TSIG `sign` describes to `response`, which must be
+    /// otherwise complete: the MAC covers every byte already there.
+    ///
+    /// Uses hickory's own server-side signer, so the stub signs exactly as
+    /// hickory's server does rather than as this module reads it.
+    fn sign_reply(response: &mut Message, request: &Message, sign: Sign) {
+        use base64::prelude::*;
+        use hickory_proto::rr::TSigResponseContext;
+
+        let theirs = request.signature().expect("the update is signed");
+        let signer = |secret: Vec<u8>| {
+            TSigner::new(
+                secret,
+                theirs.data.algorithm.clone(),
+                theirs.name.clone(),
+                300,
+            )
+            .unwrap()
+        };
+        let secret = BASE64_STANDARD.decode(config().tsig_key_secret).unwrap();
+        let mac = theirs.data.mac.clone();
+        let now = now_secs();
+
+        let context = match sign {
+            Sign::Unsigned => return,
+            Sign::Valid => TSigResponseContext::new(response.id, now, signer(secret), mac, None),
+            Sign::OtherKey => TSigResponseContext::new(
+                response.id,
+                now,
+                signer(b"not the configured secret".to_vec()),
+                mac,
+                None,
+            ),
+            Sign::OtherRequest => {
+                TSigResponseContext::new(response.id, now, signer(secret), vec![0; mac.len()], None)
+            }
+            Sign::Stale => {
+                TSigResponseContext::new(response.id, now - 1000, signer(secret), mac, None)
+            }
+            Sign::UnknownKey => {
+                TSigResponseContext::unknown_key(response.id, now, theirs.name.clone())
+            }
+            Sign::BadSig => TSigResponseContext::bad_signature(response.id, now, signer(secret)),
+        };
+        let record = context.sign(&response.to_bytes().unwrap()).unwrap();
+        response.set_signature(record);
     }
 
     /// Points a fresh updater at `addr` with a short budget.
@@ -544,25 +674,29 @@ mod tests {
         updater
     }
 
-    /// The happy path over a real socket: sign, frame, send, read the rcode.
+    /// The happy path over a real socket: sign, frame, send, verify the
+    /// answer's TSIG, read the rcode — under every algorithm offered, since
+    /// each has its own MAC length and hickory refuses a short one.
     #[tokio::test]
     async fn an_accepted_update_succeeds() {
-        use hickory_proto::op::ResponseCode;
-
-        let server = stub::spawn(stub::Udp::Answer(ResponseCode::NoError)).await;
-        updater_for(server.addr)
-            .upsert_txt("_acme-challenge.example.org.", "digest-value")
-            .await
-            .expect("NOERROR is an accepted update");
+        for algorithm in ["hmac-sha256", "hmac-sha384", "hmac-sha512"] {
+            let server = stub::spawn(stub::Udp::Answer(ResponseCode::NoError, Sign::Valid)).await;
+            let mut cfg = config();
+            cfg.server = server.addr.to_string();
+            cfg.tsig_algorithm = algorithm.to_string();
+            Rfc2136Updater::from_config(&cfg)
+                .unwrap()
+                .upsert_txt("_acme-challenge.example.org.", "digest-value")
+                .await
+                .unwrap_or_else(|error| panic!("{algorithm}: {error}"));
+        }
     }
 
     /// Retraction runs the same exchange with a delete message — best-effort at
     /// the call site, but it still has to reach the server.
     #[tokio::test]
     async fn a_retraction_reaches_the_server() {
-        use hickory_proto::op::ResponseCode;
-
-        let server = stub::spawn(stub::Udp::Answer(ResponseCode::NoError)).await;
+        let server = stub::spawn(stub::Udp::Answer(ResponseCode::NoError, Sign::Valid)).await;
         updater_for(server.addr)
             .delete_txt("_acme-challenge.example.org.", "digest-value")
             .await
@@ -574,9 +708,7 @@ mod tests {
     /// it must surface with the response code in the message.
     #[tokio::test]
     async fn a_refused_update_reports_the_response_code() {
-        use hickory_proto::op::ResponseCode;
-
-        let server = stub::spawn(stub::Udp::Answer(ResponseCode::Refused)).await;
+        let server = stub::spawn(stub::Udp::Answer(ResponseCode::Refused, Sign::Valid)).await;
         let error = updater_for(server.addr)
             .upsert_txt("_acme-challenge.example.org.", "digest-value")
             .await
@@ -589,11 +721,23 @@ mod tests {
     /// fallback is a normal path here rather than an edge case.
     #[tokio::test]
     async fn a_truncated_answer_is_retried_over_tcp() {
-        let server = stub::spawn(stub::Udp::Truncated).await;
+        let server = stub::spawn(stub::Udp::Truncated(Sign::Valid)).await;
         updater_for(server.addr)
             .upsert_txt("_acme-challenge.example.org.", "digest-value")
             .await
             .expect("the TCP retry must carry the answer");
+    }
+
+    /// The answer that decides is the TCP one, and it is held to the same
+    /// rule as a UDP answer.
+    #[tokio::test]
+    async fn an_unsigned_answer_over_tcp_is_rejected() {
+        let server = stub::spawn(stub::Udp::Truncated(Sign::Unsigned)).await;
+        let error = updater_for(server.addr)
+            .upsert_txt("_acme-challenge.example.org.", "digest-value")
+            .await
+            .expect_err("an unsigned NOERROR over TCP is not an accepted update");
+        assert!(error.contains("not signed"), "{error}");
     }
 
     /// An answer to somebody else's question is not an answer to this one —
@@ -653,7 +797,7 @@ mod tests {
     /// Receives one update on `socket`, answers it NOERROR from the same
     /// socket, and hands back the decoded request.
     async fn answer_one(socket: &UdpSocket) -> Message {
-        use hickory_proto::op::{MessageType, OpCode, ResponseCode};
+        use hickory_proto::op::{MessageType, OpCode};
 
         let mut buffer = vec![0u8; 4096];
         let (read, peer) = socket.recv_from(&mut buffer).await.unwrap();
@@ -662,6 +806,7 @@ mod tests {
         let mut response = Message::response(request.id, OpCode::Update);
         response.metadata.message_type = MessageType::Response;
         response.metadata.response_code = ResponseCode::NoError;
+        sign_reply(&mut response, &request, Sign::Valid);
         socket
             .send_to(&response.to_bytes().unwrap(), peer)
             .await
@@ -711,7 +856,7 @@ mod tests {
     /// the server's: the connected socket never delivers it.
     #[tokio::test]
     async fn a_response_from_another_address_is_ignored() {
-        use hickory_proto::op::{MessageType, OpCode, ResponseCode};
+        use hickory_proto::op::{MessageType, OpCode};
 
         let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut updater = updater_for(server.local_addr().unwrap());
@@ -740,5 +885,104 @@ mod tests {
 
         let error = result.expect_err("an answer from elsewhere is not accepted");
         assert!(error.contains("timed out"), "{error}");
+    }
+
+    /// Sends one upsert to a stub answering NOERROR signed as `sign` says.
+    async fn accepted_with(sign: Sign) -> Result<(), String> {
+        let server = stub::spawn(stub::Udp::Answer(ResponseCode::NoError, sign)).await;
+        updater_for(server.addr)
+            .upsert_txt("_acme-challenge.example.org.", "digest-value")
+            .await
+    }
+
+    /// NOERROR is the one answer that makes the relay go on to ask the CA to
+    /// validate, so it is the one that must prove it came from the key holder.
+    #[tokio::test]
+    async fn an_unsigned_acceptance_is_rejected() {
+        let error = accepted_with(Sign::Unsigned).await.unwrap_err();
+        assert!(
+            error.contains("not signed by the configured TSIG key"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acceptance_signed_with_another_key_is_rejected() {
+        let error = accepted_with(Sign::OtherKey).await.unwrap_err();
+        assert!(error.contains("not signed"), "{error}");
+    }
+
+    /// A signature is bound to the request it answers (RFC 8945 §4.3), so a
+    /// validly signed answer to some other update cannot be replayed here.
+    #[tokio::test]
+    async fn an_acceptance_signed_for_another_request_is_rejected() {
+        let error = accepted_with(Sign::OtherRequest).await.unwrap_err();
+        assert!(error.contains("not signed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_stale_signed_acceptance_is_rejected() {
+        let error = accepted_with(Sign::Stale).await.unwrap_err();
+        assert!(error.contains("not signed"), "{error}");
+    }
+
+    /// A wrong key is answered unsigned, because the server cannot sign with
+    /// a key it does not know. That refusal must keep its rcode and gain the
+    /// TSIG error's meaning, not collapse into a signature failure.
+    #[tokio::test]
+    async fn an_unsigned_refusal_keeps_its_diagnosis() {
+        for (sign, expected) in [
+            (
+                Sign::UnknownKey,
+                "does not know TSIG key acme-key. (hmac-sha256) — check tsig_key_name",
+            ),
+            (Sign::BadSig, "check tsig_key_secret"),
+        ] {
+            let server = stub::spawn(stub::Udp::Answer(ResponseCode::NotAuth, sign)).await;
+            let error = updater_for(server.addr)
+                .upsert_txt("_acme-challenge.example.org.", "digest-value")
+                .await
+                .unwrap_err();
+            assert!(error.starts_with("DNS update refused: "), "{error}");
+            assert!(!error.contains("not signed"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    /// The hint is chosen off the TSIG error alone; a refusal carrying none
+    /// reads exactly as it did before verification existed.
+    #[test]
+    fn a_refusal_names_each_tsig_error() {
+        use hickory_proto::rr::rdata::tsig::make_tsig_record;
+
+        let updater = Rfc2136Updater::from_config(&config()).unwrap();
+        let with = |error: Option<TsigError>| {
+            let tsig = TSIG::new(
+                TsigAlgorithm::HmacSha256,
+                0,
+                300,
+                Vec::new(),
+                0,
+                error,
+                Vec::new(),
+            );
+            updater.refusal(
+                ResponseCode::NotAuth,
+                Some(&make_tsig_record(Name::root(), tsig)),
+            )
+        };
+
+        let plain = updater.refusal(ResponseCode::Refused, None);
+        assert_eq!(
+            plain,
+            format!("DNS update refused: {}", ResponseCode::Refused)
+        );
+        assert_eq!(
+            with(None),
+            format!("DNS update refused: {}", ResponseCode::NotAuth)
+        );
+        assert!(with(Some(TsigError::BadTime)).contains("clock"));
+        assert!(with(Some(TsigError::BadTrunc)).ends_with("; TSIG error 22"));
+        assert!(with(Some(TsigError::Unknown(99))).ends_with("; TSIG error 99"));
     }
 }
