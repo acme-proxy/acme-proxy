@@ -51,6 +51,18 @@ pub async fn record_cli_action(
     crate::audit::write(build(actor, client), database).await;
 }
 
+/// [`record_cli_action`] for an action that writes several rows — `eab delete`,
+/// one per account it changed and one for the credential.
+pub async fn record_cli_actions(
+    database: &crate::sqlite::db::Database,
+    build: impl FnOnce(Actor, ClientContext) -> Vec<AuditRecord>,
+) {
+    let (actor, client) = cli_actor();
+    for record in build(actor, client) {
+        crate::audit::write(record, database).await;
+    }
+}
+
 fn base(
     event: AuditEvent,
     profile: impl Into<String>,
@@ -171,6 +183,63 @@ pub fn eab_revoked(
         client,
     )
     .with_detail(format!("kid {kid}"))
+}
+
+/// `eab_deleted`. `accounts` says what became of the accounts the credential
+/// bound; each account deactivated or deleted also gets its own
+/// `account_deactivated`/`account_deleted` row, written by the front end, so
+/// `audit list --account-id` explains it without this row.
+#[must_use]
+pub fn eab_deleted(
+    actor: Actor,
+    client: ClientContext,
+    deleted: &crate::sqlite::eab::DeletedEab,
+) -> AuditRecord {
+    use crate::sqlite::eab::BoundAccounts;
+
+    let eab = &deleted.eab;
+    let accounts = match deleted.accounts {
+        BoundAccounts::Keep => format!("{} account(s) kept", deleted.remaining),
+        BoundAccounts::Deactivate => format!(
+            "{} account(s) deactivated, {} kept",
+            deleted.deactivated.len(),
+            deleted.remaining
+        ),
+        BoundAccounts::Delete => format!("{} account(s) deleted", deleted.deleted.len()),
+    };
+    let detail = match &eab.label {
+        Some(label) => format!("kid {}, label {label:?}, {accounts}", eab.kid),
+        None => format!("kid {}, {accounts}", eab.kid),
+    };
+    base(
+        AuditEvent::EabDeleted,
+        eab.profile.as_deref().unwrap_or_default(),
+        actor,
+        client,
+    )
+    .with_detail(detail)
+}
+
+/// Every row one `eab delete` writes: an `account_deactivated` or
+/// `account_deleted` per account it changed — so `audit list --account-id`
+/// explains each without reading `eab_deleted` — then the `eab_deleted` row.
+/// Accounts kept, or already deactivated, changed nothing and get nothing.
+#[must_use]
+pub fn eab_deleted_records(
+    actor: Actor,
+    client: ClientContext,
+    deleted: &crate::sqlite::eab::DeletedEab,
+) -> Vec<AuditRecord> {
+    let mut records: Vec<AuditRecord> = deleted
+        .deactivated
+        .iter()
+        .map(|account| account_deactivated(actor.clone(), client.clone(), account))
+        .chain(deleted.deleted.iter().map(|(account, orders)| {
+            account_deleted(actor.clone(), client.clone(), account, *orders)
+        }))
+        .collect();
+    records.push(eab_deleted(actor, client, deleted));
+    records
 }
 
 // --- operators ---------------------------------------------------------------
@@ -431,6 +500,66 @@ mod tests {
         assert_eq!(
             record.detail.as_deref(),
             Some("contact = [mailto:a@example.com]")
+        );
+    }
+
+    /// `eab delete` writes a row per account it changed, each carrying its own
+    /// subject, then the credential's — whose detail names the label and says
+    /// what became of the accounts.
+    #[tokio::test]
+    async fn an_eab_delete_records_each_account_then_the_credential() {
+        use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab};
+
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account =
+            crate::testutil::account_seen_from(&[8u8], &ClientContext::default(), &database).await;
+        let eab = Eab::create(
+            Some("team".to_string()),
+            Some("default".to_string()),
+            &database,
+        )
+        .await
+        .unwrap();
+        let kid = eab.kid;
+        let deleted = DeletedEab {
+            eab,
+            accounts: BoundAccounts::Delete,
+            deactivated: Vec::new(),
+            deleted: vec![(account, 4)],
+            remaining: 0,
+        };
+
+        let (actor, client) = cli();
+        let records = eab_deleted_records(actor, client, &deleted);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.event)
+                .collect::<Vec<_>>(),
+            [AuditEvent::AccountDeleted, AuditEvent::EabDeleted]
+        );
+        assert_eq!(records[0].detail.as_deref(), Some("4 order(s) cascaded"));
+        assert_eq!(records[1].profile, "default");
+        assert_eq!(
+            records[1].detail.as_deref(),
+            Some(format!("kid {kid}, label \"team\", 1 account(s) deleted").as_str())
+        );
+
+        let kept = DeletedEab {
+            accounts: BoundAccounts::Deactivate,
+            deleted: Vec::new(),
+            remaining: 2,
+            ..deleted
+        };
+        let (actor, client) = cli();
+        let records = eab_deleted_records(actor, client, &kept);
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .ends_with("0 account(s) deactivated, 2 kept")
         );
     }
 

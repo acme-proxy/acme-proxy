@@ -34,17 +34,20 @@ pub struct ContactForm {
     pub contact: String,
 }
 
-/// `GET /ui/accounts?profile=&limit=&offset=`
+/// `GET /ui/accounts?profile=&eabKid=&limit=&offset=`
 pub async fn list_accounts(
     State(state): State<AdminState>,
     Query(params): Query<AccountListParams>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let filters = ListFilters::new().with("profile", params.profile.as_deref());
+    let filters = ListFilters::new()
+        .with("profile", params.profile.as_deref())
+        .with("eabKid", params.eab_kid.as_deref());
 
     let (accounts, total) = Account::search(
         params.profile.as_deref(),
+        params.eab_kid.as_deref(),
         page.limit,
         page.offset,
         &state.database,
@@ -164,6 +167,10 @@ async fn account_page_context(
     context.insert("account".to_string(), account);
     context.insert("page".to_string(), page_value(items, total));
     context.insert("order_count".to_string(), Value::from(total));
+    context.insert(
+        "live_certificates".to_string(),
+        Value::from(live_certificates(id, state).await?),
+    );
     context.insert("pager".to_string(), pager);
     Ok(context)
 }
@@ -268,9 +275,25 @@ pub async fn delete_account(
     request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let subject = Account::find_any_by_id(&id, &state.database).await?;
-    let deleted = admin::delete_account(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let deleted = match admin::delete_account(&id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(&id)),
+        // The card, with the refusal beside the button that was pressed: the
+        // account is still there, and so is every order that has to be revoked
+        // before it can go.
+        admin::Deletion::LiveCertificates(live) => {
+            let context = card_context(&state, &session, load(&id, &state).await?).await?;
+            return super::refuse_with_card(
+                &state,
+                "accounts/_card.html",
+                context,
+                &crate::webadmin::error::AdminError::conflict(
+                    "live_certificates",
+                    admin::live_certificates_refusal(&format!("account {id}"), live),
+                ),
+            );
+        }
+        admin::Deletion::Deleted(deleted) => deleted,
+    };
 
     if let Some(account) = subject {
         state
@@ -302,12 +325,39 @@ async fn card(
     account: Value,
     banner: Value,
 ) -> Result<Html<String>, PageError> {
-    let order_count = order_count(account["id"].as_str().unwrap_or_default(), state).await?;
-    let mut context = super::fragment_context(&session.auth);
-    context.insert("account".to_string(), account);
-    context.insert("order_count".to_string(), Value::from(order_count));
+    let mut context = card_context(state, session, account).await?;
     context.insert("flash".to_string(), banner);
     respond_fragment(state, "accounts/_card.html", context)
+}
+
+/// Everything the account card reads besides the banner.
+async fn card_context(
+    state: &AdminState,
+    session: &PageSessionWrite,
+    account: Value,
+) -> Result<Map<String, Value>, PageError> {
+    let id = account["id"].as_str().unwrap_or_default().to_string();
+    let mut context = super::fragment_context(&session.auth);
+    context.insert("account".to_string(), account);
+    context.insert(
+        "order_count".to_string(),
+        Value::from(order_count(&id, state).await?),
+    );
+    context.insert(
+        "live_certificates".to_string(),
+        Value::from(live_certificates(&id, state).await?),
+    );
+    Ok(context)
+}
+
+/// How many live certificates the account holds — any of which disables the
+/// card's delete button. The handler refuses regardless; this only spares the
+/// operator a button that can only say no.
+async fn live_certificates(id: &str, state: &AdminState) -> Result<u64, PageError> {
+    let Some(account_id) = crate::sqlite::id::parse(id) else {
+        return Ok(0);
+    };
+    Ok(Account::count_live_certificates(account_id, &state.database).await?)
 }
 
 /// How many orders a delete of this account would take with it — what the

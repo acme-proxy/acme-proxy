@@ -573,6 +573,43 @@ pub(crate) async fn issued_order(
     order
 }
 
+/// An order under `account` holding a certificate that expires at `not_after`
+/// (`None`: never stamped), without signing anything.
+///
+/// For the delete guard's tests, which ask only whether a row counts as a
+/// *live* certificate — issued, not revoked, not expired — and never parse the
+/// chain. [`issued_order`] is the one to reach for when the chain has to be
+/// real.
+#[cfg(test)]
+pub(crate) async fn certified_order(
+    database: &crate::sqlite::db::Database,
+    account: uuid::Uuid,
+    not_after: Option<i64>,
+) -> crate::sqlite::order::Order {
+    let mut order = crate::sqlite::order::Order::create(
+        "default",
+        account,
+        vec![crate::sqlite::order::Identifier::dns("example.com")],
+        crate::sqlite::nonce::now_secs() + 3600,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\n...".to_string(),
+            order.id.simple().to_string(),
+            vec![1],
+            not_after,
+            database,
+        )
+        .await
+        .unwrap();
+    order
+}
+
 /// One `certificate_issued` row with every optional column filled in, so a
 /// renderer test can blank the ones it wants absent.
 #[cfg(test)]

@@ -183,9 +183,9 @@ it that needs a session bounces to `/ui/login`.
 | Page | What is on it |
 |---|---|
 | `/ui/` | What needs attention — failed jobs, certificates expiring within seven days, refusals in the last day, and any endpoint bypassing validation — each linking to its list; then totals for accounts, orders, EAB credentials and nonces, and the mounted endpoints |
-| `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
+| `/ui/accounts` | Every account, filterable by profile and EAB credential, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
 | `/ui/orders` | Every order, filterable by profile, status, account, identifier (exact or substring) and certificate serial; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
-| `/ui/eab` | Credentials, paged; minting (the secret is shown **once**) and revocation |
+| `/ui/eab` | Credentials, paged; minting (the secret is shown **once**); a detail page counts the accounts it registered, links to them, and revokes or deletes — keeping, deactivating or deleting those accounts |
 | `/ui/expiring` | Certificates lapsing inside a window, soonest first, each annotated with whatever has already replaced it; filterable by profile and window, with a control to hide the replaced ones. **Read-only** |
 | `/ui/jobs` | The background queue — relayed issuance, notification delivery, the periodic sweeps — filterable by kind and status. A detail page cross-links a relay job to its upstream order and carries **Cancel** and **Run now** (see below) |
 | `/ui/upstream-orders` | One row per local order relayed to an upstream CA: the upstream URLs, the upstream's own error text, the local order status. **Read-only** — stop an in-flight relay from `/ui/jobs` instead |
@@ -245,20 +245,21 @@ their name — so `every profile` and `any status` reach the API as blanks.
 | `POST` | `/api/mfa/totp/confirm` | `{code}` — **returns the recovery codes, once** |
 | `DELETE` | `/api/mfa/totp` | turn it off; `409` while `admin.require_mfa` is on |
 | `POST` | `/api/mfa/recovery-codes` | reissue — **returns them once** |
-| `GET` | `/api/accounts?profile=&limit=&offset=` | |
+| `GET` | `/api/accounts?profile=&eabKid=&limit=&offset=` | `eabKid`: the accounts one credential registered |
 | `GET` | `/api/accounts/{id}` | |
 | `GET` | `/api/accounts/{id}/orders?limit=&offset=` | |
 | `PATCH` | `/api/accounts/{id}` | `{contact: [...]}` |
 | `POST` | `/api/accounts/{id}/deactivate` | |
-| `DELETE` | `/api/accounts/{id}` | cascades to the account's orders |
+| `DELETE` | `/api/accounts/{id}` | cascades to the account's orders; `409 live_certificates` while one holds a live certificate |
 | `GET` | `/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=` | `identifier` is exact, `identifierContains` a substring, the two mutually exclusive; `certSerial` is the issued leaf's serial |
 | `GET` | `/api/orders/{id}` | order + authorizations + challenges, plus `certificatePem` once issued |
 | `POST` | `/api/orders/{id}/revoke` | `{reason}` optional |
-| `DELETE` | `/api/orders/{id}` | |
+| `DELETE` | `/api/orders/{id}` | `409 live_certificates` while its certificate is live |
 | `GET` | `/api/eab?limit=&offset=` | never shows a secret |
 | `POST` | `/api/eab` | `{label, profile}` — **returns the secret, once** |
 | `GET` | `/api/eab/{kid}` | |
 | `POST` | `/api/eab/{kid}/revoke` | the row survives, moved to `revoked` |
+| `DELETE` | `/api/eab/{kid}?accounts=keep\|deactivate\|delete` | the row goes; `409 live_certificates` for `delete` while an account holds a live certificate |
 | `GET` | `/api/expiring?profile=&days=&superseded=&limit=&offset=` | read-only; `superseded=hide` drops the replaced rows |
 | `GET` | `/api/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=` | read-only |
 | `GET` | `/api/audit/{id}` | one row |

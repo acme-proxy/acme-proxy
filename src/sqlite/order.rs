@@ -259,6 +259,49 @@ macro_rules! columns {
     };
 }
 
+/// The `WHERE` fragment that says an order holds a **live certificate**: one
+/// issued, not revoked, and not known to have expired. Binds one `?`, the
+/// current time in unix seconds.
+///
+/// An order row is the only record of the certificate it issued:
+/// `revokeCert` and `order revoke` resolve it by serial
+/// ([`Order::find_by_cert_serial`]), and the expiry digest and RFC 9773 renewal
+/// information read its `cert_not_after`. Deleting one that is live therefore
+/// makes a certificate the CA still vouches for impossible to withdraw, which
+/// is why [`Order::cleanup`] never sweeps a `valid` order and why every
+/// operator delete — an order, an account, an EAB credential's accounts — is
+/// refused while this matches. A certificate already revoked is unaffected:
+/// the local CA's CRL reads its own ledger, not this table.
+///
+/// An expiry this row does not know is **live**: `NULL` (not yet stamped by the
+/// digest's backfill) and [`UNPARSABLE_NOT_AFTER`] alike. The conservative
+/// reading is the only one available; a certificate cannot be proven expired
+/// from a date nobody could read.
+///
+/// Columns are unqualified so it reads the same inside a subquery over
+/// `orders` (`Account::delete`). A `macro_rules!` for [`columns!`]'s reason: it
+/// has to be a literal inside `concat!`. Never evaluates to `NULL` — each
+/// comparison that could is guarded by an `IS NULL` alongside it — so `NOT (…)`
+/// is the complement and not a third state.
+macro_rules! live_certificate {
+    () => {
+        "(certificate IS NOT NULL AND revoked_at IS NULL \
+          AND (cert_not_after IS NULL OR cert_not_after < 0 OR cert_not_after > ?))"
+    };
+}
+pub(crate) use live_certificate;
+
+/// What a delete guarded by [`live_certificate!`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedDelete {
+    /// No such row.
+    NotFound,
+    /// Refused: the row (or, for an account, its orders) holds this many live
+    /// certificates.
+    LiveCertificates(u64),
+    Deleted,
+}
+
 /// What [`Order::cert_not_after`] holds for a chain that would not parse, so it
 /// is never parsed again.
 ///
@@ -626,24 +669,60 @@ impl Order {
     }
 
     /// Hard-deletes the order row — cascading, via `ON DELETE CASCADE`, to its
-    /// authorizations and challenges. Returns whether a row existed to delete.
-    pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
+    /// authorizations and challenges — unless it holds a
+    /// [`live_certificate!`], which it refuses.
+    ///
+    /// The guard is part of the `DELETE` itself rather than a read before it,
+    /// so no issuance can land between the check and the delete. Only when
+    /// nothing was deleted does a second read tell a refusal from a missing row.
+    pub async fn delete(id: &str, database: &Database) -> Result<GuardedDelete, sqlx::Error> {
         debug!(event = "db_order_delete_started", outcome = "progress", order_id = ?id);
         let Some(id) = crate::sqlite::id::parse(id) else {
-            return Ok(false);
+            return Ok(GuardedDelete::NotFound);
         };
-        let result = sqlx::query("DELETE FROM orders WHERE id = ?;")
-            .bind(id)
-            .execute(&database.pool)
-            .await?;
+        let now = now_secs();
+        let result = sqlx::query(concat!(
+            "DELETE FROM orders WHERE id = ? AND NOT ",
+            live_certificate!(),
+            ";"
+        ))
+        .bind(id)
+        .bind(now)
+        .execute(&database.pool)
+        .await?;
 
-        let deleted = result.rows_affected() > 0;
-        if deleted {
+        if result.rows_affected() > 0 {
             info!(event = "db_order_deleted", outcome = "success", order_id = ?id);
+            return Ok(GuardedDelete::Deleted);
+        }
+
+        let live = Self::count_live_certificates(id, database).await?;
+        if live > 0 {
+            info!(event = "db_order_delete_blocked", outcome = "failure", order_id = ?id, live_certificates = live);
+            Ok(GuardedDelete::LiveCertificates(live))
         } else {
             debug!(event = "db_order_delete_missing", outcome = "success", order_id = ?id);
+            Ok(GuardedDelete::NotFound)
         }
-        Ok(deleted)
+    }
+
+    /// How many live certificates ([`live_certificate!`]) this order holds: `0`
+    /// or `1`. What the order card reads to disable its delete button.
+    pub async fn count_live_certificates(
+        order_id: Uuid,
+        database: &Database,
+    ) -> Result<u64, sqlx::Error> {
+        let live: i64 = sqlx::query(concat!(
+            "SELECT COUNT(*) FROM orders WHERE id = ? AND ",
+            live_certificate!(),
+            ";"
+        ))
+        .bind(order_id)
+        .bind(now_secs())
+        .fetch_one(&database.pool)
+        .await?
+        .try_get(0)?;
+        Ok(live as u64)
     }
 
     /// Records a successful issuance: stores the PEM `chain` plus the leaf's
@@ -1633,7 +1712,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_the_row_and_reports_true() {
+    async fn delete_removes_the_row_and_reports_deleted() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
         let order = Order::create(
@@ -1648,10 +1727,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(
+        assert_eq!(
             Order::delete(order.id.to_string().as_str(), &db)
                 .await
-                .unwrap()
+                .unwrap(),
+            GuardedDelete::Deleted
         );
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
@@ -1662,9 +1742,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_of_unknown_id_reports_false() {
+    async fn delete_of_unknown_id_reports_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(!Order::delete("nope", &db).await.unwrap());
+        assert_eq!(
+            Order::delete("nope", &db).await.unwrap(),
+            GuardedDelete::NotFound
+        );
     }
 
     #[tokio::test]
@@ -1711,6 +1794,58 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// The guard. A certificate is live while it is issued, not revoked and not
+    /// known to have expired — and an expiry nobody could read (never stamped,
+    /// or unparsable) is not known to have passed. Each live shape refuses and
+    /// leaves the row; each way of not being live deletes.
+    #[tokio::test]
+    async fn delete_refuses_an_order_holding_a_live_certificate() {
+        use crate::testutil::certified_order;
+
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let acct = account_id(&db).await;
+        let now = now_secs();
+
+        for not_after in [Some(now + DAY), None, Some(UNPARSABLE_NOT_AFTER)] {
+            let order = certified_order(&db, acct, not_after).await;
+            assert_eq!(
+                Order::count_live_certificates(order.id, &db).await.unwrap(),
+                1,
+                "{not_after:?}"
+            );
+            assert_eq!(
+                Order::delete(order.id.to_string().as_str(), &db)
+                    .await
+                    .unwrap(),
+                GuardedDelete::LiveCertificates(1),
+                "{not_after:?}"
+            );
+            assert!(
+                Order::find_by_id(order.id.to_string().as_str(), &db)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "a refused delete must leave the row"
+            );
+        }
+
+        let mut revoked = certified_order(&db, acct, Some(now + DAY)).await;
+        revoked.revoke(Some(1), &db).await.unwrap();
+        let expired = certified_order(&db, acct, Some(now - DAY)).await;
+        for order in [revoked, expired] {
+            assert_eq!(
+                Order::count_live_certificates(order.id, &db).await.unwrap(),
+                0
+            );
+            assert_eq!(
+                Order::delete(order.id.to_string().as_str(), &db)
+                    .await
+                    .unwrap(),
+                GuardedDelete::Deleted
+            );
+        }
     }
 
     /// Seeds `count` orders under `profile`, each backdated one second further

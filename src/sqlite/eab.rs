@@ -5,6 +5,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::random::random_bytes;
+use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
@@ -24,7 +25,9 @@ use crate::sqlite::order::rfc3339;
 /// - `search`: one page of the listing, newest first, plus the unpaged total --
 ///   the only listing of this table, read by `eab list`, `/ui/eab` and
 ///   `GET /api/eab` alike
-/// - `revoke`: move to the terminal `revoked` state
+/// - `revoke`: move to the terminal `revoked` state, keeping the row
+/// - `delete`: remove the row, and with it deactivate, delete or leave the
+///   accounts it bound (see [`BoundAccounts`])
 /// - `to_json`: admin-facing rendering (never includes the secret)
 #[derive(Debug)]
 pub struct Eab {
@@ -36,6 +39,75 @@ pub struct Eab {
     pub profile: Option<String>,
     pub status: String,
     pub created_at: i64,
+}
+
+/// What `eab delete` does to the accounts a credential bound.
+///
+/// `Keep` is the default because it is the only one that changes nothing
+/// beyond the credential — but it is not free: an account whose kid names a
+/// deleted row resolves to no credential at all, so every `type = "eab"` filter
+/// check refuses it from then on (`handlers::helpers` finds nothing to build an
+/// `EabIdentity` from).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BoundAccounts {
+    /// Leave them as they are.
+    #[default]
+    Keep,
+    /// Move them to `deactivated` (RFC 8555 §7.3.6), keeping their orders — so
+    /// every certificate they hold stays revocable, in the expiry digest and in
+    /// renewal information until it expires.
+    Deactivate,
+    /// Hard-delete them and everything under them. Refused while any of their
+    /// orders holds a live certificate.
+    Delete,
+}
+
+impl BoundAccounts {
+    /// Every spelling [`BoundAccounts::parse`] accepts, for a refusal to list.
+    pub const ALL: [BoundAccounts; 3] = [Self::Keep, Self::Deactivate, Self::Delete];
+
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Keep => "keep",
+            Self::Deactivate => "deactivate",
+            Self::Delete => "delete",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
+}
+
+/// What [`Eab::delete`] did.
+#[derive(Debug)]
+pub enum EabDeletion {
+    NotFound,
+    /// Refused, and nothing changed: [`BoundAccounts::Delete`] was asked of a
+    /// credential whose accounts still hold live certificates.
+    LiveCertificates {
+        accounts: u64,
+        certificates: u64,
+    },
+    Deleted(DeletedEab),
+}
+
+/// A credential [`Eab::delete`] removed, and what became of its accounts.
+#[derive(Debug)]
+pub struct DeletedEab {
+    /// The row as it was — its label and profile name the audit row.
+    pub eab: Eab,
+    pub accounts: BoundAccounts,
+    /// The accounts [`BoundAccounts::Deactivate`] changed, as they now are.
+    /// Those already deactivated are not here: nothing happened to them.
+    pub deactivated: Vec<Account>,
+    /// The accounts [`BoundAccounts::Delete`] removed, each with the number of
+    /// orders that cascaded with it.
+    pub deleted: Vec<(Account, u64)>,
+    /// Accounts still in the table naming the deleted kid.
+    pub remaining: u64,
 }
 
 /// Length, in bytes, of a freshly generated HMAC secret: 32 (256 bits),
@@ -189,7 +261,9 @@ impl Eab {
 
     /// Moves the key to the terminal-for-new-use `revoked` state. Existing
     /// accounts bound under it are unaffected (see the migration's note on
-    /// `accounts.eab_kid`). Idempotent: revoking an already-revoked key still
+    /// `accounts.eab_kid`), and — unlike [`Eab::delete`] — they still resolve to
+    /// this row, so a `type = "eab"` filter check keeps matching them by label
+    /// (or refuses them, under `require_active`). Idempotent: revoking an already-revoked key still
     /// matches the row and reports `true`. Returns whether a row existed.
     pub async fn revoke(kid: &str, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_eab_revoke_started", outcome = "progress", kid = ?kid);
@@ -208,6 +282,82 @@ impl Eab {
             debug!(event = "db_eab_revoke_missing", outcome = "success", kid = ?kid);
         }
         Ok(updated)
+    }
+
+    /// Deletes the credential, doing `accounts` to the accounts it bound, all in
+    /// one transaction.
+    ///
+    /// The credential's `DELETE` is the transaction's first statement, so the
+    /// write lock is held from the start: nothing can issue under one of its
+    /// accounts between [`Account::live_certificates_by_eab_kid`] answering
+    /// "none" and the accounts going. A refusal rolls the credential back with
+    /// everything else, which is why it is not checked up front instead.
+    pub async fn delete(
+        kid: &str,
+        accounts: BoundAccounts,
+        database: &Database,
+    ) -> Result<EabDeletion, sqlx::Error> {
+        debug!(event = "db_eab_delete_started", outcome = "progress", kid = ?kid, accounts = accounts.as_str());
+        let Some(kid) = crate::sqlite::id::parse(kid) else {
+            return Ok(EabDeletion::NotFound);
+        };
+
+        let mut tx = database.pool.begin().await?;
+        let Some(row) = sqlx::query(
+            "DELETE FROM eab_keys WHERE kid = ? \
+             RETURNING kid, secret, label, profile, status, created_at;",
+        )
+        .bind(kid)
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
+            debug!(event = "db_eab_delete_missing", outcome = "success", kid = ?kid);
+            return Ok(EabDeletion::NotFound);
+        };
+        let eab = Eab::from_row(row)?;
+
+        let mut deactivated = Vec::new();
+        let mut deleted = Vec::new();
+        match accounts {
+            BoundAccounts::Keep => {}
+            BoundAccounts::Deactivate => {
+                deactivated = Account::deactivate_by_eab_kid(kid, &mut tx).await?;
+            }
+            BoundAccounts::Delete => {
+                let (holders, certificates) =
+                    Account::live_certificates_by_eab_kid(kid, &mut tx).await?;
+                if certificates > 0 {
+                    tx.rollback().await?;
+                    info!(event = "db_eab_delete_blocked", outcome = "failure", kid = ?kid, accounts = holders, live_certificates = certificates);
+                    return Ok(EabDeletion::LiveCertificates {
+                        accounts: holders,
+                        certificates,
+                    });
+                }
+                deleted = Account::delete_by_eab_kid(kid, &mut tx).await?;
+            }
+        }
+
+        let remaining: i64 = sqlx::query("SELECT COUNT(*) FROM accounts WHERE eab_kid = ?;")
+            .bind(kid)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get(0)?;
+        tx.commit().await?;
+
+        info!(event = "db_eab_deleted",
+              outcome = "success",
+              kid = ?kid,
+              accounts = accounts.as_str(),
+              accounts_deactivated = deactivated.len(),
+              rows_removed = deleted.len());
+        Ok(EabDeletion::Deleted(DeletedEab {
+            eab,
+            accounts,
+            deactivated,
+            deleted,
+            remaining: remaining as u64,
+        }))
     }
 
     /// Whether this key may still be used to bind a new account.
@@ -370,6 +520,191 @@ mod tests {
     async fn revoke_of_unknown_kid_reports_false() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         assert!(!Eab::revoke("nope", &db).await.unwrap());
+    }
+
+    /// A credential, and `count` accounts registered with it, each holding
+    /// one certificate expiring at `not_after`.
+    async fn bound(
+        db: &Arc<Database>,
+        count: u8,
+        not_after: Option<i64>,
+    ) -> (Eab, Vec<crate::sqlite::account::Account>) {
+        use crate::audit::ClientContext;
+
+        let eab = Eab::create(Some("tenant".to_string()), None, db)
+            .await
+            .unwrap();
+        let mut accounts = Vec::new();
+        for index in 0..count {
+            let (mut account, _) = Account::find_or_create(
+                "default",
+                &[eab.kid.as_bytes()[15], index],
+                vec![],
+                &ClientContext::default(),
+                db,
+            )
+            .await
+            .unwrap();
+            account.set_eab_kid(eab.kid, db).await.unwrap();
+            crate::testutil::certified_order(db, account.id, not_after).await;
+            accounts.push(account);
+        }
+        (eab, accounts)
+    }
+
+    async fn account_exists(id: uuid::Uuid, db: &Database) -> bool {
+        Account::find_any_by_id(id.to_string().as_str(), db)
+            .await
+            .unwrap()
+            .is_some()
+    }
+
+    #[tokio::test]
+    async fn delete_of_an_unknown_kid_is_not_found() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        for kid in ["nope".to_string(), crate::sqlite::id::mint().to_string()] {
+            assert!(matches!(
+                Eab::delete(&kid, BoundAccounts::Delete, &db).await.unwrap(),
+                EabDeletion::NotFound
+            ));
+        }
+    }
+
+    /// `Keep` removes the credential and nothing else: the accounts stay,
+    /// still naming a kid that now resolves to nothing.
+    #[tokio::test]
+    async fn delete_keeping_accounts_removes_only_the_credential() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (eab, accounts) = bound(&db, 2, Some(now_secs() + 86_400)).await;
+        let kid = eab.kid.to_string();
+
+        let EabDeletion::Deleted(deleted) =
+            Eab::delete(&kid, BoundAccounts::Keep, &db).await.unwrap()
+        else {
+            panic!("keeping the accounts cannot be refused");
+        };
+        assert_eq!(deleted.eab.label.as_deref(), Some("tenant"));
+        assert!(deleted.deactivated.is_empty() && deleted.deleted.is_empty());
+        assert_eq!(deleted.remaining, 2);
+
+        assert!(Eab::find_any_by_kid(&kid, &db).await.unwrap().is_none());
+        for account in &accounts {
+            let kept = Account::find_any_by_id(account.id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (kept.status.as_str(), kept.eab_kid),
+                ("valid", Some(eab.kid))
+            );
+        }
+    }
+
+    /// `Deactivate` moves the accounts to `deactivated` and keeps their orders
+    /// — live certificates included, which is the point. An account already
+    /// deactivated changed nothing and is not reported.
+    #[tokio::test]
+    async fn delete_deactivating_accounts_keeps_their_orders() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (eab, mut accounts) = bound(&db, 3, Some(now_secs() + 86_400)).await;
+        accounts[2].deactivate(&db).await.unwrap();
+
+        let EabDeletion::Deleted(deleted) =
+            Eab::delete(&eab.kid.to_string(), BoundAccounts::Deactivate, &db)
+                .await
+                .unwrap()
+        else {
+            panic!("deactivating is never refused");
+        };
+        assert_eq!(deleted.deactivated.len(), 2);
+        assert!(
+            deleted
+                .deactivated
+                .iter()
+                .all(|account| account.status == "deactivated")
+        );
+        assert_eq!(deleted.remaining, 3);
+
+        for account in &accounts {
+            assert_eq!(
+                crate::sqlite::order::Order::find_by_account(account.id, &db)
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    /// `Delete` is refused while any bound account holds a live certificate,
+    /// and the refusal rolls back everything — the credential included.
+    #[tokio::test]
+    async fn delete_with_accounts_is_refused_by_a_live_certificate_and_changes_nothing() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (eab, accounts) = bound(&db, 2, Some(now_secs() - 86_400)).await;
+        crate::testutil::certified_order(&db, accounts[1].id, None).await;
+        let kid = eab.kid.to_string();
+
+        assert!(matches!(
+            Eab::delete(&kid, BoundAccounts::Delete, &db).await.unwrap(),
+            EabDeletion::LiveCertificates {
+                accounts: 1,
+                certificates: 1
+            }
+        ));
+        assert!(Eab::find_any_by_kid(&kid, &db).await.unwrap().is_some());
+        for account in &accounts {
+            assert!(account_exists(account.id, &db).await);
+        }
+    }
+
+    /// With no live certificate, `Delete` takes the credential, its accounts
+    /// and their orders, reports each account's own cascade, and leaves
+    /// another credential's accounts alone.
+    #[tokio::test]
+    async fn delete_with_accounts_removes_them_and_their_orders() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (eab, accounts) = bound(&db, 2, Some(now_secs() - 86_400)).await;
+        crate::testutil::certified_order(&db, accounts[0].id, Some(now_secs() - 1)).await;
+        let (_, others) = bound(&db, 1, Some(now_secs() + 86_400)).await;
+
+        let EabDeletion::Deleted(deleted) =
+            Eab::delete(&eab.kid.to_string(), BoundAccounts::Delete, &db)
+                .await
+                .unwrap()
+        else {
+            panic!("no live certificate, so nothing refuses");
+        };
+        let mut cascades: Vec<(uuid::Uuid, u64)> = deleted
+            .deleted
+            .iter()
+            .map(|(account, orders)| (account.id, *orders))
+            .collect();
+        cascades.sort();
+        let mut expected = vec![(accounts[0].id, 2), (accounts[1].id, 1)];
+        expected.sort();
+        assert_eq!(cascades, expected);
+        assert_eq!(deleted.remaining, 0);
+
+        for account in &accounts {
+            assert!(!account_exists(account.id, &db).await);
+            assert!(
+                crate::sqlite::order::Order::find_by_account(account.id, &db)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert!(account_exists(others[0].id, &db).await);
+    }
+
+    #[test]
+    fn bound_accounts_parses_every_spelling_it_renders_and_nothing_else() {
+        for mode in BoundAccounts::ALL {
+            assert_eq!(BoundAccounts::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(BoundAccounts::parse("Delete"), None);
+        assert_eq!(BoundAccounts::default(), BoundAccounts::Keep);
     }
 
     #[tokio::test]

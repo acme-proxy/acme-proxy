@@ -211,9 +211,16 @@ pub async fn delete_order(
     request_context: crate::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let subject = Order::find_by_id(&id, &state.database).await?;
-    let deleted = admin::delete_order(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let deleted = match admin::delete_order(&id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(&id)),
+        admin::Deletion::LiveCertificates(live) => {
+            return Err(AdminError::conflict(
+                "live_certificates",
+                admin::live_certificates_refusal(&format!("order {id}"), live),
+            ));
+        }
+        admin::Deletion::Deleted(deleted) => deleted,
+    };
 
     if let Some(order) = subject {
         state

@@ -4,7 +4,7 @@
 use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::admin;
 use crate::admin::ops::RevokeOutcome;
@@ -111,6 +111,10 @@ pub async fn get_order(
 
     let mut context = chrome(&session, "orders", "Order");
     context.insert("detail".to_string(), detail);
+    context.insert(
+        "live_certificate".to_string(),
+        Value::Bool(live_certificate(&id, &state).await?),
+    );
 
     respond(
         &state,
@@ -247,9 +251,7 @@ pub async fn revoke_order(
     // Re-read rather than reuse: the revocation stamped columns the card shows,
     // and re-rendering from the pre-revocation row would tell the operator
     // nothing happened.
-    let detail = load(&id, &state).await?;
-    let mut context = super::fragment_context(&session.auth);
-    context.insert("detail".to_string(), detail);
+    let mut context = card_context(&id, &state, &session).await?;
     context.insert("flash".to_string(), banner);
     respond_fragment(&state, "orders/_card.html", context)
 }
@@ -262,9 +264,24 @@ pub async fn delete_order(
     request_context: crate::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let subject = crate::sqlite::order::Order::find_by_id(&id, &state.database).await?;
-    let deleted = admin::delete_order(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let deleted = match admin::delete_order(&id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(&id)),
+        // The card, with the refusal beside the button that was pressed: the
+        // order is still there, and revoking it is one panel up.
+        admin::Deletion::LiveCertificates(live) => {
+            let context = card_context(&id, &state, &session).await?;
+            return super::refuse_with_card(
+                &state,
+                "orders/_card.html",
+                context,
+                &AdminError::conflict(
+                    "live_certificates",
+                    admin::live_certificates_refusal(&format!("order {id}"), live),
+                ),
+            );
+        }
+        admin::Deletion::Deleted(deleted) => deleted,
+    };
 
     if let Some(order) = subject {
         state
@@ -286,6 +303,33 @@ pub async fn delete_order(
                    cascaded_authorizations = deleted.cascaded);
 
     Ok(redirect("/ui/orders", session.hx))
+}
+
+/// The card's context as a mutation re-renders it — the order re-read, since
+/// the mutation may have stamped columns the card shows.
+async fn card_context(
+    id: &str,
+    state: &AdminState,
+    session: &PageSessionWrite,
+) -> Result<Map<String, Value>, PageError> {
+    let detail = load(id, state).await?;
+    let mut context = super::fragment_context(&session.auth);
+    context.insert("detail".to_string(), detail);
+    context.insert(
+        "live_certificate".to_string(),
+        Value::Bool(live_certificate(id, state).await?),
+    );
+    Ok(context)
+}
+
+/// Whether the order holds a live certificate, which disables its delete
+/// button. The handler refuses regardless; this only spares the operator a
+/// button that can only say no.
+async fn live_certificate(id: &str, state: &AdminState) -> Result<bool, PageError> {
+    let Some(order_id) = crate::sqlite::id::parse(id) else {
+        return Ok(false);
+    };
+    Ok(Order::count_live_certificates(order_id, &state.database).await? > 0)
 }
 
 async fn load(id: &str, state: &AdminState) -> Result<Value, PageError> {

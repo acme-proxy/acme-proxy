@@ -13,12 +13,15 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::admin;
+use crate::sqlite::account::Account;
 use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
+use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::eab::{DeleteEabParams, deleted_or_refused};
 use crate::webadmin::handlers::paging::{Page, PageParams};
 use crate::webadmin::handlers::params::non_empty;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
-use crate::webadmin::pages::error::PageError;
+use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 
 #[derive(Debug, Deserialize, Default)]
@@ -79,6 +82,7 @@ pub async fn get_eab(
 
     let mut context = chrome(&session, "eab", "Credential");
     context.insert("eab".to_string(), eab);
+    insert_bound_accounts(&mut context, &kid, &state).await?;
 
     respond(
         &state,
@@ -188,9 +192,7 @@ pub async fn revoke_eab(
                    kid = %kid,
                    username = %session.auth.user.username);
 
-    let eab = load(&kid, &state).await?;
-    let mut context = super::fragment_context(&session.auth);
-    context.insert("eab".to_string(), eab);
+    let mut context = card_context(&kid, &state, &session).await?;
     context.insert(
         "flash".to_string(),
         flash(
@@ -199,6 +201,94 @@ pub async fn revoke_eab(
         ),
     );
     respond_fragment(&state, "eab/_card.html", context)
+}
+
+/// `DELETE /ui/eab/{kid}?accounts=keep|deactivate|delete`
+///
+/// Answers with a redirect to the list, the page the button lives on being the
+/// thing that just stopped existing. A refusal — an unknown mode, or live
+/// certificates under `accounts=delete` — is the card with the reason beside
+/// the buttons, and nothing changed.
+pub async fn delete_eab(
+    State(state): State<AdminState>,
+    Path(kid): Path<String>,
+    Query(params): Query<DeleteEabParams>,
+    session: PageSessionWrite,
+    request_context: crate::audit::RequestContext,
+) -> Result<Response, PageError> {
+    let accounts = match params.resolve() {
+        Ok(accounts) => accounts,
+        Err(error) => return refuse(&kid, &state, &session, &error).await,
+    };
+    let deletion = admin::delete_eab(&kid, accounts, state.database.clone()).await?;
+    let deleted = match deleted_or_refused(&kid, deletion) {
+        Ok(deleted) => deleted,
+        Err(error) if error.status == StatusCode::NOT_FOUND => return Err(error.into()),
+        Err(error) => return refuse(&kid, &state, &session, &error).await,
+    };
+
+    state
+        .record_admin_actions(
+            &request_context,
+            &session.auth.user.username,
+            |actor, client| crate::audit::admin::eab_deleted_records(actor, client, &deleted),
+        )
+        .await;
+    tracing::info!(event = "admin_eab_deleted",
+                   outcome = "success",
+                   surface = "ui",
+                   kid = %kid,
+                   accounts = accounts.as_str(),
+                   username = %session.auth.user.username);
+
+    Ok(redirect("/ui/eab", session.hx))
+}
+
+/// The card with `error` as its banner, keeping the error's status.
+async fn refuse(
+    kid: &str,
+    state: &AdminState,
+    session: &PageSessionWrite,
+    error: &AdminError,
+) -> Result<Response, PageError> {
+    let context = card_context(kid, state, session).await?;
+    super::refuse_with_card(state, "eab/_card.html", context, error)
+}
+
+/// The card's context as a mutation re-renders it: the credential re-read, and
+/// what it bound.
+async fn card_context(
+    kid: &str,
+    state: &AdminState,
+    session: &PageSessionWrite,
+) -> Result<Map<String, Value>, PageError> {
+    let mut context = super::fragment_context(&session.auth);
+    context.insert("eab".to_string(), load(kid, state).await?);
+    insert_bound_accounts(&mut context, kid, state).await?;
+    Ok(context)
+}
+
+/// `bound`: the counts the card's accounts link and its delete buttons read,
+/// from the same `Account::eab_summary` `eab delete` words its prompt with.
+async fn insert_bound_accounts(
+    context: &mut Map<String, Value>,
+    kid: &str,
+    state: &AdminState,
+) -> Result<(), PageError> {
+    let summary = match crate::sqlite::id::parse(kid) {
+        Some(kid) => Account::eab_summary(kid, &state.database).await?,
+        None => Default::default(),
+    };
+    context.insert(
+        "bound".to_string(),
+        serde_json::json!({
+            "accounts": summary.accounts,
+            "activeAccounts": summary.active_accounts,
+            "orders": summary.orders,
+            "liveCertificates": summary.live_certificates,
+        }),
+    );
+    Ok(())
 }
 
 async fn rows(page: Page, state: &AdminState) -> Result<(Vec<Value>, i64), PageError> {

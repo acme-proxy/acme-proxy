@@ -20,6 +20,9 @@ pub enum AccountCommand {
         /// Restrict the listing to one ACME endpoint.
         #[arg(long)]
         profile: Option<String>,
+        /// Restrict the listing to the accounts one EAB credential bound.
+        #[arg(long)]
+        eab_kid: Option<String>,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
         #[arg(long, default_value_t = 0)]
@@ -56,13 +59,20 @@ pub async fn run_account_command(
     match command {
         AccountCommand::List {
             profile,
+            eab_kid,
             limit,
             offset,
             json,
         } => {
             let window = Window::resolve(limit, offset);
-            let (accounts, total) =
-                Account::search(profile.as_deref(), window.limit, window.offset, &database).await?;
+            let (accounts, total) = Account::search(
+                profile.as_deref(),
+                eab_kid.as_deref(),
+                window.limit,
+                window.offset,
+                &database,
+            )
+            .await?;
             render::print_page(
                 &accounts,
                 total,
@@ -121,6 +131,12 @@ pub async fn run_account_command(
             let doomed = Account::find_any_by_id(&id, &database).await?;
             match admin::confirm_delete_account(&id, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
+                DeleteOutcome::LiveCertificates(live) => {
+                    return Err(CliError::bad_request(admin::live_certificates_refusal(
+                        &format!("account {id}"),
+                        live,
+                    )));
+                }
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
                     if let Some(account) = doomed {
@@ -381,6 +397,7 @@ mod tests {
             run_account_command(
                 AccountCommand::List {
                     profile: None,
+                    eab_kid: None,
                     limit,
                     offset,
                     json,
@@ -409,8 +426,8 @@ mod tests {
                 .unwrap();
         }
 
-        let (first, total) = Account::search(None, 2, 0, &database).await.unwrap();
-        let (second, also_total) = Account::search(None, 2, 2, &database).await.unwrap();
+        let (first, total) = Account::search(None, None, 2, 0, &database).await.unwrap();
+        let (second, also_total) = Account::search(None, None, 2, 2, &database).await.unwrap();
 
         assert_eq!(total, 3);
         assert_eq!(also_total, 3, "the total is the table, not the page");
@@ -444,6 +461,7 @@ mod tests {
         run_account_command(
             AccountCommand::List {
                 profile: Some("default".to_string()),
+                eab_kid: None,
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: true,
@@ -470,5 +488,41 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// `account delete` over a live certificate fails with the shared wording
+    /// and writes no audit row, even with `--yes`.
+    #[tokio::test]
+    async fn delete_refuses_an_account_holding_a_live_certificate() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account = crate::testutil::account_id(&database).await;
+        crate::testutil::certified_order(&database, account, None).await;
+
+        let error = run_account_command(
+            AccountCommand::Delete {
+                id: account.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut &b""[..],
+            &Config::default(),
+            database.clone(),
+        )
+        .await
+        .expect_err("a live certificate must refuse the delete");
+        assert_eq!(
+            error,
+            CliError::bad_request(admin::live_certificates_refusal(
+                &format!("account {account}"),
+                1
+            ))
+        );
+        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
+            &crate::sqlite::audit::AuditQuery::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+        assert!(rows.is_empty());
     }
 }

@@ -1667,6 +1667,7 @@ fn mutating_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         (Method::POST, "/api/jobs/some-id/run", Operator),
         (Method::POST, "/api/eab", Operator),
         (Method::POST, "/api/eab/some-kid/revoke", Operator),
+        (Method::DELETE, "/api/eab/some-kid", Operator),
         (Method::POST, "/api/nonces/cleanup", Operator),
         (Method::DELETE, "/api/session", SelfService),
         (Method::POST, "/api/mfa/totp", SelfService),
@@ -2768,6 +2769,202 @@ async fn an_order_can_be_deleted_and_names_its_cascade() {
             .unwrap()
             .is_none()
     );
+}
+
+/// Deleting the order or the account behind a live certificate would leave
+/// the certificate impossible to revoke, so both answer `409
+/// live_certificates` and delete nothing. Revoked, the same deletes succeed.
+#[tokio::test]
+async fn an_account_or_order_holding_a_live_certificate_cannot_be_deleted() {
+    use acme_proxy::sqlite::order::Order;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let ids = seed(&database, 1).await;
+    let account: uuid::Uuid = ids[0].parse().unwrap();
+    let mut order = certified_order(&database, account, None).await;
+
+    for path in [
+        format!("/api/orders/{}", order.id),
+        format!("/api/accounts/{account}"),
+    ] {
+        let response = admin_request(&app, Method::DELETE, &path, Some(&session), None).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+        let body = json_body(response).await;
+        assert_eq!(body["error"], "live_certificates", "{path}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("1 live certificate(s)"),
+            "{body}"
+        );
+    }
+    assert!(
+        Order::find_by_id(&order.id.to_string(), &database)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    order.revoke(None, &database).await.unwrap();
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/accounts/{account}"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["deleted"]["orders"], 2);
+}
+
+/// `DELETE /api/eab/{kid}` in its three modes, the refusal, the unknown mode
+/// and the unknown kid — and the listing an operator reads first.
+#[tokio::test]
+async fn the_eab_delete_api_keeps_deactivates_or_deletes_the_accounts() {
+    use acme_proxy::sqlite::account::Account;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    // The accounts a credential bound are one filter away, and name it.
+    let (kid, accounts) = bound_eab(&database, 2, None).await;
+    let listed = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/accounts?eabKid={kid}"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(listed["total"], 2);
+    assert_eq!(listed["items"][0]["eabKid"], kid);
+
+    // An unknown mode is refused by name, before anything happens.
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/eab/{kid}?accounts=purge"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        json_body(response).await["message"]
+            .as_str()
+            .unwrap()
+            .contains("keep, deactivate, delete")
+    );
+
+    // Live certificates refuse `delete`, and nothing changes.
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/eab/{kid}?accounts=delete"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json_body(response).await["error"], "live_certificates");
+    assert_eq!(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/eab/{kid}"),
+            Some(&session),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    // `deactivate` is the way out: the accounts and their orders stay.
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/eab/{kid}?accounts=deactivate"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await,
+        json!({ "deleted": { "accounts": 0, "orders": 0 }, "deactivatedAccounts": 2, "keptAccounts": 2 })
+    );
+    for id in &accounts {
+        let account = Account::find_any_by_id(&id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(account.status, "deactivated");
+    }
+    assert_eq!(
+        admin_request(
+            &app,
+            Method::DELETE,
+            &format!("/api/eab/{kid}"),
+            Some(&session),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Expired certificates are nothing to protect: `delete` takes it all.
+    let (kid, accounts) = bound_eab(&database, 1, Some(1)).await;
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/eab/{kid}?accounts=delete"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await,
+        json!({ "deleted": { "accounts": 1, "orders": 1 }, "deactivatedAccounts": 0, "keptAccounts": 0 })
+    );
+    assert!(
+        Account::find_any_by_id(&accounts[0].to_string(), &database)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // The default keeps them, still naming the kid that is gone.
+    let (kid, _) = bound_eab(&database, 1, None).await;
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        &format!("/api/eab/{kid}"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(
+        json_body(response).await,
+        json!({ "deleted": { "accounts": 0, "orders": 0 }, "deactivatedAccounts": 0, "keptAccounts": 1 })
+    );
+    let listed = json_body(
+        admin_request(
+            &app,
+            Method::GET,
+            &format!("/api/accounts?eabKid={kid}"),
+            Some(&session),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(listed["total"], 1);
 }
 
 #[tokio::test]
@@ -4185,7 +4382,7 @@ async fn a_blank_filter_is_absent_on_every_list() {
     // Each pair is (the unfiltered listing, the same listing with every filter
     // control left blank — the exact query string the panel's form submits).
     for (bare, blank, expected) in [
-        ("/api/accounts", "/api/accounts?profile=", 3),
+        ("/api/accounts", "/api/accounts?profile=&eabKid=", 3),
         (
             "/api/orders",
             "/api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=",

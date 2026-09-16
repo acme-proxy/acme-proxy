@@ -67,6 +67,11 @@ pub fn render_account_json(account: &Account, base_url: &str) -> Value {
         "pubkeyFingerprint".to_string(),
         Value::String(pubkey_fingerprint(&account.pubkey)),
     );
+    // The credential the account registered under, which may since have been
+    // deleted: a kid, not a promise that `GET /api/eab/{kid}` answers.
+    if let Some(kid) = account.eab_kid {
+        object.insert("eabKid".to_string(), Value::String(kid.to_string()));
+    }
     if let Some(seen) = account.last_seen_at {
         object.insert("lastSeenAt".to_string(), Value::String(rfc3339(seen)));
     }

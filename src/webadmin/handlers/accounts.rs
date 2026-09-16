@@ -26,6 +26,9 @@ use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 pub struct AccountListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
+    /// The accounts one EAB credential bound.
+    #[serde(default, rename = "eabKid", deserialize_with = "empty_is_absent")]
+    pub eab_kid: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -35,7 +38,7 @@ pub struct UpdateAccount {
     pub contact: Vec<String>,
 }
 
-/// `GET /api/accounts?profile=&limit=&offset=`
+/// `GET /api/accounts?profile=&eabKid=&limit=&offset=`
 pub async fn list_accounts(
     State(state): State<AdminState>,
     Query(params): Query<AccountListParams>,
@@ -44,6 +47,7 @@ pub async fn list_accounts(
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let (accounts, total) = Account::search(
         params.profile.as_deref(),
+        params.eab_kid.as_deref(),
         page.limit,
         page.offset,
         &state.database,
@@ -170,9 +174,16 @@ pub async fn delete_account(
     // Captured before the delete so the audit row can name the account's own
     // profile and id; `delete_account` returns only the cascade count.
     let subject = Account::find_any_by_id(&id, &state.database).await?;
-    let deleted = admin::delete_account(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let deleted = match admin::delete_account(&id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(&id)),
+        admin::Deletion::LiveCertificates(live) => {
+            return Err(AdminError::conflict(
+                "live_certificates",
+                admin::live_certificates_refusal(&format!("account {id}"), live),
+            ));
+        }
+        admin::Deletion::Deleted(deleted) => deleted,
+    };
 
     if let Some(account) = subject {
         state

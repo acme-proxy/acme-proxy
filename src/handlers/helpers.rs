@@ -632,6 +632,51 @@ pub(crate) fn parse_rfc3339(field: &str, value: &str) -> Result<i64, Problem> {
 mod tests {
     use super::*;
 
+    /// The credential an account registered under resolves while it exists —
+    /// revoked included, which is what keeps label rules matching — and to
+    /// nothing once it is deleted, which every `eab` check refuses. That is
+    /// what `eab delete` warns about when it keeps the accounts.
+    #[tokio::test]
+    async fn an_account_whose_credential_was_deleted_resolves_to_no_credential() {
+        use crate::sqlite::eab::{BoundAccounts, Eab};
+
+        let database = std::sync::Arc::new(Database::connect_in_memory().await.unwrap());
+        let eab = Eab::create(Some("tenant-a".to_string()), None, &database)
+            .await
+            .unwrap();
+        let (mut account, _) = Account::find_or_create(
+            "default",
+            &[9u8],
+            vec![],
+            &crate::audit::ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+        account.set_eab_kid(eab.kid, &database).await.unwrap();
+        let id = account.id.to_string();
+
+        Eab::revoke(&eab.kid.to_string(), &database).await.unwrap();
+        let revoked = resolve_eab(&id, "default", &database)
+            .await
+            .unwrap()
+            .expect("a revoked credential still resolves");
+        assert_eq!(
+            (revoked.label.as_deref(), revoked.active),
+            (Some("tenant-a"), false)
+        );
+
+        Eab::delete(&eab.kid.to_string(), BoundAccounts::Keep, &database)
+            .await
+            .unwrap();
+        assert!(
+            resolve_eab(&id, "default", &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn wildcard_shapes_are_recognised_and_the_rest_refused() {
         assert!(is_wildcard("*.example.com"));

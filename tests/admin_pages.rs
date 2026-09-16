@@ -1026,6 +1026,7 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         (Method::POST, "/ui/jobs/some-id/run", Operator),
         (Method::POST, "/ui/eab", Operator),
         (Method::POST, "/ui/eab/some-kid/revoke", Operator),
+        (Method::DELETE, "/ui/eab/some-kid", Operator),
         (Method::POST, "/ui/nonces/cleanup", Operator),
         (Method::POST, "/ui/logout", SelfService),
         (Method::POST, "/ui/account/mfa/totp", SelfService),
@@ -4237,4 +4238,171 @@ async fn the_operators_page_refuses_to_target_the_caller() {
         StatusCode::OK,
         "alice's own account must be untouched"
     );
+}
+
+/// The credential card offers every delete, and says why the one that would
+/// take a live certificate's order is unavailable; the account and order cards
+/// do the same. Pressed anyway, each refusal is the card with the reason, a
+/// `409`, and nothing deleted. Deactivating the accounts is the way out.
+#[tokio::test]
+async fn deletes_that_would_lose_a_live_certificate_are_refused_on_the_cards() {
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::order::Order;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (kid, accounts) = bound_eab(&database, 2, Some(1)).await;
+    let live = certified_order(&database, accounts[0], None).await;
+
+    let card =
+        html_body(admin_page(&app, &format!("/ui/eab/{kid}"), Some(&session), false).await).await;
+    assert!(
+        card.contains(&format!(r#"href="/ui/accounts?eabKid={kid}""#)),
+        "{card}"
+    );
+    assert!(card.contains("2 account(s)"), "{card}");
+    assert!(card.contains("1 live certificate(s)"), "{card}");
+    for mode in ["", "?accounts=deactivate", "?accounts=delete"] {
+        assert!(
+            card.contains(&format!(r#"hx-delete="/ui/eab/{kid}{mode}""#)),
+            "{mode}: {card}"
+        );
+    }
+    assert!(card.contains("cannot be deleted while they hold"), "{card}");
+
+    let refused = admin_form_request(
+        &app,
+        Method::DELETE,
+        &format!("/ui/eab/{kid}?accounts=delete"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let body = html_body(refused).await;
+    assert!(
+        body.trim_start().starts_with(r#"<div id="eab-card">"#),
+        "{body}"
+    );
+    assert!(body.contains("impossible to revoke"), "{body}");
+
+    // The account and the order behind the certificate refuse the same way.
+    let account_path = format!("/ui/accounts/{}", accounts[0]);
+    let order_path = format!("/ui/orders/{}", live.id);
+    let account_card =
+        html_body(admin_page(&app, &account_path, Some(&session), false).await).await;
+    assert!(
+        account_card.contains("Cannot be deleted while it holds 1 live"),
+        "{account_card}"
+    );
+    assert!(
+        account_card.contains(&format!(r#"href="/ui/eab/{kid}""#)),
+        "{account_card}"
+    );
+    let order_card = html_body(admin_page(&app, &order_path, Some(&session), false).await).await;
+    assert!(
+        order_card.contains("Cannot be deleted while its certificate is live"),
+        "{order_card}"
+    );
+    for (path, root) in [
+        (&account_path, r#"<div id="account-card">"#),
+        (&order_path, r#"<div id="order-card">"#),
+    ] {
+        let refused = admin_form_request(&app, Method::DELETE, path, Some(&session), None).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT, "{path}");
+        let body = html_body(refused).await;
+        assert!(body.trim_start().starts_with(root), "{path}: {body}");
+        assert!(body.contains("live certificate(s)"), "{path}: {body}");
+    }
+    assert!(
+        Order::find_by_id(&live.id.to_string(), &database)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // The filtered listing the card links to shows exactly those accounts.
+    let listed = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/accounts?eabKid={kid}"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    for account in &accounts {
+        assert!(listed.contains(&account.to_string()), "{listed}");
+    }
+    assert!(listed.contains(&format!(r#"value="{kid}""#)), "{listed}");
+
+    // Deactivating goes through, navigates to the list, and keeps the order.
+    let deleted = admin_form_request(
+        &app,
+        Method::DELETE,
+        &format!("/ui/eab/{kid}?accounts=deactivate"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
+    assert_eq!(deleted.headers()[header::LOCATION], "/ui/eab");
+    assert_eq!(
+        Account::find_any_by_id(&accounts[0].to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "deactivated"
+    );
+    assert!(
+        Order::find_by_id(&live.id.to_string(), &database)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        admin_page(&app, &format!("/ui/eab/{kid}"), Some(&session), false)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A credential with no accounts offers only the plain delete, and an unknown
+/// mode is the card with the refusal rather than a guess.
+#[tokio::test]
+async fn an_eab_with_no_accounts_offers_one_delete_and_refuses_an_unknown_mode() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (kid, _) = bound_eab(&database, 0, None).await;
+
+    let card =
+        html_body(admin_page(&app, &format!("/ui/eab/{kid}"), Some(&session), false).await).await;
+    assert!(card.contains("none registered with it"), "{card}");
+    assert!(
+        card.contains(&format!(r#"hx-delete="/ui/eab/{kid}""#)),
+        "{card}"
+    );
+    assert!(!card.contains("?accounts="), "{card}");
+
+    let refused = admin_form_request(
+        &app,
+        Method::DELETE,
+        &format!("/ui/eab/{kid}?accounts=purge"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert!(html_body(refused).await.contains("unknown accounts mode"));
+
+    let deleted = admin_form_request(
+        &app,
+        Method::DELETE,
+        &format!("/ui/eab/{kid}"),
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
 }

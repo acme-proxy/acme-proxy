@@ -127,6 +127,9 @@ mod tests {
             "idx_nonces_created_at",
             "idx_orders_cert_serial",
             "idx_orders_replaces_claim",
+            // Not a foreign key, but `eab delete` and `account list --eab-kid`
+            // look accounts up by it.
+            "idx_accounts_eab_kid",
         ] {
             assert!(
                 names.iter().any(|name| name == expected),

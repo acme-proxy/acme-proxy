@@ -26,8 +26,8 @@ transactional across the server's own in-flight requests.
 
 **`-y`, `--yes`** — skip the interactive "Are you sure?" prompt on destructive
 commands. It is a global flag, so it may be given anywhere on the line. `account
-delete`, `order delete`, `audit cleanup`, `admin user delete` and `admin user
-totp reset` prompt; nothing else is gated by it.
+delete`, `order delete`, `eab delete`, `audit cleanup`, `admin user delete` and
+`admin user totp reset` prompt; nothing else is gated by it.
 
 **`--json`** — where supported, emit JSON instead of the human-readable line
 format. Single-item commands print one JSON object. A **paged** list command
@@ -175,7 +175,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 
 | Command | Flags |
 | --- | --- |
-| `account list` | `--profile <name>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `account list` | `--profile <name>`, `--eab-kid <kid>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `account show <id>` | `--json` |
 | `account update-contact <id>` | `--contact <uri>` (repeatable) |
 | `account deactivate <id>` | — |
@@ -185,6 +185,8 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   it, accounts from every profile are listed — the admin CLI is deliberately
   unscoped by default, unlike the request path, which always scopes by profile.
   The listing is **newest first** and paged; see [Paging](#paging) below.
+- `account list --eab-kid` lists the accounts one EAB credential registered —
+  what to look at before `eab delete`.
 - `account list` shows, per account, the address its key was last seen from and
   that address's reverse name (`ip (ptr)`, the address alone when no name
   resolved, `-` when neither was recorded). `account show` prints one field per
@@ -195,6 +197,13 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   is the operator-side equivalent of a client deactivating itself.
 - `account delete` cascades: every order, authorization and challenge belonging
   to the account is destroyed with it. The prompt names what will go.
+- `account delete` and `order delete` are **refused while a live certificate
+  would go with them** — one issued, not revoked, and not known to have expired.
+  An order row is the only record of its certificate: without it, `revokeCert`
+  and `order revoke` cannot find the certificate, and it drops out of the
+  expiry digest and renewal information. Revoke it first (`order revoke`), or
+  wait for it to expire. A certificate whose expiry was never recorded counts
+  as live. There is no flag to override this.
 
 ## Order management
 
@@ -580,6 +589,7 @@ which abandons the local order too. The panel twins are
 | `eab list` | `--limit <n>`, `--offset <n>`, `--json` |
 | `eab show <kid>` | `--json` |
 | `eab revoke <kid>` | — |
+| `eab delete <kid>` | `--deactivate-accounts` or `--delete-accounts` *(prompts)* |
 
 - `eab create` prints the generated HMAC secret **once**. It is stored but never
   shown again, so a lost secret is replaced, not recovered.
@@ -588,6 +598,14 @@ which abandons the local order too. The panel twins are
   is usually not what you want in a multi-tenant deployment.
 - `eab revoke` takes effect immediately, with no restart: credentials are read
   from the live database on every `newAccount`.
+- `eab delete` removes the credential. By default its accounts are kept, but
+  they no longer resolve to any credential, so every
+  [`eab` filter check](../filters/eab.md) refuses them.
+  `--deactivate-accounts` also deactivates them and keeps their orders, so
+  their certificates can still be revoked. `--delete-accounts` also deletes
+  them and everything under them; like `account delete`, it is refused while
+  any of their orders holds a live certificate, and then nothing changes. The
+  prompt names how many accounts and orders are involved.
 - `eab list` is **newest first** and paged; see [Paging](#paging). It reads the
   same query `GET /api/eab` and `/ui/eab` do, so the three cannot come to
   describe the credential set differently.

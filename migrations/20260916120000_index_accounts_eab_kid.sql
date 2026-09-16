@@ -1,0 +1,13 @@
+-- `accounts.eab_kid` becomes a lookup key: `eab delete` deactivates or deletes
+-- every account a credential bound, counts them (and their live certificates)
+-- to word its confirmation, and `account list --eab-kid` / `?eabKid=` page
+-- over them. Each of those was a full scan of `accounts`.
+--
+-- An index only, so no table rebuild. The column's own migration
+-- (20260727190000) says the credential it names is "only ever revoked, never
+-- deleted"; that stopped being true with `eab delete`, and the kid an account
+-- carries may now name a row that is gone. There is still no foreign key, for
+-- the reason that migration gives and a sharper one: a cascade from
+-- `eab_keys` would delete accounts -- and their orders, the only record of a
+-- live certificate -- as a side effect of retiring a credential.
+CREATE INDEX IF NOT EXISTS idx_accounts_eab_kid ON accounts (eab_kid);

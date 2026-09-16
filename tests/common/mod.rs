@@ -2683,3 +2683,67 @@ pub mod acme {
         (account_url, order_url, pem)
     }
 }
+
+/// An order under `account` holding a certificate that expires at `not_after`
+/// (`None`: never stamped, which counts as live).
+pub async fn certified_order(
+    database: &acme_proxy::sqlite::db::Database,
+    account: uuid::Uuid,
+    not_after: Option<i64>,
+) -> acme_proxy::sqlite::order::Order {
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let mut order = Order::create(
+        "default",
+        account,
+        vec![Identifier::dns("live.example.com")],
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    order
+        .finalize(
+            "-----BEGIN CERTIFICATE-----\n...".to_string(),
+            order.id.simple().to_string(),
+            vec![1],
+            not_after,
+            database,
+        )
+        .await
+        .unwrap();
+    order
+}
+
+/// A credential and `count` accounts registered with it, each holding a
+/// certificate that expires at `not_after`.
+pub async fn bound_eab(
+    database: &acme_proxy::sqlite::db::Database,
+    count: u8,
+    not_after: Option<i64>,
+) -> (String, Vec<uuid::Uuid>) {
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::eab::Eab;
+
+    let eab = Eab::create(Some("tenant".to_string()), None, database)
+        .await
+        .unwrap();
+    let mut accounts = Vec::new();
+    for index in 0..count {
+        let (mut account, _) = Account::find_or_create(
+            "default",
+            &[eab.kid.as_bytes()[15], index, 99],
+            vec![],
+            &acme_proxy::audit::ClientContext::default(),
+            database,
+        )
+        .await
+        .unwrap();
+        account.set_eab_kid(eab.kid, database).await.unwrap();
+        certified_order(database, account.id, not_after).await;
+        accounts.push(account.id);
+    }
+    (eab.kid.to_string(), accounts)
+}

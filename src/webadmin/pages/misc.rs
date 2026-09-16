@@ -42,7 +42,7 @@ pub async fn get_index(
     State(state): State<AdminState>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
-    let (_, accounts) = Account::search(None, 1, 0, &state.database).await?;
+    let (_, accounts) = Account::search(None, None, 1, 0, &state.database).await?;
     let (_, orders) = Order::search(
         &OrderQuery {
             limit: 1,

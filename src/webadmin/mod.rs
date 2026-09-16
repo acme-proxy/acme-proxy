@@ -147,6 +147,24 @@ impl AdminState {
         crate::audit::write(build(actor, client), &self.database).await;
     }
 
+    /// [`AdminState::record_admin_action`] for an action that writes several
+    /// rows, resolving the client address once for all of them.
+    pub(crate) async fn record_admin_actions(
+        &self,
+        request_context: &crate::audit::RequestContext,
+        username: &str,
+        build: impl FnOnce(
+            crate::audit::Actor,
+            crate::audit::ClientContext,
+        ) -> Vec<crate::audit::AuditRecord>,
+    ) {
+        let actor = crate::audit::Actor::admin(username);
+        let client = self.audit.client(request_context).await;
+        for record in build(actor, client) {
+            crate::audit::write(record, &self.database).await;
+        }
+    }
+
     /// Queues one web-admin security notification through the process-wide
     /// dispatcher, if one is configured. A no-op otherwise, and — like every
     /// [`NotifyDispatcher::dispatch`](crate::notify::NotifyDispatcher::dispatch)
@@ -469,7 +487,10 @@ pub fn build_admin_app_with_logins(
         )
         .route("/orders/{id}/revoke", post(handlers::revoke_order))
         .route("/eab", get(handlers::list_eab).post(handlers::create_eab))
-        .route("/eab/{kid}", get(handlers::get_eab))
+        .route(
+            "/eab/{kid}",
+            get(handlers::get_eab).delete(handlers::delete_eab),
+        )
         .route("/eab/{kid}/revoke", post(handlers::revoke_eab))
         // The background job queue. `list`/`get` read; `cancel`/`run` are in
         // `mutating_endpoints()` and demand `operator`+.

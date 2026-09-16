@@ -13,9 +13,10 @@ use crate::sqlite::account::Account;
 use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::sqlite::authz::{Authorization, Challenge};
 use crate::sqlite::db::Database;
+use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab, EabDeletion};
 use crate::sqlite::job::Job;
 use crate::sqlite::nonce::{Nonce, now_secs};
-use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use crate::sqlite::order::{GuardedDelete, Order, UNPARSABLE_NOT_AFTER};
 use crate::sqlite::status::JobStatus;
 use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
 
@@ -37,6 +38,72 @@ pub enum DeleteOutcome {
     /// count. `acme-proxy account delete` did exactly that, so every one of its
     /// audit rows read `0 order(s) cascaded` however many there were.
     Deleted(Deleted),
+    /// Refused: the subject holds this many live certificates, and deleting its
+    /// order rows would leave them impossible to revoke. See
+    /// [`live_certificates_refusal`] for what to tell the operator, and
+    /// `live_certificate!` in `src/sqlite/order.rs` for what "live" means.
+    ///
+    /// Only an account or an order can answer this; an operator holds no
+    /// certificate.
+    LiveCertificates(u64),
+}
+
+/// Outcome of a bare hard delete of something that can hold a certificate —
+/// [`DeleteOutcome`] without `Cancelled`, for the reason given there.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Deletion {
+    NotFound,
+    /// Refused, as [`DeleteOutcome::LiveCertificates`].
+    LiveCertificates(u64),
+    Deleted(Deleted),
+}
+
+impl Deletion {
+    fn from_guarded(outcome: GuardedDelete, cascaded: u64) -> Self {
+        match outcome {
+            GuardedDelete::NotFound => Self::NotFound,
+            GuardedDelete::LiveCertificates(live) => Self::LiveCertificates(live),
+            GuardedDelete::Deleted => Self::Deleted(Deleted { cascaded }),
+        }
+    }
+}
+
+impl From<Deletion> for DeleteOutcome {
+    fn from(deletion: Deletion) -> Self {
+        match deletion {
+            Deletion::NotFound => Self::NotFound,
+            Deletion::LiveCertificates(live) => Self::LiveCertificates(live),
+            Deletion::Deleted(deleted) => Self::Deleted(deleted),
+        }
+    }
+}
+
+/// What every front end tells an operator whose delete was refused for
+/// holding live certificates. One wording, so the CLI, the API and the page
+/// cannot describe one refusal three ways.
+///
+/// `subject` names what was being deleted ("account …", "order …"). The
+/// remedy is phrased for no particular front end: each has its own way to
+/// revoke.
+#[must_use]
+pub fn live_certificates_refusal(subject: &str, live: u64) -> String {
+    format!(
+        "{subject} holds {live} live certificate(s) (issued, not revoked, not expired); \
+         deleting it would leave them impossible to revoke — revoke them first, or wait \
+         for them to expire"
+    )
+}
+
+/// [`live_certificates_refusal`] for `eab delete` with its accounts, which has
+/// a third way out the other two lack.
+#[must_use]
+pub fn eab_live_certificates_refusal(kid: &str, accounts: u64, certificates: u64) -> String {
+    format!(
+        "{accounts} account(s) bound to EAB credential {kid} hold {certificates} live \
+         certificate(s) (issued, not revoked, not expired); deleting them would leave those \
+         certificates impossible to revoke — revoke them first, wait for them to expire, or \
+         deactivate the accounts instead of deleting them"
+    )
 }
 
 /// What a hard delete took with it.
@@ -112,20 +179,22 @@ impl From<SignerError> for RevokeError {
 // happened. The generic also makes the wrapper non-object-safe for no benefit
 // on that path. The CLI calls the wrapper; everything else calls the bare form.
 
-/// Hard-deletes an account. `None` when there is no such account; otherwise
-/// how many orders cascaded with it.
-pub async fn delete_account(
-    id: &str,
-    database: Arc<Database>,
-) -> Result<Option<Deleted>, sqlx::Error> {
+/// Hard-deletes an account unless it holds a live certificate. Carries how
+/// many orders cascaded with it.
+pub async fn delete_account(id: &str, database: Arc<Database>) -> Result<Deletion, sqlx::Error> {
     let Some(cascaded) = account_cascade(id, database.clone()).await? else {
-        return Ok(None);
+        return Ok(Deletion::NotFound);
     };
-    Account::delete(id, &database).await?;
-    Ok(Some(Deleted { cascaded }))
+    let outcome = Account::delete(id, &database).await?;
+    Ok(Deletion::from_guarded(outcome, cascaded))
 }
 
 /// Looks up the account, shows what will cascade, confirms, then hard-deletes it.
+///
+/// A live certificate refuses **before** the prompt — asking to confirm a
+/// delete that can only be refused is asking for nothing — and again inside the
+/// delete, which is the check that holds if one is issued while the operator
+/// reads the question.
 pub async fn confirm_delete_account(
     id: &str,
     assume_yes: bool,
@@ -135,6 +204,10 @@ pub async fn confirm_delete_account(
     let Some(account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
     };
+    let live = Account::count_live_certificates(account.id, &database).await?;
+    if live > 0 {
+        return Ok(DeleteOutcome::LiveCertificates(live));
+    }
     let order_count = Order::count_by_account(account.id, &database).await?;
     let prompt = format!(
         "Delete account {id} (status: {}, {order_count} order(s) will cascade)?",
@@ -143,23 +216,18 @@ pub async fn confirm_delete_account(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(DeleteOutcome::Cancelled);
     }
-    Account::delete(id, &database).await?;
-    Ok(DeleteOutcome::Deleted(Deleted {
-        cascaded: order_count as u64,
-    }))
+    let outcome = Account::delete(id, &database).await?;
+    Ok(Deletion::from_guarded(outcome, order_count as u64).into())
 }
 
-/// Hard-deletes an order. `None` when there is no such order; otherwise how
-/// many authorizations cascaded with it.
-pub async fn delete_order(
-    id: &str,
-    database: Arc<Database>,
-) -> Result<Option<Deleted>, sqlx::Error> {
+/// Hard-deletes an order unless it holds a live certificate. Carries how many
+/// authorizations cascaded with it.
+pub async fn delete_order(id: &str, database: Arc<Database>) -> Result<Deletion, sqlx::Error> {
     let Some(cascaded) = order_cascade(id, database.clone()).await? else {
-        return Ok(None);
+        return Ok(Deletion::NotFound);
     };
-    Order::delete(id, &database).await?;
-    Ok(Some(Deleted { cascaded }))
+    let outcome = Order::delete(id, &database).await?;
+    Ok(Deletion::from_guarded(outcome, cascaded))
 }
 
 /// Same shape as [`confirm_delete_account`], for an order.
@@ -172,6 +240,10 @@ pub async fn confirm_delete_order(
     let Some(order) = Order::find_by_id(id, &database).await? else {
         return Ok(DeleteOutcome::NotFound);
     };
+    let live = Order::count_live_certificates(order.id, &database).await?;
+    if live > 0 {
+        return Ok(DeleteOutcome::LiveCertificates(live));
+    }
     let authz_count = Authorization::count_by_order(order.id, &database).await?;
     let prompt = format!(
         "Delete order {id} (status: {}, {authz_count} authorization(s) will cascade)?",
@@ -180,10 +252,91 @@ pub async fn confirm_delete_order(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(DeleteOutcome::Cancelled);
     }
-    Order::delete(id, &database).await?;
-    Ok(DeleteOutcome::Deleted(Deleted {
-        cascaded: authz_count as u64,
-    }))
+    let outcome = Order::delete(id, &database).await?;
+    Ok(Deletion::from_guarded(outcome, authz_count as u64).into())
+}
+
+/// Outcome of [`confirm_delete_eab`]: [`EabDeletion`] plus `Cancelled`.
+#[derive(Debug)]
+pub enum EabDeleteOutcome {
+    NotFound,
+    Cancelled,
+    /// Refused; see [`eab_live_certificates_refusal`].
+    LiveCertificates {
+        accounts: u64,
+        certificates: u64,
+    },
+    Deleted(DeletedEab),
+}
+
+impl From<EabDeletion> for EabDeleteOutcome {
+    fn from(deletion: EabDeletion) -> Self {
+        match deletion {
+            EabDeletion::NotFound => Self::NotFound,
+            EabDeletion::LiveCertificates {
+                accounts,
+                certificates,
+            } => Self::LiveCertificates {
+                accounts,
+                certificates,
+            },
+            EabDeletion::Deleted(deleted) => Self::Deleted(deleted),
+        }
+    }
+}
+
+/// Deletes an EAB credential, doing `accounts` to the accounts it bound. The
+/// web admin's form; the refusal and the transaction live in [`Eab::delete`].
+pub async fn delete_eab(
+    kid: &str,
+    accounts: BoundAccounts,
+    database: Arc<Database>,
+) -> Result<EabDeletion, sqlx::Error> {
+    Eab::delete(kid, accounts, &database).await
+}
+
+/// [`delete_eab`], asking first and naming what happens to the accounts.
+///
+/// Refuses `BoundAccounts::Delete` before the prompt when a live certificate
+/// would be lost, as [`confirm_delete_account`] does; [`Eab::delete`] checks
+/// again inside its transaction.
+pub async fn confirm_delete_eab(
+    kid: &str,
+    accounts: BoundAccounts,
+    assume_yes: bool,
+    reader: &mut impl BufRead,
+    database: Arc<Database>,
+) -> Result<EabDeleteOutcome, sqlx::Error> {
+    let Some(eab) = Eab::find_any_by_kid(kid, &database).await? else {
+        return Ok(EabDeleteOutcome::NotFound);
+    };
+    let bound = Account::eab_summary(eab.kid, &database).await?;
+    if accounts == BoundAccounts::Delete && bound.live_certificates > 0 {
+        return Ok(EabDeleteOutcome::LiveCertificates {
+            accounts: bound.accounts_with_live_certificates,
+            certificates: bound.live_certificates,
+        });
+    }
+    let prompt = match accounts {
+        BoundAccounts::Keep => format!(
+            "Delete EAB credential {kid} (status: {})? Its {} account(s) are kept, and will \
+             fail any eab filter check from now on.",
+            eab.status, bound.accounts
+        ),
+        BoundAccounts::Deactivate => format!(
+            "Delete EAB credential {kid} and deactivate its {} account(s)? Their {} order(s) \
+             are kept.",
+            bound.accounts, bound.orders
+        ),
+        BoundAccounts::Delete => format!(
+            "Delete EAB credential {kid} and its {} account(s) ({} order(s) will cascade)?",
+            bound.accounts, bound.orders
+        ),
+    };
+    if !confirm(&prompt, assume_yes, reader) {
+        return Ok(EabDeleteOutcome::Cancelled);
+    }
+    Ok(Eab::delete(kid, accounts, &database).await?.into())
 }
 
 /// Runs [`Nonce::cleanup`], returning how many were removed.
@@ -1346,9 +1499,12 @@ mod tests {
     // and a cascade count to report back instead of a bare acknowledgement.
 
     #[tokio::test]
-    async fn bare_delete_account_reports_none_for_an_unknown_id() {
+    async fn bare_delete_account_reports_not_found_for_an_unknown_id() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert_eq!(delete_account("nope", db).await.unwrap(), None);
+        assert_eq!(
+            delete_account("nope", db).await.unwrap(),
+            Deletion::NotFound
+        );
     }
 
     #[tokio::test]
@@ -1373,7 +1529,7 @@ mod tests {
             delete_account(acct.to_string().as_str(), db.clone())
                 .await
                 .unwrap(),
-            Some(Deleted { cascaded: 2 })
+            Deletion::Deleted(Deleted { cascaded: 2 })
         );
         assert!(
             Account::find_by_id("default", acct.to_string().as_str(), &db)
@@ -1384,9 +1540,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bare_delete_order_reports_none_for_an_unknown_id() {
+    async fn bare_delete_order_reports_not_found_for_an_unknown_id() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert_eq!(delete_order("nope", db).await.unwrap(), None);
+        assert_eq!(delete_order("nope", db).await.unwrap(), Deletion::NotFound);
     }
 
     #[tokio::test]
@@ -1417,13 +1573,135 @@ mod tests {
             delete_order(order.id.to_string().as_str(), db.clone())
                 .await
                 .unwrap(),
-            Some(Deleted { cascaded: 1 })
+            Deletion::Deleted(Deleted { cascaded: 1 })
         );
         assert!(
             Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    /// A live certificate refuses each `confirm_*` delete **before** the
+    /// prompt: the reader is empty and `assume_yes` false, so reaching the
+    /// question would have answered `Cancelled`. The bare forms refuse too.
+    #[tokio::test]
+    async fn a_live_certificate_refuses_account_and_order_deletes_before_asking() {
+        let db = db().await;
+        let acct = account_id(&db).await;
+        let order = crate::testutil::certified_order(&db, acct, None).await;
+        let (acct, order) = (acct.to_string(), order.id.to_string());
+
+        let mut reader: &[u8] = &[];
+        assert_eq!(
+            confirm_delete_account(&acct, false, &mut reader, db.clone())
+                .await
+                .unwrap(),
+            DeleteOutcome::LiveCertificates(1)
+        );
+        assert_eq!(
+            confirm_delete_order(&order, false, &mut reader, db.clone())
+                .await
+                .unwrap(),
+            DeleteOutcome::LiveCertificates(1)
+        );
+        assert_eq!(
+            delete_account(&acct, db.clone()).await.unwrap(),
+            Deletion::LiveCertificates(1)
+        );
+        assert_eq!(
+            delete_order(&order, db.clone()).await.unwrap(),
+            Deletion::LiveCertificates(1)
+        );
+        assert!(Order::find_by_id(&order, &db).await.unwrap().is_some());
+    }
+
+    #[test]
+    fn the_refusals_name_the_subject_the_count_and_the_way_out() {
+        let message = live_certificates_refusal("account a-1", 2);
+        assert!(message.starts_with("account a-1 holds 2 live certificate(s)"));
+        assert!(message.contains("revoke them first"));
+
+        let message = eab_live_certificates_refusal("k-1", 1, 3);
+        assert!(message.starts_with("1 account(s) bound to EAB credential k-1 hold 3 live"));
+        assert!(message.contains("deactivate the accounts instead"));
+    }
+
+    /// A credential with one bound account holding a live certificate.
+    async fn eab_with_live_account(db: &Arc<Database>) -> (Eab, uuid::Uuid) {
+        let eab = Eab::create(None, None, db).await.unwrap();
+        let (mut account, _) =
+            Account::find_or_create("default", &[42u8], vec![], &ClientContext::default(), db)
+                .await
+                .unwrap();
+        account.set_eab_kid(eab.kid, db).await.unwrap();
+        crate::testutil::certified_order(db, account.id, None).await;
+        (eab, account.id)
+    }
+
+    #[tokio::test]
+    async fn confirm_delete_eab_not_found_cancelled_and_refused() {
+        let db = db().await;
+        let mut reader: &[u8] = &[];
+        assert!(matches!(
+            confirm_delete_eab("nope", BoundAccounts::Keep, true, &mut reader, db.clone())
+                .await
+                .unwrap(),
+            EabDeleteOutcome::NotFound
+        ));
+
+        let (eab, _) = eab_with_live_account(&db).await;
+        let kid = eab.kid.to_string();
+        let mut declined: &[u8] = b"n\n";
+        assert!(matches!(
+            confirm_delete_eab(&kid, BoundAccounts::Keep, false, &mut declined, db.clone())
+                .await
+                .unwrap(),
+            EabDeleteOutcome::Cancelled
+        ));
+        assert!(Eab::find_any_by_kid(&kid, &db).await.unwrap().is_some());
+
+        // Refused before the prompt, as the account and order deletes are.
+        let mut reader: &[u8] = &[];
+        assert!(matches!(
+            confirm_delete_eab(&kid, BoundAccounts::Delete, false, &mut reader, db.clone())
+                .await
+                .unwrap(),
+            EabDeleteOutcome::LiveCertificates {
+                accounts: 1,
+                certificates: 1
+            }
+        ));
+        assert!(Eab::find_any_by_kid(&kid, &db).await.unwrap().is_some());
+    }
+
+    /// The safe way out of the refusal above: deactivating goes through, and
+    /// the certificate's order survives it.
+    #[tokio::test]
+    async fn confirm_delete_eab_deactivating_keeps_the_live_certificate() {
+        let db = db().await;
+        let (eab, account) = eab_with_live_account(&db).await;
+        let mut reader: &[u8] = &[];
+
+        let EabDeleteOutcome::Deleted(deleted) = confirm_delete_eab(
+            &eab.kid.to_string(),
+            BoundAccounts::Deactivate,
+            true,
+            &mut reader,
+            db.clone(),
+        )
+        .await
+        .unwrap() else {
+            panic!("deactivating is never refused");
+        };
+        assert_eq!(deleted.deactivated.len(), 1);
+        assert_eq!(Order::find_by_account(account, &db).await.unwrap().len(), 1);
+        assert!(
+            delete_eab(&eab.kid.to_string(), BoundAccounts::Keep, db.clone())
+                .await
+                .map(|deletion| matches!(deletion, EabDeletion::NotFound))
+                .unwrap()
         );
     }
 

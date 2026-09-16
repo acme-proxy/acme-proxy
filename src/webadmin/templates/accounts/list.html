@@ -19,6 +19,14 @@
           {% endfor %}
         </select>
       </div>
+      {#- What a credential card links to before an operator deletes it. A
+          field rather than a hidden input, so the filter is visible and can be
+          cleared: `hx-trigger="change"` sends every control in the form. -#}
+      <div class="field">
+        <label for="eabKid">EAB credential</label>
+        <input type="text" id="eabKid" name="eabKid"
+               placeholder="kid" value="{{ filters.eabKid | default('') }}">
+      </div>
       {% include "partials/_filter_meta.html" %}
     </form>
   </div>

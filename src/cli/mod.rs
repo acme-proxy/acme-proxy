@@ -338,7 +338,9 @@ pub async fn dispatch(
         Command::Profile { command } => {
             profile::run_profile_command(command, palette, config).await
         }
-        Command::Eab { command } => eab::run_eab_command(command, palette, database).await,
+        Command::Eab { command } => {
+            eab::run_eab_command(command, yes, palette, reader, database).await
+        }
         Command::Filter { command } => filter::run_filter_command(command, palette, config).await,
         Command::Upstream { command } => {
             upstream::run_upstream_command(command, reader, palette, config, database).await
@@ -1881,6 +1883,27 @@ mod tests {
         assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 
+    /// `eab delete`'s two account modes are exclusive: asked for both, clap
+    /// refuses rather than one silently winning.
+    #[test]
+    fn eab_delete_refuses_both_account_modes_at_once() {
+        let Err(error) = Cli::try_parse_from([
+            "acme-proxy",
+            "eab",
+            "delete",
+            "kid",
+            "--deactivate-accounts",
+            "--delete-accounts",
+        ]) else {
+            panic!("both modes at once must be refused");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        for flag in ["--deactivate-accounts", "--delete-accounts"] {
+            Cli::try_parse_from(["acme-proxy", "eab", "delete", "kid", flag]).unwrap();
+        }
+    }
+
     /// `--log-level` is global like `--yes` and `--color`, so it may be given
     /// on either side of the subcommand — which is the whole reason an
     /// operator reaches for it, having already typed the command once.
@@ -1928,6 +1951,7 @@ mod tests {
                 command: AccountCommand::List {
                     json: true,
                     profile: None,
+                    eab_kid: None,
                     limit: window::DEFAULT_LIMIT,
                     offset: 0
                 }
@@ -2494,6 +2518,7 @@ mod tests {
             Command::Account {
                 command: AccountCommand::List {
                     profile: None,
+                    eab_kid: None,
                     limit: window::DEFAULT_LIMIT,
                     offset: 0,
                     json: false,

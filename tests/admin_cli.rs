@@ -30,6 +30,7 @@ async fn account_cli_list_and_show() {
     run_account_command(
         AccountCommand::List {
             profile: None,
+            eab_kid: None,
             limit: DEFAULT_LIMIT,
             offset: 0,
             json: false,
@@ -45,6 +46,7 @@ async fn account_cli_list_and_show() {
     run_account_command(
         AccountCommand::List {
             profile: None,
+            eab_kid: None,
             limit: DEFAULT_LIMIT,
             offset: 0,
             json: true,
@@ -330,7 +332,9 @@ async fn eab_cli_create_list_show_revoke() {
             label: Some("test-label".to_string()),
             json: false,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -342,7 +346,9 @@ async fn eab_cli_create_list_show_revoke() {
             label: None,
             json: true,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -354,7 +360,9 @@ async fn eab_cli_create_list_show_revoke() {
             offset: 0,
             json: false,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -365,7 +373,9 @@ async fn eab_cli_create_list_show_revoke() {
             offset: 0,
             json: true,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -381,7 +391,9 @@ async fn eab_cli_create_list_show_revoke() {
             kid: kid.to_string(),
             json: false,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -392,7 +404,9 @@ async fn eab_cli_create_list_show_revoke() {
             kid: kid.to_string(),
             json: true,
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await
@@ -402,7 +416,9 @@ async fn eab_cli_create_list_show_revoke() {
         EabCommand::Revoke {
             kid: kid.to_string(),
         },
+        true,
         Palette::plain(),
+        &mut &b""[..],
         db.clone(),
     )
     .await

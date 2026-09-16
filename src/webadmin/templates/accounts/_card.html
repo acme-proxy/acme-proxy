@@ -13,6 +13,12 @@
       <dt>Status</dt><dd><span class="badge {{ account.status }}">{{ account.status }}</span></dd>
       <dt>Public key</dt><dd><code>{{ account.pubkeyFingerprint }}</code></dd>
       <dt>Created</dt><dd>{{ account.createdAt }}</dd>
+      {#- The credential the account registered under. It may since have been
+          deleted, in which case the link is a 404 -- which is the truth. -#}
+      {% if account.eabKid %}
+        <dt>EAB credential</dt>
+        <dd><a href="/ui/eab/{{ account.eabKid }}"><code>{{ account.eabKid }}</code></a></dd>
+      {% endif %}
       {#- Traceability, recorded at `newAccount` and advanced on every
           authenticated request. Every one is rendered only when present: a blank
           `<dd>` under a label would read as "unknown" rather than "never
@@ -71,21 +77,33 @@
         </button>
       {% endif %}
       {#- The delete cascades; the CLI names the count in its confirmation
-          prompt, so this one does too. `order_count` is set by both the page
-          and the fragment every account mutation answers with.
-          No target: the handler answers with a redirect, since the page this
-          button lives on is the thing being deleted. -#}
+          prompt, so this one does too. `order_count` and `live_certificates`
+          are set by both the page and the fragment every account mutation
+          answers with.
+          Success answers with a redirect, since the page this button lives on
+          is the thing being deleted; a refusal answers with this card, hence
+          the target. Disabled while a certificate is live -- the handler
+          refuses it anyway, and a button that can only say no is worse. -#}
       <button class="danger"
               hx-delete="/ui/accounts/{{ account.id }}"
+              hx-target="#account-card"
+              {% if live_certificates %}disabled{% endif %}
               hx-confirm="Delete this account and its {{ order_count }} order(s), with their authorizations and challenges? This cannot be undone.">
         Delete
       </button>
     </div>
+    {% if live_certificates %}
+      <p class="small">
+        Cannot be deleted while it holds {{ live_certificates }} live
+        certificate(s) — deleting their orders would leave them impossible to
+        revoke. Revoke them first, or wait for them to expire.
+      </p>
+    {% endif %}
     <p class="muted small">
       Deactivating is the ACME state change and is reversible only by the
       client. Deleting removes the row and cascades to its orders,
-      authorizations and challenges — it does <strong>not</strong> revoke any
-      certificate already issued.
+      authorizations and challenges, and is refused while any of them holds a
+      certificate that is neither revoked nor expired.
     </p>
   </div>
   {% endif %}

@@ -153,14 +153,25 @@
       </div>
     </form>
     <div class="actions">
-      {#- No target: the handler answers with a redirect, since the page this
-          button lives on is the thing being deleted. -#}
+      {#- Success answers with a redirect, since the page this button lives on
+          is the thing being deleted; a refusal answers with this card, hence
+          the target. Disabled while the certificate is live -- the handler
+          refuses it anyway. -#}
       <button class="danger"
               hx-delete="/ui/orders/{{ detail.order.id }}"
-              hx-confirm="Delete this order and its {{ detail.authorizations | length }} authorization(s)? Any certificate already issued stays valid — revoke it first if that is what you meant.">
+              hx-target="#order-card"
+              {% if live_certificate %}disabled{% endif %}
+              hx-confirm="Delete this order and its {{ detail.authorizations | length }} authorization(s)? This cannot be undone.">
         Delete
       </button>
     </div>
+    {% if live_certificate %}
+      <p class="small">
+        Cannot be deleted while its certificate is live — this order is the
+        only record of it, and without it the certificate could never be
+        revoked. Revoke it first, or wait for it to expire.
+      </p>
+    {% endif %}
   </div>
   {% endif %}
 </div>

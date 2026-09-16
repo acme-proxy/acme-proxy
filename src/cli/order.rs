@@ -221,6 +221,12 @@ pub async fn run_order_command(
             let doomed = Order::find_by_id(&id, &database).await?;
             match admin::confirm_delete_order(&id, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
+                DeleteOutcome::LiveCertificates(live) => {
+                    return Err(CliError::bad_request(admin::live_certificates_refusal(
+                        &format!("order {id}"),
+                        live,
+                    )));
+                }
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
                     if let Some(order) = doomed {
@@ -1264,5 +1270,33 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    /// `order delete` over a live certificate fails with the shared wording.
+    #[tokio::test]
+    async fn delete_refuses_an_order_holding_a_live_certificate() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account = crate::testutil::account_id(&database).await;
+        let order = crate::testutil::certified_order(&database, account, None).await;
+
+        let error = run_order_command(
+            OrderCommand::Delete {
+                id: order.id.to_string(),
+            },
+            true,
+            Palette::plain(),
+            &mut &b""[..],
+            &Config::default(),
+            database.clone(),
+        )
+        .await
+        .expect_err("a live certificate must refuse the delete");
+        assert_eq!(
+            error,
+            CliError::bad_request(admin::live_certificates_refusal(
+                &format!("order {}", order.id),
+                1
+            ))
+        );
     }
 }

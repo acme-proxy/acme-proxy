@@ -44,6 +44,14 @@ migrated configuration before restarting.
   swap target's `id` on its root element, since htmx now swaps with
   `outerHTML`. An override that copied the old condition keeps working for full
   pages but hides its controls after a mutation until it reads `can_write`.
+- **`account delete` and `order delete` refuse to remove a live certificate's
+  order** — on the CLI, `DELETE /api/accounts/{id}`, `DELETE /api/orders/{id}`
+  and the panel. An order row is the only record of its certificate, so
+  deleting one that is issued, not revoked and not known to have expired made
+  that certificate impossible to revoke and dropped it from the expiry digest
+  and renewal information. The API answers `409 live_certificates`; the CLI
+  fails with the count. Revoke the certificate first, or wait for it to expire.
+  A script that deleted accounts holding current certificates now fails.
 
 ### Added
 
@@ -69,6 +77,17 @@ migrated configuration before restarting.
 - Account and order cards link to their rows in the audit trail.
 - Accessibility: a skip link, `aria-current` on the active navigation entry, and
   banners announced to screen readers. The navigation is grouped.
+- **An EAB credential can be deleted**: `acme-proxy eab delete <kid>`,
+  `DELETE /api/eab/{kid}` and a button on its panel page. Its accounts are kept
+  by default; `--deactivate-accounts` (`?accounts=deactivate`) retires them and
+  keeps their orders, and `--delete-accounts` (`?accounts=delete`) deletes
+  them, refused while any holds a live certificate. A kept account resolves to
+  no credential, so every `eab` filter check refuses it. The action is audited
+  as `eab_deleted`, plus a row per account it changed.
+- The accounts a credential registered are listed by
+  `account list --eab-kid <kid>`, `GET /api/accounts?eabKid=` and the panel's
+  accounts filter; the credential's page counts them and links there, and an
+  account's JSON and page name its `eabKid`.
 - **The `dns01` relay can wait before the upstream validates**:
   `[signer.relay.dns01.propagation]` with `mode = "delay"` sleeps `delay_secs`
   between publishing the TXT record and triggering the challenge, for a DNS

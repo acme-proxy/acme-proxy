@@ -360,6 +360,9 @@ async fn run_user_command(
         AdminUserCommand::Delete { username } => {
             match users::confirm_delete_user(&username, yes, reader, database.clone()).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&username)),
+                DeleteOutcome::LiveCertificates(_) => {
+                    unreachable!("an operator holds no certificate")
+                }
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(_) => {
                     audit_admin::record_cli_action(&database, |actor, client| {

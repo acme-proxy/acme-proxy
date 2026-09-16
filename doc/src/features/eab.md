@@ -104,6 +104,42 @@ Revoking does **not** disturb accounts that already registered with the
 credential; it only stops new ones from being bound. To shut out an existing
 account, deactivate it: `acme-proxy account deactivate <id>`.
 
+A revoked credential keeps its row, so the accounts it registered still resolve
+to it — its label keeps matching [`eab` filter checks](../filters/eab.md), and
+`require_active` can refuse them.
+
+## Deleting a credential
+
+Deleting removes the row. What happens to the accounts registered with it is
+your choice:
+
+```bash
+acme-proxy account list --eab-kid <kid>             # who registered with it
+acme-proxy eab delete <kid>                         # keep the accounts
+acme-proxy eab delete <kid> --deactivate-accounts   # retire them
+acme-proxy eab delete <kid> --delete-accounts       # remove them
+```
+
+- **Keep** (the default) leaves the accounts as they are. They still name the
+  deleted `kid` but resolve to no credential, so every `eab` filter check
+  refuses them from then on.
+- **`--deactivate-accounts`** moves them to `deactivated`: they can request
+  nothing more, and their orders are kept, so every certificate they hold can
+  still be revoked and still appears in the expiry digest until it expires.
+  This is the way to retire a tenant.
+- **`--delete-accounts`** deletes them with their orders, authorizations and
+  challenges. It is **refused while any of those orders holds a live
+  certificate** (issued, not revoked, not expired): the order is the only record
+  of the certificate, and without it the certificate could never be revoked.
+  Revoke those certificates or wait for them to expire, or deactivate instead.
+  A refusal changes nothing, not even the credential.
+
+No choice revokes a certificate. The panel's credential page offers the same
+three, and the JSON API takes them as
+`DELETE /api/eab/{kid}?accounts=keep|deactivate|delete`. Each writes an
+`eab_deleted` audit row, plus one `account_deactivated` or `account_deleted`
+row per account it changed.
+
 ## Inspecting credentials
 
 ```bash

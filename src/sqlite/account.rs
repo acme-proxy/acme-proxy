@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::audit::ClientContext;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
+use crate::sqlite::order::{GuardedDelete, live_certificate};
 
 /// An ACME account (RFC 8555 §7.1.2), keyed by the client's public key stored as
 /// DER SPKI. `contact` is persisted as a JSON array of strings.
@@ -32,7 +33,8 @@ use crate::sqlite::nonce::now_secs;
 /// - `find_by_pubkey`: Lookup account by public key
 /// - `find_by_id`: Lookup account by ID
 /// - `find_or_create`: Create new account or return existing one (RFC 8555 §7.3)
-/// - `delete`: Hard-delete an account, cascading to its orders (admin CLI)
+/// - `delete`: Hard-delete an account, cascading to its orders, unless one
+///   holds a live certificate (admin CLI and web admin)
 /// - `to_json`: Convert to RFC 8555 account JSON object format
 #[derive(Debug)]
 pub struct Account {
@@ -81,6 +83,22 @@ pub struct Account {
 /// the one case a minute of staleness would hide the interesting thing.
 pub const ACCOUNT_TOUCH_INTERVAL: i64 = 60;
 
+/// The accounts an EAB credential bound, as [`Account::eab_summary`] counts
+/// them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EabAccounts {
+    pub accounts: u64,
+    /// Those not already `deactivated` — what `--deactivate-accounts` changes.
+    pub active_accounts: u64,
+    /// Orders under those accounts — what `--delete-accounts` cascades to.
+    pub orders: u64,
+    /// Of those orders, how many hold a live certificate — any of which makes
+    /// `--delete-accounts` refuse.
+    pub live_certificates: u64,
+    /// How many accounts those live certificates belong to.
+    pub accounts_with_live_certificates: u64,
+}
+
 /// A short, stable fingerprint of a public key, for correlating log lines.
 ///
 /// The field this feeds used to be `hex::encode(pubkey)` — the *entire* key, so
@@ -110,7 +128,7 @@ macro_rules! columns {
 }
 
 impl Account {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    pub(crate) fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
         let contact_json: String = row.try_get("contact")?;
         let contact: Vec<String> =
             serde_json::from_str(&contact_json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
@@ -482,59 +500,55 @@ impl Account {
     /// ordering disagreed with this one was a page control waiting to skip a
     /// row. `profile` filters to one endpoint; `None` lists accounts of every
     /// profile, which is what an operator asking "what is on this server?"
-    /// wants.
+    /// wants. `eab_kid` narrows to the accounts one EAB credential bound —
+    /// what the credential card links to before an operator deletes it.
     ///
-    /// Two literal statements per branch rather than a builder: with one
-    /// optional filter there are only two shapes, and `sqlx::query`'s
-    /// `&'static str` bound is a guarantee worth keeping where it is free.
+    /// A [`sqlx::QueryBuilder`] with one predicate function shared by the page
+    /// and the count, [`crate::sqlite::query`]'s shape. It was two literal
+    /// statements per branch while `profile` was the only filter; a second
+    /// optional filter made that four shapes, each a place for the page and the
+    /// total to disagree.
     pub async fn search(
         profile: Option<&str>,
+        eab_kid: Option<&str>,
         limit: i64,
         offset: i64,
         database: &Database,
     ) -> Result<(Vec<Account>, i64), sqlx::Error> {
-        debug!(event = "db_account_search_started", outcome = "progress", profile = ?profile, limit = limit, offset = offset);
+        debug!(event = "db_account_search_started", outcome = "progress", profile = ?profile, eab_kid = ?eab_kid, limit = limit, offset = offset);
+
+        // A kid that is not a UUID names no credential, so it matches nothing:
+        // the `find_any_by_kid` answer, rather than an error for a filter.
+        let eab_kid = match eab_kid.map(crate::sqlite::id::parse) {
+            Some(None) => return Ok((Vec::new(), 0)),
+            Some(Some(kid)) => Some(kid),
+            None => None,
+        };
+        let push_predicates = |builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>| {
+            let separator = crate::sqlite::query::push_equalities(
+                builder,
+                crate::sqlite::query::WHERE,
+                &[("profile = ", profile)],
+            );
+            if let Some(kid) = eab_kid {
+                builder.push(separator).push("eab_kid = ").push_bind(kid);
+            }
+        };
 
         // `id` breaks the `created_at` tie for the same reason it does for
         // orders: whole-second timestamps would otherwise let two rows swap
         // between pages, and one of them would never be seen.
-        let (rows, total) = match profile {
-            Some(profile) => {
-                let rows = sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM accounts WHERE profile = ? \
-                     ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;"
-                ))
-                .bind(profile)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&database.pool)
-                .await?;
-                let total: i64 = sqlx::query("SELECT COUNT(*) FROM accounts WHERE profile = ?;")
-                    .bind(profile)
-                    .fetch_one(&database.pool)
-                    .await?
-                    .try_get(0)?;
-                (rows, total)
-            }
-            None => {
-                let rows = sqlx::query(concat!(
-                    "SELECT ",
-                    columns!(),
-                    " FROM accounts ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?;"
-                ))
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(&database.pool)
-                .await?;
-                let total: i64 = sqlx::query("SELECT COUNT(*) FROM accounts;")
-                    .fetch_one(&database.pool)
-                    .await?
-                    .try_get(0)?;
-                (rows, total)
-            }
-        };
+        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!(), " FROM accounts"));
+        push_predicates(&mut page);
+        page.push(" ORDER BY created_at DESC, id DESC LIMIT ");
+        page.push_bind(limit);
+        page.push(" OFFSET ");
+        page.push_bind(offset);
+        let rows = page.build().fetch_all(&database.pool).await?;
+
+        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM accounts");
+        push_predicates(&mut count);
+        let total: i64 = count.build().fetch_one(&database.pool).await?.try_get(0)?;
 
         let accounts = rows
             .into_iter()
@@ -544,26 +558,185 @@ impl Account {
     }
 
     /// Hard-deletes the account row — cascading, via `ON DELETE CASCADE`, to
-    /// its orders, authorizations and challenges. Returns whether a row
-    /// existed to delete, so the caller can distinguish "gone" from "never
-    /// there".
-    pub async fn delete(id: &str, database: &Database) -> Result<bool, sqlx::Error> {
+    /// its orders, authorizations and challenges — unless one of its orders
+    /// holds a [`live_certificate!`], which it refuses: the cascade would take
+    /// the only record of a certificate the CA still vouches for, and with it
+    /// every way to revoke it.
+    ///
+    /// The guard is inside the `DELETE`, as [`Order::delete`]'s is, so an
+    /// issuance cannot land between a check and the delete.
+    ///
+    /// [`Order::delete`]: crate::sqlite::order::Order::delete
+    pub async fn delete(id: &str, database: &Database) -> Result<GuardedDelete, sqlx::Error> {
         debug!(event = "db_account_delete_started", outcome = "progress", account_id = ?id);
         let Some(id) = crate::sqlite::id::parse(id) else {
-            return Ok(false);
+            return Ok(GuardedDelete::NotFound);
         };
-        let result = sqlx::query("DELETE FROM accounts WHERE id = ?;")
-            .bind(id)
-            .execute(&database.pool)
-            .await?;
+        let result = sqlx::query(concat!(
+            "DELETE FROM accounts WHERE id = ? AND NOT EXISTS \
+             (SELECT 1 FROM orders WHERE orders.account_id = accounts.id AND ",
+            live_certificate!(),
+            ");"
+        ))
+        .bind(id)
+        .bind(now_secs())
+        .execute(&database.pool)
+        .await?;
 
-        let deleted = result.rows_affected() > 0;
-        if deleted {
+        if result.rows_affected() > 0 {
             info!(event = "db_account_deleted", outcome = "success", account_id = ?id);
+            return Ok(GuardedDelete::Deleted);
+        }
+
+        // A missing account has no orders, so a non-zero count is a refusal.
+        let live = Self::count_live_certificates(id, database).await?;
+        if live > 0 {
+            info!(event = "db_account_delete_blocked", outcome = "failure", account_id = ?id, live_certificates = live);
+            Ok(GuardedDelete::LiveCertificates(live))
         } else {
             debug!(event = "db_account_delete_missing", outcome = "success", account_id = ?id);
+            Ok(GuardedDelete::NotFound)
         }
-        Ok(deleted)
+    }
+
+    /// How many of this account's orders hold a [`live_certificate!`] — what
+    /// would make [`Account::delete`] refuse.
+    pub async fn count_live_certificates(
+        account_id: Uuid,
+        database: &Database,
+    ) -> Result<u64, sqlx::Error> {
+        let live: i64 = sqlx::query(concat!(
+            "SELECT COUNT(*) FROM orders WHERE account_id = ? AND ",
+            live_certificate!(),
+            ";"
+        ))
+        .bind(account_id)
+        .bind(now_secs())
+        .fetch_one(&database.pool)
+        .await?
+        .try_get(0)?;
+        Ok(live as u64)
+    }
+
+    /// What an EAB credential bound: its accounts, and what deleting or
+    /// deactivating them would touch. One read for the `eab delete` prompt, the
+    /// credential card and the refusal, so the three cannot disagree.
+    pub async fn eab_summary(kid: Uuid, database: &Database) -> Result<EabAccounts, sqlx::Error> {
+        let row = sqlx::query(concat!(
+            "SELECT \
+             (SELECT COUNT(*) FROM accounts WHERE eab_kid = ?), \
+             (SELECT COUNT(*) FROM accounts WHERE eab_kid = ? AND status != 'deactivated'), \
+             (SELECT COUNT(*) FROM orders WHERE account_id IN \
+                 (SELECT id FROM accounts WHERE eab_kid = ?)), \
+             (SELECT COUNT(*) FROM orders WHERE account_id IN \
+                 (SELECT id FROM accounts WHERE eab_kid = ?) AND ",
+            live_certificate!(),
+            "), (SELECT COUNT(DISTINCT account_id) FROM orders WHERE account_id IN \
+                 (SELECT id FROM accounts WHERE eab_kid = ?) AND ",
+            live_certificate!(),
+            ");"
+        ))
+        .bind(kid)
+        .bind(kid)
+        .bind(kid)
+        .bind(kid)
+        .bind(now_secs())
+        .bind(kid)
+        .bind(now_secs())
+        .fetch_one(&database.pool)
+        .await?;
+
+        let count =
+            |index: usize| -> Result<u64, sqlx::Error> { Ok(row.try_get::<i64, _>(index)? as u64) };
+        Ok(EabAccounts {
+            accounts: count(0)?,
+            active_accounts: count(1)?,
+            orders: count(2)?,
+            live_certificates: count(3)?,
+            accounts_with_live_certificates: count(4)?,
+        })
+    }
+
+    /// Deactivates every account `kid` bound that is not deactivated already,
+    /// returning them as they now are. Inside the caller's transaction:
+    /// `Eab::delete` pairs it with removing the credential.
+    ///
+    /// Orders are untouched, which is the point of offering it beside
+    /// [`Account::delete_by_eab_kid`]: a deactivated account can request
+    /// nothing, and every certificate it holds stays revocable.
+    pub(crate) async fn deactivate_by_eab_kid(
+        kid: Uuid,
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<Vec<Account>, sqlx::Error> {
+        let rows = sqlx::query(concat!(
+            "UPDATE accounts SET status = 'deactivated' \
+             WHERE eab_kid = ? AND status != 'deactivated' RETURNING ",
+            columns!(),
+            ";"
+        ))
+        .bind(kid)
+        .fetch_all(&mut *connection)
+        .await?;
+        rows.into_iter().map(Account::from_row).collect()
+    }
+
+    /// How many of `kid`'s accounts hold a [`live_certificate!`], and how many
+    /// such certificates there are — `(accounts, certificates)`. Inside the
+    /// caller's transaction, so the answer holds for the delete that follows.
+    pub(crate) async fn live_certificates_by_eab_kid(
+        kid: Uuid,
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<(u64, u64), sqlx::Error> {
+        let row = sqlx::query(concat!(
+            "SELECT COUNT(DISTINCT account_id), COUNT(*) FROM orders \
+             WHERE account_id IN (SELECT id FROM accounts WHERE eab_kid = ?) AND ",
+            live_certificate!(),
+            ";"
+        ))
+        .bind(kid)
+        .bind(now_secs())
+        .fetch_one(&mut *connection)
+        .await?;
+        Ok((
+            row.try_get::<i64, _>(0)? as u64,
+            row.try_get::<i64, _>(1)? as u64,
+        ))
+    }
+
+    /// Hard-deletes every account `kid` bound, returning each with the number
+    /// of orders that cascaded with it. **Unguarded** — the caller has already
+    /// asked [`Account::live_certificates_by_eab_kid`] inside the same
+    /// transaction, and a guard per row would only turn a refusal into a
+    /// partial delete.
+    ///
+    /// The counts are read before the delete for `DeleteOutcome`'s reason: once
+    /// the cascade has run there is nothing left to count.
+    pub(crate) async fn delete_by_eab_kid(
+        kid: Uuid,
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<Vec<(Account, u64)>, sqlx::Error> {
+        let rows = sqlx::query(concat!(
+            "SELECT ",
+            columns!(),
+            ", (SELECT COUNT(*) FROM orders WHERE orders.account_id = accounts.id) AS order_count \
+             FROM accounts WHERE eab_kid = ? ORDER BY created_at DESC, id DESC;"
+        ))
+        .bind(kid)
+        .fetch_all(&mut *connection)
+        .await?;
+        let accounts = rows
+            .into_iter()
+            .map(|row| {
+                let orders = row.try_get::<i64, _>("order_count")? as u64;
+                Ok((Account::from_row(row)?, orders))
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?;
+
+        sqlx::query("DELETE FROM accounts WHERE eab_kid = ?;")
+            .bind(kid)
+            .execute(&mut *connection)
+            .await?;
+        Ok(accounts)
     }
 
     /// The RFC 8555 account object: `status`, optional `contact`, and the
@@ -967,17 +1140,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_the_row_and_reports_true() {
+    async fn delete_removes_the_row_and_reports_deleted() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let (account, _) =
             Account::find_or_create("default", &[3u8], vec![], &ClientContext::default(), &db)
                 .await
                 .unwrap();
 
-        assert!(
+        assert_eq!(
             Account::delete(account.id.to_string().as_str(), &db)
                 .await
-                .unwrap()
+                .unwrap(),
+            GuardedDelete::Deleted
         );
         assert!(
             Account::find_by_id("default", account.id.to_string().as_str(), &db)
@@ -988,9 +1162,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_of_unknown_id_reports_false() {
+    async fn delete_of_unknown_id_reports_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(!Account::delete("nope", &db).await.unwrap());
+        assert_eq!(
+            Account::delete("nope", &db).await.unwrap(),
+            GuardedDelete::NotFound
+        );
     }
 
     #[tokio::test]
@@ -1021,6 +1198,137 @@ mod tests {
             .await
             .unwrap();
         assert!(remaining.is_empty());
+    }
+
+    /// An account whose orders include a live certificate is refused, whole:
+    /// the cascade would take the certificate's only record with it. Once the
+    /// certificate is revoked the same delete goes through.
+    #[tokio::test]
+    async fn delete_refuses_an_account_holding_a_live_certificate() {
+        use crate::sqlite::order::Order;
+        use crate::testutil::certified_order;
+
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (account, _) =
+            Account::find_or_create("default", &[5u8], vec![], &ClientContext::default(), &db)
+                .await
+                .unwrap();
+        let mut live = certified_order(&db, account.id, Some(now_secs() + 86_400)).await;
+        certified_order(&db, account.id, Some(now_secs() - 86_400)).await;
+
+        assert_eq!(
+            Account::count_live_certificates(account.id, &db)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            Account::delete(account.id.to_string().as_str(), &db)
+                .await
+                .unwrap(),
+            GuardedDelete::LiveCertificates(1)
+        );
+        assert_eq!(
+            Order::find_by_account(account.id, &db).await.unwrap().len(),
+            2,
+            "a refused delete must cascade to nothing"
+        );
+
+        live.revoke(None, &db).await.unwrap();
+        assert_eq!(
+            Account::delete(account.id.to_string().as_str(), &db)
+                .await
+                .unwrap(),
+            GuardedDelete::Deleted
+        );
+    }
+
+    /// `eab_kid` narrows the rows and the total alike, composes with
+    /// `profile`, and a kid that is not a UUID matches nothing rather than
+    /// failing.
+    #[tokio::test]
+    async fn search_filters_by_eab_kid() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let ids = seed_accounts(&db, "default", 3).await;
+        seed_accounts(&db, "other", 1).await;
+        let kid = crate::sqlite::id::mint();
+        for id in &ids[..2] {
+            let mut account = Account::find_any_by_id(id, &db).await.unwrap().unwrap();
+            account.set_eab_kid(kid, &db).await.unwrap();
+        }
+        let kid = kid.to_string();
+
+        let (rows, total) = Account::search(None, Some(&kid), 50, 0, &db).await.unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(
+            rows.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
+            ids[..2]
+        );
+        let (rows, total) = Account::search(None, Some(&kid), 1, 1, &db).await.unwrap();
+        assert_eq!((rows.len(), total), (1, 2), "the total ignores the window");
+
+        let (rows, total) = Account::search(Some("other"), Some(&kid), 50, 0, &db)
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
+
+        let (rows, total) = Account::search(None, Some("not-a-kid"), 50, 0, &db)
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    /// What `eab delete` words its prompt with: every account the kid bound,
+    /// those not yet deactivated, their orders, and the live certificates among
+    /// them — and nothing from an account bound to another credential.
+    #[tokio::test]
+    async fn eab_summary_counts_only_that_credentials_accounts() {
+        use crate::testutil::certified_order;
+
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let kid = crate::sqlite::id::mint();
+        let mut bound = Vec::new();
+        for key in [10u8, 11, 12] {
+            let (mut account, _) =
+                Account::find_or_create("default", &[key], vec![], &ClientContext::default(), &db)
+                    .await
+                    .unwrap();
+            account.set_eab_kid(kid, &db).await.unwrap();
+            bound.push(account);
+        }
+        bound[2].deactivate(&db).await.unwrap();
+        certified_order(&db, bound[0].id, Some(now_secs() + 86_400)).await;
+        certified_order(&db, bound[0].id, None).await;
+        certified_order(&db, bound[1].id, Some(now_secs() - 86_400)).await;
+
+        let (mut other, _) =
+            Account::find_or_create("default", &[13u8], vec![], &ClientContext::default(), &db)
+                .await
+                .unwrap();
+        other
+            .set_eab_kid(crate::sqlite::id::mint(), &db)
+            .await
+            .unwrap();
+        certified_order(&db, other.id, Some(now_secs() + 86_400)).await;
+
+        assert_eq!(
+            Account::eab_summary(kid, &db).await.unwrap(),
+            EabAccounts {
+                accounts: 3,
+                active_accounts: 2,
+                orders: 3,
+                live_certificates: 2,
+                accounts_with_live_certificates: 1,
+            }
+        );
+        assert_eq!(
+            Account::eab_summary(crate::sqlite::id::mint(), &db)
+                .await
+                .unwrap(),
+            EabAccounts::default()
+        );
     }
 
     /// Seeds `count` accounts under `profile`, backdated so `created_at DESC`
@@ -1054,21 +1362,21 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let ids = seed_accounts(&db, "default", 5).await;
 
-        let (page, total) = Account::search(None, 2, 0, &db).await.unwrap();
+        let (page, total) = Account::search(None, None, 2, 0, &db).await.unwrap();
         assert_eq!(total, 5, "the total must ignore the page window");
         assert_eq!(
             page.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
             ids[..2]
         );
 
-        let (second, _) = Account::search(None, 2, 2, &db).await.unwrap();
+        let (second, _) = Account::search(None, None, 2, 2, &db).await.unwrap();
         assert_eq!(
             second.iter().map(|a| a.id.to_string()).collect::<Vec<_>>(),
             ids[2..4]
         );
 
         // Past the end: empty, but the total is still real.
-        let (beyond, total) = Account::search(None, 2, 99, &db).await.unwrap();
+        let (beyond, total) = Account::search(None, None, 2, 99, &db).await.unwrap();
         assert!(beyond.is_empty());
         assert_eq!(total, 5);
     }
@@ -1079,15 +1387,19 @@ mod tests {
         seed_accounts(&db, "default", 2).await;
         seed_accounts(&db, "other", 3).await;
 
-        let (rows, total) = Account::search(Some("other"), 50, 0, &db).await.unwrap();
+        let (rows, total) = Account::search(Some("other"), None, 50, 0, &db)
+            .await
+            .unwrap();
         assert_eq!(total, 3);
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|a| a.profile == "other"));
 
-        let (_, total) = Account::search(None, 50, 0, &db).await.unwrap();
+        let (_, total) = Account::search(None, None, 50, 0, &db).await.unwrap();
         assert_eq!(total, 5, "no profile means every endpoint");
 
-        let (rows, total) = Account::search(Some("nope"), 50, 0, &db).await.unwrap();
+        let (rows, total) = Account::search(Some("nope"), None, 50, 0, &db)
+            .await
+            .unwrap();
         assert!(rows.is_empty());
         assert_eq!(total, 0);
     }
@@ -1095,7 +1407,7 @@ mod tests {
     #[tokio::test]
     async fn search_on_an_empty_table_is_empty_rather_than_an_error() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let (rows, total) = Account::search(None, 50, 0, &db).await.unwrap();
+        let (rows, total) = Account::search(None, None, 50, 0, &db).await.unwrap();
         assert!(rows.is_empty());
         assert_eq!(total, 0);
     }

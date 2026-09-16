@@ -172,7 +172,7 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             get(upstream_orders::get_upstream_order),
         )
         .route("/ui/eab", get(eab::list_eab).post(eab::create_eab))
-        .route("/ui/eab/{kid}", get(eab::get_eab))
+        .route("/ui/eab/{kid}", get(eab::get_eab).delete(eab::delete_eab))
         .route("/ui/eab/{kid}/revoke", post(eab::revoke_eab))
         .route("/ui/nonces", get(misc::get_nonces))
         .route("/ui/nonces/cleanup", post(misc::cleanup_nonces))

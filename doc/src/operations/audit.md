@@ -48,7 +48,7 @@ turning a remote party away — and each is attributed to `actor_kind = "admin"`
 |---|---|
 | `account_deactivated` / `account_contact_updated` / `account_deleted` | an ACME account was deactivated, had its contact list rewritten, or was hard-deleted (the row names the account and its profile; `account_deleted` carries the cascade count) |
 | `order_deleted` | an order row was hard-deleted (names the order, account and identifiers) |
-| `eab_created` / `eab_revoked` | an External Account Binding credential was minted or revoked (the `detail` names the `kid`; the secret is never recorded) |
+| `eab_created` / `eab_revoked` / `eab_deleted` | an External Account Binding credential was minted, revoked or deleted (the `detail` names the `kid`; the secret is never recorded). `eab_deleted` also says whether its accounts were kept, deactivated or deleted, and each account changed gets its own `account_deactivated` or `account_deleted` row |
 | `operator_created` / `operator_deleted` | a web-admin operator was added or removed |
 | `operator_role_changed` / `operator_disabled` / `operator_enabled` | an operator's privilege tier or sign-in status changed |
 | `operator_password_changed` / `operator_contact_updated` | an operator's password or notification address changed (self-service or by an admin) |

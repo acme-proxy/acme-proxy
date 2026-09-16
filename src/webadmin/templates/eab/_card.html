@@ -1,4 +1,4 @@
-{#- One credential. The swap target of a revoke.
+{#- One credential. The swap target of a revoke, and of a refused delete.
 
     No secret here, ever: this reads the same row `_created.html` rendered once,
     and `Eab::to_json` does not carry `hmacKey`. -#}
@@ -22,6 +22,17 @@
       </dd>
       <dt>Status</dt><dd><span class="badge {{ eab.status }}">{{ eab.status }}</span></dd>
       <dt>Created</dt><dd>{{ eab.createdAt }}</dd>
+      {#- `bound` comes from `Account::eab_summary`, the read `eab delete` words
+          its prompt with, so the card and the command cannot disagree. -#}
+      <dt>Accounts</dt>
+      <dd>
+        {%- if bound.accounts -%}
+          <a href="/ui/accounts?eabKid={{ eab.kid }}">{{ bound.accounts }} account(s)</a>,
+          {{ bound.orders }} order(s), {{ bound.liveCertificates }} live certificate(s)
+        {%- else -%}
+          <span class="muted">none registered with it</span>
+        {%- endif -%}
+      </dd>
     </dl>
   </div>
 
@@ -37,10 +48,48 @@
               hx-confirm="Revoke this credential? Registrations using it will start failing immediately.">
         Revoke
       </button>
+      {#- The three deletes. Success answers with a redirect, the page these
+          buttons live on being the thing deleted; a refusal answers with this
+          card, hence the target. -#}
+      <button class="danger"
+              hx-delete="/ui/eab/{{ eab.kid }}"
+              hx-target="#eab-card"
+              hx-confirm="Delete this credential?{% if bound.accounts %} Its {{ bound.accounts }} account(s) are kept, but no longer resolve to any credential, so every eab filter check will refuse them.{% endif %} This cannot be undone.">
+        Delete
+      </button>
+      {% if bound.accounts %}
+        <button class="danger"
+                hx-delete="/ui/eab/{{ eab.kid }}?accounts=deactivate"
+                hx-target="#eab-card"
+                hx-confirm="Delete this credential and deactivate its {{ bound.activeAccounts }} active account(s)? Their {{ bound.orders }} order(s) are kept, so their certificates stay revocable. This cannot be undone.">
+          Delete &amp; deactivate accounts
+        </button>
+        {#- Disabled while a certificate is live -- the handler refuses it
+            anyway, and a button that can only say no is worse. -#}
+        <button class="danger"
+                hx-delete="/ui/eab/{{ eab.kid }}?accounts=delete"
+                hx-target="#eab-card"
+                {% if bound.liveCertificates %}disabled{% endif %}
+                hx-confirm="Delete this credential and its {{ bound.accounts }} account(s), with their {{ bound.orders }} order(s), authorizations and challenges? This cannot be undone.">
+          Delete with accounts
+        </button>
+      {% endif %}
     </div>
+    {% if bound.liveCertificates %}
+      <p class="small">
+        Its accounts cannot be deleted while they hold
+        {{ bound.liveCertificates }} live certificate(s) — deleting their orders
+        would leave them impossible to revoke. Revoke them first, wait for them
+        to expire, or deactivate the accounts instead.
+      </p>
+    {% endif %}
     <p class="muted small">
-      The row is kept, moved to <code>revoked</code> — an audit trail is more
-      use than a missing row, and the HMAC secret was never readable anyway.
+      <strong>Revoke</strong> keeps the row, moved to <code>revoked</code>:
+      accounts registered with it still resolve to it and its label.
+      <strong>Delete</strong> removes the row; its accounts can be kept,
+      deactivated (their orders stay, so their certificates remain revocable)
+      or deleted with everything under them. No certificate is revoked by any
+      of these.
     </p>
   </div>
   {% endif %}

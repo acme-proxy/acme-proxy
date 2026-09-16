@@ -65,6 +65,7 @@ pub enum AuditEvent {
     OrderDeleted,
     EabCreated,
     EabRevoked,
+    EabDeleted,
     OperatorCreated,
     OperatorRoleChanged,
     OperatorContactUpdated,
@@ -101,6 +102,7 @@ impl AuditEvent {
             Self::OrderDeleted => "order_deleted",
             Self::EabCreated => "eab_created",
             Self::EabRevoked => "eab_revoked",
+            Self::EabDeleted => "eab_deleted",
             Self::OperatorCreated => "operator_created",
             Self::OperatorRoleChanged => "operator_role_changed",
             Self::OperatorContactUpdated => "operator_contact_updated",
@@ -139,6 +141,7 @@ impl AuditEvent {
             | Self::OrderDeleted
             | Self::EabCreated
             | Self::EabRevoked
+            | Self::EabDeleted
             | Self::OperatorCreated
             | Self::OperatorRoleChanged
             | Self::OperatorContactUpdated
@@ -191,6 +194,7 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::OrderDeleted,
     AuditEvent::EabCreated,
     AuditEvent::EabRevoked,
+    AuditEvent::EabDeleted,
     AuditEvent::OperatorCreated,
     AuditEvent::OperatorRoleChanged,
     AuditEvent::OperatorContactUpdated,
@@ -210,7 +214,7 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
 
 /// How many variants [`AuditEvent`] has, asserted against
 /// [`ALL_AUDIT_EVENTS`] at compile time.
-const EVENT_COUNT: usize = 25;
+const EVENT_COUNT: usize = 26;
 
 const _: () = assert!(
     ALL_AUDIT_EVENTS.len() == EVENT_COUNT,
@@ -236,20 +240,21 @@ const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
         AuditEvent::OrderDeleted => 8,
         AuditEvent::EabCreated => 9,
         AuditEvent::EabRevoked => 10,
-        AuditEvent::OperatorCreated => 11,
-        AuditEvent::OperatorRoleChanged => 12,
-        AuditEvent::OperatorContactUpdated => 13,
-        AuditEvent::OperatorPasswordChanged => 14,
-        AuditEvent::OperatorDisabled => 15,
-        AuditEvent::OperatorEnabled => 16,
-        AuditEvent::OperatorDeleted => 17,
-        AuditEvent::OperatorTotpEnrolled => 18,
-        AuditEvent::OperatorTotpDisabled => 19,
-        AuditEvent::OperatorRecoveryCodesRegenerated => 20,
-        AuditEvent::SessionRevoked => 21,
-        AuditEvent::JobCancelled => 22,
-        AuditEvent::JobAdvanced => 23,
-        AuditEvent::NonceCleanupCompleted => 24,
+        AuditEvent::EabDeleted => 11,
+        AuditEvent::OperatorCreated => 12,
+        AuditEvent::OperatorRoleChanged => 13,
+        AuditEvent::OperatorContactUpdated => 14,
+        AuditEvent::OperatorPasswordChanged => 15,
+        AuditEvent::OperatorDisabled => 16,
+        AuditEvent::OperatorEnabled => 17,
+        AuditEvent::OperatorDeleted => 18,
+        AuditEvent::OperatorTotpEnrolled => 19,
+        AuditEvent::OperatorTotpDisabled => 20,
+        AuditEvent::OperatorRecoveryCodesRegenerated => 21,
+        AuditEvent::SessionRevoked => 22,
+        AuditEvent::JobCancelled => 23,
+        AuditEvent::JobAdvanced => 24,
+        AuditEvent::NonceCleanupCompleted => 25,
         AuditEvent::AuditPruned => EVENT_COUNT,
     }
 }

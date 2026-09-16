@@ -91,6 +91,12 @@ type           = "eab"
 require_active = true
 ```
 
+A **deleted** credential goes further than a revoked one, with or without
+`require_active`: an account whose `kid` names a row that no longer exists
+resolves to no credential at all, and every `eab` check refuses it, exactly as
+it refuses an account registered without EAB. See
+[Deleting a credential](../features/eab.md#deleting-a-credential).
+
 Off by default, because turning it on retroactively changes what `eab revoke`
 means for a deployment. It is the lever to reach for when a tenant's credential
 leaks — and it is a usable policy on its own, with no labels at all: "any
