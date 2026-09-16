@@ -934,6 +934,7 @@ fn authenticated_pages() -> Vec<&'static str> {
         "/ui/",
         "/ui/accounts",
         "/ui/accounts/some-id",
+        "/ui/accounts/some-id/orders",
         "/ui/orders",
         "/ui/orders/some-id",
         // A download, but still a page route behind the session: a certificate
@@ -1032,6 +1033,7 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         (Method::POST, "/ui/account/mfa/totp/disable", SelfService),
         (Method::POST, "/ui/account/mfa/recovery-codes", SelfService),
         (Method::POST, "/ui/account/password", SelfService),
+        (Method::POST, "/ui/account/contact", SelfService),
         (
             Method::POST,
             "/ui/account/sessions/some-id/revoke",
@@ -1039,6 +1041,8 @@ fn mutating_page_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         ),
         (Method::POST, "/ui/operators/some-username/disable", Admin),
         (Method::POST, "/ui/operators/some-username/enable", Admin),
+        (Method::POST, "/ui/operators/some-username/contact", Admin),
+        (Method::POST, "/ui/operators/some-username/role", Admin),
         (
             Method::POST,
             "/ui/operators/some-username/totp/reset",
@@ -1237,6 +1241,37 @@ async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
         assert!(
             !hidden.contains(control),
             "{path} must not offer {control} to a viewer"
+        );
+    }
+
+    // The same holds for the bare fragment htmx swaps in. The gate used to
+    // read "no `user` in the context means show": true of a mutation's answer,
+    // and silently wrong for any fragment rendered from a read. Every fragment
+    // now carries `can_write` instead, so ask for them the way htmx does.
+    let order_id = {
+        let (orders, _) = acme_proxy::sqlite::order::Order::search(
+            &acme_proxy::sqlite::order::OrderQuery {
+                limit: 1,
+                ..Default::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        orders[0].id.to_string()
+    };
+    let order_page = format!("/ui/orders/{order_id}");
+    let fragments: [(&str, &str); 2] = [(&account_page, "/deactivate"), (&order_page, "hx-delete")];
+    for (path, control) in fragments {
+        let seen = html_body(admin_page(&app, path, Some(&admin), true).await).await;
+        let hidden = html_body(admin_page(&app, path, Some(&vera), true).await).await;
+        assert!(
+            seen.contains(control),
+            "the {path} fragment must offer {control} to an operator"
+        );
+        assert!(
+            !hidden.contains(control),
+            "the {path} fragment must not offer {control} to a viewer: {hidden}"
         );
     }
 
@@ -1544,6 +1579,62 @@ async fn the_overview_counts_every_resource() {
     assert!(body.contains(PROFILE));
 }
 
+/// The overview leads with what needs somebody, each number linking to the
+/// list behind it, and a tile is tinted only while its number is non-zero —
+/// here a refused revocation written a moment ago, beside a queue with nothing
+/// failed in it.
+#[tokio::test]
+async fn the_overview_leads_with_what_needs_attention() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    AuditEntry::insert(
+        AuditRecord::new(
+            AuditEvent::CertificateRevokeFailed,
+            PROFILE,
+            Actor::system(),
+        )
+        .with_reason("unauthorized"),
+        &database,
+    )
+    .await
+    .unwrap();
+
+    let body = html_body(admin_page(&app, "/ui/", Some(&session), false).await).await;
+    assert!(body.contains("Needs attention"), "{body}");
+    assert!(
+        body.contains(r#"<a class="stat danger" href="/ui/audit?outcome=failure">"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<a class="stat" href="/ui/jobs?status=failed">"#),
+        "{body}"
+    );
+    assert!(body.contains(r#"href="/ui/expiring?days=7""#), "{body}");
+}
+
+/// Every filtered list offers a way back to the unfiltered one, and a loading
+/// indicator inside its form, where htmx's request class will reach it.
+#[tokio::test]
+async fn every_list_page_offers_a_way_back_to_the_unfiltered_list() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    for path in [
+        "/ui/accounts",
+        "/ui/orders",
+        "/ui/expiring",
+        "/ui/jobs",
+        "/ui/upstream-orders",
+        "/ui/audit",
+    ] {
+        let body = html_body(admin_page(&app, path, Some(&session), false).await).await;
+        assert!(
+            body.contains(&format!(
+                r#"<a class="small" href="{path}">Clear filters</a>"#
+            )),
+            "{path}: {body}"
+        );
+        assert!(body.contains(r#"class="htmx-indicator"#), "{path}");
+    }
+}
+
 #[tokio::test]
 async fn an_account_page_shows_the_account_and_its_orders() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
@@ -1562,12 +1653,114 @@ async fn an_account_page_shows_the_account_and_its_orders() {
     assert!(body.contains(&ids[0]));
     assert!(body.contains("host0.example.com"));
     assert!(body.contains("account-card"));
+    // The delete confirmation names what cascades, as `account delete` does.
+    assert!(body.contains("its 1 order(s)"), "{body}");
+    // And the card leads to this account's rows in the trail.
+    assert!(
+        body.contains(&format!(r#"href="/ui/audit?accountId={}""#, ids[0])),
+        "{body}"
+    );
     // Traceability: where the account was registered from, and where the key
     // was last seen. Both pairs, both with their reverse name.
     assert!(body.contains("Created from"), "{body}");
     assert!(body.contains("Last seen from"), "{body}");
     assert!(body.contains("203.0.113.0"), "{body}");
     assert!(body.contains("client0.example.net"), "{body}");
+}
+
+/// The pager under an account's orders swaps `#orders-table`, so the URL it
+/// fetches must answer with that table. It used to fetch the account page
+/// itself, whose fragment is the *card*: a page step put a second
+/// `#account-card` inside the orders table, and the orders vanished.
+#[tokio::test]
+async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
+    use acme_proxy::sqlite::account::Account;
+    use acme_proxy::sqlite::order::{Identifier, Order};
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let (account, _) = Account::find_or_create(
+        PROFILE,
+        &[9u8, 9],
+        vec![],
+        &ClientContext::default(),
+        &database,
+    )
+    .await
+    .unwrap();
+    for index in 0..3 {
+        Order::create(
+            PROFILE,
+            account.id,
+            vec![Identifier::dns(format!("page{index}.example.com"))],
+            2_000_000_000,
+            None,
+            None,
+            &database,
+        )
+        .await
+        .unwrap();
+    }
+    let id = account.id.to_string();
+
+    // The account page's pager points at the orders route, and does not push
+    // it: the address bar belongs to the account.
+    let page = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/accounts/{id}?limit=2"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    // Auto-escaping writes the attribute's `/` as `&#x2f;`, which the browser
+    // decodes; match the escaped form rather than a path that never appears.
+    assert!(
+        page.contains(&format!("{id}&#x2f;orders?limit=2&amp;offset=2")),
+        "{page}"
+    );
+    assert!(!page.contains("hx-push-url"), "{page}");
+
+    // What htmx swaps in is the table, holding the last order, and no card.
+    let response = admin_page(
+        &app,
+        &format!("/ui/accounts/{id}/orders?limit=2&offset=2"),
+        Some(&session),
+        true,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let fragment = html_body(response).await;
+    assert!(fragment.contains(r#"id="orders-table""#), "{fragment}");
+    assert!(!fragment.contains("account-card"), "{fragment}");
+    assert!(!fragment.contains("<html"), "{fragment}");
+    assert!(fragment.contains("3–3 of 3"), "{fragment}");
+
+    // Navigated to directly, the same URL is still the whole account page.
+    let document = html_body(
+        admin_page(
+            &app,
+            &format!("/ui/accounts/{id}/orders?limit=2&offset=2"),
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    assert!(document.contains("<html"), "{document}");
+    assert!(document.contains("account-card"), "{document}");
+    assert!(document.contains(r#"id="orders-table""#), "{document}");
+
+    // An unknown account is a 404, not an empty table.
+    let missing = admin_page(
+        &app,
+        "/ui/accounts/00000000-0000-0000-0000-000000000000/orders",
+        Some(&session),
+        true,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
 /// A reverse lookup that found nothing leaves the address alone, which is a
@@ -2453,7 +2646,7 @@ async fn the_filter_policy_page_shows_what_the_process_is_enforcing() {
 
     // A sub-page of Profiles, not a nav entry of its own.
     assert!(
-        body.contains(r#"<a href="/ui/profiles" class="active">Profiles</a>"#),
+        body.contains(r#"<a href="/ui/profiles" class="active" aria-current="page">Profiles</a>"#),
         "{body}"
     );
 
@@ -2706,6 +2899,58 @@ async fn the_audit_page_lists_rows_escapes_them_and_offers_nothing_to_write() {
             response.status()
         );
     }
+}
+
+/// A deep link into the trail — `?certSerial=` from an abuse report, `?orderId=`
+/// from an order — must keep its filter on page two and show it in the form.
+/// The handler applied both and carried neither: the pager's next URL dropped
+/// them, and the form, having no control for either, dropped them the moment
+/// any other control changed.
+#[tokio::test]
+async fn the_audit_filters_survive_a_page_step_and_are_shown_in_the_form() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    for _ in 0..3 {
+        AuditEntry::insert(
+            AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
+                .with_serial("0a0b"),
+            &database,
+        )
+        .await
+        .unwrap();
+    }
+    AuditEntry::insert(
+        AuditRecord::new(AuditEvent::CertificateIssued, PROFILE, Actor::admin("root"))
+            .with_serial("ffff"),
+        &database,
+    )
+    .await
+    .unwrap();
+
+    let body = html_body(
+        admin_page(
+            &app,
+            "/ui/audit?certSerial=0a0b&limit=1",
+            Some(&session),
+            false,
+        )
+        .await,
+    )
+    .await;
+    // Filtered: three of the four rows.
+    assert!(body.contains("1–1 of 3"), "{body}");
+    assert!(body.contains("certSerial=0a0b"), "{body}");
+    assert!(
+        body.contains(r#"id="certSerial" name="certSerial""#),
+        "the form has no serial control: {body}"
+    );
+    assert!(body.contains(r#"value="0a0b""#), "{body}");
+
+    // The order filter is echoed the same way.
+    let by_order =
+        html_body(admin_page(&app, "/ui/audit?orderId=some-order", Some(&session), false).await)
+            .await;
+    assert!(by_order.contains(r#"value="some-order""#), "{by_order}");
 }
 
 /// Epoch seconds — the crate's own `now_secs` is `pub(crate)`.
@@ -3590,6 +3835,224 @@ async fn the_operators_page_lists_every_operator_and_badges_the_callers_own_row(
     assert!(body.contains(">you<"), "{body}");
     assert!(body.contains(r#"href="/ui/account""#));
     assert!(body.contains(r#"href="/ui/operators/bob""#));
+}
+
+/// The page the book describes as carrying every operator's role and contact
+/// rendered neither. The role is on the list and the card; the contact, the
+/// "none" state an operator can act on, and the recent sign-in addresses are
+/// on the card — the contact escaped, since a mailbox display name is free
+/// text.
+#[tokio::test]
+async fn the_operators_pages_show_role_contact_and_recent_addresses() {
+    let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
+    acme_proxy::admin::users::create_user(
+        "bob",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    acme_proxy::admin::users::set_role(
+        "bob",
+        acme_proxy::sqlite::admin_user::AdminRole::Viewer,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    acme_proxy::admin::users::set_contact_email(
+        "bob",
+        Some("\"<b>Bob</b>\" <bob@example.com>"),
+        database.clone(),
+    )
+    .await
+    .unwrap();
+    // Signing in is what records an address.
+    admin_login(&app, "bob", ADMIN_PASSWORD).await;
+
+    let list = html_body(admin_page(&app, "/ui/operators", Some(&alice), false).await).await;
+    assert!(list.contains(">viewer<"), "{list}");
+    assert!(list.contains(">admin<"), "{list}");
+
+    let card = html_body(admin_page(&app, "/ui/operators/bob", Some(&alice), false).await).await;
+    assert!(card.contains(">viewer<"), "{card}");
+    assert!(card.contains("bob@example.com"), "{card}");
+    assert!(
+        !card.contains("<b>Bob</b>"),
+        "the contact must be escaped: {card}"
+    );
+    assert!(card.contains("Recent sign-in addresses"), "{card}");
+    assert!(card.contains("127.0.0.1"), "{card}");
+
+    // An operator with no address is told so rather than shown a blank.
+    acme_proxy::admin::users::set_contact_email("bob", None, database.clone())
+        .await
+        .unwrap();
+    let card = html_body(admin_page(&app, "/ui/operators/bob", Some(&alice), false).await).await;
+    assert!(
+        card.contains("security notifications cannot reach them"),
+        "{card}"
+    );
+}
+
+/// A colleague's role and notification address, from their card: both forms
+/// ride the card's step-up field and re-render the card, a missing password and
+/// an unknown role are banners at their own status, a malformed address is a
+/// banner carrying its code, and a role change signs the colleague out.
+#[tokio::test]
+async fn the_operator_card_changes_a_colleagues_role_and_address() {
+    let (app, alice, bob) = app_with_bob().await;
+
+    let card = html_body(admin_page(&app, "/ui/operators/bob", Some(&alice), false).await).await;
+    assert!(
+        card.contains(r#"hx-post="/ui/operators/bob/role""#),
+        "{card}"
+    );
+    assert!(
+        card.contains(r#"hx-post="/ui/operators/bob/contact""#),
+        "{card}"
+    );
+    assert!(card.contains(r#"value="admin" selected"#), "{card}");
+
+    let refused = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/role",
+        Some(&alice),
+        Some(&[("role", "viewer")]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    let body = html_body(refused).await;
+    assert!(body.contains("That password is not correct."), "{body}");
+    assert!(body.contains(r#"id="operator-detail""#), "{body}");
+
+    let unknown = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/role",
+        Some(&alice),
+        Some(&[("role", "root"), ("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    let body = html_body(unknown).await;
+    assert!(body.contains("unknown role"), "{body}");
+    assert!(body.contains(r#"id="operator-detail""#), "{body}");
+
+    let changed = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/role",
+        Some(&alice),
+        Some(&[("role", "viewer"), ("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::OK);
+    let body = html_body(changed).await;
+    assert!(body.contains("Role changed to viewer."), "{body}");
+    assert!(body.contains(r#"value="viewer" selected"#), "{body}");
+    // Bob's cookie predates the change and must not outlive it.
+    let stale = admin_page(&app, "/ui/", Some(&bob), false).await;
+    assert_eq!(stale.status(), StatusCode::SEE_OTHER);
+
+    let contact = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/contact",
+        Some(&alice),
+        Some(&[("contact", "bob@example.org"), ("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(contact.status(), StatusCode::OK);
+    let body = html_body(contact).await;
+    assert!(body.contains("bob@example.org"), "{body}");
+    assert!(body.contains("The previous one was told."), "{body}");
+
+    let invalid = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/operators/bob/contact",
+        Some(&alice),
+        Some(&[("contact", "not an address"), ("password", ADMIN_PASSWORD)]),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let body = html_body(invalid).await;
+    assert!(body.contains("invalid_contact"), "{body}");
+    assert!(body.contains(r#"id="operator-detail""#), "{body}");
+}
+
+/// The notification address on the account page: a wrong password is the
+/// card's own banner and changes nothing, the right one saves the address and
+/// says where notifications now go, and a malformed address is a banner that
+/// keeps what was typed so it can be corrected rather than retyped.
+#[tokio::test]
+async fn the_account_page_changes_the_notification_address() {
+    use acme_proxy::sqlite::admin_user::AdminUser;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    let page = html_body(admin_page(&app, "/ui/account", Some(&session), false).await).await;
+    assert!(page.contains(r#"id="account-contact""#), "{page}");
+
+    let wrong = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/contact",
+        Some(&session),
+        Some(&[("contact", "x@example.com"), ("current_password", "nope")]),
+    )
+    .await;
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    let body = html_body(wrong).await;
+    assert!(body.contains("That password is not correct."), "{body}");
+    assert!(body.contains(r#"id="account-contact""#), "{body}");
+    let alice = AdminUser::find_by_username("alice", &database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice.contact_email, None);
+
+    let saved = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/contact",
+        Some(&session),
+        Some(&[
+            ("contact", "alice@example.org"),
+            ("current_password", ADMIN_PASSWORD),
+        ]),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let body = html_body(saved).await;
+    assert!(
+        body.contains("Security notifications now go to alice@example.org."),
+        "{body}"
+    );
+
+    let invalid = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/contact",
+        Some(&session),
+        Some(&[
+            ("contact", "not an address"),
+            ("current_password", ADMIN_PASSWORD),
+        ]),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let body = html_body(invalid).await;
+    assert!(body.contains("invalid_contact"), "{body}");
+    assert!(body.contains(r#"value="not an address""#), "{body}");
+    let alice = AdminUser::find_by_username("alice", &database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice.contact_email.as_deref(), Some("alice@example.org"));
 }
 
 /// Managing yourself stays on `/ui/account` — this is what stops the

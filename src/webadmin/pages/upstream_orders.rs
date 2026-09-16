@@ -19,7 +19,7 @@ use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::handlers::upstream_orders::UpstreamOrderListParams;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{chrome, pager, respond};
+use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
 
 /// `GET /ui/upstream-orders?profile=&status=&limit=&offset=`
 pub async fn list_upstream_orders(
@@ -28,8 +28,9 @@ pub async fn list_upstream_orders(
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let profile = params.profile.clone().unwrap_or_default();
-    let status = params.status.clone().unwrap_or_default();
+    let filters = ListFilters::new()
+        .with("profile", params.profile.as_deref())
+        .with("status", params.status.as_deref());
     let parsed = params
         .parsed_status()
         .map_err(|error| PageError::bad_request(error.to_string()))?;
@@ -57,14 +58,11 @@ pub async fn list_upstream_orders(
             page,
             total,
             "/ui/upstream-orders",
-            &[("profile", &profile), ("status", &status)],
+            &filters.pairs(),
             "#upstream-orders-table",
         ),
     );
-    context.insert(
-        "filters".to_string(),
-        serde_json::json!({ "profile": profile, "status": status }),
-    );
+    context.insert("filters".to_string(), filters.to_value());
     context.insert(
         "statuses".to_string(),
         Value::Array(

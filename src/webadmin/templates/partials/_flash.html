@@ -7,8 +7,11 @@
   Rendered by every partial that can be the target of a mutation, since that is
   where the outcome has to become visible.
 -#}
+{#- A banner usually arrives by swap, long after the page was read, so it is a
+    live region: an error interrupts (`alert`), anything else waits its turn
+    (`status`). Without one, a screen reader says nothing at all. -#}
 {% if flash %}
-  <div class="flash {{ flash.kind }}">
+  <div class="flash {{ flash.kind }}" role="{% if flash.kind == 'error' %}alert{% else %}status{% endif %}">
     {{ flash.message }}
     {% if flash.code %}<span class="code">({{ flash.code }})</span>{% endif %}
   </div>

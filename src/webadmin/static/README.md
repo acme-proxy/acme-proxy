@@ -40,8 +40,8 @@ $ sha256sum htmx.min.js
 
 Then update the table above — version, URL, checksum and size — and re-read
 `htmx.LICENSE`, which is *not* guaranteed to stay `0BSD` across a major
-version. Two behaviours the admin templates depend on and an upgrade must be
-re-checked against, both set through the `htmx-config` meta tag in
+version. Three behaviours the admin templates depend on and an upgrade must be
+re-checked against, all set through the `htmx-config` meta tag in
 `templates/layout.html`:
 
 - **`includeIndicatorStyles: false`** — htmx otherwise injects an inline
@@ -51,6 +51,10 @@ re-checked against, both set through the `htmx-config` meta tag in
 - **`responseHandling`** — htmx does not swap non-2xx responses by default, so
   without this a `409 already_revoked` would fail silently instead of showing
   the operator an error banner.
+- **`defaultSwapStyle: "outerHTML"`** — every fragment carries its swap
+  target's `id` on its own root element, so it must *replace* the target. The
+  htmx default, `innerHTML`, nested the root inside the target and left two
+  elements sharing one id after every swap.
 
 ## `admin.css`
 

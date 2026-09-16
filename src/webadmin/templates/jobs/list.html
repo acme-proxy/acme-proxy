@@ -21,12 +21,13 @@
         <label for="status">Status</label>
         <select id="status" name="status">
           <option value="">any status</option>
-          {% for status in ["ready", "running", "done", "failed", "cancelled"] %}
+          {% for status in statuses %}
             <option value="{{ status }}"
                     {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
           {% endfor %}
         </select>
       </div>
+      {% include "partials/_filter_meta.html" %}
     </form>
   </div>
 

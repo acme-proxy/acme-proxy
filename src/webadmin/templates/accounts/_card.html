@@ -29,16 +29,16 @@
         <dd><code>{{ account.lastSeenIp }}</code>{% if account.lastSeenPtr %}<br>{{ account.lastSeenPtr }}{% endif %}</dd>
       {% endif %}
       <dt>Orders URL</dt><dd class="wrap-anywhere"><code>{{ account.orders }}</code></dd>
+      <dt>Audit trail</dt>
+      <dd><a href="/ui/audit?accountId={{ account.id }}">Rows for this account</a></dd>
       {% if account.termsOfServiceAgreed is defined %}
         <dt>Terms agreed</dt><dd>{{ account.termsOfServiceAgreed }}</dd>
       {% endif %}
     </dl>
   </div>
 
-  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
-      renders as the fragment following a mutation, and the caller there has
-      already passed a write extractor, so undefined means "show". -#}
-  {% if not user is defined or user.role != "viewer" %}
+  {#- Hidden below the operator tier; see `pages::fragment_context`. -#}
+  {% if can_write %}
   <div class="panel">
     <h2>Contact</h2>
     {#- One `mailto:` URI per line. Validated by the same
@@ -57,10 +57,8 @@
   </div>
   {% endif %}
 
-  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
-      renders as the fragment following a mutation, and the caller there has
-      already passed a write extractor, so undefined means "show". -#}
-  {% if not user is defined or user.role != "viewer" %}
+  {#- Hidden below the operator tier; see `pages::fragment_context`. -#}
+  {% if can_write %}
   <div class="panel">
     <h2>Danger zone</h2>
     <div class="actions">
@@ -73,12 +71,13 @@
         </button>
       {% endif %}
       {#- The delete cascades; the CLI names the count in its confirmation
-          prompt, so this one does too. -#}
-      {#- No target: the handler answers with a redirect, since the page this
+          prompt, so this one does too. `order_count` is set by both the page
+          and the fragment every account mutation answers with.
+          No target: the handler answers with a redirect, since the page this
           button lives on is the thing being deleted. -#}
       <button class="danger"
               hx-delete="/ui/accounts/{{ account.id }}"
-              hx-confirm="Delete this account and everything that cascades from it? This cannot be undone.">
+              hx-confirm="Delete this account and its {{ order_count }} order(s), with their authorizations and challenges? This cannot be undone.">
         Delete
       </button>
     </div>

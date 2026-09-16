@@ -17,8 +17,9 @@ use serde_json::{Map, Value};
 use crate::admin;
 use crate::admin::{mfa, users};
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
+use crate::sqlite::admin_user::{AdminRole, AdminUser};
 use crate::webadmin::AdminState;
+use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::verify_current_password;
 use crate::webadmin::handlers::operators::{
     OperatorAction, apply_operator_action, find, refuse_self_target,
@@ -189,6 +190,110 @@ pub async fn revoke_operator_session(
     .await
 }
 
+/// The contact form on the operator card: the address, plus the step-up
+/// password `hx-include` pulls in. A blank address clears it.
+#[derive(Debug, Default, Deserialize)]
+pub struct OperatorContactForm {
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub contact: String,
+}
+
+/// The role form on the operator card.
+#[derive(Debug, Default, Deserialize)]
+pub struct OperatorRoleForm {
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub role: String,
+}
+
+/// `POST /ui/operators/{username}/contact`
+pub async fn set_operator_contact(
+    State(state): State<AdminState>,
+    Path(username): Path<String>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
+    session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
+    axum::Form(form): axum::Form<OperatorContactForm>,
+) -> Result<Response, PageError> {
+    let banner = if form.contact.trim().is_empty() {
+        flash(
+            "warn",
+            "Their notification address was cleared: security notifications cannot reach them.",
+        )
+    } else {
+        flash(
+            "ok",
+            "Their notification address was changed. The previous one was told.",
+        )
+    };
+    act(
+        &state,
+        &session,
+        &username,
+        &form.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetContact {
+            contact: Some(form.contact.as_str()),
+        },
+        banner,
+    )
+    .await
+}
+
+/// `POST /ui/operators/{username}/role`
+pub async fn set_operator_role(
+    State(state): State<AdminState>,
+    Path(username): Path<String>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
+    session: PageAdminWrite,
+    request_context: crate::audit::RequestContext,
+    axum::Form(form): axum::Form<OperatorRoleForm>,
+) -> Result<Response, PageError> {
+    let role = match form.role.parse::<AdminRole>() {
+        Ok(role) => role,
+        // A value outside the select is a banner beside it, like every other
+        // refusal on this card -- once the target and the self-target rule
+        // have had their say, so a typo is not how an operator learns who
+        // exists.
+        Err(message) => {
+            let target = find(&username, &state).await?;
+            refuse_self_target(&session.auth.user, &target)?;
+            let context = detail_context(&state, &target).await?;
+            return super::refuse_with_card(
+                &state,
+                "operators/_card.html",
+                context,
+                &AdminError::bad_request(message),
+            );
+        }
+    };
+    act(
+        &state,
+        &session,
+        &username,
+        &form.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetRole { role },
+        flash(
+            "ok",
+            format!(
+                "Role changed to {}. Their sessions were revoked.",
+                role.as_str()
+            ),
+        ),
+    )
+    .await
+}
+
 /// The `/ui` spelling of the shared sequence — the twin of
 /// [`crate::webadmin::handlers::operators`]'s own `act`.
 ///
@@ -216,7 +321,7 @@ async fn act(
         return Ok(refusal);
     }
 
-    apply_operator_action(
+    if let Err(error) = apply_operator_action(
         state,
         &session.auth.user,
         &mut target,
@@ -226,7 +331,18 @@ async fn act(
         request_context,
         "ui",
     )
-    .await?;
+    .await
+    {
+        // "The row's state is a banner, the server's problem is a page": a
+        // refused value (an address that is not a mailbox) belongs beside the
+        // control it came from. A `404` still replaces the page, since the
+        // operator or session it named is gone.
+        if error.status.is_client_error() && error.status != axum::http::StatusCode::NOT_FOUND {
+            let context = detail_context(state, &target).await?;
+            return super::refuse_with_card(state, "operators/_card.html", context, &error);
+        }
+        return Err(error.into());
+    }
 
     respond_card(state, &target, banner).await
 }
@@ -298,6 +414,17 @@ async fn detail_context(
     context.insert(
         "operator".to_string(),
         admin::render_admin_user_detail_json(target, remaining),
+    );
+    // From the enum `AdminRole::from_str` parses against, so the role select
+    // cannot offer a tier the handler would refuse, or miss one it accepts.
+    context.insert(
+        "roles".to_string(),
+        Value::Array(
+            AdminRole::ALL
+                .iter()
+                .map(|role| Value::from(role.as_str()))
+                .collect(),
+        ),
     );
     context.insert(
         "sessions".to_string(),

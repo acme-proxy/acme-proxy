@@ -1,0 +1,17 @@
+{#-
+  The tail of every list page's filter form: a loading indicator and a way back
+  to the unfiltered list.
+
+  Inside the `<form>` on purpose. htmx puts `htmx-request` on the element that
+  issued the request -- the form -- and `admin.css` shows a descendant
+  `.htmx-indicator` while it is there, so a slow query (an identifier substring
+  scans `json_each`) reads as work in progress rather than a dead control.
+
+  "Clear filters" is a plain link to the page's own path -- every list's `nav`
+  is its path with `_` for `-` -- and a real navigation rather than a swap,
+  since it has to reset the form's controls as well as the table.
+-#}
+<div class="filter-meta">
+  <span class="htmx-indicator muted small">Loading…</span>
+  <a class="small" href="/ui/{{ nav | replace('_', '-') }}">Clear filters</a>
+</div>

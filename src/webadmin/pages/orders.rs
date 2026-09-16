@@ -4,7 +4,7 @@
 use axum::extract::{Path, Query, State};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::admin;
 use crate::admin::ops::RevokeOutcome;
@@ -15,7 +15,9 @@ use crate::webadmin::handlers::orders::{OrderListParams, render_orders, revoke_e
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
-use crate::webadmin::pages::{chrome, flash, flash_error, pager, respond, respond_fragment};
+use crate::webadmin::pages::{
+    ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
+};
 
 /// The revoke control posts a `<select>`, whose empty option means "no reason".
 #[derive(Debug, Deserialize, Default)]
@@ -33,12 +35,13 @@ pub async fn list_orders(
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let profile = params.profile.clone().unwrap_or_default();
-    let account_id = params.account_id.clone().unwrap_or_default();
-    let status = params.status.clone().unwrap_or_default();
-    let identifier = params.identifier.clone().unwrap_or_default();
-    let identifier_contains = params.identifier_contains.clone().unwrap_or_default();
-    let cert_serial = params.cert_serial.clone().unwrap_or_default();
+    let filters = ListFilters::new()
+        .with("profile", params.profile.as_deref())
+        .with("status", params.status.as_deref())
+        .with("accountId", params.account_id.as_deref())
+        .with("identifier", params.identifier.as_deref())
+        .with("identifierContains", params.identifier_contains.as_deref())
+        .with("certSerial", params.cert_serial.as_deref());
     // Same refusals the API gives, rendered as a page rather than as JSON.
     let parsed = params
         .parsed_status()
@@ -70,31 +73,19 @@ pub async fn list_orders(
     );
     context.insert(
         "pager".to_string(),
-        pager(
-            page,
-            total,
-            "/ui/orders",
-            &[
-                ("profile", &profile),
-                ("status", &status),
-                ("accountId", &account_id),
-                ("identifier", &identifier),
-                ("identifierContains", &identifier_contains),
-                ("certSerial", &cert_serial),
-            ],
-            "#orders-table",
-        ),
+        pager(page, total, "/ui/orders", &filters.pairs(), "#orders-table"),
     );
+    context.insert("filters".to_string(), filters.to_value());
+    // From the enum `?status=` is parsed against, so a status added there is
+    // offered here rather than being filterable only by hand-typed URL.
     context.insert(
-        "filters".to_string(),
-        serde_json::json!({
-            "profile": profile,
-            "status": status,
-            "accountId": account_id,
-            "identifier": identifier,
-            "identifierContains": identifier_contains,
-            "certSerial": cert_serial,
-        }),
+        "statuses".to_string(),
+        Value::Array(
+            crate::sqlite::status::OrderStatus::ALL
+                .iter()
+                .map(|status| Value::from(status.as_str()))
+                .collect(),
+        ),
     );
     context.insert(
         "profiles".to_string(),
@@ -257,11 +248,7 @@ pub async fn revoke_order(
     // and re-rendering from the pre-revocation row would tell the operator
     // nothing happened.
     let detail = load(&id, &state).await?;
-    let mut context = Map::new();
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let mut context = super::fragment_context(&session.auth);
     context.insert("detail".to_string(), detail);
     context.insert("flash".to_string(), banner);
     respond_fragment(&state, "orders/_card.html", context)

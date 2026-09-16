@@ -35,12 +35,14 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::admin;
+use crate::admin::users::UserError;
 use crate::admin::{mfa, users};
 use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminStatus, AdminUser};
+use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::{StepUpRequest, verify_current_password};
@@ -195,6 +197,86 @@ pub async fn revoke_operator_session(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// The body of `POST /api/operators/{username}/contact`: the step-up password
+/// and the address. An absent, `null` or blank `contact` clears it.
+#[derive(Debug, Default, Deserialize)]
+pub struct SetOperatorContactRequest {
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub contact: Option<String>,
+}
+
+/// The body of `POST /api/operators/{username}/role`.
+#[derive(Debug, Default, Deserialize)]
+pub struct SetOperatorRoleRequest {
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub role: String,
+}
+
+/// `POST /api/operators/{username}/contact` — the web twin of
+/// `acme-proxy admin user contact`. Tells the address it replaced.
+pub async fn set_operator_contact(
+    State(state): State<AdminState>,
+    Path(username): Path<String>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
+    AdminWrite(auth): AdminWrite,
+    request_context: crate::audit::RequestContext,
+    body: Option<Json<SetOperatorContactRequest>>,
+) -> Result<Response, AdminError> {
+    let body = body.unwrap_or_default();
+    act(
+        &state,
+        &auth.user,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetContact {
+            contact: body.contact.as_deref(),
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `POST /api/operators/{username}/role` — the web twin of
+/// `acme-proxy admin user role`: moves the operator to another tier and revokes
+/// every session they hold.
+///
+/// An unknown role is refused by name before anything else runs, `AdminRole`'s
+/// own rule. Demoting the last `admin` is refused by `users::set_role`, but it
+/// is not reachable from here: the caller is an `admin` and cannot target
+/// themselves, so an `admin` target always leaves at least one.
+pub async fn set_operator_role(
+    State(state): State<AdminState>,
+    Path(username): Path<String>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
+    AdminWrite(auth): AdminWrite,
+    request_context: crate::audit::RequestContext,
+    body: Option<Json<SetOperatorRoleRequest>>,
+) -> Result<Response, AdminError> {
+    let body = body.unwrap_or_default();
+    let role: AdminRole = body.role.parse().map_err(AdminError::bad_request)?;
+    act(
+        &state,
+        &auth.user,
+        &username,
+        &body.password,
+        client,
+        &headers,
+        &request_context,
+        OperatorAction::SetRole { role },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// The `/api` spelling of the shared sequence: resolve the target, refuse a
 /// self-target, re-prove the caller's own password, then
 /// [`apply_operator_action`].
@@ -240,6 +322,12 @@ pub(crate) enum OperatorAction<'a> {
     ResetTotp,
     /// End one of their sessions, named by the fingerprint the listing prints.
     RevokeSession { fingerprint: &'a str },
+    /// Set (`Some`) or clear (`None` or blank) the address their security
+    /// notifications go to.
+    SetContact { contact: Option<&'a str> },
+    /// Move them to another tier. Revokes every session they hold, inside
+    /// `users::set_role`.
+    SetRole { role: AdminRole },
 }
 
 /// Performs `action` and everything that owes: the write, the audit row(s), the
@@ -368,8 +456,128 @@ pub(crate) async fn apply_operator_action(
                            target_username = %target.username,
                            session_fp = %fingerprint);
         }
+        OperatorAction::SetContact { contact } => {
+            apply_contact_change(
+                state,
+                caller,
+                target,
+                contact,
+                client,
+                headers,
+                request_context,
+                surface,
+            )
+            .await?;
+        }
+        OperatorAction::SetRole { role } => {
+            let (updated, revoked) =
+                users::set_role(&target.username, role, state.database.clone())
+                    .await
+                    .map_err(user_error)?
+                    .ok_or_else(|| operator_not_found(&target.username))?;
+            *target = updated;
+            state
+                .record_admin_action(request_context, &caller.username, |actor, ctx| {
+                    crate::audit::admin::operator_role_changed(
+                        actor,
+                        ctx,
+                        &target.username,
+                        role.as_str(),
+                    )
+                })
+                .await;
+            // The disable rule: the sessions going is a second thing that
+            // happened, and the role row alone does not say how much access
+            // was withdrawn.
+            if revoked > 0 {
+                state
+                    .record_admin_action(request_context, &caller.username, |actor, ctx| {
+                        crate::audit::admin::session_revoked(
+                            actor,
+                            ctx,
+                            crate::audit::admin::SessionScope::AllOf(target.username.clone()),
+                            revoked,
+                        )
+                    })
+                    .await;
+            }
+            tracing::info!(event = "admin_operator_role_changed",
+                           outcome = "success",
+                           surface = surface,
+                           username = %caller.username,
+                           target_username = %target.username,
+                           role = role.as_str(),
+                           sessions_revoked = revoked);
+        }
     }
     Ok(())
+}
+
+/// Sets or clears `target`'s notification address, and owes everything a
+/// change of it does: the audit row, the log line, and the message to the
+/// address it replaced.
+///
+/// Shared by the operators surface (another operator's address) and
+/// `/account/contact` (one's own), which differ only in whether `caller` is
+/// `target`. Setting an address to what it already was writes no row and sends
+/// no message: telling somebody their alarms moved to the address they were
+/// already using is noise that teaches them to ignore the real one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_contact_change(
+    state: &AdminState,
+    caller: &AdminUser,
+    target: &mut AdminUser,
+    contact: Option<&str>,
+    client: Option<std::net::IpAddr>,
+    headers: &HeaderMap,
+    request_context: &crate::audit::RequestContext,
+    surface: &'static str,
+) -> Result<(), AdminError> {
+    let previous = target.contact_email.clone();
+    let updated = users::set_contact_email(&target.username, contact, state.database.clone())
+        .await
+        .map_err(user_error)?
+        .ok_or_else(|| operator_not_found(&target.username))?;
+    *target = updated;
+    if target.contact_email == previous {
+        return Ok(());
+    }
+
+    state
+        .record_contact_change(
+            request_context,
+            &caller.username,
+            target,
+            previous,
+            caller.id == target.id,
+            client,
+            crate::webadmin::user_agent_of(headers),
+        )
+        .await;
+    tracing::info!(event = "admin_operator_contact_updated",
+                   outcome = "success",
+                   surface = surface,
+                   username = %caller.username,
+                   target_username = %target.username,
+                   contact_set = target.contact_email.is_some());
+    Ok(())
+}
+
+/// A `users::` refusal in this surface's error shape.
+///
+/// No `From` impl on purpose: `UserError` is shared with the CLI, and which
+/// status a variant deserves depends on the operation. On the two operations
+/// this surface calls, `Policy` can only be `set_role`'s last-admin refusal —
+/// a statement about the operator set, not about the request, so a `409`.
+pub(crate) fn user_error(error: UserError) -> AdminError {
+    match error {
+        UserError::Policy(message) => AdminError::conflict("last_admin", message),
+        UserError::InvalidContact(message) => {
+            AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_contact", message)
+        }
+        UserError::Database(error) => error.into(),
+        UserError::DuplicateUsername(_) => AdminError::internal(),
+    }
 }
 
 /// Refuses a route on this surface when its target is the caller.

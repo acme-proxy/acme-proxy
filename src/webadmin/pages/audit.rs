@@ -18,7 +18,7 @@ use crate::webadmin::handlers::audit::AuditListParams;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{chrome, pager, respond};
+use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
 
 /// `GET /ui/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(
@@ -27,10 +27,15 @@ pub async fn list_audit(
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let profile = params.profile.clone().unwrap_or_default();
-    let account_id = params.account_id.clone().unwrap_or_default();
-    let event = params.event.clone().unwrap_or_default();
-    let outcome = params.outcome.clone().unwrap_or_default();
+    // Every filter the query below applies, and no other: a filter missing here
+    // is dropped by the next page step and by the next change to the form.
+    let filters = ListFilters::new()
+        .with("profile", params.profile.as_deref())
+        .with("event", params.event.as_deref())
+        .with("outcome", params.outcome.as_deref())
+        .with("accountId", params.account_id.as_deref())
+        .with("orderId", params.order_id.as_deref())
+        .with("certSerial", params.cert_serial.as_deref());
 
     let (entries, total) = admin::list_audit(
         &AuditQuery {
@@ -56,28 +61,9 @@ pub async fn list_audit(
     );
     context.insert(
         "pager".to_string(),
-        pager(
-            page,
-            total,
-            "/ui/audit",
-            &[
-                ("profile", &profile),
-                ("event", &event),
-                ("outcome", &outcome),
-                ("accountId", &account_id),
-            ],
-            "#audit-table",
-        ),
+        pager(page, total, "/ui/audit", &filters.pairs(), "#audit-table"),
     );
-    context.insert(
-        "filters".to_string(),
-        serde_json::json!({
-            "profile": profile,
-            "event": event,
-            "outcome": outcome,
-            "accountId": account_id,
-        }),
-    );
+    context.insert("filters".to_string(), filters.to_value());
     context.insert(
         "events".to_string(),
         Value::Array(

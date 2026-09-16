@@ -32,6 +32,52 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+/// The body of `POST /api/account/contact`. An absent, `null` or blank
+/// `contact` clears the address.
+#[derive(Debug, Default, Deserialize)]
+pub struct ChangeContactRequest {
+    #[serde(default)]
+    pub current_password: String,
+    #[serde(default)]
+    pub contact: Option<String>,
+}
+
+/// `POST /api/account/contact` — set or clear the address this operator's own
+/// security notifications go to.
+///
+/// The address is not a credential and no session is revoked, but the current
+/// password is still re-proved ([`verify_current_password`]): it is where the
+/// alarms go, so a stolen cookie that could change it silently would switch off
+/// the one signal that the cookie was stolen. For the same reason the address
+/// it replaces is told
+/// ([`crate::notify::AdminCredentialChange::ContactAddress`]).
+pub async fn change_contact(
+    State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
+    headers: axum::http::HeaderMap,
+    SelfServiceWrite(auth): SelfServiceWrite,
+    request_context: crate::audit::RequestContext,
+    body: Option<Json<ChangeContactRequest>>,
+) -> Result<Response, AdminError> {
+    let body = body.unwrap_or_default();
+    let caller = auth.user;
+    verify_current_password(&caller, &body.current_password, client, &state.logins)?;
+
+    let mut target = caller.clone();
+    super::operators::apply_contact_change(
+        &state,
+        &caller,
+        &mut target,
+        body.contact.as_deref(),
+        client,
+        &headers,
+        &request_context,
+        "api",
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// `POST /api/account/password` — change this operator's own password.
 ///
 /// ASVS V6.2.3: takes the *current* password and verifies it

@@ -21,7 +21,7 @@
         <label for="status">Status</label>
         <select id="status" name="status">
           <option value="">any status</option>
-          {% for status in ["pending", "ready", "processing", "valid", "invalid"] %}
+          {% for status in statuses %}
             <option value="{{ status }}"
                     {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
           {% endfor %}
@@ -49,6 +49,7 @@
                placeholder="hex, no separators"
                value="{{ filters.certSerial | default('') }}">
       </div>
+      {% include "partials/_filter_meta.html" %}
     </form>
   </div>
 

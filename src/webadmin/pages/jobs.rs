@@ -3,7 +3,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::Html;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
 use crate::sqlite::job::{Job, JobQuery};
@@ -13,7 +13,9 @@ use crate::webadmin::handlers::jobs::JobListParams;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{chrome, flash, flash_error, pager, respond, respond_fragment};
+use crate::webadmin::pages::{
+    ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
+};
 
 /// The kinds the filter `<select>` offers. A free-typed `?kind=` still filters
 /// — this is only the dropdown, and a job row's kind is a closed code set.
@@ -42,8 +44,9 @@ pub async fn list_jobs(
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let kind = params.kind.clone().unwrap_or_default();
-    let status = params.status.clone().unwrap_or_default();
+    let filters = ListFilters::new()
+        .with("kind", params.kind.as_deref())
+        .with("status", params.status.as_deref());
     let parsed = params
         .parsed_status()
         .map_err(|error| PageError::bad_request(error.to_string()))?;
@@ -67,17 +70,19 @@ pub async fn list_jobs(
     );
     context.insert(
         "pager".to_string(),
-        pager(
-            page,
-            total,
-            "/ui/jobs",
-            &[("kind", &kind), ("status", &status)],
-            "#jobs-table",
-        ),
+        pager(page, total, "/ui/jobs", &filters.pairs(), "#jobs-table"),
     );
+    context.insert("filters".to_string(), filters.to_value());
+    // From the enum `?status=` is parsed against, so a status added there is
+    // offered here rather than being filterable only by hand-typed URL.
     context.insert(
-        "filters".to_string(),
-        serde_json::json!({ "kind": kind, "status": status }),
+        "statuses".to_string(),
+        Value::Array(
+            crate::sqlite::status::JobStatus::ALL
+                .iter()
+                .map(|status| Value::from(status.as_str()))
+                .collect(),
+        ),
     );
     context.insert(
         "kinds".to_string(),
@@ -222,11 +227,7 @@ async fn fragment(
     banner: Value,
 ) -> Result<Html<String>, PageError> {
     let detail = load(id, state).await?;
-    let mut context = Map::new();
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let mut context = super::fragment_context(&session.auth);
     context.insert("detail".to_string(), detail);
     context.insert("flash".to_string(), banner);
     respond_fragment(state, "jobs/_card.html", context)

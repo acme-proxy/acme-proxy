@@ -2,6 +2,35 @@
 {% block content %}
   <h1>Overview</h1>
 
+  {#- What needs somebody comes first. Each tile is the total of the list it
+      links to, and is tinted only while that total is non-zero, so a calm
+      panel looks calm. -#}
+  <h2>Needs attention</h2>
+  {% if any_bypass %}
+    <div class="flash warn">
+      At least one endpoint has <code>challenge.bypass</code> on and issues
+      certificates without checking domain control — see
+      <a href="/ui/profiles">Profiles</a>.
+    </div>
+  {% endif %}
+  <div class="grid">
+    <a class="stat{% if stats.failedJobs > 0 %} danger{% endif %}" href="/ui/jobs?status=failed">
+      <div class="value">{{ stats.failedJobs }}</div>
+      <div class="label">Failed jobs</div>
+    </a>
+    <a class="stat{% if stats.expiringSoon > 0 %} warn{% endif %}" href="/ui/expiring?days={{ stats.expiryDays }}">
+      <div class="value">{{ stats.expiringSoon }}</div>
+      <div class="label">Certificates expiring within {{ stats.expiryDays }} days</div>
+    </a>
+    {#- The count is the last day; the list it opens is every refusal, newest
+        first, which puts that day at the top. -#}
+    <a class="stat{% if stats.refusals > 0 %} danger{% endif %}" href="/ui/audit?outcome=failure">
+      <div class="value">{{ stats.refusals }}</div>
+      <div class="label">Refusals in the last 24 h</div>
+    </a>
+  </div>
+
+  <h2>Totals</h2>
   <div class="grid">
     <a class="stat" href="/ui/accounts">
       <div class="value">{{ stats.accounts }}</div>

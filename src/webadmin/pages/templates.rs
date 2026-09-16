@@ -55,6 +55,8 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("account/_enrol.html"),
         embed!("account/_codes.html"),
         embed!("account/_password.html"),
+        embed!("account/_contact.html"),
+        embed!("partials/_filter_meta.html"),
         embed!("account/_password_card.html"),
         embed!("account/_sessions.html"),
         embed!("operators/list.html"),
@@ -114,7 +116,78 @@ pub(crate) fn template_names() -> Vec<&'static str> {
 /// `layout.html` changes the chrome of every page and nothing else.
 #[must_use]
 pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'static> {
-    crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
+    let mut env = crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES);
+    env.add_filter("ago", ago);
+    env
+}
+
+/// `{{ timestamp | ago }}`: an RFC 3339 timestamp as a coarse distance from now
+/// — `"3 h ago"`, `"in 5 d"`, `"just now"`.
+///
+/// A hint beside the absolute value, never instead of it: the absolute one is
+/// what an operator greps a log for and what the CLI and the API print.
+/// Computed here rather than in the browser, since `script-src 'self'` and a
+/// no-build-step tree would make a relative-time script its own vendored file.
+///
+/// Anything that is not an RFC 3339 string — `none`, a number, garbage from a
+/// hand-edited row — renders as the empty string. A filter that could fail
+/// would turn one odd row into a `500` for the whole list.
+fn ago(value: minijinja::Value) -> String {
+    value
+        .as_str()
+        .map(|text| ago_at(text, time::OffsetDateTime::now_utc().unix_timestamp()))
+        .unwrap_or_default()
+}
+
+fn ago_at(value: &str, now: i64) -> String {
+    let Ok(then) =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    else {
+        return String::new();
+    };
+    let delta = now.saturating_sub(then.unix_timestamp());
+    let seconds = delta.saturating_abs();
+    let amount = match seconds {
+        0..60 => return "just now".to_string(),
+        60..3_600 => format!("{} min", seconds / 60),
+        3_600..86_400 => format!("{} h", seconds / 3_600),
+        _ => format!("{} d", seconds / 86_400),
+    };
+    if delta < 0 {
+        format!("in {amount}")
+    } else {
+        format!("{amount} ago")
+    }
+}
+
+#[cfg(test)]
+mod ago_tests {
+    use super::ago_at;
+
+    const NOW: i64 = 1_800_000_000; // 2027-01-15T08:00:00Z
+
+    #[test]
+    fn a_past_timestamp_reads_as_how_long_ago() {
+        assert_eq!(ago_at("2027-01-15T07:59:30Z", NOW), "just now");
+        assert_eq!(ago_at("2027-01-15T07:55:00Z", NOW), "5 min ago");
+        assert_eq!(ago_at("2027-01-15T05:00:00Z", NOW), "3 h ago");
+        assert_eq!(ago_at("2027-01-10T08:00:00Z", NOW), "5 d ago");
+    }
+
+    #[test]
+    fn a_future_timestamp_reads_as_how_long_until() {
+        assert_eq!(ago_at("2027-01-15T10:00:00Z", NOW), "in 2 h");
+        assert_eq!(ago_at("2027-02-14T08:00:00Z", NOW), "in 30 d");
+    }
+
+    /// A hint that could fail would make one odd row a `500` for its list.
+    #[test]
+    fn anything_unparseable_renders_nothing() {
+        assert_eq!(ago_at("", NOW), "");
+        assert_eq!(ago_at("yesterday", NOW), "");
+        assert_eq!(super::ago(minijinja::Value::from(())), "");
+        assert_eq!(super::ago(minijinja::Value::from(42)), "");
+    }
 }
 
 /// Renders one named template against `context`.

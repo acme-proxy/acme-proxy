@@ -77,24 +77,39 @@ That attribute is the only route by which the token reaches a mutating request.
 A layout that drops it loses **every** write at once — which is the intended
 failure mode; a partial loss would be far harder to notice.
 
-The same file sets two htmx options that the
-[Content-Security-Policy](webadmin.md#security-notes) depends on:
+The same file sets three htmx options the other templates depend on:
 
 ```html
 <meta name="htmx-config"
-      content='{"includeIndicatorStyles":false,"responseHandling":[...]}'>
+      content='{"includeIndicatorStyles":false,"defaultSwapStyle":"outerHTML","responseHandling":[...]}'>
 ```
 
 `includeIndicatorStyles: false` stops htmx injecting an inline `<style>` element
-that `style-src 'self'` would block — the rules it would have injected live in
+that the [Content-Security-Policy](webadmin.md#security-notes)'s
+`style-src 'self'` would block — the rules it would have injected live in
 `admin.css` instead. `responseHandling` makes htmx swap non-2xx responses,
 without which a `409` conflict would fail silently instead of showing the
 operator a banner.
 
+`defaultSwapStyle: "outerHTML"` means a response **replaces** the element it
+targets. Every fragment is written for that: its root element carries the same
+`id` as the swap target (`accounts/_table.html` is `<div id="accounts-table">`,
+the target of the accounts filter form). An override of a fragment must keep
+that root and its `id`, or the next swap on the page finds no target.
+
 ## Context
 
-Every full page gets `csrf_token`, `user`, `nav` (the active navigation item)
-and `title`, plus its own data. That data is the **same JSON the API returns** —
+Every full page gets `csrf_token`, `user`, `can_write`, `nav` (the active
+navigation item) and `title`, plus its own data; the fragment a mutation answers
+with gets the first three. Gate a control on `{% if can_write %}` — true for an
+`operator` or `admin` session — which is also false when absent, so a control
+never appears by accident. Timestamps are RFC 3339 strings, and the `ago`
+filter renders one as `3 h ago` or `in 5 d`, or as nothing when it is not a
+timestamp:
+
+```jinja
+{{ order.createdAt }} ({{ order.createdAt | ago }})
+``` That data is the **same JSON the API returns** —
 `render_account_json`, `render_order_detail_json`, `render_eab_json` — so `GET
 /api/accounts/{id}` is an accurate description of what `account` holds in
 `accounts/_card.html`. Lists additionally get `page` (`{items, total}`),

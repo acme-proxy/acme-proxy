@@ -28,9 +28,9 @@
         <input type="number" id="days" name="days" min="1"
                value="{{ filters.days }}">
       </div>
-      {#- The value is `hide` rather than the checkbox's default `on`, because
-          the handler compares against exactly that string and an unchecked box
-          sends no field at all -- which is the "show them" answer. -#}
+      {#- A select rather than a checkbox, and its values are `hide` and the
+          empty string because the handler compares against exactly `hide`:
+          anything else, including the "show" option's blank, shows them. -#}
       <div class="field">
         <label for="superseded">Already replaced</label>
         <select id="superseded" name="superseded">
@@ -38,6 +38,7 @@
           <option value="hide" {% if filters.hideSuperseded %}selected{% endif %}>hide</option>
         </select>
       </div>
+      {% include "partials/_filter_meta.html" %}
     </form>
   </div>
 

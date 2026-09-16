@@ -16,11 +16,11 @@
       <tbody>
         {% for job in page.items %}
           <tr>
-            <td><a href="/ui/jobs/{{ job.id }}"><code>{{ job.id }}</code></a></td>
+            <td class="id-cell"><a href="/ui/jobs/{{ job.id }}" title="{{ job.id }}"><code>{{ job.id }}</code></a></td>
             <td><code>{{ job.kind }}</code></td>
             <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
             <td class="small">{{ job.attempts }}/{{ job.maxAttempts }}</td>
-            <td class="small">{{ job.runAt }}</td>
+            <td class="small"><time datetime="{{ job.runAt }}">{{ job.runAt }}</time><br><span class="muted">{{ job.runAt | ago }}</span></td>
             <td class="wrap-anywhere small">
               {%- if job.lastError -%}{{ job.lastError }}{%- else -%}<span class="muted">—</span>{%- endif -%}
             </td>

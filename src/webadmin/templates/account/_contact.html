@@ -1,0 +1,42 @@
+{#-
+  The swap target of `POST /ui/account/contact`: where this operator's own
+  security notifications (`admin_sign_in`, `admin_credential_changed`) are
+  delivered. The `_password.html` shape, in one file, since there is nothing
+  else to carry beside it.
+
+  The password is asked for although an address is not a credential: it is
+  where the alarms go, and a stolen cookie that could change it silently would
+  switch off the one signal that the cookie was stolen. The address it replaces
+  is told.
+
+  `hx-headers` is carried explicitly for `_password_card.html`'s reason: this
+  renders standalone after a refusal or a success.
+-#}
+<div id="account-contact">
+  {% include "partials/_flash.html" %}
+  <div class="panel">
+    <h2>Notification address</h2>
+    <p class="muted small">
+      Where a sign-in from a new address, and any change to your password,
+      second factor or this address, is reported. Leave it empty to receive
+      none. A change is reported to the address it replaces.
+    </p>
+    <form hx-post="/ui/account/contact"
+          hx-target="#account-contact"
+          hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+      <div class="field">
+        <label for="contact">Email address</label>
+        <input type="email" id="contact" name="contact" autocomplete="email"
+               value="{% if contact_input is defined %}{{ contact_input }}{% elif user.contactEmail %}{{ user.contactEmail }}{% endif %}">
+      </div>
+      <div class="field">
+        <label for="contact-current-password">Current password</label>
+        <input id="contact-current-password" type="password" name="current_password"
+               autocomplete="current-password" required>
+      </div>
+      <div class="actions">
+        <button type="submit" class="primary">Save address</button>
+      </div>
+    </form>
+  </div>
+</div>

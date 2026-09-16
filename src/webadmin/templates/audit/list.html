@@ -47,6 +47,21 @@
         <input type="text" id="accountId" name="accountId"
                placeholder="account id" value="{{ filters.accountId | default('') }}">
       </div>
+      {#- Both are filters the handler applies. Without a control each, a deep
+          link carrying one lost it the moment any other control changed,
+          since the form submits only the fields it holds. -#}
+      <div class="field">
+        <label for="orderId">Order</label>
+        <input type="text" id="orderId" name="orderId"
+               placeholder="order id" value="{{ filters.orderId | default('') }}">
+      </div>
+      <div class="field">
+        <label for="certSerial">Certificate serial</label>
+        <input type="text" id="certSerial" name="certSerial"
+               placeholder="hex, no separators"
+               value="{{ filters.certSerial | default('') }}">
+      </div>
+      {% include "partials/_filter_meta.html" %}
     </form>
   </div>
 

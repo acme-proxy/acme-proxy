@@ -39,6 +39,16 @@
         <dt>Serial</dt>
         <dd class="wrap-anywhere"><code>{{ detail.order.certSerial }}</code></dd>
       {% endif %}
+      {#- The trail for this order, and -- once issued -- for its certificate by
+          serial, which also finds a revocation attempt made by somebody who
+          only held the certificate and never the order. -#}
+      <dt>Audit trail</dt>
+      <dd>
+        <a href="/ui/audit?orderId={{ detail.order.id }}">Rows for this order</a>
+        {%- if detail.order.certSerial %}
+          · <a href="/ui/audit?certSerial={{ detail.order.certSerial }}">Rows for this certificate</a>
+        {%- endif %}
+      </dd>
       {% if detail.order.certNotAfter %}
         <dt>Certificate expires</dt><dd>{{ detail.order.certNotAfter }}</dd>
       {% endif %}
@@ -112,10 +122,8 @@
     {% endfor %}
   </div>
 
-  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
-      renders as the fragment following a mutation, and the caller there has
-      already passed a write extractor, so undefined means "show". -#}
-  {% if not user is defined or user.role != "viewer" %}
+  {#- Hidden below the operator tier; see `pages::fragment_context`. -#}
+  {% if can_write %}
   <div class="panel">
     <h2>Danger zone</h2>
     {#- Revocation is not confirm-gated in the CLI because it only ever
@@ -149,7 +157,7 @@
           button lives on is the thing being deleted. -#}
       <button class="danger"
               hx-delete="/ui/orders/{{ detail.order.id }}"
-              hx-confirm="Delete this order and its authorizations? Any certificate already issued stays valid — revoke it first if that is what you meant.">
+              hx-confirm="Delete this order and its {{ detail.authorizations | length }} authorization(s)? Any certificate already issued stays valid — revoke it first if that is what you meant.">
         Delete
       </button>
     </div>

@@ -157,8 +157,9 @@ A session also carries the operator's **role**
 ([Users → Roles](webadmin_users.md#roles)). A mutating request is refused with
 `403 insufficient_role` unless the role permits it: a CA action (revoke, delete
 an account or order, EAB, nonce sweep) needs `operator` or `admin`; the
-`/operators/*` and `/ui/operators/*` colleague-management routes need `admin`;
-the own-account routes (password, own sessions, own second factor, sign-out)
+`/operators/*` and `/ui/operators/*` colleague-management routes (including a
+colleague's role and notification address) need `admin`; the own-account routes
+(password, notification address, own sessions, own second factor, sign-out)
 need only a live session. An operator whose row predates the feature is `admin`.
 
 Reads are open to every role with one exception: the `/operators` surface needs
@@ -181,7 +182,7 @@ it that needs a session bounces to `/ui/login`.
 
 | Page | What is on it |
 |---|---|
-| `/ui/` | Counts for accounts, orders, EAB credentials and nonces, plus the mounted endpoints |
+| `/ui/` | What needs attention — failed jobs, certificates expiring within seven days, refusals in the last day, and any endpoint bypassing validation — each linking to its list; then totals for accounts, orders, EAB credentials and nonces, and the mounted endpoints |
 | `/ui/accounts` | Every account, filterable by profile, listed with the address its key was last seen from; a detail page carries both recorded addresses, the contact editor, deactivate and delete |
 | `/ui/orders` | Every order, filterable by profile, status, account, identifier (exact or substring) and certificate serial; a detail page shows the authorizations and challenges, offers the issued chain for download, and revokes or deletes |
 | `/ui/eab` | Credentials, paged; minting (the secret is shown **once**) and revocation |
@@ -442,15 +443,23 @@ Every web-admin sign-in and every second-factor change is logged, and — when
   second-factor lockout.
 - **`admin_credential_changed`** — the operator's password changed, a second
   factor was enrolled or removed, recovery codes were regenerated, or another
-  administrator reset this operator's second factor (`by_self = false`).
+  administrator reset this operator's second factor (`by_self = false`). Also
+  when the operator's **notification address** changed (`change =
+  "contact_address"`) — and that one message goes to the address that was
+  *replaced*, not the new one, since whoever made the change controls the new
+  address. A first-ever address replaced nothing and tells nobody.
 
 `[admin.notify]` has exactly the shape of the per-profile [`[notify]`
 section](../notifications/index.md) — `enabled`, `email` / `webhook` / `custom`
 backends, `template_dir`, per-backend `events` — but is process-wide and built
 only while `[admin]` is enabled (`ACME_PROXY_ADMIN__NOTIFY__ENABLED`). Email
-delivery goes to each operator's own address rather than to `notify.email.to`:
-set it with `acme-proxy admin user create --contact <address>` or `admin user
-contact <username> --contact <address>`, stored in `admin_users.contact_email`.
+delivery goes to each operator's own address rather than to `notify.email.to`,
+stored in `admin_users.contact_email`. An operator sets their own from **Your
+account** (it asks for the current password), an `admin` sets a colleague's
+from the **Operators** page, and the host sets anybody's with
+`acme-proxy admin user create --contact <address>` or
+`admin user contact <username> --contact <address>`. See
+[Users → Notification address](webadmin_users.md#your-notification-address).
 An operator with no address on file gets no message (the event is still
 logged); `[admin.notify.email].to`, if set, is the fallback for that case.
 

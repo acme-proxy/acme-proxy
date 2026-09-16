@@ -29,6 +29,60 @@ Read this section before an upgrade, and `acme-proxy filter show` builds a
 `[filter]` policy exactly as startup does, so it is the cheapest way to check a
 migrated configuration before restarting.
 
+## [Unreleased]
+
+### Breaking
+
+- **`admin_credential_changed` has a fifth `change` value, `contact_address`.**
+  A `custom` notification script or a webhook consumer matching on `change`
+  must handle it. That one event is delivered to the address that was
+  *replaced*, carried as a new `previous_recipient` member, which is present
+  only on this change.
+- **Web-admin template overrides (`admin.template_dir`):** controls are gated on
+  a new `can_write` context member instead of
+  `not user is defined or user.role != "viewer"`, and a fragment must keep its
+  swap target's `id` on its root element, since htmx now swaps with
+  `outerHTML`. An override that copied the old condition keeps working for full
+  pages but hides its controls after a mutation until it reads `can_write`.
+
+### Added
+
+- **An operator sets their own notification address** from the panel's *Your
+  account* page or `POST /api/account/contact`, re-proving their password. The
+  previous address is told.
+- **An `admin` changes a colleague's role and notification address** from their
+  page on the Operators surface, or `POST /api/operators/{username}/role` and
+  `…/contact`, behind the same password step-up as the other actions there. A
+  role change revokes their sessions.
+- The operators list and card show each operator's role; the card also shows
+  their notification address (or that there is none) and their recent sign-in
+  addresses.
+- The audit page filters by order and certificate serial, and the delete
+  confirmations on an account or an order name how much cascades with it.
+- **The panel's overview leads with what needs attention**: failed jobs,
+  certificates expiring within seven days, refusals in the last day and any
+  endpoint bypassing validation, each tile linking to its list.
+- Panel lists show how long ago (or until) each timestamp is beside the absolute
+  value, the orders list gains a *Certificate expires* column, long ids are
+  shortened with the full id on hover, and every filter form has *Clear filters*
+  and a loading indicator.
+- Account and order cards link to their rows in the audit trail.
+- Accessibility: a skip link, `aria-current` on the active navigation entry, and
+  banners announced to screen readers. The navigation is grouped.
+
+### Fixed
+
+- **Paging an account's orders replaced the orders table with a copy of the
+  account card.** The pager now fetches `GET /ui/accounts/{id}/orders`.
+- **The audit page dropped `orderId`/`certSerial` filters** on the next page and
+  on any change to the form, silently widening a deep link to the whole trail.
+- **Every htmx swap left two elements sharing one `id`**, the fragment's root
+  nested inside the element it was meant to replace.
+- The orders and jobs status filters are built from the status enums rather
+  than from lists written into the templates, so a status cannot exist without
+  being filterable.
+- *Run now* on a job is no longer styled as a destructive action.
+
 ## [0.5.0] — 2026-09-08
 
 ### Breaking

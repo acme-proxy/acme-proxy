@@ -319,6 +319,28 @@ the session that submitted it stays signed in, and every *other* session of
 that operator is revoked. Rotating a credential from inside a session you are
 already trusted on need not sign you out of the tab that did it.
 
+## Your notification address
+
+The address your [security notifications](webadmin.md#security-notifications)
+are delivered to — a sign-in from a new address, a change to your password or
+second factor. Set it on **Your account** under *Notification address*, or
+from the API:
+
+```console
+$ curl -X POST https://admin.example.com/api/account/contact \
+    -H 'Cookie: __Host-acme_admin_session=…' -H 'X-CSRF-Token: …' \
+    -d '{"current_password": "…", "contact": "alice@example.com"}'
+```
+
+An empty or absent `contact` clears it. It asks for your current password
+although an address is not a credential, and revokes no session: it is where
+the alarms go, so a stolen cookie that could change it silently would switch
+off the one signal that the cookie was stolen. For the same reason, **a change
+is reported to the address it replaced** — the new one is controlled by whoever
+made the change. Setting the address you already have does nothing and sends
+nothing. An address that does not parse as a mailbox is refused
+(`400 invalid_contact`).
+
 ## Roles
 
 Every operator has one of three roles, stored in `admin_users.role` and
@@ -371,6 +393,12 @@ Role of noc set to operator. Every session they held was revoked.
 `admin user role` revokes the operator's sessions, the same as `passwd` and
 `disable` — a demotion that left a live `admin` session alive would take effect
 only when that cookie expired.
+
+An `admin` can also change a colleague's role from their page on the
+**Operators** surface ([From the panel](#from-the-panel)), with the same
+revocation. Not their own: that surface refuses to target the caller, which is
+also why the last-`admin` refusal cannot be reached from the panel — an `admin`
+changing somebody else always leaves at least themselves.
 
 ## Managing operators
 
@@ -429,11 +457,14 @@ open **Operators**, and pick a colleague:
 bob                   active    off    2026-08-08T13:21:18Z  2026-08-08T15:07:17Z
 ```
 
-Their page shows the same status and second-factor summary `admin user show`
-does, plus their own live sessions (see [Sessions](#sessions) below), and three
-buttons: **Disable**, **Reset second factor**, and, per session, **Revoke**.
-Every one of them asks for *your own* password again first, **whether or not
-you have a second factor**. Disabling a colleague's account or ending one of
+Their page shows the same status, role and second-factor summary `admin user
+show` does, their notification address and the addresses they recently signed
+in from, plus their own live sessions (see [Sessions](#sessions) below). It
+offers three buttons — **Disable**, **Reset second factor**, and, per session,
+**Revoke** — and two forms: **Change role** (which revokes every session they
+hold) and **Save address** (reported to the address it replaces; empty clears
+it). Every one of them asks for *your own* password again first, **whether or
+not you have a second factor**. Disabling a colleague's account or ending one of
 their sessions is a much larger blast radius than anything on your own account
 page, and a stolen cookie alone should not be sufficient authority for it —
 which is true of an operator who has enrolled no factor exactly as it is of one
@@ -445,13 +476,24 @@ prompt there would stand in front of the `admin.require_mfa` bootstrap.)
 $ curl -X POST https://admin.example.com/api/operators/bob/disable \
     -H 'Cookie: __Host-acme_admin_session=…' -H 'X-CSRF-Token: …' \
     -d '{"password": "…"}'
+
+$ curl -X POST https://admin.example.com/api/operators/bob/role \
+    -H 'Cookie: __Host-acme_admin_session=…' -H 'X-CSRF-Token: …' \
+    -d '{"password": "…", "role": "viewer"}'
+
+$ curl -X POST https://admin.example.com/api/operators/bob/contact \
+    -H 'Cookie: __Host-acme_admin_session=…' -H 'X-CSRF-Token: …' \
+    -d '{"password": "…", "contact": "bob@example.com"}'
 ```
+
+An unknown role is `400` naming the three that exist; an address that is not a
+mailbox is `400 invalid_contact`. In the panel both are a banner on the card.
 
 Two things this surface deliberately does **not** do, both already settled
 above: **`create` and `passwd` stay on the host.** Minting a credential is
-where "no sign-up page" already draws the line, and everything the Operators
-page offers only ever *tightens* an existing account — it can disable one,
-reset its factor, or end a session, never set a password or bring one into
+where "no sign-up page" already draws the line: the Operators page can disable
+an account, reset its factor, end a session, move it between roles or change
+where its notifications go, but never set a password or bring an account into
 being. And **an operator can never target themself here** — `GET
 /ui/operators/{your own username}` redirects straight to
 [Your account](#changing-your-own-password), which already owns every one of

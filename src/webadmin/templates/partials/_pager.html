@@ -12,16 +12,23 @@
   reload or a bookmark lands on the same page of results.
 -#}
 {% if pager.total > 0 %}
+  {#- `hx-indicator` names the pager rather than the button, so the "Loading…"
+      beside the count shows while a page is fetched. -#}
   <div class="pager">
     <span>{{ pager.from }}–{{ pager.to }} of {{ pager.total }}</span>
+    <span class="htmx-indicator">Loading…</span>
     <span class="spacer"></span>
     {% if pager.prev %}
-      <button hx-get="{{ pager.prev }}" hx-target="{{ pager.target }}" hx-push-url="true">Previous</button>
+      <button hx-get="{{ pager.prev }}" hx-target="{{ pager.target }}"
+              hx-indicator="closest .pager"
+              {% if pager.push %}hx-push-url="true"{% endif %}>Previous</button>
     {% else %}
       <button disabled>Previous</button>
     {% endif %}
     {% if pager.next %}
-      <button hx-get="{{ pager.next }}" hx-target="{{ pager.target }}" hx-push-url="true">Next</button>
+      <button hx-get="{{ pager.next }}" hx-target="{{ pager.target }}"
+              hx-indicator="closest .pager"
+              {% if pager.push %}hx-push-url="true"{% endif %}>Next</button>
     {% else %}
       <button disabled>Next</button>
     {% endif %}

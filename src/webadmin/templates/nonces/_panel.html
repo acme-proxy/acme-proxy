@@ -16,10 +16,8 @@
     </div>
   </div>
 
-  {#- Hidden from a viewer, who cannot use it. `user` is absent when this
-      renders as the fragment following a mutation, and the caller there has
-      already passed a write extractor, so undefined means "show". -#}
-  {% if not user is defined or user.role != "viewer" %}
+  {#- Hidden below the operator tier; see `pages::fragment_context`. -#}
+  {% if can_write %}
   <div class="panel">
     <h2>Sweep now</h2>
     <p class="muted small">

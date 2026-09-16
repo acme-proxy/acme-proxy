@@ -16,7 +16,7 @@
       <tbody>
         {% for row in page.items %}
           <tr>
-            <td><a href="/ui/upstream-orders/{{ row.orderId }}"><code>{{ row.orderId }}</code></a></td>
+            <td class="id-cell"><a href="/ui/upstream-orders/{{ row.orderId }}" title="{{ row.orderId }}"><code>{{ row.orderId }}</code></a></td>
             <td><code>{{ row.profile }}</code></td>
             <td><span class="badge {{ row.status }}">{{ row.status }}</span></td>
             <td><span class="badge {{ row.localStatus }}">{{ row.localStatus }}</span></td>
@@ -25,7 +25,7 @@
                 {% if not loop.first %}, {% endif %}{{ identifier.value }}
               {%- endfor -%}
             </td>
-            <td class="small">{{ row.updatedAt }}</td>
+            <td class="small"><time datetime="{{ row.updatedAt }}">{{ row.updatedAt }}</time><br><span class="muted">{{ row.updatedAt | ago }}</span></td>
           </tr>
         {% else %}
           <tr><td class="empty" colspan="6">No upstream order matches.</td></tr>

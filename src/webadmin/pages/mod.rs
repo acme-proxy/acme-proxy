@@ -92,6 +92,7 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             post(account::regenerate_recovery_codes),
         )
         .route("/ui/account/password", post(account::change_password))
+        .route("/ui/account/contact", post(account::change_contact))
         .route(
             "/ui/account/sessions/{id}/revoke",
             post(account::revoke_own_session),
@@ -116,6 +117,14 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             post(operators::reset_operator_totp),
         )
         .route(
+            "/ui/operators/{username}/contact",
+            post(operators::set_operator_contact),
+        )
+        .route(
+            "/ui/operators/{username}/role",
+            post(operators::set_operator_role),
+        )
+        .route(
             "/ui/operators/{username}/sessions/{id}/revoke",
             post(operators::revoke_operator_session),
         )
@@ -123,6 +132,10 @@ pub(crate) fn pages_router() -> Router<AdminState> {
         .route(
             "/ui/accounts/{id}",
             get(accounts::get_account).delete(accounts::delete_account),
+        )
+        .route(
+            "/ui/accounts/{id}/orders",
+            get(accounts::list_account_orders),
         )
         .route(
             "/ui/accounts/{id}/contact",
@@ -184,7 +197,30 @@ pub(crate) fn chrome<S: PageAuth>(
     nav: &'static str,
     title: &str,
 ) -> Map<String, Value> {
-    let auth = session.auth();
+    let mut context = fragment_context(session.auth());
+    context.insert("nav".to_string(), Value::String(nav.to_string()));
+    context.insert("title".to_string(), Value::String(title.to_string()));
+    context
+}
+
+/// The context every rendering for a signed-in caller starts from: the half of
+/// [`chrome`] that a mutation's fragment needs too.
+///
+/// `can_write` is what templates gate their controls on. Six of them used to
+/// spell it `not user is defined or user.role != "viewer"`, on the reasoning
+/// that a fragment rendered without `user` must be answering a mutation whose
+/// caller had already passed a write extractor. That held only while every
+/// fragment was assembled by hand the same way: a read path rendering one
+/// without `user` would have shown a `viewer` every control. Now the decision
+/// is computed once, from the role, and travels with every rendering — and a
+/// template that meets no `can_write` at all hides the control.
+///
+/// `csrf_token` rides along for the forms that carry it explicitly: a fragment
+/// rendered standalone is not yet inside the `<body>` whose `hx-headers` it
+/// would otherwise inherit.
+pub(crate) fn fragment_context(
+    auth: &crate::webadmin::session::Authenticated,
+) -> Map<String, Value> {
     let mut context = Map::new();
     context.insert(
         "csrf_token".to_string(),
@@ -194,8 +230,10 @@ pub(crate) fn chrome<S: PageAuth>(
         "user".to_string(),
         crate::admin::render_admin_user_json(&auth.user),
     );
-    context.insert("nav".to_string(), Value::String(nav.to_string()));
-    context.insert("title".to_string(), Value::String(title.to_string()));
+    context.insert(
+        "can_write".to_string(),
+        Value::Bool(auth.user.role() >= crate::sqlite::admin_user::AdminRole::Operator),
+    );
     context
 }
 
@@ -301,6 +339,52 @@ pub(crate) fn page_value(items: Vec<Value>, total: i64) -> Value {
     json!({ "items": items, "total": total })
 }
 
+/// The filters a list page is showing, stated once.
+///
+/// Each list handler used to spell its filter set three times — the
+/// `unwrap_or_default` locals, the slice handed to [`pager`] and the `filters`
+/// object the form echoes — and `/ui/audit` let two of the three drift: it
+/// filtered on `orderId`/`certSerial` and carried neither to the next page, so
+/// a deep link lost its filter on page two. One list, two views of it.
+#[derive(Debug, Default)]
+pub(crate) struct ListFilters(Vec<(&'static str, String)>);
+
+impl ListFilters {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// One filter under its query-string name; absent is the empty string, the
+    /// "any" option every control on this listener sends.
+    #[must_use]
+    pub(crate) fn with(mut self, key: &'static str, value: Option<&str>) -> Self {
+        self.0.push((key, value.unwrap_or_default().to_string()));
+        self
+    }
+
+    /// The `(key, value)` pairs [`pager`] carries forward, blank ones included
+    /// (it drops those itself).
+    #[must_use]
+    pub(crate) fn pairs(&self) -> Vec<(&str, &str)> {
+        self.0
+            .iter()
+            .map(|(key, value)| (*key, value.as_str()))
+            .collect()
+    }
+
+    /// The `filters` object a list template echoes into its form controls.
+    #[must_use]
+    pub(crate) fn to_value(&self) -> Value {
+        Value::Object(
+            self.0
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), Value::String(value.clone())))
+                .collect(),
+        )
+    }
+}
+
 /// The offset-pagination controls for a list fragment.
 ///
 /// Built here rather than in the template because the previous and next URLs
@@ -341,6 +425,10 @@ pub(crate) fn pager(
         "prev": (page.offset > 0).then(|| url(page.offset.saturating_sub(page.limit).max(0))),
         "next": (next < total).then(|| url(next)),
         "target": target,
+        // Whether a page step rewrites the address bar. On for every list that
+        // owns its page; off for a table embedded in another resource's page,
+        // whose URL belongs to that resource.
+        "push": true,
     })
 }
 
@@ -409,6 +497,26 @@ mod tests {
         assert_eq!(value["to"], 10);
         assert!(value["next"].is_null());
         assert!(value["prev"].is_string());
+    }
+
+    /// Both views come from the one list, so a filter the page echoes is a
+    /// filter the next page keeps — the `/ui/audit` regression, structurally.
+    #[test]
+    fn list_filters_echo_every_key_and_the_pager_carries_the_set_ones() {
+        let filters = ListFilters::new()
+            .with("certSerial", Some("0a0b"))
+            .with("orderId", None);
+
+        let echoed = filters.to_value();
+        assert_eq!(echoed["certSerial"], "0a0b");
+        // Absent is the empty string, which is what the form's "any" sends.
+        assert_eq!(echoed["orderId"], "");
+
+        let value = pager(page(1, 0), 5, "/ui/audit", &filters.pairs(), "#t");
+        let next = value["next"].as_str().unwrap();
+        assert!(next.contains("certSerial=0a0b"), "{next}");
+        assert!(!next.contains("orderId"), "{next}");
+        assert_eq!(value["push"], true);
     }
 
     #[test]

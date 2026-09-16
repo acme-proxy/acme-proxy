@@ -11,6 +11,7 @@
       <thead>
         <tr>
           <th>Username</th>
+          <th>Role</th>
           <th>Status</th>
           <th>Second factor</th>
           <th>Last login</th>
@@ -28,6 +29,9 @@
                 <a href="/ui/operators/{{ operator.username }}"><code>{{ operator.username }}</code></a>
               {% endif %}
             </td>
+            {#- The most important fact about an operator on this page: what
+                their session is allowed to do. -#}
+            <td><span class="badge role">{{ operator.role }}</span></td>
             <td><span class="badge {{ operator.status }}">{{ operator.status }}</span></td>
             <td>
               {%- if operator.totpEnabled -%}
@@ -38,7 +42,7 @@
             </td>
             <td class="small">
               {%- if operator.lastLoginAt -%}
-                {{ operator.lastLoginAt }}
+                <time datetime="{{ operator.lastLoginAt }}">{{ operator.lastLoginAt }}</time><br><span class="muted">{{ operator.lastLoginAt | ago }}</span>
               {%- else -%}
                 <span class="muted">never</span>
               {%- endif -%}
@@ -46,7 +50,7 @@
             <td class="small">{{ operator.createdAt }}</td>
           </tr>
         {% else %}
-          <tr><td class="empty" colspan="5">No operator exists.</td></tr>
+          <tr><td class="empty" colspan="6">No operator exists.</td></tr>
         {% endfor %}
       </tbody>
     </table>

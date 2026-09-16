@@ -21,9 +21,13 @@
       - `responseHandling`, because htmx does not swap a non-2xx response by
         default -- without it a 409 `already_revoked` would fail silently
         rather than showing the operator the error banner it returned.
+      - `defaultSwapStyle` outerHTML, because every fragment in this tree
+        carries its swap target's `id` on its own root element. htmx's default
+        `innerHTML` put that root *inside* the target, so each filter change,
+        page step and mutation left two elements with one id.
     -#}
     <meta name="htmx-config"
-          content='{"includeIndicatorStyles":false,"responseHandling":[{"code":"[45]..","swap":true},{"code":"[23]..","swap":true}]}'>
+          content='{"includeIndicatorStyles":false,"defaultSwapStyle":"outerHTML","responseHandling":[{"code":"[45]..","swap":true},{"code":"[23]..","swap":true}]}'>
     <link rel="stylesheet" href="/ui/static/admin.css">
     <script src="/ui/static/htmx.min.js" defer></script>
   </head>
@@ -34,36 +38,45 @@
     is the intended failure mode.
   -#}
   <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}'>
+    <a class="skip-link" href="#content">Skip to content</a>
     <header class="top">
       <span class="brand">acme-proxy</span>
+      {#- Grouped by what an operator came to do -- the certificates, the
+          machinery behind them, and oversight of both -- rather than one flat
+          row of eleven that wraps wherever the window happens to end. The
+          separators are presentation only. `aria-current` says which page this
+          is to a screen reader, which the underline alone does not. -#}
       <nav>
-        <a href="/ui/" {% if nav == "index" %}class="active"{% endif %}>Overview</a>
-        <a href="/ui/accounts" {% if nav == "accounts" %}class="active"{% endif %}>Accounts</a>
-        <a href="/ui/orders" {% if nav == "orders" %}class="active"{% endif %}>Orders</a>
-        <a href="/ui/expiring" {% if nav == "expiring" %}class="active"{% endif %}>Expiring</a>
-        <a href="/ui/jobs" {% if nav == "jobs" %}class="active"{% endif %}>Jobs</a>
-        <a href="/ui/upstream-orders" {% if nav == "upstream_orders" %}class="active"{% endif %}>Upstream</a>
-        <a href="/ui/audit" {% if nav == "audit" %}class="active"{% endif %}>Audit</a>
-        <a href="/ui/eab" {% if nav == "eab" %}class="active"{% endif %}>EAB</a>
+        <a href="/ui/" {% if nav == "index" %}class="active" aria-current="page"{% endif %}>Overview</a>
+        <span class="nav-sep" aria-hidden="true"></span>
+        <a href="/ui/accounts" {% if nav == "accounts" %}class="active" aria-current="page"{% endif %}>Accounts</a>
+        <a href="/ui/orders" {% if nav == "orders" %}class="active" aria-current="page"{% endif %}>Orders</a>
+        <a href="/ui/expiring" {% if nav == "expiring" %}class="active" aria-current="page"{% endif %}>Expiring</a>
+        <a href="/ui/eab" {% if nav == "eab" %}class="active" aria-current="page"{% endif %}>EAB</a>
+        <span class="nav-sep" aria-hidden="true"></span>
+        <a href="/ui/jobs" {% if nav == "jobs" %}class="active" aria-current="page"{% endif %}>Jobs</a>
+        <a href="/ui/upstream-orders" {% if nav == "upstream_orders" %}class="active" aria-current="page"{% endif %}>Upstream</a>
+        <a href="/ui/nonces" {% if nav == "nonces" %}class="active" aria-current="page"{% endif %}>Nonces</a>
+        <a href="/ui/profiles" {% if nav == "profiles" %}class="active" aria-current="page"{% endif %}>Profiles</a>
+        <span class="nav-sep" aria-hidden="true"></span>
+        <a href="/ui/audit" {% if nav == "audit" %}class="active" aria-current="page"{% endif %}>Audit</a>
         {#- Admins only, because the page is: `/ui/operators` takes
             `PageAdminRead` and every control on it takes `PageAdminWrite`, so
             for a lower tier this link only ever leads to a 403. A nav entry
             that always refuses is a worse answer than no entry. -#}
         {% if user.role == "admin" %}
-        <a href="/ui/operators" {% if nav == "operators" %}class="active"{% endif %}>Operators</a>
+        <a href="/ui/operators" {% if nav == "operators" %}class="active" aria-current="page"{% endif %}>Operators</a>
         {% endif %}
-        <a href="/ui/nonces" {% if nav == "nonces" %}class="active"{% endif %}>Nonces</a>
-        <a href="/ui/profiles" {% if nav == "profiles" %}class="active"{% endif %}>Profiles</a>
       </nav>
       <span class="whoami">
         {#- Not one more entry in the nav above: that lists resources of the
             server, and "my second factor" is not one. -#}
-        <a href="/ui/account" {% if nav == "account" %}class="active"{% endif %}>{{ user.username }}</a>
+        <a href="/ui/account" {% if nav == "account" %}class="active" aria-current="page"{% endif %}>{{ user.username }}</a>
         <button hx-post="/ui/logout" hx-swap="none">Sign out</button>
       </span>
     </header>
 
-    <main>
+    <main id="content">
       {% block content %}{% endblock %}
     </main>
   </body>

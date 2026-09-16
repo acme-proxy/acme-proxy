@@ -21,7 +21,9 @@ use crate::webadmin::handlers::orders::render_orders;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
-use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
+use crate::webadmin::pages::{
+    ListFilters, chrome, flash, page_value, pager, respond, respond_fragment,
+};
 
 /// The contact editor posts a textarea, not a JSON array.
 #[derive(Debug, Deserialize)]
@@ -39,7 +41,7 @@ pub async fn list_accounts(
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let profile = params.profile.clone().unwrap_or_default();
+    let filters = ListFilters::new().with("profile", params.profile.as_deref());
 
     let (accounts, total) = Account::search(
         params.profile.as_deref(),
@@ -62,14 +64,11 @@ pub async fn list_accounts(
             page,
             total,
             "/ui/accounts",
-            &[("profile", &profile)],
+            &filters.pairs(),
             "#accounts-table",
         ),
     );
-    context.insert(
-        "filters".to_string(),
-        serde_json::json!({ "profile": profile }),
-    );
+    context.insert("filters".to_string(), filters.to_value());
     context.insert(
         "profiles".to_string(),
         Value::Array(crate::webadmin::handlers::misc::profile_rows(&state)),
@@ -95,35 +94,7 @@ pub async fn get_account(
     Query(params): Query<PageParams>,
     session: PageSession,
 ) -> Result<Html<String>, PageError> {
-    let account = load(&id, &state).await?;
-    let page = params.resolve(&state.config);
-
-    let (orders, total) = Order::search(
-        &OrderQuery {
-            account_id: Some(id.clone()),
-            limit: page.limit,
-            offset: page.offset,
-            ..OrderQuery::default()
-        },
-        &state.database,
-    )
-    .await?;
-    let items = render_orders(&orders, &state).await?;
-
-    let mut context = chrome(&session, "accounts", "Account");
-    context.insert("account".to_string(), account);
-    context.insert("page".to_string(), page_value(items, total));
-    context.insert(
-        "pager".to_string(),
-        pager(
-            page,
-            total,
-            &format!("/ui/accounts/{id}"),
-            &[],
-            "#orders-table",
-        ),
-    );
-
+    let context = account_page_context(&state, &id, params, &session).await?;
     respond(
         &state,
         session.hx,
@@ -131,6 +102,70 @@ pub async fn get_account(
         "accounts/_card.html",
         context,
     )
+}
+
+/// `GET /ui/accounts/{id}/orders?limit=&offset=` — one account's orders.
+///
+/// The swap target of the pager under the account card. It could not be
+/// `GET /ui/accounts/{id}` itself: that URL's fragment is the *card*, so a page
+/// step there swapped a second `#account-card` into `#orders-table`. A
+/// navigation to this URL still gets the whole account page, so the one-URL,
+/// bookmarkable rule holds; the pager simply does not push it, since the
+/// address bar belongs to the account.
+pub async fn list_account_orders(
+    State(state): State<AdminState>,
+    Path(id): Path<String>,
+    Query(params): Query<PageParams>,
+    session: PageSession,
+) -> Result<Html<String>, PageError> {
+    let context = account_page_context(&state, &id, params, &session).await?;
+    respond(
+        &state,
+        session.hx,
+        "accounts/detail.html",
+        "orders/_table.html",
+        context,
+    )
+}
+
+/// The account, one page of its orders, and a pager over them — everything
+/// both account routes above render, whichever half of it they swap.
+async fn account_page_context(
+    state: &AdminState,
+    id: &str,
+    params: PageParams,
+    session: &PageSession,
+) -> Result<Map<String, Value>, PageError> {
+    let account = load(id, state).await?;
+    let page = params.resolve(&state.config);
+
+    let (orders, total) = Order::search(
+        &OrderQuery {
+            account_id: Some(id.to_string()),
+            limit: page.limit,
+            offset: page.offset,
+            ..OrderQuery::default()
+        },
+        &state.database,
+    )
+    .await?;
+    let items = render_orders(&orders, state).await?;
+
+    let mut pager = pager(
+        page,
+        total,
+        &format!("/ui/accounts/{id}/orders"),
+        &[],
+        "#orders-table",
+    );
+    pager["push"] = Value::Bool(false);
+
+    let mut context = chrome(session, "accounts", "Account");
+    context.insert("account".to_string(), account);
+    context.insert("page".to_string(), page_value(items, total));
+    context.insert("order_count".to_string(), Value::from(total));
+    context.insert("pager".to_string(), pager);
+    Ok(context)
 }
 
 /// `POST /ui/accounts/{id}/contact`
@@ -160,7 +195,8 @@ pub async fn post_account_contact(
             &session,
             account,
             super::flash_error("bad_request", rejection.detail),
-        );
+        )
+        .await;
     }
 
     let account = admin::update_account_contact(&id, contact, state.database.clone())
@@ -182,7 +218,7 @@ pub async fn post_account_contact(
                    username = %session.auth.user.username);
 
     let rendered = admin::render_account_json(&account, &state.config.server.base_url);
-    card(&state, &session, rendered, flash("ok", "Contact updated."))
+    card(&state, &session, rendered, flash("ok", "Contact updated.")).await
 }
 
 /// `POST /ui/accounts/{id}/deactivate`
@@ -218,6 +254,7 @@ pub async fn deactivate_account(
             "Account deactivated. It can no longer request issuance.",
         ),
     )
+    .await
 }
 
 /// `DELETE /ui/accounts/{id}`
@@ -259,20 +296,33 @@ pub async fn delete_account(
 
 /// The account card, with a banner — the answer to every account mutation that
 /// leaves the account in place.
-fn card(
+async fn card(
     state: &AdminState,
     session: &PageSessionWrite,
     account: Value,
     banner: Value,
 ) -> Result<Html<String>, PageError> {
-    let mut context = Map::new();
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let order_count = order_count(account["id"].as_str().unwrap_or_default(), state).await?;
+    let mut context = super::fragment_context(&session.auth);
     context.insert("account".to_string(), account);
+    context.insert("order_count".to_string(), Value::from(order_count));
     context.insert("flash".to_string(), banner);
     respond_fragment(state, "accounts/_card.html", context)
+}
+
+/// How many orders a delete of this account would take with it — what the
+/// card's confirmation names, as `account delete`'s prompt does.
+async fn order_count(id: &str, state: &AdminState) -> Result<i64, PageError> {
+    let (_, total) = Order::search(
+        &OrderQuery {
+            account_id: Some(id.to_string()),
+            limit: 1,
+            ..OrderQuery::default()
+        },
+        &state.database,
+    )
+    .await?;
+    Ok(total)
 }
 
 async fn load(id: &str, state: &AdminState) -> Result<Value, PageError> {

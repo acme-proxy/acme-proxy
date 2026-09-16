@@ -8,7 +8,29 @@
   <div class="panel">
     <dl class="fields">
       <dt>Username</dt><dd><code>{{ operator.username }}</code></dd>
+      <dt>Role</dt><dd><span class="badge role">{{ operator.role }}</span></dd>
       <dt>Status</dt><dd><span class="badge {{ operator.status }}">{{ operator.status }}</span></dd>
+      {#- Where `admin_sign_in`/`admin_credential_changed` are delivered. Absent
+          is worth saying out loud: it is the `admin_notify_contact_missing`
+          startup warning, and the panel is where somebody can act on it. -#}
+      <dt>Contact</dt>
+      <dd>
+        {%- if operator.contactEmail -%}
+          <code>{{ operator.contactEmail }}</code>
+        {%- else -%}
+          <span class="muted">none — security notifications cannot reach them</span>
+        {%- endif -%}
+      </dd>
+      {#- Forensics only: compared solely to decide whether a sign-in is from a
+          new address, never to allow or refuse one. -#}
+      {% if operator.knownLoginIps %}
+        <dt>Recent sign-in addresses</dt>
+        <dd class="wrap-anywhere">
+          {%- for address in operator.knownLoginIps -%}
+            {% if not loop.first %}, {% endif %}<code>{{ address }}</code>
+          {%- endfor -%}
+        </dd>
+      {% endif %}
       <dt>Second factor</dt>
       <dd>
         {%- if operator.totpEnabled -%}
@@ -70,6 +92,37 @@
         </button>
       {% endif %}
     </div>
+    {#- Two forms rather than buttons, since each carries a value, and both
+        pull in the same step-up field through `hx-include`. `roles` comes from
+        `AdminRole::ALL`, so the select cannot offer what the handler refuses. -#}
+    <form class="row" hx-post="/ui/operators/{{ operator.username }}/role"
+          hx-target="#operator-detail"
+          hx-include="#operator-step-up-password"
+          hx-confirm="Change {{ operator.username }}'s role? Their sessions are revoked immediately.">
+      <div class="field">
+        <label for="operator-role">Role</label>
+        <select id="operator-role" name="role">
+          {% for role in roles %}
+            <option value="{{ role }}" {% if role == operator.role %}selected{% endif %}>{{ role }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <button type="submit">Change role</button>
+      </div>
+    </form>
+    <form class="row" hx-post="/ui/operators/{{ operator.username }}/contact"
+          hx-target="#operator-detail"
+          hx-include="#operator-step-up-password">
+      <div class="field">
+        <label for="operator-contact">Notification address (empty clears it)</label>
+        <input type="email" id="operator-contact" name="contact" autocomplete="off"
+               value="{% if operator.contactEmail %}{{ operator.contactEmail }}{% endif %}">
+      </div>
+      <div>
+        <button type="submit">Save address</button>
+      </div>
+    </form>
   </div>
 
   <div class="panel">

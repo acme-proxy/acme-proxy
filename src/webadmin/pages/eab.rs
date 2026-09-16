@@ -189,11 +189,7 @@ pub async fn revoke_eab(
                    username = %session.auth.user.username);
 
     let eab = load(&kid, &state).await?;
-    let mut context = Map::new();
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let mut context = super::fragment_context(&session.auth);
     context.insert("eab".to_string(), eab);
     context.insert(
         "flash".to_string(),

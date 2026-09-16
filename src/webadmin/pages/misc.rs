@@ -4,14 +4,17 @@
 use axum::extract::State;
 use axum::response::Html;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::time::Duration;
 
 use crate::admin;
 use crate::sqlite::account::Account;
+use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::sqlite::eab::Eab;
+use crate::sqlite::job::{Job, JobQuery};
 use crate::sqlite::nonce::Nonce;
 use crate::sqlite::order::{Order, OrderQuery};
+use crate::sqlite::status::JobStatus;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::misc::profile_rows;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
@@ -25,11 +28,16 @@ pub struct CleanupForm {
     pub ttl_seconds: String,
 }
 
+/// How far ahead the overview's "expiring" tile looks. The expiry page's own
+/// "urgent" badge threshold, so the tile and the red rows it opens agree.
+const ATTENTION_EXPIRY_DAYS: u64 = 7;
+
 /// `GET /ui/` — the overview.
 ///
-/// Four counts and the endpoint list. The counts come from the same `search`
-/// calls the lists use, asked for a single row: the totals are computed by the
-/// database, so this is four `COUNT(*)`s rather than four full reads.
+/// What needs attention, then the totals, then the endpoint list. Every number
+/// comes from the same query its list page runs, asked for a single row: the
+/// totals are computed by the database, so this is a handful of `COUNT(*)`s
+/// rather than as many full reads.
 pub async fn get_index(
     State(state): State<AdminState>,
     session: PageSession,
@@ -46,6 +54,47 @@ pub async fn get_index(
     let (_, eab) = Eab::search(1, 0, &state.database).await?;
     let nonces = Nonce::count(&state.database).await?;
 
+    // What needs somebody, before what merely exists. Each is the total of a
+    // query a list page already runs, asked for one row, and each tile links
+    // to that list -- so a number here is never one the operator cannot open.
+    let (_, failed_jobs) = Job::search(
+        &JobQuery {
+            kind: None,
+            status: Some(JobStatus::Failed),
+            limit: 1,
+            offset: 0,
+        },
+        &state.database,
+    )
+    .await?;
+    // The whole window, replaced certificates included, so the number agrees
+    // with the list the tile opens rather than with a filter it does not set.
+    let (_, expiring_soon, _) = admin::list_expiring(
+        &admin::ExpiringQuery {
+            profile: None,
+            before: admin::expiring_horizon(ATTENTION_EXPIRY_DAYS),
+            include_superseded: true,
+            limit: 1,
+            offset: 0,
+        },
+        state.database.clone(),
+    )
+    .await?;
+    let (_, refusals) = AuditEntry::search(
+        &AuditQuery {
+            outcome: Some("failure".to_string()),
+            since: Some(crate::sqlite::nonce::now_secs().saturating_sub(24 * 60 * 60)),
+            limit: 1,
+            ..AuditQuery::default()
+        },
+        &state.database,
+    )
+    .await?;
+    let profiles = profile_rows(&state);
+    let any_bypass = profiles
+        .iter()
+        .any(|profile| profile["challengeBypass"] == Value::Bool(true));
+
     let mut context = chrome(&session, "index", "Overview");
     context.insert(
         "stats".to_string(),
@@ -54,9 +103,14 @@ pub async fn get_index(
             "orders": orders,
             "eab": eab,
             "nonces": nonces,
+            "failedJobs": failed_jobs,
+            "expiringSoon": expiring_soon,
+            "expiryDays": ATTENTION_EXPIRY_DAYS,
+            "refusals": refusals,
         }),
     );
-    context.insert("profiles".to_string(), Value::Array(profile_rows(&state)));
+    context.insert("any_bypass".to_string(), Value::Bool(any_bypass));
+    context.insert("profiles".to_string(), Value::Array(profiles));
 
     // The overview is a whole page or nothing: there is no fragment of it worth
     // swapping on its own.
@@ -149,11 +203,7 @@ pub async fn cleanup_nonces(
                    username = %session.auth.user.username);
 
     let count = Nonce::count(&state.database).await?;
-    let mut context = Map::new();
-    context.insert(
-        "csrf_token".to_string(),
-        Value::String(session.auth.session.csrf_token.clone()),
-    );
+    let mut context = super::fragment_context(&session.auth);
     context.insert("count".to_string(), Value::from(count));
     context.insert(
         "ttl_seconds".to_string(),

@@ -11,12 +11,16 @@
           <th>Identifiers</th>
           <th>Created</th>
           <th>Expires</th>
+          {#- The leaf's own notAfter, not the order object's `expires` beside
+              it (housekeeping, see `order.validity_seconds`): the date an
+              operator actually scans a list of orders for. -#}
+          <th>Certificate expires</th>
         </tr>
       </thead>
       <tbody>
         {% for order in page.items %}
           <tr>
-            <td><a href="/ui/orders/{{ order.id }}"><code>{{ order.id }}</code></a></td>
+            <td class="id-cell"><a href="/ui/orders/{{ order.id }}" title="{{ order.id }}"><code>{{ order.id }}</code></a></td>
             <td><code>{{ order.profile }}</code></td>
             <td>
               <span class="badge {{ order.status }}">{{ order.status }}</span>
@@ -30,11 +34,18 @@
                 {% if not loop.first %}, {% endif %}{{ identifier.value }}
               {%- endfor -%}
             </td>
-            <td class="small">{{ order.createdAt }}</td>
-            <td class="small">{{ order.expires }}</td>
+            <td class="small"><time datetime="{{ order.createdAt }}">{{ order.createdAt }}</time><br><span class="muted">{{ order.createdAt | ago }}</span></td>
+            <td class="small"><time datetime="{{ order.expires }}">{{ order.expires }}</time><br><span class="muted">{{ order.expires | ago }}</span></td>
+            <td class="small">
+              {%- if order.certNotAfter -%}
+                <time datetime="{{ order.certNotAfter }}">{{ order.certNotAfter }}</time><br><span class="muted">{{ order.certNotAfter | ago }}</span>
+              {%- else -%}
+                <span class="muted">—</span>
+              {%- endif -%}
+            </td>
           </tr>
         {% else %}
-          <tr><td class="empty" colspan="6">No order matches.</td></tr>
+          <tr><td class="empty" colspan="7">No order matches.</td></tr>
         {% endfor %}
       </tbody>
     </table>

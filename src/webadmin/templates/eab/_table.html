@@ -22,7 +22,7 @@
       <tbody>
         {% for eab in page.items %}
           <tr>
-            <td><a href="/ui/eab/{{ eab.kid }}"><code>{{ eab.kid }}</code></a></td>
+            <td class="id-cell"><a href="/ui/eab/{{ eab.kid }}" title="{{ eab.kid }}"><code>{{ eab.kid }}</code></a></td>
             <td>
               {%- if eab.label -%}
                 {{ eab.label }}
@@ -38,7 +38,7 @@
               {%- endif -%}
             </td>
             <td><span class="badge {{ eab.status }}">{{ eab.status }}</span></td>
-            <td class="small">{{ eab.createdAt }}</td>
+            <td class="small"><time datetime="{{ eab.createdAt }}">{{ eab.createdAt }}</time><br><span class="muted">{{ eab.createdAt | ago }}</span></td>
           </tr>
         {% else %}
           <tr><td class="empty" colspan="5">No EAB credential has been minted.</td></tr>

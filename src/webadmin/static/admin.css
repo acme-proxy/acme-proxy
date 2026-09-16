@@ -97,6 +97,41 @@ header.top nav a.active {
   border-bottom-color: var(--accent);
 }
 
+/* Between the nav's groups. A rule rather than a gap, so the grouping still
+   reads when the row wraps. */
+header.top nav .nav-sep {
+  align-self: stretch;
+  width: 1px;
+  background: var(--border);
+}
+
+/* Off screen until focused, then the first thing on the page: a keyboard user
+   should not have to tab through eleven nav links to reach a table. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0.5rem;
+  z-index: 10;
+  padding: 0.45rem 0.9rem;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.skip-link:focus {
+  left: 0.5rem;
+}
+
+/* Present to a screen reader, absent from the layout. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 header.top .whoami {
   margin-left: auto;
   color: var(--muted);
@@ -164,6 +199,36 @@ h2 {
   letter-spacing: 0.04em;
 }
 
+/* Every overview tile is a link to the list behind its number, and reads as a
+   tile rather than as underlined accent text. */
+a.stat {
+  color: inherit;
+  text-decoration: none;
+}
+
+a.stat:hover {
+  border-color: var(--accent);
+}
+
+/* Tinted only while the number is non-zero; the template decides. */
+.stat.warn {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.stat.warn .value {
+  color: var(--warn);
+}
+
+.stat.danger {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+.stat.danger .value {
+  color: var(--danger);
+}
+
 /* Tables
    ------------------------------------------------------------------------ */
 
@@ -206,6 +271,19 @@ td.empty {
 
 .wrap-anywhere {
   overflow-wrap: anywhere;
+}
+
+/* A UUID is 36 characters and was the widest column of every list. The list
+   shows its head -- a v7 id's leading timestamp, which is what tells two rows
+   apart at a glance -- with the whole id in the link's `title`; the detail page
+   still prints it in full, and it is still in the markup for a search. */
+td.id-cell code {
+  display: inline-block;
+  max-width: 13ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .table-scroll {
@@ -341,6 +419,7 @@ label {
 }
 
 input[type="text"],
+input[type="email"],
 input[type="password"],
 input[type="number"],
 select,
@@ -382,6 +461,21 @@ a:focus-visible {
 .row > .field {
   margin-bottom: 0;
   flex: 1 1 10rem;
+}
+
+/* The indicator and the reset link at the end of a filter form. */
+.filter-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  padding-bottom: 0.45rem;
+}
+
+/* A value-carrying form inside a detail panel, below that panel's own
+   controls (the operator card's role and address forms). */
+.panel form.row {
+  margin-top: 1rem;
 }
 
 button,

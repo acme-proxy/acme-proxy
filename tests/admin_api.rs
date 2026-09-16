@@ -1674,6 +1674,7 @@ fn mutating_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         (Method::DELETE, "/api/mfa/totp", SelfService),
         (Method::POST, "/api/mfa/recovery-codes", SelfService),
         (Method::POST, "/api/account/password", SelfService),
+        (Method::POST, "/api/account/contact", SelfService),
         (
             Method::POST,
             "/api/account/sessions/some-id/revoke",
@@ -1681,6 +1682,8 @@ fn mutating_endpoints() -> Vec<(Method, &'static str, RequiredTier)> {
         ),
         (Method::POST, "/api/operators/some-username/disable", Admin),
         (Method::POST, "/api/operators/some-username/enable", Admin),
+        (Method::POST, "/api/operators/some-username/contact", Admin),
+        (Method::POST, "/api/operators/some-username/role", Admin),
         (
             Method::POST,
             "/api/operators/some-username/totp/reset",
@@ -4597,6 +4600,26 @@ async fn every_mutation_writes_one_audit_row_naming_the_operator_and_the_address
             step_up(),
             &["operator_totp_disabled"],
         ),
+        (
+            Method::POST,
+            "/api/account/contact".to_string(),
+            Some(json!({ "current_password": ADMIN_PASSWORD, "contact": "alice@example.org" })),
+            &["operator_contact_updated"],
+        ),
+        (
+            Method::POST,
+            "/api/operators/bob/contact".to_string(),
+            Some(json!({ "password": ADMIN_PASSWORD, "contact": "bob@example.org" })),
+            &["operator_contact_updated"],
+        ),
+        // One row, not two: the disable case above already dropped every
+        // session bob held, so there is nothing left for this one to revoke.
+        (
+            Method::POST,
+            "/api/operators/bob/role".to_string(),
+            Some(json!({ "password": ADMIN_PASSWORD, "role": "operator" })),
+            &["operator_role_changed"],
+        ),
     ];
 
     // Bob's session is revoked partway through, which is the point of the row —
@@ -5022,6 +5045,138 @@ async fn a_password_change_notifies_the_operator() {
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),
     }
+}
+
+/// Changing one's own notification address takes the current password, and is
+/// reported to the address it **replaced** — whoever made the change controls
+/// the new one. A malformed address is refused by its own code and changes
+/// nothing.
+#[tokio::test]
+async fn a_contact_change_notifies_the_address_it_replaced() {
+    use acme_proxy::sqlite::admin_user::AdminUser;
+
+    let (app, database, session, notify) =
+        test_admin_app_logged_in_with_security_notify(admin_config()).await;
+    let contact_of = |database: std::sync::Arc<acme_proxy::sqlite::db::Database>| async move {
+        AdminUser::find_by_username("alice", &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .contact_email
+    };
+
+    // A live cookie alone is not enough.
+    let refused = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/contact",
+        Some(&session),
+        Some(json!({ "contact": "attacker@example.net" })),
+    )
+    .await;
+    assert!(refused.status().is_client_error(), "{}", refused.status());
+    assert_eq!(
+        contact_of(database.clone()).await.as_deref(),
+        Some("alice@example.com")
+    );
+
+    let response = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/contact",
+        Some(&session),
+        Some(json!({ "current_password": ADMIN_PASSWORD, "contact": "alice@example.org" })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let events = notify.recorded(1).await;
+    match &events[0] {
+        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+            assert_eq!(data.username, "alice");
+            assert_eq!(
+                data.previous_recipient.as_deref(),
+                Some("alice@example.com")
+            );
+            assert_eq!(data.recipient.as_deref(), Some("alice@example.org"));
+            assert!(data.by_self);
+            assert!(matches!(
+                data.change,
+                acme_proxy::notify::AdminCredentialChange::ContactAddress
+            ));
+        }
+        other => panic!("expected AdminCredentialChanged, got {other:?}"),
+    }
+
+    let invalid = admin_request(
+        &app,
+        Method::POST,
+        "/api/account/contact",
+        Some(&session),
+        Some(json!({ "current_password": ADMIN_PASSWORD, "contact": "not an address" })),
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(invalid).await["error"], "invalid_contact");
+    assert_eq!(
+        contact_of(database.clone()).await.as_deref(),
+        Some("alice@example.org")
+    );
+}
+
+/// An admin moves a colleague to another tier: an unknown role is refused by
+/// name, the role lands, every session the colleague held goes with it, and
+/// targeting yourself is refused — your own tier is not something one click
+/// on the operators surface should be able to lose.
+#[tokio::test]
+async fn an_admin_changes_a_colleagues_role_and_their_sessions_go() {
+    use acme_proxy::sqlite::admin_user::{AdminRole, AdminUser};
+
+    let (app, database, alice, bob) = app_with_bob().await;
+
+    let unknown = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/role",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD, "role": "root" })),
+    )
+    .await;
+    assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    let message = json_body(unknown).await["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("viewer, operator, admin"), "{message}");
+
+    let changed = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/role",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD, "role": "viewer" })),
+    )
+    .await;
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+    let bob_row = AdminUser::find_by_username("bob", &database)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bob_row.role(), AdminRole::Viewer);
+
+    // Bob's cookie predates the change and must not outlive it.
+    let stale = admin_request(&app, Method::GET, "/api/session", Some(&bob), None).await;
+    assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+
+    let own = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/alice/role",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD, "role": "viewer" })),
+    )
+    .await;
+    assert_eq!(own.status(), StatusCode::BAD_REQUEST);
 }
 
 /// The two **silent** branches, which are the ones a "did it fire?" test cannot

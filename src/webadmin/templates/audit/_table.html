@@ -18,7 +18,7 @@
         {% for entry in page.items %}
           <tr>
             <td><a href="/ui/audit/{{ entry.id }}"><code>{{ entry.id }}</code></a></td>
-            <td class="small">{{ entry.createdAt }}</td>
+            <td class="small"><time datetime="{{ entry.createdAt }}">{{ entry.createdAt }}</time><br><span class="muted">{{ entry.createdAt | ago }}</span></td>
             <td><span class="badge {{ entry.outcome }}">{{ entry.event }}</span></td>
             <td><code>{{ entry.profile }}</code></td>
             <td class="small">

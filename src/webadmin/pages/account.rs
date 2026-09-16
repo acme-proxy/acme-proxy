@@ -375,6 +375,106 @@ pub struct ChangePasswordForm {
     pub new_password: String,
 }
 
+/// The notification-address form. A blank `contact` clears the address.
+#[derive(Debug, Default, Deserialize)]
+pub struct ContactForm {
+    #[serde(default)]
+    pub current_password: String,
+    #[serde(default)]
+    pub contact: String,
+}
+
+/// Everything `account/_contact.html` reads: the token (a fragment rendered
+/// standalone cannot inherit `<body>`'s `hx-headers`) and the operator.
+/// `typed` is what the form last sent, echoed back on a refusal so a mistyped
+/// address can be corrected rather than retyped.
+fn contact_card_context(
+    csrf_token: &str,
+    user: &AdminUser,
+    typed: Option<&str>,
+) -> Map<String, Value> {
+    let mut context = Map::new();
+    context.insert(
+        "csrf_token".to_string(),
+        Value::String(csrf_token.to_string()),
+    );
+    context.insert(
+        "user".to_string(),
+        crate::admin::render_admin_user_json(user),
+    );
+    if let Some(typed) = typed {
+        context.insert(
+            "contact_input".to_string(),
+            Value::String(typed.to_string()),
+        );
+    }
+    context
+}
+
+/// `POST /ui/account/contact` — set or clear the address this operator's own
+/// security notifications go to.
+///
+/// The `/ui` twin of [`crate::webadmin::handlers::account::change_contact`],
+/// which says why the password is asked for. A wrong password, a rate limit and
+/// an address that is not a mailbox are all this card's own banner.
+pub async fn change_contact(
+    State(state): State<AdminState>,
+    AdminClientIp(client): AdminClientIp,
+    headers: HeaderMap,
+    session: PageSelfServiceWrite,
+    request_context: crate::audit::RequestContext,
+    axum::Form(form): axum::Form<ContactForm>,
+) -> Result<Response, PageError> {
+    let caller = session.auth.user.clone();
+    let csrf_token = session.auth.session.csrf_token.clone();
+
+    if let Err(error) =
+        verify_current_password(&caller, &form.current_password, client, &state.logins)
+    {
+        return super::refuse_with_card(
+            &state,
+            "account/_contact.html",
+            contact_card_context(&csrf_token, &caller, Some(&form.contact)),
+            &error,
+        );
+    }
+
+    let mut target = caller.clone();
+    if let Err(error) = crate::webadmin::handlers::operators::apply_contact_change(
+        &state,
+        &caller,
+        &mut target,
+        Some(form.contact.as_str()),
+        client,
+        &headers,
+        &request_context,
+        "ui",
+    )
+    .await
+    {
+        if error.status.is_server_error() {
+            return Err(error.into());
+        }
+        return super::refuse_with_card(
+            &state,
+            "account/_contact.html",
+            contact_card_context(&csrf_token, &caller, Some(&form.contact)),
+            &error,
+        );
+    }
+
+    let mut context = contact_card_context(&csrf_token, &target, None);
+    let banner = match &target.contact_email {
+        Some(address) => super::flash("ok", format!("Security notifications now go to {address}.")),
+        None => super::flash(
+            "warn",
+            "No address is on file: security notifications cannot reach you.",
+        ),
+    };
+    context.insert("flash".to_string(), banner);
+    Ok(respond_fragment(&state, "account/_contact.html", context)?.into_response())
+}
+
 /// Everything `account/_password_card.html` reads. Unlike [`card_context`]
 /// there is no second-factor state to report, but the `csrf_token` rule is
 /// the same: a fragment rendered standalone cannot inherit `<body>`'s

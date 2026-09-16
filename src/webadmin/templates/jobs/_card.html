@@ -64,15 +64,15 @@
   {% endif %}
 
   {% if detail.status == "ready" or detail.status == "failed" %}
-    {#- Hidden from a viewer, who cannot use it. `user` is absent when this
-        renders as the fragment following a mutation, and the caller there has
-        already passed a write extractor, so undefined means "show". -#}
-    {% if not user is defined or user.role != "viewer" %}
+    {#- Hidden below the operator tier; see `pages::fragment_context`. -#}
+    {% if can_write %}
     <div class="panel">
       <h2>Danger zone</h2>
       <div class="actions">
-        <button class="danger"
-                hx-post="/ui/jobs/{{ detail.id }}/run"
+        {#- Not `danger`: run-now only advances work the queue already owes
+            (the CLI does not even confirm-gate it). Cancel beside it is the
+            one that abandons something. -#}
+        <button hx-post="/ui/jobs/{{ detail.id }}/run"
                 hx-target="#job-card" hx-swap="outerHTML"
                 hx-confirm="Run this job now? A failed job gets exactly one more attempt.">
           Run now

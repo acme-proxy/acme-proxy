@@ -161,6 +161,10 @@ impl AdminState {
     /// authentication details changed (ASVS V6.3.7). `by_self` is `false` when
     /// another operator made the change (an admin resetting a colleague's
     /// second factor). Call it only after the change has actually landed.
+    ///
+    /// `previous_recipient` is the address a `ContactAddress` change replaced,
+    /// and `None` for every other change.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn notify_credential_change(
         &self,
         user: &crate::sqlite::admin_user::AdminUser,
@@ -168,12 +172,14 @@ impl AdminState {
         by_self: bool,
         client: Option<std::net::IpAddr>,
         user_agent: Option<String>,
+        previous_recipient: Option<String>,
     ) {
         self.notify_security(crate::notify::NotifyEvent::AdminCredentialChanged(
             crate::notify::AdminCredentialChangeData {
                 profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
                 username: user.username.clone(),
                 recipient: user.contact_email.clone(),
+                previous_recipient,
                 change,
                 by_self,
                 client_ip: client.map(|ip| ip.to_string()),
@@ -208,6 +214,58 @@ impl AdminState {
         client: Option<std::net::IpAddr>,
         user_agent: Option<String>,
     ) {
+        self.record_change(
+            request_context,
+            actor,
+            user,
+            change,
+            by_self,
+            client,
+            user_agent,
+            None,
+        )
+        .await;
+    }
+
+    /// [`Self::record_credential_change`] for the notification address, which
+    /// is the one change that has to know what it replaced: the message goes
+    /// *there*. `user` is the operator as they are after the change.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn record_contact_change(
+        &self,
+        request_context: &crate::audit::RequestContext,
+        actor: &str,
+        user: &crate::sqlite::admin_user::AdminUser,
+        previous_recipient: Option<String>,
+        by_self: bool,
+        client: Option<std::net::IpAddr>,
+        user_agent: Option<String>,
+    ) {
+        self.record_change(
+            request_context,
+            actor,
+            user,
+            crate::notify::AdminCredentialChange::ContactAddress,
+            by_self,
+            client,
+            user_agent,
+            previous_recipient,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn record_change(
+        &self,
+        request_context: &crate::audit::RequestContext,
+        actor: &str,
+        user: &crate::sqlite::admin_user::AdminUser,
+        change: crate::notify::AdminCredentialChange,
+        by_self: bool,
+        client: Option<std::net::IpAddr>,
+        user_agent: Option<String>,
+        previous_recipient: Option<String>,
+    ) {
         use crate::notify::AdminCredentialChange as Change;
 
         self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
@@ -233,11 +291,24 @@ impl AdminState {
                     &user.username,
                 )
             }
+            Change::ContactAddress => crate::audit::admin::operator_contact_updated(
+                audit_actor,
+                ctx,
+                &user.username,
+                user.contact_email.is_some(),
+            ),
         })
         .await;
 
-        self.notify_credential_change(user, change, by_self, client, user_agent)
-            .await;
+        self.notify_credential_change(
+            user,
+            change,
+            by_self,
+            client,
+            user_agent,
+            previous_recipient,
+        )
+        .await;
     }
 }
 
@@ -339,6 +410,7 @@ pub fn build_admin_app_with_logins(
             post(handlers::regenerate_recovery_codes),
         )
         .route("/account/password", post(handlers::change_password))
+        .route("/account/contact", post(handlers::change_contact))
         .route("/account/sessions", get(handlers::list_own_sessions))
         .route(
             "/account/sessions/{id}/revoke",
@@ -365,6 +437,14 @@ pub fn build_admin_app_with_logins(
         .route(
             "/operators/{username}/totp/reset",
             post(handlers::reset_operator_totp),
+        )
+        .route(
+            "/operators/{username}/contact",
+            post(handlers::set_operator_contact),
+        )
+        .route(
+            "/operators/{username}/role",
+            post(handlers::set_operator_role),
         )
         .route(
             "/operators/{username}/sessions/{id}/revoke",

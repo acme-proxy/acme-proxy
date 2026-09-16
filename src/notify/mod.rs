@@ -332,16 +332,32 @@ pub enum AdminCredentialChange {
     SecondFactorEnabled,
     SecondFactorDisabled,
     RecoveryCodesRegenerated,
+    /// The address these notifications go to was set, replaced or cleared.
+    ///
+    /// The one change delivered to the address it *replaced* rather than the
+    /// current one ([`AdminCredentialChangeData::previous_recipient`]): whoever
+    /// changed it — say from a stolen session — controls the new address, and
+    /// it is the old one whose owner needs to hear that the alarms were
+    /// redirected. A first-ever address replaced nothing and so tells nobody.
+    ContactAddress,
 }
 
 /// Payload of [`NotifyEvent::AdminCredentialChanged`]: a web-admin operator's
-/// password or second factor was changed (ASVS V6.3.7).
+/// password, second factor or notification address was changed (ASVS V6.3.7).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminCredentialChangeData {
     /// Always [`ADMIN_DISPATCHER_KEY`] — see [`AdminSignInData::profile`].
     pub profile: String,
     pub username: String,
+    /// The operator's contact address *after* the change.
     pub recipient: Option<String>,
+    /// The address a [`AdminCredentialChange::ContactAddress`] change replaced,
+    /// which is where that one change is delivered. `None` for every other
+    /// change. `default`, so a job queued before the member existed still
+    /// parses, and omitted from the payload when absent, so the `custom`
+    /// backend's stdin is unchanged for the changes that never carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_recipient: Option<String>,
     pub change: AdminCredentialChange,
     /// `false` when another operator made the change (an admin resetting this
     /// operator's second factor), `true` when the operator changed their own.
@@ -466,6 +482,13 @@ impl NotifyEvent {
             | Self::ChallengeFailed(_)
             | Self::CertificatesExpiring(_) => None,
             Self::AdminSignIn(data) => data.recipient.as_deref(),
+            // A changed address is reported to the one it replaced — see
+            // `AdminCredentialChange::ContactAddress`.
+            Self::AdminCredentialChanged(data)
+                if data.change == AdminCredentialChange::ContactAddress =>
+            {
+                data.previous_recipient.as_deref()
+            }
             Self::AdminCredentialChanged(data) => data.recipient.as_deref(),
         }
     }
@@ -1183,6 +1206,7 @@ pub(crate) mod tests {
                 profile: "p".to_string(),
                 username: "alice".to_string(),
                 recipient: Some("alice@example.com".to_string()),
+                previous_recipient: None,
                 change: AdminCredentialChange::Password,
                 by_self: true,
                 client_ip: Some("203.0.113.5".to_string()),
@@ -1190,6 +1214,57 @@ pub(crate) mod tests {
                 at: 1_700_000_000,
             }),
         ]
+    }
+
+    /// A changed address is reported to the address it replaced, since whoever
+    /// made the change controls the new one; every other change still goes to
+    /// the operator's current address. And the member stays out of the payload
+    /// for the changes that never carry it.
+    #[test]
+    fn a_contact_change_is_delivered_to_the_address_it_replaced() {
+        let data = |change, previous: Option<&str>| {
+            NotifyEvent::AdminCredentialChanged(AdminCredentialChangeData {
+                profile: "p".to_string(),
+                username: "alice".to_string(),
+                recipient: Some("new@example.com".to_string()),
+                previous_recipient: previous.map(str::to_string),
+                change,
+                by_self: true,
+                client_ip: None,
+                user_agent: None,
+                at: 1_700_000_000,
+            })
+        };
+
+        let replaced = data(
+            AdminCredentialChange::ContactAddress,
+            Some("old@example.com"),
+        );
+        assert_eq!(replaced.recipient(), Some("old@example.com"));
+        assert_eq!(replaced.payload()["previous_recipient"], "old@example.com");
+
+        // A first-ever address replaced nothing, so nobody is told.
+        let first = data(AdminCredentialChange::ContactAddress, None);
+        assert_eq!(first.recipient(), None);
+
+        let password = data(AdminCredentialChange::Password, None);
+        assert_eq!(password.recipient(), Some("new@example.com"));
+        assert!(password.payload().get("previous_recipient").is_none());
+
+        // A job queued before the member existed still parses.
+        let old: NotifyEvent = serde_json::from_value(serde_json::json!({
+            "hook": "admin_credential_changed",
+            "profile": "p",
+            "username": "alice",
+            "recipient": "alice@example.com",
+            "change": "password",
+            "by_self": true,
+            "client_ip": null,
+            "user_agent": null,
+            "at": 1
+        }))
+        .unwrap();
+        assert_eq!(old.recipient(), Some("alice@example.com"));
     }
 
     /// Every variant answers every accessor. These are wide `match`es over an
