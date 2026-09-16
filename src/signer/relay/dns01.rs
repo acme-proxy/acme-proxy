@@ -51,9 +51,12 @@ pub trait DnsUpdater: Send + Sync {
     /// values, and both must be present at once.
     async fn upsert_txt(&self, name: &str, value: &str) -> Result<(), String>;
 
-    /// Retracts a previously published record. Best-effort: the relay logs a
-    /// failure and carries on, because a leftover challenge record is untidy
-    /// rather than harmful.
+    /// Retracts a previously published record: only `value`, so any other value
+    /// at `name` — another authorization's, or another order's for the same
+    /// name — survives. Retracting a value that is not there is not an error.
+    ///
+    /// Best-effort: the relay logs a failure and carries on, because a leftover
+    /// challenge record is untidy rather than harmful.
     async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String>;
 }
 
@@ -144,6 +147,10 @@ impl Rfc2136Updater {
     fn txt_record(&self, name: &str, value: &str) -> Result<Record, String> {
         let name =
             Name::from_utf8(name).map_err(|error| format!("{name} is not a DNS name: {error}"))?;
+        // The server would answer NOTZONE anyway; refusing here says why.
+        if !self.zone.zone_of(&name) {
+            return Err(format!("{name} is outside the zone {}", self.zone));
+        }
         let mut record = Record::from_rdata(
             name,
             self.ttl,
@@ -187,6 +194,10 @@ impl Rfc2136Updater {
     /// Sends over UDP, retrying on TCP when the answer is truncated — the
     /// ordinary DNS fallback, and necessary because a TSIG-signed update can
     /// exceed 512 bytes.
+    ///
+    /// The UDP socket is connected, so the kernel drops datagrams from any
+    /// address but the server's: otherwise anyone who guessed the 16-bit id
+    /// could answer for it.
     async fn exchange(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         let bind: SocketAddr = if self.server.is_ipv4() {
             "0.0.0.0:0".parse().expect("a valid bind address")
@@ -198,7 +209,11 @@ impl Rfc2136Updater {
             .await
             .map_err(|error| format!("binding a UDP socket failed: {error}"))?;
         socket
-            .send_to(request, self.server)
+            .connect(self.server)
+            .await
+            .map_err(|error| format!("connecting to {} failed: {error}", self.server))?;
+        socket
+            .send(request)
             .await
             .map_err(|error| format!("sending to {} failed: {error}", self.server))?;
 
@@ -273,7 +288,13 @@ impl DnsUpdater for Rfc2136Updater {
 
     async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String> {
         let record = self.txt_record(name, value)?;
-        let message = update_message::delete_rrset(record, self.zone.clone(), true);
+        let mut rrset = RecordSet::new(record.name.clone(), RecordType::TXT, 0);
+        rrset.insert(record, 0);
+
+        // By rdata (RFC 2136 §2.5.4), not the whole RRset (§2.5.2): the name is
+        // shared by every value `upsert_txt` appends, and deleting the set
+        // would pull a concurrent order's record out from under its CA.
+        let message = update_message::delete_by_rdata(rrset, self.zone.clone(), true);
         self.send(message).await
     }
 }
@@ -405,6 +426,24 @@ mod tests {
     fn a_malformed_record_name_is_rejected() {
         let updater = Rfc2136Updater::from_config(&config()).unwrap();
         assert!(updater.txt_record("not a dns name", "value").is_err());
+    }
+
+    /// The zone bounds what the key may write: a name elsewhere is refused
+    /// before the socket, while the apex and a differently-cased name inside
+    /// are still the zone's.
+    #[test]
+    fn a_name_outside_the_zone_is_rejected() {
+        let updater = Rfc2136Updater::from_config(&config()).unwrap();
+        let error = updater
+            .txt_record("_acme-challenge.example.net.", "value")
+            .unwrap_err();
+        assert!(error.contains("outside the zone"), "{error}");
+        assert!(updater.txt_record("example.org.", "value").is_ok());
+        assert!(
+            updater
+                .txt_record("_acme-challenge.WWW.Example.ORG.", "value")
+                .is_ok()
+        );
     }
 
     /// A loopback RFC 2136 responder: one UDP socket and one TCP listener on
@@ -593,9 +632,11 @@ mod tests {
     /// indefinitely — the relay has its own budget to respect.
     #[tokio::test]
     async fn an_unanswered_update_times_out() {
-        // Port 1 on loopback: nothing listens, and UDP gives no refusal.
+        // A bound socket that never reads: an unbound port would draw an ICMP
+        // refusal, which the connected socket reports at once.
+        let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let mut cfg = config();
-        cfg.server = "127.0.0.1:1".to_string();
+        cfg.server = silent.local_addr().unwrap().to_string();
         let mut updater = Rfc2136Updater::from_config(&cfg).unwrap();
         updater.timeout = Duration::from_millis(100);
 
@@ -607,5 +648,97 @@ mod tests {
             error.contains("timed out") || error.contains("failed"),
             "{error}"
         );
+    }
+
+    /// Receives one update on `socket`, answers it NOERROR from the same
+    /// socket, and hands back the decoded request.
+    async fn answer_one(socket: &UdpSocket) -> Message {
+        use hickory_proto::op::{MessageType, OpCode, ResponseCode};
+
+        let mut buffer = vec![0u8; 4096];
+        let (read, peer) = socket.recv_from(&mut buffer).await.unwrap();
+        let request = Message::from_bytes(&buffer[..read]).unwrap();
+
+        let mut response = Message::response(request.id, OpCode::Update);
+        response.metadata.message_type = MessageType::Response;
+        response.metadata.response_code = ResponseCode::NoError;
+        socket
+            .send_to(&response.to_bytes().unwrap(), peer)
+            .await
+            .unwrap();
+        request
+    }
+
+    /// The update section on the wire, not just the arguments: an append is
+    /// CLASS IN with the challenge TTL, and a retraction names its value with
+    /// CLASS NONE and TTL 0 (RFC 2136 §2.5.4) — never CLASS ANY, which would
+    /// delete every value at the name.
+    #[tokio::test]
+    async fn a_retraction_removes_only_its_value() {
+        use hickory_proto::op::OpCode;
+
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let updater = updater_for(socket.local_addr().unwrap());
+        let name = Name::from_utf8("_acme-challenge.example.org.").unwrap();
+        let txt = RData::TXT(TXT::new(vec!["digest-value".to_string()]));
+
+        for (retract, class, ttl) in [
+            (false, DNSClass::IN, CHALLENGE_TTL),
+            (true, DNSClass::NONE, 0),
+        ] {
+            let (request, sent) = tokio::join!(answer_one(&socket), async {
+                if retract {
+                    updater.delete_txt(&name.to_utf8(), "digest-value").await
+                } else {
+                    updater.upsert_txt(&name.to_utf8(), "digest-value").await
+                }
+            });
+            sent.unwrap();
+
+            assert_eq!(request.op_code, OpCode::Update);
+            assert_eq!(request.queries.len(), 1);
+            assert_eq!(request.queries[0].name(), &updater.zone);
+            assert_eq!(request.authorities.len(), 1, "one update record");
+            let record = &request.authorities[0];
+            assert_eq!(record.name, name);
+            assert_eq!(record.dns_class, class);
+            assert_eq!(record.ttl, ttl);
+            assert_eq!(record.data, txt);
+        }
+    }
+
+    /// A well-formed answer with the right id, but from another address, is not
+    /// the server's: the connected socket never delivers it.
+    #[tokio::test]
+    async fn a_response_from_another_address_is_ignored() {
+        use hickory_proto::op::{MessageType, OpCode, ResponseCode};
+
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut updater = updater_for(server.local_addr().unwrap());
+        updater.timeout = Duration::from_millis(200);
+
+        let spoof = async {
+            let mut buffer = vec![0u8; 4096];
+            let (read, peer) = server.recv_from(&mut buffer).await.unwrap();
+            let request = Message::from_bytes(&buffer[..read]).unwrap();
+
+            let mut response = Message::response(request.id, OpCode::Update);
+            response.metadata.message_type = MessageType::Response;
+            response.metadata.response_code = ResponseCode::NoError;
+            let other = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            other
+                .send_to(&response.to_bytes().unwrap(), peer)
+                .await
+                .unwrap();
+            // Outlive the updater's budget so the socket is not dropped early.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        };
+        let (_, result) = tokio::join!(
+            spoof,
+            updater.upsert_txt("_acme-challenge.example.org.", "digest-value")
+        );
+
+        let error = result.expect_err("an answer from elsewhere is not accepted");
+        assert!(error.contains("timed out"), "{error}");
     }
 }

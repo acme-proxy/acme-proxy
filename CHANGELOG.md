@@ -82,6 +82,12 @@ migrated configuration before restarting.
   than from lists written into the templates, so a status cannot exist without
   being filterable.
 - *Run now* on a job is no longer styled as a destructive action.
+- **The `dns01` relay's cleanup deleted every TXT value at the challenge
+  name**, not only its own, so a concurrent order for the same name lost its
+  record before its CA looked. The record is now deleted by value (RFC 2136
+  §2.5.4), and a challenge name outside `rfc2136.zone` is refused before any
+  update is sent.
+- The RFC 2136 updater accepts a UDP answer only from the configured `server`.
 
 ## [0.5.0] — 2026-09-08
 

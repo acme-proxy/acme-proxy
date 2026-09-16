@@ -284,9 +284,15 @@ environment variable over a file on disk.
 The TSIG algorithm, e.g. `hmac-sha256`. Must match the key as your nameserver
 defines it.
 
+Records are added and removed by value, so other TXT values at the same name —
+another order's for that name, or ones this server did not write — are left
+alone. The challenge name must lie inside `zone`; one outside it is refused
+before anything is sent.
+
 Updates are sent over UDP and retried over TCP when the response is truncated —
 a TSIG-signed update readily exceeds 512 bytes, so the TCP path is a normal
 occurrence rather than an edge case.
+Only a UDP answer from `server` itself is accepted.
 
 ### `[signer.relay.eab]`
 
