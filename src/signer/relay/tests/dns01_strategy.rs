@@ -7,6 +7,10 @@ use crate::sqlite::status::OrderStatus;
 struct StubUpdater {
     published: std::sync::Mutex<Vec<(String, String)>>,
     deleted: std::sync::Mutex<Vec<(String, String)>>,
+    /// When the last publish and the last retraction happened, so a test can
+    /// measure what the relay did between the two.
+    published_at: std::sync::Mutex<Option<std::time::Instant>>,
+    deleted_at: std::sync::Mutex<Option<std::time::Instant>>,
     fail: bool,
 }
 
@@ -20,6 +24,7 @@ impl dns01::DnsUpdater for StubUpdater {
             .lock()
             .unwrap()
             .push((name.to_string(), value.to_string()));
+        *self.published_at.lock().unwrap() = Some(std::time::Instant::now());
         Ok(())
     }
     async fn delete_txt(&self, name: &str, value: &str) -> Result<(), String> {
@@ -27,6 +32,7 @@ impl dns01::DnsUpdater for StubUpdater {
             .lock()
             .unwrap()
             .push((name.to_string(), value.to_string()));
+        *self.deleted_at.lock().unwrap() = Some(std::time::Instant::now());
         Ok(())
     }
 }
@@ -216,6 +222,110 @@ async fn dns01_publishes_triggers_and_cleans_up() {
 
     // And the record must not be left behind.
     assert_eq!(updater.deleted.lock().unwrap().clone(), published);
+}
+
+/// Replaces the configured propagation wait on an already-built signer, the
+/// `with_updater` way — a delay short enough for a test, which configuration
+/// cannot express in whole seconds.
+fn with_propagation(signer: RelaySigner, propagation: propagation::Propagation) -> RelaySigner {
+    let inner = Arc::try_unwrap(signer.0).unwrap_or_else(|_| panic!("sole owner"));
+    RelaySigner(Arc::new(Inner {
+        dns01_propagation: propagation,
+        ..inner
+    }))
+}
+
+/// A configured delay sits between publishing the record and the trigger.
+///
+/// Measured from publish to retraction: cleanup runs only once the triggered
+/// challenge has resolved, so a gap at least as long as the delay places the
+/// wait before the trigger finished — and the code orders it before the
+/// trigger started. Without the wait the gap is a few loopback round trips.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns01_waits_the_configured_delay_before_triggering() {
+    const DELAY: Duration = Duration::from_millis(400);
+
+    let upstream = testsrv::start(Script {
+        chain: real_chain().await,
+        pose_challenge: true,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let updater = Arc::new(StubUpdater::default());
+    let queue = test_queue(db.clone());
+    let signer = with_propagation(
+        with_updater(
+            RelaySigner::from_config(
+                &config(&upstream, &dir),
+                &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+                &crate::signer::CarriedState::new(),
+            )
+            .unwrap(),
+            updater.clone(),
+        ),
+        propagation::Propagation::Delay(DELAY),
+    );
+    let _runner = TestRunner::start(queue, &signer);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            order.id.to_string().as_str(),
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
+
+    assert_eq!(upstream.challenge_triggered(), 1);
+    let published_at = updater.published_at.lock().unwrap().expect("published");
+    let deleted_at = updater.deleted_at.lock().unwrap().expect("retracted");
+    assert!(
+        deleted_at.duration_since(published_at) >= DELAY,
+        "the challenge was answered {:?} after publishing, inside the {DELAY:?} delay",
+        deleted_at.duration_since(published_at)
+    );
+}
+
+/// A propagation setting that cannot work stops the server, before any
+/// round trip to the upstream: an unknown mode, and a delay the attempt budget
+/// (`poll_timeout_secs`, the job's lease) could never let finish.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unworkable_propagation_setting_is_a_startup_error() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+
+    for (mode, delay_secs, expected) in [
+        ("sometimes", 30, "propagation.mode: sometimes"),
+        (
+            "delay",
+            5,
+            "must be less than signer.relay.poll_timeout_secs",
+        ),
+    ] {
+        let mut cfg = config(&upstream, &dir);
+        cfg.challenge_strategy = "dns01".to_string();
+        cfg.dns01.propagation.mode = mode.to_string();
+        cfg.dns01.propagation.delay_secs = delay_secs;
+
+        let error = startup_error(RelaySigner::from_config(
+            &cfg,
+            &relay_parts(
+                database().await,
+                no_notifiers(),
+                test_queue(database().await),
+            ),
+            &crate::signer::CarriedState::new(),
+        ));
+        assert!(
+            error.contains(expected),
+            "expected {expected:?} in: {error}"
+        );
+    }
 }
 
 /// The record must be retracted even when validation fails, so a failed

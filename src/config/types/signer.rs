@@ -151,6 +151,7 @@ pub struct RelayEabConfig {
 pub struct Dns01Config {
     pub provider: String,
     pub rfc2136: Rfc2136Config,
+    pub propagation: Dns01PropagationConfig,
 }
 
 impl Default for Dns01Config {
@@ -158,6 +159,30 @@ impl Default for Dns01Config {
         Self {
             provider: "rfc2136".to_string(),
             rfc2136: Rfc2136Config::default(),
+            propagation: Dns01PropagationConfig::default(),
+        }
+    }
+}
+/// What the `dns01` strategy waits for between publishing a record and asking
+/// the upstream to validate it.
+///
+/// Validated (against `poll_timeout_secs`, the attempt's whole budget) in
+/// `RelaySigner::from_config`, and only when `dns01` is the strategy in force.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Dns01PropagationConfig {
+    /// `none` (trigger right after the update) or `delay`.
+    pub mode: String,
+    /// Under `delay`: seconds between the update and the trigger. Ignored
+    /// under `none`.
+    pub delay_secs: u64,
+}
+
+impl Default for Dns01PropagationConfig {
+    fn default() -> Self {
+        Self {
+            mode: "none".to_string(),
+            delay_secs: 30,
         }
     }
 }

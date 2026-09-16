@@ -69,6 +69,11 @@ migrated configuration before restarting.
 - Account and order cards link to their rows in the audit trail.
 - Accessibility: a skip link, `aria-current` on the active navigation entry, and
   banners announced to screen readers. The navigation is grouped.
+- **The `dns01` relay can wait before the upstream validates**:
+  `[signer.relay.dns01.propagation]` with `mode = "delay"` sleeps `delay_secs`
+  between publishing the TXT record and triggering the challenge, for a DNS
+  provider that accepts an update before serving it. The default, `none`, keeps
+  today's behaviour.
 
 ### Fixed
 

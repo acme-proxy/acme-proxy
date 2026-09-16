@@ -301,6 +301,35 @@ explained: `BADKEY` means the server does not know `tsig_key_name` under
 `tsig_algorithm`, `BADSIG` that `tsig_key_secret` does not match, and `BADTIME`
 that the two clocks disagree.
 
+### `[signer.relay.dns01.propagation]`
+
+What the `dns01` strategy waits for between publishing the TXT record and
+asking the upstream to validate it. The upstream looks once: a record it cannot
+see yet makes the authorization `invalid` for good, which fails the client's
+order and, at a public CA, counts against its failed-validation limit.
+
+**`mode`** (`String`) — *Default: `"none"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE`*
+
+`none` triggers the challenge right after the update succeeds, which is right
+when the update server is itself what the CA asks. `delay` sleeps `delay_secs`
+first, for a provider that accepts an update before serving it (a DNS API behind
+an RFC 2136 bridge) or secondaries that lag their primary. Any other value is a
+startup error.
+
+**`delay_secs`** (`u64`) — *Default: `30` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS`*
+
+Seconds to wait under `delay`; ignored under `none`. Zero is refused (use
+`none`), and so is a value not less than `poll_timeout_secs`, which bounds the
+whole relay attempt. The delay runs once for **each name** in the order, so a
+multi-name order needs `poll_timeout_secs` above the delay times the number of
+names plus the time the upstream takes.
+
+The wait is a fixed delay rather than a poll of a public resolver on purpose. A
+CA resolves through the zone's authoritative nameservers itself, while a
+recursive resolver answers from whichever one it reached and caches a "no such
+record" from a lagging one for the zone's negative TTL — and never sees an
+internal or split-horizon zone at all.
+
 ### `[signer.relay.eab]`
 
 An upstream External Account Binding credential supplied in configuration

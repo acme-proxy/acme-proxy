@@ -54,6 +54,7 @@ pub mod dns01;
 pub mod eab;
 pub mod flow;
 pub mod http01;
+mod propagation;
 #[cfg(test)]
 pub mod testsrv;
 pub mod wire;
@@ -130,6 +131,11 @@ struct Inner {
     http01_tokens: Option<Arc<http01::MemoryTokenStore>>,
     database: Arc<Database>,
     strategy: ChallengeStrategy,
+    /// How long `dns01` waits between publishing a record and triggering the
+    /// challenge; [`propagation::Propagation::None`] under every other strategy.
+    /// A field beside the strategy rather than inside `ChallengeStrategy::Dns01`,
+    /// so a test swapping the updater keeps whatever wait was configured.
+    dns01_propagation: propagation::Propagation,
     poll: PollConfig,
     /// The whole `profile name -> dispatcher` map, not merely the profiles this
     /// backend relays for: a cheap clone either way, and it sidesteps keeping a
@@ -203,6 +209,15 @@ impl RelaySigner {
         let poll = PollConfig {
             interval: Duration::from_millis(cfg.poll_interval_ms),
             timeout: Duration::from_secs(cfg.poll_timeout_secs),
+        };
+
+        // Before provisioning, which may reach the upstream: a wait that cannot
+        // fit the attempt budget is a configuration error, and should say so
+        // without a network round trip first.
+        let dns01_propagation = if cfg.challenge_strategy == "dns01" {
+            propagation::Propagation::from_config(&cfg.dns01.propagation, poll.timeout)?
+        } else {
+            propagation::Propagation::None
         };
 
         // Construction is synchronous (see `signer::from_config`) but the
@@ -301,6 +316,7 @@ impl RelaySigner {
             http01_tokens,
             database: parts.database.clone(),
             strategy,
+            dns01_propagation,
             poll,
             notifiers: parts.notifiers.clone(),
             metrics: parts.metrics.clone(),

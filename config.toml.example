@@ -46,6 +46,7 @@
 #     [signer.relay.eab]                upstream EAB bootstrap credential
 #     [signer.relay.dns01]              solving the upstream's DNS-01
 #     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
+#     [signer.relay.dns01.propagation]  waiting before the upstream looks
 #     [signer.custom]                   shelling out to a script
 #   [challenge]                [per-profile]  how control of a name is proven
 #     [challenge.http_01]               (there is no [challenge.dns_01])
@@ -563,6 +564,21 @@ tsig_key_secret = ""                # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__
 # hmac-sha256 (default), hmac-sha384 or hmac-sha512. HMAC-MD5 is deliberately
 # not offered.
 tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM
+
+[signer.relay.dns01.propagation]
+# What to wait for between publishing the record and asking the upstream to
+# validate it. The upstream looks once: a record it cannot see yet makes the
+# authorization invalid for good, and the client's order fails with it.
+#   "none"  — trigger right after the update (the default). Right when the
+#             update server is itself what the CA asks.
+#   "delay" — sleep delay_secs first. For a provider that accepts an update
+#             before serving it (an API behind an RFC 2136 bridge), or
+#             secondaries that lag the primary.
+mode = "none"                       # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__MODE
+# Only read under mode = "delay". Must be less than poll_timeout_secs, which
+# bounds the whole attempt — and the delay runs once PER NAME in the order, so
+# raise poll_timeout_secs for a multi-name order.
+delay_secs = 30                     # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION__DELAY_SECS
 
 [signer.custom]
 # Only read when backend = "custom" (above). Delegates issuance and

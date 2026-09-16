@@ -629,6 +629,10 @@ async fn answer_dns01(
             RelayFailure::Retryable(format!("publishing {fqdn} failed: {error}"))
         })?;
 
+        // Before the trigger, never after: once the upstream looks and finds
+        // nothing, the authorization is `invalid` for good (see
+        // `trigger_and_await`), which no retry of this job can undo.
+        inner.dns01_propagation.wait(&fqdn).await;
         let triggered = trigger_and_await(inner, &challenge.url, authz_url).await;
 
         // Cleanup is best-effort and happens whether or not validation passed:
