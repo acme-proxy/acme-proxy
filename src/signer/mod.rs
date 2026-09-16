@@ -377,6 +377,8 @@ pub trait CrlPruner: Send + Sync {
     /// Drops entries whose certificates have expired and re-signs the CRL if
     /// any went, returning how many. Must be cheap and write nothing when
     /// there was nothing to drop — it runs daily on every CA in the process.
+    /// (`local_ca` also re-signs when another process wrote revocations this
+    /// one had not seen, which is the one other thing that changes its CRL.)
     async fn prune_expired(&self) -> Result<usize, SignerError>;
 }
 

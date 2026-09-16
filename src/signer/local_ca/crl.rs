@@ -4,8 +4,23 @@
 //! `Issuer<'static, CaSigningKey>` they sign with. The durable form of what
 //! this CA has revoked is a JSON sidecar next to `crl_path` — never the CRL's
 //! own DER round-tripped back, which would make a parser bug into data loss.
+//!
+//! **More than one process writes these files.** `acme-proxy order revoke`
+//! builds its own `LocalCa` over the same paths a running `serve` holds, each
+//! with its own in-memory ledger. Every write therefore happens under an
+//! exclusive lock on a third file beside the other two, and re-reads the
+//! sidecar first, merging what the other instance persisted into its own copy
+//! before changing anything. Without that, the server's next revocation or
+//! prune rewrote both files from memory: the CLI's serial silently left the
+//! CRL, and the server published a `crl_number` *lower* than the CLI's.
+//!
+//! What this does not fix is the CRL a running server *serves*, which is
+//! still its in-memory copy until its own next write — the next revocation,
+//! the daily prune, or a restart. Moving the ledger into the database is what
+//! closes that.
 
-use std::fs;
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,9 +42,29 @@ use crate::signer::{CrlPruner, SignerError};
 pub(super) struct CrlPaths {
     pub(super) crl_path: PathBuf,
     pub(super) revoked_path: PathBuf,
+    /// Held exclusively across every read-merge-write of the other two.
+    ///
+    /// A file of its own rather than a lock on the sidecar: `write_atomic`
+    /// renames a new inode over `revoked_path`, so a lock taken on the sidecar
+    /// guards an inode that is gone after the first write, and the next
+    /// process opens the replacement and locks it without waiting. Nothing is
+    /// ever written to this one, so it is never replaced.
+    pub(super) lock_path: PathBuf,
 }
 
 impl CrlPaths {
+    /// The three files one CA's revocation state spans, all derived from
+    /// `crl_path`: the CRL (`ca.crl`), its ledger (`ca.json`) and the lock
+    /// serialising writers of both (`ca.json.lock`).
+    pub(super) fn beside(crl_path: &str) -> Self {
+        let crl_path = PathBuf::from(crl_path);
+        Self {
+            revoked_path: crl_path.with_extension("json"),
+            lock_path: crl_path.with_extension("json.lock"),
+            crl_path,
+        }
+    }
+
     /// The [`CarriedState`](crate::signer::CarriedState) key this CA's ledger
     /// lives under.
     ///
@@ -71,15 +106,15 @@ impl RevokedLedger {
         self.crl_number += 1;
         self.crl_number
     }
+}
 
-    /// The bytes to persist beside the CRL, for the current state.
-    pub(super) fn sidecar_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&SidecarRef {
-            version: SIDECAR_VERSION,
-            crl_number: self.crl_number,
-            entries: &self.entries,
-        })
-    }
+/// The bytes to persist beside the CRL, for `entries` numbered `crl_number`.
+fn sidecar_json(entries: &[RevokedEntry], crl_number: u64) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&SidecarRef {
+        version: SIDECAR_VERSION,
+        crl_number,
+        entries,
+    })
 }
 
 /// The ledger, the key that signs CRLs over it, and where both are persisted —
@@ -112,63 +147,215 @@ impl LedgerStore {
         }
     }
 
-    /// Signs a fresh CRL over `ledger`'s current entries and persists both it
-    /// and the sidecar, then updates the served copy.
+    /// Applies `mutate` to the ledger as persisted *now*, and re-signs and
+    /// persists the CRL if anything changed. Returns what `mutate` returned —
+    /// the number of entries it added or removed.
     ///
-    /// Extracted from `LocalCa::revoke`, which was the only caller until the
-    /// periodic prune needed the identical sequence minus the append. The
-    /// caller holds the ledger's `tokio::sync::Mutex` guard across this, which
-    /// is what makes the whole read-modify-write-persist one critical section.
-    pub(super) async fn rebuild_and_persist(
+    /// One pass, under the lock file for its whole length:
+    ///
+    /// 1. re-read the sidecar and [`merge`] it into a copy of this instance's
+    ///    entries, taking the larger `crl_number` of the two;
+    /// 2. run `mutate` over the merged copy;
+    /// 3. if neither step changed anything, stop — no signature, no write;
+    /// 4. otherwise bump the number, sign, write the sidecar, write the CRL.
+    ///
+    /// **The in-memory ledger is replaced only once all of that succeeded.**
+    /// A failure leaves it exactly as it was, so there is nothing to roll back
+    /// — the way this used to be written pushed a revocation into memory before
+    /// persisting it, and a failed persist then made the retry an in-memory
+    /// "already revoked" that never reached the disk.
+    ///
+    /// The caller holds the ledger's `tokio::sync::Mutex` guard across this,
+    /// which serialises this instance's own callers; the lock file serialises
+    /// every other instance, in this process or another (a `flock` belongs to
+    /// the open file, so two opens in one process exclude each other too).
+    /// Always taken in that order.
+    pub(super) async fn update<F>(
         &self,
         ledger: &mut RevokedLedger,
-    ) -> Result<(), SignerError> {
-        let number = ledger.next_crl_number();
-        let ledger_json = ledger
-            .sidecar_json()
-            .map_err(|error| SignerError::Internal(error.to_string()))?;
+        mutate: F,
+    ) -> Result<usize, SignerError>
+    where
+        F: FnOnce(&mut Vec<RevokedEntry>) -> usize + Send + 'static,
+    {
         // Cloned rather than borrowed: the closure below outlives this scope as
         // far as the compiler is concerned, and a ledger is a handful of short
         // strings — nothing next to signing a CRL.
-        let entries = ledger.entries.clone();
+        let mut entries = ledger.entries.clone();
+        let mut crl_number = ledger.crl_number;
         let issuer = self.issuer.clone();
         let paths = self.paths.clone();
 
-        // Signing the CRL and the two file writes, all off the runtime worker.
-        //
-        // The writes were already here; `build_crl` was not, and it is the part
-        // that signs — with a PKCS#11 key that is a token round trip, which has
-        // no business happening on a thread expected to poll every other
-        // connection meanwhile. The file writes are short, but they are still
-        // blocking syscalls.
-        let crl_der = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-            let crl = build_crl(&entries, number, &issuer)?;
-            let crl_der = crl.der().to_vec();
+        // The lock, the read, signing the CRL and the two file writes, all off
+        // the runtime worker. Signing with a PKCS#11 key is a token round trip,
+        // and waiting on the lock can take as long as another process's own
+        // signature; neither has any business on a thread expected to poll
+        // every other connection meanwhile.
+        let pass = tokio::task::spawn_blocking(move || -> anyhow::Result<Pass> {
+            // Released when this closure returns, i.e. after both writes.
+            let _lock = paths
+                .as_ref()
+                .map(|paths| lock_ledger(&paths.lock_path))
+                .transpose()?;
 
+            let merged = match &paths {
+                Some(paths) if paths.revoked_path.exists() => {
+                    let (persisted, persisted_number) =
+                        load_sidecar(&paths.revoked_path).map_err(|error| {
+                            anyhow::anyhow!(
+                                "reading the ledger `{}` before writing it: {error}",
+                                paths.revoked_path.display()
+                            )
+                        })?;
+                    crl_number = crl_number.max(persisted_number);
+                    merge(&mut entries, persisted)
+                }
+                _ => 0,
+            };
+            let changed = mutate(&mut entries);
+            if merged == 0 && changed == 0 {
+                return Ok(Pass {
+                    entries,
+                    crl_number,
+                    crl_der: None,
+                    merged,
+                    changed,
+                });
+            }
+
+            crl_number += 1;
+            let crl = build_crl(&entries, crl_number, &issuer)?;
             if let Some(paths) = &paths {
-                let crl_pem = crl.pem()?;
                 // The ledger before the CRL: the ledger is the authoritative
                 // record and the CRL is derived from it at every startup, so a
                 // crash between the two loses nothing.
                 //
                 // `0600` on the ledger — it decides what the CRL says, and it
                 // is not public material the way the CRL itself is.
+                let ledger_json = sidecar_json(&entries, crl_number)?;
                 crate::pemfile::write_atomic(&paths.revoked_path, ledger_json.as_bytes(), 0o600)?;
-                crate::pemfile::write_atomic(&paths.crl_path, crl_pem.as_bytes(), 0o644)?;
+                crate::pemfile::write_atomic(&paths.crl_path, crl.pem()?.as_bytes(), 0o644)?;
             }
-            Ok(crl_der)
+            Ok(Pass {
+                entries,
+                crl_number,
+                crl_der: Some(crl.der().to_vec()),
+                merged,
+                changed,
+            })
         })
         .await
         .map_err(|error| SignerError::Internal(format!("revocation persist panicked: {error}")))?
         .map_err(|error| SignerError::Internal(error.to_string()))?;
 
-        // Only after the write succeeded: a revocation this process believes in
-        // but never persisted would vanish at the next restart, and the caller
-        // reporting an error while having already updated the served CRL is the
-        // more confusing half of that.
-        ledger.crl_der = crl_der;
-        Ok(())
+        ledger.entries = pass.entries;
+        ledger.crl_number = pass.crl_number;
+        if let Some(crl_der) = pass.crl_der {
+            ledger.crl_der = crl_der;
+        }
+        if pass.merged > 0 {
+            info!(
+                event = "local_ca_ledger_merged",
+                outcome = "success",
+                rows_merged = pass.merged,
+                ledger = %self.state_key(),
+                "took in revocations another process wrote to this CA's ledger"
+            );
+        }
+        Ok(pass.changed)
     }
+}
+
+/// What one [`LedgerStore::update`] pass leaves behind, carried out of the
+/// blocking task.
+struct Pass {
+    entries: Vec<RevokedEntry>,
+    crl_number: u64,
+    /// `None` when nothing changed and so nothing was signed.
+    crl_der: Option<Vec<u8>>,
+    merged: usize,
+    changed: usize,
+}
+
+/// Opens `path` and takes an exclusive lock on it, blocking until any other
+/// holder lets go. The lock lasts as long as the returned `File`.
+///
+/// An advisory `flock`: every writer of the ledger goes through here, and the
+/// kernel releases it when the descriptor closes — including when a process
+/// holding it dies, so a crashed `order revoke` cannot wedge the server. It
+/// serialises processes on **one host**; on a network filesystem it may not
+/// hold at all.
+///
+/// Refuses anything at `path` that is not a regular file, the caution
+/// `pemfile::write_atomic` takes and for its reason: an open that follows a
+/// planted symlink creates a file wherever the link points.
+fn lock_ledger(path: &Path) -> anyhow::Result<File> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            anyhow::bail!(
+                "the ledger lock `{}` exists and is not a regular file",
+                path.display()
+            );
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            anyhow::bail!("the ledger lock `{}`: {error}", path.display());
+        }
+        _ => {}
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).map_err(|error| {
+        anyhow::anyhow!("opening the ledger lock `{}`: {error}", path.display())
+    })?;
+    file.lock()
+        .map_err(|error| anyhow::anyhow!("locking `{}`: {error}", path.display()))?;
+    Ok(file)
+}
+
+/// Folds entries another instance persisted into `entries`, returning how many
+/// of `entries` that added or changed.
+///
+/// A **union** by serial, never a replacement: nothing but a prune ever takes
+/// an entry out, and a prune runs after this, over the merged list — so an
+/// entry one instance pruned and another still holds comes back, listed a
+/// little longer than it had to be, which is the safe direction. Where both
+/// sides hold a serial they describe one certificate, so the first revocation
+/// is the one kept (its time and its reason) and a known expiry fills an
+/// unknown one.
+pub(super) fn merge(entries: &mut Vec<RevokedEntry>, persisted: Vec<RevokedEntry>) -> usize {
+    let mut position: HashMap<String, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.serial_hex.clone(), index))
+        .collect();
+    let mut changed = 0;
+    for theirs in persisted {
+        let Some(&index) = position.get(&theirs.serial_hex) else {
+            position.insert(theirs.serial_hex.clone(), entries.len());
+            entries.push(theirs);
+            changed += 1;
+            continue;
+        };
+        let ours = &mut entries[index];
+        let mut touched = false;
+        if theirs.revoked_at < ours.revoked_at {
+            ours.revoked_at = theirs.revoked_at;
+            ours.reason = theirs.reason;
+            touched = true;
+        }
+        if ours.not_after.is_none() && theirs.not_after.is_some() {
+            ours.not_after = theirs.not_after;
+            touched = true;
+        }
+        changed += usize::from(touched);
+    }
+    changed
 }
 
 #[async_trait]
@@ -183,28 +370,24 @@ impl CrlPruner for LedgerStore {
     /// Drops expired entries and re-signs the CRL if any went. See
     /// [`prune_expired`] for which entries go.
     ///
-    /// **Returns early when nothing was pruned**, which is the common case and
-    /// is why it is worth checking: rebuilding regardless would advance
-    /// `crl_number` and rewrite two files every single day on a CA that has
-    /// revoked nothing.
+    /// **Signs and writes nothing when nothing was pruned**, which is the
+    /// common case and is why it is worth checking: rebuilding regardless would
+    /// advance `crl_number` and rewrite two files every single day on a CA that
+    /// has revoked nothing. The one exception is a sidecar holding revocations
+    /// this instance has not seen — another process's `order revoke` — which
+    /// this pass takes in and re-signs over, so the served CRL is at most a day
+    /// behind a revocation made from the command line.
+    ///
+    /// A failed persist leaves the entries in memory untouched, since
+    /// [`LedgerStore::update`] replaces them only on success: *fewer*
+    /// revocations in memory than in the sidecar and the served CRL would be
+    /// the unsafe direction of that disagreement.
     async fn prune_expired(&self) -> Result<usize, SignerError> {
         let mut ledger = self.revoked.lock().await;
-        // Kept so a failed persist can put them back. Dropping entries in
-        // memory while the sidecar and the served CRL still list them would
-        // leave this CA disagreeing with itself about what it has revoked
-        // until something else happened to trigger a successful rebuild —
-        // and *fewer* revocations in memory is the unsafe direction of that
-        // disagreement.
-        let before = ledger.entries.clone();
-        let removed = prune_expired(&mut ledger.entries, OffsetDateTime::now_utc());
-        if removed == 0 {
-            return Ok(0);
-        }
-        if let Err(error) = self.rebuild_and_persist(&mut ledger).await {
-            ledger.entries = before;
-            return Err(error);
-        }
-        Ok(removed)
+        self.update(&mut ledger, |entries| {
+            prune_expired(entries, OffsetDateTime::now_utc())
+        })
+        .await
     }
 }
 
@@ -386,10 +569,17 @@ fn load_sidecar(path: &Path) -> anyhow::Result<(Vec<RevokedEntry>, u64)> {
 /// counter it just advanced is only durable if it is written down, and the
 /// prune above may have changed the entries. The CRL write was already here, so
 /// this is no new class of startup failure.
+///
+/// Under the ledger lock, like every other write: this runs in each process
+/// that builds the CA — `serve` at startup, and `order revoke` every time — so
+/// without it two starts interleaving would each rewrite the files from what
+/// they read before the other wrote.
 pub(super) fn init_ledger(
     paths: Option<&CrlPaths>,
     issuer: &Issuer<'static, CaSigningKey>,
 ) -> anyhow::Result<RevokedLedger> {
+    // Released when this function returns, i.e. after both writes.
+    let _lock = paths.map(|p| lock_ledger(&p.lock_path)).transpose()?;
     let (entries, crl_number) = match paths {
         Some(p) if p.revoked_path.exists() => load_sidecar(&p.revoked_path)?,
         _ => (Vec::new(), 0),
@@ -417,7 +607,11 @@ pub(super) fn init_ledger(
     if let Some(p) = paths {
         // The ledger before the CRL, and each at the permissions `revoke`
         // writes them with — see the ordering note there.
-        crate::pemfile::write_atomic(&p.revoked_path, ledger.sidecar_json()?.as_bytes(), 0o600)?;
+        crate::pemfile::write_atomic(
+            &p.revoked_path,
+            sidecar_json(&ledger.entries, ledger.crl_number)?.as_bytes(),
+            0o600,
+        )?;
         crate::pemfile::write_atomic(&p.crl_path, crl.pem()?.as_bytes(), 0o644)?;
     }
     ledger.crl_der = crl.der().to_vec();

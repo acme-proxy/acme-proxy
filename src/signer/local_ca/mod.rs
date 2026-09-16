@@ -34,7 +34,7 @@ pub mod pkcs11;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -189,10 +189,7 @@ impl LocalCa {
     ) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
         let key_path = Path::new(&cfg.key_path);
-        let paths = CrlPaths {
-            crl_path: PathBuf::from(&cfg.crl_path),
-            revoked_path: Path::new(&cfg.crl_path).with_extension("json"),
-        };
+        let paths = CrlPaths::beside(&cfg.crl_path);
         // Before either branch touches disk: a URL this CA could not honour is
         // a startup error, not a CA generated and then refused.
         let leaf_policy = LeafPolicy::from_config(cfg)?;
@@ -248,10 +245,7 @@ impl LocalCa {
         carried: &crate::signer::CarriedState,
     ) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
-        let paths = CrlPaths {
-            crl_path: PathBuf::from(&cfg.crl_path),
-            revoked_path: Path::new(&cfg.crl_path).with_extension("json"),
-        };
+        let paths = CrlPaths::beside(&cfg.crl_path);
         let leaf_policy = LeafPolicy::from_config(cfg)?;
 
         if !cert_path.exists() {
@@ -618,10 +612,14 @@ impl SignerBackend for LocalCa {
         // could interleave: both read the ledger, both append their own serial,
         // and the second write drops the first.
         let mut ledger = self.ledger.revoked.lock().await;
+        // Already in this instance's ledger, so already on disk: nothing to
+        // read and nothing to write. The check is repeated inside the pass
+        // below against the *merged* ledger, which is what catches a serial
+        // another process revoked first.
         if ledger.entries.iter().any(|e| e.serial_hex == serial_hex) {
             return Ok(());
         }
-        ledger.entries.push(RevokedEntry {
+        let entry = RevokedEntry {
             serial_hex: serial_hex.clone(),
             revoked_at: OffsetDateTime::now_utc().unix_timestamp(),
             reason,
@@ -634,11 +632,22 @@ impl SignerBackend for LocalCa {
             not_after: crate::cert::cert_validity(cert_der)
                 .ok()
                 .map(|(_, not_after)| not_after),
-        });
+        };
 
-        self.ledger.rebuild_and_persist(&mut ledger).await?;
+        let added = self
+            .ledger
+            .update(&mut ledger, move |entries| {
+                if entries.iter().any(|e| e.serial_hex == entry.serial_hex) {
+                    return 0;
+                }
+                entries.push(entry);
+                1
+            })
+            .await?;
 
-        info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
+        if added > 0 {
+            info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
+        }
         Ok(())
     }
 
@@ -2069,6 +2078,299 @@ mod tests {
         let (_, not_after) = crate::cert::cert_validity(&leaf).unwrap();
         let ledger = ca.ledger.revoked.lock().await;
         assert_eq!(ledger.entries[0].not_after, Some(not_after));
+    }
+
+    // ---- Two instances over one ledger --------------------------------------
+    //
+    // `acme-proxy order revoke` builds its own `LocalCa` over the same files a
+    // running `serve` holds, each with its own in-memory ledger. These tests
+    // build exactly that pair — two `load_or_generate` calls with nothing
+    // carried between them — and pin that neither can overwrite what the other
+    // wrote.
+
+    /// The serials and `crl_number` persisted in `dir`'s sidecar, read straight
+    /// from the file rather than through a third `LocalCa`, whose own startup
+    /// would write the files again.
+    fn persisted(dir: &crate::testutil::TempDir) -> (Vec<String>, u64) {
+        let sidecar: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("ca.json")).unwrap()).unwrap();
+        let serials = sidecar["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["serial_hex"].as_str().unwrap().to_string())
+            .collect();
+        (serials, sidecar["crl_number"].as_u64().unwrap())
+    }
+
+    /// Issues a certificate for `name` and returns its leaf DER and serial.
+    async fn issued(ca: &LocalCa, name: &str) -> (Vec<u8>, String) {
+        let chain = issue_chain(ca, &make_csr_der(name), &[Identifier::dns(name)])
+            .await
+            .unwrap();
+        let leaf = first_certificate(&chain);
+        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+        (leaf, serial_hex)
+    }
+
+    /// The bug this section exists for: the CLI revokes, then the server's next
+    /// revocation rewrote the sidecar and the CRL from its own memory, and the
+    /// CLI's serial silently left the CRL while the order row still said
+    /// `revoked_at`.
+    #[tokio::test]
+    async fn a_revocation_by_another_instance_survives_this_ones_next_revocation() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let (leaf_a, serial_a) = issued(&server, "a.example.com").await;
+        let (leaf_b, serial_b) = issued(&server, "b.example.com").await;
+
+        cli.revoke(&leaf_a, Some(1)).await.unwrap();
+        server.revoke(&leaf_b, Some(1)).await.unwrap();
+
+        let (serials, _) = persisted(&dir);
+        assert!(
+            serials.contains(&serial_a),
+            "{serial_a} lost from {serials:?}"
+        );
+        assert!(
+            serials.contains(&serial_b),
+            "{serial_b} missing from {serials:?}"
+        );
+
+        // And the CRL the server serves has caught up with the file it just
+        // wrote, rather than signing only what it had in memory.
+        let served = revoked_serials(&server.crl_der().await.unwrap());
+        for serial in [&serial_a, &serial_b] {
+            assert!(
+                served.iter().any(|s| s.eq_ignore_ascii_case(serial)),
+                "{serial} missing from the served CRL {served:?}"
+            );
+        }
+    }
+
+    /// The same loss through the other write path: the daily prune.
+    #[tokio::test]
+    async fn a_revocation_by_another_instance_survives_this_ones_prune() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let (leaf_a, serial_a) = issued(&server, "a.example.com").await;
+        // Something for the server's prune to drop, so that it really writes.
+        server
+            .ledger
+            .revoked
+            .lock()
+            .await
+            .entries
+            .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
+
+        cli.revoke(&leaf_a, Some(1)).await.unwrap();
+        assert_eq!(
+            server.crl_pruner().unwrap().prune_expired().await.unwrap(),
+            1
+        );
+
+        let (serials, _) = persisted(&dir);
+        assert!(
+            serials.contains(&serial_a),
+            "{serial_a} lost from {serials:?}"
+        );
+        assert!(
+            !serials.iter().any(|s| s == "0a0b"),
+            "the expired entry stayed"
+        );
+    }
+
+    /// RFC 5280 §5.2.3 across instances. Each instance used to bump its own
+    /// copy of the counter, so the server's first write after a CLI revocation
+    /// published a *lower* number than the CLI had — a CRL a conforming client
+    /// discards in favour of the one it has cached.
+    #[tokio::test]
+    async fn the_crl_number_never_goes_backwards_across_instances() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let mut numbers = Vec::new();
+
+        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        numbers.push(persisted(&dir).1);
+        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        numbers.push(persisted(&dir).1);
+
+        let (leaf_a, _) = issued(&server, "a.example.com").await;
+        let (leaf_b, _) = issued(&server, "b.example.com").await;
+        cli.revoke(&leaf_a, None).await.unwrap();
+        numbers.push(persisted(&dir).1);
+        server.revoke(&leaf_b, None).await.unwrap();
+        numbers.push(persisted(&dir).1);
+
+        server
+            .ledger
+            .revoked
+            .lock()
+            .await
+            .entries
+            .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
+        server.crl_pruner().unwrap().prune_expired().await.unwrap();
+        numbers.push(persisted(&dir).1);
+
+        assert!(
+            numbers.windows(2).all(|pair| pair[0] < pair[1]),
+            "every write must publish a higher number: {numbers:?}"
+        );
+        assert_eq!(
+            crl_number(&server.crl_der().await.unwrap()),
+            *numbers.last().unwrap(),
+            "the served CRL carries the number that was persisted",
+        );
+    }
+
+    /// Both instances revoking one certificate leaves one entry, carrying the
+    /// time of the *first* revocation.
+    #[tokio::test]
+    async fn revoking_what_another_instance_already_revoked_keeps_one_entry() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let (leaf, serial) = issued(&server, "a.example.com").await;
+
+        cli.revoke(&leaf, Some(1)).await.unwrap();
+        let first = cli.ledger.revoked.lock().await.entries[0].revoked_at;
+        server.revoke(&leaf, Some(4)).await.unwrap();
+
+        assert_eq!(persisted(&dir).0, vec![serial.clone()]);
+        let ledger = server.ledger.revoked.lock().await;
+        assert_eq!(serials_of(&ledger.entries), vec![serial.as_str()]);
+        assert_eq!(ledger.entries[0].revoked_at, first);
+        assert_eq!(ledger.entries[0].reason, Some(1));
+    }
+
+    /// Many revocations through both instances at once. Each instance's mutex
+    /// only serialises it against itself; what stops the two interleaving
+    /// read-modify-write is the lock file, and nothing short of real
+    /// concurrency exercises it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_revocations_through_two_instances_are_all_kept() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let server =
+            Arc::new(LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap());
+        let cli =
+            Arc::new(LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap());
+
+        // Issued up front, so the revocations below really do start together
+        // rather than one per issuance.
+        let mut leaves = Vec::new();
+        let mut expected = Vec::new();
+        for index in 0..12 {
+            let (leaf, serial) = issued(&server, &format!("n{index}.example.com")).await;
+            leaves.push(leaf);
+            expected.push(serial);
+        }
+        let tasks: Vec<_> = leaves
+            .into_iter()
+            .enumerate()
+            .map(|(index, leaf)| {
+                let ca = if index % 2 == 0 {
+                    server.clone()
+                } else {
+                    cli.clone()
+                };
+                tokio::spawn(async move { ca.revoke(&leaf, None).await })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+
+        let (mut serials, _) = persisted(&dir);
+        serials.sort();
+        expected.sort();
+        assert_eq!(serials, expected);
+    }
+
+    /// A revocation whose persist failed is not remembered as done.
+    ///
+    /// `revoke` used to push the serial into memory and *then* persist, so a
+    /// failed write left it in memory only — and the retry, finding it there,
+    /// answered `Ok` without ever reaching the disk. The CRL never listed it,
+    /// and the order row said revoked.
+    #[tokio::test]
+    async fn a_revocation_whose_persist_failed_is_written_by_the_retry() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let (leaf, serial) = issued(&ca, "a.example.com").await;
+
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            ca.revoke(&leaf, Some(1)).await.is_err(),
+            "persisting into a deleted directory cannot succeed",
+        );
+        assert!(ca.ledger.revoked.lock().await.entries.is_empty());
+
+        fs::create_dir_all(&dir).unwrap();
+        ca.revoke(&leaf, Some(1)).await.unwrap();
+        assert_eq!(persisted(&dir).0, vec![serial]);
+    }
+
+    /// Something other than a regular file where the lock belongs is refused
+    /// by name, rather than followed or locked as if it were one.
+    #[tokio::test]
+    async fn a_lock_path_that_is_not_a_regular_file_is_refused() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let (leaf, _) = issued(&ca, "a.example.com").await;
+
+        let lock = dir.join("ca.json.lock");
+        fs::remove_file(&lock).unwrap();
+        fs::create_dir(&lock).unwrap();
+
+        let error = ca.revoke(&leaf, None).await.unwrap_err();
+        assert!(
+            error.to_string().contains("ca.json.lock"),
+            "the refusal names the lock: {error}"
+        );
+    }
+
+    /// The merge is a union by serial that keeps the first revocation of each.
+    #[test]
+    fn merging_a_persisted_ledger_keeps_every_serial_and_the_first_revocation() {
+        let mut ours = vec![
+            RevokedEntry {
+                serial_hex: "01".to_string(),
+                revoked_at: 200,
+                reason: Some(4),
+                not_after: None,
+            },
+            entry("02", Some(3600)),
+        ];
+        let theirs = vec![
+            // The same certificate, revoked earlier elsewhere and with its
+            // expiry known.
+            RevokedEntry {
+                serial_hex: "01".to_string(),
+                revoked_at: 100,
+                reason: Some(1),
+                not_after: Some(5000),
+            },
+            // Unchanged on both sides.
+            ours[1].clone(),
+            // Only there — and listed twice, as a hand-edited file might.
+            entry("03", None),
+            entry("03", None),
+        ];
+
+        assert_eq!(super::crl::merge(&mut ours, theirs), 2);
+        assert_eq!(serials_of(&ours), vec!["01", "02", "03"]);
+        assert_eq!(
+            (ours[0].revoked_at, ours[0].reason, ours[0].not_after),
+            (100, Some(1), Some(5000)),
+        );
     }
 
     /// Two CAs over different files are two backends, and the sweep must serve

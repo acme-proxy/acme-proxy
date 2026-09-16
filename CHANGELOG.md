@@ -96,6 +96,18 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A certificate revoked with `acme-proxy order revoke` while the server was
+  running silently left the CRL** at the server's next revocation or daily
+  prune, though the order still read as revoked. Each process rewrote
+  `ca.json` and `ca.crl` from its own in-memory ledger. Every write now re-reads
+  the sidecar and merges it under a lock on a new file beside it,
+  `ca.json.lock`. The CRL a running server *serves* still catches up only at
+  its own next revocation, its daily prune or a restart.
+- **The same interleaving published a lower `crlNumber`** than the CLI had just
+  written, and a client holding the newer CRL keeps it over a lower number. The
+  number is now the larger of the two sides plus one.
+- A `local_ca` revocation whose write failed was remembered in memory, so the
+  retry answered success without writing it.
 - **Paging an account's orders replaced the orders table with a copy of the
   account card.** The pager now fetches `GET /ui/accounts/{id}/orders`.
 - **The audit page dropped `orderId`/`certSerial` filters** on the next page and

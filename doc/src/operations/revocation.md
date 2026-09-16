@@ -87,6 +87,12 @@ This calls the signer's `revoke` hook directly, exactly as the ACME endpoint
 does. It is **not** confirm-gated — unlike `order delete` — because revocation
 only ever tightens trust; there is no destructive outcome to protect against.
 
+With `local_ca`, the command writes the revocation to the ledger and the CRL
+file at once, but a server already running keeps **serving** the CRL it holds in
+memory. It takes the new entry in at its own next revocation, at its daily
+prune, or at a restart. Restart the server if the CRL must list the certificate
+now.
+
 See [Admin CLI](cli.md).
 
 ## `GET /crl`
@@ -106,6 +112,13 @@ the same path with the extension swapped to `.json`, so `ca.crl` is accompanied
 by `ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
 both files**: losing the sidecar loses the revocation ledger, and the next
 regeneration would publish an empty CRL.
+
+A third file, `ca.json.lock`, sits beside them. Every process that writes the
+ledger — the server and `acme-proxy order revoke` alike — holds a lock on it
+while it re-reads the sidecar, merges what another process wrote, and writes
+both files back. It is always empty and needs no backup. The lock serialises
+processes on **one host**; do not share `crl_path` between machines, or put it
+on a network filesystem.
 
 ### Expired entries are dropped
 
