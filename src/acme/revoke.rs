@@ -18,9 +18,10 @@ use tracing::{error, info, warn};
 
 use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext, RequestContext};
 use crate::error::Problem;
-use crate::jobs::JobQueue;
+use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
 use crate::signer::{SignerBackend, SignerError};
+use crate::sqlite::job::Job;
 use crate::sqlite::{account::Account, db::Database, order::Order};
 
 /// What withdraws trust in a certificate.
@@ -544,4 +545,216 @@ fn refusal(
         .with_client(client)
         .with_reason(reason)
         .with_detail(detail)
+}
+
+/// The `jobs.kind` of a revocation a delegating backend must perform.
+pub const SIGNER_REVOKE_KIND: &str = "signer_revoke";
+
+/// The row asking a running server to revoke order `order_id`'s certificate
+/// at its backend, on behalf of `actor`.
+///
+/// Keyed on the order, so asking twice while the first is still queued is one
+/// revocation. The payload names who asked, never the certificate: the row is
+/// read back when it runs, so a retry sees the order as it is then.
+#[must_use]
+pub fn signer_revoke_spec(order_id: &str, reason: Option<u32>, actor: &Actor) -> JobSpec {
+    JobSpec::now(SIGNER_REVOKE_KIND, order_id).with_payload(serde_json::json!({
+        "order_id": order_id,
+        "reason": reason,
+        "actor_kind": actor.kind.as_str(),
+        "actor_id": actor.id,
+    }))
+}
+
+/// Revokes, at the backend that issued it, a certificate an operator asked to
+/// revoke from a process holding no backend — the host CLI, for a `relay` or
+/// `custom` profile, whose revocation is a call to an upstream CA or a script.
+///
+/// **One handler over every profile**, the `RelayJob` shape: a row names its
+/// order, the order names its profile, and the profile names the backend.
+pub struct SignerRevokeJob {
+    database: Arc<Database>,
+    audit: Arc<Auditor>,
+    signers: Vec<(String, Arc<dyn SignerBackend>)>,
+    notifiers: crate::notify::Notifiers,
+}
+
+impl SignerRevokeJob {
+    /// `signers` is this generation's backend per profile name.
+    #[must_use]
+    pub fn new(
+        database: Arc<Database>,
+        audit: Arc<Auditor>,
+        signers: Vec<(String, Arc<dyn SignerBackend>)>,
+        notifiers: crate::notify::Notifiers,
+    ) -> Self {
+        Self {
+            database,
+            audit,
+            signers,
+            notifiers,
+        }
+    }
+}
+
+/// The actor a queued revocation names, read back out of its payload.
+fn payload_actor(payload: &serde_json::Value) -> Actor {
+    let id = payload["actor_id"].as_str().map(str::to_string);
+    let kind = match payload["actor_kind"].as_str() {
+        Some("admin") => crate::audit::ActorKind::Admin,
+        Some("acme") => crate::audit::ActorKind::Acme,
+        Some("system") => crate::audit::ActorKind::System,
+        _ => crate::audit::ActorKind::Cli,
+    };
+    Actor { kind, id }
+}
+
+#[async_trait::async_trait]
+impl JobHandler for SignerRevokeJob {
+    fn kind(&self) -> &'static str {
+        SIGNER_REVOKE_KIND
+    }
+
+    /// What is worth asking again (`Retry`): a backend that failed, a database
+    /// that did, a profile this process does not mount — another process, or
+    /// the next generation of this one, may. What is not (`Failed`): an order
+    /// that is gone, never issued, or a reason code no backend accepts. An
+    /// order already revoked is `Done`: the operator's intent holds.
+    async fn run(&self, job: &Job) -> JobOutcome {
+        let payload = &job.payload;
+        let Some(order_id) = payload["order_id"].as_str() else {
+            return JobOutcome::Failed("the payload names no order".to_string());
+        };
+        let reason = payload["reason"]
+            .as_u64()
+            .and_then(|code| u32::try_from(code).ok());
+
+        let order = match Order::find_by_id(order_id, &self.database).await {
+            Ok(Some(order)) => order,
+            Ok(None) => return JobOutcome::Failed("the order no longer exists".to_string()),
+            Err(error) => return JobOutcome::Retry(format!("reading the order failed: {error}")),
+        };
+        let Some((_, signer)) = self
+            .signers
+            .iter()
+            .find(|(profile, _)| *profile == order.profile)
+        else {
+            return JobOutcome::Retry(format!(
+                "profile `{}` is not mounted by this process",
+                order.profile
+            ));
+        };
+        let dispatcher = self.notifiers.get(&order.profile);
+        let revocations = Revocations {
+            database: &self.database,
+            audit: &self.audit,
+            notify: dispatcher.as_deref(),
+            revoker: Revoker::Backend(signer.as_ref()),
+        };
+        match revocations
+            .revoke_order(
+                order_id,
+                reason,
+                payload_actor(payload),
+                ClientContext::default(),
+            )
+            .await
+        {
+            Ok(_) | Err(RevokeError::AlreadyRevoked) => JobOutcome::Done,
+            Err(error @ (RevokeError::Signer(_) | RevokeError::Database(_))) => {
+                JobOutcome::Retry(error.to_string())
+            }
+            Err(error) => JobOutcome::Failed(error.to_string()),
+        }
+    }
+
+    async fn abandon(&self, job: &Job, reason: &str) {
+        error!(
+            event = "certificate_revoke_abandoned",
+            outcome = "failure",
+            order_id = %job.dedup_key,
+            reason = %reason,
+            "a queued revocation was given up; the certificate is still trusted"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jobs::JobHandler;
+    use crate::signer::{IssueOutcome, RequestedValidity};
+    use crate::sqlite::order::Identifier;
+
+    /// A backend whose `revoke` always fails.
+    struct Failing;
+
+    #[async_trait::async_trait]
+    impl SignerBackend for Failing {
+        async fn issue(
+            &self,
+            _order_id: &str,
+            _csr_der: &[u8],
+            _identifiers: &[Identifier],
+            _validity: RequestedValidity,
+        ) -> Result<IssueOutcome, SignerError> {
+            Err(SignerError::Internal("not here".into()))
+        }
+        async fn revoke(&self, _cert_der: &[u8], _reason: Option<u32>) -> Result<(), SignerError> {
+            Err(SignerError::Internal("upstream unreachable".into()))
+        }
+    }
+
+    fn handler(database: &Arc<Database>) -> SignerRevokeJob {
+        SignerRevokeJob::new(
+            database.clone(),
+            Arc::new(Auditor::offline(database.clone())),
+            vec![("default".to_string(), Arc::new(Failing))],
+            std::collections::HashMap::new().into(),
+        )
+    }
+
+    async fn queued(database: &Arc<Database>, order_id: &str) -> Job {
+        let queue = crate::testutil::idle_job_queue(database.clone());
+        queue
+            .enqueue(signer_revoke_spec(order_id, None, &Actor::cli()))
+            .await
+            .unwrap();
+        Job::find_live(SIGNER_REVOKE_KIND, order_id, database)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A backend that failed is asked again; the order stays un-revoked.
+    #[tokio::test]
+    async fn a_failing_backend_is_retried() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account = crate::testutil::account_id(&database).await;
+        let order =
+            crate::testutil::issued_order(&database, "default", account, &["example.com"], 30)
+                .await;
+        let job = queued(&database, &order.id.to_string()).await;
+
+        assert!(matches!(
+            handler(&database).run(&job).await,
+            JobOutcome::Retry(_)
+        ));
+        let stored = Order::find_by_id(&order.id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.revoked_at.is_none());
+    }
+
+    /// An order that is gone will not come back: retrying is pointless.
+    #[tokio::test]
+    async fn a_vanished_order_fails_for_good() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let job = queued(&database, &crate::sqlite::id::mint().to_string()).await;
+        assert!(matches!(
+            handler(&database).run(&job).await,
+            JobOutcome::Failed(_)
+        ));
+    }
 }

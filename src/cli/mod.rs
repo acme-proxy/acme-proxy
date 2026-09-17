@@ -594,7 +594,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Order {
-                command: OrderCommand::Revoke { id, reason: Some(1) }
+                command: OrderCommand::Revoke { id, reason: Some(1), wait: 30 }
             }) if id == "ord-1"
         ));
 

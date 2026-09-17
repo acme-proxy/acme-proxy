@@ -68,6 +68,12 @@ pub enum OrderCommand {
         id: String,
         #[arg(long)]
         reason: Option<u32>,
+        /// For a `relay` or `custom` profile, how many seconds to wait for a
+        /// running server to perform the queued revocation before returning.
+        /// `0` queues it and returns at once. A local CA's revocation is
+        /// recorded immediately and does not wait.
+        #[arg(long, default_value_t = DEFAULT_REVOKE_WAIT_SECONDS)]
+        wait: u64,
     },
 }
 
@@ -247,7 +253,7 @@ pub async fn run_order_command(
                 }
             }
         }
-        OrderCommand::Revoke { id, reason } => {
+        OrderCommand::Revoke { id, reason, wait } => {
             // Revocation goes through the endpoint that issued the certificate:
             // another profile's backend holds a different CA, or none at all.
             let Some(order) = Order::find_by_id(&id, &database).await? else {
@@ -291,39 +297,32 @@ pub async fn run_order_command(
                 crate::audit::ClientContext::default(),
             );
 
-            let outcome = match &route {
-                // A local CA: recorded without its key, signed by the server.
-                signer::RevocationRoute::Ledger { issuer } => {
-                    admin::revoke_order(
-                        &id,
-                        reason,
-                        actor,
-                        client,
-                        &audit,
-                        database.clone(),
-                        crate::acme::revoke::Revoker::Ledger {
-                            issuer,
-                            jobs: &jobs,
-                        },
-                        notify,
-                    )
-                    .await
-                }
+            let issuer = match route {
+                signer::RevocationRoute::Ledger { issuer } => issuer,
+                // A backend that must itself be asked: the running server asks
+                // it, and this command waits to hear how that went.
                 signer::RevocationRoute::Delegated => {
-                    let signer = delegated_signer(config, profile, &database, &jobs)?;
-                    admin::revoke_order(
-                        &id,
-                        reason,
-                        actor,
-                        client,
-                        &audit,
-                        database.clone(),
-                        crate::acme::revoke::Revoker::Backend(signer.as_ref()),
-                        notify,
+                    return queue_revocation(
+                        &order, reason, actor, wait, config, &database, palette,
                     )
-                    .await
+                    .await;
                 }
             };
+            // A local CA: recorded without its key, signed by the server.
+            let outcome = admin::revoke_order(
+                &id,
+                reason,
+                actor,
+                client,
+                &audit,
+                database.clone(),
+                crate::acme::revoke::Revoker::Ledger {
+                    issuer: &issuer,
+                    jobs: &jobs,
+                },
+                notify,
+            )
+            .await;
             // A bad `--reason` code is the operator's to fix (exit 3); every
             // other revoke failure is the host's (a signer or database error).
             match outcome.map_err(|error| match error {
@@ -343,20 +342,18 @@ pub async fn run_order_command(
                 }
                 admin::RevokeOutcome::Revoked(order) => {
                     println!("{}", render::render_order_line(&order, palette));
-                    if let signer::RevocationRoute::Ledger { issuer } = &route {
-                        let job = crate::sqlite::job::Job::find_live(
-                            crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
-                            issuer,
-                            &database,
-                        )
-                        .await?;
-                        match job {
-                            Some(job) => println!(
-                                "CRL regeneration queued (job {}); a running server signs it.",
-                                job.id
-                            ),
-                            None => println!("CRL regeneration already done."),
-                        }
+                    let job = crate::sqlite::job::Job::find_live(
+                        crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+                        &issuer,
+                        &database,
+                    )
+                    .await?;
+                    match job {
+                        Some(job) => println!(
+                            "CRL regeneration queued (job {}); a running server signs it.",
+                            job.id
+                        ),
+                        None => println!("CRL regeneration already done."),
                     }
                 }
             }
@@ -365,30 +362,91 @@ pub async fn run_order_command(
     Ok(())
 }
 
-/// The backend a delegated revocation still calls inline — until the queue
-/// carries that work too.
-fn delegated_signer(
+/// How long `order revoke` waits for a queued revocation by default.
+const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
+
+/// `order revoke` for a `relay` or `custom` profile: queue `signer_revoke` for
+/// a running server, then wait up to `wait` seconds for its answer.
+///
+/// The refusals a queued job would only reach later — already revoked, a bad
+/// reason code — are answered here first, with exit 3, so an operator is not
+/// told "queued" for something that can never happen. A job already queued for
+/// the order is waited on rather than duplicated. Running out of time is not a
+/// failure: the revocation is queued, and the message says where to follow it.
+async fn queue_revocation(
+    order: &Order,
+    reason: Option<u32>,
+    actor: crate::audit::Actor,
+    wait: u64,
     config: &Config,
-    profile: &crate::config::ProfileConfig,
     database: &Arc<Database>,
-    jobs: &crate::jobs::JobQueue,
-) -> Result<Arc<dyn signer::SignerBackend>, CliError> {
-    let egress = Arc::new(
-        crate::server::Egress::from_config(config)
-            .map_err(|error| CliError::failed(format!("configuration error: {error}")))?,
-    );
-    let metrics = Arc::new(crate::metrics::Metrics::new(database.clone()));
-    signer::from_config(
-        &profile.sections.signer,
-        &signer::SignerParts {
-            database: database.clone(),
-            notifiers: std::collections::HashMap::new().into(),
-            metrics,
-            egress,
-            jobs: jobs.clone(),
-        },
-    )
-    .map_err(|error| CliError::failed(format!("signer error: {error}")))
+    palette: Palette,
+) -> Result<(), CliError> {
+    use crate::acme::revoke::{SIGNER_REVOKE_KIND, signer_revoke_spec};
+    use crate::sqlite::job::Job;
+
+    let id = order.id.to_string();
+    if order.revoked_at.is_some() {
+        return Err(CliError::bad_request(format!(
+            "order {id}'s certificate is already revoked"
+        )));
+    }
+    if let Some(code) = reason
+        && !crate::cert::is_valid_revocation_reason(code)
+    {
+        return Err(CliError::bad_request(
+            admin::RevokeError::BadReason(code).to_string(),
+        ));
+    }
+
+    let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+    jobs.enqueue(signer_revoke_spec(&id, reason, &actor))
+        .await?;
+    let job = Job::find_latest_by_dedup(SIGNER_REVOKE_KIND, &id, database)
+        .await?
+        .ok_or_else(|| CliError::failed(format!("the revocation of order {id} was not queued")))?;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
+    let pace = std::time::Duration::from_millis(config.jobs.poll_interval_ms.clamp(100, 1000));
+    loop {
+        let current = Job::find_by_id(job.id, database)
+            .await?
+            .ok_or_else(|| CliError::failed(format!("job {} disappeared", job.id)))?;
+        match current.status.as_str() {
+            "done" => {
+                let revoked = Order::find_by_id(&id, database)
+                    .await?
+                    .ok_or_else(|| not_found(&id))?;
+                println!("{}", render::render_order_line(&revoked, palette));
+                return Ok(());
+            }
+            "failed" => {
+                return Err(CliError::failed(format!(
+                    "the revocation of order {id} failed (job {}): {}",
+                    job.id,
+                    current
+                        .last_error
+                        .as_deref()
+                        .unwrap_or("no reason recorded")
+                )));
+            }
+            "cancelled" => {
+                return Err(CliError::failed(format!(
+                    "the revocation of order {id} was cancelled (job {})",
+                    job.id
+                )));
+            }
+            _ if tokio::time::Instant::now() >= deadline => {
+                println!(
+                    "Revocation of order {id} queued as job {}; a running server performs it \
+                     (acme-proxy jobs show {}).",
+                    job.id, job.id
+                );
+                return Ok(());
+            }
+            _ => tokio::time::sleep(pace).await,
+        }
+    }
 }
 
 /// `order list --expiring-in <days>`.
@@ -681,6 +739,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: "ord-nope".to_string(),
                 reason: None,
+                wait: 0,
             },
         ];
         for command in commands {
@@ -775,6 +834,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: None,
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -801,6 +861,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: None,
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -828,6 +889,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: None,
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -866,6 +928,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: Some(1),
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -908,6 +971,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: None,
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -942,6 +1006,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: None,
+                wait: 0,
             },
             true,
             Palette::plain(),
@@ -963,6 +1028,128 @@ mod tests {
         );
     }
 
+    /// A `custom` profile's revocation is the script's to perform, so the CLI
+    /// queues it for a running server instead of running the script itself:
+    /// `--wait 0` returns with the order untouched and one `signer_revoke` row
+    /// queued, a second ask waits on that row rather than queueing another, and
+    /// the server's handler runs the script once and records the revocation.
+    #[tokio::test]
+    async fn a_delegated_revocation_is_queued_for_the_server() {
+        use crate::acme::revoke::{SIGNER_REVOKE_KIND, SignerRevokeJob};
+        use crate::jobs::{JobHandler, JobOutcome};
+        use crate::sqlite::job::Job;
+
+        let dir = temp_dir();
+        let marker = dir.join("revoked");
+        let script = crate::testutil::write_script(
+            &dir,
+            "signer.sh",
+            &format!(
+                "#!/bin/sh\n[ \"$ACME_SIGNER_HOOK\" = revoke ] && echo once >> {}\nexit 0\n",
+                marker.display()
+            ),
+        );
+        let config = {
+            let _lock = crate::config::ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::fs::write(
+                dir.join("config.toml"),
+                format!(
+                    "[profiles.default]\nsigner.backend = \"custom\"\nsigner.custom.script_path = \"{}\"\n",
+                    script.display()
+                ),
+            )
+            .unwrap();
+            // SAFETY: the lock above makes this the only thread touching the
+            // environment, and the variable is removed before it is released.
+            unsafe {
+                std::env::set_var("ACME_PROXY_CONFIG", dir.join("config").to_str().unwrap());
+            }
+            let config = Config::load().expect("the configuration must load");
+            unsafe {
+                std::env::remove_var("ACME_PROXY_CONFIG");
+            }
+            config
+        };
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let account = seed_order(&database, "default").await.account_id;
+        let order =
+            crate::testutil::issued_order(&database, "default", account, &["example.com"], 30)
+                .await;
+        let id = order.id.to_string();
+
+        for _ in 0..2 {
+            let mut reader: &[u8] = &[];
+            run_order_command(
+                OrderCommand::Revoke {
+                    id: id.clone(),
+                    reason: Some(4),
+                    wait: 0,
+                },
+                true,
+                Palette::plain(),
+                &mut reader,
+                &config,
+                database.clone(),
+            )
+            .await
+            .expect("a queued revocation is not a failure");
+        }
+        assert_eq!(
+            Job::count_live(SIGNER_REVOKE_KIND, &database)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            Order::find_by_id(&id, &database)
+                .await
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
+        );
+        assert!(!marker.exists(), "the CLI must not run the script itself");
+
+        let profile = &config.resolve_profiles().unwrap()[0];
+        let resolver = crate::dns::resolver_addr(&config.dns)
+            .and_then(crate::challenge::build_resolver)
+            .unwrap();
+        let signer = signer::from_config(
+            &profile.sections.signer,
+            &crate::testutil::signer_parts(database.clone(), resolver),
+        )
+        .unwrap();
+        let handler = SignerRevokeJob::new(
+            database.clone(),
+            Arc::new(crate::audit::Auditor::offline(database.clone())),
+            vec![("default".to_string(), signer)],
+            std::collections::HashMap::new().into(),
+        );
+        let job = Job::find_live(SIGNER_REVOKE_KIND, &id, &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(handler.run(&job).await, JobOutcome::Done));
+
+        let revoked = Order::find_by_id(&id, &database).await.unwrap().unwrap();
+        assert_eq!(revoked.revocation_reason, Some(4));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+        // The row names the operator who asked, not the server that acted.
+        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
+            &crate::sqlite::audit::AuditQuery {
+                limit: 5,
+                ..crate::sqlite::audit::AuditQuery::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows[0].event, "certificate_revoked");
+        assert_eq!(rows[0].actor_kind, "cli");
+    }
+
     /// An out-of-range reason code comes back from `admin::revoke_order` as a
     /// typed error, not a database one.
     #[tokio::test]
@@ -978,6 +1165,7 @@ mod tests {
             OrderCommand::Revoke {
                 id: order.id.to_string(),
                 reason: Some(7),
+                wait: 0,
             },
             true,
             Palette::plain(),

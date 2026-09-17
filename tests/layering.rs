@@ -9,6 +9,9 @@
 //! production code calling it, which would make the private field `pub pool`
 //! under a longer name.
 //!
+//! The same walk keeps the host CLI from building a signing backend, which
+//! would put the CA key in a process that has no business holding it.
+//!
 //! An integration test rather than a `#[cfg(test)]` module for the reason
 //! `logging_convention.rs` gives: a source-walking helper belongs neither in
 //! the shipped library nor in the coverage denominator.
@@ -89,6 +92,44 @@ fn production_code_never_reaches_the_raw_pool() {
         "`Database::raw_pool` is for test fixtures only; production code goes \
          through a table module in `src/sqlite/`, `Database::transaction` or \
          `Database::pool_stats`:\n{}",
+        offenders.join("\n"),
+    );
+}
+
+/// The host CLI never builds a signing backend (PLAN.md #10). Building one
+/// loads a CA key, logs in to a PKCS#11 token or registers with an upstream —
+/// none of which a one-shot command should do beside the server that owns
+/// them. A revocation from the CLI is a database write plus a queued job for
+/// that server (`signer::revocation_route`); the test fixtures under
+/// `#[cfg(test)]` still build one to issue what they revoke.
+#[test]
+fn the_cli_never_builds_a_signer() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("src/cli"), &mut files);
+
+    let mut offenders = Vec::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_test_file(&relative) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        for (index, line) in production_part(&text).lines().enumerate() {
+            if line.contains("signer::from_config(") || line.contains("build_backends(") {
+                offenders.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "the CLI records what it asks of a signer in the database and the job \
+         queue, and never builds a backend:\n{}",
         offenders.join("\n"),
     );
 }

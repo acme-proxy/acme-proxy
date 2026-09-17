@@ -156,6 +156,27 @@ pub(crate) fn build_generation(
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
     }
+    // Revocations the host CLI queued for a backend it does not build (`relay`,
+    // `custom`). Registered unconditionally, `NotifyJob`'s reason below: a row
+    // queued before a configuration change must still find a handler, and one
+    // naming a profile this generation does not mount is retried rather than
+    // lost.
+    job_registry
+        .register(Arc::new(crate::acme::revoke::SignerRevokeJob::new(
+            database.clone(),
+            Arc::new(
+                crate::audit::Auditor::offline(database.clone())
+                    .with_metrics(assembly.metrics.clone()),
+            ),
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.signer.clone()))
+                .collect(),
+            assembly.notifiers.clone(),
+        )))
+        .inspect_err(|error| {
+            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+        })?;
     // Notification delivery. The same shape as the two above and the reason it
     // is: one handler for every profile, holding the whole
     // `profile name -> dispatcher` map, with a job row naming its own profile.

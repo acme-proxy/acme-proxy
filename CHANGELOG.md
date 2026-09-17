@@ -43,6 +43,14 @@ migrated configuration before restarting.
   because its pre-database `ca.json` ledger may still be waiting to be
   imported. The daily CRL refresh now also signs any recorded revocation its
   CRL does not list.
+- **`acme-proxy order revoke` on a `relay` or `custom` profile queues the
+  revocation for a running server** instead of contacting the upstream or
+  running the script itself. It queues a `signer_revoke` job and waits for its
+  answer, up to the new `--wait <seconds>` (default 30, `0` to return at once).
+  If the job has not run by then, the command exits 0, naming the job to follow
+  with `jobs show`. A failed job is exit 1, carrying its error. Already revoked
+  and a bad `--reason` are still refused at once, with exit 3. The CLI no longer
+  builds any signer backend.
 - **A local CA no longer writes `ca.json`.** Its revocations live in the
   database, and the JSON ledger beside `signer.local_ca.crl_path` is imported
   once, the first time the CA meets the new schema (`local_ca_ledger_imported`),

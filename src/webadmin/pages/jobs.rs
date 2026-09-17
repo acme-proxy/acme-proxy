@@ -30,6 +30,8 @@ const KNOWN_KINDS: &[&str] = &[
     crate::notify::job::NOTIFY_JOB_KIND,
     crate::notify::expiry::EXPIRY_JOB_KIND,
     crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
+    crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+    crate::acme::revoke::SIGNER_REVOKE_KIND,
     crate::jobs::sweep::NONCE_SWEEP_KIND,
     crate::jobs::sweep::AUDIT_SWEEP_KIND,
     crate::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
