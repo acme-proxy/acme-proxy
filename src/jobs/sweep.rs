@@ -1,8 +1,9 @@
 //! The periodic table sweeps, as jobs.
 //!
-//! Four tables accumulate rows nobody deletes on the way past — spent nonces,
-//! audit rows past their retention, expired admin sessions, and the queue's own
-//! settled jobs. Each used to be its own `tokio::spawn` + `tokio::time::interval`
+//! Several tables accumulate rows nobody deletes on the way past — spent
+//! nonces, audit rows past their retention, expired admin sessions, the queue's
+//! own settled jobs, and the relay's http-01 tokens whose attempt died before it
+//! could retract them. Each used to be its own `tokio::spawn` + `tokio::time::interval`
 //! loop, and each was a near-copy of the others: the same
 //! `MissedTickBehavior::Delay`, the same skipped first tick, the same
 //! `match cleanup(...)` arms. Only the fourth was ever a job.
@@ -55,6 +56,13 @@ pub const NONCE_SWEEP_KIND: &str = "nonce_sweep";
 /// The `jobs.kind` the audit-retention sweep runs under.
 pub const AUDIT_SWEEP_KIND: &str = "audit_sweep";
 
+/// The `jobs.kind` the expired http-01 token sweep runs under.
+pub const HTTP01_TOKEN_SWEEP_KIND: &str = "http01_token_sweep";
+
+/// How often the http-01 token sweep runs. An expired token is never served,
+/// so this is tidiness rather than a control; hourly keeps the table small.
+const HOURLY: Duration = Duration::from_secs(60 * 60);
+
 /// The `jobs.kind` the admin-session sweep runs under.
 pub const ADMIN_SESSION_SWEEP_KIND: &str = "admin_session_sweep";
 
@@ -85,6 +93,8 @@ enum SweepTarget {
     /// Expired, non-`valid` orders past each profile's `order.retention_days`,
     /// as `(profile, retention_days)`.
     Orders { retention: Vec<(String, u64)> },
+    /// http-01 key authorizations past their deadline.
+    Http01Tokens,
 }
 
 /// One periodic table sweep.
@@ -154,6 +164,18 @@ impl SweepJob {
         Self {
             target: SweepTarget::Orders { retention },
             interval: DAILY,
+            database,
+        }
+    }
+
+    /// The expired http-01 token sweep. Registered only when some profile's
+    /// signer backend publishes tokens, the way the CRL refresh is registered
+    /// only when some backend keeps a CRL.
+    #[must_use]
+    pub fn http01_tokens(database: Arc<Database>) -> Self {
+        Self {
+            target: SweepTarget::Http01Tokens,
+            interval: HOURLY,
             database,
         }
     }
@@ -234,6 +256,19 @@ impl SweepJob {
                     warn!(event = "job_retention_sweep_failed", outcome = "failure", error = %error);
                 }
             }
+            SweepTarget::Http01Tokens => {
+                let now = crate::sqlite::nonce::now_secs();
+                match crate::sqlite::http01_token::Http01Token::cleanup(now, &self.database).await {
+                    Ok(removed) => debug!(
+                        event = "http_01_token_reaper_swept",
+                        outcome = "success",
+                        rows_removed = removed
+                    ),
+                    Err(error) => {
+                        error!(event = "http_01_token_reaper_failed", outcome = "failure", error = %error);
+                    }
+                }
+            }
             SweepTarget::Orders { retention } => {
                 // One statement per profile rather than one over all of them:
                 // the retention is per-profile, and a profile whose delete
@@ -269,6 +304,7 @@ impl JobHandler for SweepJob {
             SweepTarget::AdminSessions { .. } => ADMIN_SESSION_SWEEP_KIND,
             SweepTarget::Jobs { .. } => RETENTION_JOB_KIND,
             SweepTarget::Orders { .. } => ORDER_SWEEP_KIND,
+            SweepTarget::Http01Tokens => HTTP01_TOKEN_SWEEP_KIND,
         }
     }
 
@@ -337,7 +373,8 @@ mod tests {
             SweepJob::audit(database.clone(), 7).kind(),
             SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200).kind(),
             SweepJob::jobs(database.clone(), 7).kind(),
-            SweepJob::orders(database, vec![("default".to_string(), 30)]).kind(),
+            SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]).kind(),
+            SweepJob::http01_tokens(database).kind(),
         ];
         let unique: std::collections::BTreeSet<_> = kinds.iter().collect();
         assert_eq!(unique.len(), kinds.len(), "{kinds:?}");
@@ -372,7 +409,9 @@ mod tests {
 
         // Daily, both of them.
         assert_eq!(SweepJob::audit(database.clone(), 7).interval(), DAILY);
-        assert_eq!(SweepJob::jobs(database, 7).interval(), DAILY);
+        assert_eq!(SweepJob::jobs(database.clone(), 7).interval(), DAILY);
+
+        assert_eq!(SweepJob::http01_tokens(database).interval(), HOURLY);
     }
 
     #[tokio::test]
@@ -401,6 +440,36 @@ mod tests {
         assert!(
             Nonce::verify(&fresh.value, &database, ttl).await.unwrap(),
             "a fresh nonce survives its own sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_http01_token_sweep_removes_expired_tokens_and_reschedules() {
+        use crate::sqlite::http01_token::Http01Token;
+
+        let (database, _queue) = setup().await;
+        let now = now_secs();
+        Http01Token::publish("stale", "stale.ka", now - 120, now - 60, &database)
+            .await
+            .unwrap();
+        Http01Token::publish("live", "live.ka", now, now + 600, &database)
+            .await
+            .unwrap();
+
+        let handler = SweepJob::http01_tokens(database.clone());
+        match handler.run(&row(HTTP01_TOKEN_SWEEP_KIND)).await {
+            JobOutcome::Reschedule(delay) => assert_eq!(delay, HOURLY),
+            other => panic!("{other:?}"),
+        }
+
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM http01_tokens;")
+            .fetch_one(database.raw_pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 1, "only the expired token goes");
+        assert_eq!(
+            Http01Token::lookup("live", now, &database).await.unwrap(),
+            Some("live.ka".to_string())
         );
     }
 
@@ -549,6 +618,7 @@ mod tests {
             SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200),
             SweepJob::jobs(database.clone(), 7),
             SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]),
+            SweepJob::http01_tokens(database.clone()),
         ] {
             let kind = handler.kind();
             assert!(

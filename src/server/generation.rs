@@ -220,6 +220,14 @@ pub(crate) fn build_generation(
             order_retention,
         ));
     }
+    // Only where some backend publishes http-01 tokens: the table stays empty
+    // otherwise, and the CRL refresh's rule applies.
+    if profiles
+        .iter()
+        .any(|profile| profile.signer.http01_tokens().is_some())
+    {
+        sweeps.push(crate::jobs::SweepJob::http01_tokens(database.clone()));
+    }
     if admin_enabled {
         sweeps.push(crate::jobs::SweepJob::admin_sessions(
             database.clone(),

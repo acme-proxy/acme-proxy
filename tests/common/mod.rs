@@ -31,7 +31,7 @@ use acme_proxy::notify::{
     BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
 };
 use acme_proxy::signer::local_ca::LocalCa;
-use acme_proxy::signer::relay::http01::MemoryTokenStore;
+use acme_proxy::signer::relay::http01::DbTokenStore;
 use acme_proxy::signer::{
     Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError,
 };
@@ -1691,18 +1691,22 @@ impl SignerBackend for RevokePersistFailingSigner {
 /// is how a test gets it onto the real `build_app` without standing up an
 /// upstream ACME server. Issuance is deliberately unsupported: nothing that
 /// uses this backend is about certificates.
-pub struct TokenStoreSigner(pub Arc<MemoryTokenStore>);
+pub struct TokenStoreSigner(pub Arc<DbTokenStore>);
 
 impl TokenStoreSigner {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Arc::new(MemoryTokenStore::new()))
+    /// Over its own throwaway database, with an hour before a token lapses.
+    pub async fn new() -> Self {
+        Self::over(Arc::new(Database::connect_in_memory().await.unwrap()))
     }
-}
 
-impl Default for TokenStoreSigner {
-    fn default() -> Self {
-        Self::new()
+    /// Over `database` — the app's, for a test that publishes through one
+    /// store and serves through another, the way two processes would.
+    #[must_use]
+    pub fn over(database: Arc<Database>) -> Self {
+        Self(Arc::new(DbTokenStore::new(
+            database,
+            std::time::Duration::from_secs(3600),
+        )))
     }
 }
 

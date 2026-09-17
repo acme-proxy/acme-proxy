@@ -43,7 +43,21 @@ pub async fn get_challenge_file(
     State(stores): State<Http01Stores>,
     Path(token): Path<String>,
 ) -> Response {
-    match stores.0.iter().find_map(|store| store.lookup(&token)) {
+    let mut unreadable = false;
+    let mut found = None;
+    for store in stores.0.iter() {
+        match store.lookup(&token).await {
+            Ok(Some(key_authorization)) => {
+                found = Some(key_authorization);
+                break;
+            }
+            Ok(None) => {}
+            // Logged by the store. Remembered rather than returned at once: a
+            // second store may still hold the token.
+            Err(_) => unreadable = true,
+        }
+    }
+    match found {
         Some(key_authorization) => {
             debug!(event = "http_01_responder_served", outcome = "success", token = %token);
             (
@@ -60,6 +74,16 @@ pub async fn get_challenge_file(
             )
                 .into_response()
         }
+        // A store that could not be read is not a store without the token: a
+        // `404` tells the upstream this server has nothing to show, which it
+        // records as a failed validation. A `500` is what a transient failure
+        // looks like to a CA that retries its fetch.
+        None if unreadable => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "Internal Server Error",
+        )
+            .into_response(),
         None => {
             debug!(event = "http_01_responder_unknown_token", outcome = "failure", token = %token);
             // Deliberately not a `Problem`: this route is a public file, not an

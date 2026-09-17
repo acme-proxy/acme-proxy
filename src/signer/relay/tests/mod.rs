@@ -242,8 +242,9 @@ impl StubTokens {
     }
 }
 
+#[async_trait::async_trait]
 impl http01::TokenStore for StubTokens {
-    fn publish(&self, token: &str, key_authorization: &str) {
+    async fn publish(&self, token: &str, key_authorization: &str) -> Result<(), String> {
         self.published
             .lock()
             .unwrap()
@@ -252,13 +253,14 @@ impl http01::TokenStore for StubTokens {
             .lock()
             .unwrap()
             .insert(token.to_string(), key_authorization.to_string());
+        Ok(())
     }
-    fn retract(&self, token: &str) {
+    async fn retract(&self, token: &str) {
         self.retracted.lock().unwrap().push(token.to_string());
         self.live.lock().unwrap().remove(token);
     }
-    fn lookup(&self, token: &str) -> Option<String> {
-        self.live.lock().unwrap().get(token).cloned()
+    async fn lookup(&self, token: &str) -> Result<Option<String>, String> {
+        Ok(self.live.lock().unwrap().get(token).cloned())
     }
 }
 

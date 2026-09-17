@@ -32,8 +32,8 @@ fn well_known(token: &str) -> String {
 /// A published token is served verbatim, with the content type §8.3 recommends.
 #[tokio::test]
 async fn a_published_token_is_served() {
-    let signer = Arc::new(TokenStoreSigner::new());
-    signer.0.publish("tok", "tok.thumbprint");
+    let signer = Arc::new(TokenStoreSigner::new().await);
+    signer.0.publish("tok", "tok.thumbprint").await.unwrap();
     let (app, _db) = test_app_with_signer(signer).await;
 
     let res = app
@@ -64,7 +64,7 @@ async fn a_published_token_is_served() {
 /// tell anyone who probes the path otherwise.
 #[tokio::test]
 async fn an_unknown_token_is_a_plain_not_found() {
-    let (app, _db) = test_app_with_signer(Arc::new(TokenStoreSigner::new())).await;
+    let (app, _db) = test_app_with_signer(Arc::new(TokenStoreSigner::new().await)).await;
 
     let res = app
         .oneshot(
@@ -97,13 +97,13 @@ async fn an_unknown_token_is_a_plain_not_found() {
     );
 }
 
-/// A retracted token stops being served — the property the relay's `Drop` guard
+/// A retracted token stops being served — the property the relay's retraction
 /// exists to guarantee, seen from the route.
 #[tokio::test]
 async fn a_retracted_token_is_no_longer_served() {
-    let signer = Arc::new(TokenStoreSigner::new());
-    signer.0.publish("tok", "tok.thumbprint");
-    signer.0.retract("tok");
+    let signer = Arc::new(TokenStoreSigner::new().await);
+    signer.0.publish("tok", "tok.thumbprint").await.unwrap();
+    signer.0.retract("tok").await;
     let (app, _db) = test_app_with_signer(signer).await;
 
     let res = app
@@ -139,8 +139,8 @@ async fn the_route_is_absent_without_a_token_store() {
 /// where a CA that knows nothing about ACME is the client.
 #[tokio::test]
 async fn the_route_carries_no_acme_layers() {
-    let signer = Arc::new(TokenStoreSigner::new());
-    signer.0.publish("tok", "tok.thumbprint");
+    let signer = Arc::new(TokenStoreSigner::new().await);
+    signer.0.publish("tok", "tok.thumbprint").await.unwrap();
     let (app, _db) = test_app_with_signer(signer).await;
 
     let res = app
@@ -181,8 +181,8 @@ async fn the_route_carries_no_acme_layers() {
 /// certificate without being reachable by the CA it is asking.
 #[tokio::test]
 async fn the_route_is_not_filtered() {
-    let signer = Arc::new(TokenStoreSigner::new());
-    signer.0.publish("tok", "tok.thumbprint");
+    let signer = Arc::new(TokenStoreSigner::new().await);
+    signer.0.publish("tok", "tok.thumbprint").await.unwrap();
     // A policy that refuses every connection, so nothing but the routing
     // itself can be what lets the fetch through.
     let filter = common::policy_with(Arc::new(RejectingCheck::connections()));
@@ -205,4 +205,63 @@ async fn the_route_is_not_filtered() {
         StatusCode::OK,
         "a filter refusing every connection must not reach the responder"
     );
+}
+
+/// A token published through one store is served by an app whose backend holds
+/// a different store over the same database — the relay job and the listener
+/// in two processes, which an in-memory store answered `404`.
+#[tokio::test]
+async fn a_token_published_elsewhere_is_served() {
+    let database = Arc::new(
+        acme_proxy::sqlite::db::Database::connect_in_memory()
+            .await
+            .unwrap(),
+    );
+    let app = common::test_app_over(
+        database.clone(),
+        Arc::new(TokenStoreSigner::over(database.clone())),
+    )
+    .await;
+    TokenStoreSigner::over(database)
+        .0
+        .publish("tok", "tok.thumbprint")
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(Request::get(well_known("tok")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// A store that cannot be read is a plain `500`, not the `404` that would tell
+/// the upstream this server has nothing to show — and still not an ACME
+/// problem document.
+#[tokio::test]
+async fn an_unreadable_store_is_a_plain_server_error() {
+    let database = Arc::new(
+        acme_proxy::sqlite::db::Database::connect_in_memory()
+            .await
+            .unwrap(),
+    );
+    let app = common::test_app_over(
+        database.clone(),
+        Arc::new(TokenStoreSigner::over(database.clone())),
+    )
+    .await;
+    database.close().await;
+
+    let res = app
+        .oneshot(Request::get(well_known("tok")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let content_type = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(!content_type.contains("problem+json"), "{content_type}");
 }

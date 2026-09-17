@@ -135,7 +135,11 @@ async fn http01_retracts_after_a_rejected_challenge() {
         "a failed attempt must still retract its token"
     );
     assert!(
-        tokens.lookup(testsrv::CHALLENGE_TOKEN).is_none(),
+        tokens
+            .lookup(testsrv::CHALLENGE_TOKEN)
+            .await
+            .unwrap()
+            .is_none(),
         "nothing must remain fetchable"
     );
 }
@@ -269,18 +273,18 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
     assert!(error.contains("route53"), "{error}");
 }
 
-/// The key authorizations published for the upstream survive a configuration
-/// reload that rebuilt this backend.
+/// A backend rebuilt by a configuration reload serves what the outgoing one
+/// published — and so does any other backend over the same database, which is
+/// the process that serves the route when it is not the one relaying.
 ///
-/// The half of `CarriedState` that has no durable home at all. A multi-
-/// perspective CA may have a fetch in flight for a token published seconds ago,
-/// and an empty store answers it `404` — failing an issuance over a
+/// A multi-perspective CA may have a fetch in flight for a token published
+/// seconds ago, and an empty store answers it `404`, failing an issuance over a
 /// configuration change that had nothing to do with it.
 // Multi-threaded, like every other test here that really provisions: the first
 // build blocks its thread on `thread::scope` while the scripted upstream needs
 // the runtime to answer it.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reload_carries_the_published_key_authorizations_across() {
+async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let mut cfg = config(&upstream, &dir);
@@ -291,44 +295,38 @@ async fn a_reload_carries_the_published_key_authorizations_across() {
         no_notifiers(),
         test_queue(database().await),
     );
-    let build = |cfg: &RelayConfig, carried: &crate::signer::CarriedState| {
-        RelaySigner::from_config(cfg, &parts, carried).unwrap()
+    let build = |cfg: &RelayConfig| {
+        RelaySigner::from_config(cfg, &parts, &crate::signer::CarriedState::new()).unwrap()
     };
 
-    let running = build(&cfg, &crate::signer::CarriedState::new());
+    let running = build(&cfg);
     running
         .http01_tokens()
         .expect("the http01 strategy has a store")
-        .publish("tok", "tok.thumbprint");
+        .publish("tok", "tok.thumbprint")
+        .await
+        .unwrap();
 
     // The operator edits an unrelated key and signals.
     let mut edited = cfg;
     edited.poll_interval_ms += 1;
-    let reloaded = build(&edited, &running.carried_state());
+    let reloaded = build(&edited);
     assert_eq!(
         reloaded
             .http01_tokens()
             .expect("still the http01 strategy")
-            .lookup("tok"),
+            .lookup("tok")
+            .await
+            .unwrap(),
         Some("tok.thumbprint".to_string()),
         "a fetch already in flight must still be answerable after the reload",
     );
 
-    // A strategy switched *away* from http01 offers nothing on, so switching
-    // back starts empty rather than resurrecting a token nobody is serving.
-    let mut bypassing = edited.clone();
+    // A strategy switched away from http01 exposes no store, so the route is
+    // not mounted for it.
+    let mut bypassing = edited;
     bypassing.challenge_strategy = "bypass".to_string();
-    let intermediate = build(&bypassing, &reloaded.carried_state());
-    assert!(intermediate.http01_tokens().is_none());
-
-    let back = build(&edited, &intermediate.carried_state());
-    assert!(
-        back.http01_tokens()
-            .expect("http01 again")
-            .lookup("tok")
-            .is_none(),
-        "nothing was live to carry: the intermediate backend served no tokens",
-    );
+    assert!(build(&bypassing).http01_tokens().is_none());
 }
 
 /// The `dns01_strategy` regression's twin: a tokenless challenge type ahead of

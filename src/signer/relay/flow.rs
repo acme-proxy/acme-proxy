@@ -657,9 +657,9 @@ async fn answer_dns01(
 ///   every real CA and read like a network problem.
 /// - A wildcard is refused outright: §8.3 fetches from the identifier itself,
 ///   and nothing answers on the name `*.example.com`.
-/// - Retraction is a `Drop` guard rather than an explicit call, because here it
-///   *can* be — see [`http01::PublishedToken`] for the cancellation hole that
-///   closes and why the dns-01 side cannot do the same.
+/// - Retraction is backed by a `Drop` guard as well as an explicit call, because
+///   here it *can* be — see [`http01::PublishedToken`] for the cancellation hole
+///   that closes and why the dns-01 side cannot do the same.
 ///
 /// The thumbprint is **this proxy's** at the upstream, for the reason
 /// [`answer_dns01`] sets out at length: they are different accounts on
@@ -711,15 +711,21 @@ async fn answer_http01(
         // §8.3 serves the key authorization itself — no digest, unlike dns-01.
         let key_authorization = format!("{token}.{thumbprint}");
 
-        // Dropped at the end of this iteration, on any early return, and — the
-        // case an explicit retract would miss — when the job runner's per-attempt
-        // timeout drops this future mid-poll.
-        let _published = http01::PublishedToken::publish(tokens.clone(), token, &key_authorization);
+        // A store that cannot be written has decided nothing about this
+        // order, so the attempt is retried rather than failed.
+        let published = http01::PublishedToken::publish(tokens.clone(), token, &key_authorization)
+            .await
+            .map_err(RelayFailure::Retryable)?;
 
         // Returns only once the upstream's authorization is terminal, so every
         // validation fetch — including a multi-perspective CA's several — has
-        // already happened by the time `_published` drops.
-        trigger_and_await(inner, &challenge.url, authz_url).await?;
+        // already happened by the time the token is retracted. Retracted
+        // before the `?`, so a rejected challenge retracts too; the guard's
+        // `Drop` covers the one case this cannot — the job runner's per-attempt
+        // timeout dropping this future mid-poll.
+        let triggered = trigger_and_await(inner, &challenge.url, authz_url).await;
+        published.retract().await;
+        triggered?;
     }
     Ok(())
 }
