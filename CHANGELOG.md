@@ -33,6 +33,15 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **A local CA no longer writes `ca.json`.** Its revocations live in the
+  database, and the JSON ledger beside `signer.local_ca.crl_path` is imported
+  once, the first time the CA meets the new schema (`local_ca_ledger_imported`),
+  then never read or written again. Tooling that read `ca.json` should read the
+  CRL instead. `ca.crl` is still written, as an export of the current CRL.
+- **Log events:** `local_ca_ledger_merged`, `local_ca_ledger_adopted` and
+  `signer_relay_token_store_adopted` are gone, with nothing left to merge or
+  adopt. `local_ca_crl_pruned` and `local_ca_crl_prune_failed` carry the CA's
+  `issuer` id instead of a `ledger` field.
 - **`admin_credential_changed` has a fifth `change` value, `contact_address`.**
   A `custom` notification script or a webhook consumer matching on `change`
   must handle it. That one event is delivered to the address that was
@@ -96,6 +105,23 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **A local CA's revocations and the CRL it serves live in the database.** Every
+  process over one database now serves the same CRL: a revocation made with
+  `acme-proxy order revoke` beside a running server is in that server's very
+  next `GET /crl`, where it used to wait for the server's own next write or a
+  restart. Backing up the database backs up the revocations. A CRL is stored
+  only over the one it was numbered after, so `crlNumber` stays monotonic
+  however many processes sign. The daily refresh also re-signs a CRL with less
+  than half of its seven-day validity left, since startup no longer does; a
+  server up for more than a week with no revocation used to serve an expired
+  CRL. `GET /crl` answers `500` when a CRL exists but cannot be read, rather than
+  `404`.
+- **The `relay` backend's `http-01` key authorizations live in the database**,
+  so the process answering `/.well-known/acme-challenge/{token}` need not be the
+  one relaying. A token lapses after the relay's attempt budget plus a minute if
+  its attempt dies before retracting it, and an hourly `http01_token_sweep`
+  deletes lapsed rows. A store that cannot be read answers the upstream's fetch
+  `500` instead of `404`.
 - **A queued notification naming a profile or backend this process does not
   know is retried, not dropped.** It is retried within the row's
   `jobs.max_attempts` and logged as `notify_delivery_target_missing`. Several
@@ -111,8 +137,8 @@ migrated configuration before restarting.
   prune, though the order still read as revoked. Each process rewrote
   `ca.json` and `ca.crl` from its own in-memory ledger. Every write now re-reads
   the sidecar and merges it under a lock on a new file beside it,
-  `ca.json.lock`. The CRL a running server *serves* still catches up only at
-  its own next revocation, its daily prune or a restart.
+  `ca.json.lock`. With the revocations since moved into the database (see
+  Changed), the server's next `GET /crl` lists the CLI's revocation at once.
 - **The same interleaving published a lower `crlNumber`** than the CLI had just
   written, and a client holding the newer CRL keeps it over a lower number. The
   number is now the larger of the two sides plus one.

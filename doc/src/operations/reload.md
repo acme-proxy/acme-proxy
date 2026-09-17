@@ -135,11 +135,12 @@ Nothing else is affected, and no other backend has background work to lose.
 
 A profile's `[signer]` section reloads, including the one an endpoint is
 actively issuing with. The obvious worry — that a rebuilt local CA would forget
-what it had revoked — is handled rather than avoided: the running CA hands its
-revocation ledger to its replacement, so a revocation that lands *during* the
-reload is not lost either, and `GET /crl` answers identically across the swap. A
-relay serving `http-01` hands over its published key authorizations the same
-way, so an upstream CA fetching one mid-reload still gets it.
+what it had revoked — does not arise: revocations and the CRL live in the
+database, which the running CA and its replacement both read, so a revocation
+that lands *during* the reload is not lost either, and `GET /crl` answers
+identically across the swap. A relay serving `http-01` keeps its published key
+authorizations in the database the same way, so an upstream CA fetching one
+mid-reload still gets it.
 
 A backend whose section did not move is not rebuilt at all. That matters most
 with `key_source = "pkcs11"`: an ordinary reload does not log in to the token

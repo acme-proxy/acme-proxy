@@ -41,10 +41,11 @@ graph TD
 ```
 
 Note the **fan-in**: `dev` and `staging` have identical `[signer]` sections, so
-they share one backend instance rather than constructing two. That is not an
-optimisation detail — two `local_ca` instances over the same files would each
-rewrite the CRL from their own in-memory ledger, so two profiles sharing
-`ca.key` while differing elsewhere is a startup error rather than a race.
+they share one backend instance rather than constructing two. Two profiles
+sharing `ca.key` while differing elsewhere is a startup error: one CA key under
+two configurations would issue under two policies from one identity — two
+different `crl_distribution_points` for one CRL, say — and that is refused
+rather than left to half-work.
 
 ## Hard database isolation
 Profiles act as a strict isolation boundary in the SQLite database.

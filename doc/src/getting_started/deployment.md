@@ -57,8 +57,8 @@ Below is an example `systemd` service file that runs `acme-proxy` securely.
 `ReadWritePaths`, so everything the server writes must land in
 `/var/lib/acme-proxy`. With `WorkingDirectory` set there, the defaults already
 do: `signer.local_ca.cert_path` (`ca.pem`), `key_path` (`ca.key`), `crl_path`
-(`ca.crl`) and its `.json` ledger sidecar are all resolved relative to the
-working directory, as are `server.tls.cert_path` / `key_path` if you enable TLS.
+(`ca.crl`) and the lock beside it are all resolved relative to the working
+directory, as are `server.tls.cert_path` / `key_path` if you enable TLS.
 If you set any of them to an absolute path, add that path to `ReadWritePaths`
 too.
 

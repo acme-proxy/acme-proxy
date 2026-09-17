@@ -73,10 +73,10 @@ other value is a startup error.
 ## Backends are shared by configuration, not per profile
 
 Two profiles whose `[signer]` sections are **identical** share one backend
-instance rather than constructing two. This is a correctness rule, not an
-optimisation: two `LocalCa` instances over the same files would each rewrite the
-CRL from their own in-memory ledger, so the second would silently drop the
-first's revocations.
+instance rather than constructing two. Revocations and the CRL live in the
+database, keyed by the CA's key, so two instances over one CA would still agree
+on what is revoked; what they could not agree on is everything else in the
+section.
 
 Two profiles sharing `ca.key` while differing anywhere else in `[signer]` is
 therefore a **startup error**, not a race to discover later. See

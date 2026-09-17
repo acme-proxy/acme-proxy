@@ -15,7 +15,7 @@ enterprise HSM tomorrow are the same configuration with a different
 
 Everything else about the Local CA is unchanged: the same [CSR
 sanitisation](local_ca.md#security-constraints), the same `leaf_validity_days`
-clamping, the same CRL and revocation ledger. Only *where the signature comes
+clamping, the same CRL and revocations. Only *where the signature comes
 from* moves.
 
 It protects **the CA issuing key** — the one that, if stolen, lets an attacker
@@ -333,8 +333,8 @@ recovery something to plan *before* you need it. Two workable approaches:
   distributing a new one is survivable — just make sure it is a decision rather
   than a discovery.
 
-Back up `crl_path` and its `.json` ledger sidecar as before; those are ordinary
-files, and the ledger is what makes revocations durable.
+Revocations live in the database like every other CA's, so backing up the
+database backs them up; `crl_path` is only an export of the current CRL.
 
 ### When the token disappears
 
@@ -346,7 +346,7 @@ either a successful issuance or `local_ca_pkcs11_reconnect_failed`.
 If that fails, finalize requests return `serverInternal` (500) and clients
 retry, which is the right behaviour: the order stays valid and issuance resumes
 once the token is back. `GET /crl` keeps working throughout — the current CRL is
-held in memory and serving it signs nothing.
+read from the database and serving it signs nothing.
 
 ### Sharing one token between profiles
 
@@ -354,8 +354,8 @@ Several [profiles](../core/profiles.md) may use the same module, and even the
 same key. `acme-proxy` opens one PKCS#11 context per module for the whole
 process and shares it, so this works without special configuration. Two profiles
 naming the same token key with *otherwise different* signer settings is refused
-at startup, for the same reason two profiles sharing `ca.key` are: each would
-keep its own revocation ledger and overwrite the other's CRL.
+at startup, for the same reason two profiles sharing `ca.key` are: one key under
+two configurations would issue under two policies from one identity.
 
 ## Troubleshooting
 

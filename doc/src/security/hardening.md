@@ -72,8 +72,8 @@ conjunction never becomes more permissive because something broke.
 - [ ] **`ca.key` is `0600` and owned by the service user.** `acme-proxy` creates
       it that way; a key restored from a backup may not be.
 - [ ] **The CRL is reachable** by everything that validates your certificates,
-      and `signer.local_ca.crl_path` is on durable storage — the JSON ledger
-      beside it is the authoritative record, not the CRL itself.
+      and the database is backed up — the revocations recorded there are the
+      authoritative record, not the CRL file.
       → [Revocation & CRL](../operations/revocation.md)
 
 ## Behind a proxy

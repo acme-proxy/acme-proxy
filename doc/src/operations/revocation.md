@@ -87,11 +87,9 @@ This calls the signer's `revoke` hook directly, exactly as the ACME endpoint
 does. It is **not** confirm-gated — unlike `order delete` — because revocation
 only ever tightens trust; there is no destructive outcome to protect against.
 
-With `local_ca`, the command writes the revocation to the ledger and the CRL
-file at once, but a server already running keeps **serving** the CRL it holds in
-memory. It takes the new entry in at its own next revocation, at its daily
-prune, or at a restart. Restart the server if the CRL must list the certificate
-now.
+With `local_ca`, the command records the revocation in the database and stores
+a new CRL there. A server already running over the same database serves that
+CRL on its very next `GET /crl`; there is nothing to restart.
 
 See [Admin CLI](cli.md).
 
@@ -105,27 +103,51 @@ With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
 - A valid, correctly signed **empty** CRL exists from the moment the CA is
   created, before anything has ever been revoked. Clients fetching it do not
   have to special-case "no revocations yet".
-- It is regenerated on every revocation and at startup.
+- It is signed again on every revocation, and by a daily refresh; see below.
 
-The durable record of revoked serials is a **JSON sidecar** beside `crl_path` —
-the same path with the extension swapped to `.json`, so `ca.crl` is accompanied
-by `ca.json`. The CRL's own DER is not read back to reconstruct state. **Back up
-both files**: losing the sidecar loses the revocation ledger, and the next
-regeneration would publish an empty CRL.
+The revocations and the current signed CRL live in the **database**, keyed by
+the CA's key, so every process over one database — the server, `acme-proxy
+order revoke`, a reloaded configuration — serves the same CRL. Backing up the
+database backs up the revocations; there is no separate file to keep in step
+with it.
 
-A third file, `ca.json.lock`, sits beside them. Every process that writes the
-ledger — the server and `acme-proxy order revoke` alike — holds a lock on it
-while it re-reads the sidecar, merges what another process wrote, and writes
-both files back. It is always empty and needs no backup. The lock serialises
-processes on **one host**; do not share `crl_path` between machines, or put it
-on a network filesystem.
+`crl_path` still holds the current CRL, as PEM, rewritten every time a new one
+is stored. It is an **export** for operators who publish the CRL from a static
+web server: nothing ever reads it back, and losing it loses nothing. A second
+file, `ca.json.lock`, sits beside it and is held while the export is written, so
+two processes cannot leave an older CRL in place of a newer one. It is always
+empty and needs no backup.
+
+### Upgrading from a JSON ledger
+
+Before revocations moved into the database, they were kept in a **JSON
+sidecar** beside `crl_path` — the same path with the extension swapped to
+`.json`, so `ca.crl` was accompanied by `ca.json`. The first time a CA meets a
+database with no CRL for it, the sidecar is imported: every entry becomes a
+revocation, and the CRL number resumes above the last one the sidecar
+published. The server logs `local_ca_ledger_imported` when it happens, which is
+at startup through the daily refresh's first pass, or at the first revocation
+or CRL fetch if that comes sooner.
+
+The import happens **once**. The sidecar is never read again nor written, so
+edits to it after that change nothing. Keep it with an old backup if you like,
+or delete it.
+
+A sidecar that cannot be imported — a hand-edited serial that is not hex, say —
+is logged as `local_ca_crl_initialization_failed`, naming the entry. Until it
+is fixed, that CA's revocations and `GET /crl` fail rather than proceed without
+the history the sidecar holds; the import is tried again on the next attempt.
 
 ### Expired entries are dropped
 
 A revocation entry is not kept for ever. RFC 5280 §3.3 permits removing one once
 the certificate itself has expired — nothing can present it any more — and this
-is what stops the CRL growing for the life of the deployment. The prune runs at
-startup and then daily, and re-signs the CRL only when something actually went.
+is what stops the CRL growing for the life of the deployment. The prune runs
+daily, starting shortly after startup.
+
+The same daily pass re-signs a CRL that has less than half of its seven-day
+validity left, even when nothing was revoked or pruned, so a quiet CA's CRL
+never lapses. When neither applies, nothing is signed.
 
 Two rules are worth knowing:
 
@@ -138,15 +160,15 @@ Two rules are worth knowing:
   unknown expiry is not an expired one.
 
 Each CRL carries a `crlNumber` that only ever increases, including across a
-restart and across a prune that shortens the list. That number lives in the
-sidecar, which is a second reason to back it up: a client that meets a lower
-number than it has cached keeps its cached CRL.
+restart, across a prune that shortens the list, and across several processes
+signing for one CA. A client that meets a lower number than it has cached keeps
+its cached CRL, so the number is stored with the CRL and a new one is only ever
+stored over the one it was numbered after.
 
 Sidecars written by 0.1.0 are a bare JSON array with no expiries and no number.
-They are read as-is and upgraded on the next write, with the number resuming
-above anything the older format could have published — so an upgrade needs no
-action, and entries carried over from it simply stay on the CRL until you
-revoke something else.
+They are imported as-is, with the number resuming above anything that format
+could have published. Their entries have no known expiry, so they stay on the
+CRL.
 
 ### Telling clients where it is
 

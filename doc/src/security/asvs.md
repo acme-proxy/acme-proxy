@@ -390,7 +390,7 @@ is a reference token and is assessed under V7.
 | 12.1.1 | Only current TLS versions, newest preferred | 1 | met | `with_safe_default_protocol_versions()` on the `rustls` ring provider — TLS 1.3 and 1.2 only (`src/tls.rs`) |
 | 12.1.2 | Recommended cipher suites, forward secrecy for L3 | 2 | met | `rustls` ships no suite without forward secrecy and none that is not current; there is no knob to weaken it |
 | 12.1.3 | mTLS client certificates validated before use | 2 | n/a | No mTLS. The one place a client certificate is inspected is `tls-alpn-01` validation, where the certificate *is* the challenge response and is checked for the RFC 8737 `acmeIdentifier` extension rather than for trust |
-| 12.1.4 | Certificate revocation such as OCSP stapling | 3 | partial | As a **CA**, the server publishes a CRL with a JSON ledger as the authoritative record ([Revocation & CRL](../operations/revocation.md)). As a **TLS server** it does not staple |
+| 12.1.4 | Certificate revocation such as OCSP stapling | 3 | partial | As a **CA**, the server publishes a CRL signed over the revocations recorded in its database ([Revocation & CRL](../operations/revocation.md)). As a **TLS server** it does not staple |
 | 12.1.5 | Encrypted Client Hello | 3 | gap | Not offered by `rustls` in a form this could adopt today |
 | 12.2.1 | TLS for all client connectivity, no fallback | 1 | met | With `server.tls.enabled` the socket speaks TLS instead of cleartext; there is no downgrade path. HTTPS is on the [hardening checklist](hardening.md#before-it-serves-anything) for deployments that terminate elsewhere |
 | 12.2.2 | Publicly trusted certificates on external services | 1 | n/a | This is an internal service by design; its clients trust the CA the operator installed |

@@ -84,13 +84,12 @@ disk is used as-is, whatever its type.)
 
 **`crl_path`** (`String`) — *Default: `"ca.crl"` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH`*
 
-Where the Certificate Revocation List (RFC 5280) is written and served from `GET
-/crl`. It is regenerated on every revocation and at startup. The durable ledger
-of revoked serials is a **JSON sidecar** beside it — the same path with the
-extension swapped to `.json` (so `ca.crl` → `ca.json`) — not the CRL's own DER
-read back. Back up both. Writers lock a third file, `ca.json.lock`, which stays
-empty. Entries are dropped once the certificates they name have expired, and the
-sidecar also carries the CRL's ever-increasing number; see
+Where the current Certificate Revocation List (RFC 5280) is **exported** as
+PEM, for publishing from a static web server. The revocations and the CRL
+`GET /crl` serves live in the database; this file is rewritten whenever a new
+CRL is stored and is never read back. Writers lock `ca.json.lock` beside it,
+which stays empty. The path also locates the JSON ledger a CA kept before the
+database did (`ca.crl` → `ca.json`), imported once; see
 [Revocation](../operations/revocation.md).
 
 **`crl_distribution_points`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CRL_DISTRIBUTION_POINTS`*
@@ -118,9 +117,9 @@ leading space from an environment-variable list) are each a startup error naming
 the key and the value.
 
 Note that two profiles sharing one CA share this list too: they share one
-`[signer]` section, one ledger and one CRL, so there is one place that CRL is
-published. Giving them different URLs while they share `ca.key` is refused at
-startup — see [Profiles & Routing](../core/profiles.md).
+`[signer]` section, one set of revocations and one CRL, so there is one place
+that CRL is published. Giving them different URLs while they share `ca.key` is
+refused at startup — see [Profiles & Routing](../core/profiles.md).
 
 **`ca_issuer_urls`** (`Array<String>`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__LOCAL_CA__CA_ISSUER_URLS`*
 
