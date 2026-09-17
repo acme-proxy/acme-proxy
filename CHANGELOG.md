@@ -131,6 +131,10 @@ migrated configuration before restarting.
   `certificate_revoke_signer_failed`, `certificate_revoke_persist_failed`), and
   a revocation whose order row could not be updated after the signer withdrew
   trust is now a `certificate_revoke_failed` audit row on every surface.
+- **Credential changes made from the host CLI notify the operator.**
+  `admin user passwd`, `contact`, `totp reset` and `totp recovery-codes` queue
+  the same `admin_credential_changed` the panel sends, for the running server
+  to deliver, whenever `admin.enabled` is on. ASVS V6.3.7 is now met at L3.
 - **An operator's account deactivation sends `account_deactivated`**, from the
   CLI, the panel and `POST /api/accounts/{id}/deactivate`, as the account's
   own `POST /acct/{id}` always has.

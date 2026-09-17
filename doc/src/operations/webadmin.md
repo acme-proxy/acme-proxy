@@ -464,9 +464,12 @@ from the **Operators** page, and the host sets anybody's with
 An operator with no address on file gets no message (the event is still
 logged); `[admin.notify.email].to`, if set, is the fallback for that case.
 
-Changes made from the **host CLI** (`admin user passwd`, `admin user totp
-reset`) are logged but do not notify — the CLI runs no background job queue,
-and the host is the trusted plane.
+Changes made from the **host CLI** (`admin user passwd`, `contact`,
+`totp reset`, `totp recovery-codes`) notify too. The CLI queues the delivery
+and exits, and the running server's job runner sends it, so a change made
+while no server runs is delivered when one starts. Nothing is queued while
+`admin.enabled` is off, since there is then no `[admin.notify]` to deliver
+through.
 
 ### Errors
 

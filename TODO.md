@@ -118,14 +118,6 @@ keeps its corpses stops being read.
       `contact` is unverified text a client typed, an opt-in default and a
       domain allowlist as the price of turning it on.
 
-- [ ] **Web-admin CLI credential changes do not notify.** `admin user passwd`
-      and `admin user totp reset` on the host change an operator's
-      authentication details without an `admin_credential_changed`
-      notification — the web panel's routes do (V6.3.7), the CLI's do not,
-      because the CLI has no job runner and building an `[admin.notify]`
-      dispatcher there was judged disproportionate for a host-root operation.
-      Closing it means giving `run_admin_command` a `JobQueue` and an `Egress`
-      to build one from.
 - [ ] **A "new location" that is genuinely a location, not an address.**
       `admin_users.known_login_ips` (last five distinct addresses) is what
       raises `admin_sign_in` `succeeded_from_new_address`. An address changes

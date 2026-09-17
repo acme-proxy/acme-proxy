@@ -193,17 +193,14 @@ impl AdminState {
         previous_recipient: Option<String>,
     ) {
         self.notify_security(crate::notify::NotifyEvent::AdminCredentialChanged(
-            crate::notify::AdminCredentialChangeData {
-                profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
-                username: user.username.clone(),
-                recipient: user.contact_email.clone(),
-                previous_recipient,
+            crate::notify::AdminCredentialChangeData::new(
+                user,
                 change,
                 by_self,
-                client_ip: client.map(|ip| ip.to_string()),
+                client.map(|ip| ip.to_string()),
                 user_agent,
-                at: crate::sqlite::nonce::now_secs(),
-            },
+                previous_recipient,
+            ),
         ))
         .await;
     }

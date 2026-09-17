@@ -68,7 +68,7 @@ reported for information.
 | V3 Web Frontend Security | 16 | 1 | 0 | 2 | 6 / 4 / 2 |
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
-| V6 Authentication | 26 | 1 | 0 | 8 | 7 / 2 / 3 |
+| V6 Authentication | 26 | 1 | 0 | 8 | 8 / 1 / 3 |
 | V7 Session Management | 15 | 1 | 0 | 2 | 0 / 1 / 0 |
 | V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
@@ -78,7 +78,7 @@ reported for information.
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **168** | **13** | **0** | **36** | **46 / 18 / 16** |
+| **Total** | **168** | **13** | **0** | **36** | **47 / 17 / 16** |
 
 The short version. **There is no L1 or L2 gap.** The four password-policy
 requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
@@ -266,7 +266,7 @@ assessed under V9.
 | 6.3.4 | No undocumented pathways; consistent strength | 2 | met | The panel and API share one session layer, and every mutating route passes through `AuthenticatedWrite`, `PageSessionWrite` or `EnrolWrite`. The host CLI is the second pathway and is documented as such |
 | 6.3.5 | Notify users of suspicious authentication attempts | 3 | met | A completed sign-in from an address not among the operator's recent ones (`admin_users.known_login_ips`, last five), a correct password then a refused second factor, and a per-session second-factor lockout each send an `admin_sign_in` notification to the operator's own `contact_email`, through `[admin.notify]` (`src/webadmin/handlers/session.rs`, `src/notify/`) |
 | 6.3.6 | Email not used as an authentication factor | 3 | met | It is not |
-| 6.3.7 | Notify after changes to authentication details | 3 | partial | A password change, a second-factor enrol/disable, a recovery-code regeneration and a colleague-admin second-factor reset send an `admin_credential_changed` notification. Changes made from the **host CLI** (`admin user passwd`, `admin user totp reset`) are logged only — the CLI has no job runner and the host is the trusted plane; see [Gaps](#gaps) |
+| 6.3.7 | Notify after changes to authentication details | 3 | met | A password change, a second-factor enrol/disable, a recovery-code regeneration, a notification-address change and a colleague-admin second-factor reset send an `admin_credential_changed` notification — from the panel and from the **host CLI** alike (`admin user passwd`, `contact`, `totp reset`, `totp recovery-codes`), the CLI queuing the delivery for the running server's worker |
 | 6.3.8 | Valid users not deducible from failed challenges | 3 | met | An unknown username still pays the KDF, against `password::dummy_hash()`, and every failure returns one `invalid_credentials` whatever the real cause (`src/admin/users.rs`) |
 | 6.4.1 | Initial passwords and activation codes are random, policy-compliant and short-lived | 1 | n/a | Nothing generates an initial password; the operator supplies one on stdin or in `--password-file` |
 | 6.4.2 | No password hints or secret questions | 1 | met | Neither exists |
@@ -564,16 +564,7 @@ non-feature. It is stated as such in the
 
 ## Gaps
 
-Open shortfalls, worst first. What remains is all L3: one item with a `TODO.md`
-entry, and a set of lower-priority ones recorded only here.
-
-**Credential changes made from the host CLI do not notify the operator** —
-*V6.3.7 (L3).* `admin user passwd` and `admin user totp reset` on the host
-change an operator's authentication details, and the web panel's equivalent
-routes send an `admin_credential_changed` notification while the CLI's do not:
-the CLI has no background job runner to hand the delivery to, and a host-root
-operation on a machine that already holds the password hashes is a weaker
-threat. Recorded in `TODO.md`.
+Open shortfalls, worst first. What remains is all L3, recorded only here.
 
 **Lower-priority L3 items**, recorded without a `TODO.md` entry: no CSP
 violation-report endpoint (V3.4.7), no `Cross-Origin-Opener-Policy` (V3.4.8),

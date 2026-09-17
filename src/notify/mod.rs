@@ -367,6 +367,33 @@ pub struct AdminCredentialChangeData {
     pub at: i64,
 }
 
+impl AdminCredentialChangeData {
+    /// The payload for a `change` to `user`, stamped now. One constructor for
+    /// both front ends — the panel and the host CLI — so the two cannot drift
+    /// on who the recipient is.
+    #[must_use]
+    pub fn new(
+        user: &crate::sqlite::admin_user::AdminUser,
+        change: AdminCredentialChange,
+        by_self: bool,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+        previous_recipient: Option<String>,
+    ) -> Self {
+        Self {
+            profile: ADMIN_DISPATCHER_KEY.to_string(),
+            username: user.username.clone(),
+            recipient: user.contact_email.clone(),
+            previous_recipient,
+            change,
+            by_self,
+            client_ip,
+            user_agent,
+            at: crate::sqlite::nonce::now_secs(),
+        }
+    }
+}
+
 /// One lifecycle event, carrying everything a template or `custom` script
 /// needs to describe it.
 ///

@@ -243,6 +243,11 @@ async fn run_user_command(
             );
         }
         AdminUserCommand::Contact { username, contact } => {
+            // Read first: the notification for this change goes to the address
+            // it replaces — whoever changed it controls the new one.
+            let previous = AdminUser::find_by_username(&username, &database)
+                .await?
+                .and_then(|user| user.contact_email);
             match users::set_contact_email(&username, contact.as_deref(), database.clone())
                 .await
                 .map_err(user_error)?
@@ -254,6 +259,16 @@ async fn run_user_command(
                         audit_admin::operator_contact_updated(actor, client, &user.username, set)
                     })
                     .await;
+                    if user.contact_email != previous {
+                        notify_credential_change(
+                            config,
+                            &database,
+                            &user,
+                            crate::notify::AdminCredentialChange::ContactAddress,
+                            previous,
+                        )
+                        .await;
+                    }
                     match user.contact_email {
                         Some(address) => {
                             println!("Contact address for {} set to {address}.", user.username)
@@ -344,6 +359,14 @@ async fn run_user_command(
                         audit_admin::operator_password_changed(actor, client, &user.username, false)
                     })
                     .await;
+                    notify_credential_change(
+                        config,
+                        &database,
+                        &user,
+                        crate::notify::AdminCredentialChange::Password,
+                        None,
+                    )
+                    .await;
                     revoked_sessions_row(
                         SessionScope::AllOf(user.username.clone()),
                         revoked,
@@ -385,7 +408,7 @@ async fn run_user_command(
             println!("Enabled {username}.");
         }
         AdminUserCommand::Totp { command } => {
-            run_totp_command(command, yes, palette, reader, database).await?;
+            run_totp_command(command, yes, palette, reader, config, database).await?;
         }
     }
     Ok(())
@@ -396,6 +419,7 @@ async fn run_totp_command(
     yes: bool,
     palette: Palette,
     reader: &mut impl BufRead,
+    config: &Config,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
@@ -444,6 +468,14 @@ async fn run_totp_command(
                 audit_admin::operator_totp_disabled(actor, client, &user.username, true)
             })
             .await;
+            notify_credential_change(
+                config,
+                &database,
+                &user,
+                crate::notify::AdminCredentialChange::SecondFactorDisabled,
+                None,
+            )
+            .await;
             println!(
                 "Removed the second factor for {}. Their sessions were revoked; \
                  they can sign in with a password alone until they enrol again.",
@@ -465,6 +497,14 @@ async fn run_totp_command(
                 audit_admin::operator_recovery_codes_regenerated(actor, client, &user.username)
             })
             .await;
+            notify_credential_change(
+                config,
+                &database,
+                &user,
+                crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
+                None,
+            )
+            .await;
             // The `eab create` treatment: printed once, stored one-way, and the
             // previous set is already dead by the time this prints.
             println!(
@@ -482,6 +522,53 @@ async fn run_totp_command(
 
 /// Resolves a username, reporting an unknown one in words rather than as a
 /// silent no-op.
+/// Queues `admin_credential_changed` for a change made from the host, through
+/// the `[admin.notify]` dispatcher `serve` would build — delivered by the
+/// running server's worker, since this process has no job runner.
+///
+/// Silent when there is nothing to notify through: the panel is off, so no
+/// dispatcher exists, or `[admin.notify]` does not build, which `serve` would
+/// refuse at startup anyway. A change already made is not undone because its
+/// notification could not be queued.
+///
+/// `by_self` is `false` and there is no address or User-Agent: nobody signed
+/// in made this change, and the message says so.
+async fn notify_credential_change(
+    config: &Config,
+    database: &Arc<Database>,
+    user: &AdminUser,
+    change: crate::notify::AdminCredentialChange,
+    previous_recipient: Option<String>,
+) {
+    if !config.admin.enabled {
+        return;
+    }
+    let Ok(egress) = crate::server::Egress::from_config(config) else {
+        return;
+    };
+    let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let Ok(dispatcher) = crate::notify::from_config(
+        crate::notify::ADMIN_DISPATCHER_KEY,
+        &config.admin.notify,
+        egress.outbound(),
+        &jobs,
+    ) else {
+        return;
+    };
+    dispatcher
+        .dispatch(crate::notify::NotifyEvent::AdminCredentialChanged(
+            crate::notify::AdminCredentialChangeData::new(
+                user,
+                change,
+                false,
+                None,
+                None,
+                previous_recipient,
+            ),
+        ))
+        .await;
+}
+
 async fn find_user(username: &str, database: Arc<Database>) -> Result<AdminUser, CliError> {
     AdminUser::find_by_username(username, &database)
         .await?
@@ -1030,6 +1117,56 @@ mod tests {
             error,
             CliError::bad_request("an admin user named `alice` already exists".to_string())
         );
+    }
+
+    /// A credential changed from the host queues `admin_credential_changed`
+    /// through `[admin.notify]` for the server's worker to deliver — once per
+    /// change, and not at all while the panel is off, since then no dispatcher
+    /// exists to deliver it.
+    #[tokio::test]
+    async fn a_host_credential_change_queues_its_notification() {
+        use crate::sqlite::job::Job;
+
+        let db = db().await;
+        run(create("alice"), &format!("{GOOD}\n"), db.clone())
+            .await
+            .unwrap();
+        run(contact("alice", Some("alice@example.com")), "", db.clone())
+            .await
+            .unwrap();
+        let passwd = || AdminCommand::User {
+            command: AdminUserCommand::Passwd {
+                username: "alice".to_string(),
+                password_file: None,
+            },
+        };
+        let queued = || async {
+            Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+                .await
+                .unwrap()
+        };
+
+        // The panel off: nothing to deliver through.
+        run(passwd(), "another-long-password\n", db.clone())
+            .await
+            .unwrap();
+        assert_eq!(queued().await, 0);
+
+        let mut config = Config::default();
+        config.admin.enabled = true;
+        config.admin.notify.enabled = vec!["custom".to_string()];
+        config.admin.notify.custom_enabled = vec!["pager".to_string()];
+        config.admin.notify.custom.insert(
+            "pager".to_string(),
+            crate::config::CustomNotifyConfig {
+                script_path: "/bin/true".to_string(),
+                ..crate::config::CustomNotifyConfig::default()
+            },
+        );
+        run_with_config(passwd(), "yet-another-long-password\n", &config, db.clone())
+            .await
+            .unwrap();
+        assert_eq!(queued().await, 1);
     }
 
     #[tokio::test]
