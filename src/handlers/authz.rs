@@ -8,13 +8,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{error, info, instrument, warn};
 
+use crate::acme::access::{load_owned_authz, load_owned_challenge, signer_account};
+use crate::acme::policy::challenge_problem;
 use crate::challenge::ValidationContext;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest, jwk_thumbprint};
 use crate::filter::ClientIp;
-use crate::handlers::helpers::{
-    challenge_problem, load_owned_authz, load_owned_challenge, signer_account,
-};
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::server::AppState;
 use crate::sqlite::{

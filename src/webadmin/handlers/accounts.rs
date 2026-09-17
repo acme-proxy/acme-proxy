@@ -121,7 +121,7 @@ pub async fn patch_account(
     request_context: crate::audit::RequestContext,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    if let Some(rejection) = crate::handlers::helpers::contact_shape_error(&body.contact) {
+    if let Some(rejection) = crate::acme::rules::contact_shape_error(&body.contact) {
         return Err(AdminError::bad_request(rejection.detail));
     }
 

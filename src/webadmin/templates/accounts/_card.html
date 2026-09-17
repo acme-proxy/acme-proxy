@@ -48,7 +48,7 @@
   <div class="panel">
     <h2>Contact</h2>
     {#- One `mailto:` URI per line. Validated by the same
-        `handlers::helpers::contact_shape_error` the ACME `newAccount` path and
+        `acme::rules::contact_shape_error` the ACME `newAccount` path and
         the JSON API both call -- the three must not diverge on what a valid
         contact is. -#}
     <form hx-post="/ui/accounts/{{ account.id }}/contact" hx-target="#account-card">

@@ -8,10 +8,10 @@ use base64::prelude::*;
 use serde::Deserialize;
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::acme::access::load_owned_order;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::filter::ClientIp;
-use crate::handlers::helpers::load_owned_order;
 use crate::notify::{CertificateRevokedData, NotifyEvent};
 use crate::server::AppState;
 use crate::sqlite::{account::Account, order::Order};
@@ -42,8 +42,7 @@ pub async fn post_certificate(
     } = state;
 
     let account =
-        crate::handlers::helpers::signer_account(account, &profile.name, &pubkey, &database)
-            .await?;
+        crate::acme::access::signer_account(account, &profile.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
 
     match order.certificate {

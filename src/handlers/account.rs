@@ -11,11 +11,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{error, info, instrument, warn};
 
+use crate::acme::access::signer_account;
+use crate::acme::rules::validate_contacts;
 use crate::eab;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest, ProtectedHeader, spki_to_jwk};
 use crate::filter::ClientIp;
-use crate::handlers::helpers::{signer_account, validate_contacts};
 use crate::key_change;
 use crate::notify::{AccountCreatedData, AccountDeactivatedData, NotifyEvent};
 use crate::server::AppState;
@@ -96,7 +97,7 @@ pub async fn post_new_account(
         let account = Account::find_by_pubkey(&profile.name, &pubkey, &database)
             .await
             .map_err(|error| {
-                // Distinct from `helpers.rs`'s `account_lookup_failed`: same
+                // Distinct from `acme::access`'s `account_lookup_failed`: same
                 // query, but this one is `newAccount`'s §7.3.1 lookup, not the
                 // one that resolves the signer of an order-side request.
                 error!(event = "account_only_return_existing_lookup_failed", outcome = "failure", error = %error);

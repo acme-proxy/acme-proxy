@@ -51,7 +51,8 @@
 //! - [`extractors`] - Parse and validate ACME JWS requests, verifying the media
 //!   type, the `crit` header, the signature, the JWS `url` and the nonce before
 //!   any handler runs
-//! - [`handlers`] - One module per ACME resource
+//! - [`handlers`] - One module per ACME resource: the HTTP edge
+//! - [`acme`] - The ACME domain rules every front end shares
 //! - [`challenge`] - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
 //! - [`signer`] - Pluggable certificate-issuance backends (local CA, ACME relay,
 //!   custom script)
@@ -227,6 +228,7 @@
 //! }
 //! ```
 
+pub mod acme;
 pub mod admin;
 pub mod audit;
 pub mod cert;
@@ -264,4 +266,4 @@ pub mod tls;
 pub mod webadmin;
 
 // Re-export name shape helpers for backwards compatibility
-pub use handlers::helpers::{is_wildcard, normalize_dns_name, well_formed_name};
+pub use acme::rules::{is_wildcard, normalize_dns_name, well_formed_name};

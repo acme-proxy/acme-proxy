@@ -11,14 +11,15 @@ use base64::prelude::*;
 use serde::Deserialize;
 use tracing::{error, info, instrument, warn};
 
+use crate::acme::access::{load_owned_order, order_authz_ids, signer_account};
+use crate::acme::policy::check_identifiers;
+use crate::acme::rules::{
+    check_csr_matches_order, csr_identifiers, is_wildcard, normalize_dns_name, parse_csr,
+    parse_rfc3339, well_formed_name,
+};
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::filter::{ClientIp, IdentifierStage, Stage as FilterStage};
-use crate::handlers::helpers::{
-    check_csr_matches_order, check_identifiers, csr_identifiers, is_wildcard, load_owned_order,
-    normalize_dns_name, order_authz_ids, parse_csr, parse_rfc3339, signer_account,
-    well_formed_name,
-};
 use crate::server::AppState;
 use crate::signer::{IssueOutcome, RequestedValidity, SignerError};
 use crate::sqlite::{

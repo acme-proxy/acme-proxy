@@ -195,7 +195,7 @@ pub async fn post_account_contact(
     // three front doors cannot come to disagree on what a valid contact is.
     // The refusal is a banner rather than an error page: the operator is
     // looking at the box they need to correct.
-    if let Some(rejection) = crate::handlers::helpers::contact_shape_error(&contact) {
+    if let Some(rejection) = crate::acme::rules::contact_shape_error(&contact) {
         let account = load(&id, &state).await?;
         return card(
             &state,

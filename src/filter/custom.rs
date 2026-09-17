@@ -14,7 +14,7 @@
 //! line-wise.
 //!
 //! At the `newOrder` stage that cannot happen: every identifier has been through
-//! `handlers::helpers::well_formed_name`, whose own doc comment names this
+//! `acme::rules::well_formed_name`, whose own doc comment names this
 //! variable as the reason it refuses delimiters. At the **CSR** stage it can:
 //! `csr_identifiers` projects the subject `CommonName` verbatim as a `cn` entry
 //! and renders an unreadable one with `format!("{:?}")` as an `other` entry, and

@@ -46,7 +46,7 @@ pub struct Eab {
 /// `Keep` is the default because it is the only one that changes nothing
 /// beyond the credential — but it is not free: an account whose kid names a
 /// deleted row resolves to no credential at all, so every `type = "eab"` filter
-/// check refuses it from then on (`handlers::helpers` finds nothing to build an
+/// check refuses it from then on (`acme::policy` finds nothing to build an
 /// `EabIdentity` from).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BoundAccounts {

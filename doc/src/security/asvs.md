@@ -105,7 +105,7 @@ for in a certificate authority: the audit trail is the product.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 1.1.1 | Decode into canonical form once, before processing | 2 | met | The JWS protected header and payload are base64url-decoded exactly once in `src/extractors/acme.rs`, before any check reads them; a DNS identifier passes `normalize_dns_name` (`src/handlers/helpers.rs`) once, before storage and before the filter sees it |
+| 1.1.1 | Decode into canonical form once, before processing | 2 | met | The JWS protected header and payload are base64url-decoded exactly once in `src/extractors/acme.rs`, before any check reads them; a DNS identifier passes `normalize_dns_name` (`src/acme/rules.rs`) once, before storage and before the filter sees it |
 | 1.1.2 | Output encoding as the final step, or by the interpreter | 2 | met | `minijinja` escapes at render time. The rule is per template *name*: `.html` auto-escapes, `.j2` does not — see `src/templating.rs` |
 | 1.2.1 | Context-correct output encoding for HTTP/HTML | 1 | met | Every panel template is `.html` and therefore auto-escaped; `auto_escaping_is_on_for_pages_and_off_for_notify` pins both directions |
 | 1.2.2 | Encode untrusted data in dynamically built URLs; safe protocols only | 1 | met | Panel URLs are built from server-side ids. The one place an untrusted URL is followed — an `http-01` redirect — is checked against a scheme allowlist in `Http01Validator::redirect_allowed` (`src/challenge/http_01.rs`) |
@@ -127,7 +127,7 @@ for in a certificate authority: the audit trail is the product.
 | 1.3.8 | JNDI injection | 2 | n/a | No JNDI |
 | 1.3.9 | Sanitize before memcache | 2 | n/a | No memcache |
 | 1.3.10 | Sanitize format strings | 2 | met | Rust format strings are compile-time literals; a runtime string can never become one |
-| 1.3.11 | Sanitize before mail systems (SMTP/IMAP injection) | 2 | met | `contact_shape_error` rejects control characters, `hfields` and multiple addresses before a contact can reach a `notify` template (`src/handlers/helpers.rs`) |
+| 1.3.11 | Sanitize before mail systems (SMTP/IMAP injection) | 2 | met | `contact_shape_error` rejects control characters, `hfields` and multiple addresses before a contact can reach a `notify` template (`src/acme/rules.rs`) |
 | 1.3.12 | Regular expressions free from exponential backtracking | 3 | met | The `regex` crate has no backtracking and guarantees linear time; patterns are operator configuration, not request input |
 | 1.4.1 | Memory-safe strings and copies | 2 | met | Safe Rust. The `unsafe` blocks in the tree are `std::env::set_var` in tests and one PKCS#11 `Send` impl (`src/signer/local_ca/pkcs11.rs`) |
 | 1.4.2 | Prevent integer overflow | 2 | met | Time and TTL arithmetic uses `saturating_add`/`saturating_sub` throughout `src/sqlite/`; release builds are not built with overflow checks disabled beyond the default |
