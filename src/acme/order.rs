@@ -643,6 +643,32 @@ impl OrderService<'_> {
         Ok(())
     }
 
+    /// Records a claimed validation the server has given up on.
+    ///
+    /// The queue retires a row when its attempts run out or its deadline passes,
+    /// and a challenge left `processing` at that point would be polled by its
+    /// client, saying nothing, until the authorization expired. This writes the
+    /// same failure `run_validation` writes — challenge, authorization and order
+    /// together in one transaction — so the client sees an `invalid` order and
+    /// stops.
+    ///
+    /// Deliberately **no `challenge_failed` notification**: nothing was learned
+    /// about the client's own setup, which is what that event reports. The
+    /// `challenge_validation_abandoned` log line is about this server instead.
+    pub async fn abandon_validation(
+        &self,
+        challenge: &mut Challenge,
+        authz: &mut Authorization,
+        order: &mut Order,
+        reason: &str,
+    ) -> Result<(), Error> {
+        let problem =
+            Problem::server_internal(format!("Challenge validation was not completed: {reason}"))
+                .to_value();
+        commit_validation_failure(challenge, authz, order, &problem, self.database).await?;
+        Ok(())
+    }
+
     /// Finalizes `order` with the base64url CSR a client sent (RFC 8555 §7.4),
     /// returning the order as it now stands: `valid` with its certificate, or
     /// `processing` when the backend resolves issuance elsewhere.
@@ -1171,8 +1197,12 @@ async fn commit_validation_failure(
     }
 }
 
+/// `pub(crate)` so the sibling job suite can reuse `profile` and `account`
+/// rather than growing a second copy of each — the rule `src/testutil.rs`
+/// exists for, applied to two fixtures too entangled with this module's
+/// `OrderService` to live there.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::challenge::{ChallengeError, ChallengeRegistry, ChallengeValidator};
     use crate::notify::NotifyDispatcher;

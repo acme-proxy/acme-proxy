@@ -27,6 +27,8 @@
 //!   contact update the operator front ends share.
 //! - [`revoke`] — certificate revocation, by certificate for an ACME client and
 //!   by order for an operator, sharing one tail.
+//! - [`validate`] — the `challenge_validate` job the trigger queues, since the
+//!   outbound check outlives the request that asked for it.
 //!
 //! **Logging:** whoever builds an [`Error`] logs it. The edge only maps it to a
 //! response, so a refusal is one log line however many layers it crossed —
@@ -47,6 +49,7 @@ pub mod order;
 pub mod policy;
 pub mod revoke;
 pub mod rules;
+pub mod validate;
 
 pub use account::AccountService;
 pub use error::Error;

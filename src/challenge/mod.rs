@@ -233,6 +233,16 @@ impl ChallengeRegistry {
         &self.enabled
     }
 
+    /// The budget one validation attempt gets (`challenge.timeout_ms`).
+    ///
+    /// Read by `acme::validate::ChallengeValidateJob` to size its lease: the
+    /// runner must not reclaim a row while the attempt holding it is still
+    /// inside this timeout.
+    #[must_use]
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     /// Whether triggering a challenge skips validation entirely.
     #[must_use]
     pub fn is_bypassed(&self) -> bool {

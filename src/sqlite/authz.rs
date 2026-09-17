@@ -558,6 +558,67 @@ impl Challenge {
         Ok(true)
     }
 
+    /// Gives a claim back, moving `processing` to `pending`.
+    ///
+    /// The guarded inverse of [`claim_for_validation`](Self::claim_for_validation),
+    /// named after `Order::release_finalize_claim` and owed for the same reason:
+    /// `post_challenge` claims the row and *then* queues the work, so a failed
+    /// enqueue would otherwise leave a challenge `processing` with nothing
+    /// coming — polled by its client until the authorization expired.
+    ///
+    /// Guarded on the status rather than fired blindly, so a claim another
+    /// runner has already settled is never walked back to `pending`.
+    pub async fn release_validation_claim(
+        &mut self,
+        database: &Database,
+    ) -> Result<bool, sqlx::Error> {
+        let released = sqlx::query(
+            "UPDATE challenges SET status = 'pending' WHERE id = ? AND status = 'processing';",
+        )
+        .bind(self.id)
+        .execute(&database.pool)
+        .await?
+        .rows_affected()
+            == 1;
+
+        if released {
+            self.status = ChallengeStatus::Pending;
+            debug!(event = "db_challenge_claim_released", outcome = "success", challenge_id = ?self.id);
+        }
+        Ok(released)
+    }
+
+    /// Every challenge left `processing` whose authorization has not expired,
+    /// with that authorization's `expires`.
+    ///
+    /// The recovery read behind `ChallengeValidateJob::recover`: a process that
+    /// died between the claim and the enqueue leaves exactly these rows, and
+    /// nothing else re-derives them. Expired authorizations are excluded here
+    /// rather than filtered afterwards — a job queued past its own deadline is
+    /// retired without ever running, so queueing one would be work that exists
+    /// only to be thrown away.
+    pub async fn find_processing(
+        now: i64,
+        database: &Database,
+    ) -> Result<Vec<(Uuid, i64)>, sqlx::Error> {
+        debug!(
+            event = "db_challenge_find_processing_started",
+            outcome = "progress"
+        );
+        let rows = sqlx::query(
+            "SELECT c.id, a.expires FROM challenges c \
+             JOIN authorizations a ON a.id = c.authz_id \
+             WHERE c.status = 'processing' AND a.expires > ?;",
+        )
+        .bind(now)
+        .fetch_all(&database.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok((row.try_get("id")?, row.try_get("expires")?)))
+            .collect()
+    }
+
     /// Records a successful validation: moves the challenge to `valid`, stamps
     /// `validated`, and keeps `self` in sync.
     /// The `valid` transition as a bare statement, over any executor.

@@ -177,6 +177,29 @@ pub(crate) fn build_generation(
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
+    // Challenge validation. `POST /chall/{id}` claims the challenge and queues
+    // the outbound check, so the probe of a client-chosen host no longer holds
+    // an admission permit for the length of `challenge.timeout_ms`. Registered
+    // unconditionally for `SignerRevokeJob`'s reason above — a row queued
+    // before a configuration change must still find a handler — and holding the
+    // profiles rather than one profile, since the registry refuses a second
+    // handler for one kind.
+    job_registry
+        .register(Arc::new(crate::acme::validate::ChallengeValidateJob::new(
+            database.clone(),
+            Arc::new(
+                crate::audit::Auditor::offline(database.clone())
+                    .with_metrics(assembly.metrics.clone()),
+            ),
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.clone()))
+                .collect(),
+        )))
+        .inspect_err(|error| {
+            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+        })?;
+
     // Notification delivery. The same shape as the two above and the reason it
     // is: one handler for every profile, holding the whole
     // `profile name -> dispatcher` map, with a job row naming its own profile.

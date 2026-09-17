@@ -47,20 +47,32 @@ fn is_test_file(relative: &str) -> bool {
 /// A `#[cfg(test)]` on a lone function or impl does not end production code —
 /// `proxy.rs` has several ahead of more production items — so only the
 /// attribute followed by a `mod` line counts.
+///
+/// The declaration may carry a visibility: `src/acme/order.rs` exports its
+/// fixtures to the sibling job suite as `pub(crate) mod tests`. Missing that
+/// spelling is the dangerous direction — the boundary is simply not found, the
+/// whole file reads as production, and the scan reports every fixture in it.
 fn production_part(text: &str) -> &str {
     let mut offset = 0;
     let mut lines = text.split_inclusive('\n').peekable();
     while let Some(line) = lines.next() {
-        if line.trim() == "#[cfg(test)]"
-            && lines
-                .peek()
-                .is_some_and(|next| next.trim_start().starts_with("mod "))
-        {
+        if line.trim() == "#[cfg(test)]" && lines.peek().is_some_and(|next| is_mod_decl(next)) {
             return &text[..offset];
         }
         offset += line.len();
     }
     text
+}
+
+/// Whether a line declares a module, with or without a visibility prefix.
+fn is_mod_decl(line: &str) -> bool {
+    let line = line.trim_start();
+    let rest = line
+        .strip_prefix("pub(crate) ")
+        .or_else(|| line.strip_prefix("pub(super) "))
+        .or_else(|| line.strip_prefix("pub "))
+        .unwrap_or(line);
+    rest.starts_with("mod ")
 }
 
 #[test]
@@ -150,6 +162,22 @@ fn the_production_part_ends_at_the_first_test_module() {
     assert_eq!(production.matches("raw_pool(").count(), 1, "{production}");
     assert!(production.contains("fn b()"));
     assert!(!production.contains("mod tests"));
+
+    // A visibility on the test module must not hide the boundary: without
+    // this the whole file would read as production and every fixture in it
+    // would be reported.
+    for visibility in ["", "pub ", "pub(crate) ", "pub(super) "] {
+        let text = format!(
+            "fn b() {{ db.raw_pool(); }}\n#[cfg(test)]\n{visibility}mod tests {{\n\
+             fn c() {{ db.raw_pool(); }}\n}}\n"
+        );
+        let production = production_part(&text);
+        assert_eq!(
+            production.matches("raw_pool(").count(),
+            1,
+            "`{visibility}mod tests` did not end the production part"
+        );
+    }
 
     assert_eq!(production_part("fn only() {}\n"), "fn only() {}\n");
     assert!(is_test_file("src/signer/relay/tests/lifecycle.rs"));
