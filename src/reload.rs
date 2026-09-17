@@ -128,10 +128,10 @@ pub struct Applied<'a> {
 /// entries through a digest: both reached a credential (a proxy URL's
 /// `user:password@`, the HSM PIN, the RFC 2136 TSIG key, the upstream EAB
 /// secret), and [`ReloadError::Frozen`] embeds both renderings in a message
-/// `cli::publish_reload`'s caller logs. Nothing left here can hold one, so the
-/// digest is gone with them. **The rule survives the code**: were an entry ever
-/// added back, a whole-section projection must be opaque iff any field it
-/// reaches can hold a credential.
+/// `server::generation::publish_reload`'s caller logs. Nothing left here can
+/// hold one, so the digest is gone with them. **The rule survives the code**:
+/// were an entry ever added back, a whole-section projection must be opaque iff
+/// any field it reaches can hold a credential.
 type Projection = fn(&Applied<'_>) -> String;
 const FROZEN: &[(&str, Projection)] = &[("database.url", |a| a.config.database.url.clone())];
 
@@ -611,10 +611,10 @@ mod frozen_tests {
     /// reloads — the seven this table used to hold.
     ///
     /// The table is what a reload consults *first*, so a key left in here would
-    /// make `cli::plan_sockets` unreachable code and the whole rebinding path
-    /// dead: the refusal happens before anything is built, let alone bound.
-    /// That is why this sits beside the freeze rather than only in the suite
-    /// that drives a real socket.
+    /// make `server::sockets::plan_sockets` unreachable code and the whole
+    /// rebinding path dead: the refusal happens before anything is built, let
+    /// alone bound. That is why this sits beside the freeze rather than only in
+    /// the suite that drives a real socket.
     #[test]
     fn every_listener_key_is_reloadable() {
         for mutate in [

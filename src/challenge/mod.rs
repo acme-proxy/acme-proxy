@@ -301,7 +301,7 @@ impl ChallengeRegistry {
                     typ,
                     identifier = ctx.identifier,
                     challenge_id = ctx.challenge_id,
-                    timeout_ms = crate::millis(self.timeout),
+                    timeout_ms = crate::logfields::millis(self.timeout),
                 );
                 Err(ChallengeError::Connection(format!(
                     "{typ} validation of {} timed out after {}ms",

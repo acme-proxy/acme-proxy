@@ -222,17 +222,18 @@ impl RelaySigner {
 
         // Construction is synchronous (see `signer::from_config`) but the
         // provisioning below is inherently async, and the one caller that
-        // matters — `cli::serve_on` — is *already* inside a runtime. Blocking on a
-        // nested runtime from there panics ("Cannot start a runtime from within
-        // a runtime"), and `block_in_place` is unavailable on a current-thread
-        // runtime, so the only construction that works from both an async and a
-        // sync caller is a scoped OS thread with a runtime of its own.
-        // `thread::scope` joins before returning, which is what keeps this
-        // function synchronous, and borrows `cfg` rather than cloning it. The
-        // `strategy` match lives inside the spawned closure too, not just the
-        // `provision` call: `Rfc2136Updater::from_config` can do a blocking DNS
-        // resolution, and that must stay off the caller's tokio worker thread
-        // for exactly the same reason the network provisioning below does.
+        // matters — `server::serve_on` — is *already* inside a runtime.
+        // Blocking on a nested runtime from there panics ("Cannot start a
+        // runtime from within a runtime"), and `block_in_place` is unavailable
+        // on a current-thread runtime, so the only construction that works from
+        // both an async and a sync caller is a scoped OS thread with a runtime
+        // of its own. `thread::scope` joins before returning, which is what
+        // keeps this function synchronous, and borrows `cfg` rather than
+        // cloning it. The `strategy` match lives inside the spawned closure
+        // too, not just the `provision` call: `Rfc2136Updater::from_config` can
+        // do a blocking DNS resolution, and that must stay off the caller's
+        // tokio worker thread for exactly the same reason the network
+        // provisioning below does.
         let (client, account, kid, strategy, http01_tokens) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {

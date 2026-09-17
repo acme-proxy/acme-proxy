@@ -474,7 +474,7 @@ async fn an_expired_authorization_cannot_be_validated() {
 
     // Expire the authorization (and its order) behind the client's back.
     sqlx::query("UPDATE authorizations SET expires = 1;")
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 
@@ -523,7 +523,7 @@ async fn an_issued_order_is_still_readable_after_it_expires() {
 
 async fn expire_orders(db: &Arc<Database>) {
     sqlx::query("UPDATE orders SET expires = 1;")
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 }
@@ -576,12 +576,12 @@ async fn an_order_missing_an_authorization_never_becomes_ready() {
     let surviving: uuid::Uuid = authz_urls[0].rsplit('/').next().unwrap().parse().unwrap();
     sqlx::query("DELETE FROM challenges WHERE authz_id != ?;")
         .bind(surviving)
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
     sqlx::query("DELETE FROM authorizations WHERE id != ?;")
         .bind(surviving)
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 
@@ -739,7 +739,7 @@ async fn a_panicking_acme_handler_answers_a_problem_document() {
 
     let app = Router::new()
         .route("/boom", get(boom))
-        .layer(acme_proxy::catch_panic_acme());
+        .layer(acme_proxy::server::catch_panic_acme());
 
     let res = app
         .oneshot(Request::get("/boom").body(Body::empty()).unwrap())

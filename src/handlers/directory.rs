@@ -7,9 +7,9 @@ use axum::{
 use serde_json::{Value, json};
 use tracing::debug;
 
-use crate::AppState;
 use crate::extractors::acme::AcmePostAsGet;
 use crate::routes;
+use crate::server::AppState;
 
 /// The `Cache-Control` RFC 8555 §7.2 requires on `newNonce` responses: a cached
 /// nonce is a nonce that will be rejected as already used.

@@ -287,7 +287,7 @@ async fn an_expired_session_is_refused_and_swept() {
     let hash = acme_proxy::webadmin::session::hash_token(&session.cookie);
     sqlx::query("UPDATE admin_sessions SET expires_at = 1 WHERE token_hash = ?;")
         .bind(&hash)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -315,7 +315,7 @@ async fn an_idle_session_is_refused_with_its_own_code() {
         "UPDATE admin_sessions SET last_seen_at = last_seen_at - 600 WHERE token_hash = ?;",
     )
     .bind(&hash)
-    .execute(&database.pool)
+    .execute(database.raw_pool())
     .await
     .unwrap();
 
@@ -469,7 +469,7 @@ async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
     .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -542,7 +542,7 @@ async fn a_code_cannot_be_spent_twice() {
     let secret = enrol_totp(database.clone(), "alice").await;
 
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -838,7 +838,7 @@ async fn last_login_is_stamped_at_promotion_not_at_the_password() {
     .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -3559,7 +3559,7 @@ async fn the_admin_listener_fails_closed_when_the_database_is_gone() {
     // this wide cannot tell "refused because nothing could be read" from "this
     // route stopped existing", which is the whole thing the test is named for.
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    database.pool.close().await;
+    database.close().await;
 
     for (method, path) in [
         (Method::GET, "/api/session"),
@@ -3982,7 +3982,7 @@ async fn the_jobs_api_lists_cancels_and_runs() {
     .unwrap();
     sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
         .bind(done_id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let refused = admin_request(
@@ -4013,7 +4013,7 @@ async fn the_jobs_api_lists_cancels_and_runs() {
     .unwrap();
     sqlx::query("UPDATE jobs SET status = 'failed', attempts = 5 WHERE id = ?;")
         .bind(failed_id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let revived = json_body(

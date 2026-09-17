@@ -437,7 +437,7 @@ fn durations_go_through_the_millis_helper() {
     for site in call_sites() {
         assert!(
             !site.body.contains("as_millis()"),
-            "{}: a duration field goes through `acme_proxy::millis`, never \
+            "{}: a duration field goes through `acme_proxy::logfields::millis`, never \
              `Duration::as_millis()` -- the latter lands in JSON as a string",
             site.at(),
         );

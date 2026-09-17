@@ -90,7 +90,7 @@ impl Propagation {
                     event = "signer_relay_dns_01_propagation_waited",
                     outcome = "progress",
                     name = %name,
-                    delay_ms = crate::millis(*delay),
+                    delay_ms = crate::logfields::millis(*delay),
                 );
                 tokio::time::sleep(*delay).await;
             }

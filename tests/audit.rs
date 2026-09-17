@@ -176,7 +176,7 @@ async fn account_row(database: &Arc<Database>) -> Value {
     let row: (Option<String>, Option<i64>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT created_ip, last_seen_at, last_seen_ip, last_seen_ptr FROM accounts LIMIT 1;",
     )
-    .fetch_one(&database.pool)
+    .fetch_one(database.raw_pool())
     .await
     .unwrap();
     json!({
@@ -280,7 +280,7 @@ async fn an_order_records_the_address_it_was_placed_from() {
 
     let (ip, ptr): (Option<String>, Option<String>) =
         sqlx::query_as("SELECT created_ip, created_ptr FROM orders LIMIT 1;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
     assert_eq!(ip.as_deref(), Some("198.51.100.4"));

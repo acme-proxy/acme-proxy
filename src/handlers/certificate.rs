@@ -8,12 +8,12 @@ use base64::prelude::*;
 use serde::Deserialize;
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::AppState;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::filter::ClientIp;
 use crate::handlers::helpers::load_owned_order;
 use crate::notify::{CertificateRevokedData, NotifyEvent};
+use crate::server::AppState;
 use crate::sqlite::{account::Account, order::Order};
 
 /// A revokeCert payload (RFC 8555 §7.6).

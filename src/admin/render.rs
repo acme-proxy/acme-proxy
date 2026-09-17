@@ -37,7 +37,7 @@ pub fn profile_base_url(base_url: &str, profile: &str) -> String {
     format!(
         "{}{}/{profile}",
         base_url.trim_end_matches('/'),
-        crate::PROFILE_PREFIX
+        crate::routes::PROFILE_PREFIX
     )
 }
 
@@ -481,12 +481,12 @@ pub fn render_nonce_stats_json(count: i64, ttl_seconds: u64) -> Value {
 ///
 /// The two front ends reach this from opposite directions, and the difference
 /// is real rather than an implementation detail. `GET /api/profiles` and
-/// `/ui/profiles` build it from a **mounted** [`crate::Profile`], so they
-/// describe what this process is actually serving; `acme-proxy profile list`
-/// builds it from the configuration, because the alternative is
+/// `/ui/profiles` build it from a **mounted** [`crate::server::Profile`], so
+/// they describe what this process is actually serving; `acme-proxy profile
+/// list` builds it from the configuration, because the alternative is
 /// `Profile::build_all`, which constructs signer backends -- generating a CA
-/// key and contacting a relay upstream for a read-only listing. That is
-/// `filter show`'s split exactly: the panel serves the live thing, the terminal
+/// key and contacting a relay upstream for a read-only listing. That is `filter
+/// show`'s split exactly: the panel serves the live thing, the terminal
 /// rebuilds one, and between an edit and its `SIGHUP` the two legitimately
 /// disagree.
 pub struct ProfileSummary {
@@ -499,7 +499,7 @@ pub struct ProfileSummary {
 impl ProfileSummary {
     /// An endpoint this process is serving.
     #[must_use]
-    pub fn mounted(profile: &crate::Profile) -> Self {
+    pub fn mounted(profile: &crate::server::Profile) -> Self {
         Self {
             name: profile.name.clone(),
             base_url: profile.base_url.clone(),

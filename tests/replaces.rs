@@ -376,7 +376,7 @@ async fn an_invalid_replacement_order_does_not_block_a_retry() {
     // at finalize — the order ends up terminal.
     sqlx::query("UPDATE orders SET status = 'invalid' WHERE id = ?")
         .bind(first_id.parse::<uuid::Uuid>().unwrap())
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 

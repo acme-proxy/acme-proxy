@@ -69,6 +69,13 @@ accounts.
 
 The server uses `sqlx` with `sqlite`.
 
+The connection pool is private to `src/sqlite/`. Everything else reaches the
+database through a table module, `Database::transaction()` (a transaction that
+derefs to the connection the table methods take) or `Database::pool_stats()`
+(the metrics gauge), so SQL and its dialect stay in one module tree.
+`Database::raw_pool()` exists only for test fixtures, and `tests/layering.rs`
+fails the build when production code calls it.
+
 ### Migrations
 Database migrations are embedded into the binary using `sqlx::migrate!()` and
 run automatically at startup. The database connects with two crucial pragmas:

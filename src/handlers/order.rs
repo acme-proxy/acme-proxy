@@ -11,7 +11,6 @@ use base64::prelude::*;
 use serde::Deserialize;
 use tracing::{error, info, instrument, warn};
 
-use crate::AppState;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::filter::{ClientIp, IdentifierStage, Stage as FilterStage};
@@ -20,6 +19,7 @@ use crate::handlers::helpers::{
     normalize_dns_name, order_authz_ids, parse_csr, parse_rfc3339, signer_account,
     well_formed_name,
 };
+use crate::server::AppState;
 use crate::signer::{IssueOutcome, RequestedValidity, SignerError};
 use crate::sqlite::{
     authz::{Authorization, Challenge},
@@ -386,7 +386,7 @@ pub async fn post_new_order(
     let mut authz_ids = Vec::with_capacity(order.identifiers.len());
 
     let persisted = async {
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
         order.insert(&mut *tx).await?;
 
         for identifier in &order.identifiers {
@@ -833,12 +833,12 @@ mod tests {
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
         let order = |id: &'static str, replaces: &'static str| {
-            let pool = database.pool.clone();
+            let pool = database.raw_pool().clone();
             async move {
                 sqlx::query(
                     "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, \
@@ -859,7 +859,7 @@ mod tests {
         // `UNIQUE(order_id, identifier)`. That must not be reported to a client
         // as `alreadyReplaced`.
         let authz = |id: &'static str| {
-            let pool = database.pool.clone();
+            let pool = database.raw_pool().clone();
             async move {
                 sqlx::query(
                     "INSERT INTO authorizations (id, order_id, identifier, status, expires, \
@@ -880,7 +880,7 @@ mod tests {
 
         // And an unrelated failure is not swept in either.
         let missing = sqlx::query("INSERT INTO orders (id) VALUES ('x');")
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap_err();
         assert!(!is_replaces_conflict(&missing));

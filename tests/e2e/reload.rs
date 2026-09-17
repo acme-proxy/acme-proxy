@@ -3,10 +3,11 @@
 //! `tests/reload.rs` drives `ReloadHandle::reload()` programmatically, which
 //! covers the *rebuild* and the *swap* but not the thing an operator actually
 //! does. `watch_for_hangup` — the signal stream that turns a `SIGHUP` into that
-//! call — was reached by no test at all, and it carries a trap `src/cli/mod.rs`
-//! documents in so many words: a one-shot handler would leave the **second**
-//! `SIGHUP` at its default disposition, which is *terminate*. That is a
-//! production process kill, reachable by an operator reloading twice.
+//! call — was reached by no test at all, and it carries a trap
+//! `src/server/mod.rs` documents in so many words: a one-shot handler would
+//! leave the **second** `SIGHUP` at its default disposition, which is
+//! *terminate*. That is a production process kill, reachable by an operator
+//! reloading twice.
 //!
 //! The lab configures `acme-proxy` entirely through `ACME_PROXY_*` variables,
 //! and the image's `WORKDIR` is `/data`, where `Config::load` looks for

@@ -1924,7 +1924,7 @@ mod tests {
         assert_eq!(outcome, None);
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nonces;")
-            .fetch_one(&db.pool)
+            .fetch_one(db.raw_pool())
             .await
             .unwrap();
         assert_eq!(count, 1);
@@ -1949,7 +1949,7 @@ mod tests {
         assert_eq!(outcome, Some(1));
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nonces;")
-            .fetch_one(&db.pool)
+            .fetch_one(db.raw_pool())
             .await
             .unwrap();
         assert_eq!(count, 0);
@@ -2155,7 +2155,7 @@ mod tests {
         // Drive the job to `done` without touching the upstream row.
         sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
             .bind(job.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 
@@ -2172,7 +2172,7 @@ mod tests {
         let (order, job) = relay_job(&db).await;
         sqlx::query("UPDATE jobs SET status = 'failed' WHERE id = ?;")
             .bind(job.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 
@@ -2390,7 +2390,7 @@ mod tests {
         let (order, job) = relay_job(&db).await;
         sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?;")
             .bind(job.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 
@@ -2450,7 +2450,7 @@ mod tests {
         let sweep = sweep_job(&db).await;
         sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
             .bind(sweep.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         assert!(matches!(
@@ -2520,7 +2520,7 @@ mod tests {
             "UPDATE jobs SET status = 'failed', attempts = 5, last_error = 'boom' WHERE id = ?;",
         )
         .bind(relay.id)
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
         let outcome = run_job_now(
@@ -2540,7 +2540,7 @@ mod tests {
         // done -> Refused.
         sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
             .bind(sweep.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         assert!(matches!(
@@ -2591,7 +2591,7 @@ mod tests {
         sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(successor.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 
@@ -2630,7 +2630,7 @@ mod tests {
         sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(pending.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 

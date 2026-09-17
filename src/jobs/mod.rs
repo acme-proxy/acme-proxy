@@ -191,10 +191,10 @@ pub struct JobQueue {
     database: Arc<Database>,
     notify: Arc<Notify>,
     /// Shared rather than copied, because a reload has to reach the clones.
-    /// This queue is cloned into [`crate::Assembly`], every `RelaySigner` and
-    /// every `NotifyDispatcher` at startup and none of them is ever rebuilt, so
-    /// a plain `u32` field would leave `jobs.max_attempts` readable only where
-    /// the reload happened to be holding a handle. See
+    /// This queue is cloned into [`crate::server::Assembly`], every
+    /// `RelaySigner` and every `NotifyDispatcher` at startup and none of them
+    /// is ever rebuilt, so a plain `u32` field would leave `jobs.max_attempts`
+    /// readable only where the reload happened to be holding a handle. See
     /// [`set_max_attempts`](JobQueue::set_max_attempts).
     default_max_attempts: Arc<AtomicU32>,
 }
@@ -212,7 +212,8 @@ impl JobQueue {
     /// Republishes `jobs.max_attempts`, for every clone of this queue at once.
     ///
     /// Synchronous and infallible, which is what lets a reload call it from
-    /// `cli::apply_reload`'s publishing run beside the `watch` sends.
+    /// `server::generation::publish_reload`'s publishing run beside the `watch`
+    /// sends.
     ///
     /// It sets the budget for work queued from **now on** and does not touch the
     /// backlog: `max_attempts` is frozen onto each row at enqueue, so a job
@@ -408,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_or_log_swallows_a_database_failure() {
         let queue = queue().await;
-        queue.database().pool.close().await;
+        queue.database().close().await;
         assert!(!queue.enqueue_or_log(JobSpec::now("test", "k")).await);
     }
 

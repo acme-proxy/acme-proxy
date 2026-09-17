@@ -220,7 +220,7 @@ async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
     .unwrap();
     let secret = enrol_totp(database.clone(), "alice").await;
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = 'alice';")
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -984,7 +984,7 @@ async fn an_expired_session_redirects_rather_than_answering_json() {
     let hash = acme_proxy::webadmin::session::hash_token(&session.cookie);
     sqlx::query("UPDATE admin_sessions SET expires_at = 1 WHERE token_hash = ?")
         .bind(&hash)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -2443,7 +2443,7 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
     // Move the row to a profile the harness does not mount.
     sqlx::query("UPDATE orders SET profile = 'gone' WHERE id = ?")
         .bind(orders[0].id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -3046,7 +3046,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     sqlx::query("UPDATE jobs SET status = 'failed', attempts = 1, last_error = ? WHERE id = ?;")
         .bind("<script>alert(1)</script>")
         .bind(failed_id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let (relay_job_id, _order_id) = seed_relay_job(&database).await;
@@ -3123,7 +3123,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     .unwrap();
     sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?;")
         .bind(running_id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let refused = admin_request(
@@ -3174,7 +3174,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     .unwrap();
     sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
         .bind(done_id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let refused_run = admin_request(
@@ -3336,7 +3336,7 @@ async fn the_upstream_orders_page_is_read_only_and_escapes_untrusted_text() {
 #[tokio::test]
 async fn the_page_surface_fails_closed_when_the_database_is_gone() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    database.pool.close().await;
+    database.close().await;
 
     for path in authenticated_pages() {
         for hx in [false, true] {

@@ -8,7 +8,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::{error, info, instrument, warn};
 
-use crate::AppState;
 use crate::challenge::ValidationContext;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest, jwk_thumbprint};
@@ -17,6 +16,7 @@ use crate::handlers::helpers::{
     challenge_problem, load_owned_authz, load_owned_challenge, signer_account,
 };
 use crate::notify::{ChallengeFailedData, NotifyEvent};
+use crate::server::AppState;
 use crate::sqlite::{
     authz::{Authorization, Challenge},
     db::Database,
@@ -168,7 +168,7 @@ async fn deactivate_authz(
     // just given up, which is exactly what §7.5.2 forbids.
     let demote = order.status == OrderStatus::Ready;
     let outcome = async {
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
         Authorization::set_deactivated(authz.id, &mut *tx).await?;
         if demote {
             Order::set_pending(order.id, &mut *tx).await?;
@@ -220,13 +220,13 @@ async fn commit_validation(
 ) -> Result<(), Problem> {
     let validated = now_secs();
     let outcome = async {
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
         Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
         Authorization::set_valid(authz.id, &mut *tx).await?;
 
-        // `pool.begin()` issues a deferred BEGIN, but the two writes above have
-        // already taken the RESERVED lock by the time this reads — so this sees
-        // its own write and no other writer can interleave. Putting a read
+        // `transaction()` issues a deferred BEGIN, but the two writes above
+        // have already taken the RESERVED lock by the time this reads — so this
+        // sees its own write and no other writer can interleave. Putting a read
         // first here would break that.
         let promote = order.status == OrderStatus::Pending && {
             let authzs = Authorization::find_by_order_with(order.id, &mut *tx).await?;
@@ -279,7 +279,7 @@ async fn commit_validation_failure(
     database: &Arc<Database>,
 ) -> Result<(), Problem> {
     let outcome = async {
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
         Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
         Authorization::set_invalid(authz.id, &mut *tx).await?;
         Order::set_invalid(order.id, problem, &mut *tx).await?;

@@ -474,12 +474,12 @@ mod tests {
         sqlx::query("UPDATE orders SET cert_not_after = NULL WHERE id IN (?, ?);")
             .bind(good.id)
             .bind(bad.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         sqlx::query("UPDATE orders SET certificate = 'not a pem' WHERE id = ?;")
             .bind(bad.id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
 
@@ -520,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn a_failing_pass_reschedules_rather_than_retiring() {
         let (job, db) = harness(14).await;
-        db.pool.close().await;
+        db.close().await;
         assert!(matches!(
             job.run(&row("default")).await,
             JobOutcome::Reschedule(_)

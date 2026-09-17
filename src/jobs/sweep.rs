@@ -384,7 +384,7 @@ mod tests {
         fresh.save(&database).await.unwrap();
         sqlx::query("INSERT INTO nonces (value, created_at) VALUES ('stale', ?);")
             .bind(now_secs() - 3600)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap();
 
@@ -422,7 +422,7 @@ mod tests {
         let stale = now_secs() - 30 * 24 * 60 * 60;
         sqlx::query("UPDATE audit_log SET created_at = ?;")
             .bind(stale)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap();
 
@@ -433,7 +433,7 @@ mod tests {
         ));
 
         let (remaining,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_log;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
         assert_eq!(remaining, 0);
@@ -466,7 +466,7 @@ mod tests {
         // deletes on.
         sqlx::query("UPDATE admin_sessions SET expires_at = ?;")
             .bind(now_secs() - 60)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap();
 
@@ -477,7 +477,7 @@ mod tests {
         ));
 
         let (remaining,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM admin_sessions;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
         assert_eq!(remaining, 0);
@@ -500,7 +500,7 @@ mod tests {
         .bind(stale)
         .bind(stale)
         .bind(stale)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
         assert!(
@@ -541,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn no_target_ever_retires_itself_on_a_failure() {
         let (database, _queue) = setup().await;
-        database.pool.close().await;
+        database.close().await;
 
         for handler in [
             SweepJob::nonces(database.clone(), Duration::from_secs(300)),
@@ -604,14 +604,14 @@ mod tests {
         // One long-expired order that nevertheless carries a certificate...
         sqlx::query("UPDATE orders SET status = 'valid' WHERE id = ?;")
             .bind(expired_valid)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap();
         // ...and one that has not expired at all.
         sqlx::query("UPDATE orders SET expires = ? WHERE id = ?;")
             .bind(now_secs() + 3600)
             .bind(fresh)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
             .await
             .unwrap();
 

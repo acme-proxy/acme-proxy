@@ -453,7 +453,7 @@ async fn a_runner_that_lost_its_lease_settles_nothing_and_abandons_nothing() {
         .expect("the job is live while the handler runs");
     sqlx::query("UPDATE jobs SET lease_owner = 'thief' WHERE id = ?;")
         .bind(job.id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -469,7 +469,7 @@ async fn a_runner_that_lost_its_lease_settles_nothing_and_abandons_nothing() {
     // which it can only do once the refused settlement is behind it.
     sqlx::query("UPDATE jobs SET status = 'ready', lease_owner = NULL WHERE id = ?;")
         .bind(job.id)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     let _ = entered.acquire().await.unwrap();

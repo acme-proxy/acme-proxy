@@ -80,7 +80,7 @@ pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 ///
 /// Not a profile: `[admin]` is process-wide and the web admin has no
 /// `Profile`. The underscores make it un-collidable with a real profile name
-/// (`^[a-z0-9-]+$`, `crate::PROFILE_PREFIX`), so [`NotifyJob`] routes a
+/// (`^[a-z0-9-]+$`, `crate::routes::PROFILE_PREFIX`), so [`NotifyJob`] routes a
 /// `notify_deliver` row naming it to this dispatcher with no special case, and
 /// a reload republishes it in the same map as every profile's.
 pub const ADMIN_DISPATCHER_KEY: &str = "__admin__";
@@ -1576,7 +1576,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_database_failure_is_swallowed_by_dispatch() {
         let (dispatcher, _recorder, queue) = recording_dispatcher(&every_kind()).await;
-        queue.database().pool.close().await;
+        queue.database().close().await;
 
         dispatcher.dispatch(profile_mounted("le")).await;
     }

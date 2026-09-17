@@ -65,7 +65,7 @@ where
     let signer = EcSigner::new();
     let (app, db, path, body) = prepare(app, signer, db).await;
 
-    db.pool.close().await;
+    db.close().await;
 
     let res = post(&app, &path, body).await;
     assert_eq!(
@@ -108,7 +108,7 @@ where
 
     for statement in sabotage {
         sqlx::query(*statement)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap_or_else(|error| panic!("{name}: sabotage `{statement}` failed: {error}"));
     }
@@ -326,7 +326,7 @@ async fn order_persistence_db_error_returns_500() {
 #[tokio::test]
 async fn middleware_drops_replay_nonce_when_db_unavailable() {
     let (app, db) = test_app_with_db().await;
-    db.pool.close().await;
+    db.close().await;
 
     let res = app
         .clone()

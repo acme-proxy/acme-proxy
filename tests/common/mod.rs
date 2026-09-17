@@ -15,7 +15,7 @@ use std::time::Duration;
 use acme_proxy::audit::Auditor;
 // Re-exported for the suites that build an `Account` directly.
 pub use acme_proxy::audit::ClientContext;
-use acme_proxy::{Profile, ProfileParts, build_app};
+use acme_proxy::server::{Profile, ProfileParts, build_app};
 
 use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
@@ -1062,7 +1062,7 @@ pub async fn admin_login_mfa(
 ) -> AdminSessionHandle {
     sqlx::query("UPDATE admin_users SET totp_last_step = NULL WHERE username = ?;")
         .bind(username)
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
@@ -1672,7 +1672,7 @@ impl SignerBackend for RevokePersistFailingSigner {
         self.ca.revoke(cert_der, reason).await?;
         // ...and *then* the record of it becomes impossible.
         if let Some(database) = self.database.get() {
-            database.pool.close().await;
+            database.close().await;
         }
         Ok(())
     }

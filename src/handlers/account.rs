@@ -11,7 +11,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{error, info, instrument, warn};
 
-use crate::AppState;
 use crate::eab;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest, ProtectedHeader, spki_to_jwk};
@@ -19,6 +18,7 @@ use crate::filter::ClientIp;
 use crate::handlers::helpers::{signer_account, validate_contacts};
 use crate::key_change;
 use crate::notify::{AccountCreatedData, AccountDeactivatedData, NotifyEvent};
+use crate::server::AppState;
 use crate::sqlite::{
     account::{Account, pubkey_fingerprint},
     db::Database,

@@ -153,7 +153,7 @@ pub enum SocketCommand {
 /// synchronous** (`watch::Sender::send_replace`, and an unbounded
 /// `mpsc::Sender::send`), which is what lets a socket change sit in the same
 /// uninterruptible publishing run as the routers and the job registry — see
-/// `cli::apply_reload`.
+/// `server::generation::publish_reload`.
 ///
 /// It deliberately remembers **nothing** about what it is serving. Whether a
 /// role should rebind is decided by comparing the applied configuration against
@@ -186,10 +186,11 @@ impl ListenerHandle {
 /// Binds `address` without awaiting.
 ///
 /// `std::net::TcpListener::bind` rather than tokio's, so a rebind can happen
-/// inside `cli::apply_reload` — which is deliberately not `async`, so that its
-/// publishing run has no await point another task could interleave with. The
-/// blocking part is name resolution, on the reload supervisor's own task, where
-/// building a generation already reads and writes files.
+/// inside `server::generation::prepare_reload` — which is deliberately not
+/// `async`, so that its publishing run has no await point another task could
+/// interleave with. The blocking part is name resolution, on the reload
+/// supervisor's own task, where building a generation already reads and writes
+/// files.
 ///
 /// # Errors
 ///

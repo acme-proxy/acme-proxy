@@ -173,7 +173,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
 
     let started = Instant::now();
     let mut response = next.run(request).instrument(span.clone()).await;
-    let latency_ms = crate::millis(started.elapsed());
+    let latency_ms = crate::logfields::millis(started.elapsed());
     let status = response.status().as_u16();
 
     span.in_scope(|| {

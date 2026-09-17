@@ -62,11 +62,11 @@ pub struct CrlSweepJob {
 impl CrlSweepJob {
     /// One handler over every CA in the process.
     ///
-    /// Registered by `cli::build_generation` only when `pruners` is non-empty,
-    /// the way `SweepJob::audit` is registered only for a non-zero retention: a
-    /// deployment with no local CA has nothing to prune, and an always-present
-    /// row that always finds nothing is a row an operator has to learn to
-    /// ignore.
+    /// Registered by `server::generation::build_generation` only when `pruners`
+    /// is non-empty, the way `SweepJob::audit` is registered only for a
+    /// non-zero retention: a deployment with no local CA has nothing to prune,
+    /// and an always-present row that always finds nothing is a row an operator
+    /// has to learn to ignore.
     #[must_use]
     pub fn new(pruners: Vec<Arc<dyn CrlPruner>>) -> Self {
         Self {

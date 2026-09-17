@@ -105,7 +105,7 @@ pub async fn admission_middleware(
                 outcome = "failure",
                 method = %method,
                 path = %path,
-                deadline_ms = crate::millis(admission.deadline),
+                deadline_ms = crate::logfields::millis(admission.deadline),
             );
             Problem::server_internal("The request took too long to process").into_response()
         }

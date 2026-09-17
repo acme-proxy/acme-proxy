@@ -257,8 +257,8 @@ pub(crate) fn idle_job_queue(
 /// directly has no previous generation, so any value does.
 pub(crate) fn egress_with(
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
-) -> std::sync::Arc<crate::Egress> {
-    std::sync::Arc::new(crate::Egress {
+) -> std::sync::Arc<crate::server::Egress> {
+    std::sync::Arc::new(crate::server::Egress {
         resolver,
         proxies: no_proxies(),
         identity: "test".to_string(),

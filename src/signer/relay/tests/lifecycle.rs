@@ -982,7 +982,7 @@ mod handler {
     async fn a_database_failure_is_retryable_everywhere_it_is_met() {
         let db = database().await;
         let (handler, signer, _upstream, _dir) = handler_for(db.clone()).await;
-        db.pool.close().await;
+        db.close().await;
 
         match handler
             .run(&job_on_default(&super::order_id("ord-1")))
@@ -1025,7 +1025,7 @@ mod handler {
             "a missing order names neither an expiry nor an endpoint"
         );
 
-        db.pool.close().await;
+        db.close().await;
         let unreadable = OrderContext::read(&super::order_id("ord-1"), &signer.0).await;
         assert!(
             unreadable.deadline.is_none() && unreadable.profile.is_none(),
@@ -1146,7 +1146,7 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
     // One mapping row, and it still points at the order the first call opened.
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM upstream_orders WHERE order_id = ?;")
         .bind(order.id)
-        .fetch_one(&db.pool)
+        .fetch_one(db.raw_pool())
         .await
         .unwrap();
     assert_eq!(rows, 1, "one order may have only one upstream order");

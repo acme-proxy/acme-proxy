@@ -1,8 +1,8 @@
 //! Counts one request into the Prometheus registry.
 //!
-//! Mounted only when `metrics.enabled` is on (see [`crate::build_app`]), so the
-//! lock and the two allocations below cost nothing to a deployment that has not
-//! asked for metrics.
+//! Mounted only when `metrics.enabled` is on (see
+//! [`crate::server::build_app`]), so the lock and the two allocations below
+//! cost nothing to a deployment that has not asked for metrics.
 //!
 //! ## Why the labels come from `MatchedPath`
 //!
@@ -67,7 +67,7 @@ mod tests {
 
         Router::new()
             .route("/health", get(|| async { "ok" }))
-            .nest(&format!("{}/le", crate::PROFILE_PREFIX), inner)
+            .nest(&format!("{}/le", crate::routes::PROFILE_PREFIX), inner)
             .layer(middleware::from_fn_with_state(metrics, record_request))
     }
 

@@ -149,12 +149,12 @@ pub struct RelayJob {
 impl RelayJob {
     /// One handler over every relay profile mounted in this generation.
     ///
-    /// Registered by `cli::build_generation` only when `targets` is non-empty,
-    /// the way `CrlSweepJob` is registered only when some backend keeps a
-    /// ledger: a deployment with no relay profile has nothing to claim. An
-    /// empty set is nonetheless a working handler that claims nothing, rather
-    /// than a panic — that caller's guard is about not registering a kind
-    /// nothing will ever queue, not about safety here.
+    /// Registered by `server::generation::build_generation` only when `targets`
+    /// is non-empty, the way `CrlSweepJob` is registered only when some backend
+    /// keeps a ledger: a deployment with no relay profile has nothing to claim.
+    /// An empty set is nonetheless a working handler that claims nothing,
+    /// rather than a panic — that caller's guard is about not registering a
+    /// kind nothing will ever queue, not about safety here.
     #[must_use]
     pub fn new(database: Arc<Database>, targets: Vec<(String, RelayState)>) -> Self {
         let mut upstreams: Vec<(Arc<Inner>, Vec<String>)> = Vec::new();

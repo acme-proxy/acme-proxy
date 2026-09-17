@@ -333,7 +333,7 @@ mod tests {
         let running = seed("nonce_sweep", "b", now_secs(), &db).await;
         sqlx::query("UPDATE jobs SET status = 'running' WHERE id = ?;")
             .bind(running)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         let err = run_jobs_command(
@@ -371,7 +371,7 @@ mod tests {
         let failed = seed("nonce_sweep", "b", now_secs(), &db).await;
         sqlx::query("UPDATE jobs SET status = 'failed', attempts = 5 WHERE id = ?;")
             .bind(failed)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         run_jobs_command(
@@ -396,7 +396,7 @@ mod tests {
         let id = seed("nonce_sweep", "a", now_secs(), &db).await;
         sqlx::query("UPDATE jobs SET status = 'done' WHERE id = ?;")
             .bind(id)
-            .execute(&db.pool)
+            .execute(db.raw_pool())
             .await
             .unwrap();
         let err = run_jobs_command(

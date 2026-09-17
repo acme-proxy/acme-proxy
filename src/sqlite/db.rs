@@ -8,11 +8,92 @@ use tracing::{error, info};
 
 static MIGRATOR: Migrator = sqlx::migrate!(); // defaults to "./migrations"
 
+/// The connection pool, and the only way to reach it.
+///
+/// The pool is private to `sqlite/`: everything else goes through a table
+/// module, [`Database::transaction`] or [`Database::pool_stats`]. That is what
+/// keeps SQL — and the dialect it is written in — in one module tree.
 pub struct Database {
-    pub pool: Pool<Sqlite>,
+    pub(in crate::sqlite) pool: Pool<Sqlite>,
+}
+
+/// One database transaction, handed out by [`Database::transaction`].
+///
+/// A wrapper rather than `sqlx::Transaction` itself, so the pool it is drawn
+/// from stays this module's business: a caller outside `sqlite/` can open a
+/// transaction without being able to reach the pool. It derefs to the
+/// connection, so `&mut *tx` is what every table method taking an executor or a
+/// `&mut SqliteConnection` is handed. Dropped without [`Tx::commit`], it rolls
+/// back — `sqlx`'s own rule, unchanged.
+pub struct Tx(sqlx::Transaction<'static, Sqlite>);
+
+impl Tx {
+    /// Commits the transaction.
+    pub async fn commit(self) -> Result<(), Error> {
+        self.0.commit().await
+    }
+}
+
+impl std::ops::Deref for Tx {
+    type Target = sqlx::SqliteConnection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Tx {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// The pool's occupancy at one instant, for the metrics gauge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolStats {
+    /// Every connection the pool currently holds.
+    pub size: u32,
+    /// Those of them not checked out.
+    pub idle: usize,
 }
 
 impl Database {
+    /// Begins a transaction.
+    pub async fn transaction(&self) -> Result<Tx, Error> {
+        Ok(Tx(self.pool.begin().await?))
+    }
+
+    /// The pool's size and idle count, read now rather than tracked.
+    #[must_use]
+    pub fn pool_stats(&self) -> PoolStats {
+        PoolStats {
+            size: self.pool.size(),
+            idle: self.pool.num_idle(),
+        }
+    }
+
+    /// The pool itself, **for test fixtures only**: raw SQL that sets up or
+    /// inspects state no table module writes or reads (a back-dated row, a
+    /// forced constraint violation).
+    ///
+    /// Public because the integration tests under `tests/` are another crate.
+    /// Production code must not call it — `tests/layering.rs` fails the build
+    /// when it appears in `src/` outside `sqlite/` and outside a `#[cfg(test)]`
+    /// module.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn raw_pool(&self) -> &Pool<Sqlite> {
+        &self.pool
+    }
+
+    /// Closes the pool: every later query fails with `PoolClosed`.
+    ///
+    /// Waits for checked-out connections to be returned. Also how a test
+    /// simulates the database going away underneath a running server.
+    pub async fn close(&self) {
+        self.pool.close().await;
+    }
+
     /// Connects to the `SQLite` database at `url`, creating the file if it does
     /// not exist yet, then runs the embedded migrations.
     pub async fn connect(url: &str) -> Result<Database, Error> {
@@ -107,6 +188,47 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
         }
+    }
+
+    /// A `Tx` keeps `sqlx`'s transaction semantics through the wrapper: a
+    /// commit lands, a drop rolls back, and the pool reports its occupancy.
+    #[tokio::test]
+    async fn a_transaction_commits_or_rolls_back_through_the_wrapper() {
+        let database = Database::connect_in_memory().await.unwrap();
+
+        let mut tx = database.transaction().await.unwrap();
+        sqlx::query("INSERT INTO nonces VALUES ('dropped', 0);")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        drop(tx);
+        assert_eq!(count(&database).await, 0, "a dropped Tx rolls back");
+
+        let mut tx = database.transaction().await.unwrap();
+        sqlx::query("INSERT INTO nonces VALUES ('kept', 0);")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(count(&database).await, 1, "a committed Tx lands");
+
+        // `connect_in_memory` pins the pool to one connection. Whether it reads
+        // idle yet is a race with `sqlx` handing it back, so only the bound is
+        // asserted.
+        let stats = database.pool_stats();
+        assert_eq!(stats.size, 1);
+        assert!(stats.idle <= 1, "{stats:?}");
+
+        database.close().await;
+        let refused = sqlx::query("SELECT 1;").execute(database.raw_pool()).await;
+        assert!(refused.is_err(), "a closed pool refuses work");
+    }
+
+    async fn count(database: &Database) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM nonces;")
+            .fetch_one(database.raw_pool())
+            .await
+            .unwrap()
     }
 
     /// Every foreign key is indexed. Without these, each child lookup is a full

@@ -41,13 +41,13 @@
 //!
 //! ## Counters survive a reload
 //!
-//! The registry lives in [`crate::Assembly`], which is built once and carried
-//! across every generation, rather than in a `Generation`, which is rebuilt on
-//! each `SIGHUP`. A rebuilt registry would reset every counter to zero, and a
-//! counter that goes backwards is exactly how Prometheus detects a process
-//! restart: `rate()` would report a spike of the entire pre-reload total on
-//! every configuration change. It does *not* survive a real restart, which is
-//! correct — that genuinely is a new process.
+//! The registry lives in [`crate::server::Assembly`], which is built once and
+//! carried across every generation, rather than in a `Generation`, which is
+//! rebuilt on each `SIGHUP`. A rebuilt registry would reset every counter to
+//! zero, and a counter that goes backwards is exactly how Prometheus detects a
+//! process restart: `rate()` would report a spike of the entire pre-reload
+//! total on every configuration change. It does *not* survive a real restart,
+//! which is correct — that genuinely is a new process.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -202,8 +202,9 @@ impl Metrics {
         // those not currently checked out, so `size - idle` is in-flight
         // database work. Reported as two series of one gauge rather than a
         // derived third, so a scrape cannot see them disagree.
-        let size = u64::from(self.database.pool.size());
-        let idle = self.database.pool.num_idle() as u64;
+        let stats = self.database.pool_stats();
+        let size = u64::from(stats.size);
+        let idle = stats.idle as u64;
         out.push_str(
             "# HELP acme_proxy_database_pool_connections Connections in the SQLite pool.\n",
         );
@@ -277,15 +278,15 @@ fn escape_label(value: &str) -> String {
 /// (`/profile/le/order/{id}`), so this is what turns one string into the two
 /// dimensions a query wants: "how many 500s did `le` serve" and "how many 500s
 /// did `/newOrder` serve anywhere". The split is unambiguous because
-/// [`PROFILE_PREFIX`](crate::PROFILE_PREFIX) is reserved and a profile name
-/// matches `^[a-z0-9-]+$`, so the second segment can never itself contain a
-/// slash.
+/// [`PROFILE_PREFIX`](crate::routes::PROFILE_PREFIX) is reserved and a profile
+/// name matches `^[a-z0-9-]+$`, so the second segment can never itself contain
+/// a slash.
 #[must_use]
 pub fn split_matched_path(matched: Option<&str>) -> (String, String) {
     let Some(matched) = matched else {
         return (PROFILE_NONE.to_string(), ROUTE_UNMATCHED.to_string());
     };
-    let prefix = format!("{}/", crate::PROFILE_PREFIX);
+    let prefix = format!("{}/", crate::routes::PROFILE_PREFIX);
     let Some(rest) = matched.strip_prefix(&prefix) else {
         return (PROFILE_NONE.to_string(), matched.to_string());
     };

@@ -57,11 +57,11 @@
 //! - **The handle lives in a process-wide [`OnceLock`], beside the global it is
 //!   a handle to.** The subscriber already is process-global (`.init()` panics
 //!   on a second call); this is not a second one. Threading the handle from
-//!   `main.rs` to `cli::apply_reload` instead would touch six signatures,
-//!   including the `serve_on*` seams every test enters through. When it is
-//!   unset — a test binary, or a consumer that installed its own subscriber —
-//!   [`publish_logging`] is a **no-op that says so**, since logging is then not
-//!   ours to swap.
+//!   `main.rs` to `server::generation::publish_reload` instead would touch six
+//!   signatures, including the `serve_on*` seams every test enters through.
+//!   When it is unset — a test binary, or a consumer that installed its own
+//!   subscriber — [`publish_logging`] is a **no-op that says so**, since
+//!   logging is then not ours to swap.
 //!
 //! The cost, stated rather than buried: a `reload::Layer` puts an `RwLock` read
 //! on every event.
@@ -339,7 +339,7 @@ fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
 
 /// A layer stack built from `[logging]` but not yet installed.
 ///
-/// The build/publish split is [`crate::Assembly::build_dispatchers`] and
+/// The build/publish split is [`crate::server::Assembly::build_parts`] and
 /// `publish_notifiers`', for the same reason: a reload must be able to fail
 /// *after* building this and still leave the running configuration untouched.
 pub(crate) struct PreparedLogging {
@@ -352,7 +352,8 @@ pub(crate) struct PreparedLogging {
 /// Resolves `[logging]` into a layer stack, validating every key.
 ///
 /// The one place a stack is built, so startup and a reload cannot drift — the
-/// reasoning behind [`super::build_generation`], applied to one layer.
+/// reasoning behind [`crate::server::generation::build_generation`], applied
+/// to one layer.
 pub(crate) fn prepare_logging(
     logging: &crate::config::LoggingConfig,
     flag: Option<&str>,
@@ -402,8 +403,8 @@ pub(crate) fn prepare_logging(
 ///
 /// `false` means this process installed no subscriber of its own, so there is
 /// no handle and nothing was swapped — see the module doc. Synchronous, which
-/// is what lets it sit inside `cli::apply_reload`'s publishing run beside the
-/// `watch` sends.
+/// is what lets it sit inside `server::generation::publish_reload`'s publishing
+/// run beside the `watch` sends.
 pub(crate) fn publish_logging(prepared: PreparedLogging) -> bool {
     RELOAD
         .get()

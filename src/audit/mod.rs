@@ -536,9 +536,9 @@ impl AuditRecord {
 
 /// Writes audit rows, and resolves the reverse names that go in them.
 ///
-/// One per process, shared by the ACME listener ([`crate::AppState`]), the web
-/// admin ([`crate::webadmin::AdminState`]) and the CLI. Process-wide because
-/// `[audit]` is: the trail describes the CA, not one of its endpoints.
+/// One per process, shared by the ACME listener ([`crate::server::AppState`]),
+/// the web admin ([`crate::webadmin::AdminState`]) and the CLI. Process-wide
+/// because `[audit]` is: the trail describes the CA, not one of its endpoints.
 pub struct Auditor {
     database: Arc<Database>,
     /// `None` when `audit.reverse_dns` is off, which is what makes the switch
@@ -651,7 +651,7 @@ impl Auditor {
                     event = "audit_reverse_dns_timeout",
                     outcome = "failure",
                     ip = %ip,
-                    timeout_ms = crate::millis(self.ptr_timeout),
+                    timeout_ms = crate::logfields::millis(self.ptr_timeout),
                 );
                 None
             }

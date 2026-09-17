@@ -502,7 +502,7 @@ async fn revoke_cert_answers_500_and_revokes_nothing_when_the_database_is_gone()
     let payload = json!({ "certificate": cert_field(&chain) });
     let body = signer.sign_kid(&account_url, REVOKE_URL, &nonce, &payload);
 
-    database.pool.close().await;
+    database.close().await;
 
     let res = revoke(&app, body).await;
     assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);

@@ -18,9 +18,9 @@ mod common;
 
 use std::sync::Arc;
 
-use acme_proxy::cli::serve_on_with_reloads;
 use acme_proxy::config::Config;
 use acme_proxy::reload::{ReloadError, ReloadHandle};
+use acme_proxy::server::serve_on_with_reloads;
 use acme_proxy::sqlite::db::Database;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -205,8 +205,8 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         database,
         acme_listener,
         admin_listener,
-        // No metrics listener: `src/cli/mod.rs`'s three-port test drives that
-        // socket end to end, and nothing here reads a counter.
+        // No metrics listener: `src/server/tests.rs`'s three-port test drives
+        // that socket end to end, and nothing here reads a counter.
         None,
         async {
             let _ = rx.await;

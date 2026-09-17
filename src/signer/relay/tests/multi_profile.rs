@@ -374,7 +374,7 @@ async fn a_payload_from_before_the_profile_was_recorded_resolves_from_the_order(
 
     // And a database that has gone away says nothing about the work, so the
     // fallback asks to be tried again rather than deciding anything.
-    db.pool.close().await;
+    db.close().await;
     match handler
         .run(&job(serde_json::json!({"order_id": order.id})))
         .await

@@ -39,18 +39,18 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{info, warn};
 
-use crate::Profile;
 use crate::config::Config;
 use crate::middlewares;
+use crate::server::Profile;
 use crate::sqlite::db::Database;
 
 /// Shared state for every admin route.
 ///
-/// Not [`crate::AppState`]: that one holds exactly one `Profile`, and this
-/// listener is cross-profile by nature — an operator lists accounts from every
-/// endpoint at once, and revoking an order needs *that order's own* profile's
-/// signer, which may be a different CA from the one the request arrived
-/// through.
+/// Not [`crate::server::AppState`]: that one holds exactly one `Profile`, and
+/// this listener is cross-profile by nature — an operator lists accounts from
+/// every endpoint at once, and revoking an order needs *that order's own*
+/// profile's signer, which may be a different CA from the one the request
+/// arrived through.
 #[derive(Clone)]
 pub struct AdminState {
     pub database: Arc<Database>,
@@ -354,8 +354,8 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 /// Builds the whole admin service: `/health`, then the JSON API under `/api`.
 ///
 /// Takes `profiles` as a **slice** so it can be called before `build_app`
-/// consumes the `Vec` in `cli::serve_on` — the ordering is a real constraint
-/// and the signature is where it is stated.
+/// consumes the `Vec` in `server::generation::build_generation` — the ordering
+/// is a real constraint and the signature is where it is stated.
 ///
 /// ## What this router deliberately does *not* have
 ///
@@ -562,7 +562,7 @@ pub fn build_admin_app_with_logins(
         // inside `build_app` and inherits none of its layers, so they have to
         // be applied again here — but from the one constructor, since two
         // hand-written copies of a security control are a control that drifts.
-        .layer(crate::security_headers())
+        .layer(crate::server::security_headers())
         // Strict, and affordable only because of how the pages are built:
         // htmx is served from this origin (`script-src 'self'`) and drives
         // everything through `hx-*` attributes rather than inline handlers, so
@@ -624,7 +624,7 @@ fn admin_api_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "api",
-        error = %crate::panic_message(err.as_ref()),
+        error = %crate::server::panic_message(err.as_ref()),
     );
     AdminError::internal().into_response()
 }
@@ -638,7 +638,7 @@ fn admin_page_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "ui",
-        error = %crate::panic_message(err.as_ref()),
+        error = %crate::server::panic_message(err.as_ref()),
     );
     PageError::internal().into_response()
 }

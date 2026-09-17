@@ -400,7 +400,7 @@ async fn from_config_counts_into_the_registry_it_was_given() {
 async fn a_failed_write_does_not_propagate() {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let auditor = Auditor::with_resolver(database.clone(), None, Duration::from_millis(50));
-    database.pool.close().await;
+    database.close().await;
 
     // No panic, no error to handle — the point of the signature.
     auditor

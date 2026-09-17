@@ -271,7 +271,7 @@ pub async fn run_order_command(
             // policy to reuse — both come from the same `[dns]`/`[proxy]`
             // sections `serve` reads.
             let egress = Arc::new(
-                crate::Egress::from_config(config)
+                crate::server::Egress::from_config(config)
                     .map_err(|error| CliError::failed(format!("configuration error: {error}")))?,
             );
             // A queue nothing drains: this command revokes, which every backend

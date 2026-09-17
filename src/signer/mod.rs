@@ -60,8 +60,8 @@ pub mod local_ca;
 pub mod relay;
 
 /// Re-exported so [`SignerBackend::http01_tokens`]'s signature — and the route
-/// in [`crate::build_app`] it feeds — do not reach into one backend's module
-/// for a type the generic trait mentions.
+/// in [`crate::server::build_app`] it feeds — do not reach into one backend's
+/// module for a type the generic trait mentions.
 pub use relay::http01::TokenStore as Http01TokenStore;
 
 /// What [`SignerBackend::issue`] produced: a certificate, or a promise of one.
@@ -289,9 +289,9 @@ pub trait SignerBackend: Send + Sync {
     /// relaying to *different* upstreams — two backends, since
     /// [`build_backends`] deliberately does not collapse them — a startup
     /// error, `JobRegistry::register` refusing the second handler for
-    /// `signer_relay_issue`. `cli::build_generation` now builds one
-    /// [`relay::flow::RelayJob`] over every relay profile in the process, which
-    /// picks the backend per row from the profile the row names.
+    /// `signer_relay_issue`. `server::generation::build_generation` now builds
+    /// one [`relay::flow::RelayJob`] over every relay profile in the process,
+    /// which picks the backend per row from the profile the row names.
     ///
     /// There is deliberately no general "here are my job handlers" hook left on
     /// this trait: every one it could return has this problem, and a subsystem
@@ -305,12 +305,12 @@ pub trait SignerBackend: Send + Sync {
     /// The `http-01` token store this backend answers the *upstream's* own
     /// challenge from, if it has one.
     ///
-    /// [`crate::build_app`] mounts `GET /.well-known/acme-challenge/{token}`
-    /// on the root router when any profile's backend returns `Some`, and not
-    /// at all otherwise — the same "a backend that has something to publish
-    /// over HTTP says so" shape as [`crl_der`](SignerBackend::crl_der), and the
-    /// reason this is a getter on the trait rather than a parameter threaded
-    /// through `build_app`.
+    /// [`crate::server::build_app`] mounts `GET
+    /// /.well-known/acme-challenge/{token}` on the root router when any
+    /// profile's backend returns `Some`, and not at all otherwise — the same "a
+    /// backend that has something to publish over HTTP says so" shape as
+    /// [`crl_der`](SignerBackend::crl_der), and the reason this is a getter on
+    /// the trait rather than a parameter threaded through `build_app`.
     ///
     /// Only [`relay`] with `challenge_strategy = "http01"` overrides it.
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
@@ -322,12 +322,12 @@ pub trait SignerBackend: Send + Sync {
     ///
     /// A getter handing over *state* rather than a
     /// [`JobHandler`](crate::jobs::JobHandler), and the distinction is not
-    /// cosmetic: [`crate::jobs::JobRegistry::register`] refuses two handlers for
-    /// one `kind`, and two profiles with *different* `[signer.local_ca]`
+    /// cosmetic: [`crate::jobs::JobRegistry::register`] refuses two handlers
+    /// for one `kind`, and two profiles with *different* `[signer.local_ca]`
     /// sections are two distinct backends — so a handler returned from here
     /// would make a supported configuration a startup error. Handing over the
-    /// state instead lets `cli::build_generation` build one handler over every
-    /// CA in the process, the shape
+    /// state instead lets `server::generation::build_generation` build one
+    /// handler over every CA in the process, the shape
     /// [`http01_tokens`](SignerBackend::http01_tokens) already has for the same
     /// reason. [`relay_state`](SignerBackend::relay_state) below is the second
     /// method of this shape, and the trait deliberately has no third form: a
@@ -399,11 +399,11 @@ pub enum SignerError {
 /// The dependencies every backend is built from, minus its own `[signer]`
 /// section.
 ///
-/// A struct for [`ProfileParts`](crate::ProfileParts)' reason: [`from_config`]
-/// took seven positional parameters and needed an eighth for [`CarriedState`],
-/// which is where a reader starts counting commas and clippy starts complaining.
-/// Taken by reference and cloned field by field, since [`build_backends`] calls
-/// [`from_config`] in a loop.
+/// A struct for [`ProfileParts`](crate::server::ProfileParts)' reason:
+/// [`from_config`] took seven positional parameters and needed an eighth for
+/// [`CarriedState`], which is where a reader starts counting commas and clippy
+/// starts complaining. Taken by reference and cloned field by field, since
+/// [`build_backends`] calls [`from_config`] in a loop.
 ///
 /// `database` is for the backends that resolve issuance asynchronously: they own
 /// the `Order` update once the answer arrives, long after the handler that asked
@@ -426,7 +426,7 @@ pub struct SignerParts {
     /// [`Outbound`](crate::http_client::Outbound). The two cannot then disagree,
     /// and a value that disagreed would make a `dns.resolver` edit a silent
     /// no-op for every signer — see [`build_backends`].
-    pub egress: Arc<crate::Egress>,
+    pub egress: Arc<crate::server::Egress>,
     pub jobs: crate::jobs::JobQueue,
 }
 
@@ -474,11 +474,12 @@ pub fn from_config(
 /// The backends one configuration generation runs, in the two views that are
 /// needed of them.
 ///
-/// `by_profile` is what a [`Profile`](crate::Profile) is handed and the only
-/// thing that serves a request. `by_identity` exists purely so the **next**
-/// reload can ask "is this one already built?" — see [`build_backends`], where
-/// answering yes is what keeps a `SIGHUP` from re-reading a CA key and
-/// re-opening a PKCS#11 session for a configuration that did not move.
+/// `by_profile` is what a [`Profile`](crate::server::Profile) is handed and the
+/// only thing that serves a request. `by_identity` exists purely so the
+/// **next** reload can ask "is this one already built?" — see
+/// [`build_backends`], where answering yes is what keeps a `SIGHUP` from
+/// re-reading a CA key and re-opening a PKCS#11 session for a configuration
+/// that did not move.
 #[derive(Default, Clone)]
 pub struct SignerSet {
     by_profile: HashMap<String, Arc<dyn SignerBackend>>,
@@ -690,7 +691,7 @@ mod tests {
     /// `dns.resolver` or `[proxy]` hands `build_backends`.
     async fn parts_with_egress(identity: &str) -> SignerParts {
         let mut parts = parts().await;
-        parts.egress = Arc::new(crate::Egress {
+        parts.egress = Arc::new(crate::server::Egress {
             resolver: test_resolver(),
             proxies: crate::testutil::no_proxies(),
             identity: identity.to_string(),

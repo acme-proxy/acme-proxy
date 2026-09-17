@@ -280,12 +280,12 @@ fn with_tokens(signer: RelaySigner, tokens: Arc<StubTokens>) -> RelaySigner {
 ///
 /// The handler is no longer the backend's own — it dispatches per row from the
 /// profile the payload names — so every fixture has to say which profiles the
-/// signer under test answers for, exactly as `cli::build_generation` does from
-/// the live profile list.
+/// signer under test answers for, exactly as
+/// `server::generation::build_generation` does from the live profile list.
 fn relay_handler(signer: &RelaySigner, profiles: &[&str]) -> flow::RelayJob {
-    // The pool comes off the backend here where `cli::build_generation` hands
-    // over the process's own: every relay shares it, so the two are the same
-    // handle either way.
+    // The pool comes off the backend here where
+    // `server::generation::build_generation` hands over the process's own:
+    // every relay shares it, so the two are the same handle either way.
     flow::RelayJob::new(
         signer.0.database.clone(),
         profiles

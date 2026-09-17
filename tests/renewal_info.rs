@@ -476,7 +476,7 @@ async fn renewal_info_rejects_an_order_whose_certificate_is_missing() {
     let id = cert_id(&chain);
 
     sqlx::query("UPDATE orders SET certificate = NULL")
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 
@@ -517,7 +517,7 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
 
     sqlx::query("UPDATE orders SET certificate = ?")
         .bind(no_aki.pem())
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 
@@ -572,7 +572,7 @@ async fn renewal_info_reports_an_unparsable_stored_chain_as_internal() {
 
     sqlx::query("UPDATE orders SET certificate = ?")
         .bind("-----BEGIN CERTIFICATE-----\nnot really\n-----END CERTIFICATE-----\n")
-        .execute(&db.pool)
+        .execute(db.raw_pool())
         .await
         .unwrap();
 
