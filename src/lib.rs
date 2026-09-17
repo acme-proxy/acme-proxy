@@ -196,12 +196,15 @@
 //!         database.clone(),
 //!         metrics.clone(),
 //!     )?);
+//!     // The queue goes in too: `POST /chall/{id}` claims a challenge and
+//!     // queues its validation rather than performing it inside the request.
 //!     let app = build_app(
 //!         database.clone(),
 //!         config.clone(),
 //!         profiles,
 //!         audit,
 //!         metrics.clone(),
+//!         job_queue.clone(),
 //!     );
 //!
 //!     // One runner drains the queue for the process. Every handler comes from

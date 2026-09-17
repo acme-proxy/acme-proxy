@@ -19,7 +19,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use base64::prelude::*;
 use http_body_util::BodyExt;
-use serde_json::json;
+use serde_json::{Value, json};
 use tower::ServiceExt;
 use x509_parser::prelude::FromDer;
 
@@ -130,11 +130,21 @@ async fn issue_certificate(app: &Router, signer: &impl TestSigner, account_url: 
     let authz = body_json(res).await;
     let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
+    // Validation is queued, so the trigger answers `processing`; poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
     let challenge_path = challenge_url.strip_prefix(common::HOST).unwrap();
-    let nonce = fetch_nonce(app).await;
-    let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
-    let res = post(app, challenge_path, body).await;
-    assert_eq!(body_json(res).await["status"], "valid");
+    let mut status = Value::Null;
+    for _ in 0..600 {
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
+        let res = post(app, challenge_path, body).await;
+        status = body_json(res).await["status"].clone();
+        if status != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, "valid");
 
     let nonce = fetch_nonce(app).await;
     let body = signer.sign_kid_empty(account_url, &order_url, &nonce);

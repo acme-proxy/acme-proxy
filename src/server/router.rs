@@ -38,6 +38,14 @@ pub struct AppState {
     /// because `[audit]` is process-wide: the trail describes the CA, and the
     /// web admin writes to the same one across every endpoint it can revoke on.
     pub audit: Arc<audit::Auditor>,
+    /// The durable queue, for the work a request starts and does not finish.
+    ///
+    /// Here for `audit`'s reason — one queue, one table, one runner for the
+    /// process — rather than on the profile. `post_challenge` is its only
+    /// caller on this listener: it claims a challenge and queues the outbound
+    /// check rather than awaiting it, so a probe of a client-chosen host no
+    /// longer holds an admission permit.
+    pub jobs: crate::jobs::JobQueue,
 }
 
 /// Every distinct `http-01` token store across the mounted profiles.
@@ -145,6 +153,7 @@ pub fn build_app(
     profiles: Vec<Arc<Profile>>,
     audit: Arc<audit::Auditor>,
     metrics: Arc<metrics::Metrics>,
+    jobs: crate::jobs::JobQueue,
 ) -> Router {
     // Server-level routes. Deliberately *outside* the admission limit below: a
     // health probe is asked for precisely when the server is saturated, and
@@ -191,6 +200,7 @@ pub fn build_app(
                 config.clone(),
                 profile.clone(),
                 audit.clone(),
+                jobs.clone(),
             ),
         );
     }
@@ -299,6 +309,7 @@ pub fn build_router(
     config: Arc<Config>,
     profile: Arc<Profile>,
     audit: Arc<audit::Auditor>,
+    jobs: crate::jobs::JobQueue,
 ) -> Router {
     let filter = profile.filter.clone();
     let state = AppState {
@@ -306,6 +317,7 @@ pub fn build_router(
         config,
         profile: profile.clone(),
         audit,
+        jobs,
     };
 
     let profile_name = profile.name.clone();

@@ -112,15 +112,25 @@ async fn issue(
     let authz = read(app, signer, account_url, &authz_url).await;
     let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
-    let nonce = fetch_nonce(app).await;
+    // Validation is queued work, so the trigger only starts it. Poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
     let path = challenge_url.strip_prefix(common::HOST).unwrap();
-    let res = post(
-        app,
-        path,
-        signer.sign_kid(account_url, &challenge_url, &nonce, &json!({})),
-    )
-    .await;
-    assert_eq!(body_json(res).await["status"], "valid");
+    let mut status = serde_json::Value::Null;
+    for _ in 0..600 {
+        let nonce = fetch_nonce(app).await;
+        let res = post(
+            app,
+            path,
+            signer.sign_kid(account_url, &challenge_url, &nonce, &json!({})),
+        )
+        .await;
+        status = body_json(res).await["status"].clone();
+        if status != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, "valid");
 
     let finalize_url = format!("{order_url}/finalize");
     let nonce = fetch_nonce(app).await;

@@ -339,6 +339,7 @@ pub(crate) fn build_generation(
         profiles.clone(),
         auditor,
         assembly.metrics.clone(),
+        assembly.jobs.clone(),
     );
 
     Ok(Generation {

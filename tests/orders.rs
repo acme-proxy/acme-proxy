@@ -20,7 +20,7 @@ use tower::ServiceExt;
 mod common;
 use base64::prelude::*;
 use common::{
-    EcSigner, FailingSigner, GarbageChainSigner, PREFIX, RsaSigner, TestSigner, body_json,
+    EcSigner, FailingSigner, GarbageChainSigner, PREFIX, RsaSigner, TestSigner, acme, body_json,
     fetch_nonce, make_csr, make_csr_with_sans, p, test_app, test_app_with_signer,
 };
 
@@ -96,10 +96,9 @@ async fn ready_order(app: &Router, signer: &impl TestSigner) -> (String, String)
         .unwrap()
         .to_string();
 
-    let nonce = fetch_nonce(app).await;
-    let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
-    let res = post(app, challenge_url.strip_prefix(common::HOST).unwrap(), body).await;
-    assert_eq!(res.status(), StatusCode::OK);
+    // Validation is queued work, so the trigger only starts it; wait for the
+    // verdict the way a client polling its `Retry-After` would.
+    acme::await_challenge(app, signer, &account_url, &challenge_url).await;
 
     (account_url, order_url)
 }
@@ -154,12 +153,22 @@ async fn full_lifecycle(signer: impl TestSigner) {
         .to_string();
 
     // --- trigger the challenge (stub validation flips it to valid) ---
-    let challenge_path = challenge_url.strip_prefix(common::HOST).unwrap();
     let nonce = fetch_nonce(&app).await;
     let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
-    let res = post(&app, challenge_path, body).await;
+    let res = post(
+        &app,
+        challenge_url.strip_prefix(common::HOST).unwrap(),
+        body,
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    // The trigger starts the work; §7.1.6's `processing` is what comes back,
+    // and the verdict lands in the job runner.
+    assert_eq!(body_json(res).await["status"], "processing");
+    assert_eq!(
+        acme::await_challenge(&app, &signer, &account_url, &challenge_url).await["status"],
+        "valid"
+    );
 
     // --- POST-as-GET the order: now ready ---
     let nonce = fetch_nonce(&app).await;
@@ -304,6 +313,27 @@ async fn trigger_challenge(
     post(app, challenge_path, body).await
 }
 
+/// Polls an order until it reports `status`.
+///
+/// Promotion to `ready` happens in whichever validation commits last, and that
+/// now runs in the job runner rather than in the trigger's own request.
+async fn await_order_status(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    order_url: &str,
+    status: &str,
+) -> Value {
+    for _ in 0..600 {
+        let order = post_as_get(app, signer, account_url, order_url).await;
+        if order["status"] == status {
+            return order;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{order_url}` never reached `{status}`");
+}
+
 /// Drives every authorization of an order to `valid`, moving the order to
 /// `ready` so it can be finalized.
 async fn drive_order_to_ready(
@@ -316,6 +346,9 @@ async fn drive_order_to_ready(
         let challenge_url = first_challenge_url(app, signer, account_url, &authz_url).await;
         let res = trigger_challenge(app, signer, account_url, &challenge_url).await;
         assert_eq!(res.status(), StatusCode::OK);
+        // The trigger queues the check; wait for the verdict before calling the
+        // order ready, the way a client polling its `Retry-After` would.
+        acme::await_challenge(app, signer, account_url, &challenge_url).await;
     }
 }
 
@@ -825,20 +858,22 @@ async fn multi_identifier_order_becomes_ready_after_all_challenges() {
     let authz_urls = order_authz_urls(&app, &signer, &account_url, &order_url).await;
     assert_eq!(authz_urls.len(), 2, "one authorization per identifier");
 
-    // Trigger the first challenge only: the order is not yet ready.
+    // Prove the first authorization only: the order is not yet ready.
     let challenge_url = first_challenge_url(&app, &signer, &account_url, &authz_urls[0]).await;
     let res = trigger_challenge(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(res.status(), StatusCode::OK);
+    acme::await_challenge(&app, &signer, &account_url, &challenge_url).await;
 
     let nonce = fetch_nonce(&app).await;
     let body = signer.sign_kid_empty(&account_url, &order_url, &nonce);
     let res = post(&app, order_path, body).await;
     assert_eq!(body_json(res).await["status"], "pending");
 
-    // Trigger the second challenge: now every authorization is valid → ready.
+    // Prove the second: now every authorization is valid → ready.
     let challenge_url = first_challenge_url(&app, &signer, &account_url, &authz_urls[1]).await;
     let res = trigger_challenge(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(res.status(), StatusCode::OK);
+    acme::await_challenge(&app, &signer, &account_url, &challenge_url).await;
 
     let nonce = fetch_nonce(&app).await;
     let body = signer.sign_kid_empty(&account_url, &order_url, &nonce);
@@ -1329,7 +1364,9 @@ async fn concurrent_validations_of_one_order_still_promote_it() {
     assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(second.status(), StatusCode::OK);
 
-    let order = post_as_get(&app, &signer, &account_url, &order_url).await;
+    // Both verdicts land in the job runner, so the promotion — which is what
+    // this test is about — happens there rather than in either request.
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "ready").await;
     assert_eq!(
         order["status"], "ready",
         "both authorizations are valid, so the order must be ready: {order}"

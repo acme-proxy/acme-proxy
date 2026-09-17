@@ -17,6 +17,7 @@ use acme_proxy::audit::Auditor;
 pub use acme_proxy::audit::ClientContext;
 use acme_proxy::server::{Profile, ProfileParts, build_app};
 
+use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
@@ -524,14 +525,57 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
             },
         )));
     }
+    let jobs = spawn_validation_runner(&database, &built);
     let router = build_app(
         database.clone(),
         Arc::new(config),
         built,
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database.clone())),
+        jobs,
     );
     (router, database)
+}
+
+/// The queue the app enqueues into, with a runner draining it.
+///
+/// Challenge validation is queued work: `POST /chall/{id}` claims the challenge
+/// and returns it `processing`, and the outbound check happens in the job
+/// runner. So a suite that triggers a challenge needs something to perform it,
+/// and this is the same `ChallengeValidateJob` and the same `spawn_runner`
+/// production uses — rather than reaching into the queue by hand, so the suites
+/// go on exercising the real claim, lease and settle path.
+///
+/// The shutdown sender is deliberately leaked rather than dropped: the loop
+/// treats a closed shutdown channel as a signal (`shutdown.changed()` on a
+/// dropped sender returns `Err` at once, and the arm `break`s), so letting it
+/// fall out of scope would stop the runner before it claimed anything. The task
+/// is then left to the test's own runtime, which ends with the test — there is
+/// nothing to drain gracefully, the database being in memory and going with it.
+fn spawn_validation_runner(database: &Arc<Database>, profiles: &[Arc<Profile>]) -> JobQueue {
+    let queue = JobQueue::new(database.clone(), &JobsConfig::default());
+    let mut registry = JobRegistry::new();
+    registry
+        .register(Arc::new(ChallengeValidateJob::new(
+            database.clone(),
+            Arc::new(Auditor::offline(database.clone())),
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.clone()))
+                .collect(),
+        )))
+        .expect("the validation handler registers");
+
+    let (shutdown, rx) = tokio::sync::watch::channel(false);
+    std::mem::forget(shutdown);
+
+    acme_proxy::jobs::spawn_runner(
+        queue.clone(),
+        Arc::new(registry),
+        &JobsConfig::default(),
+        rx,
+    );
+    queue
 }
 
 /// The one place the app is actually constructed: every other `test_app_*`
@@ -551,12 +595,14 @@ pub async fn test_app_full(
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let profile = one_profile(&config, signer, filter, challenges, notify);
+    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     let router = build_app(
         database.clone(),
         Arc::new(config),
         vec![profile],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database.clone())),
+        jobs,
     );
     (router, database)
 }
@@ -574,12 +620,14 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
         default_challenges(),
         no_notifications().await,
     );
+    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     build_app(
         database.clone(),
         Arc::new(config),
         vec![profile],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database)),
+        jobs,
     )
 }
 
@@ -621,12 +669,14 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
         default_challenges(),
         no_notifications().await,
     );
+    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     let router = build_app(
         database.clone(),
         Arc::new(config),
         vec![profile],
         test_auditor(database.clone()),
         Arc::new(Metrics::new(database.clone())),
+        jobs,
     );
     (router, database, DiskDb(path))
 }
@@ -665,12 +715,14 @@ pub async fn test_app_with_metrics(
         )
         .with_metrics(metrics.clone()),
     );
+    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     let router = build_app(
         database.clone(),
         Arc::new(config),
         vec![profile],
         auditor,
         metrics.clone(),
+        jobs,
     );
     (router, database, metrics)
 }
@@ -2605,6 +2657,57 @@ pub mod acme {
         post(app, &path_of(challenge_url), body).await
     }
 
+    /// Polls a challenge until the server has decided it, and returns it.
+    ///
+    /// Validation is queued work: the trigger claims the challenge and answers
+    /// `processing` (§7.1.6), and the verdict lands moments later in the job
+    /// runner. A real client polls exactly this way — §8.2 pairs `processing`
+    /// with the `Retry-After` the trigger carries — and so does the suite,
+    /// rather than reaching into the queue, so what is exercised is the path a
+    /// certbot run takes.
+    ///
+    /// Polled by re-POSTing `{}`, not POST-as-GET: §7.5.1 defines the challenge
+    /// resource's POST body as the trigger and this server accepts no empty
+    /// payload there, and the same section makes a retry explicitly *not* a
+    /// state change — the claim simply fails and the object comes back as it
+    /// stands.
+    ///
+    /// Bounded, so a challenge that never settles fails the test with a
+    /// diagnosis instead of hanging it.
+    pub async fn await_challenge(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        challenge_url: &str,
+    ) -> Value {
+        for _ in 0..600 {
+            let response = trigger(app, signer, account_url, challenge_url).await;
+            let challenge = crate::common::body_json(response).await;
+            if challenge["status"] != "processing" {
+                return challenge;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("`{challenge_url}` never left `processing`");
+    }
+
+    /// Triggers a challenge and waits for its verdict, returning the challenge.
+    ///
+    /// What a suite proving domain control wants: [`trigger`] alone now only
+    /// starts the work.
+    pub async fn trigger_and_settle(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        challenge_url: &str,
+    ) -> Value {
+        let response = trigger(app, signer, account_url, challenge_url).await;
+        // Both outcomes are `200` + the challenge object (§7.5.1), so this
+        // asserts the transport, not the verdict.
+        assert_eq!(response.status(), StatusCode::OK);
+        await_challenge(app, signer, account_url, challenge_url).await
+    }
+
     /// Drives an order from `pending` to `ready` by proving every
     /// authorization, and returns the order object.
     ///
@@ -2626,10 +2729,7 @@ pub mod acme {
         for authz_url in &authorizations {
             let authz = post_as_get(app, signer, account_url, authz_url).await;
             let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
-            let response = trigger(app, signer, account_url, &challenge_url).await;
-            // Both outcomes are `200` + the challenge object (§7.5.1), so this
-            // asserts the transport, not the verdict.
-            assert_eq!(response.status(), StatusCode::OK);
+            trigger_and_settle(app, signer, account_url, &challenge_url).await;
         }
     }
 

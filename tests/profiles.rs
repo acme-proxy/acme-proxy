@@ -131,12 +131,21 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
     let authz = body_json(post(app, to_path(&authz_url), body).await).await;
     let chall_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
-    let n = nonce(app, profile).await;
-    let body = signer.sign_kid(account, &chall_url, &n, &json!({}));
-    assert_eq!(
-        post(app, to_path(&chall_url), body).await.status(),
-        StatusCode::OK
-    );
+    // Validation is queued work, so the trigger only starts it. Poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
+    let mut status = serde_json::Value::Null;
+    for _ in 0..600 {
+        let n = nonce(app, profile).await;
+        let body = signer.sign_kid(account, &chall_url, &n, &json!({}));
+        let res = post(app, to_path(&chall_url), body).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        status = body_json(res).await["status"].clone();
+        if status != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, "valid");
 
     let finalize_url = format!("{order_url}/finalize");
     let n = nonce(app, profile).await;
@@ -415,9 +424,17 @@ async fn a_certificate_cannot_be_revoked_through_another_profile() {
     let body = account_signer.sign_kid_empty(&account, &authz_url, &n);
     let authz = body_json(post(&app, to_path(&authz_url), body).await).await;
     let chall_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
-    let n = nonce(&app, "a").await;
-    let body = account_signer.sign_kid(&account, &chall_url, &n, &json!({}));
-    post(&app, to_path(&chall_url), body).await;
+    // Validation is queued work, so the trigger only starts it. Poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
+    for _ in 0..600 {
+        let n = nonce(&app, "a").await;
+        let body = account_signer.sign_kid(&account, &chall_url, &n, &json!({}));
+        let res = post(&app, to_path(&chall_url), body).await;
+        if body_json(res).await["status"] != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     let finalize_url = format!("{order_url}/finalize");
     let n = nonce(&app, "a").await;

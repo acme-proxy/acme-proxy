@@ -112,6 +112,43 @@ async fn trigger(app: &Router, signer: &impl TestSigner, account_url: &str, url:
     .await
 }
 
+/// Triggers a challenge and waits for the server to decide it, returning the
+/// challenge object.
+///
+/// Validation is queued work: the trigger claims the challenge and answers it
+/// `processing` (§7.1.6), and the job runner reaches the verdict moments later.
+/// A real client polls exactly this way, against the `Retry-After` the trigger
+/// carries (§8.2). Bounded, so a challenge that never settles fails the test
+/// with a diagnosis instead of hanging it.
+async fn settle(app: &Router, signer: &impl TestSigner, account_url: &str, url: &str) -> Value {
+    let res = trigger(app, signer, account_url, url).await;
+    assert_eq!(res.status(), StatusCode::OK, "trigger of {url}");
+    await_decided(app, signer, account_url, url).await
+}
+
+/// Polls a challenge until it is no longer `processing`.
+///
+/// By re-POSTing `{}`, not POST-as-GET: §7.5.1 defines the challenge resource's
+/// POST body as the trigger and this server accepts no empty payload there, and
+/// the same section makes a retry explicitly *not* a state change — the claim
+/// simply fails and the object comes back as it stands. That is what a client
+/// polling a `processing` challenge against its `Retry-After` actually sends.
+async fn await_decided(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    url: &str,
+) -> Value {
+    for _ in 0..600 {
+        let challenge = body_json(trigger(app, signer, account_url, url).await).await;
+        if challenge["status"] != "processing" {
+            return challenge;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{url}` never left `processing`");
+}
+
 /// The challenge of a given type on an authorization, by URL.
 fn challenge_url_of_type(authz: &Value, typ: &str) -> String {
     authz["challenges"]
@@ -151,9 +188,8 @@ async fn the_default_configuration_offers_one_bypassing_http_01_challenge() {
     assert!(authz.get("wildcard").is_none());
 
     let challenge_url = challenge_url_of_type(&authz, "http-01");
-    let res = trigger(&app, &signer, &account_url, &challenge_url).await;
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    let challenge = settle(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(challenge["status"], "valid");
 }
 
 /// Every enabled type is offered, each with its own token — a key authorization
@@ -229,9 +265,8 @@ async fn a_passing_validator_carries_the_order_through_to_a_certificate() {
     let authz = read(&app, &signer, &account_url, &authz_url).await;
     let challenge_url = challenge_url_of_type(&authz, "http-01");
 
-    let res = trigger(&app, &signer, &account_url, &challenge_url).await;
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    let challenge = settle(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(challenge["status"], "valid");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     assert_eq!(
@@ -299,12 +334,25 @@ async fn a_pending_authorization_and_challenge_carry_a_retry_after() {
     assert_eq!(authz["status"], "pending");
     let challenge_url = challenge_url_of_type(&authz, "http-01");
 
-    // Triggering it decides it (bypass is on by default), so the answer that
-    // comes back is `valid` — and carries no Retry-After, because there is
-    // nothing left to wait for.
+    // Triggering it starts the work rather than doing it, so the answer that
+    // comes back is `processing` — and §8.2 makes the `Retry-After` beside it a
+    // MUST, since the client now has something to come back for.
     let res = trigger(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    assert_eq!(
+        res.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("5"),
+        "a processing challenge must pace the client (RFC 8555 §8.2)"
+    );
+    assert_eq!(body_json(res).await["status"], "processing");
+
+    // Once the runner has decided it, there is nothing left to wait for.
+    assert_eq!(
+        await_decided(&app, &signer, &account_url, &challenge_url).await["status"],
+        "valid"
+    );
 
     let nonce = fetch_nonce(&app).await;
     let res = post(
@@ -373,7 +421,10 @@ async fn a_failing_validator_reports_the_reason_in_the_challenge_object() {
         "the index link must be present too: {links:?}"
     );
 
-    let challenge = body_json(res).await;
+    // The trigger only starts the work; the refusal lands once the runner has
+    // performed the check. It is still reported *in the challenge object* —
+    // never as an HTTP error — which is what this test is really about.
+    let challenge = await_decided(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(challenge["status"], "invalid");
     assert_eq!(
         challenge["error"]["type"],
@@ -473,7 +524,7 @@ async fn a_sibling_challenge_is_not_run_once_the_authorization_is_valid() {
     // Satisfy http-01 first.
     let http_url = challenge_url_of_type(&authz, "http-01");
     assert_eq!(
-        body_json(trigger(&app, &signer, &account_url, &http_url).await).await["status"],
+        settle(&app, &signer, &account_url, &http_url).await["status"],
         "valid"
     );
 
@@ -522,7 +573,7 @@ async fn an_order_is_ready_only_once_every_authorization_is_valid() {
     assert_eq!(authz_urls.len(), 2);
 
     let first = read(&app, &signer, &account_url, &authz_urls[0]).await;
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -536,7 +587,7 @@ async fn an_order_is_ready_only_once_every_authorization_is_valid() {
     );
 
     let second = read(&app, &signer, &account_url, &authz_urls[1]).await;
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -581,7 +632,7 @@ async fn the_key_authorization_matches_what_a_client_would_compute() {
         .unwrap()
         .to_string();
 
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -651,7 +702,7 @@ async fn a_wildcard_order_offers_dns_01_on_the_base_name() {
     assert_eq!(challenges.len(), 1);
     assert_eq!(challenges[0]["type"], "dns-01");
 
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -723,7 +774,7 @@ async fn a_name_and_its_wildcard_get_separate_authorizations() {
     assert_eq!(wildcard["challenges"].as_array().unwrap().len(), 1);
 
     // Both must be satisfied before the order is ready.
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -734,7 +785,7 @@ async fn a_name_and_its_wildcard_get_separate_authorizations() {
         read(&app, &signer, &account_url, &order_url).await["status"],
         "pending"
     );
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,
@@ -770,7 +821,7 @@ async fn a_wildcard_order_issues_a_wildcard_certificate() {
         order["authorizations"][0].as_str().unwrap(),
     )
     .await;
-    trigger(
+    settle(
         &app,
         &signer,
         &account_url,

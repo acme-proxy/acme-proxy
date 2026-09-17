@@ -243,14 +243,21 @@ async fn the_order_window_and_the_leaf_window_are_configured_separately() {
     let authz = body_json(res).await;
     let chall_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
-    let n = nonce(&app).await;
-    let body = signer.sign_kid(&account_url, &chall_url, &n, &json!({}));
-    assert_eq!(
-        post(&app, chall_url.strip_prefix(HOST).unwrap(), body)
-            .await
-            .status(),
-        StatusCode::OK
-    );
+    // Validation is queued, so the trigger answers `processing`; poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
+    let mut status = Value::Null;
+    for _ in 0..600 {
+        let n = nonce(&app).await;
+        let body = signer.sign_kid(&account_url, &chall_url, &n, &json!({}));
+        let res = post(&app, chall_url.strip_prefix(HOST).unwrap(), body).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        status = body_json(res).await["status"].clone();
+        if status != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, "valid");
 
     let finalize_url = format!("{order_url}/finalize");
     let n = nonce(&app).await;

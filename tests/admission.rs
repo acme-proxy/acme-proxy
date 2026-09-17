@@ -8,9 +8,17 @@
 //! hang, `/health` answers while the ACME endpoints are saturated, and a slot is
 //! always given back.
 //!
-//! Every test drives a real `POST /chall/{id}`, because challenge validation is
-//! one of the two things this server does *inside* a request — so a blocking
-//! validator holds a genuine ACME request open rather than simulating one.
+//! Every test drives a real `POST /order/{id}/finalize` against a signer that
+//! parks inside `issue`, because issuance is what this server still does
+//! *inside* a request — so a gated backend holds a genuine ACME request open
+//! rather than simulating one.
+//!
+//! It used to be a blocking `POST /chall/{id}`: challenge validation was the
+//! other inline hook, and the better one to hold open, since the address it
+//! reaches is the client's. That is exactly why it moved into the job queue —
+//! a probe of a client-chosen host no longer holds an admission permit at all —
+//! and with it this suite lost that subject. Finalize is what is left, and it
+//! is the hook `check_request_timeout` still refuses a short deadline for.
 
 use std::sync::Arc;
 
@@ -18,19 +26,17 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
+use acme_proxy::filter::FilterPolicy;
 use common::{
-    BlockingValidator, EcSigner, TestSigner, body_json, challenges_with, fetch_nonce, p,
-    test_app_with_challenges,
+    EcSigner, GatedSigner, TestSigner, acme, body_json, challenges_with, default_challenges,
+    fetch_nonce, make_csr, no_notifications, p, test_app_full, test_app_with_challenges,
 };
 
 use acme_proxy::config::Config;
-
-const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
-const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()
@@ -60,102 +66,61 @@ fn admission_config(max_concurrent: usize, wait_ms: u64, timeout_ms: u64) -> Con
     config
 }
 
-/// Registers an account, opens an order and returns the URL of its first
-/// challenge — the request that will block once triggered.
-async fn ready_challenge(app: &Router, signer: &EcSigner) -> (String, String) {
-    let nonce = fetch_nonce(app).await;
-    let res = post(
-        app,
-        &p("/newAccount"),
-        signer.sign(
-            NEW_ACCOUNT_URL,
-            &nonce,
-            &json!({ "termsOfServiceAgreed": true }),
-        ),
+/// The full router over `backend`, with the admission knobs a test set.
+///
+/// `test_app_with_signer` takes no `Config`, and every test here turns one of
+/// those knobs down, so this goes through `test_app_full` directly.
+async fn gated_app(
+    config: Config,
+    backend: GatedSigner,
+) -> (Router, std::sync::Arc<acme_proxy::sqlite::db::Database>) {
+    test_app_full(
+        config,
+        Arc::new(backend),
+        Arc::new(FilterPolicy::default()),
+        default_challenges(),
+        no_notifications().await,
     )
-    .await;
-    assert_eq!(res.status(), StatusCode::CREATED);
-    let account_url = res
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok())
-        .unwrap()
-        .to_string();
-
-    let nonce = fetch_nonce(app).await;
-    let order = body_json(
-        post(
-            app,
-            &p("/newOrder"),
-            signer.sign_kid(
-                &account_url,
-                NEW_ORDER_URL,
-                &nonce,
-                &json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] }),
-            ),
-        )
-        .await,
-    )
-    .await;
-
-    let authz_url = order["authorizations"][0].as_str().unwrap().to_string();
-    let nonce = fetch_nonce(app).await;
-    let authz_path = authz_url.strip_prefix(common::HOST).unwrap();
-    let authz: Value = body_json(
-        post(
-            app,
-            authz_path,
-            signer.sign_kid_empty(&account_url, &authz_url, &nonce),
-        )
-        .await,
-    )
-    .await;
-
-    let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
-    (account_url, challenge_url)
+    .await
 }
 
-async fn trigger(app: &Router, signer: &EcSigner, account_url: &str, url: &str) -> Response {
-    let (path, body) = signed_trigger(app, signer, account_url, url).await;
-    post(app, &path, body).await
-}
-
-/// The path and signed body of a challenge trigger, ready to send later.
-async fn signed_trigger(
-    app: &Router,
-    signer: &EcSigner,
-    account_url: &str,
-    url: &str,
-) -> (String, String) {
+/// Registers an account, opens an order and proves it, returning the path and
+/// signed body of the finalize request that will block once sent.
+///
+/// The JWS is built here rather than in the task that sends it: `EcSigner` is
+/// not `Clone`, and signing needs a nonce, which needs a request — which would
+/// itself need a slot.
+async fn ready_finalize(app: &Router, signer: &EcSigner) -> (String, String) {
+    let (account_url, order_url, _) = acme::ready_order(app, signer, &["example.com"]).await;
+    let finalize_url = format!("{order_url}/finalize");
     let nonce = fetch_nonce(app).await;
-    let path = url.strip_prefix(common::HOST).unwrap().to_string();
-    (path, signer.sign_kid(account_url, url, &nonce, &json!({})))
+    let body = signer.sign_kid(
+        &account_url,
+        &finalize_url,
+        &nonce,
+        &json!({ "csr": make_csr("example.com") }),
+    );
+    (
+        finalize_url.strip_prefix(common::HOST).unwrap().to_string(),
+        body,
+    )
 }
 
 /// Past the limit, a request is refused with a problem document — not parked.
 #[tokio::test]
 async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
-    let validator = BlockingValidator::new("http-01");
-    let (_calls, gate, entered) = validator.handles();
+    let backend = GatedSigner::new().await;
+    let (_calls, gate, entered) = backend.handles();
     // One slot, and no willingness to wait for it, so this is deterministic.
-    let (app, _db) = test_app_with_challenges(
-        admission_config(1, 0, 30_000),
-        challenges_with(&["http-01"], vec![Arc::new(validator)]),
-    )
-    .await;
+    let (app, _db) = gated_app(admission_config(1, 0, 30_000), backend).await;
 
     let signer = EcSigner::new();
-    let (account_url, challenge_url) = ready_challenge(&app, &signer).await;
-
-    // The JWS is built here rather than in the task: `EcSigner` is not `Clone`,
-    // and signing needs a nonce, which needs a request — which would itself
-    // need a slot.
-    let (path, body) = signed_trigger(&app, &signer, &account_url, &challenge_url).await;
+    let (path, body) = ready_finalize(&app, &signer).await;
     let held = tokio::spawn({
         let app = app.clone();
         async move { post(&app, &path, body).await }
     });
-    // Wait for it to be genuinely inside the validator holding the only slot,
+    // Wait for it to be genuinely inside the signer holding the only slot,
     // rather than for a duration and a hope.
     let _ = entered.acquire().await.unwrap();
 
@@ -183,21 +148,12 @@ async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
 /// exactly when it needs to.
 #[tokio::test]
 async fn health_answers_while_the_acme_endpoints_are_saturated() {
-    let validator = BlockingValidator::new("http-01");
-    let (_calls, gate, entered) = validator.handles();
-    let (app, _db) = test_app_with_challenges(
-        admission_config(1, 0, 30_000),
-        challenges_with(&["http-01"], vec![Arc::new(validator)]),
-    )
-    .await;
+    let backend = GatedSigner::new().await;
+    let (_calls, gate, entered) = backend.handles();
+    let (app, _db) = gated_app(admission_config(1, 0, 30_000), backend).await;
 
     let signer = EcSigner::new();
-    let (account_url, challenge_url) = ready_challenge(&app, &signer).await;
-
-    // The JWS is built here rather than in the task: `EcSigner` is not `Clone`,
-    // and signing needs a nonce, which needs a request — which would itself
-    // need a slot.
-    let (path, body) = signed_trigger(&app, &signer, &account_url, &challenge_url).await;
+    let (path, body) = ready_finalize(&app, &signer).await;
     let held = tokio::spawn({
         let app = app.clone();
         async move { post(&app, &path, body).await }
@@ -220,27 +176,23 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
 /// walks down to zero and the server never recovers.
 #[tokio::test]
 async fn a_slot_is_released_after_a_request_exceeds_its_deadline() {
-    let validator = BlockingValidator::new("http-01");
-    let (_calls, gate, entered) = validator.handles();
-    // One slot; a deadline short enough that the blocked validation trips it.
-    let (app, _db) = test_app_with_challenges(
-        admission_config(1, 500, 200),
-        challenges_with(&["http-01"], vec![Arc::new(validator)]),
-    )
-    .await;
+    let backend = GatedSigner::new().await;
+    let (_calls, gate, entered) = backend.handles();
+    // One slot; a deadline short enough that the blocked issuance trips it.
+    let (app, _db) = gated_app(admission_config(1, 500, 200), backend).await;
 
     let signer = EcSigner::new();
-    let (account_url, challenge_url) = ready_challenge(&app, &signer).await;
+    let (path, body) = ready_finalize(&app, &signer).await;
 
-    let timed_out = trigger(&app, &signer, &account_url, &challenge_url).await;
+    let timed_out = post(&app, &path, body).await;
     assert_eq!(timed_out.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    // The deadline came from the blocked validation and not from somewhere
-    // else on the way in — otherwise the slot being free below proves nothing
-    // about the case this test is named for.
+    // The deadline came from the blocked issuance and not from somewhere else
+    // on the way in — otherwise the slot being free below proves nothing about
+    // the case this test is named for.
     assert_eq!(
         entered.available_permits(),
         1,
-        "the request must have reached the validator before its deadline fired"
+        "the request must have reached the signer before its deadline fired"
     );
     assert_eq!(
         timed_out

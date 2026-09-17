@@ -192,41 +192,40 @@ impl Profile {
 /// Refuses a `server.request_timeout_ms` shorter than the work the server does
 /// *inside* a request.
 ///
-/// Two hooks run inline in a handler rather than in the background: challenge
-/// validation (`post_challenge` awaits `challenges.validate`) and the `custom`
-/// signer's script (`post_finalize` awaits it). If the request deadline is the
-/// shorter of the two budgets, a validation that was going to succeed is cut
-/// off and the client is told the server failed — a misconfiguration that would
-/// look like an intermittent CA outage and be miserable to diagnose. Cheaper to
-/// refuse to start and say which two numbers disagree.
+/// One hook still runs inline in a handler rather than in the background: the
+/// `custom` signer's script, which `post_finalize` awaits. If the request
+/// deadline is the shorter of the two budgets, an issuance that was going to
+/// succeed is cut off and the client is told the server failed — a
+/// misconfiguration that would look like an intermittent CA outage and be
+/// miserable to diagnose. Cheaper to refuse to start and say which two numbers
+/// disagree.
+///
+/// **`challenge.timeout_ms` used to be checked here too, and deliberately is
+/// not any more.** Validation moved into the job queue (`acme::validate`), so
+/// that budget bounds a job attempt rather than a request, and the two numbers
+/// are now independent: a deployment may legitimately give a slow `dns-01`
+/// check longer than it is willing to hold any HTTP request open for.
 fn check_request_timeout(
     config: &Config,
     name: &str,
     sections: &config::ProfileSections,
 ) -> anyhow::Result<()> {
     let deadline = config.server.request_timeout_ms;
-    let inline = [
-        ("challenge.timeout_ms", sections.challenge.timeout_ms),
-        (
-            "signer.custom.timeout_ms",
-            // Only when that backend is the one actually installed; an unused
-            // `[signer.custom]` section says nothing about this profile.
-            if sections.signer.backend == "custom" {
-                sections.signer.custom.timeout_ms
-            } else {
-                0
-            },
-        ),
-    ];
+    // Only when that backend is the one actually installed; an unused
+    // `[signer.custom]` section says nothing about this profile.
+    let budget = if sections.signer.backend == "custom" {
+        sections.signer.custom.timeout_ms
+    } else {
+        0
+    };
 
-    for (key, budget) in inline {
-        anyhow::ensure!(
-            deadline > budget,
-            "profile `{name}`: server.request_timeout_ms ({deadline}) must exceed {key} \
-             ({budget}) — that hook runs inside the request, so a shorter deadline would cut \
-             off work that was going to succeed and report it to the client as a server failure",
-        );
-    }
+    anyhow::ensure!(
+        deadline > budget,
+        "profile `{name}`: server.request_timeout_ms ({deadline}) must exceed \
+         signer.custom.timeout_ms ({budget}) — that hook runs inside the request, so a shorter \
+         deadline would cut off work that was going to succeed and report it to the client as a \
+         server failure",
+    );
     Ok(())
 }
 
@@ -348,8 +347,8 @@ mod tests {
     }
 
     /// A request deadline shorter than a hook that runs inside the request is a
-    /// misconfiguration that would look like an intermittent CA outage: a
-    /// validation that was going to succeed gets cut off and reported to the
+    /// misconfiguration that would look like an intermittent CA outage: an
+    /// issuance that was going to succeed gets cut off and reported to the
     /// client as a server failure. Refuse to start and name both numbers.
     #[tokio::test]
     async fn build_all_refuses_a_deadline_shorter_than_an_inline_hook() {
@@ -359,7 +358,9 @@ mod tests {
             request_timeout_ms = 1000
 
             [profiles.le]
-            challenge.timeout_ms = 5000
+            signer.backend = "custom"
+            signer.custom.script_path = "/bin/true"
+            signer.custom.timeout_ms = 5000
             "#,
         );
         let error = match Profile::build_all(
@@ -368,11 +369,34 @@ mod tests {
             &crate::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
-            Ok(_) => panic!("a deadline below challenge.timeout_ms is a startup error"),
+            Ok(_) => panic!("a deadline below signer.custom.timeout_ms is a startup error"),
         };
         assert!(error.contains("profile `le`"), "{error}");
         assert!(error.contains("request_timeout_ms"), "{error}");
-        assert!(error.contains("challenge.timeout_ms"), "{error}");
+        assert!(error.contains("signer.custom.timeout_ms"), "{error}");
+    }
+
+    /// `challenge.timeout_ms` is deliberately **not** checked against the
+    /// request deadline any more: validation runs in the job queue, so that
+    /// budget bounds an attempt rather than a request and the two numbers are
+    /// independent. A configuration the old check refused must now start.
+    #[tokio::test]
+    async fn a_challenge_timeout_above_the_deadline_is_no_longer_refused() {
+        let config = config_from(
+            r#"
+            [server]
+            request_timeout_ms = 1000
+
+            [profiles.le]
+            challenge.timeout_ms = 5000
+            "#,
+        );
+        Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        )
+        .expect("challenge validation no longer runs inside the request");
     }
 
     /// The same check must not fire on `signer.custom.timeout_ms` when that

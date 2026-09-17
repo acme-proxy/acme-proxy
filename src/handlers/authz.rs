@@ -93,13 +93,13 @@ pub async fn post_authz(
     Ok(response)
 }
 
-/// How long a client is asked to wait before polling a still-`pending`
-/// authorization or challenge again (RFC 8555 §7.5.1).
+/// How long a client is asked to wait before polling a still-`pending` or
+/// `processing` authorization or challenge again (RFC 8555 §7.5.1).
 ///
 /// Deliberately small, and for the same reason as `PROCESSING_RETRY_AFTER` on
-/// orders: validation here is inline and bounded by `challenge.timeout_ms`, so
-/// the answer is usually already decided by the time a client asks — a long
-/// hint would stall a client that could have finished immediately.
+/// orders: a queued validation is claimed and run within `challenge.timeout_ms`
+/// of being triggered, so the answer is usually there by the time a client asks
+/// — a long hint would stall a client that could have finished immediately.
 const PENDING_RETRY_AFTER: &str = "5";
 
 /// Adds `Retry-After` while a resource is still undecided.
@@ -142,6 +142,7 @@ pub async fn post_challenge(
         database,
         profile,
         audit,
+        jobs,
         ..
     } = state;
     let base = &profile.base_url;
@@ -152,13 +153,40 @@ pub async fn post_challenge(
     };
 
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
-    let (mut challenge, mut authz, mut order) =
-        load_owned_challenge(&id, &account, &database).await?;
+    let (mut challenge, authz, order) = load_owned_challenge(&id, &account, &database).await?;
 
+    // Claimed, then queued — never awaited. The check reaches an address the
+    // client named, so awaiting it here held an admission permit for the length
+    // of `challenge.timeout_ms`. The challenge now answers `processing`, which
+    // §7.1.6 defines for exactly this ("transitions to the `processing` state
+    // when the client responds to the challenge") and §8.2 pairs with the
+    // `Retry-After` below.
     if orders.claim_challenge(&mut challenge, &authz).await? {
-        orders
-            .run_validation(&account, &mut challenge, &mut authz, &mut order, client_ip)
-            .await?;
+        let queued = jobs
+            .enqueue(crate::acme::validate::challenge_validate_spec(
+                &id,
+                client_ip,
+                authz.expires,
+            ))
+            .await;
+
+        // The claim is on the row and the work is not queued, so nothing is
+        // coming for it: give the claim back rather than leave the client
+        // polling a `processing` challenge until its authorization expires.
+        // `Ok(false)` needs no release — a live job already holds this
+        // challenge's identity, which is the same fact the claim asserts.
+        if let Err(error) = queued {
+            error!(
+                event = "challenge_validation_enqueue_failed",
+                outcome = "failure",
+                challenge_id = %id,
+                error = %error
+            );
+            let _ = challenge.release_validation_claim(&database).await;
+            return Err(Problem::server_internal(
+                "Challenge validation could not be queued",
+            ));
+        }
     }
 
     info!(

@@ -106,18 +106,28 @@ async fn ready_order(
     let authz = body_json(res).await;
     let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
-    let nonce = fetch_nonce_from(app, peer).await;
-    let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
-    let res = post_from(
-        app,
-        challenge_url.strip_prefix(common::HOST).unwrap(),
-        body,
-        peer,
-    )
-    .await;
-    assert_eq!(body_json(res).await["status"], "valid");
-
-    order_url
+    // Validation is queued work, so the trigger answers `processing` and the
+    // verdict lands in the job runner. Poll it the way a client would: §7.5.1
+    // makes a retry explicitly not a state change, so re-POSTing `{}` reads the
+    // object as it stands.
+    for _ in 0..600 {
+        let nonce = fetch_nonce_from(app, peer).await;
+        let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
+        let res = post_from(
+            app,
+            challenge_url.strip_prefix(common::HOST).unwrap(),
+            body,
+            peer,
+        )
+        .await;
+        let status = body_json(res).await["status"].clone();
+        if status == "valid" {
+            return order_url;
+        }
+        assert_eq!(status, "processing", "the challenge must not fail here");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the challenge never became valid");
 }
 
 /// Finalizes `order_url` with `csr`, returning the response.

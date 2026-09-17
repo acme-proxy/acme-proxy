@@ -104,10 +104,20 @@ async fn ready_order(
         let authz = post_as_get(app, signer, account_url, authz_url).await;
         for challenge in authz["challenges"].as_array().unwrap() {
             let chall_url = challenge["url"].as_str().unwrap();
+            // Validation is queued work, so the trigger only starts it. Poll
+            // with the repeat `{}` POST §7.5.1 makes explicitly not a state
+            // change.
             let path = chall_url.strip_prefix(common::HOST).unwrap();
-            let nonce = fetch_nonce(app).await;
-            let body = signer.sign_kid(account_url, chall_url, &nonce, &json!({}));
-            assert_eq!(post(app, path, body).await.status(), StatusCode::OK);
+            for _ in 0..600 {
+                let nonce = fetch_nonce(app).await;
+                let body = signer.sign_kid(account_url, chall_url, &nonce, &json!({}));
+                let res = post(app, path, body).await;
+                assert_eq!(res.status(), StatusCode::OK);
+                if body_json(res).await["status"] != "processing" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
         }
     }
     order_url

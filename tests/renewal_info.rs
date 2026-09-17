@@ -94,10 +94,20 @@ async fn issue_certificate(
     let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
 
     let challenge_path = challenge_url.strip_prefix(common::HOST).unwrap();
-    let nonce = fetch_nonce(app).await;
-    let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
-    let res = post(app, challenge_path, body).await;
-    assert_eq!(body_json(res).await["status"], "valid");
+    // Validation is queued work, so the trigger only starts it. Poll with the
+    // repeat `{}` POST §7.5.1 makes explicitly not a state change.
+    let mut status = serde_json::Value::Null;
+    for _ in 0..600 {
+        let nonce = fetch_nonce(app).await;
+        let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
+        let res = post(app, challenge_path, body).await;
+        status = body_json(res).await["status"].clone();
+        if status != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(status, "valid");
 
     let nonce = fetch_nonce(app).await;
     let body = signer.sign_kid_empty(account_url, &order_url, &nonce);

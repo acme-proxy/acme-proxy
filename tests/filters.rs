@@ -231,10 +231,23 @@ async fn drive_to_ready(app: &Router, signer: &EcSigner, account_url: &str, orde
         let authz = post_as_get(app, signer, account_url, &authz_url).await;
         let challenge_url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
         let path = challenge_url.strip_prefix(common::HOST).unwrap();
-        let nonce = fetch_nonce_from(app, ALLOWED).await;
-        let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
-        let res = post_from(app, path, body, ALLOWED).await;
-        assert_eq!(res.status(), StatusCode::OK);
+
+        // Validation is queued work, so the trigger answers `processing` and
+        // the verdict lands in the job runner. Poll with the repeat `{}` POST
+        // §7.5.1 makes explicitly not a state change.
+        let mut settled = false;
+        for _ in 0..600 {
+            let nonce = fetch_nonce_from(app, ALLOWED).await;
+            let body = signer.sign_kid(account_url, &challenge_url, &nonce, &json!({}));
+            let res = post_from(app, path, body, ALLOWED).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            if body_json(res).await["status"] != "processing" {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(settled, "`{challenge_url}` never left `processing`");
     }
 }
 

@@ -122,7 +122,12 @@ async fn deactivate(
     .await
 }
 
-/// Triggers the first challenge of an authorization.
+/// Triggers the first challenge of an authorization and waits for the verdict.
+///
+/// Validation is queued work, so the trigger only starts it. Polling is a
+/// repeat `{}` POST, which §7.5.1 makes explicitly not a state change, so this
+/// returns the last response — the decided one — and callers can still read its
+/// status and body.
 async fn trigger_first_challenge(
     app: &Router,
     signer: &impl TestSigner,
@@ -131,14 +136,29 @@ async fn trigger_first_challenge(
 ) -> Response {
     let authz = read(app, signer, account_url, authz_url).await;
     let url = authz["challenges"][0]["url"].as_str().unwrap().to_string();
-    let nonce = fetch_nonce(app).await;
     let path = url.strip_prefix(common::HOST).unwrap();
-    post(
-        app,
-        path,
-        signer.sign_kid(account_url, &url, &nonce, &json!({})),
-    )
-    .await
+
+    for _ in 0..600 {
+        let nonce = fetch_nonce(app).await;
+        let res = post(
+            app,
+            path,
+            signer.sign_kid(account_url, &url, &nonce, &json!({})),
+        )
+        .await;
+        // Peek at the status without consuming the response the caller wants.
+        let (parts, body) = res.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let decided = serde_json::from_slice::<Value>(&bytes)
+            .map(|challenge| challenge["status"] != "processing")
+            .unwrap_or(true);
+        let res = Response::from_parts(parts, axum::body::Body::from(bytes));
+        if decided {
+            return res;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{url}` never left `processing`");
 }
 
 /// §7.5.2: "If the server accepts the deactivation, it should reply with a 200
