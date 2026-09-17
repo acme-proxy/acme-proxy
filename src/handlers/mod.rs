@@ -6,9 +6,12 @@
 //! request and does only its own work — there is no four-line preamble to
 //! repeat, and a new signed route cannot forget one of those checks.
 //!
-//! What the resource modules share — the ownership checks, the CSR-to-identifier
-//! projection the filters see, the identifier shape validators — is not HTTP and
-//! lives in [`crate::acme`].
+//! Each handler is the HTTP edge of one operation: extractor, a call into
+//! [`crate::acme`] — `OrderService`, `AccountService`, `revoke::Revocations` —
+//! and the response. The rules, the transactions, the audit rows and the log
+//! lines are the service's, shared with the operator front ends and the relay;
+//! what stays here is what only HTTP has (a `Location`, a `Retry-After`, a
+//! `Link`).
 //!
 //! Errors are [`crate::error::Problem`] values, which render as RFC 8555
 //! `application/problem+json`.

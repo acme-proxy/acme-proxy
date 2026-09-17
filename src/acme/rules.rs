@@ -632,8 +632,8 @@ mod tests {
 
     #[test]
     fn a_csr_naming_more_than_the_order_is_refused() {
-        // RFC 8555 §7.4 demande « the exact same set » : un sur-ensemble est un
-        // refus, pas une intersection acceptable.
+        // RFC 8555 §7.4 asks for "the exact same set": a superset is a
+        // refusal, not an acceptable intersection.
         let der = csr_with(
             vec![
                 SanType::DnsName("a.example.com".try_into().unwrap()),

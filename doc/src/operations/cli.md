@@ -213,7 +213,7 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 | `order show <id>` | `--json` |
 | `order chain <id>` | — |
 | `order delete <id>` | *(prompts)* |
-| `order revoke <id>` | `--reason <n>` |
+| `order revoke <id>` | `--reason <n>`, `--wait <seconds>` |
 
 - `--identifier <name>` finds the orders that name that identifier **exactly**
   (case-insensitive): the answer to "which order covers `web.corp.example.com`".
@@ -270,10 +270,10 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   zero bytes named `.pem` read as a broken certificate rather than an absent
   one. There is no `--json` — the PEM *is* the output.
 - `order revoke` is the operator-side equivalent of `POST /revokeCert`, for an
-  out-of-band compromise report a client cannot or will not act on. It calls the
-  signer's own `revoke` hook, so a local CA's CRL genuinely reflects it. It is
-  **not** confirm-gated, because revocation only ever tightens trust. See
-  [Revocation & CRL](revocation.md).
+  out-of-band compromise report a client cannot or will not act on. It never
+  loads a CA key or contacts an upstream itself; the running server does the
+  signing, as [Revocation & CRL](revocation.md) describes. It is **not**
+  confirm-gated, because revocation only ever tightens trust.
 
 ## Job queue
 

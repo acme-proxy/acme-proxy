@@ -247,6 +247,8 @@ The events worth building alerts on:
 | `key_change_rejected` | warn | `POST /keyChange` refused. `reason = bad_signature` means the inner JWS did not verify — somebody attempted a rollover they could not prove possession for. |
 | `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. |
 | `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |
+| `local_ca_crl_republished` | info | A revocation `acme-proxy order revoke` recorded without the CA key was signed into the CRL by the `local_ca_crl_regenerate` job. Carries the CA's `issuer` id. |
+| `certificate_revoke_abandoned` | error | A revocation the CLI queued for a `relay` or `custom` backend was given up after its attempts ran out: the certificate is **still trusted**. Carries `order_id` and the last reason. Alert on it. |
 | `local_ca_crl_pruned` | info | Revocation entries whose certificates had expired were dropped from the CRL (RFC 5280 §3.3). Carries `rows_removed` and the CA's `issuer` id. Silent when nothing expired, which is most days. |
 | `local_ca_crl_prune_failed` | error | The daily CRL refresh failed for one CA — the database, or a CRL that could not be signed. Nothing is lost and the refresh tries again tomorrow, but the refresh is also what re-signs a CRL before its `nextUpdate`, so two days of this in a row deserve a look. |
 | `local_ca_ledger_imported` | info | A CA met the database for the first time and imported the JSON ledger it kept beside `crl_path` before. Carries `rows_imported` and the new `crl_number`. Logged once per CA; the sidecar is not read again. |

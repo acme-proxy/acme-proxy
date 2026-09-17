@@ -83,13 +83,25 @@ not act on:
 acme-proxy order revoke <order-id> --reason 1
 ```
 
-This calls the signer's `revoke` hook directly, exactly as the ACME endpoint
-does. It is **not** confirm-gated — unlike `order delete` — because revocation
-only ever tightens trust; there is no destructive outcome to protect against.
+It is **not** confirm-gated — unlike `order delete` — because revocation only
+ever tightens trust; there is no destructive outcome to protect against. It
+runs the same checks and writes the same audit row and `certificate_revoked`
+notification as the ACME endpoint, but it never loads the CA key or talks to an
+upstream itself: whatever holds the signing material is the running server.
 
-With `local_ca`, the command records the revocation in the database and stores
-a new CRL there. A server already running over the same database serves that
-CRL on its very next `GET /crl`; there is nothing to restart.
+- **`local_ca`:** the command records the revocation in the database and marks
+  the order revoked in one transaction, then queues a
+  `local_ca_crl_regenerate` job and prints its id. The order reads revoked at
+  once. The server's job runner signs the new CRL, usually within
+  `jobs.poll_interval_ms`, and with no server running the CRL catches up when
+  one starts. A CA that no server has started with yet is refused: its
+  revocation state is imported the first time a server meets it.
+- **`relay` / `custom`:** revoking means asking the upstream CA or running the
+  operator's script, which is the server's job. The command queues a
+  `signer_revoke` job and waits for its answer, up to `--wait` seconds
+  (default 30; `0` returns at once). A job that has not run by then is not an
+  error: the command exits `0` naming it, and `acme-proxy jobs show <id>`
+  follows it. A job that failed exits `1` with its error.
 
 See [Admin CLI](cli.md).
 
@@ -106,8 +118,8 @@ With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
 - It is signed again on every revocation, and by a daily refresh; see below.
 
 The revocations and the current signed CRL live in the **database**, keyed by
-the CA's key, so every process over one database — the server, `acme-proxy
-order revoke`, a reloaded configuration — serves the same CRL. Backing up the
+the CA's key, so every process over one database — the server, a reloaded
+configuration, a second server — serves the same CRL. Backing up the
 database backs up the revocations; there is no separate file to keep in step
 with it.
 
