@@ -22,6 +22,8 @@
 //!   finalizing. Plus the issuance bookkeeping the relay shares with finalize
 //!   (`record_issuance`, `announce_issuance`, `record_issue_failure`), since it
 //!   completes an issuance long after the request that started it.
+//! - [`revoke`] — certificate revocation, by certificate for an ACME client and
+//!   by order for an operator, sharing one tail.
 //!
 //! **Logging:** whoever builds an [`Error`] logs it. The edge only maps it to a
 //! response, so a refusal is one log line however many layers it crossed —
@@ -39,6 +41,7 @@ pub mod access;
 pub mod error;
 pub mod order;
 pub mod policy;
+pub mod revoke;
 pub mod rules;
 
 pub use error::Error;

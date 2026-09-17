@@ -263,9 +263,6 @@ pub async fn run_order_command(
                     order.profile
                 )));
             };
-            // No notifiers: this is a one-off admin invocation, not the long-
-            // running server — there is no background completion task here
-            // for a notifier to ever be reached from.
             // A throwaway egress: this is a one-shot admin command, not the
             // long-running server, so there is no shared resolver or proxy
             // policy to reuse — both come from the same `[dns]`/`[proxy]`
@@ -294,6 +291,9 @@ pub async fn run_order_command(
                 },
             )
             .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
+            // Queued, not sent: the running server's worker delivers the
+            // `certificate_revoked` notification this revocation owes.
+            let notifiers = super::offline_notifiers(config, database.clone())?;
             // `Actor::cli` and an empty client context: there is no request
             // here, and the audit row says so rather than inventing an address.
             match admin::revoke_order(
@@ -304,6 +304,9 @@ pub async fn run_order_command(
                 &crate::audit::Auditor::offline(database.clone()),
                 database,
                 signer,
+                notifiers
+                    .get(&order.profile)
+                    .map(|dispatcher| dispatcher.as_ref()),
             )
             .await
             // A bad `--reason` code is the operator's to fix (exit 3); every

@@ -105,6 +105,14 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **An operator's revocation sends `certificate_revoked`.** `order revoke`, the
+  panel and `POST /api/orders/{id}/revoke` now notify exactly as a client's
+  `POST /revokeCert` always has: the event is about the certificate, not about
+  who withdrew it. The CLI queues the delivery, and the running server sends
+  it. They also share that path's log lines (`certificate_revoked`,
+  `certificate_revoke_signer_failed`, `certificate_revoke_persist_failed`), and
+  a revocation whose order row could not be updated after the signer withdrew
+  trust is now a `certificate_revoke_failed` audit row on every surface.
 - **A local CA's revocations and the CRL it serves live in the database.** Every
   process over one database now serves the same CRL: a revocation made with
   `acme-proxy order revoke` beside a running server is in that server's very

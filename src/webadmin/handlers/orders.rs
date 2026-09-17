@@ -159,7 +159,7 @@ pub async fn revoke_order(
     // Resolve the profile before doing anything: an order belonging to a
     // profile this process no longer mounts cannot be revoked here, and saying
     // so plainly beats revoking against whatever backend happened to be first.
-    let signer = resolve_order_signer(&state, &id).await?;
+    let profile = resolve_order_profile(&state, &id).await?;
 
     // The operator's username, not the order's account: this revocation was an
     // administrative act, and a row attributing it to the certificate's owner
@@ -171,7 +171,8 @@ pub async fn revoke_order(
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),
-        signer,
+        profile.signer.clone(),
+        Some(&profile.notify),
     )
     .await
     .map_err(revoke_error)?;
@@ -303,7 +304,8 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
     }
 }
 
-/// The signer that issued `id`'s certificate, or the refusal saying why not.
+/// The profile that issued `id`'s certificate — its signer and its notifier —
+/// or the refusal saying why not.
 ///
 /// Revocation is per-profile: another profile's backend holds a different CA,
 /// or none at all, so an order belonging to a profile this process no longer
@@ -313,10 +315,10 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
 /// Shared with `pages::orders`, which had the same nine lines and the same
 /// error string character for character. `render_orders` and `revoke_error`
 /// were already shared between the two; this was the one that was not.
-pub(crate) async fn resolve_order_signer(
+pub(crate) async fn resolve_order_profile(
     state: &AdminState,
     id: &str,
-) -> Result<std::sync::Arc<dyn crate::signer::SignerBackend>, AdminError> {
+) -> Result<std::sync::Arc<crate::server::Profile>, AdminError> {
     let order = Order::find_by_id(id, &state.database)
         .await?
         .ok_or_else(|| not_found(id))?;
@@ -329,7 +331,7 @@ pub(crate) async fn resolve_order_signer(
             ),
         )
     })?;
-    Ok(profile.signer.clone())
+    Ok(profile.clone())
 }
 
 fn not_found(id: &str) -> AdminError {

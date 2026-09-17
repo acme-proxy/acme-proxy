@@ -204,9 +204,9 @@ pub async fn revoke_order(
         })?),
     };
 
-    let banner = match crate::webadmin::handlers::resolve_order_signer(&state, &id).await {
+    let banner = match crate::webadmin::handlers::resolve_order_profile(&state, &id).await {
         Err(error) => flash_error(error.code, error.message),
-        Ok(signer) => {
+        Ok(profile) => {
             // The operator, not the certificate's owner — see the API twin.
             match admin::revoke_order(
                 &id,
@@ -215,7 +215,8 @@ pub async fn revoke_order(
                 state.audit.client(&request_context).await,
                 &state.audit,
                 state.database.clone(),
-                signer,
+                profile.signer.clone(),
+                Some(&profile.notify),
             )
             .await
             {

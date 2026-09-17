@@ -5,7 +5,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::admin::prompt::confirm;
-use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext};
+use crate::audit::{Actor, Auditor, ClientContext};
 use crate::config::Config;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
 use crate::signer::{SignerBackend, SignerError};
@@ -134,31 +134,18 @@ pub enum RevokeOutcome {
     Revoked(Box<Order>),
 }
 
-/// How a [`SignerError`] reads inside a [`RevokeError`].
-///
-/// `BadCsr` is not a thing `revoke` can legitimately answer — the hook takes a
-/// certificate, not a CSR — so it is reported as the contract violation it is
-/// rather than passed through as if it meant something here.
-fn signer_detail(error: &SignerError) -> String {
-    match error {
-        SignerError::Internal(detail) => detail.clone(),
-        SignerError::BadCsr => "unexpected badCsr from revoke".to_string(),
-    }
-}
-
 /// Why [`revoke_order`] failed.
 #[derive(Debug, thiserror::Error)]
 pub enum RevokeError {
     #[error("database error: {0}")]
     Database(sqlx::Error),
-    #[error("signer error: {}", signer_detail(.0))]
+    #[error("signer error: {}", crate::acme::revoke::signer_detail(.0))]
     Signer(SignerError),
     #[error("internal error: {0}")]
     Internal(String),
     #[error("unsupported revocation reason code {0}")]
     BadReason(u32),
 }
-
 impl From<sqlx::Error> for RevokeError {
     fn from(error: sqlx::Error) -> Self {
         Self::Database(error)
@@ -413,11 +400,13 @@ pub async fn deactivate_account(
 /// agnostic — it is the same reason the destructive operations come in a bare
 /// and a `confirm_*` form.
 ///
-/// The four outcomes that are *not* a revocation (`NotFound`, `NotIssued`,
-/// `AlreadyRevoked`, a bad reason code) write no audit row. They are the
-/// operator being told the state of things, not the CA refusing something it
-/// might have done — unlike `POST /revokeCert`'s refusals, which are a remote
-/// party being turned away and are audited for exactly that reason.
+/// The operation itself is [`crate::acme::revoke::Revocations::revoke_order`],
+/// the same tail `POST /revokeCert` runs; this wrapper only sorts its answers
+/// into the outcomes an operator front end reports. `notify` is the order's
+/// profile's dispatcher, where there is one: the `certificate_revoked`
+/// notification is about the certificate, so it goes out however it was
+/// revoked.
+#[allow(clippy::too_many_arguments)]
 pub async fn revoke_order(
     id: &str,
     reason: Option<u32>,
@@ -426,59 +415,30 @@ pub async fn revoke_order(
     audit: &Auditor,
     database: Arc<Database>,
     signer: Arc<dyn SignerBackend>,
+    notify: Option<&crate::notify::NotifyDispatcher>,
 ) -> Result<RevokeOutcome, RevokeError> {
-    let Some(mut order) = Order::find_by_id(id, &database).await? else {
-        return Ok(RevokeOutcome::NotFound);
-    };
-    let Some(chain) = order.certificate.clone() else {
-        return Ok(RevokeOutcome::NotIssued);
-    };
-    if order.revoked_at.is_some() {
-        return Ok(RevokeOutcome::AlreadyRevoked);
-    }
-    if let Some(r) = reason
-        && !crate::cert::is_valid_revocation_reason(r)
-    {
-        return Err(RevokeError::BadReason(r));
-    }
+    use crate::acme::revoke::{Revocations, RevokeError as Refusal, Revoker};
 
-    let cert_der = crate::cert::leaf_der_from_chain(&chain).map_err(|error| {
-        RevokeError::Internal(format!("stored certificate chain is unparsable: {error}"))
-    })?;
-    let mut record = AuditRecord::new(
-        AuditEvent::CertificateRevoked,
-        &order.profile,
-        actor.clone(),
-    )
-    .with_order(&order)
-    .with_client(client.clone());
-    if let Some(serial) = order.cert_serial.clone() {
-        record = record.with_serial(serial);
+    let revocations = Revocations {
+        database: &database,
+        audit,
+        notify,
+        revoker: Revoker::Backend(signer.as_ref()),
+    };
+    match revocations.revoke_order(id, reason, actor, client).await {
+        Ok(order) => Ok(RevokeOutcome::Revoked(Box::new(order))),
+        Err(Refusal::NotFound) => Ok(RevokeOutcome::NotFound),
+        Err(Refusal::NotIssued) => Ok(RevokeOutcome::NotIssued),
+        Err(Refusal::AlreadyRevoked) => Ok(RevokeOutcome::AlreadyRevoked),
+        Err(Refusal::BadReason(code)) => Err(RevokeError::BadReason(code)),
+        Err(Refusal::Database(error)) => Err(RevokeError::Database(error)),
+        Err(Refusal::Internal(detail)) => Err(RevokeError::Internal(detail)),
+        Err(Refusal::Signer(error)) => Err(RevokeError::Signer(error)),
+        // Only the ACME door refuses this way; an operator is never turned away.
+        Err(Refusal::Refused(problem)) => Err(RevokeError::Internal(
+            problem.to_value()["detail"].to_string(),
+        )),
     }
-    // Absent rather than empty when no reason was given — see the same rule in
-    // `post_revoke_cert`.
-    if let Some(reason) = reason {
-        record = record.with_reason(reason.to_string());
-    }
-
-    // The signer first, as on the ACME path: the CA-side action is
-    // authoritative, so a failure there must leave the order un-revoked for a
-    // retry — and must be audited as the attempt it was.
-    if let Err(error) = signer.revoke(&cert_der, reason).await {
-        audit
-            .record(
-                AuditRecord::new(AuditEvent::CertificateRevokeFailed, &order.profile, actor)
-                    .with_order(&order)
-                    .with_client(client)
-                    .with_reason("serverInternal")
-                    .with_detail(error.to_string()),
-            )
-            .await;
-        return Err(error.into());
-    }
-    order.revoke(reason.map(i64::from), &database).await?;
-    audit.record(record).await;
-    Ok(RevokeOutcome::Revoked(Box::new(order)))
 }
 
 /// The `created_at` below which an audit row is past `retention_days`.
@@ -1136,6 +1096,7 @@ fn ari_cert_id(chain: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::{AuditEvent, AuditRecord};
     use crate::sqlite::order::Identifier;
     use crate::testutil::{account_id, issued_order};
 
@@ -1292,6 +1253,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -1321,11 +1283,66 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer,
+            None,
         )
         .await
         .unwrap();
         assert!(matches!(outcome, RevokeOutcome::AlreadyRevoked));
         assert_eq!(audit_rows(&db).await.len(), 1);
+    }
+
+    /// A backend wanting every event, which never delivers — enough to see a
+    /// `notify_deliver` row queued.
+    struct Wanting;
+
+    #[async_trait::async_trait]
+    impl crate::notify::NotifyBackend for Wanting {
+        fn name(&self) -> &'static str {
+            "custom"
+        }
+        async fn send(
+            &self,
+            _event: &crate::notify::NotifyEvent,
+        ) -> Result<(), crate::notify::NotifyError> {
+            Ok(())
+        }
+    }
+
+    /// An operator's revocation notifies the way `POST /revokeCert` does: the
+    /// event is about the certificate, not about who withdrew it.
+    #[tokio::test]
+    async fn an_operator_revocation_queues_a_certificate_revoked_notification() {
+        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let signer = in_memory_ca(&db);
+        let order = finalized_order(db.clone(), &signer).await;
+        let dispatcher = crate::notify::NotifyDispatcher::new(
+            "default",
+            vec![crate::notify::BackendSlot::new(
+                "custom:test",
+                Arc::new(Wanting),
+                &["certificate_revoked".to_string()],
+            )],
+            crate::testutil::idle_job_queue(db.clone()),
+        );
+
+        let outcome = revoke_order(
+            order.id.to_string().as_str(),
+            None,
+            cli_actor(),
+            ClientContext::default(),
+            &Auditor::offline(db.clone()),
+            db.clone(),
+            signer,
+            Some(&dispatcher),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, RevokeOutcome::Revoked(_)));
+
+        let queued = Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+            .await
+            .unwrap();
+        assert_eq!(queued, 1);
     }
 
     /// No reason given is an **absent** `reason`, not an empty one: RFC 8555
@@ -1344,6 +1361,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer,
+            None,
         )
         .await
         .unwrap();
@@ -1806,6 +1824,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             in_memory_ca(&db),
+            None,
         )
         .await
         .unwrap();
@@ -1836,6 +1855,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             in_memory_ca(&db),
+            None,
         )
         .await
         .unwrap();
@@ -1856,6 +1876,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -1892,6 +1913,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -1903,6 +1925,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db,
             signer,
+            None,
         )
         .await
         .unwrap();
@@ -1923,6 +1946,7 @@ mod tests {
             &crate::audit::Auditor::offline(db.clone()),
             db,
             signer,
+            None,
         )
         .await
         .unwrap_err();

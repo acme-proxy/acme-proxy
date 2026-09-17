@@ -155,6 +155,43 @@ pub enum Command {
     Man,
 }
 
+/// The notification dispatchers `serve` would build from this configuration —
+/// every profile's, plus the web admin's when `admin.enabled` — over a queue
+/// this process never drains.
+///
+/// A dispatcher only *writes* `notify_deliver` rows; delivering them is the
+/// running server's job runner, over the same database. So a host command
+/// whose action deserves a notification (a revocation, a deactivated account,
+/// a changed credential) queues it here and exits, and the worker sends it —
+/// the CLI never talks SMTP or a webhook itself. A row queued while no server
+/// runs waits for the next one to start.
+pub(crate) fn offline_notifiers(
+    config: &Config,
+    database: Arc<Database>,
+) -> Result<crate::notify::DispatcherMap, CliError> {
+    let failed = |error: anyhow::Error| CliError::failed(format!("configuration error: {error}"));
+    let profiles = config
+        .resolve_profiles()
+        .map_err(|error| failed(anyhow::anyhow!(error)))?;
+    let egress = crate::server::Egress::from_config(config).map_err(failed)?;
+    let jobs = crate::jobs::JobQueue::new(database, &config.jobs);
+    let mut dispatchers =
+        crate::notify::build_registry(&profiles, egress.outbound(), &jobs).map_err(failed)?;
+    if config.admin.enabled {
+        dispatchers.insert(
+            crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            crate::notify::from_config(
+                crate::notify::ADMIN_DISPATCHER_KEY,
+                &config.admin.notify,
+                egress.outbound(),
+                &jobs,
+            )
+            .map_err(failed)?,
+        );
+    }
+    Ok(dispatchers)
+}
+
 /// Picks the profile a command acts on.
 ///
 /// `--profile` is optional only when the configuration defines exactly one:
