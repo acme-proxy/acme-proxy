@@ -124,9 +124,11 @@ statuses! {
 
     /// A challenge's state (RFC 8555 §8).
     ///
-    /// `processing` is in the `CHECK` but never written: validation here is
-    /// inline and synchronous under `challenge.timeout_ms`, so a triggered
-    /// challenge is `valid` or `invalid` by the time the response is built.
+    /// `processing` is what a triggered challenge answers with: the trigger
+    /// claims the row and queues the outbound check, and the job runner reaches
+    /// the verdict. §7.1.6 defines it for exactly this — "they transition to
+    /// the `processing` state when the client responds to the challenge" — and
+    /// §8.2 pairs it with the `Retry-After` the handler adds.
     ChallengeStatus("challenge status") {
         Pending => "pending",
         Processing => "processing",

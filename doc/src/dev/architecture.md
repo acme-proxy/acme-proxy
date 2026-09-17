@@ -160,6 +160,7 @@ sequenceDiagram
     participant Axum Router
     participant Filters
     participant Order Manager
+    participant Job Queue
     participant Challenge Validator
     participant Signer Backend
 
@@ -171,10 +172,13 @@ sequenceDiagram
     Axum Router-->>Client: 201 Created
 
     Client->>Axum Router: POST /chall/{id} (trigger)
-    Axum Router->>Challenge Validator: Validate domain control (inline)
-    Challenge Validator-->>Axum Router: Pass/Fail
-    Axum Router->>Order Manager: Commit challenge + authz + order
+    Axum Router->>Job Queue: claim + enqueue challenge_validate
+    Axum Router-->>Client: 200 OK + challenge object (processing)
+    Job Queue->>Challenge Validator: Validate domain control
+    Challenge Validator-->>Job Queue: Pass/Fail
+    Job Queue->>Order Manager: Commit challenge + authz + order
     Note over Order Manager: Order -> "ready" once every<br/>authorization is valid
+    Client->>Axum Router: POST /chall/{id} (poll)
     Axum Router-->>Client: 200 OK + challenge object (either way)
     Note over Client,Challenge Validator: This exchange in detail:<br/>Challenge Validation
 

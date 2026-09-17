@@ -148,4 +148,7 @@ Each authorization carries one challenge per enabled type, and satisfying **any
 one** of them makes the authorization `valid` — the others stay `pending` for
 ever, which is correct rather than a stuck state.
 
+Triggering one queues the check rather than performing it, so a triggered
+challenge answers `processing` and the client polls it.
+
 See [Challenge Validation](../challenges/index.md).

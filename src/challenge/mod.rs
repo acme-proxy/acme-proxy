@@ -39,10 +39,14 @@
 //!
 //! ## One budget for the whole attempt
 //!
-//! Validation runs **inside** the `POST /chall/{id}` request — there is no
-//! `processing` state and no detached task — so [`ChallengeRegistry::validate`]
-//! wraps every attempt in `challenge.timeout_ms`. Without it a wedged target
-//! would pin a request, and a `SQLite` connection, open indefinitely.
+//! Validation runs in the job runner, not in the request:
+//! `POST /chall/{id}` claims the challenge, queues a `challenge_validate` row
+//! and answers `processing` (RFC 8555 §7.1.6). [`ChallengeRegistry::validate`]
+//! still wraps every attempt in `challenge.timeout_ms`, because the target is
+//! an address the *client* named and a wedged one would otherwise hold a job
+//! slot — and a `SQLite` connection — indefinitely. What the budget no longer
+//! bounds is an HTTP request, which is why `server.request_timeout_ms` is no
+//! longer required to exceed it. See `crate::acme::validate`.
 
 use std::sync::Arc;
 use std::time::Duration;

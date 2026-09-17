@@ -33,6 +33,32 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **Challenge validation runs in the job queue, not inside the request.**
+  `POST /chall/{id}` now claims the challenge, writes a `challenge_validate`
+  job and answers `200` with the challenge in the `processing` state plus a
+  `Retry-After`; the job runner performs the outbound check and records the
+  verdict. Previously the trigger performed the check inline and came back
+  already `valid` or `invalid`. This is what RFC 8555 describes — §7.1.6 has
+  challenges "transition to the `processing` state when the client responds to
+  the challenge", and §8.2 pairs that with the `Retry-After` on the challenge
+  resource — and certbot, acme.sh and lego all poll, so no client change is
+  needed. A script that read the trigger's own response body and expected a
+  final status must poll instead; re-POSTing `{}` is explicitly not a state
+  change (§7.5.1) and returns the object as it stands.
+
+  Two consequences worth knowing. `challenge.timeout_ms` now bounds a **job
+  attempt** rather than an HTTP request, so it no longer has to be below
+  `server.request_timeout_ms` and **the startup refusal that enforced that is
+  gone** — a configuration it used to reject now starts. And a client pointing
+  a name at an unreachable host no longer occupies one of
+  `server.max_concurrent_requests` while the server waits for it.
+
+  A validation that ran is still decided once and for all, pass or fail: the
+  job is retried only when the attempt could not happen at all (the database
+  was unreachable, or the endpoint's profile is not mounted by the process that
+  claimed the row). A validation the queue finally gives up on marks the
+  challenge, its authorization and its order `invalid`, so a client is never
+  left polling a challenge that has stopped moving.
 - **`acme-proxy order revoke` no longer loads a local CA's key.** It writes the
   revocation row and stamps the order in one transaction, then queues
   `local_ca_crl_regenerate` for the process that holds the key. The order reads

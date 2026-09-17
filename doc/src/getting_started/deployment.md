@@ -69,12 +69,13 @@ too.
    >what the `ExecReload` line above wires up — see [Reloading the
    >Configuration](../operations/reload.md) for what a reload may change and
    >what it refuses.
-   >One case still deserves a quiet period: challenge validation and the
-   >`custom` signer script run *inside* a request, so a restart during one waits
-   >up to `challenge.timeout_ms` or `signer.custom.timeout_ms`. If systemd's
-   >`TimeoutStopSec` (90 s by default) is shorter than your
-   >`server.request_timeout_ms`, systemd sends `SIGKILL` first and the graceful
-   >path is skipped — raise it, or lower the request timeout.
+   >One case still deserves a quiet period: the `custom` signer script runs
+   >*inside* a request, so a restart during one waits up to
+   >`signer.custom.timeout_ms`. If systemd's `TimeoutStopSec` (90 s by default)
+   >is shorter than your `server.request_timeout_ms`, systemd sends `SIGKILL`
+   >first and the graceful path is skipped — raise it, or lower the request
+   >timeout. Challenge validation is no longer one of these: it runs in the job
+   >queue, and a job left unfinished by a restart is reclaimed by lease expiry.
 
 4. **Enable and start the service:**
    ```bash

@@ -106,42 +106,58 @@ stateDiagram-v2
 and re-triggering the same challenge will not retry it. Deactivation is the
 operator- or client-initiated exit — see [Deactivation](#deactivation) below.
 
-## Validation is inline and synchronous
+## Validation runs in the job queue
 
-Triggering a challenge with `POST /chall/{id}` performs the check **inside that
-request**. There is no background worker and no polling loop.
+Triggering a challenge with `POST /chall/{id}` does **not** perform the check.
+It claims the challenge, writes a `challenge_validate` job and answers straight
+away with the challenge in the `processing` state, plus a `Retry-After`. The
+job runner performs the outbound check and records the verdict.
+
+RFC 8555 has the states for exactly this. §7.1.6: challenges "transition to the
+`processing` state when the client responds to the challenge". §8.2 pairs that
+with a `Retry-After` on the challenge resource, which is what the client polls
+against. certbot, acme.sh and lego all poll.
 
 ```mermaid
 sequenceDiagram
     participant C as ACME client
     participant P as acme-proxy
+    participant W as job runner
     participant T as The name being proven<br/>(port 80 / 443 / DNS)
     participant D as SQLite
 
     C->>P: POST /chall/{id}
+    P->>D: claim: pending → processing
+    P->>D: enqueue challenge_validate
+    P-->>C: 200 + challenge object (processing)<br/>+ Retry-After + Link: rel="up"
+    W->>D: claim the job
     rect rgb(240, 240, 240)
-        Note over P,T: inside the request, under challenge.timeout_ms
-        P->>T: fetch token / query TXT / TLS handshake
-        T-->>P: answer, or timeout
+        Note over W,T: in the runner, under challenge.timeout_ms
+        W->>T: fetch token / query TXT / TLS handshake
+        T-->>W: answer, or timeout
     end
-    P->>D: one transaction:<br/>challenge + authorization + order
+    W->>D: one transaction:<br/>challenge + authorization + order
     Note over D: "is every authorization valid?"<br/>is read INSIDE this transaction
-    D-->>P: committed
-    P-->>C: 200 + challenge object — pass or fail<br/>+ Link: rel="up"
+    C->>P: POST /chall/{id} (retry — not a state change)
+    P-->>C: 200 + challenge object — valid or invalid
 ```
 
-The grey band is the part that surprises people: the client's HTTP request is
-blocked on a connection to a third party for its whole duration.
+Three consequences:
 
-Two consequences:
+- `challenge.timeout_ms` bounds a **job attempt**, not an HTTP request. It is
+  therefore independent of `server.request_timeout_ms`, and the server no
+  longer refuses to start when it exceeds it.
+- A client that points a name at an unreachable host no longer occupies one of
+  `server.max_concurrent_requests` while the server waits for it.
+- The server still needs egress to the client. For `http-01` and `tls-alpn-01`
+  it must be able to open a connection *back* to the machine requesting the
+  certificate — a common source of "the order just sits at `pending`" in
+  firewalled networks.
 
-- `challenge.timeout_ms` is also the worst case for that HTTP request. It must
-  stay below `server.request_timeout_ms`, and the server refuses to start if it
-  does not.
-- The server needs egress to the client. For `http-01` and `tls-alpn-01` it must
-  be able to open a connection *back* to the machine requesting the certificate
-  — a common source of "the order just sits at `pending`" in firewalled
-  networks.
+A validation is attempted **once**: a check that ran records its verdict, pass
+or fail. The job is retried only when the attempt could not happen at all — the
+database was unreachable, or the endpoint's profile is not mounted by the
+process that picked the row up.
 
 ## Both outcomes are `200`
 
