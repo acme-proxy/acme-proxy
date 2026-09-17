@@ -22,6 +22,9 @@
 //!   finalizing. Plus the issuance bookkeeping the relay shares with finalize
 //!   (`record_issuance`, `announce_issuance`, `record_issue_failure`), since it
 //!   completes an issuance long after the request that started it.
+//! - [`account`] — [`AccountService`]: `newAccount` (with EAB), the account
+//!   update, key rollover and the orders list, plus the deactivation and
+//!   contact update the operator front ends share.
 //! - [`revoke`] — certificate revocation, by certificate for an ACME client and
 //!   by order for an operator, sharing one tail.
 //!
@@ -38,11 +41,13 @@
 //! RFC 7807 JSON — and only its `IntoResponse` impl belongs to the edge.
 
 pub mod access;
+pub mod account;
 pub mod error;
 pub mod order;
 pub mod policy;
 pub mod revoke;
 pub mod rules;
 
+pub use account::AccountService;
 pub use error::Error;
 pub use order::OrderService;

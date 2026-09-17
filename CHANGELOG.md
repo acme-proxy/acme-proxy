@@ -113,6 +113,13 @@ migrated configuration before restarting.
   `certificate_revoke_signer_failed`, `certificate_revoke_persist_failed`), and
   a revocation whose order row could not be updated after the signer withdrew
   trust is now a `certificate_revoke_failed` audit row on every surface.
+- **An operator's account deactivation sends `account_deactivated`**, from the
+  CLI, the panel and `POST /api/accounts/{id}/deactivate`, as the account's
+  own `POST /acct/{id}` always has.
+- **`account update-contact` refuses a contact `newAccount` would refuse** — a
+  scheme other than `mailto:`, `hfields`, several addresses, a control
+  character, more than 32 entries — with exit code 3. The panel and the admin
+  API already did. The CLI stored anything.
 - **A local CA's revocations and the CRL it serves live in the database.** Every
   process over one database now serves the same CRL: a revocation made with
   `acme-proxy order revoke` beside a running server is in that server's very

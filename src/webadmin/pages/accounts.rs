@@ -207,7 +207,8 @@ pub async fn post_account_contact(
     }
 
     let account = admin::update_account_contact(&id, contact, state.database.clone())
-        .await?
+        .await
+        .map_err(crate::webadmin::handlers::accounts::contact_error)?
         .ok_or_else(|| not_found(&id))?;
 
     state
@@ -235,9 +236,16 @@ pub async fn deactivate_account(
     session: PageSessionWrite,
     request_context: crate::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
-    let account = admin::deactivate_account(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let account = admin::deactivate_account(
+        &id,
+        state.database.clone(),
+        |profile| state.notifiers.get(profile),
+        request_context
+            .ip
+            .map(|ip| crate::filter::canonical(ip).to_string()),
+    )
+    .await?
+    .ok_or_else(|| not_found(&id))?;
 
     state
         .record_admin_action(

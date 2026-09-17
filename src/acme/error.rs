@@ -2,7 +2,8 @@
 
 use crate::error::Problem;
 
-/// The error an [`OrderService`](super::order::OrderService) operation returns.
+/// The error an [`OrderService`](super::order::OrderService) or
+/// [`AccountService`](super::account::AccountService) operation returns.
 ///
 /// Most refusals are protocol answers the client is owed verbatim — the type,
 /// the status and a `detail` several test suites pin byte for byte — and those
@@ -21,6 +22,13 @@ use crate::error::Problem;
 pub enum Error {
     /// A refusal the client reads as it is.
     Problem(Problem),
+    /// `newAccount` without agreeing to the configured terms (RFC 8555 §7.3.3).
+    /// Its response carries a `Link` to the terms, which a problem document
+    /// cannot.
+    TermsNotAgreed,
+    /// `keyChange` onto a key another account holds (RFC 8555 §7.3.5). Its
+    /// response carries that account's `Location`.
+    KeyChangeConflict { holder: uuid::Uuid },
 }
 
 impl From<Problem> for Error {
@@ -33,6 +41,12 @@ impl From<Error> for Problem {
     fn from(error: Error) -> Self {
         match error {
             Error::Problem(problem) => problem,
+            Error::TermsNotAgreed => Problem::user_action_required(
+                "Terms of service must be agreed to before an account can be created",
+            ),
+            Error::KeyChangeConflict { .. } => Problem::key_change_conflict(
+                "The new key is already associated with a different account",
+            ),
         }
     }
 }

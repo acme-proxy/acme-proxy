@@ -126,7 +126,8 @@ pub async fn patch_account(
     }
 
     let account = admin::update_account_contact(&id, body.contact, state.database.clone())
-        .await?
+        .await
+        .map_err(contact_error)?
         .ok_or_else(|| not_found(&id))?;
     state
         .record_admin_action(&request_context, &auth.user.username, |actor, client| {
@@ -139,6 +140,14 @@ pub async fn patch_account(
     )))
 }
 
+/// How a refused or failed contact update reads to an admin client.
+pub(crate) fn contact_error(error: admin::ContactError) -> AdminError {
+    match error {
+        admin::ContactError::Invalid(detail) => AdminError::bad_request(detail),
+        admin::ContactError::Database(error) => AdminError::from(error),
+    }
+}
+
 /// `POST /api/accounts/{id}/deactivate`
 pub async fn deactivate_account(
     State(state): State<AdminState>,
@@ -146,9 +155,16 @@ pub async fn deactivate_account(
     AuthenticatedWrite(auth): AuthenticatedWrite,
     request_context: crate::audit::RequestContext,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let account = admin::deactivate_account(&id, state.database.clone())
-        .await?
-        .ok_or_else(|| not_found(&id))?;
+    let account = admin::deactivate_account(
+        &id,
+        state.database.clone(),
+        |profile| state.notifiers.get(profile),
+        request_context
+            .ip
+            .map(|ip| crate::filter::canonical(ip).to_string()),
+    )
+    .await?
+    .ok_or_else(|| not_found(&id))?;
     state
         .record_admin_action(&request_context, &auth.user.username, |actor, client| {
             audit_admin::account_deactivated(actor, client, &account)

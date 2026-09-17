@@ -366,28 +366,61 @@ async fn order_cascade(id: &str, database: Arc<Database>) -> Result<Option<u64>,
     ))
 }
 
-/// Updates an account's contact list.
+/// Why [`update_account_contact`] did not write.
+#[derive(Debug, thiserror::Error)]
+pub enum ContactError {
+    /// A contact `newAccount` would refuse, with the reason.
+    #[error("{0}")]
+    Invalid(String),
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+/// Updates an account's contact list, refusing what `newAccount` would refuse
+/// ([`crate::acme::account::update_contact`], the one check every surface
+/// shares).
 pub async fn update_account_contact(
     id: &str,
     contact: Vec<String>,
     database: Arc<Database>,
-) -> Result<Option<Account>, sqlx::Error> {
+) -> Result<Option<Account>, ContactError> {
+    use crate::acme::account::{ContactUpdateError, update_contact};
+
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
     };
-    account.update_contact(contact, &database).await?;
+    update_contact(&mut account, contact, &database)
+        .await
+        .map_err(|error| match error {
+            ContactUpdateError::Refused(problem) => ContactError::Invalid(
+                problem.to_value()["detail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            ContactUpdateError::Database(error) => ContactError::Database(error),
+        })?;
     Ok(Some(account))
 }
 
-/// Deactivates an account.
+/// Deactivates an account, and queues `account_deactivated` through its
+/// profile's dispatcher — `notifier` looks one up by profile name, `None` where
+/// this process has none — naming `client_ip` as whoever asked.
+///
+/// The same [`crate::acme::account::deactivate`] the account's own request runs,
+/// so the notification goes out however the account was shut.
 pub async fn deactivate_account(
     id: &str,
     database: Arc<Database>,
+    notifier: impl Fn(&str) -> Option<Arc<crate::notify::NotifyDispatcher>>,
+    client_ip: Option<String>,
 ) -> Result<Option<Account>, sqlx::Error> {
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
     };
-    account.deactivate(&database).await?;
+    let dispatcher = notifier(&account.profile);
+    crate::acme::account::deactivate(&mut account, &database, dispatcher.as_deref(), client_ip)
+        .await?;
     Ok(Some(account))
 }
 
@@ -2037,19 +2070,45 @@ mod tests {
     #[tokio::test]
     async fn deactivate_account_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        assert!(deactivate_account("nope", db).await.unwrap().is_none());
+        assert!(
+            deactivate_account("nope", db, |_| None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
+    /// Persists, and notifies the way the account's own request does.
     #[tokio::test]
     async fn deactivate_account_persists() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
+        let dispatcher = Arc::new(crate::notify::NotifyDispatcher::new(
+            "default",
+            vec![crate::notify::BackendSlot::new(
+                "custom:test",
+                Arc::new(Wanting),
+                &["account_deactivated".to_string()],
+            )],
+            crate::testutil::idle_job_queue(db.clone()),
+        ));
 
-        let updated = deactivate_account(acct.to_string().as_str(), db.clone())
-            .await
-            .unwrap()
-            .unwrap();
+        let updated = deactivate_account(
+            acct.to_string().as_str(),
+            db.clone(),
+            |profile| (profile == "default").then(|| dispatcher.clone()),
+            Some("203.0.113.7".to_string()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(updated.status, "deactivated");
+        assert_eq!(
+            Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+                .await
+                .unwrap(),
+            1
+        );
 
         let reloaded = Account::find_by_id("default", acct.to_string().as_str(), &db)
             .await

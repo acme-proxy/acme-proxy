@@ -93,7 +93,12 @@ pub async fn run_account_command(
             Some(account) => print!("{}", render::render_account_detail_text(&account, palette)),
         },
         AccountCommand::UpdateContact { id, contact } => {
-            match admin::update_account_contact(&id, contact, database.clone()).await? {
+            match admin::update_account_contact(&id, contact, database.clone())
+                .await
+                .map_err(|error| match error {
+                    admin::ContactError::Invalid(detail) => CliError::bad_request(detail),
+                    admin::ContactError::Database(error) => CliError::from(error),
+                })? {
                 None => return Err(not_found(&id)),
                 Some(account) => {
                     audit_admin::record_cli_action(&database, |actor, client| {
@@ -110,7 +115,18 @@ pub async fn run_account_command(
             }
         }
         AccountCommand::Deactivate { id } => {
-            match admin::deactivate_account(&id, database.clone()).await? {
+            // Queued, not sent: the running server's worker delivers it. A
+            // configuration that mounts no profile has nothing to notify
+            // through, which is not a reason to refuse the deactivation.
+            let notifiers = super::offline_notifiers(config, database.clone()).unwrap_or_default();
+            match admin::deactivate_account(
+                &id,
+                database.clone(),
+                |profile| notifiers.get(profile).cloned(),
+                None,
+            )
+            .await?
+            {
                 None => return Err(not_found(&id)),
                 Some(account) => {
                     audit_admin::record_cli_action(&database, |actor, client| {
@@ -203,6 +219,45 @@ mod tests {
             .expect_err("an unknown account must fail");
             assert_eq!(error, expected);
         }
+    }
+
+    /// A contact `newAccount` would refuse is refused here too, as the
+    /// operator's error, and the account keeps the contact it had.
+    #[tokio::test]
+    async fn update_contact_refuses_what_new_account_refuses() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Config::default();
+        let (account, _) = Account::find_or_create(
+            "default",
+            &[2, 7, 1],
+            vec!["mailto:ops@example.com".to_string()],
+            &ClientContext::default(),
+            &database,
+        )
+        .await
+        .unwrap();
+
+        let mut reader: &[u8] = &[];
+        let error = run_account_command(
+            AccountCommand::UpdateContact {
+                id: account.id.to_string(),
+                contact: vec!["tel:+15555550100".to_string()],
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .expect_err("an unsupported scheme must be refused");
+        assert_eq!(error.kind(), crate::cli::CliErrorKind::BadRequest);
+
+        let reloaded = Account::find_any_by_id(&account.id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.contact, vec!["mailto:ops@example.com".to_string()]);
     }
 
     /// A successful mutation leaves one `cli`-attributed audit row carrying the
