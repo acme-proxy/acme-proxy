@@ -9,21 +9,12 @@ use serde_json::Value;
 use tracing::{error, info, instrument, warn};
 
 use crate::acme::access::{load_owned_authz, load_owned_challenge, signer_account};
-use crate::acme::policy::challenge_problem;
-use crate::challenge::ValidationContext;
+use crate::acme::order::OrderService;
 use crate::error::Problem;
-use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest, jwk_thumbprint};
+use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest};
 use crate::filter::ClientIp;
-use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::server::AppState;
-use crate::sqlite::{
-    authz::{Authorization, Challenge},
-    db::Database,
-    nonce::now_secs,
-    order::Order,
-    status::{AuthzStatus, ChallengeStatus, OrderStatus},
-};
-use std::sync::Arc;
+use crate::sqlite::authz::Challenge;
 
 /// The one payload RFC 8555 §7.5.2 defines for the authorization resource:
 /// "sending POST requests with the static object `{"status": "deactivated"}`".
@@ -55,7 +46,10 @@ pub async fn post_authz(
         deactivating = payload.is_some(),
     );
     let AppState {
-        database, profile, ..
+        database,
+        profile,
+        audit,
+        ..
     } = state;
     let base = &profile.base_url;
 
@@ -74,7 +68,12 @@ pub async fn post_authz(
                 "Only {\"status\": \"deactivated\"} is supported on an authorization",
             ));
         }
-        deactivate_authz(&mut authz, &mut order, &database).await?;
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        orders.deactivate_authz(&mut authz, &mut order).await?;
     }
 
     let challenges = Challenge::find_by_authz(authz.id, &database)
@@ -124,191 +123,6 @@ fn add_pending_retry_after(response: &mut Response, status: &str) {
     }
 }
 
-/// Deactivates `authz` and re-derives its order's status (RFC 8555 §7.5.2).
-///
-/// Already-`deactivated` is a no-op rather than an error: §7.5.2 describes the
-/// client sending the same static object to *each* authorization of an
-/// identifier, and a retry after a partial failure must not start reporting
-/// errors halfway through.
-async fn deactivate_authz(
-    authz: &mut Authorization,
-    order: &mut Order,
-    database: &Arc<Database>,
-) -> Result<(), Problem> {
-    if authz.status == AuthzStatus::Deactivated {
-        return Ok(());
-    }
-
-    // A certificate already exists for this order, so relinquishing the
-    // authorization it was issued under would claim something untrue. §7.5.2 is
-    // about giving up the *ability* to issue, not about undoing issuance —
-    // that is what revocation (§7.6) is for.
-    if order.status == OrderStatus::Valid {
-        warn!(event = "authz_deactivate_refused_order_valid", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
-        return Err(Problem::malformed(
-            "Cannot deactivate an authorization whose order has already been issued; revoke the certificate instead",
-        ));
-    }
-
-    if authz.status != AuthzStatus::Pending && authz.status != AuthzStatus::Valid {
-        warn!(event = "authz_deactivate_refused_terminal", outcome = "failure", authz_id = %authz.id, status = %authz.status);
-        return Err(Problem::malformed(
-            "Authorization is in a terminal state and cannot be deactivated",
-        ));
-    }
-
-    // §7.5.2: "The server MUST NOT treat deactivated authorization objects as
-    // sufficient for issuing certificates." For a `pending` order that falls
-    // out of the readiness check on its own, but an order already promoted to
-    // `ready` would still finalize — so demote it.
-    //
-    // Both in one transaction. Between them, an order sits `ready` with a
-    // deactivated authorization under it: finalizable for a name the client has
-    // just given up, which is exactly what §7.5.2 forbids.
-    let demote = order.status == OrderStatus::Ready;
-    let outcome = async {
-        let mut tx = database.transaction().await?;
-        Authorization::set_deactivated(authz.id, &mut *tx).await?;
-        if demote {
-            Order::set_pending(order.id, &mut *tx).await?;
-        }
-        tx.commit().await
-    }
-    .await;
-
-    outcome.map_err(|error| {
-        error!(event = "authz_deactivate_failed", outcome = "failure", authz_id = %authz.id, error = %error);
-        Problem::server_internal("Authorization deactivation failed")
-    })?;
-
-    // Only once the transaction has committed: a rollback must not leave these
-    // objects claiming a status the database never took.
-    authz.status = AuthzStatus::Deactivated;
-    if demote {
-        order.status = OrderStatus::Pending;
-    }
-
-    info!(event = "authz_deactivated", outcome = "success", authz_id = %authz.id, order_id = %order.id);
-    Ok(())
-}
-
-/// Records a successful validation as **one** transaction: the challenge becomes
-/// `valid`, its authorization becomes `valid`, and the order is promoted to
-/// `ready` if that was the last one outstanding.
-///
-/// Three separate statements — which is what this was — can stop between any
-/// two. The gap that matters is the last one: an order left `pending` with every
-/// authorization already `valid` can never be finalized and nothing re-derives
-/// readiness, because the check only ever ran from here and the client has no
-/// challenge left to answer to make it run again. The order is stuck until it
-/// expires. `post_new_order` has always used one transaction for the same
-/// reason.
-///
-/// It also fixes a second, quieter bug. The readiness check used to re-read the
-/// authorizations *from the pool* after the write above had committed, so two
-/// concurrent validations of two authorizations of one order could each read
-/// before the other's write landed: neither would see a complete set, and
-/// neither would promote. Reading inside the transaction that just wrote means
-/// SQLite serializes the two writers, and whichever commits second is the one
-/// that sees them all `valid`.
-async fn commit_validation(
-    challenge: &mut Challenge,
-    authz: &mut Authorization,
-    order: &mut Order,
-    database: &Arc<Database>,
-) -> Result<(), Problem> {
-    let validated = now_secs();
-    let outcome = async {
-        let mut tx = database.transaction().await?;
-        Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
-        Authorization::set_valid(authz.id, &mut *tx).await?;
-
-        // `transaction()` issues a deferred BEGIN, but the two writes above
-        // have already taken the RESERVED lock by the time this reads — so this
-        // sees its own write and no other writer can interleave. Putting a read
-        // first here would break that.
-        let promote = order.status == OrderStatus::Pending && {
-            let authzs = Authorization::find_by_order_with(order.id, &mut *tx).await?;
-            authzs.len() == order.identifiers.len()
-                && authzs
-                    .iter()
-                    .all(|authz| authz.status == AuthzStatus::Valid)
-        };
-        if promote {
-            Order::set_ready(order.id, &mut *tx).await?;
-        }
-        tx.commit().await?;
-        Ok::<bool, sqlx::Error>(promote)
-    }
-    .await;
-
-    match outcome {
-        Ok(promoted) => {
-            // In-memory sync only after the commit; see `Authorization::set_valid`.
-            challenge.status = ChallengeStatus::Valid;
-            challenge.validated = Some(validated);
-            authz.status = AuthzStatus::Valid;
-            if promoted {
-                order.status = OrderStatus::Ready;
-            }
-            Ok(())
-        }
-        Err(error) => {
-            error!(
-                event = "challenge_validation_persist_failed",
-                outcome = "failure",
-                challenge_id = %challenge.id,
-                authz_id = %authz.id,
-                order_id = %order.id,
-                error = %error
-            );
-            Err(Problem::server_internal("Challenge validation failed"))
-        }
-    }
-}
-
-/// The failure arm of [`commit_validation`], same shape: the challenge takes the
-/// problem document explaining why, and its authorization and order both become
-/// `invalid`, in one transaction.
-async fn commit_validation_failure(
-    challenge: &mut Challenge,
-    authz: &mut Authorization,
-    order: &mut Order,
-    problem: &Value,
-    database: &Arc<Database>,
-) -> Result<(), Problem> {
-    let outcome = async {
-        let mut tx = database.transaction().await?;
-        Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
-        Authorization::set_invalid(authz.id, &mut *tx).await?;
-        Order::set_invalid(order.id, problem, &mut *tx).await?;
-        tx.commit().await
-    }
-    .await;
-
-    match outcome {
-        Ok(()) => {
-            challenge.status = ChallengeStatus::Invalid;
-            challenge.error = Some(problem.clone());
-            authz.status = AuthzStatus::Invalid;
-            order.status = OrderStatus::Invalid;
-            order.error = Some(problem.clone());
-            Ok(())
-        }
-        Err(error) => {
-            error!(
-                event = "challenge_failure_persist_failed",
-                outcome = "failure",
-                challenge_id = %challenge.id,
-                authz_id = %authz.id,
-                order_id = %order.id,
-                error = %error
-            );
-            Err(Problem::server_internal("Challenge validation failed"))
-        }
-    }
-}
-
 /// Triggers validation of a challenge (RFC 8555 §7.5.1).
 #[instrument(name = "post_challenge", skip_all, fields(challenge_id = %id))]
 pub async fn post_challenge(
@@ -325,109 +139,26 @@ pub async fn post_challenge(
         challenge_id = %id
     );
     let AppState {
-        database, profile, ..
+        database,
+        profile,
+        audit,
+        ..
     } = state;
     let base = &profile.base_url;
-    let challenges = &profile.challenges;
+    let orders = OrderService {
+        database: &database,
+        audit: &audit,
+        profile: &profile,
+    };
 
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
     let (mut challenge, mut authz, mut order) =
         load_owned_challenge(&id, &account, &database).await?;
 
-    if authz.status != AuthzStatus::Valid && authz.expires <= now_secs() {
-        warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
-        return Err(Problem::malformed("Authorization has expired"));
-    }
-
-    // The client gave this authorization up (RFC 8555 §7.5.2). Validating a
-    // challenge under it would walk it straight back to `valid` — which §7.5.2
-    // forbids being sufficient for issuance — so refuse before doing any work.
-    if authz.status == AuthzStatus::Deactivated {
-        warn!(event = "authz_already_deactivated", outcome = "failure", authz_id = %authz.id);
-        return Err(Problem::malformed("Authorization has been deactivated"));
-    }
-
-    // Already answered, here or by a sibling: §7.5.1's "client requests for
-    // retries do not cause a state change".
-    let decided = challenge.status == ChallengeStatus::Valid
-        || challenge.status == ChallengeStatus::Invalid
-        || authz.status == AuthzStatus::Valid;
-
-    // The claim, and the reason it is a claim rather than the status check
-    // above: `challenges.validate` reaches out to an address the *client*
-    // named, so two triggers that both read this row as `pending` become two
-    // probes of that host from this server — bounded only by
-    // `server.max_concurrent_requests`, on a default configuration with no
-    // filter to refuse them. Deciding it in the `UPDATE` makes "one validation
-    // per challenge" a property of the row instead of one of scheduling.
-    //
-    // The loser falls through to the response below, which now reports
-    // `processing` and carries a `Retry-After` — §8.2's answer for a challenge
-    // the server is still working on.
-    let claimed = !decided && challenge.claim_for_validation(&database).await.map_err(|error| {
-        error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %id, error = %error);
-        Problem::server_internal("Challenge could not be claimed for validation")
-    })?;
-
-    if claimed {
-        let thumbprint = jwk_thumbprint(&account.pubkey).map_err(|error| {
-            error!(event = "authz_thumbprint_failed", outcome = "failure", account_id = %account.id, error = %error);
-            Problem::server_internal("Key authorization could not be computed")
-        })?;
-        let key_authorization = format!("{}.{}", challenge.token, thumbprint);
-        let challenge_id = challenge.id.to_string();
-
-        let context = ValidationContext {
-            identifier: authz.base_identifier(),
-            wildcard: authz.is_wildcard(),
-            token: &challenge.token,
-            key_authorization: &key_authorization,
-            challenge_id: &challenge_id,
-        };
-
-        match challenges.validate(&challenge.typ, &context).await {
-            Ok(()) => {
-                commit_validation(&mut challenge, &mut authz, &mut order, &database).await?;
-            }
-            Err(error) => {
-                let problem = challenge_problem(&error).to_value();
-                warn!(
-                    event = "challenge_failed",
-                    outcome = "failure",
-                    challenge_id = %id,
-                    typ = %challenge.typ,
-                    kind = error.kind()
-                );
-
-                commit_validation_failure(
-                    &mut challenge,
-                    &mut authz,
-                    &mut order,
-                    &problem,
-                    &database,
-                )
-                .await?;
-
-                // After the commit, not before. Dispatched first, a persistence
-                // failure would have notified an operator about a failure that
-                // was never recorded — and the client, which gets a 500, would
-                // see the challenge still `pending`.
-                profile
-                    .notify
-                    .dispatch(NotifyEvent::ChallengeFailed(ChallengeFailedData {
-                        profile: profile.name.clone(),
-                        order_id: order.id.to_string(),
-                        account_id: account.id.to_string(),
-                        authz_id: authz.id.to_string(),
-                        challenge_id: challenge.id.clone().to_string(),
-                        challenge_type: challenge.typ.clone(),
-                        identifier: authz.base_identifier().to_string(),
-                        error: error.kind().to_string(),
-                        client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
-                    }))
-                    .await;
-            }
-        }
+    if orders.claim_challenge(&mut challenge, &authz).await? {
+        orders
+            .run_validation(&account, &mut challenge, &mut authz, &mut order, client_ip)
+            .await?;
     }
 
     info!(

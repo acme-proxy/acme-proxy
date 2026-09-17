@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use tracing::{error, instrument};
+use tracing::error;
 
 use crate::challenge::ChallengeError;
 use crate::error::Problem;
@@ -9,7 +9,6 @@ use crate::sqlite::{account::Account, db::Database, order::Identifier};
 
 /// Runs the policy's identifier stage and maps a refusal to the ACME error the
 /// sub-stage calls for.
-#[instrument(name = "check_identifiers", skip_all)]
 pub(crate) async fn check_identifiers(
     filter: &FilterPolicy,
     client_ip: Option<IpAddr>,

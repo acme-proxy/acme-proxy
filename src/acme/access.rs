@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use uuid::Uuid;
 
-use tracing::{error, instrument, warn};
+use tracing::{error, warn};
 
 use crate::error::Problem;
 use crate::sqlite::{
@@ -15,7 +15,6 @@ use crate::sqlite::{
 
 /// Resolves the account that signed the request, within the endpoint it
 /// reached: an account registered at another profile is simply unknown here.
-#[instrument(name = "signer_account", skip_all)]
 pub(crate) async fn signer_account(
     cached: Option<Account>,
     profile: &str,
@@ -41,7 +40,6 @@ pub(crate) async fn signer_account(
 }
 
 /// Loads order `id` and verifies it belongs to the account that signed the request.
-#[instrument(name = "load_owned_order", skip_all, fields(order_id = %id, account_id = %account.id))]
 pub(crate) async fn load_owned_order(
     id: &str,
     account: &Account,
@@ -85,7 +83,6 @@ pub(crate) async fn load_owned_order(
 }
 
 /// Loads authorization `id` and the order it belongs to, verifying ownership.
-#[instrument(name = "load_owned_authz", skip_all, fields(authz_id = %id))]
 pub(crate) async fn load_owned_authz(
     id: &str,
     account: &Account,
@@ -104,7 +101,6 @@ pub(crate) async fn load_owned_authz(
 }
 
 /// Loads challenge `id`, its authorization, and its order, verifying ownership.
-#[instrument(name = "load_owned_challenge", skip_all, fields(challenge_id = %id))]
 pub(crate) async fn load_owned_challenge(
     id: &str,
     account: &Account,
@@ -124,7 +120,6 @@ pub(crate) async fn load_owned_challenge(
 }
 
 /// Fetches an order's authorization ids.
-#[instrument(name = "order_authz_ids", skip_all, fields(order_id = %order_id))]
 pub(crate) async fn order_authz_ids(
     order_id: Uuid,
     database: &Arc<Database>,

@@ -15,12 +15,26 @@
 //!   walk from a challenge up to its order.
 //! - [`policy`] — the configured policy applied to a request: the filter's
 //!   identifier stage, and the problem a failed challenge validation maps to.
+//! - [`order`] — [`OrderService`], the order state machine: deactivating an
+//!   authorization, claiming and validating a challenge.
 //!
-//! Errors are still [`crate::error::Problem`] values here. `Problem` is a data
-//! type as much as a response — the documents stored in `challenges.error` and
-//! `orders.error` are its RFC 7807 JSON — and only its `IntoResponse` impl
-//! belongs to the edge.
+//! **Logging:** whoever builds an [`Error`] logs it. The edge only maps it to a
+//! response, so a refusal is one log line however many layers it crossed —
+//! and every event name stayed what it was when the code lived in the handler,
+//! since `monitoring.md` and the e2e lab grep for them. Nothing here carries
+//! `#[instrument]`: the handler's span already covers the request, and the
+//! attribute hides a body from coverage.
+//!
+//! Refusals the client reads as they are travel as [`crate::error::Problem`]
+//! values, wrapped in [`Error`]. `Problem` is a data type as much as a response
+//! — the documents stored in `challenges.error` and `orders.error` are its
+//! RFC 7807 JSON — and only its `IntoResponse` impl belongs to the edge.
 
 pub mod access;
+pub mod error;
+pub mod order;
 pub mod policy;
 pub mod rules;
+
+pub use error::Error;
+pub use order::OrderService;
