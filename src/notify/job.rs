@@ -27,7 +27,7 @@ pub const NOTIFY_JOB_KIND: &str = "notify_deliver";
 /// The map arrives as a [`Notifiers`] handle rather than a plain `Arc` because
 /// this handler is registered once per generation but must see the *current*
 /// configuration: a row queued by a reloaded router names a slot id only the new
-/// map has, and an unknown one is retired rather than retried.
+/// map has.
 pub struct NotifyJob(Notifiers);
 
 impl NotifyJob {
@@ -79,12 +79,17 @@ impl JobHandler for NotifyJob {
 
     /// One delivery attempt.
     ///
-    /// Three things retire the job immediately rather than retrying, and they
-    /// share a shape: nothing about them can change between now and the fifth
-    /// attempt. A payload that does not parse never will; a profile or a backend
-    /// that is no longer configured is a configuration the operator changed
-    /// under a queued row, and re-reading it every thirty seconds until the
-    /// budget runs out would say nothing the first log line did not.
+    /// Only a payload that does not parse retires the job at once: the bytes are
+    /// written, and no number of attempts reads them differently.
+    ///
+    /// A profile or a backend this process does not know is **retried** within
+    /// the row's own `max_attempts`, not retired. The configuration that queued
+    /// the row need not be the one claiming it: during a reload rolled out
+    /// across several processes over one database, a router already on the new
+    /// configuration queues a slot a runner still on the old one has never
+    /// heard of, and retiring that row would lose the notification for good.
+    /// A target that really is gone costs the retry budget and then ends in
+    /// `abandon`, which is the line that says a notification was lost.
     async fn run(&self, job: &Job) -> JobOutcome {
         let delivery = match Delivery::parse(&job.payload) {
             Ok(delivery) => delivery,
@@ -92,7 +97,16 @@ impl JobHandler for NotifyJob {
         };
 
         let Some(dispatcher) = self.0.get(&delivery.profile) else {
-            return JobOutcome::Failed(format!(
+            warn!(
+                event = "notify_delivery_target_missing",
+                outcome = "failure",
+                profile = %delivery.profile,
+                backend = %delivery.backend,
+                attempt = job.attempts,
+                "no dispatcher is mounted under this profile here; retrying in case the \
+                 configuration that queued the row has not reached this process yet"
+            );
+            return JobOutcome::Retry(format!(
                 "no profile `{}` is mounted, so its notification cannot be delivered",
                 delivery.profile
             ));
@@ -128,10 +142,21 @@ impl JobHandler for NotifyJob {
                     JobOutcome::Failed(error.to_string())
                 }
             }
-            None => JobOutcome::Failed(format!(
-                "profile `{}` has no notify backend `{}` configured any more",
-                delivery.profile, delivery.backend
-            )),
+            None => {
+                warn!(
+                    event = "notify_delivery_target_missing",
+                    outcome = "failure",
+                    profile = %delivery.profile,
+                    backend = %delivery.backend,
+                    attempt = job.attempts,
+                    "this profile has no such notify backend here; retrying in case the \
+                     configuration that queued the row has not reached this process yet"
+                );
+                JobOutcome::Retry(format!(
+                    "profile `{}` has no notify backend `{}` configured",
+                    delivery.profile, delivery.backend
+                ))
+            }
         }
     }
 
@@ -268,11 +293,12 @@ mod tests {
         assert!(matches!(outcome, JobOutcome::Failed(_)), "{outcome:?}");
     }
 
-    /// A configuration change under a queued row. Both of these would otherwise
-    /// burn the whole retry budget re-reading a map that cannot change while the
-    /// process lives.
+    /// A configuration change under a queued row. With several processes over
+    /// one database the row may have been queued by a newer configuration than
+    /// the one claiming it, so both cases go back in the queue — bounded by the
+    /// row's `max_attempts` — rather than losing the notification outright.
     #[tokio::test]
-    async fn an_unknown_profile_or_backend_is_retired_rather_than_retried() {
+    async fn an_unknown_profile_or_backend_is_retried_within_its_budget() {
         let recorder = Arc::new(RecordingNotifyBackend::default());
         let (job, _d) = handler("le", recorder.clone(), queue().await);
 
@@ -280,7 +306,7 @@ mod tests {
             .run(&row(delivery("staging", "recording", &mounted("le"))))
             .await;
         match outcome {
-            JobOutcome::Failed(reason) => assert!(reason.contains("staging"), "{reason}"),
+            JobOutcome::Retry(reason) => assert!(reason.contains("staging"), "{reason}"),
             other => panic!("{other:?}"),
         }
 
@@ -288,7 +314,7 @@ mod tests {
             .run(&row(delivery("le", "carrier-pigeon", &mounted("le"))))
             .await;
         match outcome {
-            JobOutcome::Failed(reason) => assert!(reason.contains("carrier-pigeon"), "{reason}"),
+            JobOutcome::Retry(reason) => assert!(reason.contains("carrier-pigeon"), "{reason}"),
             other => panic!("{other:?}"),
         }
 

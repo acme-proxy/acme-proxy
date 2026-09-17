@@ -94,6 +94,16 @@ migrated configuration before restarting.
   provider that accepts an update before serving it. The default, `none`, keeps
   today's behaviour.
 
+### Changed
+
+- **A queued notification naming a profile or backend this process does not
+  know is retried, not dropped.** It is retried within the row's
+  `jobs.max_attempts` and logged as `notify_delivery_target_missing`. Several
+  processes over one database may run different configurations for a moment
+  during a rolling reload, and a delivery queued by the newer one used to be
+  retired at once by a runner still on the older one. A target that is really
+  gone now costs the retry budget before `notify_delivery_abandoned`.
+
 ### Fixed
 
 - **A certificate revoked with `acme-proxy order revoke` while the server was

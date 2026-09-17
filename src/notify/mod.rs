@@ -893,9 +893,9 @@ pub type NotifiersSender = tokio::sync::watch::Sender<Arc<DispatcherMap>>;
 /// [`NotifyJob`] captures it at registration. Handing those two a plain `Arc`
 /// pinned them to generation zero, which is worse than stale — a request served
 /// by a *new* router writes a `notify_deliver` row naming a slot id from the
-/// *new* configuration, and a `NotifyJob` still holding the old map would answer
-/// [`JobOutcome::Failed`](crate::jobs::JobOutcome::Failed) for it. Permanently:
-/// an unknown backend id is retired rather than retried, by design.
+/// *new* configuration, and a `NotifyJob` still holding the old map would never
+/// find it. An unknown backend id is retried within the row's `max_attempts`,
+/// so a stale map would burn that budget and then lose the notification.
 ///
 /// [`tokio::sync::watch::Receiver::borrow`] takes `&self` and does not mark the
 /// value seen, so this stays `Clone + Send + Sync` and [`get`](Self::get) is
