@@ -347,8 +347,8 @@ impl JobHandler for RelayJob {
             reason,
             actor,
             client,
+            &inner.audit,
             &inner.database,
-            Some(&inner.metrics),
         )
         .await
         {
@@ -956,10 +956,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     let record = relay_record(crate::audit::AuditEvent::CertificateIssued, &order, inner)
         .await
         .with_serial(serial.clone());
-    // See the failure arm above: no `Auditor` reaches this task, so the counter
-    // is bumped from the record itself rather than from a wrapper.
-    inner.metrics.record_audit(&record);
-    crate::audit::write(record, &inner.database).await;
+    inner.audit.record(record).await;
 
     // The synchronous signer backends (`local_ca`, `custom`) notify from
     // `post_finalize`'s own success tail, which has a `Profile` in scope. This
@@ -1038,7 +1035,7 @@ async fn relay_actor_and_client(
 /// only in *who* the audit row names: the runner attributes it to the account
 /// that asked (with the finalize request's own address, via
 /// [`relay_actor_and_client`]); an operator cancel attributes it to the
-/// operator and passes no metrics handle.
+/// operator.
 ///
 /// Non-transactional by design — three `&Database` calls, each also syncing an
 /// in-memory struct, matching the sequence this was lifted from. A crash
@@ -1051,13 +1048,9 @@ pub(crate) async fn abandon_relayed_order(
     reason: &str,
     actor: crate::audit::Actor,
     client: crate::audit::ClientContext,
+    audit: &crate::audit::Auditor,
     database: &Database,
-    metrics: Option<&Arc<crate::metrics::Metrics>>,
 ) -> Result<(), sqlx::Error> {
-    // Counted from the same value about to be written, so the metric and the
-    // audit row cannot disagree — the property `Metrics::record_audit` exists
-    // for. Spelled out here rather than folded into `write` because neither
-    // caller path is guaranteed an `Auditor`.
     let record = crate::audit::AuditRecord::new(
         crate::audit::AuditEvent::CertificateIssueFailed,
         &order.profile,
@@ -1067,10 +1060,7 @@ pub(crate) async fn abandon_relayed_order(
     .with_client(client)
     .with_reason("serverInternal")
     .with_detail(reason);
-    if let Some(metrics) = metrics {
-        metrics.record_audit(&record);
-    }
-    crate::audit::write(record, database).await;
+    audit.record(record).await;
 
     // The client sees a generic problem document; the real reason is
     // operator-only, on the mapping row.
@@ -1086,7 +1076,8 @@ mod tests {
 
     /// `abandon_relayed_order` produces the same row shape whether the runner
     /// or an operator calls it — only the actor differs. Driven here with an
-    /// admin actor, the operator-cancel path.
+    /// admin actor, the operator-cancel path — which also counts the row into
+    /// the registry of the `Auditor` it writes through.
     #[tokio::test]
     async fn abandon_relayed_order_marks_both_rows_and_writes_one_row() {
         use crate::sqlite::account::Account;
@@ -1094,7 +1085,9 @@ mod tests {
         use crate::sqlite::db::Database;
         use crate::sqlite::order::Identifier;
 
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let metrics = crate::testutil::test_metrics(database.clone());
+        let audit = crate::audit::Auditor::offline(database.clone()).with_metrics(metrics.clone());
         let (account, _) = Account::find_or_create(
             "default",
             &crate::random::random_bytes::<16>(),
@@ -1133,8 +1126,8 @@ mod tests {
                 ip: Some("203.0.113.9".to_string()),
                 ..crate::audit::ClientContext::default()
             },
+            &audit,
             &database,
-            None,
         )
         .await
         .unwrap();
@@ -1185,6 +1178,14 @@ mod tests {
         assert_eq!(rows[0].actor_kind, "admin");
         assert_eq!(rows[0].actor_id.as_deref(), Some("root"));
         assert_eq!(rows[0].client_ip.as_deref(), Some("203.0.113.9"));
+
+        assert!(
+            metrics.render().contains(
+                "acme_proxy_certificate_issue_failures_total{profile=\"default\",reason=\"serverInternal\"} 1"
+            ),
+            "{}",
+            metrics.render()
+        );
     }
 
     /// The classification table, one row per way the upstream can fail.

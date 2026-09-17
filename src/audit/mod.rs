@@ -549,8 +549,9 @@ pub struct Auditor {
     ptr_timeout: Duration,
     /// The process's Prometheus counters.
     ///
-    /// `None` only for an auditor built through [`Auditor::with_resolver`],
-    /// which is test scaffolding. The serving path goes through
+    /// `None` for an auditor built through [`Auditor::with_resolver`] or
+    /// [`Auditor::offline`] and never given one: test scaffolding, and the host
+    /// CLI, which serves no `/metrics`. The serving path goes through
     /// [`Auditor::from_config`], where it is a **required argument** rather
     /// than a builder step — see that constructor.
     metrics: Option<Arc<crate::metrics::Metrics>>,
@@ -658,6 +659,18 @@ impl Auditor {
         }
     }
 
+    /// An auditor with no resolver and no metrics registry, for a caller that
+    /// has no request to resolve an address from: the host CLI, and the
+    /// background tasks that settle work long after the request that asked.
+    ///
+    /// Attach the process's registry with [`Auditor::with_metrics`] wherever one
+    /// exists — a background task inside `serve` has one, the CLI does not (it
+    /// serves no `/metrics`, so a count there would reach nobody).
+    #[must_use]
+    pub fn offline(database: Arc<Database>) -> Self {
+        Self::with_resolver(database, None, Duration::ZERO)
+    }
+
     /// Resolves a [`RequestContext`] into the [`ClientContext`] a row stores,
     /// running the reverse lookup on the way.
     pub async fn client(&self, request: &RequestContext) -> ClientContext {
@@ -683,21 +696,6 @@ impl Auditor {
         self
     }
 
-    /// The registry this auditor counts into, for the one caller that writes a
-    /// record through the free [`write()`] rather than through [`Auditor::record`]
-    /// and so has to carry the counter itself.
-    ///
-    /// That caller is `signer::relay::abandon_relayed_order`, which is shared
-    /// with a background task holding no `Auditor` at all — see its own note on
-    /// why the count is spelled out there. Handing the registry over keeps the
-    /// operator-cancel path counting into the same place the runner's does, so
-    /// `/metrics` and `acme-proxy audit list` cannot disagree about how many
-    /// issuances failed.
-    #[must_use]
-    pub fn metrics(&self) -> Option<&Arc<crate::metrics::Metrics>> {
-        self.metrics.as_ref()
-    }
-
     /// Writes one row, and counts it.
     ///
     /// The counter is driven off the *same* [`AuditRecord`] that is about to be
@@ -715,15 +713,14 @@ impl Auditor {
     }
 }
 
-/// Writes one row against a bare database handle.
+/// Writes one row against a bare database handle, counting nothing.
 ///
-/// The free function exists for the `relay` backend: it settles an issuance
-/// from a background task that holds an `Arc<Database>` and no [`Auditor`], and
-/// it needs no reverse lookup either — the address it records was resolved
-/// during the finalize request and stored on the `upstream_orders` row. Giving
-/// that task an `Auditor` would have meant threading one through
-/// `signer::build_backends` and `Profile::build_all` for the sake of a resolver
-/// it would never call.
+/// Every writer outside this module goes through [`Auditor::record`], so a row
+/// and its Prometheus count cannot come apart — the relay's settlement, the
+/// operator's revocation and the web admin's action rows each used to write
+/// here directly and each skipped the counter. What is left is the host CLI's
+/// administrative rows ([`admin::record_cli_action`]), whose process serves no
+/// `/metrics` for a count to reach.
 ///
 /// **A failed write is logged and swallowed.** The alternative — failing the
 /// request — would turn a certificate this CA has already signed into a 500 the
@@ -733,7 +730,7 @@ impl Auditor {
 /// write that preceded it had already failed. The `error!` carries the record's
 /// identifying fields, so the trail survives in the log even when the table did
 /// not get it.
-pub async fn write(record: AuditRecord, database: &Database) {
+pub(crate) async fn write(record: AuditRecord, database: &Database) {
     let (event, profile) = (record.event, record.profile.clone());
     let (order_id, serial) = (record.order_id.clone(), record.cert_serial.clone());
     if let Err(error) = AuditEntry::insert(record, database).await {

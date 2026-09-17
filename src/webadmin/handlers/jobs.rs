@@ -96,7 +96,7 @@ pub async fn cancel_job(
         &id,
         crate::audit::Actor::admin(&auth.user.username),
         state.audit.client(&request_context).await,
-        state.audit.metrics(),
+        &state.audit,
         state.database.clone(),
     )
     .await
@@ -144,6 +144,7 @@ pub async fn run_job(
         &id,
         crate::audit::Actor::admin(&auth.user.username),
         state.audit.client(&request_context).await,
+        &state.audit,
         state.database.clone(),
     )
     .await?

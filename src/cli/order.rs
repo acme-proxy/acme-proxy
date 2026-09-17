@@ -301,6 +301,7 @@ pub async fn run_order_command(
                 reason,
                 crate::audit::Actor::cli(),
                 crate::audit::ClientContext::default(),
+                &crate::audit::Auditor::offline(database.clone()),
                 database,
                 signer,
             )

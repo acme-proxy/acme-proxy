@@ -122,14 +122,15 @@ struct Inner {
     /// the dispatchers are rebuilt, so a captured map would keep notifying
     /// through backends the operator has since removed.
     notifiers: crate::notify::Notifiers,
-    /// The process's Prometheus counters, carried for the same reason
-    /// `notifiers` is: this backend records an issuance from a background task
-    /// long after `post_finalize` answered `processing` and returned, so it has
-    /// no `Auditor` to count through. Held directly rather than behind a
-    /// `watch` handle because, unlike the dispatchers, the registry is *not*
-    /// rebuilt per generation — that is the whole point of it living in
-    /// `Assembly`.
-    metrics: Arc<crate::metrics::Metrics>,
+    /// Where this backend's settle-time audit rows go, counted into the
+    /// process's Prometheus registry. Needed for the same reason `notifiers`
+    /// is: an issuance is recorded from a background task long after
+    /// `post_finalize` answered `processing` and returned, with no request's
+    /// `Auditor` in scope. An offline one — no resolver, since the address
+    /// was resolved during the finalize request and parked on
+    /// `upstream_orders` — over the registry, which is *not* rebuilt per
+    /// generation and so can be held directly.
+    audit: Arc<crate::audit::Auditor>,
     /// Where an issuance is queued once the upstream order is open.
     ///
     /// The backend holds the *enqueue* side only; the runner that drains it is
@@ -277,7 +278,10 @@ impl RelaySigner {
             dns01_propagation,
             poll,
             notifiers: parts.notifiers.clone(),
-            metrics: parts.metrics.clone(),
+            audit: Arc::new(
+                crate::audit::Auditor::offline(parts.database.clone())
+                    .with_metrics(parts.metrics.clone()),
+            ),
             jobs: parts.jobs.clone(),
         })))
     }

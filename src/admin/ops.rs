@@ -5,7 +5,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::admin::prompt::confirm;
-use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
+use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext};
 use crate::config::Config;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
 use crate::signer::{SignerBackend, SignerError};
@@ -423,6 +423,7 @@ pub async fn revoke_order(
     reason: Option<u32>,
     actor: Actor,
     client: ClientContext,
+    audit: &Auditor,
     database: Arc<Database>,
     signer: Arc<dyn SignerBackend>,
 ) -> Result<RevokeOutcome, RevokeError> {
@@ -464,19 +465,19 @@ pub async fn revoke_order(
     // authoritative, so a failure there must leave the order un-revoked for a
     // retry — and must be audited as the attempt it was.
     if let Err(error) = signer.revoke(&cert_der, reason).await {
-        crate::audit::write(
-            AuditRecord::new(AuditEvent::CertificateRevokeFailed, &order.profile, actor)
-                .with_order(&order)
-                .with_client(client)
-                .with_reason("serverInternal")
-                .with_detail(error.to_string()),
-            &database,
-        )
-        .await;
+        audit
+            .record(
+                AuditRecord::new(AuditEvent::CertificateRevokeFailed, &order.profile, actor)
+                    .with_order(&order)
+                    .with_client(client)
+                    .with_reason("serverInternal")
+                    .with_detail(error.to_string()),
+            )
+            .await;
         return Err(error.into());
     }
     order.revoke(reason.map(i64::from), &database).await?;
-    crate::audit::write(record, &database).await;
+    audit.record(record).await;
     Ok(RevokeOutcome::Revoked(Box::new(order)))
 }
 
@@ -691,12 +692,12 @@ pub enum CancelJobError {
 /// supplies [`Actor::cli`] with an empty context, the web admin
 /// [`Actor::admin`] with the operator's own address.
 ///
-/// `metrics` is the registry the `certificate_issue_failed` row on the relay
-/// branch is also counted into, so `/metrics` and `acme-proxy audit list`
-/// cannot disagree about how many issuances failed — the property
-/// `Metrics::record_audit` exists for. The web admin passes its process
-/// registry; **the CLI passes `None` and legitimately so**, since a `serve`-less
-/// invocation has no registry and no exposition to keep honest.
+/// `audit` is what every row is written through, so the
+/// `certificate_issue_failed` row on the relay branch is counted into the same
+/// registry the trail describes — `/metrics` and `acme-proxy audit list` cannot
+/// disagree about how many issuances failed. The web admin passes the process's
+/// auditor; the CLI passes an [`Auditor::offline`] one, since a `serve`-less
+/// invocation has no exposition to keep honest.
 ///
 /// **The job row is cancelled first, then the order is abandoned.** The guard
 /// (`status IN ('ready', 'failed')`) means at most one caller wins a race with
@@ -708,7 +709,7 @@ pub async fn cancel_job(
     id: &str,
     actor: Actor,
     client: ClientContext,
-    metrics: Option<&Arc<crate::metrics::Metrics>>,
+    audit: &Auditor,
     database: Arc<Database>,
 ) -> Result<CancelJobOutcome, CancelJobError> {
     let Some(job_id) = crate::sqlite::id::parse(id) else {
@@ -753,8 +754,8 @@ pub async fn cancel_job(
                 "issuance cancelled by operator",
                 actor,
                 client,
+                audit,
                 &database,
-                metrics,
             )
             .await?;
             return Ok(CancelJobOutcome::CancelledAndOrderAbandoned {
@@ -769,11 +770,14 @@ pub async fn cancel_job(
     // administrative row. `abandon_relayed_order` writes the
     // `certificate_issue_failed` row on the branch above; this one is the only
     // record the rest of them leave, so it must not be skipped.
-    crate::audit::write(
-        crate::audit::admin::job_cancelled(actor, client, &job.kind, &job.id.to_string()),
-        &database,
-    )
-    .await;
+    audit
+        .record(crate::audit::admin::job_cancelled(
+            actor,
+            client,
+            &job.kind,
+            &job.id.to_string(),
+        ))
+        .await;
     Ok(CancelJobOutcome::Cancelled(Box::new(job)))
 }
 
@@ -785,6 +789,7 @@ pub async fn confirm_cancel_job(
     reader: &mut impl BufRead,
     actor: Actor,
     client: ClientContext,
+    audit: &Auditor,
     database: Arc<Database>,
 ) -> Result<Option<CancelJobOutcome>, CancelJobError> {
     // Resolve the subject before prompting, the shape `confirm_delete_account`
@@ -819,8 +824,7 @@ pub async fn confirm_cancel_job(
     if !confirm(&prompt, assume_yes, reader) {
         return Ok(None);
     }
-    // No metrics registry: the host CLI serves no `/metrics`.
-    Ok(Some(cancel_job(id, actor, client, None, database).await?))
+    Ok(Some(cancel_job(id, actor, client, audit, database).await?))
 }
 
 /// Makes a job eligible to run immediately: a live `ready` job's `run_at` is
@@ -843,25 +847,32 @@ pub async fn run_job_now(
     id: &str,
     actor: Actor,
     client: ClientContext,
+    audit: &Auditor,
     database: Arc<Database>,
 ) -> Result<RunJobNowOutcome, sqlx::Error> {
     let Some(job_id) = crate::sqlite::id::parse(id) else {
         return Ok(RunJobNowOutcome::NotFound);
     };
     if let Some(job) = Job::advance_row(job_id, &database).await? {
-        crate::audit::write(
-            crate::audit::admin::job_advanced(actor, client, &job.id.to_string(), false),
-            &database,
-        )
-        .await;
+        audit
+            .record(crate::audit::admin::job_advanced(
+                actor,
+                client,
+                &job.id.to_string(),
+                false,
+            ))
+            .await;
         return Ok(RunJobNowOutcome::Nudged(Box::new(job)));
     }
     if let Some(job) = Job::revive_row(job_id, &database).await? {
-        crate::audit::write(
-            crate::audit::admin::job_advanced(actor, client, &job.id.to_string(), true),
-            &database,
-        )
-        .await;
+        audit
+            .record(crate::audit::admin::job_advanced(
+                actor,
+                client,
+                &job.id.to_string(),
+                true,
+            ))
+            .await;
         return Ok(RunJobNowOutcome::Revived(Box::new(job)));
     }
     Ok(match Job::find_by_id(job_id, &database).await? {
@@ -1278,6 +1289,7 @@ mod tests {
                 ptr: Some("desk.example.com".to_string()),
                 ..ClientContext::default()
             },
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
         )
@@ -1306,6 +1318,7 @@ mod tests {
             None,
             Actor::admin("root"),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer,
         )
@@ -1328,6 +1341,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer,
         )
@@ -1789,6 +1803,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             in_memory_ca(&db),
         )
@@ -1818,6 +1833,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             in_memory_ca(&db),
         )
@@ -1837,6 +1853,7 @@ mod tests {
             Some(1),
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
         )
@@ -1872,6 +1889,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
             signer.clone(),
         )
@@ -1882,6 +1900,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db,
             signer,
         )
@@ -1901,6 +1920,7 @@ mod tests {
             Some(999),
             cli_actor(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db,
             signer,
         )
@@ -2204,7 +2224,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            None,
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2242,7 +2262,7 @@ mod tests {
                 ip: Some("203.0.113.7".to_string()),
                 ..ClientContext::default()
             },
-            None,
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2301,8 +2321,8 @@ mod tests {
             "urn:ietf:params:acme:error:rejectedIdentifier from the upstream",
             Actor::cli(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             &db,
-            None,
         )
         .await
         .unwrap();
@@ -2329,7 +2349,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            None,
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2373,7 +2393,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            None,
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2402,7 +2422,7 @@ mod tests {
             job.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            None,
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2431,7 +2451,7 @@ mod tests {
                 "nope",
                 cli_actor(),
                 ClientContext::default(),
-                None,
+                &crate::audit::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2443,7 +2463,7 @@ mod tests {
                 crate::sqlite::id::mint().to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                None,
+                &crate::audit::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2462,7 +2482,7 @@ mod tests {
                 sweep.id.to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                None,
+                &crate::audit::Auditor::offline(db.clone()),
                 db,
             )
                 .await
@@ -2483,6 +2503,7 @@ mod tests {
                 &mut reader,
                 cli_actor(),
                 ClientContext::default(),
+                &crate::audit::Auditor::offline(db.clone()),
                 db.clone(),
             )
             .await
@@ -2509,6 +2530,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2531,6 +2553,7 @@ mod tests {
             relay.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2552,15 +2575,22 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
         ).await.unwrap(),
             RunJobNowOutcome::Refused(s) if s == "done"
         ));
 
         assert!(matches!(
-            run_job_now("nope", Actor::cli(), ClientContext::default(), db)
-                .await
-                .unwrap(),
+            run_job_now(
+                "nope",
+                Actor::cli(),
+                ClientContext::default(),
+                &Auditor::offline(db.clone()),
+                db
+            )
+            .await
+            .unwrap(),
             RunJobNowOutcome::NotFound
         ));
     }

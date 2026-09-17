@@ -169,6 +169,7 @@ pub async fn revoke_order(
         reason,
         crate::audit::Actor::admin(&auth.user.username),
         state.audit.client(&request_context).await,
+        &state.audit,
         state.database.clone(),
         signer,
     )

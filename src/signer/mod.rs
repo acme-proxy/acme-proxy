@@ -369,10 +369,11 @@ pub fn from_config(
             &cfg.local_ca,
             parts.database.clone(),
         )?)),
-        // The one backend handed the metrics registry, because it is the one
-        // that finishes an issuance from a background task: `post_finalize`
-        // answered `processing` and returned, so no `Auditor` — and no request
-        // — is in scope when the certificate actually arrives.
+        // The one backend that reads the metrics registry, because it is the
+        // one that finishes an issuance from a background task: `post_finalize`
+        // answered `processing` and returned, so no request's `Auditor` is in
+        // scope when the certificate actually arrives, and the backend builds
+        // an offline one counting into this registry.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
             &cfg.relay, parts,
         )?)),

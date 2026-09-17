@@ -144,7 +144,7 @@ impl AdminState {
     ) {
         let actor = crate::audit::Actor::admin(username);
         let client = self.audit.client(request_context).await;
-        crate::audit::write(build(actor, client), &self.database).await;
+        self.audit.record(build(actor, client)).await;
     }
 
     /// [`AdminState::record_admin_action`] for an action that writes several
@@ -161,7 +161,7 @@ impl AdminState {
         let actor = crate::audit::Actor::admin(username);
         let client = self.audit.client(request_context).await;
         for record in build(actor, client) {
-            crate::audit::write(record, &self.database).await;
+            self.audit.record(record).await;
         }
     }
 

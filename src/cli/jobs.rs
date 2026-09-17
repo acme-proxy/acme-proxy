@@ -105,6 +105,7 @@ pub async fn run_jobs_command(
                 reader,
                 Actor::cli(),
                 ClientContext::default(),
+                &crate::audit::Auditor::offline(database.clone()),
                 database,
             )
             .await
@@ -136,6 +137,7 @@ pub async fn run_jobs_command(
             &id,
             Actor::cli(),
             ClientContext::default(),
+            &crate::audit::Auditor::offline(database.clone()),
             database.clone(),
         )
         .await?
