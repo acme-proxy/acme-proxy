@@ -69,7 +69,6 @@ async fn bypass_triggers_the_offered_challenge() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -111,7 +110,6 @@ async fn bypass_triggers_a_challenge_of_any_type() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -146,7 +144,6 @@ async fn bypass_fails_the_order_when_the_upstream_rejects() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
@@ -182,7 +179,6 @@ async fn dns01_publishes_triggers_and_cleans_up() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         updater.clone(),
@@ -260,7 +256,6 @@ async fn dns01_waits_the_configured_delay_before_triggering() {
             RelaySigner::from_config(
                 &config(&upstream, &dir),
                 &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-                &crate::signer::CarriedState::new(),
             )
             .unwrap(),
             updater.clone(),
@@ -319,7 +314,6 @@ async fn an_unworkable_propagation_setting_is_a_startup_error() {
                 no_notifiers(),
                 test_queue(database().await),
             ),
-            &crate::signer::CarriedState::new(),
         ));
         assert!(
             error.contains(expected),
@@ -346,7 +340,6 @@ async fn dns01_cleans_up_after_a_rejected_challenge() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         updater.clone(),
@@ -389,7 +382,6 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubUpdater::default()),
@@ -440,7 +432,6 @@ async fn dns01_fails_when_the_record_cannot_be_published() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubUpdater {
@@ -496,7 +487,6 @@ async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         updater.clone(),
@@ -552,7 +542,6 @@ async fn bypass_prefers_a_challenge_it_could_answer() {
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
         &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-        &crate::signer::CarriedState::new(),
     )
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);

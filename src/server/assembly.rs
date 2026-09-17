@@ -99,9 +99,8 @@ pub struct GenerationParts {
 ///   `rate()` would report the whole pre-reload total as a spike on every
 ///   configuration change.
 /// - `signers` is the *previous* generation's backend set, kept so the next
-///   reload can reuse a backend whose configuration did not move and hand the
-///   live in-memory state of one that did to its replacement (see
-///   [`signer::CarriedState`]). Behind a `Mutex` because it is written once per
+///   reload can reuse a backend whose configuration did not move (see
+///   [`signer::build_backends`]). Behind a `Mutex` because it is written once per
 ///   generation; nothing reads it to serve a request, since a `Profile` holds
 ///   its own `Arc<dyn SignerBackend>`.
 /// - `notifiers` is a handle rather than a map, so `[notify]` can reload

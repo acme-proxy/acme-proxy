@@ -43,7 +43,6 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         tokens.clone(),
@@ -110,7 +109,6 @@ async fn http01_retracts_after_a_rejected_challenge() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         tokens.clone(),
@@ -161,7 +159,6 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -215,7 +212,6 @@ async fn http01_refuses_a_wildcard_authorization() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         Arc::new(StubTokens::default()),
@@ -268,7 +264,6 @@ async fn an_unknown_dns_provider_is_a_startup_error() {
             no_notifiers(),
             test_queue(database().await),
         ),
-        &crate::signer::CarriedState::new(),
     ));
     assert!(error.contains("route53"), "{error}");
 }
@@ -295,9 +290,7 @@ async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
         no_notifiers(),
         test_queue(database().await),
     );
-    let build = |cfg: &RelayConfig| {
-        RelaySigner::from_config(cfg, &parts, &crate::signer::CarriedState::new()).unwrap()
-    };
+    let build = |cfg: &RelayConfig| RelaySigner::from_config(cfg, &parts).unwrap();
 
     let running = build(&cfg);
     running
@@ -352,7 +345,6 @@ async fn http01_answers_past_a_challenge_type_carrying_no_token() {
         RelaySigner::from_config(
             &config(&upstream, &dir),
             &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-            &crate::signer::CarriedState::new(),
         )
         .unwrap(),
         tokens.clone(),

@@ -170,7 +170,6 @@ impl RelaySigner {
     pub fn from_config(
         cfg: &RelayConfig,
         parts: &crate::signer::SignerParts,
-        _carried: &crate::signer::CarriedState,
     ) -> anyhow::Result<Self> {
         let outbound = parts.egress.outbound();
         if cfg.directory_url.is_empty() {

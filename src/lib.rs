@@ -164,9 +164,6 @@
 //!                         egress: egress.clone(),
 //!                         jobs: job_queue.clone(),
 //!                     },
-//!                     // Nothing to adopt at startup; a reload passes what the
-//!                     // previous generation's backends handed over.
-//!                     &signer::CarriedState::new(),
 //!                 )?,
 //!                 filter: filter::from_config(
 //!                     &sections.filter,

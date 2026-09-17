@@ -164,10 +164,10 @@ async fn test_reload_on_sighup_twice() {
 /// cannot change is refused **by name** with the old generation left serving.
 ///
 /// The two halves belong in one scenario because they are the same decision
-/// seen from both sides. Mounting a profile is what `signer::CarriedState`
-/// bought — the profile set was frozen only because a `LocalCa` rebuilds its
-/// CRL from an in-memory ledger and a relay's `http-01` store would come back
-/// empty, and carrying both ended it. `database.url` is what is left, and it is
+/// seen from both sides. Mounting a profile became possible once a signer
+/// backend's state stopped living in its own memory — the profile set was
+/// frozen only because a `LocalCa` rebuilt its CRL from an in-memory ledger and
+/// a relay's `http-01` store would have come back empty. `database.url` is what is left, and it is
 /// the only entry ever frozen *physically*: the pool is open, and the accounts
 /// and orders issued against it do not follow a URL elsewhere. Refusing whole
 /// rather than half-applying is what keeps "what is this server running?"

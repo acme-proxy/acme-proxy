@@ -292,9 +292,6 @@ pub async fn run_order_command(
                     egress,
                     jobs,
                 },
-                // Nothing to adopt: there is no previous generation in a process
-                // that exits when this command does.
-                &signer::CarriedState::new(),
             )
             .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
@@ -569,7 +566,6 @@ mod tests {
         let signer: Arc<dyn SignerBackend> = signer::from_config(
             &profile.sections.signer,
             &crate::testutil::signer_parts(database.clone(), resolver),
-            &signer::CarriedState::new(),
         )
         .unwrap();
 

@@ -67,20 +67,10 @@ async fn two_upstreams(db: &Arc<Database>, queue: &crate::jobs::JobQueue) -> Two
     let dir_b = TempDir::new("upstream-b");
     let parts = relay_parts(db.clone(), no_notifiers(), queue.clone());
 
-    let bypassing = RelaySigner::from_config(
-        &config(&bypassing_upstream, &dir_a),
-        &parts,
-        &crate::signer::CarriedState::new(),
-    )
-    .unwrap();
+    let bypassing = RelaySigner::from_config(&config(&bypassing_upstream, &dir_a), &parts).unwrap();
     let tokens = Arc::new(StubTokens::default());
     let challenged = with_tokens(
-        RelaySigner::from_config(
-            &config(&challenged_upstream, &dir_b),
-            &parts,
-            &crate::signer::CarriedState::new(),
-        )
-        .unwrap(),
+        RelaySigner::from_config(&config(&challenged_upstream, &dir_b), &parts).unwrap(),
         tokens.clone(),
     );
 
@@ -260,12 +250,8 @@ async fn the_lease_is_the_owning_profile_s_own_poll_timeout() {
     let mut patient_config = config(&patient_upstream, &dir_patient);
     patient_config.poll_timeout_secs = 97;
 
-    let quick =
-        RelaySigner::from_config(&quick_config, &parts, &crate::signer::CarriedState::new())
-            .unwrap();
-    let patient =
-        RelaySigner::from_config(&patient_config, &parts, &crate::signer::CarriedState::new())
-            .unwrap();
+    let quick = RelaySigner::from_config(&quick_config, &parts).unwrap();
+    let patient = RelaySigner::from_config(&patient_config, &parts).unwrap();
 
     let handler = RelayJob::new(
         db.clone(),

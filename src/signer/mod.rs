@@ -38,13 +38,15 @@
 //! but a backend that is still configured exactly as it was is **reused
 //! verbatim** — see [`build_backends`], which keys on the configuration's own
 //! `Debug` rendering. Only a backend whose configuration actually moved is
-//! constructed again, and that one adopts the previous instance's in-memory
-//! state through [`CarriedState`]. Both halves matter: without the reuse every
-//! `SIGHUP` would re-read a CA key and re-open a PKCS#11 session for nothing,
-//! and without the adoption a rebuilt backend would start with an empty
-//! revocation ledger and an empty `http-01` token store.
+//! constructed again. Without the reuse every `SIGHUP` would re-read a CA key
+//! and re-open a PKCS#11 session for nothing.
+//!
+//! A rebuilt backend has nothing to adopt from the one it replaces: every piece
+//! of state a backend keeps between requests — a local CA's revocations and
+//! CRL, a relay's `http-01` tokens and upstream orders — lives in the database,
+//! which the outgoing and the incoming instance share. That is also what lets
+//! two processes over one database run the same backend.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -140,64 +142,6 @@ impl RequestedValidity {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.not_before.is_none() && self.not_after.is_none()
-    }
-}
-
-/// In-memory state a signer backend owns that has no durable home, carried from
-/// one configuration generation to the next.
-///
-/// Keyed by the **resource** the state describes — a `crl_path`, a relay account
-/// key path — never by profile name and never by configuration identity. That
-/// choice is the whole safety argument: a backend rebuilt over the same files is
-/// the same CA and must not start with an empty ledger, while one rebuilt over
-/// *different* files must never adopt state describing somebody else's. A key
-/// cannot collide, because [`signer_paths`] already refuses two live backends
-/// over one path.
-///
-/// A map of `Arc<dyn Any>` rather than an enum naming each backend's internals,
-/// so `signer/mod.rs` keeps knowing nothing about what a backend holds — the
-/// same line [`SignerBackend::crl_der`] and [`SignerBackend::http01_tokens`]
-/// draw. And a map of *state* rather than a `fn adopt(&self, previous: &dyn
-/// SignerBackend)`, which would need every backend downcast to itself and would
-/// still have to answer "is that previous backend the same thing I am?" — a
-/// question the key already answers, in the open, one resource at a time.
-#[derive(Default)]
-pub struct CarriedState(HashMap<String, Arc<dyn Any + Send + Sync>>);
-
-impl CarriedState {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Offers `value` to whichever backend is built over `resource` next.
-    pub fn insert<T: Any + Send + Sync>(&mut self, resource: String, value: Arc<T>) {
-        self.0.insert(resource, value);
-    }
-
-    /// Takes the state recorded for `resource`, if the previous generation left
-    /// any *and* it is of the expected type.
-    ///
-    /// A type mismatch answers `None` rather than panicking: it can only mean a
-    /// backend changed kind over one path (a `local_ca` where a `relay` used to
-    /// be), which is a legitimate reload and should start from disk, not abort.
-    #[must_use]
-    pub fn get<T: Any + Send + Sync>(&self, resource: &str) -> Option<Arc<T>> {
-        self.0.get(resource)?.clone().downcast::<T>().ok()
-    }
-
-    /// Folds another backend's contribution in.
-    pub fn absorb(&mut self, other: Self) {
-        self.0.extend(other.0);
-    }
-
-    /// The resources this state covers, for a caller that wants to log what it
-    /// is carrying.
-    #[must_use]
-    pub fn resources(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.0.keys().map(String::as_str).collect();
-        names.sort_unstable();
-        names
     }
 }
 
@@ -342,23 +286,6 @@ pub trait SignerBackend: Send + Sync {
     fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
         None
     }
-
-    /// What this backend hands to whichever backend replaces it on a
-    /// configuration reload, keyed by the resource each piece describes.
-    ///
-    /// A getter on the trait for the fourth time and for the same reason as
-    /// [`crl_der`](SignerBackend::crl_der) and
-    /// [`relay_state`](SignerBackend::relay_state): what a backend owns is the
-    /// backend's own business. The default is empty,
-    /// which is the honest answer for [`custom::CustomScriptSigner`] — it holds
-    /// nothing between calls — and for any state that already has a durable
-    /// home.
-    ///
-    /// `local_ca` carries nothing: its revocation state lives in the database,
-    /// which the outgoing and the incoming instance share for the whole window.
-    fn carried_state(&self) -> CarriedState {
-        CarriedState::default()
-    }
 }
 
 /// One backend's CRL, as the periodic sweep sees it.
@@ -399,9 +326,8 @@ pub enum SignerError {
 /// section.
 ///
 /// A struct for [`ProfileParts`](crate::server::ProfileParts)' reason:
-/// [`from_config`] took seven positional parameters and needed an eighth for
-/// [`CarriedState`], which is where a reader starts counting commas and clippy
-/// starts complaining. Taken by reference and cloned field by field, since
+/// [`from_config`] had reached seven positional parameters, which is where a
+/// reader starts counting commas and clippy starts complaining. Taken by reference and cloned field by field, since
 /// [`build_backends`] calls [`from_config`] in a loop.
 ///
 /// `database` is for the backends that resolve issuance asynchronously: they own
@@ -429,8 +355,7 @@ pub struct SignerParts {
     pub jobs: crate::jobs::JobQueue,
 }
 
-/// Builds the configured signer backend, adopting whatever the generation before
-/// it left for this backend's own resources.
+/// Builds the configured signer backend.
 ///
 /// Called at startup and again for any backend a reload rebuilds; a failure is
 /// fatal to whichever of the two it is (the process exits, or the reload is
@@ -438,7 +363,6 @@ pub struct SignerParts {
 pub fn from_config(
     cfg: &SignerConfig,
     parts: &SignerParts,
-    carried: &CarriedState,
 ) -> anyhow::Result<Arc<dyn SignerBackend>> {
     match cfg.backend.as_str() {
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
@@ -450,7 +374,7 @@ pub fn from_config(
         // answered `processing` and returned, so no `Auditor` — and no request
         // — is in scope when the certificate actually arrives.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
-            &cfg.relay, parts, carried,
+            &cfg.relay, parts,
         )?)),
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
@@ -503,48 +427,28 @@ impl SignerSet {
     pub fn is_empty(&self) -> bool {
         self.by_identity.is_empty()
     }
-
-    /// Everything these backends would hand to their replacements, folded into
-    /// one map.
-    ///
-    /// Folded across *all* of them rather than matched backend to backend,
-    /// because the keys are resources and [`signer_paths`] already refuses two
-    /// live backends over one path — so a rebuilt backend finds its own state by
-    /// naming its own files, and no ownership analysis is needed here.
-    #[must_use]
-    pub fn carried(&self) -> CarriedState {
-        let mut carried = CarriedState::new();
-        for backend in self.by_identity.values() {
-            carried.absorb(backend.carried_state());
-        }
-        carried
-    }
 }
 
 /// Builds one backend per profile, **sharing** the instance between profiles
 /// whose signer configuration is identical, and **reusing** the instance the
 /// previous generation built for a configuration that has not moved.
 ///
-/// Sharing is not an optimization, it is a correctness requirement. Two
-/// `LocalCa` instances over the same files each keep their own in-memory
-/// revocation ledger and rewrite the CRL from it, so the second one to revoke
-/// silently drops the first one's entries. Two `RelaySigner`s over the same
-/// account key would likewise each register a job handler for one kind, which
-/// the registry refuses outright. Hence also
-/// the check below: identical configuration shares one instance, but *different*
-/// configuration touching the same file is refused outright rather than
+/// Sharing is cheaper than two instances, and the check below keeps it honest:
+/// identical configuration shares one instance, but *different* configuration
+/// touching the same file — one CA key under two leaf policies, one upstream
+/// account under two poll budgets — is refused outright rather than
 /// half-working.
 ///
 /// Reuse is the same requirement in the time dimension, and `previous` is what
 /// makes a reload able to touch this at all. Three outcomes per distinct
 /// configuration:
 ///
-/// 1. **Already built** — the very same `Arc` comes back. Nothing is adopted
-///    because nothing is constructed; this is the ordinary case, since most
-///    reloads touch `[filter]` or `[notify]` and leave every signer alone.
-/// 2. **New** — built, and handed everything the outgoing generation offered
-///    ([`SignerSet::carried`]). This covers both a profile mounted for the first
-///    time and a live profile whose `[signer]` an operator edited.
+/// 1. **Already built** — the very same `Arc` comes back, and nothing is
+///    constructed; this is the ordinary case, since most reloads touch
+///    `[filter]` or `[notify]` and leave every signer alone.
+/// 2. **New** — built. This covers both a profile mounted for the first time
+///    and a live profile whose `[signer]` an operator edited; the rebuilt
+///    backend finds its state where the outgoing one left it, in the database.
 /// 3. **Gone** — no longer named by any profile, so it is simply absent from the
 ///    result and dropped once the caller publishes it.
 ///
@@ -581,12 +485,6 @@ pub fn build_backends(
         }
     }
 
-    // Gathered once, before anything is built: a backend rebuilt over the same
-    // files must find the live ledger, and the outgoing instances are still
-    // holding it at this point — which is the whole reason the handover is a
-    // shared `Arc` and not a copy.
-    let carried = previous.carried();
-
     let mut set = SignerSet::default();
     for profile in profiles {
         let key = key_of(&profile.sections.signer);
@@ -605,7 +503,7 @@ pub fn build_backends(
                 backend
             }
             (None, None) => {
-                let backend = from_config(&profile.sections.signer, parts, &carried)
+                let backend = from_config(&profile.sections.signer, parts)
                     .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
                 set.by_identity.insert(key, backend.clone());
                 backend
@@ -737,12 +635,12 @@ mod tests {
     /// A configuration that *did* move is rebuilt — and the new instance shares
     /// the old one's revocation ledger.
     ///
-    /// The whole point of [`CarriedState`]. Proven through the CRL rather than
-    /// by inspecting the ledger: a revocation recorded on the outgoing backend
-    /// is visible in the incoming one's CRL, which is what an operator would
-    /// notice if it were not.
+    /// A backend rebuilt by a reload serves what the outgoing one revoked.
+    /// Proven through the CRL rather than by inspecting the table: a
+    /// revocation recorded on the outgoing backend is visible in the incoming
+    /// one's CRL, which is what an operator would notice if it were not.
     #[tokio::test]
-    async fn an_edited_configuration_is_rebuilt_over_the_running_ledger() {
+    async fn an_edited_configuration_is_rebuilt_over_the_same_revocations() {
         let (cfg, _dir) = config("local_ca");
         let parts = parts().await;
         let running =
@@ -784,11 +682,12 @@ mod tests {
         assert_eq!(
             incoming.crl_der().await.expect("a local CA has a CRL"),
             before,
-            "the rebuilt CA must serve the same CRL, ledger and all",
+            "the rebuilt CA must serve the same CRL, revocations and all",
         );
 
-        // And the sharing is live in both directions, which is what closes the
-        // window between building the replacement and publishing it.
+        // And a revocation landing on the outgoing instance after the
+        // replacement was built — the window between building and publishing
+        // it — still reaches the replacement.
         let second = params.serialize_request(&key_pair).unwrap();
         let chain = match outgoing
             .issue(
@@ -809,7 +708,7 @@ mod tests {
             incoming.crl_der().await.unwrap(),
             before,
             "a revocation landing on the outgoing instance mid-reload must reach \
-             the incoming one — that is the case reading the sidecar back cannot cover",
+             the incoming one",
         );
     }
 
@@ -885,10 +784,10 @@ mod tests {
         );
     }
 
-    /// A rebuild over *different* files starts from those files, never from the
-    /// state describing the old ones.
+    /// A rebuild over *different* files is a different CA, and serves none of
+    /// the old one's revocations.
     ///
-    /// The safety half of keying [`CarriedState`] on a resource: an operator
+    /// The safety half of keying revocation state on the CA's key: an operator
     /// repointing a profile at a second CA must get that CA's revocation
     /// history, not the first one's.
     #[tokio::test]
@@ -924,7 +823,7 @@ mod tests {
         assert_ne!(
             reloaded.get("le").unwrap().crl_der().await.unwrap(),
             outgoing.crl_der().await.unwrap(),
-            "a different `crl_path` is a different CA and starts from its own sidecar",
+            "a different CA key is a different issuer with its own revocations",
         );
     }
 
@@ -1003,8 +902,7 @@ mod tests {
     #[tokio::test]
     async fn builds_the_local_ca_backend_and_it_can_issue() {
         let (cfg, _dir) = config("local_ca");
-        let signer = from_config(&cfg, &parts().await, &CarriedState::new())
-            .expect("local_ca is a known backend");
+        let signer = from_config(&cfg, &parts().await).expect("local_ca is a known backend");
 
         // Reached through the trait object, which is how handlers see it.
         let key_pair = rcgen::KeyPair::generate().unwrap();
@@ -1050,8 +948,7 @@ mod tests {
             },
             ..SignerConfig::default()
         };
-        let signer = from_config(&cfg, &parts().await, &CarriedState::new())
-            .expect("custom is a known backend");
+        let signer = from_config(&cfg, &parts().await).expect("custom is a known backend");
 
         let outcome = signer
             .issue(
@@ -1071,7 +968,7 @@ mod tests {
     #[tokio::test]
     async fn the_local_ca_backend_has_no_renewal_info_opinion() {
         let (cfg, _dir) = config("local_ca");
-        let signer = from_config(&cfg, &parts().await, &CarriedState::new()).unwrap();
+        let signer = from_config(&cfg, &parts().await).unwrap();
         assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
     }
 
@@ -1081,7 +978,7 @@ mod tests {
     async fn an_unknown_backend_is_a_startup_error() {
         let (cfg, _dir) = config("hashicorp-vault");
         // `Arc<dyn SignerBackend>` is not `Debug`, so `unwrap_err` is unavailable.
-        let error = match from_config(&cfg, &parts().await, &CarriedState::new()) {
+        let error = match from_config(&cfg, &parts().await) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown backend must not build"),
         };
@@ -1099,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn the_old_acme_proxy_backend_name_is_refused_by_its_new_one() {
         let (cfg, _dir) = config("acme_proxy");
-        let error = match from_config(&cfg, &parts().await, &CarriedState::new()) {
+        let error = match from_config(&cfg, &parts().await) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("the old backend name must not build"),
         };

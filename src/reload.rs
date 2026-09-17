@@ -44,16 +44,15 @@
 //!   concurrency), which made them the worst possible thing to charge a restart
 //!   for. See [`crate::jobs::runner`].
 //! - **The profile set, each profile's `[signer]`, and `[dns]`/`[proxy]`** — the
-//!   last four and the hardest, because a signer backend really does own state
-//!   with no durable home: a `LocalCa` rebuilds its whole CRL from an in-memory
-//!   ledger, and a relay's `http-01` token store would come back empty under an
-//!   upstream fetch already in flight. [`crate::signer::CarriedState`] is the
-//!   seam. A backend whose configuration did not move is now **reused verbatim**
-//!   rather than rebuilt, and one whose configuration did move is rebuilt
-//!   holding the *same* ledger and the *same* token store — so a revocation
-//!   landing mid-reload is not lost and a challenge fetch in flight is still
-//!   answered. Mounting and unmounting an endpoint fell out of it for free, that
-//!   having been the whole of what made the profile set unmovable, and
+//!   last four and the hardest, because a signer backend used to own state with
+//!   no durable home: a `LocalCa`'s revocation ledger and a relay's `http-01`
+//!   token store. Both now live in the database, which the outgoing and the
+//!   incoming backend share, so a backend whose configuration moved is simply
+//!   rebuilt — a revocation landing mid-reload is in the table the new instance
+//!   reads, and a challenge fetch in flight is answered from the same rows. A
+//!   backend whose configuration did not move is **reused verbatim** rather
+//!   than rebuilt. Mounting and unmounting an endpoint fell out of it for free,
+//!   that having been the whole of what made the profile set unmovable, and
 //!   `[dns]`/`[proxy]` fell out too: they were frozen only because the signers
 //!   cached them at construction, which is now a reason to *rebuild* a signer
 //!   (they are part of its identity key) rather than to refuse the edit.
@@ -114,14 +113,14 @@ pub struct Applied<'a> {
 ///   pacing at spawn ([`crate::jobs::runner`]).
 /// - **`profiles`, `profiles.*.signer`, `dns.resolver` and `proxy`** — the last
 ///   four, and the ones this table existed for. They were frozen *by ownership*:
-///   a signer backend holds in-memory state with no durable home, so two
+///   a signer backend held in-memory state with no durable home, so two
 ///   generations over one set of files would disagree, and `[dns]`/`[proxy]`
 ///   followed because the signers were the one outbound client never rebuilt.
-///   [`crate::signer::CarriedState`] is the seam that ended it — a backend whose
+///   What ended it was that state moving into the database — a backend whose
 ///   configuration did not move is reused verbatim, and one whose configuration
-///   did is rebuilt over the *live* ledger and token store rather than over an
-///   empty pair. Mounting and unmounting an endpoint fell out of the same
-///   change, since building or dropping a backend was the whole of what made the
+///   did is rebuilt over the same revocations and tokens the outgoing one
+///   wrote. Mounting and unmounting an endpoint fell out of the same change,
+///   since building or dropping a backend was the whole of what made the
 ///   profile set unmovable.
 ///
 /// The `[signer]` section is also why this table used to render two of its
@@ -504,14 +503,13 @@ mod frozen_tests {
     /// Beside the freeze rather than only in `tests/reload.rs`, for
     /// `every_listener_key_is_reloadable`'s reason and more sharply: the table is
     /// consulted **first**, so any of these left in it would make the whole
-    /// carried-state path below unreachable — the refusal lands before a single
-    /// backend is built, and the seam that exists to make this safe would never
-    /// run.
+    /// rebuild path unreachable — the refusal lands before a single backend is
+    /// built.
     ///
-    /// What makes each safe is `crate::signer::CarriedState` and the reuse pass
-    /// in `signer::build_backends`; what proves it is that module's own suite,
-    /// which drives a real ledger across a rebuild. This one only proves the
-    /// refusal is gone.
+    /// What makes each safe is the reuse pass in `signer::build_backends` and
+    /// the backends' state living in the database; what proves it is that
+    /// module's own suite, which drives a real revocation across a rebuild.
+    /// This one only proves the refusal is gone.
     #[test]
     fn the_profile_set_its_signers_and_the_egress_all_reload() {
         // A profile mounted, and a profile renamed at the same count.

@@ -1018,12 +1018,12 @@ async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
 /// A profile's `[signer]` edited under a running server, with the CRL proving
 /// the rebuilt CA kept the revocation the old one recorded.
 ///
-/// This is the case the freeze existed for. `LocalCa` rebuilds its whole CRL
-/// from an in-memory ledger, so the fear was that a second instance over one
-/// `crl_path` would drop the first's entries. `CarriedState` hands the ledger
-/// over instead — and the CRL is where that either worked or did not, since a
-/// relying party fetching `/crl` is what a dropped entry would silently
-/// un-revoke.
+/// This is the case the freeze existed for. `LocalCa` used to rebuild its whole
+/// CRL from an in-memory ledger, so the fear was that a second instance over
+/// one `crl_path` would drop the first's entries. Both instances now read the
+/// same revocations from the database — and the CRL is where that either worked
+/// or did not, since a relying party fetching `/crl` is what a dropped entry
+/// would silently un-revoke.
 ///
 /// Driven through the real ACME ladder rather than the signer directly: the unit
 /// suites already prove the handover, and what only this can show is that the
