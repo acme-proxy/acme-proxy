@@ -629,6 +629,15 @@ async fn answer_dns01(
             RelayFailure::Retryable(format!("publishing {fqdn} failed: {error}"))
         })?;
 
+        // Give the record a chance to actually reach the upstream's own
+        // resolvers before asking it to look — see
+        // `Dns01Config::propagation_wait_seconds`. A provider's API answering
+        // success is not the same as every validating resolver already
+        // seeing it.
+        if !inner.poll.dns01_propagation_wait.is_zero() {
+            tokio::time::sleep(inner.poll.dns01_propagation_wait).await;
+        }
+
         let triggered = trigger_and_await(inner, &challenge.url, authz_url).await;
 
         // Cleanup is best-effort and happens whether or not validation passed:
@@ -819,8 +828,18 @@ async fn trigger_and_await(
             "invalid" => {
                 // The CA looked and said no. Permanent: the client's own record
                 // or reachability is what would have to change, not the moment.
+                // Naming *why* — the upstream's own problem document off the
+                // challenge it rejected, when it sent one — turns "invalid"
+                // into something an operator can act on without a packet
+                // capture.
+                let detail = authz
+                    .challenges
+                    .iter()
+                    .find_map(|challenge| challenge.error.as_ref())
+                    .map(|error| format!(": {error}"))
+                    .unwrap_or_default();
                 return Err(RelayFailure::Permanent(format!(
-                    "upstream rejected the challenge for {}",
+                    "upstream rejected the challenge for {}{detail}",
                     authz.identifier.value
                 )));
             }

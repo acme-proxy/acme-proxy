@@ -66,14 +66,15 @@ implementation for at all. Nothing falls back: if the upstream authorization
 does not offer the type the strategy names, the relay says so and stops, rather
 than trying a type it could not finish.
 
-### `dns01` (RFC 2136 TSIG)
+### `dns01` (RFC 2136 TSIG, or deSEC.io)
 This is the strategy that can prove a wildcard. The proxy intercepts internal
 HTTP-01 or DNS-01 challenges, but to satisfy the external CA, the proxy solves
-the external DNS-01 challenge itself. It does this using an `rfc2136` provider
-powered by `hickory-proto`. It securely authenticates with the DNS server using
-TSIG (Transaction Signature) to publish the TXT record. **Note:** The TXT record
-uses the thumbprint of the proxy's upstream account key, *not* the internal
-client's key.
+the external DNS-01 challenge itself, through one of two providers
+(`signer.relay.dns01.provider`): `rfc2136`, powered by `hickory-proto`, which
+authenticates with the DNS server using TSIG (Transaction Signature) to
+publish the TXT record; or `desec`, which publishes it through deSEC.io's REST
+API instead. **Note:** The TXT record uses the thumbprint of the proxy's
+upstream account key, *not* the internal client's key.
 
 ### `http01`
 The proxy answers the upstream's `http-01` challenge by serving the key
@@ -254,12 +255,21 @@ Only consulted when `challenge_strategy = "dns01"`.
 
 **`provider`** (`String`) — *Default: `"rfc2136"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER`*
 
-DNS provider used to publish the upstream TXT record. `rfc2136` is currently the
-only implementation.
+DNS provider used to publish the upstream TXT record: `rfc2136` or `desec`.
+
+**`propagation_wait_seconds`** (`u64`) — *Default: `10` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION_WAIT_SECONDS`*
+
+How long to wait, after the provider's API answers success, before telling
+the upstream to validate the record. A provider accepting a write is not the
+same as every resolver the upstream might query already seeing it — this
+matters most for `desec`, whose enforced minimum TTL (`3600` seconds) means a
+validation triggered immediately can race the record and fail with "no TXT
+record found" even though the write already succeeded. `0` restores the old
+no-wait behaviour, for a provider/nameserver known to propagate instantly.
 
 ### `[signer.relay.dns01.rfc2136]`
 
-All default to `""` and are required once the `dns01` strategy is selected.
+All default to `""` and are required once `provider = "rfc2136"`.
 
 **`server`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER`*
 `host:port` of the nameserver accepting the dynamic update, e.g. `10.0.0.53:53`.
@@ -288,7 +298,42 @@ Updates are sent over UDP and retried over TCP when the response is truncated �
 a TSIG-signed update readily exceeds 512 bytes, so the TCP path is a normal
 occurrence rather than an edge case.
 
-### `[signer.relay.eab]`
+### `[signer.relay.dns01.desec]`
+
+Read only when `provider = "desec"`. Publishes/retracts the `_acme-challenge`
+TXT record through [deSEC.io](https://desec.io)'s REST API rather than RFC 2136
+dynamic update — useful when the zone is hosted at deSEC rather than on a
+nameserver you run yourself.
+
+**`domain`** — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__DOMAIN`*
+The deSEC-managed zone, e.g. `example.dedyn.io` (no trailing dot — the
+`rfc2136.zone` equivalent). Required.
+
+**`token`** — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__TOKEN`*
+The deSEC API token, sent as `Authorization: Token <token>`. Required, and a
+secret — prefer the environment variable to a file on disk, the same rule as
+`tsig_key_secret`.
+
+**`api_url`** — *Default: `"https://desec.io/api/v1"` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__API_URL`*
+deSEC's API base URL. Overridable only for testing or a compatible
+self-hosted deployment.
+
+deSEC's rrset `PUT` **replaces** the whole `records` array rather than
+appending like RFC 2136's dynamic update, so publishing or retracting one TXT
+value reads the current rrset first (a `404` reads as "none yet"), splices the
+value in or out, and writes the merged list back — an empty result clears the
+rrset. **A name deSEC has never seen has no rrset to `PUT` to yet** — its
+per-rrset endpoint only ever replaces an existing one and 404s on a brand-new
+name, so publishing falls back to `POST /domains/{domain}/rrsets/`, which
+creates it, whenever the specific-rrset `PUT` 404s on a non-empty write. This
+opens a narrow race between two concurrent updates to the same name; it is
+accepted rather than locked against, the same way retracting a record is
+already best-effort. The TTL sent is a fixed `3600` seconds (deSEC's
+practical floor for ordinary accounts) and is not configurable, matching
+`rfc2136`'s fixed TTL — which is also why `propagation_wait_seconds`'s
+default above is not `0` for this provider.
+
+
 
 An upstream External Account Binding credential supplied in configuration
 rather than through `acme-proxy upstream register`. Both keys are empty by

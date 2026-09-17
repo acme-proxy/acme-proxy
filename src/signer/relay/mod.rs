@@ -50,6 +50,7 @@ use crate::sqlite::upstream_order::UpstreamOrder;
 
 pub mod account;
 pub mod client;
+pub mod desec;
 pub mod dns01;
 pub mod eab;
 pub mod flow;
@@ -100,6 +101,8 @@ fn token_store_key(account_key_path: &str) -> String {
 struct PollConfig {
     interval: Duration,
     timeout: Duration,
+    /// See [`crate::config::Dns01Config::propagation_wait_seconds`].
+    dns01_propagation_wait: Duration,
 }
 
 /// The shared guts, behind one `Arc`.
@@ -203,6 +206,7 @@ impl RelaySigner {
         let poll = PollConfig {
             interval: Duration::from_millis(cfg.poll_interval_ms),
             timeout: Duration::from_secs(cfg.poll_timeout_secs),
+            dns01_propagation_wait: Duration::from_secs(cfg.dns01.propagation_wait_seconds),
         };
 
         // Construction is synchronous (see `signer::from_config`) but the
@@ -234,8 +238,18 @@ impl RelaySigner {
                                 )),
                                 None,
                             ),
+                            "desec" => (
+                                ChallengeStrategy::Dns01(Arc::new(
+                                    desec::DesecUpdater::from_config(
+                                        &cfg.dns01.desec,
+                                        outbound.clone(),
+                                    )?,
+                                )),
+                                None,
+                            ),
                             other => anyhow::bail!(
-                                "unknown signer.relay.dns01.provider: {other} (supported: rfc2136)"
+                                "unknown signer.relay.dns01.provider: {other} (supported: \
+                                 rfc2136, desec)"
                             ),
                         },
                         "http01" => {

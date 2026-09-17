@@ -99,6 +99,11 @@ pub(super) struct UpstreamChallengeView {
     /// not become a confusing "offers no dns-01 challenge".
     #[serde(default)]
     pub(super) token: Option<String>,
+    /// The upstream's own problem document (§7.1.4) for a challenge it
+    /// marked `invalid` — carried so a rejected challenge names *why*
+    /// (e.g. an unexpected DNS answer, a timeout) instead of just "invalid".
+    #[serde(default)]
+    pub(super) error: Option<Value>,
 }
 
 #[cfg(test)]

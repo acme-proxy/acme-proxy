@@ -150,14 +150,30 @@ pub struct RelayEabConfig {
 #[serde(default)]
 pub struct Dns01Config {
     pub provider: String,
+    /// Seconds to wait after publishing the TXT record and before telling
+    /// the upstream to validate it.
+    ///
+    /// Publishing through a provider's API answering `200`/`204` is not the
+    /// same as every resolver the upstream might query being able to see it
+    /// yet — `rfc2136`'s own dynamic update usually reaches an authoritative
+    /// server fast enough that this was never missed, but `desec`'s minimum
+    /// enforced TTL (see [`super::super::desec`]) means a validation
+    /// triggered with no wait at all can race a record that has not
+    /// propagated to the upstream's resolvers, and fail with "no TXT record
+    /// found" even though the write already succeeded. Default `10`; `0`
+    /// restores the old no-wait behaviour.
+    pub propagation_wait_seconds: u64,
     pub rfc2136: Rfc2136Config,
+    pub desec: DesecConfig,
 }
 
 impl Default for Dns01Config {
     fn default() -> Self {
         Self {
             provider: "rfc2136".to_string(),
+            propagation_wait_seconds: 10,
             rfc2136: Rfc2136Config::default(),
+            desec: DesecConfig::default(),
         }
     }
 }
@@ -176,6 +192,43 @@ pub struct Rfc2136Config {
     pub tsig_key_secret: String,
     pub tsig_algorithm: String,
 }
+/// [deSEC.io](https://desec.io) REST API, as an alternative to `rfc2136`.
+///
+/// Unlike `rfc2136`'s dynamic-update protocol, deSEC's rrset endpoint
+/// **replaces** the whole record set for a name rather than appending to it —
+/// see [`crate::signer::relay::desec`] for what that costs the implementation.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DesecConfig {
+    /// The deSEC-managed zone the challenge record is published under, e.g.
+    /// `example.dedyn.io` — the `rfc2136.zone` equivalent, without the
+    /// trailing dot deSEC's own naming doesn't use.
+    pub domain: String,
+    /// SENSITIVE — the deSEC API authentication token, sent as
+    /// `Authorization: Token <token>`. Prefer the environment variable, like
+    /// every other secret in this file.
+    pub token: String,
+    /// Base URL of the deSEC API. Defaults to the public service; overridable
+    /// only so a test (or an API-compatible self-hosted deployment) can point
+    /// elsewhere.
+    pub api_url: String,
+}
+
+impl DesecConfig {
+    /// The public deSEC API's base URL.
+    pub const DEFAULT_API_URL: &'static str = "https://desec.io/api/v1";
+}
+
+impl Default for DesecConfig {
+    fn default() -> Self {
+        Self {
+            domain: String::new(),
+            token: String::new(),
+            api_url: Self::DEFAULT_API_URL.to_string(),
+        }
+    }
+}
+
 /// Configuration for the persistent local-CA signer backend.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]

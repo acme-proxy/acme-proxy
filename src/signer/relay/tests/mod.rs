@@ -189,6 +189,12 @@ fn config(upstream: &Upstream, dir: &TempDir) -> RelayConfig {
         // interval only governs how long a test waits for nothing.
         poll_interval_ms: 5,
         poll_timeout_secs: 5,
+        dns01: crate::config::Dns01Config {
+            // No real propagation to wait for against a fake upstream, and
+            // the default would otherwise outlast poll_timeout_secs above.
+            propagation_wait_seconds: 0,
+            ..crate::config::Dns01Config::default()
+        },
         ..RelayConfig::default()
     }
 }

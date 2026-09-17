@@ -47,6 +47,17 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`signer.relay.dns01.provider = "desec"`** — a second DNS-01 provider for
+  the relay signer backend, publishing/retracting the `_acme-challenge` TXT
+  record through [deSEC.io](https://desec.io)'s REST API instead of RFC 2136
+  dynamic update. Configured under `[signer.relay.dns01.desec]`
+  (`domain`/`token`/`api_url`); see `config.toml.example`.
+- **`signer.relay.dns01.propagation_wait_seconds`** — how long to wait after
+  publishing the TXT record before telling the upstream to validate it.
+  Default `10`; a provider's write API answering success is not the same as
+  every resolver the upstream might query already seeing it, and validating
+  immediately can fail with "no TXT record found" even though the write
+  already succeeded. `0` restores the old no-wait behaviour.
 - **An operator sets their own notification address** from the panel's *Your
   account* page or `POST /api/account/contact`, re-proving their password. The
   previous address is told.

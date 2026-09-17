@@ -46,6 +46,7 @@
 #     [signer.relay.eab]                upstream EAB bootstrap credential
 #     [signer.relay.dns01]              solving the upstream's DNS-01
 #     [signer.relay.dns01.rfc2136]      the TSIG-authenticated DNS update
+#     [signer.relay.dns01.desec]        the deSEC.io REST API
 #     [signer.custom]                   shelling out to a script
 #   [challenge]                [per-profile]  how control of a name is proven
 #     [challenge.http_01]               (there is no [challenge.dns_01])
@@ -543,11 +544,20 @@ kid = ""                            # ACME_PROXY_SIGNER__RELAY__EAB__KID
 hmac_key = ""                       # ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY
 
 [signer.relay.dns01]
-# Only read when challenge_strategy = "dns01". The only provider is "rfc2136",
-# which works with any authoritative server implementing RFC 2136 dynamic
-# update (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than
-# tying the server to one cloud vendor's API.
+# Only read when challenge_strategy = "dns01". Two providers: "rfc2136", which
+# works with any authoritative server implementing RFC 2136 dynamic update
+# (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than tying
+# the server to one cloud vendor's API, and "desec", which speaks deSEC.io's
+# REST API directly.
 provider = "rfc2136"                # ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER
+# Seconds to wait after publishing the TXT record and before asking the
+# upstream to validate it — a provider's write API answering success is not
+# the same as every resolver the upstream might query already seeing it.
+# Matters most for "desec", whose enforced minimum TTL (3600s) means a
+# validation triggered with no wait can race the record and fail with "no TXT
+# record found" even though the write already succeeded. 0 restores the old
+# no-wait behaviour.
+propagation_wait_seconds = 10       # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATION_WAIT_SECONDS
 
 [signer.relay.dns01.rfc2136]
 # host:port of the authoritative server that accepts the update.
@@ -563,6 +573,20 @@ tsig_key_secret = ""                # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__
 # hmac-sha256 (default), hmac-sha384 or hmac-sha512. HMAC-MD5 is deliberately
 # not offered.
 tsig_algorithm = "hmac-sha256"      # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM
+
+[signer.relay.dns01.desec]
+# Only read when signer.relay.dns01.provider = "desec". Publishes/retracts the
+# _acme-challenge TXT record through deSEC.io's REST API instead of RFC 2136.
+#
+# The deSEC-managed zone, e.g. "example.dedyn.io" (no trailing dot).
+domain = ""                         # ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__DOMAIN
+# SENSITIVE — the deSEC API token, sent as "Authorization: Token <token>".
+# Prefer the environment variable to a file on disk, like every other secret
+# in this file.
+token = ""                          # ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__TOKEN
+# Base URL of the deSEC API. Only overridden by a test or an API-compatible
+# self-hosted deployment.
+api_url = "https://desec.io/api/v1" # ACME_PROXY_SIGNER__RELAY__DNS01__DESEC__API_URL
 
 [signer.custom]
 # Only read when backend = "custom" (above). Delegates issuance and
