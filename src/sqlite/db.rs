@@ -283,6 +283,23 @@ mod tests {
         }
     }
 
+    /// The width `revocations.issuer` and `crls.issuer` declare is the length of
+    /// [`crate::cert::issuer_id`], the `declared_token_widths_match_random_token`
+    /// rule applied to the other derived value this schema stores.
+    #[tokio::test]
+    async fn declared_issuer_widths_match_the_issuer_id() {
+        let database = Database::connect_in_memory().await.unwrap();
+        let expected = format!("VARCHAR({})", crate::cert::issuer_id(b"any key").len());
+
+        for (table, column) in [("revocations", "issuer"), ("crls", "issuer")] {
+            assert_eq!(
+                declared_type(&database, table, column).await,
+                expected,
+                "{table}.{column} declares a width the issuer id does not have"
+            );
+        }
+    }
+
     /// The declared type of every column holding a row id.
     ///
     /// The [`random_token`] twin above, for the other family of values the

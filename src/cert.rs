@@ -21,6 +21,19 @@ pub fn is_valid_revocation_reason(reason: u32) -> bool {
     ALLOWED_REVOCATION_REASONS.contains(&reason)
 }
 
+/// The identity a local CA's revocation state is stored under: lowercase hex
+/// SHA-256 of the CA certificate's `SubjectPublicKeyInfo` DER.
+///
+/// The key rather than a path or a profile, because the key is what signs the
+/// CRL: two profiles over one CA are one issuer, and a CA whose files move is
+/// still the same one. The `revocations.issuer`/`crls.issuer` columns declare
+/// exactly this width (`VARCHAR(64)`), pinned by a test beside the migration
+/// runner.
+#[must_use]
+pub fn issuer_id(spki_der: &[u8]) -> String {
+    hex::encode(ring::digest::digest(&ring::digest::SHA256, spki_der).as_ref())
+}
+
 /// Extracts a single certificate's serial (hex-encoded, no separators) and
 /// the DER encoding of its `SubjectPublicKeyInfo` from raw X.509 DER bytes.
 ///
