@@ -36,9 +36,9 @@ use base64::prelude::*;
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 
+use crate::acme::order::IssuanceError;
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
-use crate::notify::{CertificateIssuedData, NotifyEvent};
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::Order;
@@ -910,41 +910,22 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
         }
     };
 
-    let leaf = match crate::cert::leaf_der_from_chain(&chain) {
-        Ok(leaf) => leaf,
-        Err(error) => {
+    let serial = match crate::acme::order::record_issuance(&mut order, chain, &inner.database).await
+    {
+        Ok(serial) => serial,
+        Err(IssuanceError::Chain(error)) => {
             return JobOutcome::Failed(format!("upstream chain unparsable: {error}"));
         }
-    };
-    let (serial, pubkey) = match crate::cert::cert_serial_and_spki(&leaf) {
-        Ok(parts) => parts,
-        Err(error) => {
+        Err(IssuanceError::Leaf(error)) => {
             return JobOutcome::Failed(format!("upstream leaf unparsable: {error}"));
         }
+        Err(IssuanceError::Persist(error)) => {
+            error!(event = "upstream_relay_finalize_failed", outcome = "failure", order_id = %order_id, error = %error);
+            // Retryable: the certificate exists upstream and the whole relay is
+            // re-entrant, so the next attempt collects it again and writes it.
+            return JobOutcome::Retry(format!("recording the certificate failed: {error}"));
+        }
     };
-
-    // Best-effort, for the reason `handlers::order` states at its own call
-    // site: an upstream leaf this server cannot read the validity of is still
-    // a certificate the client is owed.
-    let cert_not_after = crate::cert::cert_validity(&leaf)
-        .ok()
-        .map(|(_, not_after)| not_after);
-
-    if let Err(error) = order
-        .finalize(
-            chain,
-            serial.clone(),
-            pubkey,
-            cert_not_after,
-            &inner.database,
-        )
-        .await
-    {
-        error!(event = "upstream_relay_finalize_failed", outcome = "failure", order_id = %order_id, error = %error);
-        // Retryable: the certificate exists upstream and the whole relay is
-        // re-entrant, so the next attempt collects it again and writes it.
-        return JobOutcome::Retry(format!("recording the certificate failed: {error}"));
-    }
     info!(event = "upstream_relay_succeeded", outcome = "success", order_id = %order_id, cert_serial = %serial);
 
     // The audit row for this issuance, written here and nowhere else:
@@ -953,56 +934,32 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     // one that request stored on the mapping row — the relay has no request of
     // its own, and a row saying "issued, from nowhere, by nobody" is the shape
     // this trail exists to avoid.
-    let record = relay_record(crate::audit::AuditEvent::CertificateIssued, &order, inner)
-        .await
-        .with_serial(serial.clone());
-    inner.audit.record(record).await;
-
+    //
     // The synchronous signer backends (`local_ca`, `custom`) notify from
-    // `post_finalize`'s own success tail, which has a `Profile` in scope. This
-    // backend's completion happens here instead, long after that handler
-    // returned — so it looks up the right profile's dispatcher by
-    // `Order.profile` rather than being handed one directly. `client_ip` is
-    // `None`: no request is in scope on this path at all.
-    if let Some(dispatcher) = inner.notifiers.get(&order.profile) {
-        dispatcher
-            .dispatch(NotifyEvent::CertificateIssued(CertificateIssuedData {
-                profile: order.profile.clone(),
-                order_id: order_id.to_string(),
-                account_id: order.account_id.clone().to_string(),
-                cert_serial: serial.clone(),
-                identifiers: order.identifiers.iter().map(|i| i.value.clone()).collect(),
-                client_ip: None,
-            }))
-            .await;
-    }
+    // `finalize`, which has a `Profile` in scope. This backend's completion
+    // happens here instead, long after that request returned — so it looks up
+    // the right profile's dispatcher by `Order.profile` rather than being
+    // handed one directly. `client_ip` is `None`: no request is in scope on
+    // this path at all.
+    let (actor, client) = relay_actor_and_client(&order, &inner.database).await;
+    let dispatcher = inner.notifiers.get(&order.profile);
+    crate::acme::order::announce_issuance(
+        &order,
+        &serial,
+        actor,
+        client,
+        None,
+        &inner.audit,
+        dispatcher.as_deref(),
+    )
+    .await;
 
     JobOutcome::Done
 }
 
-/// The audit row for a relayed issuance, carrying the finalize request's own
-/// context back out of the `upstream_orders` row it was parked in.
-///
-/// The actor is the **account that asked**, not [`crate::audit::Actor::system`]:
-/// somebody placed and finalized this order, and attributing it to the server
-/// would lose the one identity the row is for. `system` is what is left when
-/// the mapping row is gone or predates the context columns — a relay resumed
-/// across a restart from an older database — and it means exactly "this server
-/// completed work whose requester it can no longer name".
-async fn relay_record(
-    event: crate::audit::AuditEvent,
-    order: &Order,
-    inner: &Inner,
-) -> crate::audit::AuditRecord {
-    let (actor, client) = relay_actor_and_client(order, &inner.database).await;
-    crate::audit::AuditRecord::new(event, &order.profile, actor)
-        .with_order(order)
-        .with_client(client)
-}
-
 /// Who a settle-time relay audit row names, and from where: the account that
 /// asked plus the finalize request's own address (off the mapping row), or
-/// `system` with no address when there is no mapping. Shared by [`relay_record`]
+/// `system` with no address when there is no mapping. Shared by [`settle`]
 /// and [`RelayJob::abandon`].
 async fn relay_actor_and_client(
     order: &Order,
@@ -1051,21 +1008,18 @@ pub(crate) async fn abandon_relayed_order(
     audit: &crate::audit::Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
-    let record = crate::audit::AuditRecord::new(
-        crate::audit::AuditEvent::CertificateIssueFailed,
-        &order.profile,
-        actor,
-    )
-    .with_order(order)
-    .with_client(client)
-    .with_reason("serverInternal")
-    .with_detail(reason);
-    audit.record(record).await;
-
     // The client sees a generic problem document; the real reason is
-    // operator-only, on the mapping row.
-    let problem = Problem::server_internal("Upstream certificate issuance failed");
-    order.mark_invalid(problem.to_value(), database).await?;
+    // operator-only, on the mapping row and in the audit detail.
+    crate::acme::order::record_issue_failure(
+        order,
+        &Problem::server_internal("Upstream certificate issuance failed"),
+        reason,
+        actor,
+        client,
+        audit,
+        database,
+    )
+    .await?;
     UpstreamOrder::mark_invalid(&order.id.to_string(), reason, database).await?;
     Ok(())
 }

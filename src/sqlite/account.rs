@@ -766,7 +766,7 @@ impl Account {
 /// key winning the race.
 ///
 /// Matched on the offending *columns* rather than on "any unique violation", the
-/// `handlers::order::is_replaces_conflict` treatment: `accounts` also carries a
+/// `acme::order::is_replaces_conflict` treatment: `accounts` also carries a
 /// primary key on `id`, and a UUID collision there is a different event
 /// entirely — one that must not be quietly answered with somebody else's
 /// account.

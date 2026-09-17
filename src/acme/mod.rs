@@ -1,7 +1,9 @@
 //! The ACME domain: what an order, an authorization, a challenge and an account
 //! may do, independent of the HTTP request that asked.
 //!
-//! Nothing in this module imports axum. The resource handlers in
+//! Nothing in this module routes, extracts or renders a response — the one
+//! axum name it touches is `StatusCode`, which comes with `Problem`. The resource
+//! handlers in
 //! [`crate::handlers`] are the HTTP edge — an extractor, a call into this module,
 //! a rendered response — and the operator front ends ([`crate::admin`], the
 //! relay's background settlement) reach the same rules through the same
@@ -15,8 +17,11 @@
 //!   walk from a challenge up to its order.
 //! - [`policy`] — the configured policy applied to a request: the filter's
 //!   identifier stage, and the problem a failed challenge validation maps to.
-//! - [`order`] — [`OrderService`], the order state machine: deactivating an
-//!   authorization, claiming and validating a challenge.
+//! - [`order`] — [`OrderService`], the order state machine: creating an order,
+//!   deactivating an authorization, claiming and validating a challenge,
+//!   finalizing. Plus the issuance bookkeeping the relay shares with finalize
+//!   (`record_issuance`, `announce_issuance`, `record_issue_failure`), since it
+//!   completes an issuance long after the request that started it.
 //!
 //! **Logging:** whoever builds an [`Error`] logs it. The edge only maps it to a
 //! response, so a refusal is one log line however many layers it crossed —
