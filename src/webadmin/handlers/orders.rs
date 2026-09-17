@@ -171,7 +171,7 @@ pub async fn revoke_order(
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),
-        profile.signer.clone(),
+        crate::acme::revoke::Revoker::Backend(profile.signer.as_ref()),
         Some(&profile.notify),
     )
     .await

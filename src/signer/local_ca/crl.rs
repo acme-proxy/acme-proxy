@@ -439,11 +439,50 @@ impl CrlRefresher for CrlStore {
         let half_life = Duration::days(CRL_VALIDITY_DAYS).whole_seconds() / 2;
         let stale = current.is_none_or(|crl| now.unix_timestamp() + half_life >= crl.next_update);
 
-        if expired > 0 || stale {
+        // The third condition is the safety net for a revocation recorded
+        // without this key, whose regeneration job never ran: the daily pass
+        // signs it in rather than leaving it off the CRL until it goes stale.
+        if expired > 0 || stale || !self.lists_every_revocation().await? {
             return self.regenerate(Some(cutoff), None).await;
         }
         self.export().await;
         Ok(0)
+    }
+
+    async fn republish(&self) -> Result<bool, SignerError> {
+        self.ensure_initialized().await?;
+        if self.lists_every_revocation().await? {
+            return Ok(false);
+        }
+        self.regenerate(None, None).await?;
+        Ok(true)
+    }
+}
+
+impl CrlStore {
+    /// Whether this CA's stored CRL lists every revocation recorded for it —
+    /// `false` when a row landed that no signed CRL carries yet. With no stored
+    /// CRL at all, only an empty table counts as listed.
+    async fn lists_every_revocation(&self) -> Result<bool, SignerError> {
+        let mut tx = self
+            .database
+            .transaction()
+            .await
+            .map_err(database_failure)?;
+        let current = StoredCrl::find(&self.issuer_id, &mut *tx)
+            .await
+            .map_err(database_failure)?;
+        let rows = Revocation::list_for_issuer(&self.issuer_id, &mut *tx)
+            .await
+            .map_err(database_failure)?;
+        drop(tx);
+        let Some(current) = current else {
+            return Ok(rows.is_empty());
+        };
+        let listed = listed_serials(&current.der);
+        Ok(rows
+            .iter()
+            .all(|row| listed.contains(&row.serial.to_ascii_lowercase())))
     }
 }
 
@@ -571,6 +610,25 @@ fn lists_serial(der: &[u8], serial: &str) -> bool {
         Err(error) => {
             warn!(event = "local_ca_crl_unparsable", outcome = "failure", error = %error);
             false
+        }
+    }
+}
+
+/// Every serial the CRL `der` lists, lower-case hex — one parse for a whole set,
+/// where [`lists_serial`] is one per question. A CRL that does not parse lists
+/// nothing, for that function's reason.
+fn listed_serials(der: &[u8]) -> std::collections::HashSet<String> {
+    use x509_parser::prelude::FromDer;
+    use x509_parser::revocation_list::CertificateRevocationList;
+
+    match CertificateRevocationList::from_der(der) {
+        Ok((_, crl)) => crl
+            .iter_revoked_certificates()
+            .map(|revoked| hex::encode(revoked.raw_serial()))
+            .collect(),
+        Err(error) => {
+            warn!(event = "local_ca_crl_unparsable", outcome = "failure", error = %error);
+            std::collections::HashSet::new()
         }
     }
 }

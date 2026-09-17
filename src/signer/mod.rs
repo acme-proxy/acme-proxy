@@ -306,6 +306,15 @@ pub trait CrlRefresher: Send + Sync {
     /// sign nothing when there is nothing to do — it runs daily on every CA in
     /// the process.
     async fn refresh(&self) -> Result<u64, SignerError>;
+
+    /// Re-signs the CRL when it does not list every recorded revocation, and
+    /// says whether it did.
+    ///
+    /// What a revocation recorded *without* this CA's key asks for: the row is
+    /// in `revocations`, and the process that holds the key signs it into the
+    /// CRL (`local_ca_crl_regenerate`). A no-op when another writer's CRL has
+    /// already caught up, so a burst of such revocations signs once.
+    async fn republish(&self) -> Result<bool, SignerError>;
 }
 
 /// Why issuance failed, mapped by the handler to the right ACME error:
@@ -353,6 +362,45 @@ pub struct SignerParts {
     /// no-op for every signer — see [`build_backends`].
     pub egress: Arc<crate::server::Egress>,
     pub jobs: crate::jobs::JobQueue,
+}
+
+/// How a revocation reaches a configured backend **without building it**.
+///
+/// The host CLI never constructs a signer: building one loads the CA key,
+/// logs in to a PKCS#11 token or registers with an upstream, none of which a
+/// one-shot command should do beside a running server. This is what it
+/// decides from the configuration alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevocationRoute {
+    /// A local CA: the revocation is a row in `revocations` under this issuer
+    /// id, and whichever process holds the key signs it into the CRL.
+    Ledger { issuer: String },
+    /// A backend that must itself be asked — an upstream CA or an operator
+    /// script — so the work goes to the server's job queue.
+    Delegated,
+}
+
+/// The [`RevocationRoute`] for `cfg`.
+///
+/// For a local CA this reads `cert_path` (public, and present once a server
+/// has started with this configuration) and nothing else.
+pub fn revocation_route(cfg: &SignerConfig) -> anyhow::Result<RevocationRoute> {
+    match cfg.backend.as_str() {
+        "local_ca" => {
+            let path = &cfg.local_ca.cert_path;
+            let ca_pem = std::fs::read_to_string(path).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot read the CA certificate `{path}`: {error} — start `acme-proxy serve` \
+                     with this configuration once, so the CA exists"
+                )
+            })?;
+            Ok(RevocationRoute::Ledger {
+                issuer: local_ca::issuer_id_of(&ca_pem)?,
+            })
+        }
+        "relay" | "custom" => Ok(RevocationRoute::Delegated),
+        other => anyhow::bail!("unknown signer backend `{other}`"),
+    }
 }
 
 /// Builds the configured signer backend.

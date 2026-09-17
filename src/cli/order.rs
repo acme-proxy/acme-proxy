@@ -263,55 +263,70 @@ pub async fn run_order_command(
                     order.profile
                 )));
             };
-            // A throwaway egress: this is a one-shot admin command, not the
-            // long-running server, so there is no shared resolver or proxy
-            // policy to reuse — both come from the same `[dns]`/`[proxy]`
-            // sections `serve` reads.
-            let egress = Arc::new(
-                crate::server::Egress::from_config(config)
-                    .map_err(|error| CliError::failed(format!("configuration error: {error}")))?,
-            );
-            // A queue nothing drains: this command revokes, which every backend
-            // answers inline, so no job is ever enqueued. Handing over a live
-            // queue would be worse than useless — it would let a one-shot CLI
-            // invocation write rows that only the running server can work off.
-            let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
-            // A registry nothing scrapes, for the same reason as the queue
-            // above: this process exits when the command does, and the counters
-            // that matter belong to the server that is serving `/metrics`.
-            let metrics = Arc::new(crate::metrics::Metrics::new(database.clone()));
-            let signer = signer::from_config(
-                &profile.sections.signer,
-                &signer::SignerParts {
-                    database: database.clone(),
-                    notifiers: std::collections::HashMap::new().into(),
-                    metrics,
-                    egress,
-                    jobs,
-                },
-            )
-            .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
+            // Before anything reads the signer's configuration: an order with
+            // nothing to revoke is the operator's answer, whatever state the
+            // CA's files are in. `admin::revoke_order` makes the same check
+            // against the row it re-reads.
+            if order.certificate.is_none() {
+                return Err(CliError::bad_request(format!(
+                    "order {id} has no issued certificate"
+                )));
+            }
             // Queued, not sent: the running server's worker delivers the
             // `certificate_revoked` notification this revocation owes.
             let notifiers = super::offline_notifiers(config, database.clone())?;
+            let notify = notifiers
+                .get(&order.profile)
+                .map(|dispatcher| dispatcher.as_ref());
+            let audit = crate::audit::Auditor::offline(database.clone());
+            // A queue this process never drains: what it enqueues, a running
+            // server's job runner works off.
+            let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+            let route = signer::revocation_route(&profile.sections.signer)
+                .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
             // here, and the audit row says so rather than inventing an address.
-            match admin::revoke_order(
-                &id,
-                reason,
+            let (actor, client) = (
                 crate::audit::Actor::cli(),
                 crate::audit::ClientContext::default(),
-                &crate::audit::Auditor::offline(database.clone()),
-                database,
-                signer,
-                notifiers
-                    .get(&order.profile)
-                    .map(|dispatcher| dispatcher.as_ref()),
-            )
-            .await
+            );
+
+            let outcome = match &route {
+                // A local CA: recorded without its key, signed by the server.
+                signer::RevocationRoute::Ledger { issuer } => {
+                    admin::revoke_order(
+                        &id,
+                        reason,
+                        actor,
+                        client,
+                        &audit,
+                        database.clone(),
+                        crate::acme::revoke::Revoker::Ledger {
+                            issuer,
+                            jobs: &jobs,
+                        },
+                        notify,
+                    )
+                    .await
+                }
+                signer::RevocationRoute::Delegated => {
+                    let signer = delegated_signer(config, profile, &database, &jobs)?;
+                    admin::revoke_order(
+                        &id,
+                        reason,
+                        actor,
+                        client,
+                        &audit,
+                        database.clone(),
+                        crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+                        notify,
+                    )
+                    .await
+                }
+            };
             // A bad `--reason` code is the operator's to fix (exit 3); every
             // other revoke failure is the host's (a signer or database error).
-            .map_err(|error| match error {
+            match outcome.map_err(|error| match error {
                 admin::RevokeError::BadReason(_) => CliError::bad_request(error.to_string()),
                 other => CliError::failed(other.to_string()),
             })? {
@@ -328,11 +343,52 @@ pub async fn run_order_command(
                 }
                 admin::RevokeOutcome::Revoked(order) => {
                     println!("{}", render::render_order_line(&order, palette));
+                    if let signer::RevocationRoute::Ledger { issuer } = &route {
+                        let job = crate::sqlite::job::Job::find_live(
+                            crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+                            issuer,
+                            &database,
+                        )
+                        .await?;
+                        match job {
+                            Some(job) => println!(
+                                "CRL regeneration queued (job {}); a running server signs it.",
+                                job.id
+                            ),
+                            None => println!("CRL regeneration already done."),
+                        }
+                    }
                 }
             }
         }
     }
     Ok(())
+}
+
+/// The backend a delegated revocation still calls inline — until the queue
+/// carries that work too.
+fn delegated_signer(
+    config: &Config,
+    profile: &crate::config::ProfileConfig,
+    database: &Arc<Database>,
+    jobs: &crate::jobs::JobQueue,
+) -> Result<Arc<dyn signer::SignerBackend>, CliError> {
+    let egress = Arc::new(
+        crate::server::Egress::from_config(config)
+            .map_err(|error| CliError::failed(format!("configuration error: {error}")))?,
+    );
+    let metrics = Arc::new(crate::metrics::Metrics::new(database.clone()));
+    signer::from_config(
+        &profile.sections.signer,
+        &signer::SignerParts {
+            database: database.clone(),
+            notifiers: std::collections::HashMap::new().into(),
+            metrics,
+            egress,
+            jobs: jobs.clone(),
+        },
+    )
+    .map_err(|error| CliError::failed(format!("signer error: {error}")))
 }
 
 /// `order list --expiring-in <days>`.
@@ -562,7 +618,13 @@ mod tests {
 
     /// Issues against `config`'s own CA and records the result on `order`, so
     /// the certificate the CLI later revokes is one that CA actually signed.
-    async fn issue_onto(order: &mut Order, config: &Config, database: Arc<Database>) {
+    /// Returns the CA, which the caller initializes (as a server's startup
+    /// does) when it wants a revocation recorded against it.
+    async fn issue_onto(
+        order: &mut Order,
+        config: &Config,
+        database: Arc<Database>,
+    ) -> Arc<dyn SignerBackend> {
         let profile = &config.resolve_profiles().unwrap()[0];
         let resolver = crate::dns::resolver_addr(&config.dns)
             .and_then(crate::challenge::build_resolver)
@@ -596,6 +658,7 @@ mod tests {
             .finalize(chain, serial, pubkey, not_after, &database)
             .await
             .unwrap();
+        signer
     }
 
     #[tokio::test]
@@ -780,15 +843,23 @@ mod tests {
         );
     }
 
-    /// The whole arm end to end: issue, revoke through the CLI, then find the
-    /// second attempt refused because the first one stuck.
+    /// The whole arm end to end: issue, revoke through the CLI — which
+    /// records the revocation without the CA key and queues the CRL — let the
+    /// server's handler sign it, then find the second attempt refused because
+    /// the first one stuck.
     #[tokio::test]
     async fn an_issued_order_revokes_once() {
+        use crate::jobs::JobHandler;
+        use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
+        use crate::sqlite::job::Job;
+
         let dir = temp_dir();
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = config_in(&dir, "default");
         let mut order = seed_order(&database, "default").await;
-        issue_onto(&mut order, &config, database.clone()).await;
+        let ca = issue_onto(&mut order, &config, database.clone()).await;
+        // What a server's first pass does: meet the database, store a CRL.
+        ca.crl_der().await.unwrap();
 
         let mut reader: &[u8] = &[];
         run_order_command(
@@ -805,14 +876,33 @@ mod tests {
         .await
         .expect("a certificate issued by this profile's CA must revoke");
 
-        assert!(
-            Order::find_by_id(order.id.to_string().as_str(), &database)
-                .await
-                .unwrap()
-                .unwrap()
-                .revoked_at
-                .is_some()
-        );
+        let revoked = Order::find_by_id(order.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+
+        // Recorded, not yet signed: the CRL waits for the job.
+        let serial = revoked.cert_serial.clone().unwrap();
+        let lists = |der: &[u8]| {
+            use x509_parser::prelude::FromDer;
+            let (_, crl) =
+                x509_parser::revocation_list::CertificateRevocationList::from_der(der).unwrap();
+            crl.iter_revoked_certificates()
+                .any(|entry| hex::encode(entry.raw_serial()).eq_ignore_ascii_case(&serial))
+        };
+        assert!(!lists(&ca.crl_der().await.unwrap().unwrap()));
+        let refresher = ca.crl_refresher().unwrap();
+        let job = Job::find_live(CRL_REGENERATE_KIND, refresher.issuer(), &database)
+            .await
+            .unwrap()
+            .expect("the revocation queued its CRL");
+        let handler = CrlRegenerateJob::new(vec![refresher]);
+        assert!(matches!(
+            handler.run(&job).await,
+            crate::jobs::JobOutcome::Done
+        ));
+        assert!(lists(&ca.crl_der().await.unwrap().unwrap()));
 
         let error = run_order_command(
             OrderCommand::Revoke {
@@ -833,6 +923,43 @@ mod tests {
                 "order {}'s certificate is already revoked",
                 order.id
             ))
+        );
+    }
+
+    /// A CA that no server has met yet has no stored CRL, and its old
+    /// `ca.json` ledger may still be waiting to be imported: the CLI refuses
+    /// rather than writing a revocation under a row that import owns.
+    #[tokio::test]
+    async fn revoking_against_a_ca_no_server_has_initialised_is_refused() {
+        let dir = temp_dir();
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = config_in(&dir, "default");
+        let mut order = seed_order(&database, "default").await;
+        issue_onto(&mut order, &config, database.clone()).await;
+
+        let mut reader: &[u8] = &[];
+        let error = run_order_command(
+            OrderCommand::Revoke {
+                id: order.id.to_string(),
+                reason: None,
+            },
+            true,
+            Palette::plain(),
+            &mut reader,
+            &config,
+            database.clone(),
+        )
+        .await
+        .expect_err("an uninitialised CA must not take a revocation");
+        assert_eq!(error.kind(), crate::cli::CliErrorKind::Failed);
+        assert!(error.to_string().contains("acme-proxy serve"), "{error}");
+        assert!(
+            Order::find_by_id(order.id.to_string().as_str(), &database)
+                .await
+                .unwrap()
+                .unwrap()
+                .revoked_at
+                .is_none()
         );
     }
 

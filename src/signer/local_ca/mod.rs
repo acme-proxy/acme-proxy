@@ -340,23 +340,29 @@ impl LocalCa {
     ) -> anyhow::Result<Self> {
         // The key, not a path or a profile, is what the revocation state is
         // stored under — see `cert::issuer_id`.
-        let ca_der = crate::cert::leaf_der_from_chain(&ca_pem)?;
-        let (_, spki) = cert_serial_and_spki(&ca_der)
-            .map_err(|error| anyhow::anyhow!("the CA certificate does not parse: {error}"))?;
+        let issuer_id = issuer_id_of(&ca_pem)?;
         let issuer = Arc::new(issuer);
         Ok(Self {
             issuer: issuer.clone(),
             ca_pem,
             leaf_validity_days,
             leaf_policy,
-            crl: Arc::new(CrlStore::new(
-                database,
-                crate::cert::issuer_id(&spki),
-                issuer,
-                paths,
-            )),
+            crl: Arc::new(CrlStore::new(database, issuer_id, issuer, paths)),
         })
     }
+}
+
+/// The issuer id ([`crate::cert::issuer_id`]) of the CA certificate `ca_pem`:
+/// the key its revocation state is stored under.
+///
+/// Public material only, which is the point: a process that must record a
+/// revocation for this CA without holding its key — the host CLI — derives the
+/// same id from `cert_path` as the process that signs.
+pub fn issuer_id_of(ca_pem: &str) -> anyhow::Result<String> {
+    let ca_der = crate::cert::leaf_der_from_chain(ca_pem)?;
+    let (_, spki) = cert_serial_and_spki(&ca_der)
+        .map_err(|error| anyhow::anyhow!("the CA certificate does not parse: {error}"))?;
+    Ok(crate::cert::issuer_id(&spki))
 }
 
 /// Refuses a CSR that does not ask for exactly the order's DNS identifiers.
@@ -2177,6 +2183,74 @@ mod tests {
         job.recover(&queue).await;
 
         assert_eq!(Job::count_live(CRL_SWEEP_KIND, &database).await.unwrap(), 1);
+    }
+
+    /// A revocation recorded without the key — a bare `revocations` row, as the
+    /// CLI writes one — is signed in by `republish`, and a second call finds
+    /// nothing to do.
+    #[tokio::test]
+    async fn republish_signs_a_row_recorded_without_the_key() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, serial) = issued(&ca, "example.com").await;
+        let before = served(&ca).await;
+
+        record_without_key(&ca, &database, &leaf, &serial).await;
+        assert!(!lists(&served(&ca).await, &serial));
+
+        let refresher = ca.crl_refresher().unwrap();
+        assert!(refresher.republish().await.unwrap());
+        let after = served(&ca).await;
+        assert!(lists(&after, &serial));
+        assert!(crl_number(&after) > crl_number(&before));
+        assert!(!refresher.republish().await.unwrap());
+    }
+
+    /// The daily refresh is the safety net for a regeneration job that never
+    /// ran: a recorded revocation its CRL does not list is signed in even when
+    /// nothing expired and the CRL is fresh.
+    #[tokio::test]
+    async fn the_daily_refresh_signs_a_revocation_the_crl_does_not_list() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, serial) = issued(&ca, "example.com").await;
+        served(&ca).await;
+
+        record_without_key(&ca, &database, &leaf, &serial).await;
+        ca.crl_refresher().unwrap().refresh().await.unwrap();
+        assert!(lists(&served(&ca).await, &serial));
+    }
+
+    /// A row naming a CA this process does not serve is retried, not retired:
+    /// another process, or the next generation of this one, may serve it.
+    #[tokio::test]
+    async fn the_regenerate_job_retries_an_issuer_it_does_not_serve() {
+        use crate::jobs::{JobHandler, JobOutcome};
+        use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
+
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database).unwrap();
+        let job = CrlRegenerateJob::new(vec![ca.crl_refresher().unwrap()]);
+        let mut row = sweep_row();
+        row.kind = CRL_REGENERATE_KIND.to_string();
+        row.dedup_key = "not-an-issuer-here".to_string();
+
+        assert!(matches!(job.run(&row).await, JobOutcome::Retry(_)));
+    }
+
+    /// Writes `serial` straight into `revocations`, the way a revocation
+    /// recorded without the CA key lands.
+    async fn record_without_key(ca: &LocalCa, database: &Database, leaf: &[u8], serial: &str) {
+        let row = crate::sqlite::revocation::Revocation {
+            issuer: ca.crl.issuer_id().to_string(),
+            serial: serial.to_string(),
+            revoked_at: crate::sqlite::nonce::now_secs(),
+            reason: None,
+            not_after: crate::cert::cert_validity(leaf).ok().map(|(_, na)| na),
+        };
+        let mut tx = database.transaction().await.unwrap();
+        row.insert_if_absent(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
     }
 
     /// A claimed row, as the runner would hand one to `run`.

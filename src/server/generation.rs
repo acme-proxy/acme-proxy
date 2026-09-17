@@ -125,7 +125,16 @@ pub(crate) fn build_generation(
     // The daily CRL refresh, over whichever CAs keep a CRL of their own.
     // Registered only when there is one, the way the audit sweep is registered
     // only for a non-zero retention.
+    // Beside it, the handler that signs revocations the CLI recorded without
+    // the key.
     if !refreshers.is_empty() {
+        job_registry
+            .register(Arc::new(
+                crate::signer::local_ca::sweep::CrlRegenerateJob::new(refreshers.clone()),
+            ))
+            .inspect_err(|error| {
+                error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+            })?;
         job_registry
             .register(Arc::new(crate::signer::local_ca::sweep::CrlSweepJob::new(
                 refreshers,

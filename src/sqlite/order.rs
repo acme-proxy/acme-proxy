@@ -984,6 +984,32 @@ impl Order {
         Ok(())
     }
 
+    /// The revocation stamp as a bare statement, over any executor.
+    ///
+    /// Split from [`Order::revoke`] so a revocation recorded without a signer
+    /// round trip (`acme::revoke`'s ledger path) can write the order and the
+    /// `revocations` row in **one** transaction. The in-memory sync is the
+    /// caller's, after the commit.
+    pub(crate) async fn set_revoked<'e, E>(
+        id: Uuid,
+        reason: Option<i64>,
+        revoked_at: i64,
+        executor: E,
+    ) -> Result<(), sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?id, reason = ?reason);
+        sqlx::query("UPDATE orders SET revoked_at = ?, revocation_reason = ? WHERE id = ?;")
+            .bind(revoked_at)
+            .bind(reason)
+            .bind(id)
+            .execute(executor)
+            .await?;
+        info!(event = "db_order_revoked", outcome = "success", order_id = ?id, reason = ?reason);
+        Ok(())
+    }
+
     /// Records a failed issuance: stores the `error` problem document, moves the
     /// order to the terminal `invalid` state, and keeps `self` in sync (like
     /// [`Order::finalize`]). Used when the signer fails internally; a `badCSR`

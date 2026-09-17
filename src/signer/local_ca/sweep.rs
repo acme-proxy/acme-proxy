@@ -138,3 +138,78 @@ impl JobHandler for CrlSweepJob {
             .await;
     }
 }
+
+/// The `jobs.kind` a revocation recorded without the CA's key asks for.
+pub const CRL_REGENERATE_KIND: &str = "local_ca_crl_regenerate";
+
+/// The row that asks the process holding `issuer`'s key to sign the CRL.
+///
+/// Keyed on the issuer, so a burst of revocations of one CA queues one row
+/// while it waits: the signing that row does covers every revocation recorded
+/// before it runs.
+#[must_use]
+pub fn regenerate_spec(issuer: &str) -> JobSpec {
+    JobSpec::now(CRL_REGENERATE_KIND, issuer)
+}
+
+/// Signs the revocations recorded without a key into their CA's CRL.
+///
+/// The host CLI records a local-CA revocation as a `revocations` row and never
+/// loads the key, so this is where it reaches the CRL. **One handler over
+/// every CA**, for [`CrlSweepJob`]'s reason, picking the CA by the row's key.
+pub struct CrlRegenerateJob {
+    refreshers: Vec<Arc<dyn CrlRefresher>>,
+}
+
+impl CrlRegenerateJob {
+    #[must_use]
+    pub fn new(refreshers: Vec<Arc<dyn CrlRefresher>>) -> Self {
+        Self { refreshers }
+    }
+}
+
+#[async_trait]
+impl JobHandler for CrlRegenerateJob {
+    fn kind(&self) -> &'static str {
+        CRL_REGENERATE_KIND
+    }
+
+    /// `Retry` rather than `Failed` for a CA this process does not serve: a
+    /// row queued against a configuration another process — or the next
+    /// generation of this one — does serve must not be thrown away. The
+    /// attempt budget still ends it, and the daily refresh signs whatever it
+    /// would have.
+    async fn run(&self, job: &Job) -> JobOutcome {
+        let issuer = job.dedup_key.as_str();
+        let Some(refresher) = self
+            .refreshers
+            .iter()
+            .find(|refresher| refresher.issuer() == issuer)
+        else {
+            return JobOutcome::Retry(format!("no local CA with issuer {issuer} is served here"));
+        };
+        match refresher.republish().await {
+            Ok(true) => {
+                info!(
+                    event = "local_ca_crl_republished",
+                    outcome = "success",
+                    issuer = %issuer,
+                    "signed revocations recorded without the CA key into the CRL"
+                );
+                JobOutcome::Done
+            }
+            Ok(false) => JobOutcome::Done,
+            Err(error) => JobOutcome::Retry(error.to_string()),
+        }
+    }
+
+    async fn abandon(&self, job: &Job, reason: &str) {
+        error!(
+            event = "local_ca_crl_republish_abandoned",
+            outcome = "failure",
+            issuer = %job.dedup_key,
+            reason = %reason,
+            "the daily refresh will sign the missing revocations instead"
+        );
+    }
+}

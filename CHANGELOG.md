@@ -33,6 +33,16 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **`acme-proxy order revoke` no longer loads a local CA's key.** It writes the
+  revocation row and stamps the order in one transaction, then queues
+  `local_ca_crl_regenerate` for the process that holds the key. The order reads
+  revoked when the command returns. The CRL lists the serial once a running
+  `serve` has signed it, usually within `jobs.poll_interval_ms`. The command
+  prints the queued job. With no server running, the CRL catches up when one
+  starts. A CA no server has ever started with is refused, naming `serve`,
+  because its pre-database `ca.json` ledger may still be waiting to be
+  imported. The daily CRL refresh now also signs any recorded revocation its
+  CRL does not list.
 - **A local CA no longer writes `ca.json`.** Its revocations live in the
   database, and the JSON ledger beside `signer.local_ca.crl_path` is imported
   once, the first time the CA meets the new schema (`local_ca_ledger_imported`),

@@ -18,6 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext, RequestContext};
 use crate::error::Problem;
+use crate::jobs::JobQueue;
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
 use crate::signer::{SignerBackend, SignerError};
 use crate::sqlite::{account::Account, db::Database, order::Order};
@@ -26,6 +27,18 @@ use crate::sqlite::{account::Account, db::Database, order::Order};
 pub enum Revoker<'a> {
     /// The backend that issued it, called inline.
     Backend(&'a dyn SignerBackend),
+    /// A local CA's revocation state, written directly — no key, no signer.
+    ///
+    /// The `revocations` row and the order's stamp land in **one**
+    /// transaction, and `local_ca_crl_regenerate` asks whichever process holds
+    /// the key to sign the CRL. What the host CLI uses: a revocation is
+    /// recorded, and visible on the order, the moment the command returns,
+    /// where the CRL follows once a server's job runner gets to it.
+    Ledger {
+        /// The CA's issuer id ([`crate::signer::local_ca::issuer_id_of`]).
+        issuer: &'a str,
+        jobs: &'a JobQueue,
+    },
 }
 
 /// Where the address and reverse name an audit row stores come from.
@@ -382,27 +395,47 @@ impl Revocations<'_> {
             return Err(RevokeError::BadReason(code));
         }
 
-        // The signer first: the CA-side action is authoritative, so a failure
-        // there must leave the order un-revoked for a retry — and is audited as
-        // the attempt it was, whoever asked.
-        let Revoker::Backend(signer) = self.revoker;
-        if let Err(error) = signer.revoke(cert_der, reason).await {
-            error!(event = "certificate_revoke_signer_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
-            self.audit
-                .record(refused(&order, "serverInternal", &error.to_string()))
-                .await;
-            return Err(RevokeError::Signer(error));
-        }
-        if let Err(error) = order.revoke(reason.map(i64::from), self.database).await {
-            error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
-            // The signer already withdrew trust, so the CA-side action stands; what
-            // failed is this server's record of it. Audited as a failure because
-            // that is what a later reader needs to know — the order still reads
-            // un-revoked and a retry is expected.
-            self.audit
-                .record(refused(&order, "serverInternal", &error.to_string()))
-                .await;
-            return Err(RevokeError::Database(error));
+        match self.revoker {
+            // The signer first, then the order: the CA-side action is
+            // authoritative, so a failure there must leave the order un-revoked
+            // for a retry — and is audited as the attempt it was, whoever asked.
+            Revoker::Backend(signer) => {
+                if let Err(error) = signer.revoke(cert_der, reason).await {
+                    error!(event = "certificate_revoke_signer_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+                    self.audit
+                        .record(refused(&order, "serverInternal", &error.to_string()))
+                        .await;
+                    return Err(RevokeError::Signer(error));
+                }
+                if let Err(error) = order.revoke(reason.map(i64::from), self.database).await {
+                    error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+                    // The signer already withdrew trust, so the CA-side action
+                    // stands; what failed is this server's record of it. Audited
+                    // as a failure because that is what a later reader needs to
+                    // know — the order still reads un-revoked and a retry is
+                    // expected.
+                    self.audit
+                        .record(refused(&order, "serverInternal", &error.to_string()))
+                        .await;
+                    return Err(RevokeError::Database(error));
+                }
+            }
+            // The row and the order together, then the CRL asked for.
+            Revoker::Ledger { issuer, jobs } => {
+                if let Err(error) = self
+                    .record_in_ledger(&mut order, issuer, cert_der, &serial_hex, reason)
+                    .await
+                {
+                    self.audit
+                        .record(refused(&order, "serverInternal", &error.to_string()))
+                        .await;
+                    return Err(error);
+                }
+                // The revocation stands whether or not this lands: the daily
+                // refresh signs any recorded revocation its CRL does not list.
+                jobs.enqueue_or_log(crate::signer::local_ca::sweep::regenerate_spec(issuer))
+                    .await;
+            }
         }
 
         info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);
@@ -433,6 +466,67 @@ impl Revocations<'_> {
                 .await;
         }
         Ok(order)
+    }
+}
+
+impl Revocations<'_> {
+    /// The ledger half of [`Revoker::Ledger`]: the `revocations` row and the
+    /// order's stamp in one transaction, `order` synced after the commit.
+    ///
+    /// Refused while the CA has no stored CRL. A CA meets the database through
+    /// its first process holding the key, which imports any pre-database
+    /// `ca.json` ledger in the same transaction as that first CRL — and a
+    /// revocation landing before that import would be written under a row the
+    /// import then believes it owns. Any server that has run with this CA has
+    /// stored one.
+    async fn record_in_ledger(
+        &self,
+        order: &mut Order,
+        issuer: &str,
+        cert_der: &[u8],
+        serial_hex: &str,
+        reason: Option<u32>,
+    ) -> Result<(), RevokeError> {
+        let revoked_at = crate::sqlite::nonce::now_secs();
+        let row = crate::sqlite::revocation::Revocation {
+            issuer: issuer.to_string(),
+            serial: serial_hex.to_string(),
+            revoked_at,
+            reason,
+            // Best-effort, as on the signer's own path: an expiry this server
+            // cannot read only means the entry is never pruned.
+            not_after: crate::cert::cert_validity(cert_der)
+                .ok()
+                .map(|(_, not_after)| not_after),
+        };
+        let written = async {
+            let mut tx = self.database.transaction().await?;
+            if crate::sqlite::crl::StoredCrl::find(issuer, &mut *tx)
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+            row.insert_if_absent(&mut *tx).await?;
+            Order::set_revoked(order.id, reason.map(i64::from), revoked_at, &mut *tx).await?;
+            tx.commit().await?;
+            Ok::<bool, sqlx::Error>(true)
+        }
+        .await;
+        let recorded = written.map_err(|error| {
+            error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+            RevokeError::Database(error)
+        })?;
+        if !recorded {
+            warn!(event = "certificate_revoke_ca_uninitialized", outcome = "failure", order_id = %order.id, issuer = %issuer);
+            return Err(RevokeError::Internal(format!(
+                "the CA {issuer} has no stored CRL yet — start `acme-proxy serve` with this \
+                 configuration once, so it can import its revocation ledger, then retry"
+            )));
+        }
+        order.revoked_at = Some(revoked_at);
+        order.revocation_reason = reason.map(i64::from);
+        Ok(())
     }
 }
 

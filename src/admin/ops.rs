@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::admin::prompt::confirm;
 use crate::audit::{Actor, Auditor, ClientContext};
 use crate::config::Config;
+use crate::signer::SignerError;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
-use crate::signer::{SignerBackend, SignerError};
 use crate::sqlite::account::Account;
 use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::sqlite::authz::{Authorization, Challenge};
@@ -433,6 +433,9 @@ pub async fn deactivate_account(
 /// agnostic — it is the same reason the destructive operations come in a bare
 /// and a `confirm_*` form.
 ///
+/// `revoker` is what withdraws the trust: the live backend where the caller
+/// has one (the web admin), a local CA's ledger where it does not (the CLI).
+///
 /// The operation itself is [`crate::acme::revoke::Revocations::revoke_order`],
 /// the same tail `POST /revokeCert` runs; this wrapper only sorts its answers
 /// into the outcomes an operator front end reports. `notify` is the order's
@@ -447,16 +450,16 @@ pub async fn revoke_order(
     client: ClientContext,
     audit: &Auditor,
     database: Arc<Database>,
-    signer: Arc<dyn SignerBackend>,
+    revoker: crate::acme::revoke::Revoker<'_>,
     notify: Option<&crate::notify::NotifyDispatcher>,
 ) -> Result<RevokeOutcome, RevokeError> {
-    use crate::acme::revoke::{Revocations, RevokeError as Refusal, Revoker};
+    use crate::acme::revoke::{Revocations, RevokeError as Refusal};
 
     let revocations = Revocations {
         database: &database,
         audit,
         notify,
-        revoker: Revoker::Backend(signer.as_ref()),
+        revoker,
     };
     match revocations.revoke_order(id, reason, actor, client).await {
         Ok(order) => Ok(RevokeOutcome::Revoked(Box::new(order))),
@@ -1130,6 +1133,7 @@ fn ari_cert_id(chain: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::audit::{AuditEvent, AuditRecord};
+    use crate::signer::SignerBackend;
     use crate::sqlite::order::Identifier;
     use crate::testutil::{account_id, issued_order};
 
@@ -1285,7 +1289,7 @@ mod tests {
             },
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            signer.clone(),
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1315,7 +1319,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            signer,
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1365,7 +1369,7 @@ mod tests {
             ClientContext::default(),
             &Auditor::offline(db.clone()),
             db.clone(),
-            signer,
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             Some(&dispatcher),
         )
         .await
@@ -1393,7 +1397,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            signer,
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1856,7 +1860,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            in_memory_ca(&db),
+            crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
         )
         .await
@@ -1887,7 +1891,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            in_memory_ca(&db),
+            crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
         )
         .await
@@ -1908,7 +1912,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            signer.clone(),
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1945,7 +1949,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db.clone(),
-            signer.clone(),
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1957,7 +1961,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db,
-            signer,
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1978,7 +1982,7 @@ mod tests {
             ClientContext::default(),
             &crate::audit::Auditor::offline(db.clone()),
             db,
-            signer,
+            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
