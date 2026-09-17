@@ -149,9 +149,12 @@ impl SignerBackend for CustomScriptSigner {
         }
     }
 
-    async fn crl_der(&self) -> Option<Vec<u8>> {
+    /// A script failure answers `Ok(None)`, the same `404` as a script with
+    /// nothing to publish, and is logged: this backend's CRL is the script's,
+    /// and a relying party gains nothing from a `500` over a hook it cannot see.
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
         if !self.supports_crl {
-            return None;
+            return Ok(None);
         }
         let envs = [("ACME_SIGNER_HOOK", "crl")];
         let payload = json!({ "hook": "crl" });
@@ -159,9 +162,9 @@ impl SignerBackend for CustomScriptSigner {
         match self.run_script(&envs, &payload).await {
             Ok(outcome) if outcome.output.status.success() => {
                 if outcome.output.stdout.is_empty() {
-                    None
+                    Ok(None)
                 } else {
-                    Some(outcome.output.stdout)
+                    Ok(Some(outcome.output.stdout))
                 }
             }
             // Two different failures: the script ran and refused (a non-zero
@@ -174,11 +177,11 @@ impl SignerBackend for CustomScriptSigner {
                     outcome = "failure",
                     detail = %Self::detail_from(&outcome),
                 );
-                None
+                Ok(None)
             }
             Err(err) => {
                 warn!(event = "signer_custom_crl_failed", outcome = "failure", detail = %err);
-                None
+                Ok(None)
             }
         }
     }
@@ -304,7 +307,7 @@ mod tests {
             signer.revoke(&[0x30, 0x00], None).await,
             Err(SignerError::Internal(_))
         ));
-        assert!(signer.crl_der().await.is_none());
+        assert!(signer.crl_der().await.unwrap().is_none());
         assert!(matches!(
             signer.renewal_info(&[0x30, 0x00]).await,
             Err(SignerError::Internal(_))
@@ -498,7 +501,7 @@ exit 0
             &format!("#!/bin/sh\ntouch {}\nexit 0\n", marker.to_str().unwrap()),
         );
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.is_none());
+        assert!(signer.crl_der().await.unwrap().is_none());
         assert!(!marker.exists(), "crl hook must not run when disabled");
     }
 
@@ -512,7 +515,10 @@ exit 0
         );
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert_eq!(signer.crl_der().await, Some(b"fake-der-bytes".to_vec()));
+        assert_eq!(
+            signer.crl_der().await.unwrap(),
+            Some(b"fake-der-bytes".to_vec())
+        );
     }
 
     #[tokio::test]
@@ -521,7 +527,7 @@ exit 0
         let mut cfg = write_script(&dir, "crl.sh", "#!/bin/sh\ncat > /dev/null\nexit 0\n");
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.is_none());
+        assert!(signer.crl_der().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -530,7 +536,7 @@ exit 0
         let mut cfg = write_script(&dir, "crl.sh", "#!/bin/sh\ncat > /dev/null\nexit 1\n");
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.is_none());
+        assert!(signer.crl_der().await.unwrap().is_none());
     }
 
     #[tokio::test]

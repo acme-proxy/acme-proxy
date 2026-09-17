@@ -867,6 +867,15 @@ mod softhsm {
         "/usr/local/lib/softhsm/libsofthsm2.so",
     ];
 
+    /// A throwaway database for a CA's revocation state.
+    async fn memory_db() -> std::sync::Arc<crate::sqlite::db::Database> {
+        std::sync::Arc::new(
+            crate::sqlite::db::Database::connect_in_memory()
+                .await
+                .unwrap(),
+        )
+    }
+
     const SO_PIN: &str = "3737";
     const USER_PIN: &str = "1234";
     const TOKEN_LABEL: &str = "acme-proxy-test";
@@ -1087,7 +1096,7 @@ mod softhsm {
     #[tokio::test]
     async fn a_token_backed_ca_issues_a_verifiable_leaf() {
         let lab = lab_or_skip!();
-        let ca = LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new())
+        let ca = LocalCa::load_or_generate(&lab.config(), memory_db().await)
             .expect("the token-backed CA must load");
 
         let outcome = ca
@@ -1120,8 +1129,7 @@ mod softhsm {
     #[tokio::test]
     async fn a_token_backed_ca_signs_a_verifiable_crl() {
         let lab = lab_or_skip!();
-        let ca =
-            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
+        let ca = LocalCa::load_or_generate(&lab.config(), memory_db().await).unwrap();
 
         let outcome = ca
             .issue(
@@ -1140,7 +1148,11 @@ mod softhsm {
 
         ca.revoke(&leaf_der, Some(1)).await.unwrap();
 
-        let crl_der = ca.crl_der().await.expect("a CRL is always present");
+        let crl_der = ca
+            .crl_der()
+            .await
+            .unwrap()
+            .expect("a CRL is always present");
         use x509_parser::prelude::FromDer;
         let (_, crl) =
             x509_parser::revocation_list::CertificateRevocationList::from_der(&crl_der).unwrap();
@@ -1156,13 +1168,13 @@ mod softhsm {
 
     /// The cross-check that turns a typo into a startup error instead of a
     /// fleet of certificates that verify nowhere.
-    #[test]
-    fn a_key_label_that_matches_nothing_is_a_startup_error() {
+    #[tokio::test]
+    async fn a_key_label_that_matches_nothing_is_a_startup_error() {
         let lab = lab_or_skip!();
         let mut cfg = lab.config();
         cfg.pkcs11.key_label = "not-the-ca-key".to_string();
 
-        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
+        let error = match LocalCa::load_or_generate(&cfg, memory_db().await) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a key label matching nothing must not start the server"),
         };
@@ -1171,15 +1183,15 @@ mod softhsm {
 
     /// HSM mode never generates: a missing certificate is an error naming the
     /// path, and nothing is written in its place.
-    #[test]
-    fn a_missing_certificate_is_an_error_and_no_ca_is_generated() {
+    #[tokio::test]
+    async fn a_missing_certificate_is_an_error_and_no_ca_is_generated() {
         let lab = lab_or_skip!();
         let dir = TempDir::new("softhsm-nocert");
         let mut cfg = lab.config();
         cfg.cert_path = dir.join("absent.pem").to_string_lossy().into_owned();
         cfg.key_path = dir.join("absent.key").to_string_lossy().into_owned();
 
-        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
+        let error = match LocalCa::load_or_generate(&cfg, memory_db().await) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("pkcs11 mode must not generate a CA"),
         };
@@ -1192,8 +1204,8 @@ mod softhsm {
 
     /// A wrong PIN fails at startup, before anything is signed — and the
     /// message points at where the PIN comes from.
-    #[test]
-    fn a_wrong_pin_fails_at_startup() {
+    #[tokio::test]
+    async fn a_wrong_pin_fails_at_startup() {
         let lab = lab_or_skip!();
         let dir = TempDir::new("softhsm-badpin");
         let mut cfg = lab.config();
@@ -1202,7 +1214,7 @@ mod softhsm {
             .to_string_lossy()
             .into_owned();
 
-        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
+        let error = match LocalCa::load_or_generate(&cfg, memory_db().await) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a wrong PIN must not start the server"),
         };
@@ -1222,7 +1234,7 @@ mod softhsm {
         };
         assert_eq!(cfg.key_source, "file", "the default must not have moved");
 
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let outcome = ca
             .issue(
                 "ord-file",
@@ -1240,13 +1252,11 @@ mod softhsm {
 
     /// Two `LocalCa`s over one module must not fight over `C_Initialize` —
     /// the shared-context registry is what makes a second one possible at all.
-    #[test]
-    fn a_second_backend_over_the_same_module_opens_fine() {
+    #[tokio::test]
+    async fn a_second_backend_over_the_same_module_opens_fine() {
         let lab = lab_or_skip!();
-        let first =
-            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
-        let second =
-            LocalCa::load_or_generate(&lab.config(), &crate::signer::CarriedState::new()).unwrap();
+        let first = LocalCa::load_or_generate(&lab.config(), memory_db().await).unwrap();
+        let second = LocalCa::load_or_generate(&lab.config(), memory_db().await).unwrap();
         drop((first, second));
     }
 }

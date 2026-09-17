@@ -12,7 +12,6 @@
 //! Here the registry is read directly, because what is under test is what moves
 //! it.
 
-use acme_proxy::signer::local_ca::LocalCa;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use std::sync::Arc;
@@ -27,11 +26,8 @@ use common::{EcSigner, TestSigner, acme, make_csr, p, test_app_with_metrics};
 /// mounted at all, and an unsigned GET keeps the assertion about one thing.
 #[tokio::test]
 async fn an_acme_request_is_counted_under_its_profile_and_route() {
-    let (app, _database, metrics) = test_app_with_metrics(
-        Default::default(),
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
-    )
-    .await;
+    let (app, _database, metrics) =
+        test_app_with_metrics(Default::default(), Arc::new(common::memory_ca().await)).await;
 
     for _ in 0..3 {
         let response = app
@@ -59,11 +55,8 @@ async fn an_acme_request_is_counted_under_its_profile_and_route() {
 /// everything else still passes.
 #[tokio::test]
 async fn issuing_a_certificate_moves_the_issued_counter() {
-    let (app, _database, metrics) = test_app_with_metrics(
-        Default::default(),
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
-    )
-    .await;
+    let (app, _database, metrics) =
+        test_app_with_metrics(Default::default(), Arc::new(common::memory_ca().await)).await;
     let signer = EcSigner::new();
 
     acme::issue_certificate(&app, &signer, &["metrics.example.com"]).await;
@@ -94,11 +87,8 @@ async fn issuing_a_certificate_moves_the_issued_counter() {
 /// because both are rendered from one `AuditRecord`.
 #[tokio::test]
 async fn a_refused_csr_is_counted_with_its_reason() {
-    let (app, _database, metrics) = test_app_with_metrics(
-        Default::default(),
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
-    )
-    .await;
+    let (app, _database, metrics) =
+        test_app_with_metrics(Default::default(), Arc::new(common::memory_ca().await)).await;
     let signer = EcSigner::new();
 
     let (account_url, _order_url, order) =

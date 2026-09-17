@@ -1,61 +1,78 @@
-//! The revocation ledger and the CRL built from it.
+//! The revocation state and the CRL signed over it.
 //!
 //! Separated from issuance because the two share only the
-//! `Issuer<'static, CaSigningKey>` they sign with. The durable form of what
-//! this CA has revoked is a JSON sidecar next to `crl_path` — never the CRL's
-//! own DER round-tripped back, which would make a parser bug into data loss.
+//! `Issuer<'static, CaSigningKey>` they sign with.
 //!
-//! **More than one process writes these files.** `acme-proxy order revoke`
-//! builds its own `LocalCa` over the same paths a running `serve` holds, each
-//! with its own in-memory ledger. Every write therefore happens under an
-//! exclusive lock on a third file beside the other two, and re-reads the
-//! sidecar first, merging what the other instance persisted into its own copy
-//! before changing anything. Without that, the server's next revocation or
-//! prune rewrote both files from memory: the CLI's serial silently left the
-//! CRL, and the server published a `crl_number` *lower* than the CLI's.
+//! **The database is the only store.** What this CA has revoked is the
+//! `revocations` rows under its issuer id ([`crate::cert::issuer_id`]), and the
+//! CRL it serves is its `crls` row. Every process over one database therefore
+//! sees one CA: `acme-proxy order revoke` beside a running `serve` lands a row
+//! the server's very next `GET /crl` already reflects. That is what this module
+//! used to get wrong with a JSON sidecar and an in-memory copy per process.
 //!
-//! What this does not fix is the CRL a running server *serves*, which is
-//! still its in-memory copy until its own next write — the next revocation,
-//! the daily prune, or a restart. Moving the ledger into the database is what
-//! closes that.
+//! Three things keep that correct under concurrency:
+//!
+//! - **`crl_number` only moves through a compare-and-swap.** A writer reads the
+//!   stored CRL and the revocations in one snapshot, signs outside any
+//!   transaction (a PKCS#11 signature is a token round trip), then stores with
+//!   [`StoredCrl::replace_if_number`]. A writer that lost re-reads and signs
+//!   again, so no CRL is ever stored over a snapshot older than the one it
+//!   replaces.
+//! - **A revocation is covered once *some* stored CRL lists it**, whoever
+//!   signed it. A loser whose serial the winner already included is done, which
+//!   is what keeps a burst of concurrent revocations from spending its retries.
+//! - **Initialisation is one transaction keyed on the `crls` row.** The first
+//!   CRL for an issuer is stored together with whatever the old sidecar held,
+//!   so a sidecar is imported exactly once, and no revocation can be recorded
+//!   under an issuer before its import has happened.
+//!
+//! `crl_path` survives as an **export**: every stored CRL is written there as
+//! PEM, for operators who publish it from a static web server, and nothing ever
+//! reads it back. The sidecar beside it (`ca.json`) is read once, at import,
+//! and never written again.
 
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::prelude::*;
 use rcgen::{
     CertificateRevocationListParams, Issuer, KeyIdMethod, RevocationReason, RevokedCertParams,
     SerialNumber,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::Mutex;
-use tracing::info;
+use tokio::sync::{Mutex, OnceCell};
+use tracing::{error, info, warn};
 
 use super::CLOCK_SKEW_ALLOWANCE;
 use super::key::CaSigningKey;
-use crate::signer::{CrlPruner, SignerError};
+use crate::signer::{CrlRefresher, SignerError};
+use crate::sqlite::crl::StoredCrl;
+use crate::sqlite::db::Database;
+use crate::sqlite::revocation::Revocation;
 
+/// The files beside a file-backed CA's CRL, all derived from `crl_path`.
 #[derive(Clone)]
 pub(super) struct CrlPaths {
+    /// Where the current CRL is exported, as PEM.
     pub(super) crl_path: PathBuf,
+    /// The pre-database ledger (`ca.json`), read once at import.
     pub(super) revoked_path: PathBuf,
-    /// Held exclusively across every read-merge-write of the other two.
+    /// Held exclusively across every export, so two processes writing
+    /// `crl_path` cannot leave an older CRL in place of a newer one.
     ///
-    /// A file of its own rather than a lock on the sidecar: `write_atomic`
-    /// renames a new inode over `revoked_path`, so a lock taken on the sidecar
-    /// guards an inode that is gone after the first write, and the next
-    /// process opens the replacement and locks it without waiting. Nothing is
-    /// ever written to this one, so it is never replaced.
+    /// A file of its own rather than a lock on the export: `write_atomic`
+    /// renames a new inode over `crl_path`, so a lock taken on it guards an
+    /// inode that is gone after the first write. Nothing is ever written to
+    /// this one, so it is never replaced. Its name predates the database and
+    /// is kept, since an operator's tooling may already expect the file.
     pub(super) lock_path: PathBuf,
 }
 
 impl CrlPaths {
-    /// The three files one CA's revocation state spans, all derived from
-    /// `crl_path`: the CRL (`ca.crl`), its ledger (`ca.json`) and the lock
-    /// serialising writers of both (`ca.json.lock`).
+    /// `ca.crl` → `ca.json` and `ca.json.lock` beside it.
     pub(super) fn beside(crl_path: &str) -> Self {
         let crl_path = PathBuf::from(crl_path);
         Self {
@@ -64,241 +81,398 @@ impl CrlPaths {
             crl_path,
         }
     }
-
-    /// The [`CarriedState`](crate::signer::CarriedState) key this CA's ledger
-    /// lives under.
-    ///
-    /// Keyed on `crl_path` and defined once here rather than spelled out at the
-    /// two call sites, because the two spellings agreeing is the entire
-    /// correctness of the handover: a rebuilt CA that looked under a key nobody
-    /// wrote would silently start from the sidecar and lose whatever the
-    /// outgoing instance revoked while the reload was building.
-    pub(super) fn state_key(&self) -> String {
-        format!("local_ca.ledger:{}", self.crl_path.display())
-    }
 }
 
-/// The durable source of truth for what this CA has revoked, plus a cached
-/// copy of the current signed CRL derived from it. `entries` and `crl_number`
-/// are what get persisted/reloaded (see [`init_ledger`]); `crl_der` is rebuilt
-/// fresh from them on every change and on every startup, never itself parsed
-/// back.
-pub(super) struct RevokedLedger {
-    pub(super) entries: Vec<RevokedEntry>,
-    /// The number the *last* CRL was signed with. Bumped by
-    /// [`RevokedLedger::next_crl_number`] before every build, and durable, so
-    /// the sequence survives a restart — see [`Sidecar`].
-    pub(super) crl_number: u64,
-    pub(super) crl_der: Vec<u8>,
-}
+/// How long a generated CRL claims to remain current (RFC 5280's `nextUpdate`).
+const CRL_VALIDITY_DAYS: i64 = 7;
 
-impl RevokedLedger {
-    /// Claims the next CRL number.
-    ///
-    /// **Every build takes one, and every build persists it.** RFC 5280 §5.2.3
-    /// requires `crlNumber` to increase monotonically, and a client that meets a
-    /// lower one than it has cached treats the new CRL as the older of the two —
-    /// i.e. it keeps trusting a certificate this CA has since revoked. Skipping
-    /// numbers is legal and happens whenever a persist fails between the bump
-    /// and the write; going backwards is not, which is why this is a durable
-    /// counter rather than anything derived from `entries.len()`.
-    pub(super) fn next_crl_number(&mut self) -> u64 {
-        self.crl_number += 1;
-        self.crl_number
-    }
-}
+/// How many times one regeneration re-reads and re-signs after another writer
+/// stored a CRL first. Each loss means somebody else's CRL was stored, which is
+/// progress; running out means this CA is being revoked against faster than it
+/// can sign, and the caller hears about it rather than looping.
+const MAX_REGENERATION_ATTEMPTS: usize = 5;
 
-/// The bytes to persist beside the CRL, for `entries` numbered `crl_number`.
-fn sidecar_json(entries: &[RevokedEntry], crl_number: u64) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&SidecarRef {
-        version: SIDECAR_VERSION,
-        crl_number,
-        entries,
-    })
-}
-
-/// The ledger, the key that signs CRLs over it, and where both are persisted —
-/// everything the write path needs and nothing else.
+/// A CA's revocation state: where it is stored, what signs over it, and where
+/// the result is exported.
 ///
-/// Split out of `LocalCa` so it can be handed to the periodic sweep as an
-/// `Arc<dyn CrlPruner>`: [`SignerBackend::crl_pruner`](crate::signer::SignerBackend::crl_pruner)
-/// takes `&self` and so cannot produce an `Arc<LocalCa>`, and a `Weak` back-reference
-/// to make it able to would be a cycle to maintain for one caller. `LocalCa` holds
-/// one of these and reaches its ledger through it.
-pub(super) struct LedgerStore {
-    /// An `Arc` rather than a plain `Mutex` because this exact cell is what
-    /// `SignerBackend::carried_state` hands to the CA that replaces this one on
-    /// a reload — see the note on `LocalCa::assemble`.
-    pub(super) revoked: Arc<Mutex<RevokedLedger>>,
-    issuer: Arc<Issuer<'static, CaSigningKey>>,
+/// What [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher)
+/// hands the daily sweep, and what `LocalCa` revokes and serves through. Holds
+/// nothing a second instance over the same database would disagree with: the
+/// only in-memory state is whether *this* instance has initialised, and a lock
+/// serialising its own regenerations.
+pub(super) struct CrlStore {
+    database: Arc<Database>,
+    issuer_id: String,
+    signer: Arc<Issuer<'static, CaSigningKey>>,
+    /// `None` for an in-memory CA, which exports nothing and imports nothing.
     paths: Option<CrlPaths>,
+    /// Set once this CA's `crls` row is known to exist. Not set by a failed
+    /// attempt, so the next caller tries again.
+    initialized: OnceCell<()>,
+    /// Serialises this instance's own regenerations: two of its revocations
+    /// signing over the same snapshot would only have one of them lose the
+    /// compare-and-swap. Other instances are what the swap is for.
+    regenerating: Mutex<()>,
 }
 
-impl LedgerStore {
+impl CrlStore {
     pub(super) fn new(
-        revoked: Arc<Mutex<RevokedLedger>>,
-        issuer: Arc<Issuer<'static, CaSigningKey>>,
+        database: Arc<Database>,
+        issuer_id: String,
+        signer: Arc<Issuer<'static, CaSigningKey>>,
         paths: Option<CrlPaths>,
     ) -> Self {
         Self {
-            revoked,
-            issuer,
+            database,
+            issuer_id,
+            signer,
             paths,
+            initialized: OnceCell::new(),
+            regenerating: Mutex::new(()),
         }
     }
 
-    /// Applies `mutate` to the ledger as persisted *now*, and re-signs and
-    /// persists the CRL if anything changed. Returns what `mutate` returned —
-    /// the number of entries it added or removed.
-    ///
-    /// One pass, under the lock file for its whole length:
-    ///
-    /// 1. re-read the sidecar and [`merge`] it into a copy of this instance's
-    ///    entries, taking the larger `crl_number` of the two;
-    /// 2. run `mutate` over the merged copy;
-    /// 3. if neither step changed anything, stop — no signature, no write;
-    /// 4. otherwise bump the number, sign, write the sidecar, write the CRL.
-    ///
-    /// **The in-memory ledger is replaced only once all of that succeeded.**
-    /// A failure leaves it exactly as it was, so there is nothing to roll back
-    /// — the way this used to be written pushed a revocation into memory before
-    /// persisting it, and a failed persist then made the retry an in-memory
-    /// "already revoked" that never reached the disk.
-    ///
-    /// The caller holds the ledger's `tokio::sync::Mutex` guard across this,
-    /// which serialises this instance's own callers; the lock file serialises
-    /// every other instance, in this process or another (a `flock` belongs to
-    /// the open file, so two opens in one process exclude each other too).
-    /// Always taken in that order.
-    pub(super) async fn update<F>(
-        &self,
-        ledger: &mut RevokedLedger,
-        mutate: F,
-    ) -> Result<usize, SignerError>
-    where
-        F: FnOnce(&mut Vec<RevokedEntry>) -> usize + Send + 'static,
-    {
-        // Cloned rather than borrowed: the closure below outlives this scope as
-        // far as the compiler is concerned, and a ledger is a handful of short
-        // strings — nothing next to signing a CRL.
-        let mut entries = ledger.entries.clone();
-        let mut crl_number = ledger.crl_number;
-        let issuer = self.issuer.clone();
-        let paths = self.paths.clone();
+    /// The key this CA's revocation state is stored under.
+    pub(super) fn issuer_id(&self) -> &str {
+        &self.issuer_id
+    }
 
-        // The lock, the read, signing the CRL and the two file writes, all off
-        // the runtime worker. Signing with a PKCS#11 key is a token round trip,
-        // and waiting on the lock can take as long as another process's own
-        // signature; neither has any business on a thread expected to poll
-        // every other connection meanwhile.
-        let pass = tokio::task::spawn_blocking(move || -> anyhow::Result<Pass> {
-            // Released when this closure returns, i.e. after both writes.
-            let _lock = paths
-                .as_ref()
-                .map(|paths| lock_ledger(&paths.lock_path))
-                .transpose()?;
-
-            let merged = match &paths {
-                Some(paths) if paths.revoked_path.exists() => {
-                    let (persisted, persisted_number) =
-                        load_sidecar(&paths.revoked_path).map_err(|error| {
-                            anyhow::anyhow!(
-                                "reading the ledger `{}` before writing it: {error}",
-                                paths.revoked_path.display()
-                            )
-                        })?;
-                    crl_number = crl_number.max(persisted_number);
-                    merge(&mut entries, persisted)
-                }
-                _ => 0,
-            };
-            let changed = mutate(&mut entries);
-            if merged == 0 && changed == 0 {
-                return Ok(Pass {
-                    entries,
-                    crl_number,
-                    crl_der: None,
-                    merged,
-                    changed,
-                });
-            }
-
-            crl_number += 1;
-            let crl = build_crl(&entries, crl_number, &issuer)?;
-            if let Some(paths) = &paths {
-                // The ledger before the CRL: the ledger is the authoritative
-                // record and the CRL is derived from it at every startup, so a
-                // crash between the two loses nothing.
-                //
-                // `0600` on the ledger — it decides what the CRL says, and it
-                // is not public material the way the CRL itself is.
-                let ledger_json = sidecar_json(&entries, crl_number)?;
-                crate::pemfile::write_atomic(&paths.revoked_path, ledger_json.as_bytes(), 0o600)?;
-                crate::pemfile::write_atomic(&paths.crl_path, crl.pem()?.as_bytes(), 0o644)?;
-            }
-            Ok(Pass {
-                entries,
-                crl_number,
-                crl_der: Some(crl.der().to_vec()),
-                merged,
-                changed,
+    /// Makes sure this CA has a stored CRL, importing the old sidecar the first
+    /// time any process meets it.
+    ///
+    /// Every read and write of the revocation state goes through here first.
+    /// That ordering is the import's correctness: a revocation recorded before
+    /// the sidecar was imported would make "the table already has rows" a lie,
+    /// which is why the import is keyed on the `crls` row rather than on
+    /// `revocations` being empty.
+    pub(super) async fn ensure_initialized(&self) -> Result<(), SignerError> {
+        self.initialized
+            .get_or_try_init(|| async {
+                self.initialize().await.inspect_err(|error| {
+                    error!(
+                        event = "local_ca_crl_initialization_failed",
+                        outcome = "failure",
+                        issuer = %self.issuer_id,
+                        error = %error,
+                    );
+                })
             })
-        })
+            .await
+            .map(|_| ())
+    }
+
+    async fn initialize(&self) -> Result<(), SignerError> {
+        let existing = self.stored().await?;
+        if existing.is_some() {
+            return Ok(());
+        }
+
+        // The sidecar, if this CA kept one before the database did. Read and
+        // signed over off the runtime, the way every signature here is.
+        let paths = self.paths.clone();
+        let signer = self.signer.clone();
+        let issuer_id = self.issuer_id.clone();
+        let (imported, initial) = tokio::task::spawn_blocking(
+            move || -> anyhow::Result<(Option<Vec<Revocation>>, StoredCrl)> {
+                let (entries, number) = match &paths {
+                    Some(paths) if paths.revoked_path.exists() => {
+                        let (entries, number) =
+                            load_sidecar(&paths.revoked_path).map_err(|error| {
+                                anyhow::anyhow!(
+                                    "importing the revocation ledger `{}`: {error}",
+                                    paths.revoked_path.display()
+                                )
+                            })?;
+                        let rows = entries
+                            .into_iter()
+                            .map(|entry| entry.into_revocation(&issuer_id))
+                            .collect();
+                        (Some(rows), number)
+                    }
+                    _ => (None, 0),
+                };
+                let rows: &[Revocation] = entries.as_deref().unwrap_or_default();
+                let crl = sign(rows, number + 1, &signer, &issuer_id)?;
+                Ok((entries, crl))
+            },
+        )
         .await
-        .map_err(|error| SignerError::Internal(format!("revocation persist panicked: {error}")))?
+        .map_err(|error| SignerError::Internal(format!("CRL initialisation panicked: {error}")))?
         .map_err(|error| SignerError::Internal(error.to_string()))?;
 
-        ledger.entries = pass.entries;
-        ledger.crl_number = pass.crl_number;
-        if let Some(crl_der) = pass.crl_der {
-            ledger.crl_der = crl_der;
+        let mut tx = self
+            .database
+            .transaction()
+            .await
+            .map_err(database_failure)?;
+        // First, so it is what takes the write lock: a second process racing
+        // this one waits here and then finds the row already stored.
+        if !initial
+            .insert_initial(&mut *tx)
+            .await
+            .map_err(database_failure)?
+        {
+            return Ok(());
         }
-        if pass.merged > 0 {
+        for row in imported.iter().flatten() {
+            row.insert_if_absent(&mut *tx)
+                .await
+                .map_err(database_failure)?;
+        }
+        tx.commit().await.map_err(database_failure)?;
+
+        if let Some(rows) = &imported {
             info!(
-                event = "local_ca_ledger_merged",
+                event = "local_ca_ledger_imported",
                 outcome = "success",
-                rows_merged = pass.merged,
-                ledger = %self.state_key(),
-                "took in revocations another process wrote to this CA's ledger"
+                issuer = %self.issuer_id,
+                rows_imported = rows.len(),
+                crl_number = initial.crl_number,
+                ledger = ?self.paths.as_ref().map(|paths| paths.revoked_path.display().to_string()),
+                "the revocation ledger now lives in the database; the sidecar is no longer \
+                 read or written and may be archived",
             );
         }
-        Ok(pass.changed)
+        self.export().await;
+        Ok(())
+    }
+
+    /// Records `serial` as revoked and makes sure a stored CRL lists it.
+    ///
+    /// Idempotent. A serial already recorded is not recorded again — the first
+    /// revocation's time and reason stand — but its CRL is still checked, and
+    /// signed if it does not list the serial yet: that is the retry of a
+    /// revocation whose row landed and whose CRL did not.
+    pub(super) async fn revoke(&self, revocation: Revocation) -> Result<bool, SignerError> {
+        self.ensure_initialized().await?;
+        let mut tx = self
+            .database
+            .transaction()
+            .await
+            .map_err(database_failure)?;
+        let inserted = revocation
+            .insert_if_absent(&mut *tx)
+            .await
+            .map_err(database_failure)?;
+        tx.commit().await.map_err(database_failure)?;
+        self.regenerate(None, Some(&revocation.serial)).await?;
+        Ok(inserted)
+    }
+
+    /// The CRL to serve.
+    pub(super) async fn current_der(&self) -> Result<Vec<u8>, SignerError> {
+        self.ensure_initialized().await?;
+        self.stored().await?.map(|crl| crl.der).ok_or_else(|| {
+            error!(
+                event = "local_ca_crl_missing",
+                outcome = "failure",
+                issuer = %self.issuer_id,
+            );
+            SignerError::Internal("this CA has no stored CRL".to_string())
+        })
+    }
+
+    /// Signs and stores a new CRL, retrying from a fresh snapshot while other
+    /// writers keep storing first. Returns how many revocations the prune took.
+    ///
+    /// `cutoff`, when given, first deletes the revocations whose certificates
+    /// expired before it (RFC 5280 §3.3). `covering` names a serial that must
+    /// end up listed: if the stored CRL already lists it — because another
+    /// writer's CRL included it — nothing is signed.
+    async fn regenerate(
+        &self,
+        cutoff: Option<i64>,
+        covering: Option<&str>,
+    ) -> Result<u64, SignerError> {
+        let _serialised = self.regenerating.lock().await;
+
+        let removed = match cutoff {
+            Some(cutoff) => {
+                let mut tx = self
+                    .database
+                    .transaction()
+                    .await
+                    .map_err(database_failure)?;
+                let removed = Revocation::prune_expired(&self.issuer_id, cutoff, &mut *tx)
+                    .await
+                    .map_err(database_failure)?;
+                tx.commit().await.map_err(database_failure)?;
+                removed
+            }
+            None => 0,
+        };
+
+        for _ in 0..MAX_REGENERATION_ATTEMPTS {
+            // One read transaction, so the number and the rows come from the
+            // same snapshot; closed before signing, so no lock is held across it.
+            let mut tx = self
+                .database
+                .transaction()
+                .await
+                .map_err(database_failure)?;
+            let current = StoredCrl::find(&self.issuer_id, &mut *tx)
+                .await
+                .map_err(database_failure)?
+                .ok_or_else(|| {
+                    SignerError::Internal("this CA has no stored CRL to replace".to_string())
+                })?;
+            let rows = Revocation::list_for_issuer(&self.issuer_id, &mut *tx)
+                .await
+                .map_err(database_failure)?;
+            drop(tx);
+
+            if covering.is_some_and(|serial| lists_serial(&current.der, serial)) {
+                return Ok(removed);
+            }
+
+            let signer = self.signer.clone();
+            let issuer_id = self.issuer_id.clone();
+            let number = current.crl_number + 1;
+            let next = tokio::task::spawn_blocking(move || sign(&rows, number, &signer, &issuer_id))
+                .await
+                .map_err(|error| {
+                    error!(event = "local_ca_crl_signing_panicked", outcome = "failure", error = %error);
+                    SignerError::Internal(format!("CRL signing panicked: {error}"))
+                })?
+                .map_err(|error| {
+                    error!(event = "local_ca_crl_signing_failed", outcome = "failure", issuer = %self.issuer_id, error = %error);
+                    SignerError::Internal(error.to_string())
+                })?;
+
+            if next
+                .replace_if_number(current.crl_number, &self.database)
+                .await
+                .map_err(database_failure)?
+            {
+                self.export().await;
+                return Ok(removed);
+            }
+        }
+
+        error!(
+            event = "local_ca_crl_regeneration_contended",
+            outcome = "failure",
+            issuer = %self.issuer_id,
+            attempts = MAX_REGENERATION_ATTEMPTS,
+        );
+        Err(SignerError::Internal(format!(
+            "another writer stored a CRL first {MAX_REGENERATION_ATTEMPTS} times in a row"
+        )))
+    }
+
+    /// Writes the stored CRL to `crl_path`, logging rather than failing.
+    ///
+    /// The database is authoritative and has already answered by the time this
+    /// runs, so an unwritable export must not turn a recorded revocation into
+    /// an error the caller would retry. The daily sweep exports again.
+    ///
+    /// The row is read **under the lock**, not handed in: two processes that
+    /// each stored a CRL would otherwise race to write their own, and the
+    /// slower one could leave the older CRL on disk. Whoever holds the lock
+    /// writes whatever is newest at that moment.
+    async fn export(&self) {
+        let Some(paths) = self.paths.clone() else {
+            return;
+        };
+        if let Err(error) = self.try_export(paths.clone()).await {
+            error!(
+                event = "local_ca_crl_export_failed",
+                outcome = "failure",
+                issuer = %self.issuer_id,
+                crl_path = %paths.crl_path.display(),
+                error = %error,
+            );
+        }
+    }
+
+    async fn try_export(&self, paths: CrlPaths) -> anyhow::Result<()> {
+        let lock_path = paths.lock_path.clone();
+        let lock = tokio::task::spawn_blocking(move || lock_export(&lock_path)).await??;
+        let Some(crl) = self.stored().await? else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || {
+            crate::pemfile::write_atomic(&paths.crl_path, crl_pem(&crl.der).as_bytes(), 0o644)?;
+            drop(lock);
+            anyhow::Ok(())
+        })
+        .await??;
+        Ok(())
+    }
+
+    /// This CA's stored CRL, if it has one yet.
+    async fn stored(&self) -> Result<Option<StoredCrl>, SignerError> {
+        let mut tx = self
+            .database
+            .transaction()
+            .await
+            .map_err(database_failure)?;
+        StoredCrl::find(&self.issuer_id, &mut *tx)
+            .await
+            .map_err(database_failure)
     }
 }
 
-/// What one [`LedgerStore::update`] pass leaves behind, carried out of the
-/// blocking task.
-struct Pass {
-    entries: Vec<RevokedEntry>,
-    crl_number: u64,
-    /// `None` when nothing changed and so nothing was signed.
-    crl_der: Option<Vec<u8>>,
-    merged: usize,
-    changed: usize,
+#[async_trait]
+impl CrlRefresher for CrlStore {
+    fn issuer(&self) -> &str {
+        &self.issuer_id
+    }
+
+    /// Drops the revocations whose certificates have expired, and re-signs when
+    /// any went **or** when less than half the stored CRL's validity is left.
+    ///
+    /// The second condition is what keeps a CA that revokes nothing serving a
+    /// CRL that has not lapsed: nothing else re-signs one any more — startup
+    /// used to, when every process rebuilt the CRL from its own copy. A CA
+    /// with nothing expired and a fresh CRL signs nothing, and only exports,
+    /// so a missing or stale `crl_path` catches up within a day.
+    async fn refresh(&self) -> Result<u64, SignerError> {
+        self.ensure_initialized().await?;
+        let now = OffsetDateTime::now_utc();
+        let cutoff = (now - CLOCK_SKEW_ALLOWANCE).unix_timestamp();
+
+        let expired = Revocation::count_expired(&self.issuer_id, cutoff, &self.database)
+            .await
+            .map_err(database_failure)?;
+        let current = self.stored().await?;
+        let half_life = Duration::days(CRL_VALIDITY_DAYS).whole_seconds() / 2;
+        let stale = current.is_none_or(|crl| now.unix_timestamp() + half_life >= crl.next_update);
+
+        if expired > 0 || stale {
+            return self.regenerate(Some(cutoff), None).await;
+        }
+        self.export().await;
+        Ok(0)
+    }
+}
+
+/// Maps a storage error, logging it where it is built.
+fn database_failure(error: sqlx::Error) -> SignerError {
+    error!(event = "local_ca_database_query_failed", outcome = "failure", error = %error);
+    SignerError::Internal(format!("revocation state: {error}"))
 }
 
 /// Opens `path` and takes an exclusive lock on it, blocking until any other
 /// holder lets go. The lock lasts as long as the returned `File`.
 ///
-/// An advisory `flock`: every writer of the ledger goes through here, and the
-/// kernel releases it when the descriptor closes — including when a process
-/// holding it dies, so a crashed `order revoke` cannot wedge the server. It
-/// serialises processes on **one host**; on a network filesystem it may not
-/// hold at all.
+/// An advisory `flock`, released by the kernel when the descriptor closes —
+/// including when a process holding it dies. It serialises writers on **one
+/// host**, which is all an export to a local path needs.
 ///
 /// Refuses anything at `path` that is not a regular file, the caution
 /// `pemfile::write_atomic` takes and for its reason: an open that follows a
 /// planted symlink creates a file wherever the link points.
-fn lock_ledger(path: &Path) -> anyhow::Result<File> {
+fn lock_export(path: &Path) -> anyhow::Result<File> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             anyhow::bail!(
-                "the ledger lock `{}` exists and is not a regular file",
+                "the CRL export lock `{}` exists and is not a regular file",
                 path.display()
             );
         }
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            anyhow::bail!("the ledger lock `{}`: {error}", path.display());
+            anyhow::bail!("the CRL export lock `{}`: {error}", path.display());
         }
         _ => {}
     }
@@ -311,175 +485,68 @@ fn lock_ledger(path: &Path) -> anyhow::Result<File> {
         options.mode(0o600);
     }
     let file = options.open(path).map_err(|error| {
-        anyhow::anyhow!("opening the ledger lock `{}`: {error}", path.display())
+        anyhow::anyhow!("opening the CRL export lock `{}`: {error}", path.display())
     })?;
     file.lock()
         .map_err(|error| anyhow::anyhow!("locking `{}`: {error}", path.display()))?;
     Ok(file)
 }
 
-/// Folds entries another instance persisted into `entries`, returning how many
-/// of `entries` that added or changed.
-///
-/// A **union** by serial, never a replacement: nothing but a prune ever takes
-/// an entry out, and a prune runs after this, over the merged list — so an
-/// entry one instance pruned and another still holds comes back, listed a
-/// little longer than it had to be, which is the safe direction. Where both
-/// sides hold a serial they describe one certificate, so the first revocation
-/// is the one kept (its time and its reason) and a known expiry fills an
-/// unknown one.
-pub(super) fn merge(entries: &mut Vec<RevokedEntry>, persisted: Vec<RevokedEntry>) -> usize {
-    let mut position: HashMap<String, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(index, entry)| (entry.serial_hex.clone(), index))
-        .collect();
-    let mut changed = 0;
-    for theirs in persisted {
-        let Some(&index) = position.get(&theirs.serial_hex) else {
-            position.insert(theirs.serial_hex.clone(), entries.len());
-            entries.push(theirs);
-            changed += 1;
-            continue;
-        };
-        let ours = &mut entries[index];
-        let mut touched = false;
-        if theirs.revoked_at < ours.revoked_at {
-            ours.revoked_at = theirs.revoked_at;
-            ours.reason = theirs.reason;
-            touched = true;
-        }
-        if ours.not_after.is_none() && theirs.not_after.is_some() {
-            ours.not_after = theirs.not_after;
-            touched = true;
-        }
-        changed += usize::from(touched);
-    }
-    changed
-}
-
-#[async_trait]
-impl CrlPruner for LedgerStore {
-    fn state_key(&self) -> String {
-        self.paths.as_ref().map_or_else(
-            || "local_ca.ledger:<memory>".to_string(),
-            CrlPaths::state_key,
-        )
-    }
-
-    /// Drops expired entries and re-signs the CRL if any went. See
-    /// [`prune_expired`] for which entries go.
-    ///
-    /// **Signs and writes nothing when nothing was pruned**, which is the
-    /// common case and is why it is worth checking: rebuilding regardless would
-    /// advance `crl_number` and rewrite two files every single day on a CA that
-    /// has revoked nothing. The one exception is a sidecar holding revocations
-    /// this instance has not seen — another process's `order revoke` — which
-    /// this pass takes in and re-signs over, so the served CRL is at most a day
-    /// behind a revocation made from the command line.
-    ///
-    /// A failed persist leaves the entries in memory untouched, since
-    /// [`LedgerStore::update`] replaces them only on success: *fewer*
-    /// revocations in memory than in the sidecar and the served CRL would be
-    /// the unsafe direction of that disagreement.
-    async fn prune_expired(&self) -> Result<usize, SignerError> {
-        let mut ledger = self.revoked.lock().await;
-        self.update(&mut ledger, |entries| {
-            prune_expired(entries, OffsetDateTime::now_utc())
-        })
-        .await
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub(super) struct RevokedEntry {
-    pub(super) serial_hex: String,
-    /// Unix seconds.
-    pub(super) revoked_at: i64,
-    pub(super) reason: Option<u32>,
-    /// The revoked certificate's own `notAfter`, in unix seconds — what lets
-    /// [`prune_expired`] drop the entry once RFC 5280 §3.3 permits it.
-    ///
-    /// `None` on an entry loaded from a v1 sidecar, and on one whose DER would
-    /// not parse at revocation time. **An unknown expiry is never treated as an
-    /// expired one**, so such an entry stays on the CRL for ever; that is the
-    /// safe direction, and it is why this is an `Option` rather than a `0`
-    /// default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) not_after: Option<i64>,
-}
-
-/// The version this build writes. v1 was a bare top-level array of
-/// [`RevokedEntry`] with no envelope, no counter and no expiries; see
-/// [`load_sidecar`], which still reads it.
-const SIDECAR_VERSION: u32 = 2;
-
-/// The persisted form of a [`RevokedLedger`], as it is read back.
-#[derive(Deserialize)]
-struct Sidecar {
-    /// Read but not acted on: an older binary meeting a newer file should fail
-    /// on the fields it cannot understand rather than on a number, and a newer
-    /// one has nothing yet to branch on. It exists so the *next* format change
-    /// has something to dispatch over besides the shape of the JSON.
-    #[allow(dead_code)]
-    version: u32,
-    crl_number: u64,
-    entries: Vec<RevokedEntry>,
-}
-
-/// The same, as it is written. Borrowed rather than owned so persisting does
-/// not clone the whole ledger.
-#[derive(Serialize)]
-struct SidecarRef<'a> {
-    version: u32,
-    crl_number: u64,
-    entries: &'a [RevokedEntry],
-}
-
-/// How long a generated CRL claims to remain current (RFC 5280's `nextUpdate`).
-/// Regenerated fresh on every revocation and on every startup, so this is a
-/// ceiling on staleness, not a promise a client actually waits out.
-const CRL_VALIDITY_DAYS: i64 = 7;
-
-/// Builds a signed CRL from the ledger `entries`, numbered `crl_number`.
-/// Shared by initial generation (empty, at construction), every subsequent
-/// revocation, and the periodic prune.
-pub(super) fn build_crl(
-    entries: &[RevokedEntry],
+/// Signs a CRL listing `rows`, numbered `crl_number`, as the row to store.
+fn sign(
+    rows: &[Revocation],
     crl_number: u64,
     issuer: &Issuer<'static, CaSigningKey>,
+    issuer_id: &str,
+) -> anyhow::Result<StoredCrl> {
+    let now = OffsetDateTime::now_utc();
+    let this_update = now - CLOCK_SKEW_ALLOWANCE;
+    let next_update = now + Duration::days(CRL_VALIDITY_DAYS);
+    let crl = build_crl(rows, crl_number, issuer, this_update, next_update)?;
+    Ok(StoredCrl {
+        issuer: issuer_id.to_string(),
+        crl_number,
+        der: crl.der().to_vec(),
+        this_update: this_update.unix_timestamp(),
+        next_update: next_update.unix_timestamp(),
+    })
+}
+
+/// Builds a signed CRL over `rows`, numbered `crl_number`.
+pub(super) fn build_crl(
+    rows: &[Revocation],
+    crl_number: u64,
+    issuer: &Issuer<'static, CaSigningKey>,
+    this_update: OffsetDateTime,
+    next_update: OffsetDateTime,
 ) -> anyhow::Result<rcgen::CertificateRevocationList> {
-    // A serial that is not hex can only come from the JSON ledger sidecar on
-    // disk, which is an operator-editable file. This used to `expect`, which
-    // meant a corrupted or hand-edited ledger panicked — and not only at
-    // startup: `revoke` calls this too, so it was a panic in a request task,
-    // taking the `Mutex` poisoned with it and turning every later `GET /crl`
-    // into a panic of its own. Naming the bad entry is something an operator
-    // can act on.
-    let revoked_certs = entries
+    // A serial that is not hex can only arrive from the sidecar import — an
+    // operator-editable file — since every row this CA writes itself comes
+    // from `cert_serial_and_spki`. Naming the entry is something an operator
+    // can act on; the `expect` this replaced was a panic in a request task.
+    let revoked_certs = rows
         .iter()
         .enumerate()
-        .map(|(index, e)| {
-            let serial = hex::decode(&e.serial_hex).map_err(|error| {
+        .map(|(index, row)| {
+            let serial = hex::decode(&row.serial).map_err(|error| {
                 anyhow::anyhow!(
                     "revoked ledger entry {index}: serial `{}` is not hex: {error}",
-                    e.serial_hex
+                    row.serial
                 )
             })?;
             Ok(RevokedCertParams {
                 serial_number: SerialNumber::from_slice(&serial),
-                revocation_time: OffsetDateTime::from_unix_timestamp(e.revoked_at)
-                    .unwrap_or_else(|_| OffsetDateTime::now_utc()),
-                reason_code: e.reason.and_then(reason_from_u32),
+                revocation_time: OffsetDateTime::from_unix_timestamp(row.revoked_at)
+                    .unwrap_or(this_update),
+                reason_code: row.reason.and_then(reason_from_u32),
                 invalidity_date: None,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let now = OffsetDateTime::now_utc();
     CertificateRevocationListParams {
-        this_update: now - CLOCK_SKEW_ALLOWANCE,
-        next_update: now + Duration::days(CRL_VALIDITY_DAYS),
+        this_update,
+        next_update,
         crl_number: SerialNumber::from(crl_number),
         issuing_distribution_point: None,
         revoked_certs,
@@ -487,6 +554,38 @@ pub(super) fn build_crl(
     }
     .signed_by(issuer)
     .map_err(Into::into)
+}
+
+/// Whether the CRL `der` lists `serial` (hex, either case).
+///
+/// A CRL that does not parse lists nothing, which makes the caller sign a new
+/// one — the safe answer for bytes this CA stored itself and cannot read.
+fn lists_serial(der: &[u8], serial: &str) -> bool {
+    use x509_parser::prelude::FromDer;
+    use x509_parser::revocation_list::CertificateRevocationList;
+
+    match CertificateRevocationList::from_der(der) {
+        Ok((_, crl)) => crl
+            .iter_revoked_certificates()
+            .any(|revoked| hex::encode(revoked.raw_serial()).eq_ignore_ascii_case(serial)),
+        Err(error) => {
+            warn!(event = "local_ca_crl_unparsable", outcome = "failure", error = %error);
+            false
+        }
+    }
+}
+
+/// `der` as a PEM `X509 CRL` block — the format `crl_path` has always held.
+fn crl_pem(der: &[u8]) -> String {
+    let body = BASE64_STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN X509 CRL-----\n");
+    for line in body.as_bytes().chunks(64) {
+        // Base64 output is ASCII, so every chunk is valid UTF-8.
+        pem.push_str(std::str::from_utf8(line).unwrap_or_default());
+        pem.push('\n');
+    }
+    pem.push_str("-----END X509 CRL-----\n");
+    pem
 }
 
 /// Maps an RFC 5280 §5.3.1 `CRLReason` code to rcgen's enum. `post_revoke_cert`/
@@ -511,47 +610,50 @@ pub(super) fn reason_from_u32(code: u32) -> Option<RevocationReason> {
     }
 }
 
-/// Drops every entry whose certificate has already expired, returning how many
-/// went. RFC 5280 §3.3: an entry MAY be removed once the certificate itself is
-/// past its own `notAfter`, since nothing can present it any more — which is
-/// what stops this ledger, and the CRL every relying party downloads from it,
-/// growing for the life of the deployment.
-///
-/// Two rules, both load-bearing:
-///
-/// - **An entry with no `not_after` is never dropped.** That is a v1 sidecar's
-///   entry, or one whose certificate would not parse at revocation time, and an
-///   *unknown* expiry is not an expired one.
-/// - **The cutoff is backdated by [`CLOCK_SKEW_ALLOWANCE`]**, the same
-///   allowance issuance already grants. A relying party whose clock is behind
-///   ours still considers the certificate valid for a little longer, and
-///   dropping the entry the instant we think it expired is exactly the window
-///   in which it would accept a certificate this CA revoked.
-pub(super) fn prune_expired(entries: &mut Vec<RevokedEntry>, now: OffsetDateTime) -> usize {
-    let cutoff = (now - CLOCK_SKEW_ALLOWANCE).unix_timestamp();
-    let before = entries.len();
-    entries.retain(|entry| match entry.not_after {
-        Some(not_after) => not_after >= cutoff,
-        None => true,
-    });
-    before - entries.len()
+/// One entry of the pre-database sidecar, as it is read for import.
+#[derive(Deserialize)]
+struct SidecarEntry {
+    serial_hex: String,
+    /// Unix seconds.
+    revoked_at: i64,
+    reason: Option<u32>,
+    /// Absent in a v1 sidecar, and then never pruned.
+    #[serde(default)]
+    not_after: Option<i64>,
+}
+
+impl SidecarEntry {
+    fn into_revocation(self, issuer_id: &str) -> Revocation {
+        Revocation {
+            issuer: issuer_id.to_string(),
+            serial: self.serial_hex,
+            revoked_at: self.revoked_at,
+            reason: self.reason,
+            not_after: self.not_after,
+        }
+    }
+}
+
+/// The v2 sidecar envelope.
+#[derive(Deserialize)]
+struct Sidecar {
+    crl_number: u64,
+    entries: Vec<SidecarEntry>,
 }
 
 /// Reads the sidecar, in either format it has ever had.
 ///
 /// Dispatch is on the **shape of the JSON** rather than through
 /// `#[serde(untagged)]`: an untagged enum collapses every field-level error into
-/// one "did not match any variant", and this file is operator-editable — the
-/// same reason [`build_crl`] names the offending entry instead of `expect`ing.
-fn load_sidecar(path: &Path) -> anyhow::Result<(Vec<RevokedEntry>, u64)> {
+/// one "did not match any variant", and this file is operator-editable.
+fn load_sidecar(path: &Path) -> anyhow::Result<(Vec<SidecarEntry>, u64)> {
     let value: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
     if value.is_array() {
         // v1: a bare array, no envelope and no counter. The highest number that
-        // format could ever have emitted was `entries.len() + 1`, so starting
-        // there — and bumping before the first build, as every build does —
-        // puts the first v2 CRL strictly above the last v1 one. Monotonicity
-        // has to hold across the upgrade too, not only after it.
-        let entries: Vec<RevokedEntry> = serde_json::from_value(value)?;
+        // format could ever have emitted was `entries.len() + 1`, so the first
+        // CRL the database stores — numbered one above what this returns — sits
+        // strictly above the last one v1 published.
+        let entries: Vec<SidecarEntry> = serde_json::from_value(value)?;
         let crl_number = entries.len() as u64 + 1;
         return Ok((entries, crl_number));
     }
@@ -559,61 +661,48 @@ fn load_sidecar(path: &Path) -> anyhow::Result<(Vec<RevokedEntry>, u64)> {
     Ok((sidecar.entries, sidecar.crl_number))
 }
 
-/// Loads the revoked-certificate ledger from `paths` (if given and its
-/// sidecar file exists) — else starts empty — prunes what has expired, and
-/// builds the matching signed CRL. Shared by [`LocalCa::load_or_generate`] and
-/// [`LocalCa::generate_in_memory`], mirroring the existing `generate_ca`
-/// shared-helper pattern.
-///
-/// Unlike its previous form this **writes the sidecar as well as the CRL**: the
-/// counter it just advanced is only durable if it is written down, and the
-/// prune above may have changed the entries. The CRL write was already here, so
-/// this is no new class of startup failure.
-///
-/// Under the ledger lock, like every other write: this runs in each process
-/// that builds the CA — `serve` at startup, and `order revoke` every time — so
-/// without it two starts interleaving would each rewrite the files from what
-/// they read before the other wrote.
-pub(super) fn init_ledger(
-    paths: Option<&CrlPaths>,
-    issuer: &Issuer<'static, CaSigningKey>,
-) -> anyhow::Result<RevokedLedger> {
-    // Released when this function returns, i.e. after both writes.
-    let _lock = paths.map(|p| lock_ledger(&p.lock_path)).transpose()?;
-    let (entries, crl_number) = match paths {
-        Some(p) if p.revoked_path.exists() => load_sidecar(&p.revoked_path)?,
-        _ => (Vec::new(), 0),
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let mut ledger = RevokedLedger {
-        entries,
-        crl_number,
-        crl_der: Vec::new(),
-    };
-    let removed = prune_expired(&mut ledger.entries, OffsetDateTime::now_utc());
-    if removed > 0 {
-        info!(
-            event = "local_ca_crl_pruned",
-            outcome = "success",
-            rows_removed = removed,
-            "dropped revocation entries whose certificates have expired"
+    /// Something other than a regular file where the lock belongs is refused
+    /// by name, rather than followed or locked as if it were one.
+    #[test]
+    fn a_lock_path_that_is_not_a_regular_file_is_refused() {
+        let dir = crate::testutil::TempDir::new("crl-lock");
+        let lock = dir.join("ca.json.lock");
+        fs::create_dir(&lock).unwrap();
+
+        let error = lock_export(&lock).unwrap_err().to_string();
+        assert!(
+            error.contains("ca.json.lock"),
+            "the refusal names the lock: {error}"
         );
     }
 
-    // Rewritten on every startup, so `thisUpdate`/`nextUpdate` never go stale
-    // after a long-idle restart even with no new revocation.
-    let number = ledger.next_crl_number();
-    let crl = build_crl(&ledger.entries, number, issuer)?;
-    if let Some(p) = paths {
-        // The ledger before the CRL, and each at the permissions `revoke`
-        // writes them with — see the ordering note there.
-        crate::pemfile::write_atomic(
-            &p.revoked_path,
-            sidecar_json(&ledger.entries, ledger.crl_number)?.as_bytes(),
-            0o600,
-        )?;
-        crate::pemfile::write_atomic(&p.crl_path, crl.pem()?.as_bytes(), 0o644)?;
+    /// The export is standard PEM: 64-column base64 between the `X509 CRL`
+    /// armour, decoding back to the exact bytes.
+    #[test]
+    fn the_export_is_pem_that_decodes_to_the_der() {
+        let der: Vec<u8> = (0..=255u8).cycle().take(1000).collect();
+        let pem = crl_pem(&der);
+
+        let lines: Vec<&str> = pem.lines().collect();
+        assert_eq!(lines.first(), Some(&"-----BEGIN X509 CRL-----"));
+        assert_eq!(lines.last(), Some(&"-----END X509 CRL-----"));
+        assert!(
+            lines[1..lines.len() - 1]
+                .iter()
+                .all(|line| line.len() <= 64)
+        );
+        let body: String = lines[1..lines.len() - 1].concat();
+        assert_eq!(BASE64_STANDARD.decode(body).unwrap(), der);
     }
-    ledger.crl_der = crl.der().to_vec();
-    Ok(ledger)
+
+    /// Bytes that are not a CRL list nothing, so the caller signs a new one
+    /// rather than trusting what it cannot read.
+    #[test]
+    fn an_unparsable_crl_lists_nothing() {
+        assert!(!lists_serial(b"not a crl", "01"));
+    }
 }

@@ -3389,7 +3389,11 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     assert_eq!(body["certSerial"], expected_serial);
 
     // The CA acted, not just the database: the CRL now names the serial.
-    let crl = signer.crl_der().await.expect("a local CA always has a CRL");
+    let crl = signer
+        .crl_der()
+        .await
+        .unwrap()
+        .expect("a local CA always has a CRL");
     assert!(!crl.is_empty());
 
     // A repeat is a conflict, not a second revocation.

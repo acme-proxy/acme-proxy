@@ -528,7 +528,18 @@ pub(crate) async fn issued_order(
 
     const DAY: i64 = 24 * 60 * 60;
 
-    let signer = crate::signer::local_ca::LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+    // Its own throwaway database: this fixture only issues, and a CA's
+    // revocation state is the one thing that would need to share `database`.
+    let signer = crate::signer::local_ca::LocalCa::generate_in_memory(
+        "ecdsa-p256",
+        90,
+        std::sync::Arc::new(
+            crate::sqlite::db::Database::connect_in_memory()
+                .await
+                .unwrap(),
+        ),
+    )
+    .unwrap();
     let mut order = Order::create(
         profile,
         account,

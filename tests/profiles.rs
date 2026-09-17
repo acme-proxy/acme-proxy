@@ -33,8 +33,8 @@ use common::{
 /// They have distinct local CAs, so the issuer of a leaf says which one signed.
 async fn two_profiles() -> Router {
     test_app_with_profiles(vec![
-        TestProfile::new("a"),
-        TestProfile::new("b").requiring_eab(),
+        TestProfile::new("a").await,
+        TestProfile::new("b").await.requiring_eab(),
     ])
     .await
     .0
@@ -292,9 +292,12 @@ async fn registering_without_eab_does_not_open_an_eab_protected_profile() {
 /// can never be spent on a stricter endpoint's signer.
 #[tokio::test]
 async fn an_order_is_invisible_from_another_profile() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let signer = EcSigner::new();
 
     let account_at_a = register(&app, "a", &signer).await;
@@ -333,9 +336,12 @@ async fn an_order_is_invisible_from_another_profile() {
 /// Each endpoint signs with its own CA and publishes its own CRL.
 #[tokio::test]
 async fn each_profile_issues_from_its_own_ca() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let signer = EcSigner::new();
 
     let account_at_a = register(&app, "a", &signer).await;
@@ -380,9 +386,12 @@ async fn each_profile_issues_from_its_own_ca() {
 /// must not revoke — or even recognise — a certificate `a` issued.
 #[tokio::test]
 async fn a_certificate_cannot_be_revoked_through_another_profile() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let account_signer = EcSigner::new();
     let account = register(&app, "a", &account_signer).await;
 
@@ -466,9 +475,12 @@ async fn a_certificate_cannot_be_revoked_through_another_profile() {
 /// ARI is unauthenticated, so it is scoped the same way revocation is.
 #[tokio::test]
 async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let signer = EcSigner::new();
     let account = register(&app, "a", &signer).await;
     let chain = issue(&app, "a", &signer, &account, "ari.example.com").await;
@@ -520,8 +532,8 @@ impl Check for DenyAll {
 async fn filters_apply_to_their_own_profile_only() {
     let closed = common::policy_with(Arc::new(DenyAll));
     let app = test_app_with_profiles(vec![
-        TestProfile::new("open"),
-        TestProfile::new("closed").with_filter(closed),
+        TestProfile::new("open").await,
+        TestProfile::new("closed").await.with_filter(closed),
     ])
     .await
     .0;
@@ -581,9 +593,12 @@ async fn routing_separates_server_routes_from_acme_routes() {
 /// use wherever it is spent.
 #[tokio::test]
 async fn a_nonce_minted_at_one_profile_is_accepted_at_another() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let signer = EcSigner::new();
 
     let n = nonce(&app, "a").await;
@@ -600,9 +615,12 @@ async fn a_nonce_minted_at_one_profile_is_accepted_at_another() {
 /// accounts — different ids, and deactivating one leaves the other working.
 #[tokio::test]
 async fn one_key_yields_one_account_per_profile() {
-    let app = test_app_with_profiles(vec![TestProfile::new("a"), TestProfile::new("b")])
-        .await
-        .0;
+    let app = test_app_with_profiles(vec![
+        TestProfile::new("a").await,
+        TestProfile::new("b").await,
+    ])
+    .await
+    .0;
     let signer = EcSigner::new();
 
     let at_a = register(&app, "a", &signer).await;

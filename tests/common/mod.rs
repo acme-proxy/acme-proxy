@@ -186,8 +186,22 @@ pub async fn test_app() -> Router {
 /// close its pool to exercise DB-failure paths. The signer is an in-memory local
 /// CA so the suite stays disk- and network-free.
 pub async fn test_app_with_db() -> (Router, Arc<Database>) {
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer = Arc::new(memory_ca().await);
     test_app_with_signer(signer).await
+}
+
+/// An in-memory local CA over its own throwaway database.
+///
+/// Its revocations and CRL live in that database, which nothing else here
+/// reads: a test that needs two CAs — or a CA and an app — to share revocation
+/// state builds the CA over the app's database itself.
+pub async fn memory_ca() -> LocalCa {
+    LocalCa::generate_in_memory(
+        "ecdsa-p256",
+        90,
+        Arc::new(Database::connect_in_memory().await.unwrap()),
+    )
+    .expect("an in-memory CA is always available")
 }
 
 /// Builds the full router with a caller-supplied signer backend (and a throwaway
@@ -207,7 +221,7 @@ pub async fn test_app_with_signer(signer: Arc<dyn SignerBackend>) -> (Router, Ar
 /// Builds the full router with a caller-supplied filter chain, the default
 /// config and an in-memory local CA.
 pub async fn test_app_with_filter(filter: Arc<FilterPolicy>) -> (Router, Arc<Database>) {
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer = Arc::new(memory_ca().await);
     test_app_full(
         Config::default(),
         signer,
@@ -224,7 +238,7 @@ pub async fn test_app_with_challenges(
     config: Config,
     challenges: Arc<ChallengeRegistry>,
 ) -> (Router, Arc<Database>) {
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer = Arc::new(memory_ca().await);
     test_app_full(
         config,
         signer,
@@ -239,7 +253,7 @@ pub async fn test_app_with_challenges(
 /// wrapping a [`RecordingNotifyBackend`] — plus the default config, an
 /// in-memory local CA, no filters and a bypassing `http-01` registry.
 pub async fn test_app_with_notify(notify: Arc<NotifyDispatcher>) -> (Router, Arc<Database>) {
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer = Arc::new(memory_ca().await);
     test_app_full(
         Config::default(),
         signer,
@@ -436,18 +450,16 @@ impl TestProfile {
     /// A profile named `name`, with its **own** local CA — two of these issue
     /// certificates with different issuers, which is how a test proves which
     /// endpoint actually signed.
-    #[must_use]
-    pub fn new(name: &'static str) -> Self {
+    pub async fn new(name: &'static str) -> Self {
         Self {
             name,
-            signer: Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
+            signer: Arc::new(memory_ca().await),
             filter: Arc::new(FilterPolicy::default()),
             challenges: default_challenges(),
             eab: acme_proxy::config::EabConfig::default(),
             meta: acme_proxy::config::MetaConfig::default(),
             // Resolved when the app is built: a dispatcher needs a `JobQueue`
-            // and therefore a database, which this synchronous constructor has
-            // no way to open.
+            // over the app's own database, which does not exist yet.
             notify: None,
         }
     }
@@ -549,6 +561,28 @@ pub async fn test_app_full(
     (router, database)
 }
 
+/// [`test_app_with_signer`] over a caller-supplied database, for a test whose
+/// signer keeps state in that same database — a local CA whose revocations a
+/// second instance, standing in for another process, must see.
+pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBackend>) -> Router {
+    init_tracing();
+    let config = Config::default();
+    let profile = one_profile(
+        &config,
+        signer,
+        Arc::new(FilterPolicy::default()),
+        default_challenges(),
+        no_notifications().await,
+    );
+    build_app(
+        database.clone(),
+        Arc::new(config),
+        vec![profile],
+        test_auditor(database.clone()),
+        Arc::new(Metrics::new(database)),
+    )
+}
+
 /// A file-backed database, removed with its WAL sidecars when the test ends.
 ///
 /// Hold it for as long as the app that opened it: dropping it deletes the file.
@@ -582,7 +616,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     let config = Config::default();
     let profile = one_profile(
         &config,
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
+        Arc::new(memory_ca().await),
         Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications().await,
@@ -731,8 +765,7 @@ async fn admin_app_with_notifiers(
 ) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let signer: Arc<dyn SignerBackend> =
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer: Arc<dyn SignerBackend> = Arc::new(memory_ca().await);
     let profile = one_profile(
         &config,
         signer.clone(),
@@ -1488,13 +1521,9 @@ pub struct GatedSigner {
 }
 
 impl GatedSigner {
-    #[must_use]
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         Self {
-            ca: Arc::new(
-                LocalCa::generate_in_memory("ecdsa-p256", 90)
-                    .expect("an in-memory CA is always available"),
-            ),
+            ca: Arc::new(memory_ca().await),
             calls: Arc::new(AtomicUsize::new(0)),
             gate: Arc::new(tokio::sync::Semaphore::new(0)),
             entered: Arc::new(tokio::sync::Semaphore::new(0)),
@@ -1516,12 +1545,6 @@ impl GatedSigner {
             Arc::clone(&self.gate),
             Arc::clone(&self.entered),
         )
-    }
-}
-
-impl Default for GatedSigner {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1552,7 +1575,7 @@ impl SignerBackend for GatedSigner {
         self.ca.revoke(cert_der, reason).await
     }
 
-    async fn crl_der(&self) -> Option<Vec<u8>> {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
         self.ca.crl_der().await
     }
 }
@@ -1568,18 +1591,8 @@ impl SignerBackend for GatedSigner {
 pub struct RevokeFailingSigner(pub Arc<LocalCa>);
 
 impl RevokeFailingSigner {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Arc::new(
-            LocalCa::generate_in_memory("ecdsa-p256", 90)
-                .expect("an in-memory CA is always available"),
-        ))
-    }
-}
-
-impl Default for RevokeFailingSigner {
-    fn default() -> Self {
-        Self::new()
+    pub async fn new() -> Self {
+        Self(Arc::new(memory_ca().await))
     }
 }
 
@@ -1599,7 +1612,7 @@ impl SignerBackend for RevokeFailingSigner {
         Err(SignerError::Internal("the CA refused".to_string()))
     }
 
-    async fn crl_der(&self) -> Option<Vec<u8>> {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
         self.0.crl_der().await
     }
 }
@@ -1627,13 +1640,9 @@ pub struct RevokePersistFailingSigner {
 }
 
 impl RevokePersistFailingSigner {
-    #[must_use]
-    pub fn new() -> Self {
+    pub async fn new() -> Self {
         Self {
-            ca: Arc::new(
-                LocalCa::generate_in_memory("ecdsa-p256", 90)
-                    .expect("an in-memory CA is always available"),
-            ),
+            ca: Arc::new(memory_ca().await),
             database: std::sync::OnceLock::new(),
             revocations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
@@ -1642,12 +1651,6 @@ impl RevokePersistFailingSigner {
     /// Hands over the database to close, once the app that owns it exists.
     pub fn arm(&self, database: Arc<Database>) {
         let _ = self.database.set(database);
-    }
-}
-
-impl Default for RevokePersistFailingSigner {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1677,7 +1680,7 @@ impl SignerBackend for RevokePersistFailingSigner {
         Ok(())
     }
 
-    async fn crl_der(&self) -> Option<Vec<u8>> {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
         self.ca.crl_der().await
     }
 }
@@ -1812,9 +1815,9 @@ pub struct ScriptedAriSigner {
 }
 
 impl ScriptedAriSigner {
-    pub fn new(answer: AriAnswer) -> Self {
+    pub async fn new(answer: AriAnswer) -> Self {
         Self {
-            inner: LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap(),
+            inner: memory_ca().await,
             answer,
         }
     }

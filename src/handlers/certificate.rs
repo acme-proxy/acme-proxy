@@ -288,11 +288,17 @@ pub async fn post_revoke_cert(
 }
 
 /// Serves the local CA's certificate revocation list (RFC 5280), DER encoded.
+///
+/// `404` when the backend keeps no CRL of its own, and `500` when it does but
+/// the CRL could not be read: a relying party told "there is no CRL" might
+/// stop checking, where a failure it retries later.
 #[instrument(name = "get_crl", skip_all)]
 pub async fn get_crl(State(state): State<AppState>) -> Response {
     match state.profile.signer.crl_der().await {
-        Some(der) => ([(header::CONTENT_TYPE, "application/pkix-crl")], der).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        Ok(Some(der)) => ([(header::CONTENT_TYPE, "application/pkix-crl")], der).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // Logged where the backend built it.
+        Err(_) => Problem::server_internal("CRL lookup failed").into_response(),
     }
 }
 

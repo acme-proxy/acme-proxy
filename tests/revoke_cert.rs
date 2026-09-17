@@ -413,6 +413,76 @@ async fn revoked_certificate_appears_in_the_served_crl() {
     );
 }
 
+/// `acme-proxy order revoke` beside a running server: the CLI builds its own
+/// `LocalCa` over the same files and database, revokes through the operator
+/// path, and the server's very next `GET /crl` lists the serial.
+///
+/// This is the bug that moved the CA's revocation state into the database.
+/// The server used to serve the CRL it held in memory, so a revocation made by
+/// another process stayed invisible until the server's own next write or a
+/// restart — while `order show` said revoked.
+#[tokio::test]
+async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() {
+    use acme_proxy::signer::SignerBackend;
+    use acme_proxy::signer::local_ca::LocalCa;
+    use acme_proxy::sqlite::db::Database;
+
+    let dir = common::TempDir::new("shared-crl");
+    let cfg = acme_proxy::config::LocalCaConfig {
+        cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
+        key_path: dir.join("ca.key").to_string_lossy().into_owned(),
+        crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+        ..acme_proxy::config::LocalCaConfig::default()
+    };
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    let server_ca = Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
+    let app = common::test_app_over(database.clone(), server_ca).await;
+
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
+    let (serial_hex, _) =
+        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    // Served once before the other process acts, so the server has already
+    // produced whatever it would have held on to.
+    assert_eq!(get(&app, &p("/crl")).await.status(), StatusCode::OK);
+
+    let cli_ca: Arc<dyn SignerBackend> =
+        Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
+    let order =
+        acme_proxy::sqlite::order::Order::find_by_cert_serial("default", &serial_hex, &database)
+            .await
+            .unwrap()
+            .expect("the issued order is found by its serial");
+    let outcome = acme_proxy::admin::revoke_order(
+        &order.id.to_string(),
+        Some(1),
+        acme_proxy::audit::Actor::cli(),
+        common::ClientContext::default(),
+        database.clone(),
+        cli_ca,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        acme_proxy::admin::RevokeOutcome::Revoked(_)
+    ));
+
+    let res = get(&app, &p("/crl")).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let der = res.into_body().collect().await.unwrap().to_bytes();
+    use x509_parser::prelude::FromDer;
+    let (_, crl) = x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
+    assert!(
+        crl.iter_revoked_certificates().any(|r| r
+            .raw_serial_as_string()
+            .replace(':', "")
+            .eq_ignore_ascii_case(&serial_hex)),
+        "the server must serve the CLI's revocation without a write or restart of its own"
+    );
+}
+
 /// A signer that refuses leaves the order **un-revoked and retryable**.
 ///
 /// `post_revoke_cert` calls the signer's `revoke` *before* `Order::revoke`,
@@ -423,7 +493,7 @@ async fn revoked_certificate_appears_in_the_served_crl() {
 /// the retry must not come back `alreadyRevoked`.
 #[tokio::test]
 async fn a_signer_revoke_failure_leaves_the_order_revocable() {
-    let backend = Arc::new(RevokeFailingSigner::new());
+    let backend = Arc::new(RevokeFailingSigner::new().await);
     let (app, database) = test_app_with_signer(backend.clone()).await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
@@ -543,7 +613,7 @@ async fn revoke_cert_answers_500_and_revokes_nothing_when_the_database_is_gone()
 /// un-revoked.
 #[tokio::test]
 async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() {
-    let backend = Arc::new(common::RevokePersistFailingSigner::new());
+    let backend = Arc::new(common::RevokePersistFailingSigner::new().await);
     let (app, database) = test_app_with_signer(backend.clone()).await;
     backend.arm(database.clone());
 
@@ -578,7 +648,11 @@ async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() 
     // order row never learned about it. That asymmetry is the whole reason the
     // branch is audited as a failure rather than swallowed.
     use acme_proxy::signer::SignerBackend;
-    let crl = backend.crl_der().await.expect("the CA serves a CRL");
+    let crl = backend
+        .crl_der()
+        .await
+        .unwrap()
+        .expect("the CA serves a CRL");
     use x509_parser::prelude::FromDer;
     let (_, parsed) =
         x509_parser::revocation_list::CertificateRevocationList::from_der(&crl).unwrap();

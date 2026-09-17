@@ -2131,6 +2131,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
         !signer
             .crl_der()
             .await
+            .unwrap()
             .expect("a local CA always has a CRL")
             .is_empty()
     );

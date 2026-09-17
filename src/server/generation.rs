@@ -96,12 +96,12 @@ pub(crate) fn build_generation(
     // `build_backends` deliberately does not collapse. So each backend hands
     // over *state* and one handler is built over all of it.
     let mut job_registry = crate::jobs::JobRegistry::new();
-    // The CRL ledgers are collected once per distinct backend, since two
-    // profiles sharing one CA share one ledger and pruning it twice a day would
-    // be pointless work. The identity is kept as a `usize` rather than the
+    // The CRLs are collected once per distinct backend, since two profiles
+    // sharing one CA share one CRL and refreshing it twice a day would be
+    // pointless work. The identity is kept as a `usize` rather than the
     // pointer itself, so this function's caller stays `Send`; it is spawned.
     let mut registered: Vec<usize> = Vec::new();
-    let mut pruners: Vec<Arc<dyn crate::signer::CrlPruner>> = Vec::new();
+    let mut refreshers: Vec<Arc<dyn crate::signer::CrlRefresher>> = Vec::new();
     // The relay backends are collected per *profile*, because that is the key a
     // job row is dispatched on — and because taking the profile list from the
     // backend would take a stale one: a backend whose configuration did not
@@ -120,15 +120,15 @@ pub(crate) fn build_generation(
             continue;
         }
         registered.push(identity);
-        pruners.extend(profile.signer.crl_pruner());
+        refreshers.extend(profile.signer.crl_refresher());
     }
-    // The periodic CRL prune, over whichever CAs keep a ledger of their own.
+    // The daily CRL refresh, over whichever CAs keep a CRL of their own.
     // Registered only when there is one, the way the audit sweep is registered
     // only for a non-zero retention.
-    if !pruners.is_empty() {
+    if !refreshers.is_empty() {
         job_registry
             .register(Arc::new(crate::signer::local_ca::sweep::CrlSweepJob::new(
-                pruners,
+                refreshers,
             )))
             .inspect_err(|error| {
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);

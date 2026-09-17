@@ -237,12 +237,16 @@ pub trait SignerBackend: Send + Sync {
     async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError>;
 
     /// The backend's current certificate revocation list (RFC 5280), DER
-    /// encoded, if it maintains one servable here. `None` means the backend
+    /// encoded, if it maintains one servable here. `Ok(None)` means the backend
     /// has no CRL of its own (e.g. a delegating backend whose CRL is only
     /// ever published by the upstream CA it defers to, at a URL of the
     /// upstream's choosing).
-    async fn crl_der(&self) -> Option<Vec<u8>> {
-        None
+    ///
+    /// An `Err` is a CRL that exists but could not be read — `local_ca`'s
+    /// database being unreachable — which `GET /crl` answers with a 500 rather
+    /// than the 404 that would tell a relying party there is no CRL at all.
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
+        Ok(None)
     }
 
     /// The certificates a client needs to trust what this backend issues, PEM
@@ -284,7 +288,7 @@ pub trait SignerBackend: Send + Sync {
     ///
     /// **State, not a [`JobHandler`](crate::jobs::JobHandler)** — the same
     /// distinction, and for the same reason, as
-    /// [`crl_pruner`](SignerBackend::crl_pruner) above. This method replaced a
+    /// [`crl_refresher`](SignerBackend::crl_refresher) above. This method replaced a
     /// `jobs()` returning one handler per backend, which made two profiles
     /// relaying to *different* upstreams — two backends, since
     /// [`build_backends`] deliberately does not collapse them — a startup
@@ -317,8 +321,8 @@ pub trait SignerBackend: Send + Sync {
         None
     }
 
-    /// This backend's revocation ledger, if it keeps one that grows and can be
-    /// swept (RFC 5280 §3.3).
+    /// This backend's CRL, if it keeps one that must be pruned (RFC 5280 §3.3)
+    /// and re-signed before it lapses.
     ///
     /// A getter handing over *state* rather than a
     /// [`JobHandler`](crate::jobs::JobHandler), and the distinction is not
@@ -333,10 +337,9 @@ pub trait SignerBackend: Send + Sync {
     /// method of this shape, and the trait deliberately has no third form: a
     /// backend never returns a handler of its own.
     ///
-    /// Only [`local_ca::LocalCa`] overrides it, and only when it has files to
-    /// persist to. The delegating backends have no ledger of their own — the
-    /// upstream or the script keeps it.
-    fn crl_pruner(&self) -> Option<Arc<dyn CrlPruner>> {
+    /// Only [`local_ca::LocalCa`] overrides it. The delegating backends have no
+    /// CRL of their own to keep — the upstream or the script keeps it.
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
         None
     }
 
@@ -351,35 +354,31 @@ pub trait SignerBackend: Send + Sync {
     /// nothing between calls — and for any state that already has a durable
     /// home.
     ///
-    /// **Durability is not the test, though; a race is.** `local_ca`'s ledger
-    /// *is* persisted, and it is still carried, because a revocation landing on
-    /// the outgoing instance between the incoming one's read of the sidecar and
-    /// the swap would otherwise be lost. Sharing the `Arc` means both instances
-    /// see one ledger for the whole window, so there is nothing to diverge.
+    /// `local_ca` carries nothing: its revocation state lives in the database,
+    /// which the outgoing and the incoming instance share for the whole window.
     fn carried_state(&self) -> CarriedState {
         CarriedState::default()
     }
 }
 
-/// One backend's revocation ledger, as the periodic sweep sees it.
+/// One backend's CRL, as the periodic sweep sees it.
 ///
 /// Deliberately narrow: the sweep has no business knowing what a `LocalCa` is,
 /// and this is the whole of what it needs — something to name in a log line and
-/// something to call. See [`SignerBackend::crl_pruner`] for why the state
+/// something to call. See [`SignerBackend::crl_refresher`] for why the state
 /// travels rather than a [`JobHandler`](crate::jobs::JobHandler).
 #[async_trait]
-pub trait CrlPruner: Send + Sync {
-    /// Which ledger this is, for logging. The same
-    /// [`CarriedState`] key the reload path files it under, so one CA reads as
-    /// one resource wherever it is named.
-    fn state_key(&self) -> String;
+pub trait CrlRefresher: Send + Sync {
+    /// Which CA this is, for logging: its issuer id
+    /// ([`crate::cert::issuer_id`]), the key its revocation state is stored
+    /// under. Two profiles sharing one CA name one issuer.
+    fn issuer(&self) -> &str;
 
-    /// Drops entries whose certificates have expired and re-signs the CRL if
-    /// any went, returning how many. Must be cheap and write nothing when
-    /// there was nothing to drop — it runs daily on every CA in the process.
-    /// (`local_ca` also re-signs when another process wrote revocations this
-    /// one had not seen, which is the one other thing that changes its CRL.)
-    async fn prune_expired(&self) -> Result<usize, SignerError>;
+    /// Drops revocations whose certificates have expired, re-signs the CRL if
+    /// any went or if it is due, and returns how many went. Must be cheap and
+    /// sign nothing when there is nothing to do — it runs daily on every CA in
+    /// the process.
+    async fn refresh(&self) -> Result<u64, SignerError>;
 }
 
 /// Why issuance failed, mapped by the handler to the right ACME error:
@@ -444,7 +443,7 @@ pub fn from_config(
     match cfg.backend.as_str() {
         "local_ca" => Ok(Arc::new(local_ca::LocalCa::load_or_generate(
             &cfg.local_ca,
-            carried,
+            parts.database.clone(),
         )?)),
         // The one backend handed the metrics registry, because it is the one
         // that finishes an issuance from a background task: `post_finalize`

@@ -389,7 +389,16 @@ async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
 /// A real `leaf + CA` chain, so the relay's own parsing of what the
 /// upstream returned is exercised rather than stubbed.
 async fn real_chain() -> String {
-    let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+    let ca = LocalCa::generate_in_memory(
+        "ecdsa-p256",
+        90,
+        Arc::new(
+            crate::sqlite::db::Database::connect_in_memory()
+                .await
+                .unwrap(),
+        ),
+    )
+    .unwrap();
     let key_pair = rcgen::KeyPair::generate().unwrap();
     let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
     let csr = params.serialize_request(&key_pair).unwrap();

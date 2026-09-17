@@ -613,7 +613,7 @@ async fn finalize_internal_signer_failure_marks_order_invalid() {
 /// certificate leaves nothing else behind to look for.
 #[tokio::test]
 async fn two_concurrent_finalizes_issue_exactly_one_certificate() {
-    let backend = Arc::new(common::GatedSigner::new());
+    let backend = Arc::new(common::GatedSigner::new().await);
     let (calls, gate, entered) = backend.handles();
     let (app, signer, account_url, order_url) = setup_ready_order_with_signer(backend).await;
 

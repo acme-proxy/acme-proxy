@@ -15,7 +15,6 @@ use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::FilterPolicy;
 use acme_proxy::jobs::JobRegistry;
 use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
-use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::sqlite::job::Job;
 use axum::Router;
 use axum::body::Body;
@@ -268,7 +267,7 @@ async fn certificate_revoked_dispatches_with_the_serial_and_reason() {
 #[tokio::test]
 async fn challenge_failed_dispatches_with_the_error_kind() {
     let notify = NotifyHarness::new().await;
-    let signer_backend = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer_backend = Arc::new(common::memory_ca().await);
     let (app, _db) = test_app_full(
         Config::default(),
         signer_backend,

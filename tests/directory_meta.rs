@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use acme_proxy::config::Config;
 use acme_proxy::filter::FilterPolicy;
-use acme_proxy::signer::local_ca::LocalCa;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -28,7 +27,7 @@ const TOS: &str = "https://acme.example.test/terms/v3";
 async fn app_with(config: Config) -> Router {
     test_app_full(
         config,
-        Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap()),
+        Arc::new(common::memory_ca().await),
         Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications().await,

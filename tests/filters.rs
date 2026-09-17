@@ -18,7 +18,6 @@ use acme_proxy::config::{
 };
 use acme_proxy::filter::policy::{Check, StageSet, Verdict};
 use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
-use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::sqlite::eab::Eab;
 use async_trait::async_trait;
 use axum::Router;
@@ -69,7 +68,7 @@ async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     .expect("ipam config should build");
     let chain = filter::from_config(&filter, &DnsConfig::default(), inventory, true)
         .expect("filter config should build");
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let signer = Arc::new(common::memory_ca().await);
     test_app_full(
         Config::default(),
         signer,
@@ -1611,7 +1610,7 @@ async fn eab_labels_scope_each_tenant_to_its_own_names() {
 
     let policy = filter::from_config(&tenant_policy(), &DnsConfig::default(), None, true)
         .expect("tenant policy should build");
-    let ca = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap());
+    let ca = Arc::new(common::memory_ca().await);
     let (app, db) = test_app_full(
         config,
         ca,

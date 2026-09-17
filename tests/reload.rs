@@ -1079,7 +1079,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
     // what a restart after this reload would do.
     acme_proxy::signer::local_ca::LocalCa::load_or_generate(
         &cfg,
-        &acme_proxy::signer::CarriedState::new(),
+        Arc::new(Database::connect_in_memory().await.unwrap()),
     )
     .expect("the CA material must survive an edited [signer]");
 

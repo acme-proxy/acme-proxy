@@ -10,15 +10,14 @@
 //! order, signs a real leaf embedding the CSR's public key, and returns the
 //! `leaf + CA` PEM chain.
 //!
-//! [`LocalCa::revoke`] records a revocation and regenerates a real, CA-signed
-//! certificate revocation list (RFC 5280) via `rcgen`'s CRL support; the
-//! durable source of truth is a small JSON ledger sidecar next to `crl_path`
-//! (`crl_path` with its extension replaced by `.json`), not the CRL's own DER
-//! round-tripped back — simpler, and avoids ASN.1 reconstruction edge cases.
-//! The CRL file itself is a derived artifact, rebuilt fresh from the ledger on
-//! every revocation and on every startup. [`LocalCa::crl_der`] serves the
-//! current one; an initial, empty, validly-signed CRL is generated eagerly (at
-//! construction, before any revocation ever happens) so it is always fetchable.
+//! [`LocalCa::revoke`] records a revocation in the database and stores a real,
+//! CA-signed certificate revocation list (RFC 5280) over every revocation of
+//! this CA, via `rcgen`'s CRL support. [`LocalCa::crl_der`] serves the stored
+//! one, so every process over one database serves the same CRL; see [`crl`]
+//! for how that stays correct when several of them write. A CA's first use
+//! stores an initial CRL — importing the JSON sidecar a CA kept beside
+//! `crl_path` before the database did — so there is always one to fetch.
+//! `crl_path` itself is only an export now, never read back.
 
 mod ca;
 mod crl;
@@ -27,7 +26,7 @@ mod policy;
 pub mod sweep;
 
 use ca::{generate_ca, random_serial};
-use crl::{CrlPaths, LedgerStore, RevokedEntry, RevokedLedger, init_ledger};
+use crl::{CrlPaths, CrlStore};
 use policy::LeafPolicy;
 #[cfg(feature = "hsm")]
 pub mod pkcs11;
@@ -44,14 +43,15 @@ use rcgen::{
 };
 use rustls_pki_types::CertificateSigningRequestDer;
 use time::{Duration, OffsetDateTime};
-use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::cert::cert_serial_and_spki;
 use crate::config::{LocalCaConfig, LocalCaSubjectConfig};
 use crate::pemfile::{warn_if_key_is_readable, write_private_key};
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
+use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
+use crate::sqlite::revocation::Revocation;
 
 pub use key::{CaSigningKey, KeySource};
 
@@ -76,23 +76,12 @@ pub struct LocalCa {
     /// and its certificate can be fetched. Validated and DER-encoded once, at
     /// construction — see [`policy`].
     leaf_policy: LeafPolicy,
-    /// Revoked-certificate ledger + the current signed CRL derived from it,
-    /// together with everything needed to re-sign and persist it.
+    /// This CA's revocation state and CRL, in the database.
     ///
-    /// Behind an [`Arc`] twice over, for two different reasons. The inner
-    /// `Arc<Mutex<RevokedLedger>>` is so a configuration reload that rebuilds
-    /// this CA can hand the *same* ledger to its replacement — see
-    /// [`CarriedState`](crate::signer::CarriedState). The sidecar on disk is the
-    /// durable copy, but reading it back would lose any revocation that landed
-    /// on this instance after the replacement was constructed and before it was
-    /// published. Sharing the cell means there is no such window. The outer one
-    /// is so the whole store can be handed to the periodic prune as an
-    /// `Arc<dyn CrlPruner>`; see
-    /// [`SignerBackend::crl_pruner`](crate::signer::SignerBackend::crl_pruner).
-    ledger: Arc<LedgerStore>,
-    /// Where the ledger/CRL are persisted. `None` for [`LocalCa::generate_in_memory`]
-    /// (disk-free, tests): the ledger and CRL still work, just in-memory only.
-    paths: Option<CrlPaths>,
+    /// Behind an [`Arc`] so the same store can be handed to the daily sweep as
+    /// an `Arc<dyn CrlRefresher>`; see
+    /// [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher).
+    crl: Arc<CrlStore>,
 }
 
 /// Validity of a generated CA certificate, in days (~10 years). rcgen's default
@@ -165,27 +154,21 @@ impl LocalCa {
     /// `"file"` loads *or generates* the CA, while `"pkcs11"` only ever loads
     /// one — see [`load_pkcs11`](Self::load_pkcs11).
     ///
-    /// `carried` is what the previous configuration generation left behind, and
-    /// is empty at startup. Only the revocation ledger is taken from it; the CA
-    /// certificate and its key are read from disk either way, since they are
-    /// exactly the things that have a durable home.
-    pub fn load_or_generate(
-        cfg: &LocalCaConfig,
-        carried: &crate::signer::CarriedState,
-    ) -> anyhow::Result<Self> {
+    /// `database` holds this CA's revocations and its CRL. Construction does
+    /// no database I/O: the first revocation, CRL read or sweep does whatever
+    /// one-time initialisation the CA still needs.
+    pub fn load_or_generate(cfg: &LocalCaConfig, database: Arc<Database>) -> anyhow::Result<Self> {
         match KeySource::parse(&cfg.key_source)? {
-            KeySource::File => Self::load_or_generate_from_file(cfg, carried),
-            KeySource::Pkcs11 => Self::load_pkcs11(cfg, carried),
+            KeySource::File => Self::load_or_generate_from_file(cfg, database),
+            KeySource::Pkcs11 => Self::load_pkcs11(cfg, database),
         }
     }
 
     /// Loads the CA from `cert_path`/`key_path` if both exist, otherwise
-    /// generates a new one, **persists both files**, and uses it. Also loads
-    /// (or, on first run, eagerly creates) the revocation ledger/CRL at
-    /// `crl_path`.
+    /// generates a new one, **persists both files**, and uses it.
     fn load_or_generate_from_file(
         cfg: &LocalCaConfig,
-        carried: &crate::signer::CarriedState,
+        database: Arc<Database>,
     ) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
         let key_path = Path::new(&cfg.key_path);
@@ -207,7 +190,7 @@ impl LocalCa {
                 cfg.leaf_validity_days,
                 leaf_policy,
                 Some(paths),
-                carried,
+                database,
             );
         }
 
@@ -222,7 +205,7 @@ impl LocalCa {
             cfg.leaf_validity_days,
             leaf_policy,
             Some(paths),
-            carried,
+            database,
         )
     }
 
@@ -240,10 +223,7 @@ impl LocalCa {
     /// and every certificate it issues fails path validation at the client —
     /// a failure that surfaces days later and nowhere near its cause.
     #[cfg(feature = "hsm")]
-    fn load_pkcs11(
-        cfg: &LocalCaConfig,
-        carried: &crate::signer::CarriedState,
-    ) -> anyhow::Result<Self> {
+    fn load_pkcs11(cfg: &LocalCaConfig, database: Arc<Database>) -> anyhow::Result<Self> {
         let cert_path = Path::new(&cfg.cert_path);
         let paths = CrlPaths::beside(&cfg.crl_path);
         let leaf_policy = LeafPolicy::from_config(cfg)?;
@@ -310,7 +290,7 @@ impl LocalCa {
             cfg.leaf_validity_days,
             leaf_policy,
             Some(paths),
-            carried,
+            database,
         )
     }
 
@@ -320,20 +300,22 @@ impl LocalCa {
     /// key: an operator who configured a token and got a software key would
     /// have no indication their CA key is sitting in `ca.key`.
     #[cfg(not(feature = "hsm"))]
-    fn load_pkcs11(
-        _cfg: &LocalCaConfig,
-        _carried: &crate::signer::CarriedState,
-    ) -> anyhow::Result<Self> {
+    fn load_pkcs11(_cfg: &LocalCaConfig, _database: Arc<Database>) -> anyhow::Result<Self> {
         anyhow::bail!(
             "local_ca key_source = \"pkcs11\" needs PKCS#11 support, which this binary was \
              built without; rebuild with `cargo build --release --features hsm`"
         )
     }
 
-    /// Generates a CA held only in memory (never written to disk). Used by tests
-    /// so the suite stays disk-free — the revocation ledger/CRL work the same
-    /// way, just never persisted (`paths: None`).
-    pub fn generate_in_memory(key_type: &str, leaf_validity_days: u64) -> anyhow::Result<Self> {
+    /// Generates a CA whose key and certificate are never written to disk. Used
+    /// by tests so the suite stays disk-free. Its revocations and CRL live in
+    /// `database` like any other CA's; only the `crl_path` export and the
+    /// sidecar import are absent.
+    pub fn generate_in_memory(
+        key_type: &str,
+        leaf_validity_days: u64,
+        database: Arc<Database>,
+    ) -> anyhow::Result<Self> {
         let (key_pair, ca_pem) = generate_ca(key_type, &LocalCaSubjectConfig::default())?;
         let issuer = Issuer::from_ca_cert_pem(&ca_pem, CaSigningKey::Software(key_pair))?;
         Self::assemble(
@@ -342,53 +324,37 @@ impl LocalCa {
             leaf_validity_days,
             LeafPolicy::default(),
             None,
-            &crate::signer::CarriedState::new(),
+            database,
         )
     }
 
-    /// The tail every constructor shares: adopt or load the revocation ledger,
-    /// then wrap everything up. Extracted because it is now reached from four
-    /// places, and the `Arc` around the issuer has to be created after
-    /// `init_ledger` has borrowed it.
-    ///
-    /// The ledger is **adopted** from `carried` when the previous configuration
-    /// generation ran a CA over this same `crl_path`, and read from the sidecar
-    /// otherwise. Adopting shares the cell rather than copying it, so a
-    /// revocation landing on the outgoing instance while this one is still being
-    /// built is not lost — which is the case reading the sidecar back cannot
-    /// cover, however durable that file is.
+    /// The tail every constructor shares: name this CA by its key and wrap
+    /// everything up.
     fn assemble(
         issuer: Issuer<'static, CaSigningKey>,
         ca_pem: String,
         leaf_validity_days: u64,
         leaf_policy: LeafPolicy,
         paths: Option<CrlPaths>,
-        carried: &crate::signer::CarriedState,
+        database: Arc<Database>,
     ) -> anyhow::Result<Self> {
-        let adopted = paths
-            .as_ref()
-            .and_then(|paths| carried.get::<Mutex<RevokedLedger>>(&paths.state_key()));
-        let revoked = match adopted {
-            Some(ledger) => {
-                info!(
-                    event = "local_ca_ledger_adopted",
-                    outcome = "success",
-                    crl_path = ?paths.as_ref().map(|paths| paths.crl_path.display().to_string()),
-                    "the CA was rebuilt by a configuration reload and shares the running \
-                     instance's revocation ledger, so nothing revoked mid-reload is lost"
-                );
-                ledger
-            }
-            None => Arc::new(Mutex::new(init_ledger(paths.as_ref(), &issuer)?)),
-        };
+        // The key, not a path or a profile, is what the revocation state is
+        // stored under — see `cert::issuer_id`.
+        let ca_der = crate::cert::leaf_der_from_chain(&ca_pem)?;
+        let (_, spki) = cert_serial_and_spki(&ca_der)
+            .map_err(|error| anyhow::anyhow!("the CA certificate does not parse: {error}"))?;
         let issuer = Arc::new(issuer);
         Ok(Self {
             issuer: issuer.clone(),
             ca_pem,
             leaf_validity_days,
             leaf_policy,
-            ledger: Arc::new(LedgerStore::new(revoked, issuer, paths.clone())),
-            paths,
+            crl: Arc::new(CrlStore::new(
+                database,
+                crate::cert::issuer_id(&spki),
+                issuer,
+                paths,
+            )),
         })
     }
 }
@@ -596,31 +562,18 @@ impl SignerBackend for LocalCa {
         )))
     }
 
-    /// Records `cert_der`'s serial as revoked and regenerates the CRL.
-    /// Idempotent: revoking an already-revoked serial is a no-op, since a
-    /// caller (the ACME handler, or the admin CLI after a partial-failure
-    /// retry) may call this twice for the same certificate.
+    /// Records `cert_der`'s serial as revoked and stores a CRL listing it.
+    /// Idempotent: revoking an already-revoked serial keeps the first
+    /// revocation, since a caller (the ACME handler, or the admin CLI after a
+    /// partial-failure retry) may call this twice for the same certificate.
     #[tracing::instrument(name = "local_ca_revoke", skip_all)]
     async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
         let (serial_hex, _) = cert_serial_and_spki(cert_der)
             .map_err(|error| SignerError::Internal(format!("unparsable certificate: {error}")))?;
 
-        // A `tokio::sync::Mutex`, so the whole read-modify-write-persist
-        // sequence is one critical section even though it now awaits in the
-        // middle. With a `std::sync::Mutex` the guard could not be held across
-        // the `spawn_blocking` below at all, and two concurrent revocations
-        // could interleave: both read the ledger, both append their own serial,
-        // and the second write drops the first.
-        let mut ledger = self.ledger.revoked.lock().await;
-        // Already in this instance's ledger, so already on disk: nothing to
-        // read and nothing to write. The check is repeated inside the pass
-        // below against the *merged* ledger, which is what catches a serial
-        // another process revoked first.
-        if ledger.entries.iter().any(|e| e.serial_hex == serial_hex) {
-            return Ok(());
-        }
-        let entry = RevokedEntry {
-            serial_hex: serial_hex.clone(),
+        let revocation = Revocation {
+            issuer: self.crl.issuer_id().to_string(),
+            serial: serial_hex.clone(),
             revoked_at: OffsetDateTime::now_utc().unix_timestamp(),
             reason,
             // Best-effort, and deliberately not a `?`: `cert_serial_and_spki`
@@ -634,35 +587,19 @@ impl SignerBackend for LocalCa {
                 .map(|(_, not_after)| not_after),
         };
 
-        let added = self
-            .ledger
-            .update(&mut ledger, move |entries| {
-                if entries.iter().any(|e| e.serial_hex == entry.serial_hex) {
-                    return 0;
-                }
-                entries.push(entry);
-                1
-            })
-            .await?;
-
-        if added > 0 {
+        if self.crl.revoke(revocation).await? {
             info!(event = "local_ca_certificate_revoked", outcome = "success", cert_serial = ?serial_hex);
         }
         Ok(())
     }
 
-    async fn crl_der(&self) -> Option<Vec<u8>> {
-        Some(self.ledger.revoked.lock().await.crl_der.clone())
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
+        self.crl.current_der().await.map(Some)
     }
 
-    /// This CA's ledger, for the periodic prune (RFC 5280 §3.3).
-    ///
-    /// Unconditional rather than gated on `paths`: an in-memory ledger grows
-    /// with every revocation exactly as a persisted one does, and pruning it
-    /// writes nothing because there is nowhere to write. Gating would buy a
-    /// branch and one more way for the two paths to differ.
-    fn crl_pruner(&self) -> Option<Arc<dyn crate::signer::CrlPruner>> {
-        Some(self.ledger.clone())
+    /// This CA's CRL, for the daily sweep (RFC 5280 §3.3).
+    fn crl_refresher(&self) -> Option<Arc<dyn crate::signer::CrlRefresher>> {
+        Some(self.crl.clone())
     }
 
     /// This CA's own certificate — the anchor, and the whole chain, since a
@@ -674,24 +611,6 @@ impl SignerBackend for LocalCa {
     /// its certificate chain.
     async fn ca_chain_pem(&self) -> Option<String> {
         Some(self.ca_pem.clone())
-    }
-
-    /// Hands on the revocation ledger, keyed by `crl_path`.
-    ///
-    /// Nothing else: the CA certificate, its key and the CRL itself are all on
-    /// disk, and `crl_path` is what identifies *this* CA's ledger — a
-    /// replacement pointed at a different one is a different CA and must start
-    /// from that CA's own sidecar.
-    ///
-    /// An in-memory CA ([`LocalCa::generate_in_memory`]) has no `paths` and so
-    /// offers nothing. It is never reached by a reload anyway; the empty answer
-    /// is what makes that true by construction rather than by convention.
-    fn carried_state(&self) -> crate::signer::CarriedState {
-        let mut carried = crate::signer::CarriedState::new();
-        if let Some(paths) = &self.paths {
-            carried.insert(paths.state_key(), self.ledger.revoked.clone());
-        }
-        carried
     }
 }
 
@@ -755,9 +674,15 @@ mod tests {
         csr.der().to_vec()
     }
 
-    #[test]
-    fn the_default_ca_subject_is_common_name_only() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+    /// A throwaway in-memory database, for a CA whose revocation state no
+    /// other instance needs to see.
+    async fn memory_db() -> Arc<Database> {
+        Arc::new(Database::connect_in_memory().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_default_ca_subject_is_common_name_only() {
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
@@ -844,8 +769,8 @@ mod tests {
 
     /// Proves the config actually reaches the *persisted* CA, not just the
     /// `generate_ca` helper in isolation — the real entrypoint operators use.
-    #[test]
-    fn load_or_generate_applies_a_configured_subject() {
+    #[tokio::test]
+    async fn load_or_generate_applies_a_configured_subject() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = LocalCaConfig {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
@@ -860,7 +785,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
         let org = ca_cert
@@ -875,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn issue_produces_a_two_cert_chain() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -899,7 +824,7 @@ mod tests {
         use x509_parser::extensions::ParsedExtension;
         use x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER;
 
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -959,7 +884,7 @@ mod tests {
             ..LocalCaConfig::default()
         };
 
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -1028,7 +953,7 @@ mod tests {
             OID_PKIX_AUTHORITY_INFO_ACCESS, OID_X509_EXT_CRL_DISTRIBUTION_POINTS,
         };
 
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -1132,7 +1057,7 @@ mod tests {
     /// certificate, which is the property that was missing.
     #[tokio::test]
     async fn a_requested_not_after_shortens_the_issued_certificate() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let wanted_end = OffsetDateTime::now_utc() + Duration::days(7);
 
         let chain = issue_chain_with(
@@ -1156,7 +1081,7 @@ mod tests {
 
     #[tokio::test]
     async fn issue_rejects_identifier_mismatch() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         // CSR is for a.example but the order says b.example.
         let result = issue_chain(
             &ca,
@@ -1173,7 +1098,7 @@ mod tests {
     /// for an address nobody authorized.
     #[tokio::test]
     async fn issue_rejects_a_non_dns_san() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
@@ -1188,7 +1113,7 @@ mod tests {
 
     #[tokio::test]
     async fn issue_rejects_an_email_san() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
@@ -1210,7 +1135,7 @@ mod tests {
     /// mint certificates for every other name. `issue` must overwrite both.
     #[tokio::test]
     async fn issue_refuses_to_grant_ca_powers_a_csr_asks_for() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
 
         let key_pair = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
@@ -1271,7 +1196,7 @@ mod tests {
     /// `parse_x509_certificate` is lenient, hence the explicit re-encoding check.
     #[tokio::test]
     async fn the_issued_chain_is_strictly_der_encoded() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("example.com"),
@@ -1302,7 +1227,7 @@ mod tests {
     /// beneath it.
     #[tokio::test]
     async fn the_ca_cannot_have_intermediates_below_it() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let ca_der = pem_to_der(&ca.ca_pem);
         let (_, parsed) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
@@ -1318,7 +1243,7 @@ mod tests {
     /// revocation ambiguous.
     #[tokio::test]
     async fn renewing_with_the_same_key_produces_a_different_serial() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
 
         // One key pair, two separate issuances.
         let key_pair = KeyPair::generate().unwrap();
@@ -1345,7 +1270,7 @@ mod tests {
     /// which requires `dns-01` to be enabled.
     #[tokio::test]
     async fn issue_accepts_a_wildcard_san_matching_the_order() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let chain = issue_chain(
             &ca,
             &make_csr_der("*.example.com"),
@@ -1376,7 +1301,7 @@ mod tests {
     /// certificate covering its whole zone. The set comparison is what stops it.
     #[tokio::test]
     async fn issue_rejects_a_wildcard_csr_for_a_non_wildcard_order() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let result = issue_chain(
             &ca,
             &make_csr_der("*.example.com"),
@@ -1389,7 +1314,7 @@ mod tests {
     /// And the reverse: a wildcard order does not licence some other name.
     #[tokio::test]
     async fn issue_rejects_a_wildcard_san_not_in_the_order() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let result = issue_chain(
             &ca,
             &make_csr_der("*.other.example"),
@@ -1400,9 +1325,9 @@ mod tests {
     }
 
     /// The generated CA must not inherit rcgen's 1975 → 4096 default window.
-    #[test]
-    fn the_generated_ca_has_a_sane_validity_window() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+    #[tokio::test]
+    async fn the_generated_ca_has_a_sane_validity_window() {
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let ca_der = pem_to_der(&ca.ca_pem);
         let (_, parsed) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
@@ -1421,7 +1346,7 @@ mod tests {
 
     #[tokio::test]
     async fn issue_rejects_garbage_csr() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let result = issue_chain(
             &ca,
             &[0xde, 0xad, 0xbe, 0xef],
@@ -1431,26 +1356,19 @@ mod tests {
         assert!(matches!(result, Err(SignerError::BadCsr)));
     }
 
-    #[test]
-    fn unsupported_key_type_errors() {
-        assert!(LocalCa::generate_in_memory("rsa-4096", 90).is_err());
+    #[tokio::test]
+    async fn unsupported_key_type_errors() {
+        assert!(LocalCa::generate_in_memory("rsa-4096", 90, memory_db().await).is_err());
     }
 
     #[tokio::test]
     async fn load_or_generate_persists_then_reloads() {
         // A unique temp dir so the generate-then-load branches both run.
         let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
+        let cfg = ca_config(&dir);
 
         // First call generates and writes both files.
-        let first = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let first = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         assert!(Path::new(&cfg.cert_path).exists());
         assert!(Path::new(&cfg.key_path).exists());
 
@@ -1463,7 +1381,7 @@ mod tests {
         }
 
         // Second call loads the *same* CA (identical certificate PEM).
-        let second = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let second = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         assert_eq!(first.ca_pem, second.ca_pem);
 
         // The reloaded CA can still issue.
@@ -1475,6 +1393,37 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(chain.matches("-----BEGIN CERTIFICATE-----").count(), 2);
+    }
+
+    // ---- Revocation and the CRL --------------------------------------------
+
+    /// A CA configuration over `dir`, the spelling every disk-backed test here
+    /// uses.
+    fn ca_config(dir: &crate::testutil::TempDir) -> LocalCaConfig {
+        LocalCaConfig {
+            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
+            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
+            key_type: "ecdsa-p256".to_string(),
+            leaf_validity_days: 90,
+            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
+            ..LocalCaConfig::default()
+        }
+    }
+
+    /// A file-backed database in `dir`, for the tests that need two
+    /// connections at once: `connect_in_memory` pins its pool to one, which
+    /// would serialise the very interleavings those tests are about.
+    async fn file_db(dir: &crate::testutil::TempDir) -> Arc<Database> {
+        let url = format!("sqlite://{}", dir.join("acme.db").display());
+        Arc::new(Database::connect(&url).await.unwrap())
+    }
+
+    /// The CRL `ca` serves, which every one of these tests reads.
+    async fn served(ca: &LocalCa) -> Vec<u8> {
+        ca.crl_der()
+            .await
+            .unwrap()
+            .expect("a local CA always has a CRL")
     }
 
     /// Parses `der` as a CRL and returns the hex-encoded serials it lists as
@@ -1489,73 +1438,124 @@ mod tests {
             .collect()
     }
 
+    fn lists(der: &[u8], serial: &str) -> bool {
+        revoked_serials(der)
+            .iter()
+            .any(|listed| listed.eq_ignore_ascii_case(serial))
+    }
+
+    /// Parses `der` as a CRL and returns its `crlNumber` extension.
+    fn crl_number(der: &[u8]) -> u64 {
+        use x509_parser::extensions::ParsedExtension;
+        use x509_parser::prelude::FromDer;
+        use x509_parser::revocation_list::CertificateRevocationList;
+
+        let (_, crl) = CertificateRevocationList::from_der(der).unwrap();
+        for extension in crl.extensions() {
+            if let ParsedExtension::CRLNumber(number) = extension.parsed_extension() {
+                return number.try_into().expect("a test CRL number fits in u64");
+            }
+        }
+        panic!("every CRL this CA signs carries a crlNumber");
+    }
+
+    /// Issues a certificate for `name` and returns its leaf DER and serial.
+    async fn issued(ca: &LocalCa, name: &str) -> (Vec<u8>, String) {
+        let chain = issue_chain(ca, &make_csr_der(name), &[Identifier::dns(name)])
+            .await
+            .unwrap();
+        let leaf = first_certificate(&chain);
+        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+        (leaf, serial_hex)
+    }
+
+    /// The CRL row `ca` has stored, read straight from the table.
+    async fn stored(ca: &LocalCa, database: &Database) -> crate::sqlite::crl::StoredCrl {
+        let mut tx = database.transaction().await.unwrap();
+        crate::sqlite::crl::StoredCrl::find(ca.crl.issuer_id(), &mut *tx)
+            .await
+            .unwrap()
+            .expect("the CA has initialised")
+    }
+
+    /// The revocation rows under `ca`'s issuer.
+    async fn rows(ca: &LocalCa, database: &Database) -> Vec<Revocation> {
+        let mut tx = database.transaction().await.unwrap();
+        Revocation::list_for_issuer(ca.crl.issuer_id(), &mut *tx)
+            .await
+            .unwrap()
+    }
+
+    /// Records a revocation directly, the way another process — or a sidecar
+    /// import — would have, without going through `ca`.
+    async fn record(ca: &LocalCa, database: &Database, serial: &str, not_after: Option<i64>) {
+        let mut tx = database.transaction().await.unwrap();
+        Revocation {
+            issuer: ca.crl.issuer_id().to_string(),
+            serial: serial.to_string(),
+            revoked_at: OffsetDateTime::now_utc().unix_timestamp(),
+            reason: Some(1),
+            not_after,
+        }
+        .insert_if_absent(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    /// Moves the stored CRL's `nextUpdate` so the next refresh finds it due.
+    async fn age_the_stored_crl(database: &Database) {
+        sqlx::query("UPDATE crls SET next_update = ?;")
+            .bind(OffsetDateTime::now_utc().unix_timestamp() + 60)
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn an_empty_crl_is_served_before_any_revocation() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let der = ca.crl_der().await.expect("LocalCa always has a CRL");
-        assert!(revoked_serials(&der).is_empty());
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
+        assert!(revoked_serials(&served(&ca).await).is_empty());
     }
 
     #[tokio::test]
     async fn revoke_marks_serial_and_appears_in_the_crl() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        let leaf = first_certificate(&chain);
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
+        let (leaf, serial) = issued(&ca, "example.com").await;
 
         ca.revoke(&leaf, Some(1)).await.unwrap();
 
-        let der = ca.crl_der().await.unwrap();
-        let serials = revoked_serials(&der);
-        assert!(
-            serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
-            "expected {serial_hex} in {serials:?}"
-        );
+        let der = served(&ca).await;
+        assert!(lists(&der, &serial), "expected {serial} in {der:?}");
     }
 
+    /// Idempotent, and the first revocation's reason is the one kept.
     #[tokio::test]
     async fn revoke_is_idempotent() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        let leaf = first_certificate(&chain);
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, _) = issued(&ca, "example.com").await;
 
         ca.revoke(&leaf, Some(1)).await.unwrap();
-        ca.revoke(&leaf, Some(1)).await.unwrap();
+        ca.revoke(&leaf, Some(4)).await.unwrap();
 
-        let der = ca.crl_der().await.unwrap();
-        assert_eq!(revoked_serials(&der).len(), 1);
+        assert_eq!(revoked_serials(&served(&ca).await).len(), 1);
+        let recorded = rows(&ca, &database).await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].reason, Some(1));
     }
 
     #[tokio::test]
     async fn revoke_of_unparsable_der_is_internal_error() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
         let result = ca.revoke(&[0xde, 0xad, 0xbe, 0xef], None).await;
         assert!(matches!(result, Err(SignerError::Internal(_))));
     }
 
     #[tokio::test]
     async fn revoking_a_certificate_does_not_block_reissuing_the_same_name() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        let leaf = first_certificate(&chain);
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
+        let (leaf, _) = issued(&ca, "example.com").await;
         ca.revoke(&leaf, None).await.unwrap();
 
         // Issuance and revocation are orthogonal: a revoked name can still be
@@ -1570,217 +1570,18 @@ mod tests {
         assert!(reissued.is_ok());
     }
 
+    /// A revocation records the certificate's own `notAfter`, which is what
+    /// makes the entry prunable at all — without it every entry would land as
+    /// the never-dropped `None`.
     #[tokio::test]
-    async fn load_or_generate_persists_revocations_across_reload() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
+    async fn revoke_records_the_certificates_expiry() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, _) = issued(&ca, "example.com").await;
+        ca.revoke(&leaf, Some(1)).await.unwrap();
 
-        let first = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let chain = issue_chain(
-            &first,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        let leaf = first_certificate(&chain);
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-        first.revoke(&leaf, Some(1)).await.unwrap();
-
-        // A fresh `LocalCa` built from the same paths must still know about
-        // the revocation — proving the ledger sidecar file, not just the
-        // in-memory ledger, is what makes this durable.
-        let reloaded =
-            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let der = reloaded.crl_der().await.unwrap();
-        let serials = revoked_serials(&der);
-        assert!(
-            serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
-            "expected {serial_hex} in {serials:?}"
-        );
-    }
-
-    /// A CA rebuilt over an adopted ledger **shares** it, rather than reading
-    /// the sidecar back.
-    ///
-    /// The window the sidecar cannot cover: a reload builds the replacement CA,
-    /// a revocation lands on the one still serving, and only then is the
-    /// replacement published. Reading the file back would have missed that
-    /// revocation entirely; sharing the cell means there is nothing to miss.
-    ///
-    /// Asserted in both directions, because a one-way copy would pass the first
-    /// half.
-    #[tokio::test]
-    async fn an_adopted_ledger_is_shared_with_the_ca_that_handed_it_over() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
-
-        let outgoing =
-            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        // Built while the first is still running and still owns the files, which
-        // is exactly the state a reload's build phase is in.
-        let incoming = LocalCa::load_or_generate(&cfg, &outgoing.carried_state()).unwrap();
-
-        for (revoker, reader, direction) in [
-            (&outgoing, &incoming, "outgoing -> incoming"),
-            (&incoming, &outgoing, "incoming -> outgoing"),
-        ] {
-            let chain = issue_chain(
-                revoker,
-                &make_csr_der("example.com"),
-                &[Identifier::dns("example.com")],
-            )
-            .await
-            .unwrap();
-            let leaf = first_certificate(&chain);
-            let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-            revoker.revoke(&leaf, Some(1)).await.unwrap();
-
-            let serials = revoked_serials(&reader.crl_der().await.unwrap());
-            assert!(
-                serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
-                "{direction}: expected {serial_hex} in {serials:?}",
-            );
-        }
-    }
-
-    /// A CA rebuilt over a *different* `crl_path` adopts nothing, however much
-    /// the previous generation offered.
-    ///
-    /// The safety half of keying the handover on a resource: repointing a
-    /// profile at a second CA must give that CA's revocation history, not the
-    /// first one's.
-    #[tokio::test]
-    async fn a_ca_over_a_different_crl_path_ignores_the_offered_ledger() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
-        let outgoing =
-            LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let chain = issue_chain(
-            &outgoing,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        outgoing
-            .revoke(&first_certificate(&chain), None)
-            .await
-            .unwrap();
-
-        let elsewhere = LocalCaConfig {
-            crl_path: dir.join("other.crl").to_string_lossy().into_owned(),
-            ..cfg
-        };
-        let other = LocalCa::load_or_generate(&elsewhere, &outgoing.carried_state()).unwrap();
-
-        let serials = revoked_serials(&other.crl_der().await.unwrap());
-        assert!(
-            serials.is_empty(),
-            "a different crl_path is a different ledger, got {serials:?}",
-        );
-    }
-
-    /// A corrupted ledger sidecar is a startup *error* naming the file, not a
-    /// panic.
-    ///
-    /// `build_crl` used to `expect` that every stored serial was hex. The
-    /// sidecar is an ordinary JSON file an operator can edit or a crash can
-    /// truncate, and `revoke` calls `build_crl` too — so this was not merely a
-    /// boot panic but a panic in a request task, which would poison the ledger
-    /// mutex and turn every later `GET /crl` into a panic of its own.
-    #[tokio::test]
-    async fn a_corrupted_ledger_is_reported_rather_than_panicking() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
-
-        // Build once so the CA material exists, then hand-edit the ledger the
-        // way a bad merge or a half-written file would.
-        LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        fs::write(
-            dir.join("ca.json"),
-            r#"[{"serial_hex":"not hex at all","revoked_at":0,"reason":null}]"#,
-        )
-        .unwrap();
-
-        let error = match LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()) {
-            Err(error) => error.to_string(),
-            Ok(_) => panic!("a non-hex serial must not start the server"),
-        };
-        assert!(error.contains("not hex"), "{error}");
-        assert!(
-            error.contains("entry 0"),
-            "the message must name the offending entry: {error}"
-        );
-    }
-
-    /// The revocation ledger is owner-only: it decides what the CRL says, so a
-    /// local user able to rewrite it could un-revoke a certificate at the next
-    /// restart. The CRL beside it is published material and stays readable.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn the_ledger_is_owner_only_and_the_crl_is_not() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        };
-
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        ca.revoke(&first_certificate(&chain), Some(1))
-            .await
-            .unwrap();
-
-        let ledger_mode = fs::metadata(dir.join("ca.json"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(ledger_mode, 0o600, "the ledger must be owner-only");
-
-        let crl_mode = fs::metadata(dir.join("ca.crl"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(crl_mode, 0o644, "the CRL is served to anyone");
+        let (_, not_after) = crate::cert::cert_validity(&leaf).unwrap();
+        assert_eq!(rows(&ca, &database).await[0].not_after, Some(not_after));
     }
 
     /// Every `CRLReason` this server accepts maps to an rcgen reason, and the
@@ -1816,453 +1617,127 @@ mod tests {
         }
     }
 
-    // ---- Pruning expired entries (RFC 5280 §3.3) ----------------------------
-
-    /// A CA configuration over `dir`, the spelling every disk-backed test here
-    /// uses.
-    fn ca_config(dir: &crate::testutil::TempDir) -> LocalCaConfig {
-        LocalCaConfig {
-            cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
-            key_path: dir.join("ca.key").to_string_lossy().into_owned(),
-            key_type: "ecdsa-p256".to_string(),
-            leaf_validity_days: 90,
-            crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-            ..LocalCaConfig::default()
-        }
-    }
-
-    /// Parses `der` as a CRL and returns its `crlNumber` extension.
-    fn crl_number(der: &[u8]) -> u64 {
-        use x509_parser::extensions::ParsedExtension;
-        use x509_parser::prelude::FromDer;
-        use x509_parser::revocation_list::CertificateRevocationList;
-
-        let (_, crl) = CertificateRevocationList::from_der(der).unwrap();
-        for extension in crl.extensions() {
-            if let ParsedExtension::CRLNumber(number) = extension.parsed_extension() {
-                return number.try_into().expect("a test CRL number fits in u64");
-            }
-        }
-        panic!("every CRL this CA signs carries a crlNumber");
-    }
-
-    /// An entry, `not_after` seconds from now (negative for the past).
-    fn entry(serial: &str, not_after: Option<i64>) -> RevokedEntry {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        RevokedEntry {
-            serial_hex: serial.to_string(),
-            revoked_at: now,
-            reason: Some(1),
-            not_after: not_after.map(|offset| now + offset),
-        }
-    }
-
-    fn serials_of(entries: &[RevokedEntry]) -> Vec<&str> {
-        entries.iter().map(|e| e.serial_hex.as_str()).collect()
-    }
-
-    /// The whole point: an entry may go once the certificate itself has
-    /// expired, and must not before.
-    #[test]
-    fn prune_drops_the_expired_and_keeps_the_live() {
-        let mut entries = vec![
-            entry("aa", Some(-Duration::days(30).whole_seconds())),
-            entry("bb", Some(Duration::days(30).whole_seconds())),
-        ];
-        assert_eq!(
-            crl::prune_expired(&mut entries, OffsetDateTime::now_utc()),
-            1
-        );
-        assert_eq!(serials_of(&entries), ["bb"]);
-    }
-
-    /// A certificate that expired *just now* stays for `CLOCK_SKEW_ALLOWANCE`.
-    ///
-    /// A relying party whose clock is behind ours still considers it valid, and
-    /// dropping the entry the instant we think it expired is precisely the
-    /// window in which that party would accept a certificate this CA revoked.
-    #[test]
-    fn prune_grants_the_clock_skew_allowance() {
-        let mut entries = vec![entry("aa", Some(-Duration::minutes(10).whole_seconds()))];
-        assert_eq!(
-            crl::prune_expired(&mut entries, OffsetDateTime::now_utc()),
-            0
-        );
-
-        // And goes once the allowance itself has passed.
-        let past = OffsetDateTime::now_utc() + CLOCK_SKEW_ALLOWANCE + Duration::minutes(11);
-        assert_eq!(crl::prune_expired(&mut entries, past), 1);
-    }
-
-    /// **An unknown expiry is not an expired one.** An entry loaded from a v1
-    /// sidecar carries no `not_after`, and so must stay on the CRL for ever
-    /// rather than be swept on the first pass — the safe direction, and the one
-    /// a `#[serde(default)]` of `0` would have got backwards.
-    #[test]
-    fn prune_never_drops_an_entry_with_no_known_expiry() {
-        let mut entries = vec![entry("aa", None)];
-        let far_future = OffsetDateTime::now_utc() + Duration::days(365 * 20);
-        assert_eq!(crl::prune_expired(&mut entries, far_future), 0);
-        assert_eq!(serials_of(&entries), ["aa"]);
-    }
-
-    /// A v1 sidecar — a bare array, no envelope, no counter, no expiries —
-    /// still loads, and its entries survive.
-    #[tokio::test]
-    async fn a_v1_sidecar_loads_and_keeps_its_entries() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-
-        LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        fs::write(
-            dir.join("ca.json"),
-            r#"[{"serial_hex":"0a0b","revoked_at":0,"reason":1}]"#,
-        )
-        .unwrap();
-
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let serials = revoked_serials(&ca.crl_der().await.unwrap());
-        assert!(
-            serials.iter().any(|s| s.eq_ignore_ascii_case("0a0b")),
-            "a v1 entry must survive the upgrade: {serials:?}",
-        );
-    }
-
-    /// The upgrade must not lower `crlNumber` either.
-    ///
-    /// v1 derived it from `entries.len() + 1`, so a three-entry ledger last
-    /// published number 4. The first v2 CRL has to sit strictly above that, or
-    /// a client holding the v1 one treats this newer CRL as the older of the
-    /// two and keeps trusting whatever it has since revoked.
-    #[tokio::test]
-    async fn a_v1_sidecar_resumes_above_the_number_it_last_published() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-
-        LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        fs::write(
-            dir.join("ca.json"),
-            r#"[{"serial_hex":"01","revoked_at":0,"reason":null},
-                {"serial_hex":"02","revoked_at":0,"reason":null},
-                {"serial_hex":"03","revoked_at":0,"reason":null}]"#,
-        )
-        .unwrap();
-
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        assert!(
-            crl_number(&ca.crl_der().await.unwrap()) > 4,
-            "the last number v1 could have published was entries.len() + 1",
-        );
-    }
-
-    /// **The regression the whole envelope exists for.**
-    ///
-    /// `crl_number` used to be `entries.len() + 1`, so pruning would have made
-    /// it go *backwards* — which RFC 5280 §5.2.3 forbids, and which makes a
-    /// conforming client discard the new CRL in favour of its cached one. The
-    /// counter is durable precisely so this cannot happen.
-    #[tokio::test]
-    async fn the_crl_number_rises_across_a_prune_that_shortens_the_list() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-
-        // Three entries, all long expired, so the next pass drops the lot.
-        let expired =
-            OffsetDateTime::now_utc().unix_timestamp() - Duration::days(365).whole_seconds();
-        LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        fs::write(
-            dir.join("ca.json"),
-            format!(
-                r#"{{"version":2,"crl_number":9,"entries":[
-                    {{"serial_hex":"01","revoked_at":0,"reason":null,"not_after":{expired}}},
-                    {{"serial_hex":"02","revoked_at":0,"reason":null,"not_after":{expired}}},
-                    {{"serial_hex":"03","revoked_at":0,"reason":null,"not_after":{expired}}}]}}"#
-            ),
-        )
-        .unwrap();
-
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let der = ca.crl_der().await.unwrap();
-        assert!(
-            revoked_serials(&der).is_empty(),
-            "every entry was expired and should have gone",
-        );
-        assert!(
-            crl_number(&der) > 9,
-            "pruning must not lower the number: {}",
-            crl_number(&der),
-        );
-    }
-
-    /// The counter is durable, which is the only thing that makes it monotonic
-    /// across a restart — the case a process-local one would fail.
-    #[tokio::test]
-    async fn the_crl_number_rises_across_a_restart() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-
-        let first = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let before = crl_number(&first.crl_der().await.unwrap());
-        drop(first);
-
-        let second = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        assert!(
-            crl_number(&second.crl_der().await.unwrap()) > before,
-            "a restart re-reads the counter rather than starting over",
-        );
-    }
-
-    /// A prune with nothing to drop writes nothing and signs nothing.
-    ///
-    /// This runs daily against every CA in the process, and the overwhelmingly
-    /// common answer is "nothing expired". Rebuilding regardless would advance
-    /// `crl_number` and rewrite two files every single day on a CA that has
-    /// revoked nothing at all.
-    #[tokio::test]
-    async fn a_prune_with_nothing_to_drop_changes_nothing() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        ca.revoke(&first_certificate(&chain), Some(1))
-            .await
-            .unwrap();
-        let before = ca.crl_der().await.unwrap();
-
-        let pruner = ca.crl_pruner().expect("a local CA always keeps a ledger");
-        assert_eq!(pruner.prune_expired().await.unwrap(), 0);
-        assert_eq!(
-            ca.crl_der().await.unwrap(),
-            before,
-            "an untouched ledger must not be re-signed",
-        );
-    }
-
-    /// The sweep really drops an expired entry from the served CRL, through the
-    /// same `CrlPruner` the job holds.
-    #[tokio::test]
-    async fn the_pruner_drops_an_expired_entry_from_the_served_crl() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        {
-            let mut ledger = ca.ledger.revoked.lock().await;
-            ledger
-                .entries
-                .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
-        }
-
-        let pruner = ca.crl_pruner().expect("a local CA always keeps a ledger");
-        assert_eq!(pruner.prune_expired().await.unwrap(), 1);
-        assert!(revoked_serials(&ca.crl_der().await.unwrap()).is_empty());
-    }
-
-    /// A revocation records the certificate's own `notAfter`, which is what
-    /// makes the entry prunable at all — without it every entry would land as
-    /// the never-dropped `None`.
-    #[tokio::test]
-    async fn revoke_records_the_certificates_expiry() {
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let chain = issue_chain(
-            &ca,
-            &make_csr_der("example.com"),
-            &[Identifier::dns("example.com")],
-        )
-        .await
-        .unwrap();
-        let leaf = first_certificate(&chain);
-        ca.revoke(&leaf, Some(1)).await.unwrap();
-
-        let (_, not_after) = crate::cert::cert_validity(&leaf).unwrap();
-        let ledger = ca.ledger.revoked.lock().await;
-        assert_eq!(ledger.entries[0].not_after, Some(not_after));
-    }
-
-    // ---- Two instances over one ledger --------------------------------------
+    // ---- More than one instance over one database ---------------------------
     //
-    // `acme-proxy order revoke` builds its own `LocalCa` over the same files a
-    // running `serve` holds, each with its own in-memory ledger. These tests
-    // build exactly that pair — two `load_or_generate` calls with nothing
-    // carried between them — and pin that neither can overwrite what the other
-    // wrote.
+    // `acme-proxy order revoke` builds its own `LocalCa` beside a running
+    // `serve`, and a configuration reload builds a second one beside the first.
+    // Each of these pairs is two `load_or_generate` calls over the same files
+    // and the same database, with nothing shared in memory between them.
 
-    /// The serials and `crl_number` persisted in `dir`'s sidecar, read straight
-    /// from the file rather than through a third `LocalCa`, whose own startup
-    /// would write the files again.
-    fn persisted(dir: &crate::testutil::TempDir) -> (Vec<String>, u64) {
-        let sidecar: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("ca.json")).unwrap()).unwrap();
-        let serials = sidecar["entries"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["serial_hex"].as_str().unwrap().to_string())
-            .collect();
-        (serials, sidecar["crl_number"].as_u64().unwrap())
-    }
-
-    /// Issues a certificate for `name` and returns its leaf DER and serial.
-    async fn issued(ca: &LocalCa, name: &str) -> (Vec<u8>, String) {
-        let chain = issue_chain(ca, &make_csr_der(name), &[Identifier::dns(name)])
-            .await
-            .unwrap();
-        let leaf = first_certificate(&chain);
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-        (leaf, serial_hex)
-    }
-
-    /// The bug this section exists for: the CLI revokes, then the server's next
-    /// revocation rewrote the sidecar and the CRL from its own memory, and the
-    /// CLI's serial silently left the CRL while the order row still said
-    /// `revoked_at`.
+    /// **The bug this module was moved into the database for.** The CLI
+    /// revoked, and the running server went on serving a CRL without that
+    /// serial until its own next write — a revocation, the daily prune, or a
+    /// restart. Now the server's very next read lists it, in both directions.
     #[tokio::test]
-    async fn a_revocation_by_another_instance_survives_this_ones_next_revocation() {
+    async fn a_revocation_by_another_instance_is_served_immediately() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
-        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let (leaf_a, serial_a) = issued(&server, "a.example.com").await;
-        let (leaf_b, serial_b) = issued(&server, "b.example.com").await;
+        let database = file_db(&dir).await;
+        let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        // Served once first, so the server has initialised and holds whatever
+        // it would have cached.
+        served(&server).await;
+        let cli = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
 
-        cli.revoke(&leaf_a, Some(1)).await.unwrap();
-        server.revoke(&leaf_b, Some(1)).await.unwrap();
-
-        let (serials, _) = persisted(&dir);
-        assert!(
-            serials.contains(&serial_a),
-            "{serial_a} lost from {serials:?}"
-        );
-        assert!(
-            serials.contains(&serial_b),
-            "{serial_b} missing from {serials:?}"
-        );
-
-        // And the CRL the server serves has caught up with the file it just
-        // wrote, rather than signing only what it had in memory.
-        let served = revoked_serials(&server.crl_der().await.unwrap());
-        for serial in [&serial_a, &serial_b] {
-            assert!(
-                served.iter().any(|s| s.eq_ignore_ascii_case(serial)),
-                "{serial} missing from the served CRL {served:?}"
-            );
+        for (revoker, reader, direction) in [
+            (&cli, &server, "cli -> server"),
+            (&server, &cli, "server -> cli"),
+        ] {
+            let (leaf, serial) = issued(revoker, "example.com").await;
+            revoker.revoke(&leaf, Some(1)).await.unwrap();
+            let der = served(reader).await;
+            assert!(lists(&der, &serial), "{direction}: {serial} not served");
         }
     }
 
-    /// The same loss through the other write path: the daily prune.
+    /// Two different CAs over one database keep separate revocation state:
+    /// the issuer id is the key, and a serial revoked under one is not listed
+    /// by the other.
     #[tokio::test]
-    async fn a_revocation_by_another_instance_survives_this_ones_prune() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let (leaf_a, serial_a) = issued(&server, "a.example.com").await;
-        // Something for the server's prune to drop, so that it really writes.
-        server
-            .ledger
-            .revoked
-            .lock()
-            .await
-            .entries
-            .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
+    async fn two_cas_over_one_database_keep_separate_crls() {
+        let database = memory_db().await;
+        let one = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let two = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        assert_ne!(one.crl.issuer_id(), two.crl.issuer_id());
 
-        cli.revoke(&leaf_a, Some(1)).await.unwrap();
-        assert_eq!(
-            server.crl_pruner().unwrap().prune_expired().await.unwrap(),
-            1
-        );
+        let (leaf, serial) = issued(&one, "example.com").await;
+        one.revoke(&leaf, None).await.unwrap();
 
-        let (serials, _) = persisted(&dir);
-        assert!(
-            serials.contains(&serial_a),
-            "{serial_a} lost from {serials:?}"
-        );
-        assert!(
-            !serials.iter().any(|s| s == "0a0b"),
-            "the expired entry stayed"
-        );
+        assert!(lists(&served(&one).await, &serial));
+        assert!(revoked_serials(&served(&two).await).is_empty());
     }
 
-    /// RFC 5280 §5.2.3 across instances. Each instance used to bump its own
-    /// copy of the counter, so the server's first write after a CLI revocation
-    /// published a *lower* number than the CLI had — a CRL a conforming client
-    /// discards in favour of the one it has cached.
+    /// RFC 5280 §5.2.3 across instances: every CRL stored, whichever instance
+    /// signed it, carries a higher number than the one before — and the
+    /// served CRL carries the number that was stored.
     #[tokio::test]
     async fn the_crl_number_never_goes_backwards_across_instances() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
-        let mut numbers = Vec::new();
-
-        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        numbers.push(persisted(&dir).1);
-        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        numbers.push(persisted(&dir).1);
-
+        let database = file_db(&dir).await;
+        let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        let cli = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
         let (leaf_a, _) = issued(&server, "a.example.com").await;
         let (leaf_b, _) = issued(&server, "b.example.com").await;
-        cli.revoke(&leaf_a, None).await.unwrap();
-        numbers.push(persisted(&dir).1);
-        server.revoke(&leaf_b, None).await.unwrap();
-        numbers.push(persisted(&dir).1);
 
-        server
-            .ledger
-            .revoked
-            .lock()
-            .await
-            .entries
-            .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
-        server.crl_pruner().unwrap().prune_expired().await.unwrap();
-        numbers.push(persisted(&dir).1);
+        let mut numbers = vec![crl_number(&served(&server).await)];
+        cli.revoke(&leaf_a, None).await.unwrap();
+        numbers.push(stored(&cli, &database).await.crl_number);
+        server.revoke(&leaf_b, None).await.unwrap();
+        numbers.push(stored(&server, &database).await.crl_number);
+        record(&cli, &database, "0a0b", Some(0)).await;
+        cli.crl_refresher().unwrap().refresh().await.unwrap();
+        numbers.push(stored(&cli, &database).await.crl_number);
 
         assert!(
             numbers.windows(2).all(|pair| pair[0] < pair[1]),
-            "every write must publish a higher number: {numbers:?}"
+            "every stored CRL must carry a higher number: {numbers:?}"
         );
         assert_eq!(
-            crl_number(&server.crl_der().await.unwrap()),
+            crl_number(&served(&server).await),
             *numbers.last().unwrap(),
-            "the served CRL carries the number that was persisted",
+            "the served CRL carries the number that was stored",
         );
     }
 
-    /// Both instances revoking one certificate leaves one entry, carrying the
-    /// time of the *first* revocation.
+    /// Both instances revoking one certificate leaves one row, carrying the
+    /// *first* revocation's time and reason.
     #[tokio::test]
     async fn revoking_what_another_instance_already_revoked_keeps_one_entry() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
-        let server = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let cli = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let database = file_db(&dir).await;
+        let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        let cli = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
         let (leaf, serial) = issued(&server, "a.example.com").await;
 
         cli.revoke(&leaf, Some(1)).await.unwrap();
-        let first = cli.ledger.revoked.lock().await.entries[0].revoked_at;
+        let first = rows(&cli, &database).await[0].revoked_at;
         server.revoke(&leaf, Some(4)).await.unwrap();
 
-        assert_eq!(persisted(&dir).0, vec![serial.clone()]);
-        let ledger = server.ledger.revoked.lock().await;
-        assert_eq!(serials_of(&ledger.entries), vec![serial.as_str()]);
-        assert_eq!(ledger.entries[0].revoked_at, first);
-        assert_eq!(ledger.entries[0].reason, Some(1));
+        let recorded = rows(&server, &database).await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].serial, serial);
+        assert_eq!(recorded[0].revoked_at, first);
+        assert_eq!(recorded[0].reason, Some(1));
     }
 
-    /// Many revocations through both instances at once. Each instance's mutex
-    /// only serialises it against itself; what stops the two interleaving
-    /// read-modify-write is the lock file, and nothing short of real
-    /// concurrency exercises it.
+    /// Many revocations through both instances at once, over a file-backed
+    /// database so they really do race. Each instance serialises its own
+    /// regenerations; what keeps the two from storing a CRL that misses the
+    /// other's serial is the compare-and-swap on `crl_number` and its retry.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_revocations_through_two_instances_are_all_kept() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
-        let server =
-            Arc::new(LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap());
-        let cli =
-            Arc::new(LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap());
+        let database = file_db(&dir).await;
+        let server = Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
+        let cli = Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
+        // Both initialised up front, so the race below is over revocations and
+        // not over who stores the first CRL.
+        served(&server).await;
+        served(&cli).await;
 
-        // Issued up front, so the revocations below really do start together
-        // rather than one per issuance.
         let mut leaves = Vec::new();
         let mut expected = Vec::new();
         for index in 0..12 {
@@ -2286,95 +1761,318 @@ mod tests {
             task.await.unwrap().unwrap();
         }
 
-        let (mut serials, _) = persisted(&dir);
-        serials.sort();
-        expected.sort();
-        assert_eq!(serials, expected);
+        let der = served(&server).await;
+        for serial in &expected {
+            assert!(lists(&der, serial), "{serial} missing from the served CRL");
+        }
+        assert_eq!(rows(&server, &database).await.len(), expected.len());
     }
 
-    /// A revocation whose persist failed is not remembered as done.
-    ///
-    /// `revoke` used to push the serial into memory and *then* persist, so a
-    /// failed write left it in memory only — and the retry, finding it there,
-    /// answered `Ok` without ever reaching the disk. The CRL never listed it,
-    /// and the order row said revoked.
+    /// A revocation whose row landed but whose CRL did not — the store failed,
+    /// or the process died in between — is listed by the retry, rather than
+    /// the retry finding the row and answering `Ok` over a CRL that never
+    /// listed it.
     #[tokio::test]
-    async fn a_revocation_whose_persist_failed_is_written_by_the_retry() {
+    async fn a_revocation_whose_crl_was_never_stored_is_listed_by_the_retry() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, serial) = issued(&ca, "a.example.com").await;
+        served(&ca).await;
+        record(&ca, &database, &serial, None).await;
+        assert!(!lists(&served(&ca).await, &serial), "the setup is the gap");
+
+        ca.revoke(&leaf, Some(1)).await.unwrap();
+        assert!(lists(&served(&ca).await, &serial));
+    }
+
+    /// A CA rebuilt by a reload — a second instance over the same
+    /// configuration — serves the same stored CRL, rather than signing a new
+    /// one of its own at construction.
+    #[tokio::test]
+    async fn a_new_instance_serves_the_stored_crl_rather_than_signing_its_own() {
         let dir = crate::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
+        let database = file_db(&dir).await;
+        let first = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        let (leaf, _) = issued(&first, "a.example.com").await;
+        first.revoke(&leaf, None).await.unwrap();
+        let before = served(&first).await;
+
+        let second = LocalCa::load_or_generate(&cfg, database).unwrap();
+        assert_eq!(served(&second).await, before);
+    }
+
+    // ---- The sidecar import -------------------------------------------------
+
+    /// A v1 sidecar — a bare array, no envelope, no counter, no expiries — is
+    /// imported, and its entries survive.
+    #[tokio::test]
+    async fn a_v1_sidecar_is_imported_and_keeps_its_entries() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        fs::write(
+            dir.join("ca.json"),
+            r#"[{"serial_hex":"0a0b","revoked_at":0,"reason":1}]"#,
+        )
+        .unwrap();
+        let database = memory_db().await;
+
+        let ca = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        assert!(lists(&served(&ca).await, "0a0b"));
+        let recorded = rows(&ca, &database).await;
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            (recorded[0].reason, recorded[0].not_after),
+            (Some(1), None),
+            "a v1 entry has no known expiry, and so is never pruned"
+        );
+    }
+
+    /// The import must not lower `crlNumber`.
+    ///
+    /// v1 derived it from `entries.len() + 1`, so a three-entry ledger last
+    /// published number 4. The first CRL the database stores has to sit
+    /// strictly above that, or a client holding the v1 one treats this newer
+    /// CRL as the older of the two and keeps trusting whatever it has since
+    /// revoked.
+    #[tokio::test]
+    async fn a_v1_sidecar_resumes_above_the_number_it_last_published() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        fs::write(
+            dir.join("ca.json"),
+            r#"[{"serial_hex":"01","revoked_at":0,"reason":null},
+                {"serial_hex":"02","revoked_at":0,"reason":null},
+                {"serial_hex":"03","revoked_at":0,"reason":null}]"#,
+        )
+        .unwrap();
+
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
+        assert!(
+            crl_number(&served(&ca).await) > 4,
+            "the last number v1 could have published was entries.len() + 1",
+        );
+    }
+
+    /// **The regression the durable counter exists for**, carried across the
+    /// import: a v2 sidecar's number is resumed above, and a prune that then
+    /// empties the list still raises it.
+    #[tokio::test]
+    async fn the_crl_number_rises_across_the_import_and_a_prune_that_shortens_the_list() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let expired =
+            OffsetDateTime::now_utc().unix_timestamp() - Duration::days(365).whole_seconds();
+        fs::write(
+            dir.join("ca.json"),
+            format!(
+                r#"{{"version":2,"crl_number":9,"entries":[
+                    {{"serial_hex":"01","revoked_at":0,"reason":null,"not_after":{expired}}},
+                    {{"serial_hex":"02","revoked_at":0,"reason":null,"not_after":{expired}}},
+                    {{"serial_hex":"03","revoked_at":0,"reason":null,"not_after":{expired}}}]}}"#
+            ),
+        )
+        .unwrap();
+        let database = memory_db().await;
+        let ca = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+
+        let imported = served(&ca).await;
+        assert_eq!(revoked_serials(&imported).len(), 3, "imported as they were");
+        assert!(crl_number(&imported) > 9);
+        assert_eq!(rows(&ca, &database).await[0].not_after, Some(expired));
+
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 3);
+        let pruned = served(&ca).await;
+        assert!(revoked_serials(&pruned).is_empty());
+        assert!(
+            crl_number(&pruned) > crl_number(&imported),
+            "pruning must not lower the number",
+        );
+    }
+
+    /// Imported once: a sidecar edited after its CA met the database changes
+    /// nothing, and nothing writes the sidecar again.
+    #[tokio::test]
+    async fn the_sidecar_is_imported_once_and_never_written() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let sidecar = dir.join("ca.json");
+        fs::write(
+            &sidecar,
+            r#"[{"serial_hex":"01","revoked_at":0,"reason":null}]"#,
+        )
+        .unwrap();
+        let database = memory_db().await;
+        let first = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        served(&first).await;
+
+        let edited = r#"[{"serial_hex":"01","revoked_at":0,"reason":null},
+                         {"serial_hex":"02","revoked_at":0,"reason":null}]"#;
+        fs::write(&sidecar, edited).unwrap();
+        let second = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
+        let (leaf, _) = issued(&second, "a.example.com").await;
+        second.revoke(&leaf, None).await.unwrap();
+
+        assert!(
+            !lists(&served(&second).await, "02"),
+            "imported a second time"
+        );
+        assert_eq!(fs::read_to_string(&sidecar).unwrap(), edited);
+    }
+
+    /// A corrupted sidecar is an *error* naming the entry, not a panic, and
+    /// the import is tried again once the file is fixed.
+    ///
+    /// `build_crl` used to `expect` that every stored serial was hex. The
+    /// sidecar is an ordinary JSON file an operator can edit or a crash can
+    /// truncate.
+    #[tokio::test]
+    async fn a_corrupted_sidecar_is_reported_and_retried_once_fixed() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        fs::write(
+            dir.join("ca.json"),
+            r#"[{"serial_hex":"not hex at all","revoked_at":0,"reason":null}]"#,
+        )
+        .unwrap();
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
+
+        let error = ca.crl_der().await.unwrap_err().to_string();
+        assert!(error.contains("not hex"), "{error}");
+        assert!(error.contains("entry 0"), "the entry is named: {error}");
+        let (leaf, _) = issued(&ca, "a.example.com").await;
+        assert!(
+            ca.revoke(&leaf, None).await.is_err(),
+            "nothing is revoked around a failed import"
+        );
+
+        fs::write(
+            dir.join("ca.json"),
+            r#"[{"serial_hex":"0a0b","revoked_at":0,"reason":null}]"#,
+        )
+        .unwrap();
+        assert!(lists(&served(&ca).await, "0a0b"));
+    }
+
+    // ---- The export ----------------------------------------------------------
+
+    /// `crl_path` holds the stored CRL as PEM, world-readable, from the first
+    /// use onwards and after every change.
+    #[tokio::test]
+    async fn the_exported_crl_is_the_stored_one() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
+        let exported = || {
+            let pem = fs::read_to_string(dir.join("ca.crl")).unwrap();
+            let body: String = pem
+                .lines()
+                .filter(|line| !line.starts_with("-----"))
+                .collect();
+            base64::prelude::BASE64_STANDARD.decode(body).unwrap()
+        };
+
+        let initial = served(&ca).await;
+        assert_eq!(exported(), initial);
+
+        let (leaf, _) = issued(&ca, "a.example.com").await;
+        ca.revoke(&leaf, None).await.unwrap();
+        assert_eq!(exported(), served(&ca).await);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("ca.crl"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o644, "the CRL is served to anyone");
+        }
+    }
+
+    /// The database is authoritative: an export that cannot be written is
+    /// logged, and the revocation it followed still stands and is served.
+    #[tokio::test]
+    async fn an_unwritable_export_does_not_fail_the_revocation() {
+        let dir = crate::testutil::TempDir::new("ca");
+        let cfg = ca_config(&dir);
+        let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let (leaf, serial) = issued(&ca, "a.example.com").await;
+        served(&ca).await;
 
         fs::remove_dir_all(&dir).unwrap();
-        assert!(
-            ca.revoke(&leaf, Some(1)).await.is_err(),
-            "persisting into a deleted directory cannot succeed",
-        );
-        assert!(ca.ledger.revoked.lock().await.entries.is_empty());
-
-        fs::create_dir_all(&dir).unwrap();
         ca.revoke(&leaf, Some(1)).await.unwrap();
-        assert_eq!(persisted(&dir).0, vec![serial]);
+        assert!(lists(&served(&ca).await, &serial));
     }
 
-    /// Something other than a regular file where the lock belongs is refused
-    /// by name, rather than followed or locked as if it were one.
+    // ---- The daily refresh ---------------------------------------------------
+
+    /// A refresh with nothing expired and a fresh CRL signs nothing: it runs
+    /// daily on every CA, and the common answer is "nothing to do".
     #[tokio::test]
-    async fn a_lock_path_that_is_not_a_regular_file_is_refused() {
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        let (leaf, _) = issued(&ca, "a.example.com").await;
+    async fn a_refresh_with_nothing_to_do_changes_nothing() {
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
+        let (leaf, _) = issued(&ca, "example.com").await;
+        ca.revoke(&leaf, Some(1)).await.unwrap();
+        let before = served(&ca).await;
 
-        let lock = dir.join("ca.json.lock");
-        fs::remove_file(&lock).unwrap();
-        fs::create_dir(&lock).unwrap();
-
-        let error = ca.revoke(&leaf, None).await.unwrap_err();
-        assert!(
-            error.to_string().contains("ca.json.lock"),
-            "the refusal names the lock: {error}"
-        );
-    }
-
-    /// The merge is a union by serial that keeps the first revocation of each.
-    #[test]
-    fn merging_a_persisted_ledger_keeps_every_serial_and_the_first_revocation() {
-        let mut ours = vec![
-            RevokedEntry {
-                serial_hex: "01".to_string(),
-                revoked_at: 200,
-                reason: Some(4),
-                not_after: None,
-            },
-            entry("02", Some(3600)),
-        ];
-        let theirs = vec![
-            // The same certificate, revoked earlier elsewhere and with its
-            // expiry known.
-            RevokedEntry {
-                serial_hex: "01".to_string(),
-                revoked_at: 100,
-                reason: Some(1),
-                not_after: Some(5000),
-            },
-            // Unchanged on both sides.
-            ours[1].clone(),
-            // Only there — and listed twice, as a hand-edited file might.
-            entry("03", None),
-            entry("03", None),
-        ];
-
-        assert_eq!(super::crl::merge(&mut ours, theirs), 2);
-        assert_eq!(serials_of(&ours), vec!["01", "02", "03"]);
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 0);
         assert_eq!(
-            (ours[0].revoked_at, ours[0].reason, ours[0].not_after),
-            (100, Some(1), Some(5000)),
+            served(&ca).await,
+            before,
+            "an untouched CRL must not be re-signed"
         );
     }
 
-    /// Two CAs over different files are two backends, and the sweep must serve
-    /// both from **one** handler.
+    /// A CRL with less than half its validity left is re-signed even though
+    /// nothing was revoked or pruned — the only thing that stops a quiet CA's
+    /// CRL from lapsing, now that startup no longer signs one.
+    #[tokio::test]
+    async fn a_crl_past_half_its_validity_is_re_signed() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        served(&ca).await;
+        let before = stored(&ca, &database).await;
+
+        age_the_stored_crl(&database).await;
+        let aged = stored(&ca, &database).await;
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 0);
+
+        let after = stored(&ca, &database).await;
+        assert!(after.crl_number > before.crl_number);
+        assert!(after.next_update > aged.next_update);
+        assert_eq!(crl_number(&served(&ca).await), after.crl_number);
+    }
+
+    /// The prune drops an expired entry from the served CRL, and grants the
+    /// clock-skew allowance: a certificate that expired minutes ago stays
+    /// listed, since a relying party whose clock is behind ours still accepts
+    /// it. An entry with no known expiry is never dropped.
+    #[tokio::test]
+    async fn the_refresh_prunes_only_what_has_expired_past_the_allowance() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        served(&ca).await;
+        let now = OffsetDateTime::now_utc();
+        let long_ago = (now - Duration::days(365)).unix_timestamp();
+        let just_now = (now - Duration::minutes(10)).unix_timestamp();
+        record(&ca, &database, "0a", Some(long_ago)).await;
+        record(&ca, &database, "0b", Some(just_now)).await;
+        record(&ca, &database, "0c", None).await;
+        assert!(just_now > (now - CLOCK_SKEW_ALLOWANCE).unix_timestamp());
+
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 1);
+
+        let der = served(&ca).await;
+        assert!(!lists(&der, "0a"), "long expired");
+        assert!(lists(&der, "0b"), "inside the clock-skew allowance");
+        assert!(lists(&der, "0c"), "an unknown expiry is not an expired one");
+    }
+
+    // ---- The sweep job -------------------------------------------------------
+
+    /// Two CAs are two backends, and the sweep must serve both from **one**
+    /// handler.
     ///
     /// The trap this exists for: `JobRegistry::register` refuses two handlers
     /// for one `kind`, so returning the sweep from the backend itself would
@@ -2388,70 +2086,58 @@ mod tests {
         use crate::jobs::{JobHandler, JobRegistry};
         use crate::signer::local_ca::sweep::CrlSweepJob;
 
+        let database = memory_db().await;
         let dirs = [
             crate::testutil::TempDir::new("ca-one"),
             crate::testutil::TempDir::new("ca-two"),
         ];
         let cas: Vec<_> = dirs
             .iter()
-            .map(|dir| {
-                LocalCa::load_or_generate(&ca_config(dir), &crate::signer::CarriedState::new())
-                    .unwrap()
-            })
+            .map(|dir| LocalCa::load_or_generate(&ca_config(dir), database.clone()).unwrap())
             .collect();
 
-        let pruners: Vec<_> = cas.iter().filter_map(SignerBackend::crl_pruner).collect();
-        assert_eq!(pruners.len(), 2, "each CA offers its own ledger");
+        let refreshers: Vec<_> = cas
+            .iter()
+            .filter_map(SignerBackend::crl_refresher)
+            .collect();
+        assert_eq!(refreshers.len(), 2, "each CA offers its own CRL");
         assert_ne!(
-            pruners[0].state_key(),
-            pruners[1].state_key(),
-            "the two ledgers must be distinguishable in a log line",
+            refreshers[0].issuer(),
+            refreshers[1].issuer(),
+            "the two CAs must be distinguishable in a log line",
         );
 
         let mut registry = JobRegistry::new();
         registry
-            .register(Arc::new(CrlSweepJob::new(pruners)))
+            .register(Arc::new(CrlSweepJob::new(refreshers)))
             .expect("one handler over both CAs registers cleanly");
         assert_eq!(registry.kinds(), vec![CrlSweepJob::new(Vec::new()).kind()]);
     }
 
     /// The sweep **never returns `Failed`**: a retired periodic job does not
-    /// re-enqueue itself, so one CA whose files cannot be written would stop
-    /// the prune for the life of the process rather than for one day.
+    /// re-enqueue itself, so one CA whose refresh fails would stop the refresh
+    /// for the life of the process rather than for one day.
     #[tokio::test]
-    async fn the_sweep_reschedules_even_when_a_ledger_cannot_be_written() {
+    async fn the_sweep_reschedules_even_when_a_refresh_fails() {
         use crate::jobs::{JobHandler, JobOutcome};
         use crate::signer::local_ca::sweep::CrlSweepJob;
 
-        let dir = crate::testutil::TempDir::new("ca");
-        let cfg = ca_config(&dir);
-        let ca = LocalCa::load_or_generate(&cfg, &crate::signer::CarriedState::new()).unwrap();
-        {
-            let mut ledger = ca.ledger.revoked.lock().await;
-            ledger
-                .entries
-                .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
-        }
-        // The directory goes, so persisting the pruned ledger cannot succeed.
-        std::fs::remove_dir_all(&dir).unwrap();
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        database.close().await;
 
-        let pruner = ca.crl_pruner().unwrap();
-        // Asserted first, or this test would pass just as happily on a prune
+        let refresher = ca.crl_refresher().unwrap();
+        // Asserted first, or this test would pass just as happily on a refresh
         // that succeeded — and the whole claim is about the one that does not.
         assert!(
-            pruner.prune_expired().await.is_err(),
-            "persisting into a deleted directory cannot succeed",
+            refresher.refresh().await.is_err(),
+            "a closed database cannot be refreshed",
         );
 
-        // Still listed, because a persist that failed puts the entry back —
-        // which is also what leaves the job below a failure to swallow rather
-        // than an already-emptied ledger.
-        assert_eq!(ca.ledger.revoked.lock().await.entries.len(), 1);
-
-        let job = CrlSweepJob::new(vec![pruner]);
+        let job = CrlSweepJob::new(vec![refresher]);
         assert!(
             matches!(job.run(&sweep_row()).await, JobOutcome::Reschedule(interval) if interval == job.interval()),
-            "a failing prune is still rescheduled",
+            "a failing refresh is still rescheduled",
         );
     }
 
@@ -2461,19 +2147,16 @@ mod tests {
         use crate::jobs::{JobHandler, JobOutcome};
         use crate::signer::local_ca::sweep::CrlSweepJob;
 
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        {
-            let mut ledger = ca.ledger.revoked.lock().await;
-            ledger
-                .entries
-                .push(entry("0a0b", Some(-Duration::days(365).whole_seconds())));
-        }
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        served(&ca).await;
+        record(&ca, &database, "0a0b", Some(0)).await;
 
-        let job = CrlSweepJob::new(vec![ca.crl_pruner().unwrap()]);
+        let job = CrlSweepJob::new(vec![ca.crl_refresher().unwrap()]);
         assert!(
             matches!(job.run(&sweep_row()).await, JobOutcome::Reschedule(interval) if interval == job.interval()),
         );
-        assert!(revoked_serials(&ca.crl_der().await.unwrap()).is_empty());
+        assert!(revoked_serials(&served(&ca).await).is_empty());
     }
 
     /// One row however often `recover` runs — the partial identity index is
@@ -2485,14 +2168,10 @@ mod tests {
         use crate::signer::local_ca::sweep::{CRL_SWEEP_KIND, CrlSweepJob};
         use crate::sqlite::job::Job;
 
-        let database = Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
-                .await
-                .unwrap(),
-        );
+        let database = memory_db().await;
         let queue = crate::testutil::idle_job_queue(database.clone());
-        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90).unwrap();
-        let job = CrlSweepJob::new(vec![ca.crl_pruner().unwrap()]);
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let job = CrlSweepJob::new(vec![ca.crl_refresher().unwrap()]);
 
         job.recover(&queue).await;
         job.recover(&queue).await;

@@ -1266,7 +1266,7 @@ mod tests {
     #[tokio::test]
     async fn revoking_writes_one_audit_row_naming_the_caller() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let signer = in_memory_ca();
+        let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
 
         let outcome = revoke_order(
@@ -1320,7 +1320,7 @@ mod tests {
     #[tokio::test]
     async fn a_revocation_with_no_reason_leaves_the_column_absent() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let signer = in_memory_ca();
+        let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
 
         revoke_order(
@@ -1728,10 +1728,14 @@ mod tests {
         );
     }
 
-    fn in_memory_ca() -> Arc<dyn SignerBackend> {
+    fn in_memory_ca(database: &Arc<Database>) -> Arc<dyn SignerBackend> {
         Arc::new(
-            crate::signer::local_ca::LocalCa::generate_in_memory("ecdsa-p256", 90)
-                .expect("in-memory CA"),
+            crate::signer::local_ca::LocalCa::generate_in_memory(
+                "ecdsa-p256",
+                90,
+                database.clone(),
+            )
+            .expect("in-memory CA"),
         )
     }
 
@@ -1785,8 +1789,8 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            db,
-            in_memory_ca(),
+            db.clone(),
+            in_memory_ca(&db),
         )
         .await
         .unwrap();
@@ -1814,8 +1818,8 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            db,
-            in_memory_ca(),
+            db.clone(),
+            in_memory_ca(&db),
         )
         .await
         .unwrap();
@@ -1825,7 +1829,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_order_persists() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let signer = in_memory_ca();
+        let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
 
         let outcome = revoke_order(
@@ -1851,7 +1855,7 @@ mod tests {
         assert!(reloaded.revoked_at.is_some());
 
         use x509_parser::prelude::FromDer;
-        let der = signer.crl_der().await.unwrap();
+        let der = signer.crl_der().await.unwrap().unwrap();
         let (_, crl) =
             x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
         assert_eq!(crl.iter_revoked_certificates().count(), 1);
@@ -1860,7 +1864,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_order_already_revoked() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let signer = in_memory_ca();
+        let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
 
         revoke_order(
@@ -1889,7 +1893,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_order_bad_reason_is_refused() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let signer = in_memory_ca();
+        let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
 
         let error = revoke_order(

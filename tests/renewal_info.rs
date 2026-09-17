@@ -350,7 +350,7 @@ const END: i64 = 1_800_086_400;
 /// its window must take precedence over the local estimate.
 #[tokio::test]
 async fn an_upstream_window_is_preferred_over_the_local_estimate() {
-    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(START, END)));
+    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(START, END)).await);
     let (app, _db) = test_app_with_signer(signer).await;
     let ec = EcSigner::new();
     let account_url = register(&app, &ec).await;
@@ -369,7 +369,7 @@ async fn an_upstream_window_is_preferred_over_the_local_estimate() {
 /// make the server fall back on its local estimate.
 #[tokio::test]
 async fn an_unreachable_upstream_falls_back_to_the_local_window() {
-    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Unreachable));
+    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Unreachable).await);
     let (app, _db) = test_app_with_signer(signer).await;
     let ec = EcSigner::new();
     let account_url = register(&app, &ec).await;
@@ -398,9 +398,8 @@ async fn an_unreachable_upstream_falls_back_to_the_local_window() {
 #[tokio::test]
 async fn an_upstream_explanation_url_reaches_the_client() {
     const URL: &str = "https://ca.example/incidents/2026-08";
-    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::WindowWithExplanation(
-        START, END, URL,
-    )));
+    let signer =
+        Arc::new(ScriptedAriSigner::new(AriAnswer::WindowWithExplanation(START, END, URL)).await);
     let (app, _db) = test_app_with_signer(signer).await;
     let ec = EcSigner::new();
     let account_url = register(&app, &ec).await;
@@ -420,7 +419,7 @@ async fn an_upstream_explanation_url_reaches_the_client() {
 /// that the certificate is revoked.
 #[tokio::test]
 async fn revocation_beats_an_upstream_window_in_the_future() {
-    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(START, END)));
+    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(START, END)).await);
     let (app, _db) = test_app_with_signer(signer).await;
     let ec = EcSigner::new();
     let account_url = register(&app, &ec).await;
@@ -540,7 +539,7 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
 /// ici un amont qui en renvoie une dégénérée.
 #[tokio::test]
 async fn a_degenerate_window_is_never_served() {
-    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(END, START)));
+    let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(END, START)).await);
     let (app, _db) = test_app_with_signer(signer).await;
     let ec = EcSigner::new();
     let account_url = register(&app, &ec).await;

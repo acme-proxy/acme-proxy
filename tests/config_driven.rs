@@ -61,7 +61,14 @@ fn config_with_short_nonce_ttl() -> Config {
 
 async fn app_with(config: Config) -> (Router, Arc<Database>) {
     let leaf_days = config.signer.local_ca.leaf_validity_days;
-    let signer = Arc::new(LocalCa::generate_in_memory("ecdsa-p256", leaf_days).unwrap());
+    let signer = Arc::new(
+        LocalCa::generate_in_memory(
+            "ecdsa-p256",
+            leaf_days,
+            Arc::new(Database::connect_in_memory().await.unwrap()),
+        )
+        .unwrap(),
+    );
     test_app_full(
         config,
         signer,
