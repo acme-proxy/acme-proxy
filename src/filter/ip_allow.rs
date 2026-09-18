@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn it_decides_the_same_way_at_the_identifier_stage() {
         let check = check(&["10.0.0.0/8"]);
-        let identifiers = vec![crate::sqlite::order::Identifier::dns("example.com")];
+        let identifiers = vec![crate::identifier::Identifier::dns("example.com")];
 
         let verdict = check
             .check_identifiers(&IdentifierContext {

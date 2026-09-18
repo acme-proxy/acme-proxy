@@ -1,4 +1,3 @@
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -7,46 +6,10 @@ use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::status::{self, OrderStatus};
-
-/// An ACME identifier (RFC 8555 §7.1.4). Only `dns` is supported here, but the
-/// type is kept generic so the JSON round-trips whatever a client sent.
-///
-/// Stored inside the order's `identifiers` JSON array and echoed verbatim in the
-/// order object. Reused by the signer to check a finalize CSR's SANs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Identifier {
-    #[serde(rename = "type")]
-    pub typ: String,
-    pub value: String,
-}
-
-impl Identifier {
-    /// A `dns` identifier, which is every identifier this server issues for.
-    ///
-    /// Here rather than in a test helper because the struct had no constructor
-    /// at all, and twelve modules had each grown their own `fn dns(&str)` to
-    /// avoid writing the literal — the same accumulation that put `TempDir` in
-    /// `testutil`, except these are one line each and belong in production,
-    /// where the handlers building identifiers benefit too.
-    #[must_use]
-    pub fn dns(value: impl Into<String>) -> Self {
-        Self::new("dns", value)
-    }
-
-    /// An identifier of any type. `typ` is kept a free string because RFC 8555
-    /// §9.7.7 leaves the registry open and the order object echoes back
-    /// whatever a client sent.
-    #[must_use]
-    pub fn new(typ: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            typ: typ.into(),
-            value: value.into(),
-        }
-    }
-}
 
 /// An ACME order (RFC 8555 §7.1.3). A new order is created in the `pending`
 /// state with one authorization per identifier; once every authorization is

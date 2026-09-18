@@ -625,15 +625,15 @@ pub async fn revoke_own_session(
     AdminSession::delete(&target.token_hash, &state.database).await?;
 
     let scope = if was_current {
-        crate::audit::admin::SessionScope::OwnCurrent
+        crate::auditor::admin::SessionScope::OwnCurrent
     } else {
-        crate::audit::admin::SessionScope::OwnOther
+        crate::auditor::admin::SessionScope::OwnOther
     };
     state
         .record_admin_action(
             &request_context,
             &session.auth.user.username,
-            |actor, ctx| crate::audit::admin::session_revoked(actor, ctx, scope, 1),
+            |actor, ctx| crate::auditor::admin::session_revoked(actor, ctx, scope, 1),
         )
         .await;
 

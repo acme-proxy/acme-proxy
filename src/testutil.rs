@@ -417,19 +417,19 @@ impl FakeProxy {
 /// two modules had a verbatim `fn ids(&[(&str, &str)])` and several more built
 /// the same `Vec` inline.
 #[cfg(test)]
-pub(crate) fn identifiers(pairs: &[(&str, &str)]) -> Vec<crate::sqlite::order::Identifier> {
+pub(crate) fn identifiers(pairs: &[(&str, &str)]) -> Vec<crate::identifier::Identifier> {
     pairs
         .iter()
-        .map(|(typ, value)| crate::sqlite::order::Identifier::new(*typ, *value))
+        .map(|(typ, value)| crate::identifier::Identifier::new(*typ, *value))
         .collect()
 }
 
 /// The `dns`-only shorthand for [`identifiers`].
 #[cfg(test)]
-pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<crate::sqlite::order::Identifier> {
+pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<crate::identifier::Identifier> {
     values
         .iter()
-        .map(|value| crate::sqlite::order::Identifier::dns(*value))
+        .map(|value| crate::identifier::Identifier::dns(*value))
         .collect()
 }
 
@@ -499,7 +499,7 @@ pub(crate) fn order_fixture(
     let mut order = crate::sqlite::order::Order::new(
         "default",
         account_id,
-        vec![crate::sqlite::order::Identifier::dns("example.com")],
+        vec![crate::identifier::Identifier::dns("example.com")],
         0,
         None,
         None,
@@ -524,7 +524,8 @@ pub(crate) async fn issued_order(
     names: &[&str],
     not_after_days: i64,
 ) -> crate::sqlite::order::Order {
-    use crate::sqlite::order::{Identifier, Order};
+    use crate::identifier::Identifier;
+    use crate::sqlite::order::Order;
 
     const DAY: i64 = 24 * 60 * 60;
 
@@ -600,7 +601,7 @@ pub(crate) async fn certified_order(
     let mut order = crate::sqlite::order::Order::create(
         "default",
         account,
-        vec![crate::sqlite::order::Identifier::dns("example.com")],
+        vec![crate::identifier::Identifier::dns("example.com")],
         crate::sqlite::nonce::now_secs() + 3600,
         None,
         None,
@@ -688,7 +689,7 @@ pub(crate) fn upstream_order_row_fixture() -> crate::sqlite::upstream_order::Ups
         request_id: Some("req-9".to_string()),
         profile: "le".to_string(),
         account_id: uuid::uuid!("00000000-0000-7000-8000-0000000acc01"),
-        identifiers: vec![crate::sqlite::order::Identifier::dns("a.example.com")],
+        identifiers: vec![crate::identifier::Identifier::dns("a.example.com")],
         local_status: crate::sqlite::status::OrderStatus::Processing,
         local_expires: 1_700_600_000,
     }

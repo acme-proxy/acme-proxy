@@ -839,9 +839,9 @@ mod tests {
     use crate::admin::ops::load_order_detail;
     use crate::audit::ClientContext;
     use crate::cli::style::ColorChoice;
+    use crate::identifier::Identifier;
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
-    use crate::sqlite::order::Identifier;
     use crate::sqlite::status::OrderStatus;
     use crate::testutil::{
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, audit_entry,

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use acme_proxy::audit::Auditor;
+use acme_proxy::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
 pub use acme_proxy::audit::ClientContext;
 use acme_proxy::server::{Profile, ProfileParts, build_app};
@@ -29,6 +29,7 @@ use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
 use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, Stage};
+use acme_proxy::identifier::Identifier;
 use acme_proxy::jobs::{JobQueue, JobRegistry};
 pub use acme_proxy::metrics::Metrics;
 use acme_proxy::notify::{
@@ -42,7 +43,6 @@ use acme_proxy::signer::{
     RevocationRoute, SignerBackend, SignerError, SignerInfo,
 };
 use acme_proxy::sqlite::db::Database;
-use acme_proxy::sqlite::order::Identifier;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
@@ -3215,7 +3215,8 @@ pub async fn certified_order(
     account: uuid::Uuid,
     not_after: Option<i64>,
 ) -> acme_proxy::sqlite::order::Order {
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::identifier::Identifier;
+    use acme_proxy::sqlite::order::Order;
 
     let mut order = Order::create(
         "default",

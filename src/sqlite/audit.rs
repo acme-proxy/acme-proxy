@@ -432,7 +432,7 @@ mod tests {
         let order = crate::sqlite::order::Order::new(
             "default",
             account_id,
-            vec![crate::sqlite::order::Identifier::dns("a.example.com")],
+            vec![crate::identifier::Identifier::dns("a.example.com")],
             0,
             None,
             None,
@@ -445,7 +445,7 @@ mod tests {
                 "default",
                 Actor::acme(account_id.to_string()),
             )
-            .with_order(&order),
+            .with_order(order.id, order.account_id, &order.identifiers),
             &db,
         )
         .await

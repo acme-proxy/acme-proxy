@@ -17,9 +17,9 @@ use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 use uuid::Uuid;
 
+use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::Identifier;
 use crate::sqlite::status::{self, OrderStatus, UpstreamOrderStatus};
 
 /// The most rows [`UpstreamOrder::list_processing`] returns in one call.
@@ -468,8 +468,9 @@ impl UpstreamOrder {
 mod tests {
     use super::*;
     use crate::audit::ClientContext;
+    use crate::identifier::Identifier;
     use crate::sqlite::account::Account;
-    use crate::sqlite::order::{Identifier, Order};
+    use crate::sqlite::order::Order;
     use std::sync::Arc;
 
     /// `upstream_orders.order_id` is a foreign key, so a real order has to

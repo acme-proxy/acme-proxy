@@ -236,8 +236,8 @@ pub async fn run_order_command(
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
                     if let Some(order) = doomed {
-                        crate::audit::admin::record_cli_action(&database, |actor, client| {
-                            crate::audit::admin::order_deleted(
+                        crate::auditor::admin::record_cli_action(&database, |actor, client| {
+                            crate::auditor::admin::order_deleted(
                                 actor,
                                 client,
                                 &order,
@@ -284,7 +284,7 @@ pub async fn run_order_command(
             let notify = notifiers
                 .get(&order.profile)
                 .map(|dispatcher| dispatcher.as_ref());
-            let audit = crate::audit::Auditor::offline(database.clone());
+            let audit = crate::auditor::Auditor::offline(database.clone());
             // A queue this process never drains: what it enqueues, a running
             // server's job runner works off.
             let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
@@ -584,7 +584,7 @@ mod tests {
         Order::create(
             profile,
             account.id,
-            vec![crate::sqlite::order::Identifier::dns("example.com")],
+            vec![crate::identifier::Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
             None,
@@ -1043,7 +1043,7 @@ mod tests {
         .unwrap();
         let handler = SignerRevokeJob::new(
             database.clone(),
-            Arc::new(crate::audit::Auditor::offline(database.clone())),
+            Arc::new(crate::auditor::Auditor::offline(database.clone())),
             vec![("default".to_string(), signer)],
             std::collections::HashMap::new().into(),
         );

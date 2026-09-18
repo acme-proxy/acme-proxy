@@ -248,10 +248,10 @@ pub async fn post_logout(
                 &request_context,
                 &session.auth.user.username,
                 |actor, ctx| {
-                    crate::audit::admin::session_revoked(
+                    crate::auditor::admin::session_revoked(
                         actor,
                         ctx,
-                        crate::audit::admin::SessionScope::AllOf(
+                        crate::auditor::admin::SessionScope::AllOf(
                             session.auth.user.username.clone(),
                         ),
                         revoked,

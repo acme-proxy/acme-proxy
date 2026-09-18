@@ -353,7 +353,7 @@ impl Problem {
     /// there, so calling this on a problem that is then returned directly is a
     /// no-op rather than a violation.
     #[must_use]
-    pub fn with_identifier(mut self, identifier: &crate::sqlite::order::Identifier) -> Self {
+    pub fn with_identifier(mut self, identifier: &crate::identifier::Identifier) -> Self {
         self.ext_mut().identifier = serde_json::to_value(identifier).ok();
         self
     }

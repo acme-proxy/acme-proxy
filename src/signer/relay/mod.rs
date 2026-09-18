@@ -42,13 +42,13 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 
 use crate::config::RelayConfig;
+use crate::identifier::Identifier;
 use crate::jobs::JobQueue;
 use crate::signer::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
 use crate::sqlite::db::Database;
-use crate::sqlite::order::Identifier;
 use crate::sqlite::upstream_order::UpstreamOrder;
 
 pub mod account;
@@ -135,7 +135,7 @@ struct Inner {
     /// was resolved during the finalize request and parked on
     /// `upstream_orders` — over the registry, which is *not* rebuilt per
     /// generation and so can be held directly.
-    audit: Arc<crate::audit::Auditor>,
+    audit: Arc<crate::auditor::Auditor>,
     /// The read side over the same directory and token store — what
     /// [`SignerBackend::info`] hands out.
     info: Arc<RelayInfo>,
@@ -299,7 +299,7 @@ impl RelaySigner {
             poll,
             notifiers: parts.notifiers.clone(),
             audit: Arc::new(
-                crate::audit::Auditor::offline(parts.database.clone())
+                crate::auditor::Auditor::offline(parts.database.clone())
                     .with_metrics(parts.metrics.clone()),
             ),
             jobs: parts.jobs.clone(),

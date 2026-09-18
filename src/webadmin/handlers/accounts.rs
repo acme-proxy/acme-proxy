@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::admin;
-use crate::audit::admin as audit_admin;
+use crate::auditor::admin as audit_admin;
 use crate::sqlite::account::Account;
 use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;

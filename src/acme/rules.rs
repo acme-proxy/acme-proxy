@@ -5,7 +5,7 @@ use time::format_description::well_known::Rfc3339;
 use tracing::warn;
 
 use crate::error::Problem;
-use crate::sqlite::order::Identifier;
+use crate::identifier::Identifier;
 
 /// Parses a PKCS#10 CSR, which also verifies its own self-signature.
 ///

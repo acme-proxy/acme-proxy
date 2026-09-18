@@ -1004,7 +1004,7 @@ pub(crate) async fn abandon_relayed_order(
     reason: &str,
     actor: crate::audit::Actor,
     client: crate::audit::ClientContext,
-    audit: &crate::audit::Auditor,
+    audit: &crate::auditor::Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
     // The client sees a generic problem document; the real reason is
@@ -1033,14 +1033,15 @@ mod tests {
     /// the registry of the `Auditor` it writes through.
     #[tokio::test]
     async fn abandon_relayed_order_marks_both_rows_and_writes_one_row() {
+        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
         use crate::sqlite::audit::{AuditEntry, AuditQuery};
         use crate::sqlite::db::Database;
-        use crate::sqlite::order::Identifier;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let metrics = crate::testutil::test_metrics(database.clone());
-        let audit = crate::audit::Auditor::offline(database.clone()).with_metrics(metrics.clone());
+        let audit =
+            crate::auditor::Auditor::offline(database.clone()).with_metrics(metrics.clone());
         let (account, _) = Account::find_or_create(
             "default",
             &crate::random::random_bytes::<16>(),

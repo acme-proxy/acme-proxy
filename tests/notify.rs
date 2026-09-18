@@ -483,9 +483,10 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 #[tokio::test]
 async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     use acme_proxy::config::{ExpiryNotifyConfig, NotifyConfig, ProfileConfig, ProfileSections};
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::notify::expiry::ExpiryDigestJob;
     use acme_proxy::sqlite::db::Database;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let config = JobsConfig {
         poll_interval_ms: 5,

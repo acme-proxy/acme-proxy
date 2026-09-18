@@ -5,7 +5,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::admin::prompt::confirm;
-use crate::audit::{Actor, Auditor, ClientContext};
+use crate::audit::{Actor, ClientContext};
+use crate::auditor::Auditor;
 use crate::config::Config;
 use crate::signer::SignerError;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
@@ -806,7 +807,7 @@ pub async fn cancel_job(
     // `certificate_issue_failed` row on the branch above; this one is the only
     // record the rest of them leave, so it must not be skipped.
     audit
-        .record(crate::audit::admin::job_cancelled(
+        .record(crate::auditor::admin::job_cancelled(
             actor,
             client,
             &job.kind,
@@ -890,7 +891,7 @@ pub async fn run_job_now(
     };
     if let Some(job) = Job::advance_row(job_id, &database).await? {
         audit
-            .record(crate::audit::admin::job_advanced(
+            .record(crate::auditor::admin::job_advanced(
                 actor,
                 client,
                 &job.id.to_string(),
@@ -901,7 +902,7 @@ pub async fn run_job_now(
     }
     if let Some(job) = Job::revive_row(job_id, &database).await? {
         audit
-            .record(crate::audit::admin::job_advanced(
+            .record(crate::auditor::admin::job_advanced(
                 actor,
                 client,
                 &job.id.to_string(),
@@ -1172,8 +1173,8 @@ fn ari_cert_id(chain: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::audit::{AuditEvent, AuditRecord};
+    use crate::identifier::Identifier;
     use crate::signer::SignerBackend;
-    use crate::sqlite::order::Identifier;
     use crate::testutil::{account_id, issued_order};
 
     const DAY: i64 = 24 * 60 * 60;
@@ -1326,7 +1327,7 @@ mod tests {
                 ptr: Some("desk.example.com".to_string()),
                 ..ClientContext::default()
             },
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1356,7 +1357,7 @@ mod tests {
             None,
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1434,7 +1435,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1897,7 +1898,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
@@ -1928,7 +1929,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
@@ -1949,7 +1950,7 @@ mod tests {
             Some(1),
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1986,7 +1987,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1998,7 +1999,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db,
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -2019,7 +2020,7 @@ mod tests {
             Some(999),
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db,
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -2350,7 +2351,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2388,7 +2389,7 @@ mod tests {
                 ip: Some("203.0.113.7".to_string()),
                 ..ClientContext::default()
             },
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2447,7 +2448,7 @@ mod tests {
             "urn:ietf:params:acme:error:rejectedIdentifier from the upstream",
             Actor::cli(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             &db,
         )
         .await
@@ -2475,7 +2476,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2519,7 +2520,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2548,7 +2549,7 @@ mod tests {
             job.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2577,7 +2578,7 @@ mod tests {
                 "nope",
                 cli_actor(),
                 ClientContext::default(),
-                &crate::audit::Auditor::offline(db.clone()),
+                &crate::auditor::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2589,7 +2590,7 @@ mod tests {
                 crate::sqlite::id::mint().to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                &crate::audit::Auditor::offline(db.clone()),
+                &crate::auditor::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2608,7 +2609,7 @@ mod tests {
                 sweep.id.to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                &crate::audit::Auditor::offline(db.clone()),
+                &crate::auditor::Auditor::offline(db.clone()),
                 db,
             )
                 .await
@@ -2629,7 +2630,7 @@ mod tests {
                 &mut reader,
                 cli_actor(),
                 ClientContext::default(),
-                &crate::audit::Auditor::offline(db.clone()),
+                &crate::auditor::Auditor::offline(db.clone()),
                 db.clone(),
             )
             .await
@@ -2656,7 +2657,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2679,7 +2680,7 @@ mod tests {
             relay.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2701,7 +2702,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::audit::Auditor::offline(db.clone()),
+            &crate::auditor::Auditor::offline(db.clone()),
             db.clone(),
         ).await.unwrap(),
             RunJobNowOutcome::Refused(s) if s == "done"

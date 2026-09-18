@@ -196,7 +196,7 @@
 //!     // process cannot build an auditor that counts into nothing. The counters
 //!     // come off the same `AuditRecord` the trail is written from, so the two
 //!     // can never disagree.
-//!     let audit = Arc::new(acme_proxy::audit::Auditor::from_config(
+//!     let audit = Arc::new(acme_proxy::auditor::Auditor::from_config(
 //!         &config.audit,
 //!         &config.dns,
 //!         database.clone(),
@@ -248,6 +248,7 @@
 pub mod acme;
 pub mod admin;
 pub mod audit;
+pub mod auditor;
 pub mod cert;
 pub mod challenge;
 pub mod cli;
@@ -260,6 +261,7 @@ pub mod extractors;
 pub mod filter;
 pub mod handlers;
 pub mod http_client;
+pub mod identifier;
 pub mod ipam;
 pub mod jobs;
 pub mod jws;

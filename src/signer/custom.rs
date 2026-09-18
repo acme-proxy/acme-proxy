@@ -19,8 +19,8 @@ use super::{
     SignerInfo,
 };
 use crate::config::CustomSignerConfig;
+use crate::identifier::Identifier;
 use crate::script_hook::{ScriptHook, ScriptOutcome, ScriptStdin};
-use crate::sqlite::order::Identifier;
 
 /// Exit code reserved for "the CSR is bad" on the `issue` hook — any other
 /// non-zero exit is treated as an internal signer failure. `1` is

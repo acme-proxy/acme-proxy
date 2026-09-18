@@ -167,7 +167,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::revoke::SignerRevokeJob::new(
             database.clone(),
             Arc::new(
-                crate::audit::Auditor::offline(database.clone())
+                crate::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             backends.clone(),
@@ -184,7 +184,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::issue::SignerIssueJob::new(
             database.clone(),
             Arc::new(
-                crate::audit::Auditor::offline(database.clone())
+                crate::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             backends.clone(),
@@ -204,7 +204,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::validate::ChallengeValidateJob::new(
             database.clone(),
             Arc::new(
-                crate::audit::Auditor::offline(database.clone())
+                crate::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             profiles
@@ -317,7 +317,7 @@ pub(crate) fn build_generation(
     // here rather than in `Profile::build_all` for exactly that reason — it is
     // not a per-endpoint subsystem.
     let auditor = Arc::new(
-        crate::audit::Auditor::from_config(
+        crate::auditor::Auditor::from_config(
             &config.audit,
             &config.dns,
             database.clone(),

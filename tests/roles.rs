@@ -501,7 +501,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
         &keyless.resolve_profiles().unwrap()[0].sections.signer,
     )
     .unwrap();
-    let audit = acme_proxy::audit::Auditor::offline(database.clone());
+    let audit = acme_proxy::auditor::Auditor::offline(database.clone());
     acme_proxy::acme::revoke::Revocations {
         database: &database,
         audit: &audit,
@@ -593,8 +593,9 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
 /// A `ready` order for `a.example.com`, claimed with its `signer_issue` row
 /// queued — what `finalize` leaves behind — returning its id.
 async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQueue) -> String {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
     use base64::prelude::*;
 
     let (account, _) = Account::find_or_create(

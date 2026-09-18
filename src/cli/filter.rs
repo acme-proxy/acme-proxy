@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::filter::explain::{
     Subject, explain, explanation_json, policy_json, render_explanation, render_policy,
 };
-use crate::sqlite::order::Identifier;
+use crate::identifier::Identifier;
 
 #[derive(Subcommand)]
 pub enum FilterCommand {

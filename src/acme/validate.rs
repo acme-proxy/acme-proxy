@@ -24,7 +24,7 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 use super::order::OrderService;
-use crate::audit::Auditor;
+use crate::auditor::Auditor;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::server::Profile;
 use crate::sqlite::{
@@ -374,7 +374,7 @@ mod tests {
     use crate::challenge::{
         ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
     };
-    use crate::sqlite::order::Identifier;
+    use crate::identifier::Identifier;
     use crate::sqlite::status::{AuthzStatus, OrderStatus};
 
     /// A validator refusing every attempt, so the failure arm is reachable

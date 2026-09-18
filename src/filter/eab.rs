@@ -200,7 +200,7 @@ impl Check for EabList {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::sqlite::order::Identifier;
+    use crate::identifier::Identifier;
     use crate::testutil::dns_identifiers;
 
     fn identity(label: Option<&str>, active: bool) -> EabIdentity {

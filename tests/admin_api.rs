@@ -2075,8 +2075,9 @@ async fn seed(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
     count: u8,
 ) -> Vec<String> {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let mut ids = Vec::new();
     for index in 0..count {
@@ -2604,8 +2605,9 @@ async fn an_unknown_order_status_filter_is_refused_rather_than_matching_nothing(
 
 #[tokio::test]
 async fn an_order_detail_carries_its_authorizations() {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::authz::{Authorization, Challenge};
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
@@ -2701,8 +2703,9 @@ async fn revoking_an_order_covers_every_outcome() {
 /// and says so rather than reaching for whatever signer is at hand.
 #[tokio::test]
 async fn revoking_an_order_from_an_unmounted_profile_is_a_conflict() {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -3297,9 +3300,10 @@ async fn the_admin_listener_serves_no_acme() {
 /// other revoke test cannot reach, and the one that actually touches the CA.
 #[tokio::test]
 async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let mut config = admin_config();
     config.admin.enabled = true;
@@ -3822,9 +3826,10 @@ async fn seed_sweep_job(database: &std::sync::Arc<acme_proxy::sqlite::db::Databa
 async fn seed_relay_job(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
 ) -> (String, String) {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::job::{Job, NewJob};
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
     use acme_proxy::sqlite::upstream_order::UpstreamOrder;
 
     let (account, _) = Account::find_or_create(
@@ -4126,7 +4131,8 @@ async fn expiring(
     names: &[&str],
     not_after: i64,
 ) -> String {
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::identifier::Identifier;
+    use acme_proxy::sqlite::order::Order;
 
     let mut order = Order::create(
         PROFILE,

@@ -5,7 +5,7 @@ use std::time::Duration;
 use clap::Subcommand;
 
 use crate::admin;
-use crate::audit::admin as audit_admin;
+use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::config::Config;
 use crate::sqlite::db::Database;

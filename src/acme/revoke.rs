@@ -27,7 +27,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext, RequestContext};
+use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext, RequestContext};
+use crate::auditor::Auditor;
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
@@ -314,7 +315,7 @@ impl Revocations<'_> {
                         "unauthorized",
                         "signed by neither the order's account nor the certificate's own key",
                     )
-                    .with_order(&order),
+                    .with_order(order.id, order.account_id, &order.identifiers),
                 )
                 .await;
             return Err(RevokeError::Refused(Problem::unauthorized(
@@ -402,7 +403,7 @@ impl Revocations<'_> {
                 reason,
                 detail,
             )
-            .with_order(order)
+            .with_order(order.id, order.account_id, &order.identifiers)
         };
         let audited = refusals == Refusals::Audited;
 
@@ -493,7 +494,7 @@ impl Revocations<'_> {
 
         info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);
         let revoked = AuditRecord::new(AuditEvent::CertificateRevoked, &order.profile, actor)
-            .with_order(&order)
+            .with_order(order.id, order.account_id, &order.identifiers)
             .with_serial(&serial_hex)
             .with_client(client.clone());
         // The RFC 5280 reason code, decimal, and left **absent** when none was
@@ -849,9 +850,9 @@ impl JobHandler for SignerRevokeJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identifier::Identifier;
     use crate::jobs::JobHandler;
     use crate::signer::{IssueOutcome, RequestedValidity};
-    use crate::sqlite::order::Identifier;
 
     /// A backend whose `revoke` always fails.
     struct Failing;

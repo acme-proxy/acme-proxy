@@ -1534,8 +1534,9 @@ async fn seed(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
     count: u8,
 ) -> Vec<String> {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let mut ids = Vec::new();
     for index in 0..count {
@@ -1675,8 +1676,9 @@ async fn an_account_page_shows_the_account_and_its_orders() {
 /// `#account-card` inside the orders table, and the orders vanished.
 #[tokio::test]
 async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -2049,9 +2051,10 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
 /// act on and the CA-side ledger belongs to the same object that serves the CRL.
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
     acme_proxy::admin::users::create_user(
@@ -2164,9 +2167,10 @@ async fn issue_into_an_order(
     signer: &std::sync::Arc<dyn acme_proxy::signer::SignerBackend>,
     name: &str,
 ) -> (String, String) {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
@@ -2969,9 +2973,10 @@ fn now_secs() -> i64 {
 async fn seed_relay_job(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
 ) -> (String, String) {
+    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::job::{Job, NewJob};
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::sqlite::order::Order;
     use acme_proxy::sqlite::upstream_order::UpstreamOrder;
 
     let (account, _) = Account::find_or_create(
@@ -3372,7 +3377,8 @@ async fn expiring_row(
     names: &[&str],
     not_after: i64,
 ) -> String {
-    use acme_proxy::sqlite::order::{Identifier, Order};
+    use acme_proxy::identifier::Identifier;
+    use acme_proxy::sqlite::order::Order;
 
     let mut order = Order::create(
         PROFILE,

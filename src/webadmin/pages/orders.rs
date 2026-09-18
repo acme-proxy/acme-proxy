@@ -309,7 +309,7 @@ pub async fn delete_order(
                 &request_context,
                 &session.auth.user.username,
                 |actor, client| {
-                    crate::audit::admin::order_deleted(actor, client, &order, deleted.cascaded)
+                    crate::auditor::admin::order_deleted(actor, client, &order, deleted.cascaded)
                 },
             )
             .await;

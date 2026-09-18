@@ -190,7 +190,7 @@ pub async fn cleanup_nonces(
                 &request_context,
                 &session.auth.user.username,
                 |actor, client| {
-                    crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
+                    crate::auditor::admin::nonce_cleanup_completed(actor, client, removed)
                 },
             )
             .await;

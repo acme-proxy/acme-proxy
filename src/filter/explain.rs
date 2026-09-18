@@ -38,7 +38,7 @@ use serde_json::{Value, json};
 use super::policy::{Evaluation, FilterPolicy, Outcome, Stage, Verdict};
 use super::{ConnectionContext, EabIdentity, IdentifierContext, IdentifierStage};
 use crate::cli::style::Palette;
-use crate::sqlite::order::Identifier;
+use crate::identifier::Identifier;
 
 /// Which check kinds reach outside this process when they run.
 ///

@@ -52,7 +52,7 @@ pub async fn cleanup_nonces(
     if removed > 0 {
         state
             .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-                crate::audit::admin::nonce_cleanup_completed(actor, client, removed)
+                crate::auditor::admin::nonce_cleanup_completed(actor, client, removed)
             })
             .await;
     }

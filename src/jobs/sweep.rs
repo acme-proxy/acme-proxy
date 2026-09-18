@@ -639,8 +639,9 @@ mod tests {
     /// exclusion has to be about the *status* and not about the clock.
     #[tokio::test]
     async fn the_order_sweep_spares_valid_orders_and_takes_expired_ones() {
+        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
-        use crate::sqlite::order::{Identifier, Order};
+        use crate::sqlite::order::Order;
 
         let (database, _queue) = setup().await;
         let (account, _) = Account::find_or_create(
@@ -715,8 +716,9 @@ mod tests {
     /// profile's rows must not go out with the first's.
     #[tokio::test]
     async fn the_order_sweep_is_scoped_to_one_profile() {
+        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
-        use crate::sqlite::order::{Identifier, Order};
+        use crate::sqlite::order::Order;
 
         let (database, _queue) = setup().await;
         let ancient = now_secs() - 400 * 24 * 60 * 60;

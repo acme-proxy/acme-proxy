@@ -66,7 +66,7 @@ pub struct AdminState {
     /// The same process-wide auditor the ACME listener holds. Shared rather
     /// than a second instance: an operator revoking through the panel writes
     /// into the one trail, and the reverse-lookup cache is worth sharing.
-    pub audit: Arc<crate::audit::Auditor>,
+    pub audit: Arc<crate::auditor::Auditor>,
     /// The `profile name -> dispatcher` map, as a reload-stable handle — the
     /// same type `NotifyJob` and the signer backends hold. Used only to reach
     /// the process-wide security dispatcher under
@@ -88,7 +88,7 @@ impl AdminState {
         database: Arc<Database>,
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
-        audit: Arc<crate::audit::Auditor>,
+        audit: Arc<crate::auditor::Auditor>,
         notifiers: crate::notify::Notifiers,
         jobs: crate::jobs::JobQueue,
     ) -> Self {
@@ -105,7 +105,7 @@ impl AdminState {
         database: Arc<Database>,
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
-        audit: Arc<crate::audit::Auditor>,
+        audit: Arc<crate::auditor::Auditor>,
         notifiers: crate::notify::Notifiers,
         jobs: crate::jobs::JobQueue,
         previous_logins: Option<&LoginLimiter>,
@@ -133,9 +133,9 @@ impl AdminState {
         }
     }
 
-    /// Writes one administrative audit row (`src/audit/admin.rs`), attributed to
+    /// Writes one administrative audit row (`src/auditor/admin.rs`), attributed to
     /// the signed-in operator and the address the shared
-    /// [`Auditor`](crate::audit::Auditor) resolves
+    /// [`Auditor`](crate::auditor::Auditor) resolves
     /// from `request_context`. Call it **after** the operation has landed; a
     /// failed write is swallowed, exactly as on the certificate paths, so it
     /// cannot fail the request.
@@ -290,29 +290,29 @@ impl AdminState {
         use crate::notify::AdminCredentialChange as Change;
 
         self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
-            Change::Password => crate::audit::admin::operator_password_changed(
+            Change::Password => crate::auditor::admin::operator_password_changed(
                 audit_actor,
                 ctx,
                 &user.username,
                 by_self,
             ),
             Change::SecondFactorEnabled => {
-                crate::audit::admin::operator_totp_enrolled(audit_actor, ctx, &user.username)
+                crate::auditor::admin::operator_totp_enrolled(audit_actor, ctx, &user.username)
             }
-            Change::SecondFactorDisabled => crate::audit::admin::operator_totp_disabled(
+            Change::SecondFactorDisabled => crate::auditor::admin::operator_totp_disabled(
                 audit_actor,
                 ctx,
                 &user.username,
                 !by_self,
             ),
             Change::RecoveryCodesRegenerated => {
-                crate::audit::admin::operator_recovery_codes_regenerated(
+                crate::auditor::admin::operator_recovery_codes_regenerated(
                     audit_actor,
                     ctx,
                     &user.username,
                 )
             }
-            Change::ContactAddress => crate::audit::admin::operator_contact_updated(
+            Change::ContactAddress => crate::auditor::admin::operator_contact_updated(
                 audit_actor,
                 ctx,
                 &user.username,
@@ -375,7 +375,7 @@ pub fn build_admin_app(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
-    audit: Arc<crate::audit::Auditor>,
+    audit: Arc<crate::auditor::Auditor>,
     notifiers: crate::notify::Notifiers,
     jobs: crate::jobs::JobQueue,
 ) -> Router {
@@ -391,7 +391,7 @@ pub fn build_admin_app_with_logins(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
-    audit: Arc<crate::audit::Auditor>,
+    audit: Arc<crate::auditor::Auditor>,
     notifiers: crate::notify::Notifiers,
     jobs: crate::jobs::JobQueue,
     previous_logins: Option<&LoginLimiter>,

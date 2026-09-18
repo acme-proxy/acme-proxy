@@ -1103,7 +1103,7 @@ mod softhsm {
             .issue(
                 "ord-hsm",
                 &make_csr_der("example.com"),
-                &[crate::sqlite::order::Identifier::dns("example.com")],
+                &[crate::identifier::Identifier::dns("example.com")],
                 crate::signer::RequestedValidity::default(),
             )
             .await
@@ -1135,7 +1135,7 @@ mod softhsm {
             .issue(
                 "ord-hsm",
                 &make_csr_der("revoke.example"),
-                &[crate::sqlite::order::Identifier::dns("revoke.example")],
+                &[crate::identifier::Identifier::dns("revoke.example")],
                 crate::signer::RequestedValidity::default(),
             )
             .await
@@ -1240,7 +1240,7 @@ mod softhsm {
             .issue(
                 "ord-file",
                 &make_csr_der("example.com"),
-                &[crate::sqlite::order::Identifier::dns("example.com")],
+                &[crate::identifier::Identifier::dns("example.com")],
                 crate::signer::RequestedValidity::default(),
             )
             .await

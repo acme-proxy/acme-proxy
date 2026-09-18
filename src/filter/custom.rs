@@ -236,7 +236,7 @@ impl Check for CustomScriptFilter {
 /// evaluated here — this CSR asks for something the policy cannot express, which
 /// is a refusal the client can act on (`badCSR`, 400) rather than a server-side
 /// unknown it would retry against for ever.
-fn delimiter_free(identifiers: &[crate::sqlite::order::Identifier]) -> Option<Verdict> {
+fn delimiter_free(identifiers: &[crate::identifier::Identifier]) -> Option<Verdict> {
     let offender = identifiers
         .iter()
         .find(|identifier| identifier.value.contains(',') || contains_control(&identifier.value))?;
@@ -258,7 +258,7 @@ fn contains_control(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::sqlite::order::Identifier;
+    use crate::identifier::Identifier;
     use crate::testutil::TempDir;
     use axum::http::Method;
     use std::time::Duration;

@@ -5,7 +5,8 @@ use tracing::error;
 use crate::challenge::ChallengeError;
 use crate::error::Problem;
 use crate::filter::{EabIdentity, FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
-use crate::sqlite::{account::Account, db::Database, order::Identifier};
+use crate::identifier::Identifier;
+use crate::sqlite::{account::Account, db::Database};
 
 /// Runs the policy's identifier stage and maps a refusal to the ACME error the
 /// sub-stage calls for.

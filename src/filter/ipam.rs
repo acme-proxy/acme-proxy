@@ -173,7 +173,7 @@ impl Check for IpamFilter {
 }
 
 /// Whether this identifier is subject metadata this filter leaves alone.
-fn is_subject_only(identifier: &crate::sqlite::order::Identifier) -> bool {
+fn is_subject_only(identifier: &crate::identifier::Identifier) -> bool {
     SUBJECT_ONLY_TYPES.contains(&identifier.typ.to_ascii_lowercase().as_str())
 }
 
@@ -181,8 +181,8 @@ fn is_subject_only(identifier: &crate::sqlite::order::Identifier) -> bool {
 mod tests {
     use super::*;
     use crate::filter::{ConnectionContext, IdentifierStage};
+    use crate::identifier::Identifier;
     use crate::ipam::{Ipam, IpamError};
-    use crate::sqlite::order::Identifier;
     use crate::testutil::identifiers as ids;
     use axum::http::Method;
     use std::sync::atomic::{AtomicUsize, Ordering};

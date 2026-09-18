@@ -18,10 +18,12 @@ use super::rules::{
     check_csr_matches_order, csr_identifiers, is_wildcard, normalize_dns_name, parse_csr,
     parse_rfc3339, well_formed_name,
 };
-use crate::audit::{Auditor, RequestContext};
+use crate::audit::RequestContext;
+use crate::auditor::Auditor;
 use crate::challenge::ValidationContext;
 use crate::error::Problem;
 use crate::filter::{IdentifierStage, Stage as FilterStage};
+use crate::identifier::Identifier;
 use crate::jobs::JobQueue;
 use crate::jws::signature::jwk_thumbprint;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
@@ -31,7 +33,7 @@ use crate::sqlite::{
     authz::{Authorization, Challenge},
     db::Database,
     nonce::now_secs,
-    order::{Identifier, Order},
+    order::Order,
     status::{AuthzStatus, ChallengeStatus, OrderStatus},
 };
 
@@ -216,7 +218,7 @@ fn issue_failed(
         profile,
         crate::audit::Actor::acme(account_id),
     )
-    .with_order(order)
+    .with_order(order.id, order.account_id, &order.identifiers)
     .with_client(client.clone())
     .with_reason(reason)
     .with_detail(detail)
@@ -872,7 +874,7 @@ pub async fn announce_issuance(
                 &order.profile,
                 actor,
             )
-            .with_order(order)
+            .with_order(order.id, order.account_id, &order.identifiers)
             .with_client(client)
             .with_serial(serial),
         )
@@ -916,7 +918,7 @@ pub async fn record_issue_failure(
                 &order.profile,
                 actor,
             )
-            .with_order(order)
+            .with_order(order.id, order.account_id, &order.identifiers)
             .with_client(client)
             .with_reason("serverInternal")
             .with_detail(detail),
@@ -1050,9 +1052,9 @@ async fn commit_validation_failure(
 pub(crate) mod tests {
     use super::*;
     use crate::challenge::{ChallengeError, ChallengeRegistry, ChallengeValidator};
+    use crate::identifier::Identifier;
     use crate::notify::NotifyDispatcher;
     use crate::server::ProfileParts;
-    use crate::sqlite::order::Identifier;
     use std::time::Duration;
 
     /// A `default` profile over `database`: an in-memory CA, no filter, no

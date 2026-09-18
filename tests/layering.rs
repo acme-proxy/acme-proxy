@@ -282,6 +282,7 @@ const MODULE_CRATE: &[(&str, &str)] = &[
     ("config", "core"),
     ("eab", "core"),
     ("error", "core"),
+    ("identifier", "core"),
     ("jws", "core"),
     ("key_change", "core"),
     ("logfields", "core"),
@@ -299,7 +300,8 @@ const MODULE_CRATE: &[(&str, &str)] = &[
     ("tls", "net"),
     ("filter", "policy"),
     ("ipam", "policy"),
-    ("audit", "jobs"),
+    ("audit", "core"),
+    ("auditor", "jobs"),
     ("jobs", "jobs"),
     ("metrics", "jobs"),
     ("notify", "jobs"),
@@ -353,7 +355,6 @@ const CRATE_DEPS: &[(&str, &[&str])] = &[
 const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("acme", "server"),
     ("admin", "server"),
-    ("error", "sqlite"),
     ("extractors", "server"),
     ("filter", "cli"),
     ("handlers", "server"),
@@ -363,7 +364,6 @@ const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("signer", "acme"),
     ("signer", "handlers"),
     ("signer", "server"),
-    ("sqlite", "audit"),
     ("webadmin", "server"),
 ];
 

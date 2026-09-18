@@ -7,14 +7,14 @@
 //! operator, a session, the nonce or audit tables. Those latter operations are
 //! plain CRUD whose audit row is a side effect of success, so the record is
 //! built **here** and the front end (`src/cli/`, `src/webadmin/handlers/`,
-//! `src/webadmin/pages/`) writes it with [`crate::audit::write`] once the
+//! `src/webadmin/pages/`) writes it with [`crate::auditor::write`] once the
 //! operation has returned success. A not-found or refused operation writes
 //! nothing.
 //!
 //! One function per event so the three front ends cannot describe one action
 //! differently. The web front end passes [`Actor::admin`] with the operator's
 //! username and the client address it resolved through the shared
-//! [`Auditor`](crate::audit::Auditor); the CLI passes [`Actor::cli`] and an
+//! [`Auditor`](crate::auditor::Auditor); the CLI passes [`Actor::cli`] and an
 //! empty [`ClientContext`].
 
 use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
@@ -48,7 +48,7 @@ pub async fn record_cli_action(
     build: impl FnOnce(Actor, ClientContext) -> AuditRecord,
 ) {
     let (actor, client) = cli_actor();
-    crate::audit::write(build(actor, client), database).await;
+    crate::auditor::write(build(actor, client), database).await;
 }
 
 /// [`record_cli_action`] for an action that writes several rows — `eab delete`,
@@ -59,7 +59,7 @@ pub async fn record_cli_actions(
 ) {
     let (actor, client) = cli_actor();
     for record in build(actor, client) {
-        crate::audit::write(record, database).await;
+        crate::auditor::write(record, database).await;
     }
 }
 
@@ -142,7 +142,7 @@ pub fn order_deleted(
     cascaded: u64,
 ) -> AuditRecord {
     base(AuditEvent::OrderDeleted, &order.profile, actor, client)
-        .with_order(order)
+        .with_order(order.id, order.account_id, &order.identifiers)
         .with_detail(format!("{cascaded} authorization(s) cascaded"))
 }
 

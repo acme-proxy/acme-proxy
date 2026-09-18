@@ -42,7 +42,8 @@ use base64::prelude::*;
 use tracing::{error, info, warn};
 
 use super::order::{IssuanceError, announce_issuance, record_issuance, record_issue_failure};
-use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext};
+use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
+use crate::auditor::Auditor;
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobSpec};
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
@@ -254,7 +255,7 @@ impl JobHandler for SignerIssueJob {
                             &order.profile,
                             Actor::acme(order.account_id),
                         )
-                        .with_order(&order)
+                        .with_order(order.id, order.account_id, &order.identifiers)
                         .with_client(client)
                         .with_reason("badCSR")
                         .with_detail("the signer backend rejected the CSR"),
@@ -321,7 +322,7 @@ impl JobHandler for SignerIssueJob {
 mod tests {
     use super::*;
     use crate::acme::order::tests::{account, ready_order};
-    use crate::sqlite::order::Identifier;
+    use crate::identifier::Identifier;
 
     /// A signer answering `issue` with whatever the test set.
     enum Answer {

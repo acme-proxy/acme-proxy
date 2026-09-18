@@ -520,10 +520,10 @@ pub async fn delete_session(
         // it is a revoke worth recording; a plain single logout is not.
         state
             .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-                crate::audit::admin::session_revoked(
+                crate::auditor::admin::session_revoked(
                     actor,
                     ctx,
-                    crate::audit::admin::SessionScope::AllOf(auth.user.username.clone()),
+                    crate::auditor::admin::SessionScope::AllOf(auth.user.username.clone()),
                     revoked,
                 )
             })

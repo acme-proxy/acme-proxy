@@ -4,10 +4,11 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use crate::identifier::Identifier;
 use crate::random::random_token;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::{Identifier, rfc3339};
+use crate::sqlite::order::rfc3339;
 use crate::sqlite::status::{self, AuthzStatus, ChallengeStatus};
 
 /// An ACME authorization (RFC 8555 §7.1.4). One authorization is created per

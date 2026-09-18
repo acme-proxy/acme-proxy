@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::error::Problem;
 use crate::routes;
 use crate::sqlite::db::Database;
-use crate::{audit, challenge, handlers, metrics, middlewares, signer};
+use crate::{challenge, handlers, metrics, middlewares, signer};
 
 use super::Profile;
 
@@ -37,7 +37,7 @@ pub struct AppState {
     /// The CA's audit trail. Beside `config` rather than on the profile,
     /// because `[audit]` is process-wide: the trail describes the CA, and the
     /// web admin writes to the same one across every endpoint it can revoke on.
-    pub audit: Arc<audit::Auditor>,
+    pub audit: Arc<crate::auditor::Auditor>,
     /// The durable queue, for the work a request starts and does not finish.
     ///
     /// Here for `audit`'s reason — one queue, one table, one runner for the
@@ -151,7 +151,7 @@ pub fn build_app(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: Vec<Arc<Profile>>,
-    audit: Arc<audit::Auditor>,
+    audit: Arc<crate::auditor::Auditor>,
     metrics: Arc<metrics::Metrics>,
     jobs: crate::jobs::JobQueue,
 ) -> Router {
@@ -308,7 +308,7 @@ pub fn build_router(
     database: Arc<Database>,
     config: Arc<Config>,
     profile: Arc<Profile>,
-    audit: Arc<audit::Auditor>,
+    audit: Arc<crate::auditor::Auditor>,
     jobs: crate::jobs::JobQueue,
 ) -> Router {
     let filter = profile.filter.clone();

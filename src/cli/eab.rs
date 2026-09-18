@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin::{self, EabDeleteOutcome};
-use crate::audit::admin as audit_admin;
+use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;

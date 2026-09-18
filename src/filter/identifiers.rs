@@ -10,7 +10,7 @@
 //! A CSR is not a list of hostnames. Its subject alternative names can be IP
 //! addresses, email addresses or URIs, and its subject can carry a common name
 //! that no SAN mentions. All of them are projected into the same
-//! [`Identifier`](crate::sqlite::order::Identifier) list by the caller (see
+//! [`Identifier`](crate::identifier::Identifier) list by the caller (see
 //! `csr_identifiers` in [`crate::acme::rules`]), so a
 //! `deny` pattern cannot be sidestepped by moving a name from a DNS SAN to the
 //! common name, or from a DNS SAN to an IP SAN.
@@ -200,7 +200,7 @@ impl Check for IdentifierList {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::sqlite::order::Identifier;
+    use crate::identifier::Identifier;
     use crate::testutil::identifiers as ids;
 
     fn globs(allow: &[&str], deny: &[&str]) -> Settings {

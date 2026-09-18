@@ -8,9 +8,10 @@ use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
 use acme_proxy::cli::order::{OrderCommand, run_order_command};
 use acme_proxy::cli::window::DEFAULT_LIMIT;
 use acme_proxy::config::Config;
+use acme_proxy::identifier::Identifier;
 use acme_proxy::sqlite::account::Account;
 use acme_proxy::sqlite::db::Database;
-use acme_proxy::sqlite::order::{Identifier, Order};
+use acme_proxy::sqlite::order::Order;
 
 #[tokio::test]
 async fn account_cli_list_and_show() {

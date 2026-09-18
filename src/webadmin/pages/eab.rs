@@ -121,7 +121,7 @@ pub async fn create_eab(
             &request_context,
             &session.auth.user.username,
             |actor, client| {
-                crate::audit::admin::eab_created(
+                crate::auditor::admin::eab_created(
                     actor,
                     client,
                     &eab.kid.to_string(),
@@ -181,7 +181,7 @@ pub async fn revoke_eab(
             .record_admin_action(
                 &request_context,
                 &session.auth.user.username,
-                |actor, client| crate::audit::admin::eab_revoked(actor, client, &kid, profile),
+                |actor, client| crate::auditor::admin::eab_revoked(actor, client, &kid, profile),
             )
             .await;
     }
@@ -231,7 +231,7 @@ pub async fn delete_eab(
         .record_admin_actions(
             &request_context,
             &session.auth.user.username,
-            |actor, client| crate::audit::admin::eab_deleted_records(actor, client, &deleted),
+            |actor, client| crate::auditor::admin::eab_deleted_records(actor, client, &deleted),
         )
         .await;
     tracing::info!(event = "admin_eab_deleted",

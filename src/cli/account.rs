@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin::{self, DeleteOutcome};
-use crate::audit::admin as audit_admin;
+use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::style::Palette;
@@ -334,8 +334,9 @@ mod tests {
     /// where it was already computed to word the prompt.
     #[tokio::test]
     async fn deleting_an_account_records_what_actually_cascaded() {
+        use crate::identifier::Identifier;
         use crate::sqlite::audit::{AuditEntry, AuditQuery};
-        use crate::sqlite::order::{Identifier, Order};
+        use crate::sqlite::order::Order;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();

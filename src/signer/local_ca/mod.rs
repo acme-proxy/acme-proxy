@@ -50,10 +50,10 @@ use tracing::{error, info, warn};
 
 use crate::cert::cert_serial_and_spki;
 use crate::config::{LocalCaConfig, LocalCaSubjectConfig};
+use crate::identifier::Identifier;
 use crate::pemfile::{warn_if_key_is_readable, write_private_key};
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
-use crate::sqlite::order::Identifier;
 use crate::sqlite::revocation::Revocation;
 
 pub use info::LocalCaInfo;

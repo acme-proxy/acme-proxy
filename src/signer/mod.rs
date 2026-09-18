@@ -62,8 +62,8 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use crate::config::SignerConfig;
+use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
-use crate::sqlite::order::Identifier;
 
 pub mod custom;
 pub mod info;
