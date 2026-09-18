@@ -1,209 +1,115 @@
-//! [`Profile`]: one ACME endpoint, and how a configuration generation builds
-//! every one it mounts.
+//! How a configuration generation builds every [`Profile`] it mounts.
 
 use std::sync::Arc;
 
-use crate::challenge::{self, ChallengeRegistry};
+use crate::challenge;
 use crate::config::{self, Config};
-use crate::filter::{self, FilterPolicy};
+use crate::filter;
 use crate::ipam;
-use crate::notify::NotifyDispatcher;
-use crate::routes::{self, PROFILE_PREFIX};
-use crate::signer::SignerInfo;
+use crate::profile::{Profile, ProfileParts};
 use crate::sqlite::db::Database;
 
 use super::{Assembly, GenerationParts};
 
-/// One ACME endpoint: its identity, its URLs, and the three subsystems that
-/// answer for it.
+/// Builds every endpoint this configuration mounts, ready to serve.
 ///
-/// Everything per-endpoint lives here rather than beside the global config in
-/// [`AppState`](super::AppState), so a handler cannot pair one profile's signer
-/// with another's base URL — the two always travel together.
-pub struct Profile {
-    /// The configured name (`[profiles.<name>]`), also the URL segment and the
-    /// value stored in `accounts.profile` / `orders.profile`.
-    pub name: String,
-    /// Where the router mounts it: `/profile/<name>`.
-    pub path: String,
-    /// The public base for every URL this endpoint hands out and for the
-    /// RFC 8555 §6.4 `url` check: `server.base_url` + [`Profile::path`].
-    pub base_url: String,
-    /// What this endpoint's signer publishes — its CRL, anchor, renewal
-    /// opinion and `http-01` tokens — and where its revocations go. Built from
-    /// public material, so every role has one.
-    ///
-    /// **There is deliberately no backend here.** Signing and revoking need
-    /// the key, which only the `worker` role holds, and only the job handlers
-    /// it runs are handed one (`GenerationParts::signers`). A profile is what
-    /// a request is served from, so leaving the backend off it is what makes
-    /// "a request never signs" a type error rather than a convention.
-    pub signer_info: Arc<dyn SignerInfo>,
-    pub filter: Arc<FilterPolicy>,
-    pub challenges: Arc<ChallengeRegistry>,
-    pub order: config::OrderConfig,
-    pub eab: config::EabConfig,
-    /// The optional `meta` members this endpoint's directory advertises
-    /// (RFC 8555 §7.1.1). Per-profile, like everything else here: two endpoints
-    /// on one process can have different terms of service.
-    pub meta: config::MetaConfig,
-    pub notify: Arc<NotifyDispatcher>,
+/// Lives here rather than in `server::serve_on` because it is the assembly
+/// step, not dispatch: it resolves the profiles, builds the signer backends
+/// (deduplicated by configuration — see
+/// [`signer::build_backends`](crate::signer::build_backends)), and gives
+/// each profile its own filter chain and challenge registry. Every failure
+/// is fatal at startup, so they come back as one error for the caller to
+/// report and exit on.
+///
+/// Each profile's subsystems are built inside a span naming it, so the
+/// warnings they emit at build time (`filter_disabled`,
+/// `challenge_validation_bypassed`) say *which* endpoint is wide open —
+/// with several mounted, an unattributed warning is worse than none.
+/// `jobs` is the enqueue side of the durable queue, handed in rather than
+/// built here for the reason the `Auditor` is built in `serve_on_with`:
+/// `[jobs]` is process-wide, one queue drained by one runner, and a profile
+/// is not the thing that owns it.
+pub fn build_all(
+    config: &Config,
+    database: Arc<Database>,
+    jobs: &crate::jobs::JobQueue,
+) -> anyhow::Result<Vec<Arc<Profile>>> {
+    let resolved = config.resolve_profiles()?;
+    // All roles: this builder is the CLI's and the tests' path, where the
+    // process is doing everything it is going to do.
+    let (_assembly, first) = Assembly::new(
+        super::RoleSet::default(),
+        &resolved,
+        database,
+        jobs.clone(),
+        config,
+    )?;
+    build_all_with(config, &resolved, &first)
 }
 
-/// The subsystems and per-endpoint sections a [`Profile`] is assembled from.
+/// One generation of profiles, over an [`Assembly`] that outlives it.
 ///
-/// A struct because [`Profile::new`] took nine positional parameters, four of
-/// them `Arc<dyn …>` or config sections that a reader has to count commas to
-/// tell apart. It also retires the crate's last
-/// `#[allow(clippy::too_many_arguments)]`.
-///
-/// `name` and `base_url` stay positional: they are what the constructor
-/// *derives* from rather than stores, and keeping them out of here is what
-/// makes "the path is never configured" visible in the signature.
-pub struct ProfileParts {
-    pub signer_info: Arc<dyn SignerInfo>,
-    pub filter: Arc<FilterPolicy>,
-    pub challenges: Arc<ChallengeRegistry>,
-    pub order: config::OrderConfig,
-    pub eab: config::EabConfig,
-    pub meta: config::MetaConfig,
-    pub notify: Arc<NotifyDispatcher>,
-}
+/// The half of [`build_all`] a configuration reload runs
+/// again. Everything it touches is cheap and side-effect-free to rebuild —
+/// a filter policy, an IPAM client, a challenge registry — which is exactly
+/// why the *stateful* half lives in the `Assembly` instead. A profile takes
+/// its signer's read side from `generation.infos` — built, like the
+/// backends, only where the configuration moved (see
+/// [`signer::build_infos`](crate::signer::build_infos)) — and never the
+/// backend itself, which stays with the job handlers.
+pub fn build_all_with(
+    config: &Config,
+    resolved: &[config::ProfileConfig],
+    generation: &GenerationParts,
+) -> anyhow::Result<Vec<Arc<Profile>>> {
+    let egress = &generation.egress;
+    let dispatchers = &generation.dispatchers;
 
-impl Profile {
-    /// Assembles a profile, deriving its path and base URL from its name —
-    /// the two are never configured, so they cannot drift from each other or
-    /// from what the database records.
-    pub fn new(name: &str, base_url: &str, parts: ProfileParts) -> Self {
-        let path = format!("{PROFILE_PREFIX}/{name}");
-        Self {
-            name: name.to_string(),
-            base_url: format!("{}{path}", base_url.trim_end_matches('/')),
-            path,
-            signer_info: parts.signer_info,
-            filter: parts.filter,
-            challenges: parts.challenges,
-            order: parts.order,
-            eab: parts.eab,
-            meta: parts.meta,
-            notify: parts.notify,
-        }
-    }
-
-    /// This endpoint's directory URL — where a client starts.
-    ///
-    /// Derived here rather than `format!`-ed at each of the three call sites
-    /// (the startup log line, the admin API's profile listing, and anything
-    /// added later), all of which have to agree with what `build_router`
-    /// actually mounts.
-    #[must_use]
-    pub fn directory_url(&self) -> String {
-        format!("{}{}", self.base_url, routes::DIRECTORY)
-    }
-
-    /// Builds every endpoint this configuration mounts, ready to serve.
-    ///
-    /// Lives here rather than in `server::serve_on` because it is the assembly
-    /// step, not dispatch: it resolves the profiles, builds the signer backends
-    /// (deduplicated by configuration — see
-    /// [`signer::build_backends`](crate::signer::build_backends)), and gives
-    /// each profile its own filter chain and challenge registry. Every failure
-    /// is fatal at startup, so they come back as one error for the caller to
-    /// report and exit on.
-    ///
-    /// Each profile's subsystems are built inside a span naming it, so the
-    /// warnings they emit at build time (`filter_disabled`,
-    /// `challenge_validation_bypassed`) say *which* endpoint is wide open —
-    /// with several mounted, an unattributed warning is worse than none.
-    /// `jobs` is the enqueue side of the durable queue, handed in rather than
-    /// built here for the reason the `Auditor` is built in `serve_on_with`:
-    /// `[jobs]` is process-wide, one queue drained by one runner, and a profile
-    /// is not the thing that owns it.
-    pub fn build_all(
-        config: &Config,
-        database: Arc<Database>,
-        jobs: &crate::jobs::JobQueue,
-    ) -> anyhow::Result<Vec<Arc<Profile>>> {
-        let resolved = config.resolve_profiles()?;
-        // All roles: this builder is the CLI's and the tests' path, where the
-        // process is doing everything it is going to do.
-        let (_assembly, first) = Assembly::new(
-            super::RoleSet::default(),
-            &resolved,
-            database,
-            jobs.clone(),
-            config,
-        )?;
-        Self::build_all_with(config, &resolved, &first)
-    }
-
-    /// One generation of profiles, over an [`Assembly`] that outlives it.
-    ///
-    /// The half of [`build_all`](Self::build_all) a configuration reload runs
-    /// again. Everything it touches is cheap and side-effect-free to rebuild —
-    /// a filter policy, an IPAM client, a challenge registry — which is exactly
-    /// why the *stateful* half lives in the `Assembly` instead. A profile takes
-    /// its signer's read side from `generation.infos` — built, like the
-    /// backends, only where the configuration moved (see
-    /// [`signer::build_infos`](crate::signer::build_infos)) — and never the
-    /// backend itself, which stays with the job handlers.
-    pub fn build_all_with(
-        config: &Config,
-        resolved: &[config::ProfileConfig],
-        generation: &GenerationParts,
-    ) -> anyhow::Result<Vec<Arc<Profile>>> {
-        let egress = &generation.egress;
-        let dispatchers = &generation.dispatchers;
-
-        let mut profiles = Vec::with_capacity(resolved.len());
-        for profile in resolved {
-            let sections = &profile.sections;
-            let span = tracing::info_span!("profile", profile = %profile.name);
-            let (filter, challenges) = span.in_scope(|| {
-                // Built per profile with no dedup pass, unlike
-                // `signer::build_backends`. Sharing a signer backend is a
-                // correctness requirement — two `LocalCa` over one CRL file
-                // would clobber each other's ledger — whereas an IPAM client
-                // owns no files and holds no mutable state, so two profiles
-                // naming the same inventory each building one costs nothing
-                // but a `rustls::ClientConfig`.
-                let ipam = ipam::from_config(&sections.ipam, egress.outbound())
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                let filter =
-                    filter::from_config(&sections.filter, &config.dns, ipam, sections.eab.enabled)
-                        .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                let challenges = challenge::from_config(
-                    &sections.challenge,
-                    &config.dns,
-                    egress.proxies.clone(),
-                )
+    let mut profiles = Vec::with_capacity(resolved.len());
+    for profile in resolved {
+        let sections = &profile.sections;
+        let span = tracing::info_span!("profile", profile = %profile.name);
+        let (filter, challenges) = span.in_scope(|| {
+            // Built per profile with no dedup pass, unlike
+            // `signer::build_backends`. Sharing a signer backend is a
+            // correctness requirement — two `LocalCa` over one CRL file
+            // would clobber each other's ledger — whereas an IPAM client
+            // owns no files and holds no mutable state, so two profiles
+            // naming the same inventory each building one costs nothing
+            // but a `rustls::ClientConfig`.
+            let ipam = ipam::from_config(&sections.ipam, egress.outbound())
                 .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                check_request_timeout(config, profile.name.as_str(), sections)?;
-                Ok::<_, anyhow::Error>((filter, challenges))
-            })?;
+            let filter =
+                filter::from_config(&sections.filter, &config.dns, ipam, sections.eab.enabled)
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+            let challenges =
+                challenge::from_config(&sections.challenge, &config.dns, egress.proxies.clone())
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+            check_request_timeout(config, profile.name.as_str(), sections)?;
+            Ok::<_, anyhow::Error>((filter, challenges))
+        })?;
 
-            profiles.push(Arc::new(Profile::new(
-                &profile.name,
-                &config.server.base_url,
-                ProfileParts {
-                    signer_info: generation
-                        .infos
-                        .get(&profile.name)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("profile `{}`: no signer read side", profile.name)
-                        })?
-                        .clone(),
-                    filter,
-                    challenges,
-                    order: sections.order.clone(),
-                    eab: sections.eab.clone(),
-                    meta: sections.meta.clone(),
-                    notify: dispatchers[&profile.name].clone(),
-                },
-            )));
-        }
-        Ok(profiles)
+        profiles.push(Arc::new(Profile::new(
+            &profile.name,
+            &config.server.base_url,
+            ProfileParts {
+                signer_info: generation
+                    .infos
+                    .get(&profile.name)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("profile `{}`: no signer read side", profile.name)
+                    })?
+                    .clone(),
+                filter,
+                challenges,
+                order: sections.order.clone(),
+                eab: sections.eab.clone(),
+                meta: sections.meta.clone(),
+                notify: dispatchers[&profile.name].clone(),
+            },
+        )));
     }
+    Ok(profiles)
 }
 
 /// Refuses a `server.request_timeout_ms` shorter than the work the server does
@@ -314,7 +220,7 @@ mod tests {
         let dir = crate::testutil::TempDir::new("build");
         let config = two_profiles_config(&dir);
 
-        let profiles = Profile::build_all(
+        let profiles = crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -335,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn build_all_refuses_a_configuration_that_mounts_nothing() {
         let config = config_from("[server]\nbase_url = \"http://acme.test\"\n");
-        let error = match Profile::build_all(
+        let error = match crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -356,7 +262,7 @@ mod tests {
             challenge.enabled = ["not-a-challenge"]
             "#,
         );
-        let error = match Profile::build_all(
+        let error = match crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -386,7 +292,7 @@ mod tests {
             signer.custom.supports_crl = true
             "#,
         );
-        let error = match Profile::build_all(
+        let error = match crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -415,7 +321,7 @@ mod tests {
             signer.custom.timeout_ms = 5000
             "#,
         );
-        Profile::build_all(
+        crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -438,7 +344,7 @@ mod tests {
             challenge.timeout_ms = 5000
             "#,
         );
-        Profile::build_all(
+        crate::server::profile::build_all(
             &config,
             database().await,
             &crate::testutil::idle_job_queue(database().await),
@@ -465,7 +371,7 @@ mod tests {
             "#,
         );
         assert!(
-            Profile::build_all(
+            crate::server::profile::build_all(
                 &config,
                 database().await,
                 &crate::testutil::idle_job_queue(database().await)

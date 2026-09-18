@@ -74,7 +74,7 @@ pub mod relay;
 pub use info::{Opaque, SignerInfo, info_from_config};
 
 /// Re-exported so [`SignerInfo::http01_tokens`]'s signature — and the route
-/// in [`crate::server::build_app`] it feeds — do not reach into one backend's
+/// in [`crate::router::build_app`] it feeds — do not reach into one backend's
 /// module for a type the generic trait mentions.
 pub use relay::http01::TokenStore as Http01TokenStore;
 
@@ -301,7 +301,7 @@ pub enum SignerError {
 /// The dependencies every backend is built from, minus its own `[signer]`
 /// section.
 ///
-/// A struct for [`ProfileParts`](crate::server::ProfileParts)' reason:
+/// A struct for [`ProfileParts`](crate::profile::ProfileParts)' reason:
 /// [`from_config`] had reached seven positional parameters, which is where a
 /// reader starts counting commas and clippy starts complaining. Taken by reference and cloned field by field, since
 /// [`build_backends`] calls [`from_config`] in a loop.
@@ -417,7 +417,7 @@ fn unknown_backend(name: &str) -> anyhow::Error {
 /// The backends one configuration generation runs — or their read sides —
 /// in the two views that are needed of them.
 ///
-/// `by_profile` is what a [`Profile`](crate::server::Profile) or a job handler
+/// `by_profile` is what a [`Profile`](crate::profile::Profile) or a job handler
 /// is handed and the only thing that serves. `by_identity` exists purely so the
 /// **next** reload can ask "is this one already built?" — see
 /// [`build_backends`], where answering yes is what keeps a `SIGHUP` from
@@ -634,7 +634,7 @@ fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// The shared resolver `Profile::build_all` supplies at startup. These
+    /// The shared resolver `server::profile::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
         std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())

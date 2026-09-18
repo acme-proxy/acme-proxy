@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use tracing::debug;
 
 use crate::extractors::acme::AcmePostAsGet;
+use crate::router::AppState;
 use crate::routes;
-use crate::server::AppState;
 
 /// The `Cache-Control` RFC 8555 §7.2 requires on `newNonce` responses: a cached
 /// nonce is a nonce that will be rejected as already used.

@@ -455,7 +455,7 @@ pub async fn migrate(palette: Palette, database: Arc<Database>) -> Result<(), Cl
 /// run the `worker` role refuses to generate any, so a split deployment runs
 /// this once, as the uid that should own the files, before starting anything.
 ///
-/// Building the profiles is what generates: `Profile::build_all` constructs
+/// Building the profiles is what generates: `server::profile::build_all` constructs
 /// every signer backend, and a `local_ca` with no key writes one, a `relay`
 /// with no account registers one. That is why this goes through the real
 /// builder rather than a separate generation path — there would be two
@@ -468,7 +468,7 @@ pub async fn init(
     migrate(palette, database.clone()).await?;
 
     let queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let profiles = crate::server::Profile::build_all(config, database, &queue)
+    let profiles = crate::server::profile::build_all(config, database, &queue)
         .map_err(|error| CliError::failed(error.to_string()))?;
 
     for profile in &profiles {

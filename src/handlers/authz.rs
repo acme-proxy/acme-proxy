@@ -13,7 +13,7 @@ use crate::acme::order::OrderService;
 use crate::client::ClientIp;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest};
-use crate::server::AppState;
+use crate::router::AppState;
 use crate::sqlite::authz::Challenge;
 
 /// The one payload RFC 8555 §7.5.2 defines for the authorization resource:

@@ -285,7 +285,7 @@ where
 /// The two travelled as separate parameters through some forty positions across
 /// `challenge/`, `ipam/`, `notify/webhook.rs` and `signer/relay/`, and they are
 /// never meaningfully apart: a caller holding one holds the other, and both
-/// come from the same `Profile::build_all`. Bundling them is what retires the
+/// come from the same `server::profile::build_all`. Bundling them is what retires the
 /// crate's last `#[allow(clippy::too_many_arguments)]`
 /// (`notify::webhook::send_request`).
 ///

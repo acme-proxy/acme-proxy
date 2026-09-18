@@ -74,7 +74,7 @@ pub trait SignerInfo: Send + Sync {
     /// The `http-01` token store this backend answers the *upstream's* own
     /// challenge from, if it has one.
     ///
-    /// [`crate::server::build_app`] mounts `GET
+    /// [`crate::router::build_app`] mounts `GET
     /// /.well-known/acme-challenge/{token}` on the root router when any
     /// profile's backend returns `Some`, and not at all otherwise — the same "a
     /// backend that has something to publish over HTTP says so" shape as

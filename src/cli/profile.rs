@@ -2,11 +2,11 @@
 //!
 //! The terminal's half of `GET /api/profiles`. Both render
 //! [`crate::admin::render_profile_json`], and they reach it from opposite
-//! directions: the API describes a **mounted** [`crate::server::Profile`],
+//! directions: the API describes a **mounted** [`crate::profile::Profile`],
 //! where this describes what the configuration on disk *would* mount.
 //!
 //! That difference is deliberate rather than a shortcut. Building the real
-//! thing means `Profile::build_all`, which constructs every signer backend —
+//! thing means `server::profile::build_all`, which constructs every signer backend —
 //! generating a CA key that does not exist yet, and contacting a relay's
 //! upstream — which is not a price a read-only listing should make an operator
 //! pay. `filter show` already draws the same line, and it cuts both ways: the

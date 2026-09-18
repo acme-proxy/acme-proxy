@@ -15,7 +15,9 @@ use std::time::Duration;
 use acme_proxy::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
 pub use acme_proxy::audit::ClientContext;
-use acme_proxy::server::{Profile, ProfileParts, build_app};
+use acme_proxy::profile::Profile;
+use acme_proxy::profile::ProfileParts;
+use acme_proxy::router::build_app;
 
 use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
@@ -287,7 +289,7 @@ pub async fn no_notifications() -> Arc<NotifyDispatcher> {
 }
 
 /// A queue over its own in-memory database, for a dispatcher a test builds
-/// directly rather than through `Profile::build_all`.
+/// directly rather than through `server::profile::build_all`.
 pub async fn test_job_queue() -> JobQueue {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     JobQueue::new(database, &JobsConfig::default())

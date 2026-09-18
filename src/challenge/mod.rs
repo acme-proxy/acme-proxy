@@ -198,7 +198,7 @@ impl Default for ChallengeRegistry {
     ///
     /// This is a **test** default and deliberately no longer matches
     /// `from_config(&ChallengeConfig::default())`, which validates for real.
-    /// The server never reaches this impl — `Profile::build_all` always goes
+    /// The server never reaches this impl — `server::profile::build_all` always goes
     /// through `from_config` — and a test suite that has no `http-01` responder
     /// on port 80 needs a registry that answers without one. The divergence is
     /// pinned by `the_test_default_bypasses_where_the_configured_default_does_not`
@@ -541,7 +541,7 @@ mod tests {
 
     /// `ChallengeRegistry::default()` is a test convenience and deliberately
     /// differs from the configured default now that the latter validates. The
-    /// server never reaches it — `Profile::build_all` always goes through
+    /// server never reaches it — `server::profile::build_all` always goes through
     /// `from_config` — but a suite with no `http-01` responder on port 80 needs
     /// a registry that answers without one. Asserted so the difference stays a
     /// decision rather than a drift somebody discovers later.

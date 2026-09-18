@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use tracing::{Span, debug, error, instrument, warn};
 
 use crate::error::Problem;
-use crate::server::AppState;
+use crate::router::AppState;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::Nonce;
 

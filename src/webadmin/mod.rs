@@ -41,12 +41,12 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::middlewares;
-use crate::server::Profile;
+use crate::profile::Profile;
 use crate::sqlite::db::Database;
 
 /// Shared state for every admin route.
 ///
-/// Not [`crate::server::AppState`]: that one holds exactly one `Profile`, and
+/// Not [`crate::router::AppState`]: that one holds exactly one `Profile`, and
 /// this listener is cross-profile by nature — an operator lists accounts from
 /// every endpoint at once, and revoking an order needs *that order's own*
 /// profile's revocation route, which may name a different CA from the one the
@@ -568,7 +568,7 @@ pub fn build_admin_app_with_logins(
         // inside `build_app` and inherits none of its layers, so they have to
         // be applied again here — but from the one constructor, since two
         // hand-written copies of a security control are a control that drifts.
-        .layer(crate::server::security_headers())
+        .layer(crate::router::security_headers())
         // Strict, and affordable only because of how the pages are built:
         // htmx is served from this origin (`script-src 'self'`) and drives
         // everything through `hx-*` attributes rather than inline handlers, so
@@ -630,7 +630,7 @@ fn admin_api_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "api",
-        error = %crate::server::panic_message(err.as_ref()),
+        error = %crate::router::panic_message(err.as_ref()),
     );
     AdminError::internal().into_response()
 }
@@ -644,7 +644,7 @@ fn admin_page_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "ui",
-        error = %crate::server::panic_message(err.as_ref()),
+        error = %crate::router::panic_message(err.as_ref()),
     );
     PageError::internal().into_response()
 }

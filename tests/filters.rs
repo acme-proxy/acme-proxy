@@ -40,7 +40,7 @@ const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";
 const ALLOWED: &str = "192.168.1.5:40000";
 const BLOCKED: &str = "203.0.113.9:40000";
 
-/// The shared resolver `Profile::build_all` would hand the filter chain. These
+/// The shared resolver `server::profile::build_all` would hand the filter chain. These
 /// tests reach loopback by IP literal, which `dns::connect` short-circuits, so
 /// the system configuration is never actually consulted.
 fn test_resolver() -> Arc<dyn acme_proxy::dns::Resolver> {
@@ -56,7 +56,7 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 }
 
 /// The same, with an `[ipam]` section — the two are built together at startup,
-/// `[ipam]` first, exactly as `Profile::build_all` does it.
+/// `[ipam]` first, exactly as `server::profile::build_all` does it.
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     let inventory = acme_proxy::ipam::from_config(
         ipam,

@@ -27,7 +27,7 @@ use crate::identifier::Identifier;
 use crate::jobs::JobQueue;
 use crate::jws::signature::jwk_thumbprint;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
-use crate::server::Profile;
+use crate::profile::Profile;
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},
@@ -925,7 +925,7 @@ pub(crate) mod tests {
     use crate::challenge::{ChallengeError, ChallengeRegistry, ChallengeValidator};
     use crate::identifier::Identifier;
     use crate::notify::NotifyDispatcher;
-    use crate::server::ProfileParts;
+    use crate::profile::ProfileParts;
     use std::time::Duration;
 
     /// A `default` profile over `database`: an in-memory CA, no filter, no

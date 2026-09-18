@@ -587,7 +587,7 @@ async fn a_process_without_the_worker_role_builds_no_backend() {
         !dir.join("ca.key").exists(),
         "a process without the worker role must not generate a key"
     );
-    let profiles = crate::server::Profile::build_all_with(&config, &resolved, &serving).unwrap();
+    let profiles = crate::server::profile::build_all_with(&config, &resolved, &serving).unwrap();
     assert_eq!(
         profiles[0].signer_info.ca_chain_pem().await,
         Some(std::fs::read_to_string(dir.join("ca.pem")).unwrap())

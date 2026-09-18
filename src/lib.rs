@@ -96,14 +96,15 @@
 //!
 //! ## Usage
 //!
-//! The main entry point is `server::build_app()`, which mounts one ACME router
+//! The main entry point is `router::build_app()`, which mounts one ACME router
 //! per configured profile under `/profile/<name>` and serves the server-level
 //! routes (`/health`) at the root.
 //!
 //! ```rust,no_run
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
-//! use acme_proxy::server::{Profile, ProfileParts, build_app};
+//! use acme_proxy::profile::{Profile, ProfileParts};
+//! use acme_proxy::router::build_app;
 //! use acme_proxy::sqlite::db::Database;
 //! use acme_proxy::{challenge, config::Config, filter, ipam, jobs, notify, signer};
 //!
@@ -273,9 +274,11 @@ pub mod metrics;
 pub mod middlewares;
 pub mod notify;
 pub mod pemfile;
+pub mod profile;
 pub mod proxy;
 mod random;
 pub mod reload;
+pub mod router;
 pub mod routes;
 pub mod script_hook;
 pub mod server;

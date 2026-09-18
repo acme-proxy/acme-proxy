@@ -13,7 +13,7 @@ use crate::client::ClientIp;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::key_change;
-use crate::server::AppState;
+use crate::router::AppState;
 
 pub use crate::acme::account::{NewAccountPayload, UpdateAccountPayload, verify_eab};
 

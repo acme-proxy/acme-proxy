@@ -16,7 +16,7 @@
 //! makes, from the profile's [`RevocationRoute`].
 //!
 //! Deliberately not an [`OrderService`](super::OrderService) method: that
-//! bundle carries a mounted [`Profile`](crate::server::Profile), and the host
+//! bundle carries a mounted [`Profile`](crate::profile::Profile), and the host
 //! CLI revokes with no profile mounted. What revocation needs is narrower —
 //! whatever withdraws trust, and whom to tell — so that is what
 //! [`Revocations`] holds.

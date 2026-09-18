@@ -13,7 +13,7 @@
 //!
 //! This sits **inside** the `Replay-Nonce` middleware. `tower`'s `.layer()`
 //! wraps what was added before it, so the nonce layer — added last in
-//! [`build_router`](crate::server::build_router) — stays outermost and still
+//! [`build_router`](crate::router::build_router) — stays outermost and still
 //! stamps a fresh nonce onto a 403 produced here. An ACME client that gets
 //! refused therefore still has a usable nonce, and retries with a corrected
 //! configuration rather than a `badNonce` loop.

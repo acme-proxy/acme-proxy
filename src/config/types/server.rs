@@ -46,7 +46,7 @@ pub struct ServerConfig {
     /// A whole-request deadline. Must exceed every hook the server runs *inside*
     /// a request — `challenge.timeout_ms` and `signer.custom.timeout_ms` — or a
     /// validation still in progress is cut off and reported as a server failure;
-    /// `Profile::build_all` refuses to start if it does not.
+    /// `server::profile::build_all` refuses to start if it does not.
     pub request_timeout_ms: u64,
     /// Largest request body accepted. An ACME body is a JWS carrying at most a
     /// CSR, i.e. kilobytes; axum's implicit default is 2 MiB.

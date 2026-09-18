@@ -13,7 +13,9 @@ use crate::tls;
 
 use super::sockets::{Role, SocketPlans, check_metrics_config, plan_sockets};
 use super::supervisor::Cells;
-use super::{Assembly, GenerationParts, Profile, build_app};
+use super::{Assembly, GenerationParts};
+use crate::profile::Profile;
+use crate::router::build_app;
 
 /// Everything one configuration generation contributes, built and validated
 /// before any of it is published.
@@ -62,7 +64,7 @@ pub(crate) fn build_generation(
 ) -> anyhow::Result<Generation> {
     let admin_enabled = config.admin.enabled;
     let database = assembly.database.clone();
-    let profiles = Profile::build_all_with(config, resolved, parts)?;
+    let profiles = crate::server::profile::build_all_with(config, resolved, parts)?;
 
     let tls = tls::from_config(&config.server)
         .inspect_err(|error| {
@@ -314,7 +316,7 @@ pub(crate) fn build_generation(
 
     // The CA's audit trail: one per process, shared by every profile's router
     // and by the web admin listener, because `[audit]` is process-wide. Built
-    // here rather than in `Profile::build_all` for exactly that reason — it is
+    // here rather than in `server::profile::build_all` for exactly that reason — it is
     // not a per-endpoint subsystem.
     let auditor = Arc::new(
         crate::auditor::Auditor::from_config(

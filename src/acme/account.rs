@@ -19,7 +19,7 @@ use crate::jws::ProtectedHeader;
 use crate::jws::signature::spki_to_jwk;
 use crate::key_change;
 use crate::notify::{AccountCreatedData, AccountDeactivatedData, NotifyDispatcher, NotifyEvent};
-use crate::server::Profile;
+use crate::profile::Profile;
 use crate::sqlite::{
     account::{Account, pubkey_fingerprint},
     db::Database,

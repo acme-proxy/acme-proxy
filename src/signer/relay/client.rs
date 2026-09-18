@@ -532,7 +532,7 @@ fn header_string(value: Option<&HeaderValue>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// The shared resolver `Profile::build_all` supplies at startup. These
+    /// The shared resolver `server::profile::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
     fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
         std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())

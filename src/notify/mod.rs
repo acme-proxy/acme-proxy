@@ -1083,7 +1083,7 @@ pub(crate) mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    /// The shared resolver `Profile::build_all` supplies at startup.
+    /// The shared resolver `server::profile::build_all` supplies at startup.
     fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
         Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
     }

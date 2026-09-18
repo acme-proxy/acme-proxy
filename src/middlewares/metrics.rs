@@ -1,7 +1,7 @@
 //! Counts one request into the Prometheus registry.
 //!
 //! Mounted only when `metrics.enabled` is on (see
-//! [`crate::server::build_app`]), so the lock and the two allocations below
+//! [`crate::router::build_app`]), so the lock and the two allocations below
 //! cost nothing to a deployment that has not asked for metrics.
 //!
 //! ## Why the labels come from `MatchedPath`

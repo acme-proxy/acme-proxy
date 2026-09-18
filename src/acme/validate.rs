@@ -26,7 +26,7 @@ use tracing::{error, warn};
 use super::order::OrderService;
 use crate::auditor::Auditor;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
-use crate::server::Profile;
+use crate::profile::Profile;
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},

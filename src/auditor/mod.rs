@@ -25,7 +25,7 @@ pub mod admin;
 
 /// Writes audit rows, and resolves the reverse names that go in them.
 ///
-/// One per process, shared by the ACME listener ([`crate::server::AppState`]),
+/// One per process, shared by the ACME listener ([`crate::router::AppState`]),
 /// the web admin ([`crate::webadmin::AdminState`]) and the CLI. Process-wide
 /// because `[audit]` is: the trail describes the CA, not one of its endpoints.
 pub struct Auditor {
@@ -50,7 +50,7 @@ impl Auditor {
     /// Builds the auditor, and with it the **cached** resolver its PTR lookups
     /// go through.
     ///
-    /// Cached, unlike the shared resolver `Profile::build_all` threads through
+    /// Cached, unlike the shared resolver `server::profile::build_all` threads through
     /// the challenge and signer subsystems, and for the reason
     /// `filter::reverse_dns` makes the same choice: a PTR record for an address
     /// that keeps connecting is exactly what a cache is for, and there is no

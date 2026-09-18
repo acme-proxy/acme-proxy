@@ -12,7 +12,7 @@ use crate::acme::access::{load_owned_order, order_authz_ids, signer_account};
 use crate::client::ClientIp;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
-use crate::server::AppState;
+use crate::router::AppState;
 use crate::sqlite::{order::Order, status::OrderStatus};
 
 pub use crate::acme::order::{FinalizePayload, NewOrderPayload};

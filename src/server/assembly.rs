@@ -12,7 +12,7 @@ use crate::{metrics, notify, signer};
 /// The three things one configuration generation contributes to its profiles,
 /// built before any of them is published.
 ///
-/// A struct because [`Profile::build_all_with`](super::Profile::build_all_with)
+/// A struct because [`profile::build_all_with`](super::profile::build_all_with)
 /// would otherwise take three same-shaped values positionally, and because the
 /// three are built together and must be published together —
 /// `server::generation::publish_reload` swaps the notifier map and the signer
@@ -74,7 +74,7 @@ impl Assembly {
     ///
     /// Those come back rather than being kept here because they are *not*
     /// long-lived: the caller hands them to
-    /// [`Profile::build_all_with`](super::Profile::build_all_with) and then
+    /// [`profile::build_all_with`](super::profile::build_all_with) and then
     /// forgets them, and every later generation builds its own through
     /// [`build_parts`](Self::build_parts).
     pub fn new(

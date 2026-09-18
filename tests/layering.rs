@@ -158,7 +158,7 @@ fn the_cli_never_builds_a_signer() {
 /// prevent. The backend is the job handlers' alone (`src/acme/issue.rs`,
 /// `src/acme/revoke.rs`'s `SignerRevokeJob`), in the `worker` role.
 ///
-/// [`Profile`]: acme_proxy::server::Profile
+/// [`Profile`]: acme_proxy::profile::Profile
 #[test]
 fn the_request_path_never_holds_a_signer() {
     const REQUEST_PATH: &[&str] = &[
@@ -167,8 +167,8 @@ fn the_request_path_never_holds_a_signer() {
         "src/middlewares",
         "src/webadmin",
         "src/admin",
-        "src/server/router.rs",
-        "src/server/profile.rs",
+        "src/router.rs",
+        "src/profile.rs",
     ];
     const FORBIDDEN: &[&str] = &[
         "SignerBackend",
@@ -311,6 +311,8 @@ const MODULE_CRATE: &[(&str, &str)] = &[
     ("extractors", "protocol"),
     ("handlers", "protocol"),
     ("middlewares", "protocol"),
+    ("profile", "protocol"),
+    ("router", "protocol"),
     ("admin", "admin"),
     ("webadmin", "admin"),
     ("reload", "server"),
@@ -353,16 +355,8 @@ const CRATE_DEPS: &[(&str, &[&str])] = &[
 /// Module references that still cross a future crate boundary the wrong way.
 /// Each untangling commit deletes its entries; an entry that no longer occurs
 /// fails the test too, so this list only ever shrinks.
-const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
-    ("acme", "server"),
-    ("admin", "server"),
-    ("extractors", "server"),
-    ("filter", "cli"),
-    ("handlers", "server"),
-    ("server", "cli"),
-    ("signer", "handlers"),
-    ("webadmin", "server"),
-];
+const KNOWN_BACK_EDGES: &[(&str, &str)] =
+    &[("filter", "cli"), ("server", "cli"), ("signer", "handlers")];
 
 /// The top-level modules one line of source names through `crate::`, either
 /// directly (`crate::audit::Actor`) or in a group (`use crate::{dns, proxy};`).

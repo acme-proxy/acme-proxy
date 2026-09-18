@@ -11,7 +11,7 @@ use crate::acme::access::load_owned_order;
 use crate::acme::revoke::{Revocations, Revoker};
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
-use crate::server::AppState;
+use crate::router::AppState;
 
 /// A revokeCert payload (RFC 8555 §7.6).
 #[derive(Debug, Deserialize)]

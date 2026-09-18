@@ -201,7 +201,7 @@ pub(crate) fn require_client_ip(client_ip: Option<IpAddr>) -> Result<IpAddr, Ver
 /// `ipam` is the profile's already-built inventory — `None` when `ipam.backend`
 /// is unset, which is a startup error if any selected rule names an `ipam`
 /// check. It is built by
-/// [`Profile::build_all`](crate::server::Profile::build_all) rather than here
+/// `server::profile::build_all` rather than here
 /// because it is its own configuration section with its own selector, and this
 /// policy is one of its consumers rather than its owner.
 pub fn from_config(

@@ -54,7 +54,7 @@ the default.
 Budget for one validation attempt, applied at the registry level whatever the
 type. Validation runs *inside* `POST /chall/{id}`, so this is also that
 request's worst case, and it must stay below `server.request_timeout_ms` —
-`Profile::build_all` refuses to start otherwise.
+`server::profile::build_all` refuses to start otherwise.
 
 Per-type keys live under `[challenge.http_01]` and `[challenge.tls_alpn_01]`;
 see those pages. `dns-01` has no table of its own — it is governed by

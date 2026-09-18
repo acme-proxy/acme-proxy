@@ -350,7 +350,7 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
 pub(crate) async fn resolve_order_profile(
     state: &AdminState,
     id: &str,
-) -> Result<std::sync::Arc<crate::server::Profile>, AdminError> {
+) -> Result<std::sync::Arc<crate::profile::Profile>, AdminError> {
     let order = Order::find_by_id(id, &state.database)
         .await?
         .ok_or_else(|| not_found(id))?;

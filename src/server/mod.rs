@@ -20,12 +20,15 @@
 //! may change, and what it refuses by name, is [`crate::reload`]'s to say;
 //! [`serve_on_with_reloads`] is where the two meet.
 //!
-//! - [`profile`] — one ACME endpoint, and how a generation builds each one.
-//! - [`assembly`] — what a generation dials through, and what outlives it.
-//! - [`router`] — the routers each listener serves, and their shared layers.
+//! - [`profile`] — how a generation builds each ACME endpoint.
+//! - [`assembly`] — what a generation hands its profiles, and what outlives it.
 //! - [`generation`] — one generation built, then published: the reload policy.
 //! - [`supervisor`] — the task that serialises reloads.
 //! - [`sockets`] — the three listeners' binds, plans and announcements.
+//!
+//! What it serves sits below it: the endpoint itself is
+//! [`crate::profile::Profile`], and the routers each listener serves, with
+//! their shared layers, are [`crate::router`].
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -41,17 +44,14 @@ pub mod assembly;
 pub mod generation;
 pub mod profile;
 pub mod roles;
-pub mod router;
 pub mod sockets;
 pub mod supervisor;
 #[cfg(test)]
 mod tests;
 
 pub use assembly::{Assembly, GenerationParts};
-pub use profile::{Profile, ProfileParts};
 pub use roles::{ProcessRole, RoleSet};
-pub use router::{AppState, build_app, build_router, catch_panic_acme, metrics_app};
-pub(crate) use router::{panic_message, security_headers};
+
 pub use sockets::check_metrics_config;
 
 use generation::{Generation, announce_profile, build_generation};
@@ -413,7 +413,7 @@ pub async fn serve_on_with_reloads(
         announce_metrics_listener(&metrics_bound);
     }
     let metrics = serve_role(
-        metrics_app(assembly.metrics.clone()),
+        crate::router::metrics_app(assembly.metrics.clone()),
         metrics_socket,
         shutdown_rx,
     );

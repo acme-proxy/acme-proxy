@@ -24,7 +24,7 @@ use crate::routes;
 use crate::sqlite::db::Database;
 use crate::{challenge, handlers, metrics, middlewares, signer};
 
-use super::Profile;
+use crate::profile::Profile;
 
 /// Shared application state handed to every route via `State<AppState>`.
 #[derive(Clone)]
@@ -284,7 +284,7 @@ pub fn build_app(
 /// This router is **not** behind a [`reload`](crate::reload) swap cell, unlike
 /// the other two. It has one route, and its only state is the registry — which
 /// by design is carried across generations rather than rebuilt (see
-/// [`Assembly`](super::Assembly)), so there is nothing a reload could put in a
+/// `Assembly`), so there is nothing a reload could put in a
 /// new one. `metrics.enabled` and `metrics.bind_address` are frozen for the
 /// reason every bind address is: the socket cannot move under a running
 /// listener.
