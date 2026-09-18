@@ -273,6 +273,230 @@ fn only_the_schema_owners_apply_migrations() {
     );
 }
 
+/// The crate each top-level module of `src/` is headed for (PLAN.md #6), in
+/// dependency order: a crate may name only the crates listed before it in
+/// [`CRATE_DEPS`].
+const MODULE_CRATE: &[(&str, &str)] = &[
+    ("cert", "core"),
+    ("config", "core"),
+    ("eab", "core"),
+    ("error", "core"),
+    ("key_change", "core"),
+    ("logfields", "core"),
+    ("pemfile", "core"),
+    ("random", "core"),
+    ("routes", "core"),
+    ("script_hook", "core"),
+    ("templating", "core"),
+    ("sqlite", "store"),
+    ("challenge", "net"),
+    ("dns", "net"),
+    ("http_client", "net"),
+    ("listener", "net"),
+    ("proxy", "net"),
+    ("tls", "net"),
+    ("filter", "policy"),
+    ("ipam", "policy"),
+    ("audit", "jobs"),
+    ("jobs", "jobs"),
+    ("metrics", "jobs"),
+    ("notify", "jobs"),
+    ("signer", "signer"),
+    ("acme", "protocol"),
+    ("extractors", "protocol"),
+    ("handlers", "protocol"),
+    ("middlewares", "protocol"),
+    ("admin", "admin"),
+    ("webadmin", "admin"),
+    ("reload", "server"),
+    ("server", "server"),
+    ("cli", "bin"),
+];
+
+/// Each crate and the crates it may depend on.
+const CRATE_DEPS: &[(&str, &[&str])] = &[
+    ("core", &[]),
+    ("store", &["core"]),
+    ("net", &["core"]),
+    ("policy", &["core", "store", "net"]),
+    ("jobs", &["core", "store", "net"]),
+    ("signer", &["core", "store", "net", "jobs"]),
+    (
+        "protocol",
+        &["core", "store", "net", "policy", "jobs", "signer"],
+    ),
+    (
+        "admin",
+        &[
+            "core", "store", "net", "policy", "jobs", "signer", "protocol",
+        ],
+    ),
+    (
+        "server",
+        &[
+            "core", "store", "net", "policy", "jobs", "signer", "protocol", "admin",
+        ],
+    ),
+    (
+        "bin",
+        &[
+            "core", "store", "net", "policy", "jobs", "signer", "protocol", "admin", "server",
+        ],
+    ),
+];
+
+/// Module references that still cross a future crate boundary the wrong way.
+/// Each untangling commit deletes its entries; an entry that no longer occurs
+/// fails the test too, so this list only ever shrinks.
+const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
+    ("acme", "server"),
+    ("admin", "server"),
+    ("audit", "filter"),
+    ("audit", "middlewares"),
+    ("eab", "extractors"),
+    ("error", "sqlite"),
+    ("extractors", "server"),
+    ("filter", "cli"),
+    ("handlers", "server"),
+    ("jobs", "admin"),
+    ("key_change", "extractors"),
+    ("notify", "admin"),
+    ("proxy", "filter"),
+    ("server", "cli"),
+    ("signer", "acme"),
+    ("signer", "extractors"),
+    ("signer", "handlers"),
+    ("signer", "server"),
+    ("sqlite", "audit"),
+    ("webadmin", "server"),
+];
+
+/// The top-level modules one line of source names through `crate::`, either
+/// directly (`crate::audit::Actor`) or in a group (`use crate::{dns, proxy};`).
+fn crate_paths(line: &str) -> Vec<&str> {
+    fn ident(text: &str) -> &str {
+        let end = text
+            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+            .unwrap_or(text.len());
+        &text[..end]
+    }
+    let mut found = Vec::new();
+    for (index, _) in line.match_indices("crate::") {
+        let rest = &line[index + "crate::".len()..];
+        if let Some(group) = rest.strip_prefix('{') {
+            let group = &group[..group.find('}').unwrap_or(group.len())];
+            found.extend(group.split(',').map(|item| ident(item.trim())));
+        } else {
+            found.push(ident(rest));
+        }
+    }
+    found.retain(|name| !name.is_empty());
+    found
+}
+
+/// Every module reference in `src/` — production **and** test code, since a
+/// test cannot name a crate its own crate is a dependency of either — must
+/// point at the module's own crate or one it depends on.
+#[test]
+fn module_layers_form_a_dag() {
+    let crate_of = |module: &str| {
+        MODULE_CRATE
+            .iter()
+            .find(|(name, _)| *name == module)
+            .map(|(_, krate)| *krate)
+    };
+    let may_use = |from: &str, to: &str| {
+        from == to
+            || CRATE_DEPS
+                .iter()
+                .find(|(krate, _)| *krate == from)
+                .is_some_and(|(_, deps)| deps.contains(&to))
+    };
+
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("src"), &mut files);
+
+    let mut unmapped = Vec::new();
+    let mut offenders = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let module = relative
+            .trim_start_matches("src/")
+            .split('/')
+            .next()
+            .unwrap()
+            .trim_end_matches(".rs")
+            .to_string();
+        // The crate root and the shared test helpers are split up by the
+        // extraction itself rather than untangled ahead of it.
+        if ["lib", "main", "testutil"].contains(&module.as_str()) {
+            continue;
+        }
+        let Some(from) = crate_of(&module) else {
+            unmapped.push(module);
+            continue;
+        };
+        let text = fs::read_to_string(&path).unwrap();
+        for (index, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            for target in crate_paths(line) {
+                let Some(to) = crate_of(target) else { continue };
+                if target == module || may_use(from, to) {
+                    continue;
+                }
+                let edge = (module.clone(), target.to_string());
+                if KNOWN_BACK_EDGES.contains(&(edge.0.as_str(), edge.1.as_str())) {
+                    seen.insert(edge);
+                } else {
+                    offenders.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    unmapped.sort();
+    unmapped.dedup();
+    assert!(
+        unmapped.is_empty(),
+        "every top-level module needs a crate in MODULE_CRATE: {unmapped:?}"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a module names one in a crate its own crate may not depend on:\n{}",
+        offenders.join("\n")
+    );
+    let stale: Vec<_> = KNOWN_BACK_EDGES
+        .iter()
+        .filter(|(from, to)| !seen.contains(&(from.to_string(), to.to_string())))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these back-edges are gone; delete them from KNOWN_BACK_EDGES: {stale:?}"
+    );
+}
+
+#[test]
+fn crate_paths_finds_direct_and_grouped_references() {
+    assert_eq!(crate_paths("use crate::audit::Actor;"), ["audit"]);
+    assert_eq!(
+        crate_paths("use crate::{challenge, dns::Resolver, proxy};"),
+        ["challenge", "dns", "proxy"]
+    );
+    assert_eq!(
+        crate_paths("let a = crate::cert::x(crate::sqlite::y);"),
+        ["cert", "sqlite"]
+    );
+    assert!(crate_paths("use super::Profile;").is_empty());
+}
+
 /// The scanner itself: a stray call above the test module is found, one inside
 /// it is not, and a `#[cfg(test)]` helper function does not end the scan early.
 #[test]
