@@ -120,7 +120,7 @@
 //!     // because every outbound client takes them together — and because the
 //!     // rendering beside them is what tells a reload whether a signer backend
 //!     // has to be rebuilt.
-//!     let egress = Arc::new(acme_proxy::server::Egress::from_config(&config)?);
+//!     let egress = Arc::new(acme_proxy::egress::Egress::from_config(&config)?);
 //!     let outbound = egress.outbound();
 //!     // The enqueue side of the durable queue, built first because everything
 //!     // below queues into it. A backend that defers issuance (`relay`) is
@@ -256,6 +256,7 @@ pub mod client;
 pub mod config;
 pub mod dns;
 pub mod eab;
+pub mod egress;
 pub mod error;
 pub mod extractors;
 pub mod filter;

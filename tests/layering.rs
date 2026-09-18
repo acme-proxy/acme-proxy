@@ -294,6 +294,7 @@ const MODULE_CRATE: &[(&str, &str)] = &[
     ("sqlite", "store"),
     ("challenge", "net"),
     ("dns", "net"),
+    ("egress", "net"),
     ("http_client", "net"),
     ("listener", "net"),
     ("proxy", "net"),
@@ -361,7 +362,6 @@ const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("server", "cli"),
     ("signer", "acme"),
     ("signer", "handlers"),
-    ("signer", "server"),
     ("webadmin", "server"),
 ];
 

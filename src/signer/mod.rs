@@ -326,7 +326,7 @@ pub struct SignerParts {
     /// [`Outbound`](crate::http_client::Outbound). The two cannot then disagree,
     /// and a value that disagreed would make a `dns.resolver` edit a silent
     /// no-op for every signer — see [`build_backends`].
-    pub egress: Arc<crate::server::Egress>,
+    pub egress: Arc<crate::egress::Egress>,
     pub jobs: crate::jobs::JobQueue,
 }
 
@@ -672,7 +672,7 @@ mod tests {
     /// `dns.resolver` or `[proxy]` hands `build_backends`.
     async fn parts_with_egress(identity: &str) -> SignerParts {
         let mut parts = parts().await;
-        parts.egress = Arc::new(crate::server::Egress {
+        parts.egress = Arc::new(crate::egress::Egress {
             resolver: test_resolver(),
             proxies: crate::testutil::no_proxies(),
             identity: identity.to_string(),

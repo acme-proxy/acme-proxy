@@ -47,7 +47,7 @@ pub mod supervisor;
 #[cfg(test)]
 mod tests;
 
-pub use assembly::{Assembly, Egress, GenerationParts};
+pub use assembly::{Assembly, GenerationParts};
 pub use profile::{Profile, ProfileParts};
 pub use roles::{ProcessRole, RoleSet};
 pub use router::{AppState, build_app, build_router, catch_panic_acme, metrics_app};
