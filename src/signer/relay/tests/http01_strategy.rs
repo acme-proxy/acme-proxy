@@ -1,21 +1,35 @@
 use super::*;
 use crate::sqlite::status::OrderStatus;
 
-/// Serves `tokens` from the **production** handler on an ephemeral loopback
-/// port, so the scripted upstream fetches what a deployment would.
+/// Serves `tokens` on an ephemeral loopback port at the real route path, so
+/// the scripted upstream fetches what a deployment would.
 ///
-/// The handler and the route path are the real ones; only `build_app`'s
-/// surrounding profile machinery is skipped — building it here would need a
-/// `FilterPolicy`, a `ChallengeRegistry` and a `NotifyDispatcher` for no
-/// added coverage, and `tests/http01_responder.rs` covers the mounting
-/// against the real `build_app` instead.
+/// A stand-in for `handlers::get_challenge_file`, which sits above the signer
+/// backends and so cannot be mounted from here: it answers the key
+/// authorization verbatim or a `404`, which is all this path needs of it.
+/// `tests/http01_responder.rs` pins the production handler itself, mounted by
+/// the real `build_app`.
 async fn spawn_responder(tokens: Arc<dyn http01::TokenStore>) -> String {
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    async fn respond(
+        State(tokens): State<Arc<dyn http01::TokenStore>>,
+        Path(token): Path<String>,
+    ) -> axum::response::Response {
+        match tokens.lookup(&token).await {
+            Ok(Some(key_authorization)) => (StatusCode::OK, key_authorization).into_response(),
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
     let app = axum::Router::new()
         .route(
             "/.well-known/acme-challenge/{token}",
-            axum::routing::get(crate::handlers::get_challenge_file),
+            axum::routing::get(respond),
         )
-        .with_state(crate::handlers::Http01Stores(Arc::new(vec![tokens])));
+        .with_state(tokens);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

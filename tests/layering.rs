@@ -356,7 +356,7 @@ const CRATE_DEPS: &[(&str, &[&str])] = &[
 /// Module references that still cross a future crate boundary the wrong way.
 /// Each untangling commit deletes its entries; an entry that no longer occurs
 /// fails the test too, so this list only ever shrinks.
-const KNOWN_BACK_EDGES: &[(&str, &str)] = &[("signer", "handlers")];
+const KNOWN_BACK_EDGES: &[(&str, &str)] = &[];
 
 /// The top-level modules one line of source names through `crate::`, either
 /// directly (`crate::audit::Actor`) or in a group (`use crate::{dns, proxy};`).
