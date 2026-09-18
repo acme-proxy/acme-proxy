@@ -53,28 +53,35 @@ to the internet does not expose this.
 $ curl -s localhost:3002/metrics
 # HELP acme_proxy_requests_total Requests served, by endpoint, matched route and response status.
 # TYPE acme_proxy_requests_total counter
-acme_proxy_requests_total{profile="default",route="/newOrder",status="201"} 42
-acme_proxy_requests_total{profile="none",route="/health",status="200"} 8613
+acme_proxy_requests_total{role="acme,admin,worker",profile="default",route="/newOrder",status="201"} 42
+acme_proxy_requests_total{role="acme,admin,worker",profile="none",route="/health",status="200"} 8613
 # HELP acme_proxy_certificates_issued_total Certificates signed, by endpoint.
 # TYPE acme_proxy_certificates_issued_total counter
-acme_proxy_certificates_issued_total{profile="default"} 41
+acme_proxy_certificates_issued_total{role="acme,admin,worker",profile="default"} 41
 # HELP acme_proxy_certificate_issue_failures_total Issuance attempts the CA refused, by endpoint and ACME problem type.
 # TYPE acme_proxy_certificate_issue_failures_total counter
-acme_proxy_certificate_issue_failures_total{profile="default",reason="badCSR"} 1
+acme_proxy_certificate_issue_failures_total{role="acme,admin,worker",profile="default",reason="badCSR"} 1
 # HELP acme_proxy_database_pool_connections Connections in the SQLite pool.
 # TYPE acme_proxy_database_pool_connections gauge
-acme_proxy_database_pool_connections{state="idle"} 4
-acme_proxy_database_pool_connections{state="busy"} 1
+acme_proxy_database_pool_connections{role="acme,admin,worker",state="idle"} 4
+acme_proxy_database_pool_connections{role="acme,admin,worker",state="busy"} 1
 ```
 
 | Metric | Type | Labels |
 | --- | --- | --- |
-| `acme_proxy_requests_total` | counter | `profile`, `route`, `status` |
-| `acme_proxy_certificates_issued_total` | counter | `profile` |
-| `acme_proxy_certificate_issue_failures_total` | counter | `profile`, `reason` |
-| `acme_proxy_database_pool_connections` | gauge | `state` |
+| `acme_proxy_requests_total` | counter | `role`, `profile`, `route`, `status` |
+| `acme_proxy_certificates_issued_total` | counter | `role`, `profile` |
+| `acme_proxy_certificate_issue_failures_total` | counter | `role`, `profile`, `reason` |
+| `acme_proxy_database_pool_connections` | gauge | `role`, `state` |
 
-Four things are worth knowing about the numbers.
+Five things are worth knowing about the numbers.
+
+**`role` names the roles that process runs**, comma-separated —
+`acme,admin,worker` for an all-in-one deployment, which is the default. The
+counters are per-process memory by design, so a
+[split deployment](../getting_started/deployment.md#running-the-roles-as-separate-processes)
+is several scrape targets reporting the same family names, and this is what
+tells them apart. Each process also needs its own `metrics.bind_address`.
 
 **`route` is the matched route pattern, not the URI.** A request for
 `/profile/le/order/9f3c…` is counted under `route="/order/{id}"`, and the
@@ -245,6 +252,8 @@ The events worth building alerts on:
 | `challenge_http_01_mismatch` | warn | The responder answered, but with the wrong key authorization. The body itself is never logged here; a truncated preview goes to `challenge_http_01_mismatch_body` at `debug`. |
 | `challenge_validation_abandoned` | warn | The queue gave up on a validation — the attempts ran out, or the authorization expired under it. The challenge, its authorization and its order are marked `invalid` so the client stops polling. Distinct from `challenge_failed`, which means the check ran and the client's setup did not satisfy it; this one means the check never reached a verdict. |
 | `challenge_validation_enqueue_failed` | error | A challenge was claimed but its validation job could not be written. The claim is released, so the client may trigger again; the request answers `500`. Alert on it — it means the database refused a write on the ACME path. |
+| `server_role_no_worker` | warn | This process runs no `worker` role, so nothing in it drains the job queue. Expected in a split deployment; a deployment where *no* process runs one issues nothing at all, because challenge validation, relayed issuance, notifications and the sweeps are all queued work. |
+| `server_schema_behind` | error | A process that does not own the schema found migrations unapplied and refused to serve. Run `acme-proxy migrate`, or start the `worker` role, before the others. |
 | `nonce_replayed` | warn | A JWS carried a nonce that was unknown, already consumed or expired. Routine in small numbers (a client racing itself); a flood is a client stuck in a retry loop, or a replay attempt. |
 | `key_change_rejected` | warn | `POST /keyChange` refused. `reason = bad_signature` means the inner JWS did not verify — somebody attempted a rollover they could not prove possession for. |
 | `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. |

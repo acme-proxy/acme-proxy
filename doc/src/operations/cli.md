@@ -22,6 +22,61 @@ Commands operate directly on SQLite. Running them against a live server is safe
 (the database is in WAL mode), but they act immediately and are not
 transactional across the server's own in-flight requests.
 
+## The schema is applied explicitly
+
+Opening the database does **not** migrate it. `acme-proxy migrate` applies any
+migrations that have not run yet, and a `serve` running the `worker` role does
+the same at startup — so a default single-process `acme-proxy serve` against a
+fresh database still just works.
+
+Everything else checks the schema and refuses by name:
+
+```text
+database error: the schema is 3 migration(s) behind; run `acme-proxy migrate` first
+```
+
+This used to be a side effect of opening the database, which made every
+subcommand an upgrade step — `acme-proxy audit list` from a newer binary
+silently rewrote the schema — and let two processes starting together race the
+migration runner, SQLite offering sqlx no lock to serialise them.
+
+**`acme-proxy migrate`** is idempotent and safe to run repeatedly; it prints how
+many migrations it applied, or says the schema is already up to date.
+
+**`acme-proxy init`** migrates and then generates whatever first-run material
+the configuration calls for — the local CA key and certificate, an upstream
+account for a `relay` profile, a self-signed TLS certificate. It is the one
+command that *creates* key material, so a split deployment runs it once, as the
+uid that should own those files, before starting anything.
+
+## Roles
+
+`serve` takes **`--role`**, a comma-separated list of `acme`, `admin` and
+`worker`. With no `--role` it runs all three in one process, which is the
+default and what every deployment before the flag existed did.
+
+| Role | Does |
+| --- | --- |
+| `acme` | Serves ACME to certificate clients: the ACME listener and the root router. Enqueues work, runs none. |
+| `admin` | Serves the web admin, `/ui` and `/api`. Enqueues work, runs none. |
+| `worker` | Drains the job queue, and owns the schema and the first-run material. |
+
+Splitting them puts the process that parses untrusted JWS and CSRs, the process
+that holds operator sessions, and the process that reaches out to client-chosen
+hosts in three different places, each able to run under its own uid. See
+[Deployment](../getting_started/deployment.md#running-the-roles-as-separate-processes).
+
+An unknown role is refused with usage before anything is read:
+
+```text
+error: invalid value 'wroker' for '--role <ROLES>': unknown role `wroker`
+(expected one of: acme, admin, worker)
+```
+
+A process running no `worker` logs the advisory `server_role_no_worker` at
+startup: nothing there drains the queue, so challenge validation, notifications
+and the periodic sweeps all wait for a process that does.
+
 ### Global flags
 
 **`-y`, `--yes`** — skip the interactive "Are you sure?" prompt on destructive

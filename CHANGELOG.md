@@ -33,6 +33,24 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **Migrations are applied explicitly, not as a side effect of opening the
+  database.** `acme-proxy migrate` applies them, and so does `acme-proxy serve`
+  when it runs the `worker` role — which the default, role-less `serve` does, so
+  a single-process deployment upgrades exactly as it did: replace the binary and
+  restart. Everything else now checks the schema and refuses by name:
+
+  ```text
+  database error: the schema is 3 migration(s) behind; run `acme-proxy migrate` first
+  ```
+
+  Previously every subcommand migrated on its way in, so `acme-proxy audit list`
+  from a newer binary silently rewrote the schema of whatever database it was
+  pointed at. It also raced: two processes starting together both ran the
+  migration runner, and SQLite offers sqlx no lock to serialise them — which is
+  what made one owner a prerequisite for the role split below.
+
+  `Database::connect` is gone from the library API, replaced by `open` (connect
+  only), `migrate`, `connect_and_migrate` and `pending_migrations`.
 - **Challenge validation runs in the job queue, not inside the request.**
   `POST /chall/{id}` now claims the challenge, writes a `challenge_validate`
   job and answers `200` with the challenge in the `processing` state plus a
@@ -107,6 +125,34 @@ migrated configuration before restarting.
   A script that deleted accounts holding current certificates now fails.
 
 ### Added
+
+- **`acme-proxy serve --role acme,admin,worker`** — one binary and one
+  configuration, run as several processes each doing a subset of the work:
+  `acme` serves ACME, `admin` serves the panel, `worker` drains the job queue
+  and owns the schema and the first-run material. **All-in-one remains the
+  default**: `serve` with no `--role` builds all three, exactly as before.
+
+  The point is privilege separation for a CA — the process parsing untrusted
+  JWS and CSRs from the internet is not the one holding operator sessions, and
+  neither is the one making outbound connections to client-chosen hosts. Each
+  can run under its own uid and systemd sandbox.
+
+  An unknown role is refused with usage before the configuration is read or the
+  database file created. A process running no worker logs the advisory
+  `server_role_no_worker`; one that finds the schema behind and does not own it
+  logs `server_schema_behind` and refuses to serve. Topologies, and why each
+  process needs its own `metrics.bind_address`, are in the book under
+  Deployment.
+- **`acme-proxy migrate`** applies any unapplied migrations and exits;
+  **`acme-proxy init`** migrates and then generates whatever first-run material
+  the configuration calls for (the local CA, a relay's upstream account, a
+  self-signed TLS certificate). `init` is the one command that *creates* key
+  material, so a split deployment runs it once, as the uid that should own
+  those files, before starting anything.
+- **A `role` label on every metric series**, naming the roles that process
+  runs. The counters are per-process memory by design, so a split deployment is
+  several scrape targets reporting the same family names; this is what tells
+  them apart.
 
 - **An operator sets their own notification address** from the panel's *Your
   account* page or `POST /api/account/contact`, re-proving their password. The

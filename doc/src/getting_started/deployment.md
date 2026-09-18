@@ -276,16 +276,86 @@ podman run -d --name acme-proxy \
   acme-proxy:latest
 ```
 
+## Running the roles as separate processes
+
+`acme-proxy serve` runs three jobs in one process: serving ACME, serving the web
+admin, and draining the job queue. `--role` splits them across processes of the
+same binary, reading the same configuration.
+
+| Role | Does | Holds |
+| --- | --- | --- |
+| `acme` | Serves ACME to certificate clients | The ACME listener |
+| `admin` | Serves `/ui` and `/api` | The admin listener |
+| `worker` | Drains the job queue; owns the schema and the first-run material | No listener |
+
+**All-in-one is still the default** and nothing about it changes: `acme-proxy
+serve` with no `--role` behaves exactly as it always did. The split is worth
+doing when you want privilege separation — the process parsing untrusted JWS and
+CSRs from the internet is then not the one holding operator sessions, and
+neither is the one making outbound connections to client-chosen hosts. Each can
+run under its own uid and its own systemd sandbox.
+
+Three things to get right:
+
+1. **Initialise once, first.** `acme-proxy init` migrates the database and
+   generates the CA key, the upstream account and any self-signed TLS
+   certificate. Run it as the uid that should own those files. A process that
+   does not run `worker` refuses to start against a schema that is behind,
+   naming `acme-proxy migrate` — so starting the others before the schema
+   exists fails loudly rather than racing.
+2. **Give each process its own `metrics.bind_address`.** The counters are
+   per-process memory, so three processes are three scrape targets; sharing one
+   address means the second one to start fails to bind. Set
+   `ACME_PROXY_METRICS__BIND_ADDRESS` per unit, point each at its own file with
+   `ACME_PROXY_CONFIG`, or turn `metrics.enabled` off where you do not want it.
+   Every series carries a `role` label naming the roles that process runs, so
+   one scrape config can tell them apart.
+3. **Run at least one worker.** A process without it logs
+   `server_role_no_worker` at startup; a deployment without one issues nothing,
+   because challenge validation, relayed issuance, notifications and the
+   periodic sweeps are all queued work.
+
+A worked topology, one systemd unit per role:
+
+```ini
+# acme-proxy-worker.service
+ExecStart=/usr/local/bin/acme-proxy serve --role worker
+Environment=ACME_PROXY_METRICS__BIND_ADDRESS=127.0.0.1:3002
+
+# acme-proxy-acme.service
+ExecStart=/usr/local/bin/acme-proxy serve --role acme
+Environment=ACME_PROXY_METRICS__BIND_ADDRESS=127.0.0.1:3012
+
+# acme-proxy-admin.service
+ExecStart=/usr/local/bin/acme-proxy serve --role admin
+Environment=ACME_PROXY_METRICS__BIND_ADDRESS=127.0.0.1:3022
+```
+
+**One host, one filesystem.** SQLite across processes is fine on a local disk in
+WAL mode, and `busy_timeout` is already set — it is *not* safe on NFS or across
+nodes. Multi-node needs PostgreSQL, which is not implemented yet. Run one admin
+process; its login rate limiter is in memory, so two would each get their own
+budget.
+
+Each process reloads independently on `SIGHUP`, so a configuration change means
+reloading all three.
+
 ## Upgrading
 
-Replace the binary and restart. There is no separate migration step: migrations
-are embedded and run automatically at startup, and **the schema is append-only
-as of 0.1.0** — a new release only ever adds migrations, never rewrites the ones
-your database has already applied.
+Replace the binary, **migrate**, and restart. The schema is **append-only as of
+0.1.0** — a new release only ever adds migrations, never rewrites the ones your
+database has already applied.
+
+Migrations no longer run as a side effect of opening the database. `acme-proxy
+serve` running the `worker` role (which the default does) still applies them at
+startup, so a single-process deployment can simply restart; anything else — an
+admin command, or a split deployment's `acme`/`admin` process — checks the
+schema and refuses by name until `acme-proxy migrate` has run.
 
 ```bash
 systemctl stop acme-proxy
 install -m 0755 acme-proxy /usr/local/bin/acme-proxy
+acme-proxy migrate          # explicit; the default `serve` would also do it
 systemctl start acme-proxy
 journalctl -u acme-proxy -n 50
 ```
