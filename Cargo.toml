@@ -1,69 +1,37 @@
-[package]
-name = "acme-proxy"
+# One binary over a workspace of library crates (PLAN.md #6). The crate
+# edges are the layering: a crate names only the crates beneath it, so the
+# compiler refuses what `tests/layering.rs` used to have to catch by reading
+# the source. Every member is published in lockstep with the binary — the
+# exact `=` pins below are what keep them in step — and none carries a semver
+# promise of its own: the library exists so the binary and the tests can
+# reach it, and `CHANGELOG.md`'s Compatibility section still covers only the
+# database schema.
+[workspace]
+# `crates/*` once the first library crate exists; the root package is a member
+# regardless.
+members = []
+# Container fixtures for the e2e lab, built by their own `Containerfile`s and
+# never by this workspace.
+exclude = ["tests/e2e/netbox-mock", "tests/e2e/phpipam-mock"]
+resolver = "3"
+
+[workspace.package]
 version = "0.5.0"
 edition = "2024"
-license = "MIT"
-description = "An ACME (RFC 8555) server that issues from a local CA, relays to an upstream CA, or delegates to a script"
-repository = "https://github.com/acme-proxy/acme-proxy"
-documentation = "https://acme-proxy.github.io/acme-proxy/"
-homepage = "https://acme-proxy.github.io/acme-proxy/"
-readme = "README.md"
-keywords = ["acme", "rfc8555", "certificate", "tls", "ca"]
-categories = ["cryptography", "network-programming", "web-programming::http-server"]
 # Edition 2024 requires 1.85. Stated so `cargo` reports a clear version error on
 # an older toolchain rather than a wall of syntax errors. CI's `msrv` job reads
 # this value and runs `cargo check --locked` on that exact toolchain, so raising
 # it here is what raises it everywhere.
 rust-version = "1.97"
-# Kept out of the published `.crate`: material that only means anything inside
-# the repository. The book is served from GitHub Pages, the vendored RFC text is
-# reference reading, `tests/e2e/` drives containers a `cargo install` will never
-# build, and the `CLAUDE.md` files are contributor notes. `migrations/` is
-# deliberately *not* here — `sqlx::migrate!()` embeds it at compile time, so
-# excluding it would break the build for everyone installing from crates.io.
-exclude = [
-    "/doc/",
-    "/rfc/",
-    "/dashboards/",
-    "/examples-client/",
-    "/tests/e2e/",
-    # The harness root that `#[path]`-includes the directory above; left behind
-    # it would be a test target referring to files the package does not carry.
-    # `cargo package` warns "ignoring test `e2e`" over this — that warning is
-    # the exclusion working, not something to fix by putting the file back.
-    "/tests/e2e.rs",
-    "/.github/",
-    "**/CLAUDE.md",
-    "/TODO.md",
-]
+license = "MIT"
+repository = "https://github.com/acme-proxy/acme-proxy"
+documentation = "https://acme-proxy.github.io/acme-proxy/"
+homepage = "https://acme-proxy.github.io/acme-proxy/"
 
-[features]
-default = []
-# PKCS#11 support for the `local_ca` signer's issuing key
-# (`signer.local_ca.key_source = "pkcs11"`), so the CA private key can live in
-# a YubiKey or an enterprise HSM instead of a file. Off by default: it pulls in
-# `cryptoki` and its `cryptoki-sys` bindings, which no deployment signing with
-# an on-disk key needs. The PKCS#11 module itself is `dlopen`ed at runtime, so
-# turning this on adds no build-time C toolchain requirement — `cryptoki` ships
-# pregenerated bindings and only its opt-in `generate-bindings` feature would
-# want `bindgen`/`clang`.
-hsm = ["dep:cryptoki"]
-
-# docs.rs builds with every feature on, so `signer::local_ca::pkcs11` — which is
-# `#[cfg(feature = "hsm")]` and therefore absent from a default build — is
-# documented rather than silently missing from the published API.
-#
-# `--cfg docsrs` turns on the `doc_auto_cfg` attribute in `src/lib.rs`, which is
-# the other half of that: without it the gated items appear with nothing saying
-# they need a feature, which is worse than absent — a reader would take
-# `pkcs11` for part of the default build. `doc_auto_cfg` is nightly-only and
-# docs.rs builds nightly; the `cfg_attr(docsrs, …)` gate means a stable
-# `cargo doc`, `cargo build` and clippy never see it.
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
-
-[dependencies]
+# Every dependency of every member, declared once. A member names the ones it
+# uses with `<name>.workspace = true`, so versions and features cannot drift
+# between crates.
+[workspace.dependencies]
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
 # used: net/time/process/signal/sync (mpsc) and io-util (AsyncRead/WriteExt,
@@ -190,12 +158,120 @@ minijinja = { version = "2", features = ["json"] }
 # tracked against the OASIS spec, and wraps sessions and object handles in safe
 # types instead of exposing raw `CK_*` FFI. Apache-2.0, already allowed by
 # `deny.toml`.
-cryptoki = { version = "0.12", optional = true }
+cryptoki = "0.12"
+# The e2e lab's container driver (`tests/e2e/`); a dev-dependency wherever it
+# is named.
+testcontainers = "0.28"
+
+[package]
+name = "acme-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "An ACME (RFC 8555) server that issues from a local CA, relays to an upstream CA, or delegates to a script"
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["acme", "rfc8555", "certificate", "tls", "ca"]
+categories = ["cryptography", "network-programming", "web-programming::http-server"]
+rust-version.workspace = true
+# Kept out of the published `.crate`: material that only means anything inside
+# the repository. The book is served from GitHub Pages, the vendored RFC text is
+# reference reading, `tests/e2e/` drives containers a `cargo install` will never
+# build, and the `CLAUDE.md` files are contributor notes. `migrations/` is
+# deliberately *not* here — `sqlx::migrate!()` embeds it at compile time, so
+# excluding it would break the build for everyone installing from crates.io.
+exclude = [
+    "/doc/",
+    "/rfc/",
+    "/dashboards/",
+    "/examples-client/",
+    "/tests/e2e/",
+    # The harness root that `#[path]`-includes the directory above; left behind
+    # it would be a test target referring to files the package does not carry.
+    # `cargo package` warns "ignoring test `e2e`" over this — that warning is
+    # the exclusion working, not something to fix by putting the file back.
+    "/tests/e2e.rs",
+    "/.github/",
+    "**/CLAUDE.md",
+    "/TODO.md",
+]
+
+[features]
+default = []
+# PKCS#11 support for the `local_ca` signer's issuing key
+# (`signer.local_ca.key_source = "pkcs11"`), so the CA private key can live in
+# a YubiKey or an enterprise HSM instead of a file. Off by default: it pulls in
+# `cryptoki` and its `cryptoki-sys` bindings, which no deployment signing with
+# an on-disk key needs. The PKCS#11 module itself is `dlopen`ed at runtime, so
+# turning this on adds no build-time C toolchain requirement — `cryptoki` ships
+# pregenerated bindings and only its opt-in `generate-bindings` feature would
+# want `bindgen`/`clang`.
+hsm = ["dep:cryptoki"]
+
+# docs.rs builds with every feature on, so `signer::local_ca::pkcs11` — which is
+# `#[cfg(feature = "hsm")]` and therefore absent from a default build — is
+# documented rather than silently missing from the published API.
+#
+# `--cfg docsrs` turns on the `doc_auto_cfg` attribute in `src/lib.rs`, which is
+# the other half of that: without it the gated items appear with nothing saying
+# they need a feature, which is worse than absent — a reader would take
+# `pkcs11` for part of the default build. `doc_auto_cfg` is nightly-only and
+# docs.rs builds nightly; the `cfg_attr(docsrs, …)` gate means a stable
+# `cargo doc`, `cargo build` and clippy never see it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+sqlx.workspace = true
+config.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+base64.workspace = true
+ring.workspace = true
+simple_asn1.workspace = true
+hex.workspace = true
+rcgen.workspace = true
+rustls-pki-types.workspace = true
+time.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+ipnet.workspace = true
+regex.workspace = true
+hickory-resolver.workspace = true
+hickory-proto.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+subtle.workspace = true
+x509-parser.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+lettre.workspace = true
+minijinja.workspace = true
+cryptoki = { workspace = true, optional = true }
 
 [dev-dependencies]
 # `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
-tower = { version = "0.5", features = ["util"] }
-testcontainers = "0.28"
+tower = { workspace = true, features = ["util"] }
+testcontainers.workspace = true
 
 [profile.release]
 lto = true
