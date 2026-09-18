@@ -42,6 +42,7 @@ use crate::sqlite::db::Database;
 
 pub mod assembly;
 pub mod generation;
+pub mod logging;
 pub mod profile;
 pub mod roles;
 pub mod sockets;

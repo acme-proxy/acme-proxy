@@ -37,10 +37,9 @@ pub(crate) mod logging;
 
 /// Installs the `[logging]` configuration. Re-exported because `main.rs` is
 /// what calls it — see [`dispatch`].
-pub use logging::init_logging;
 /// The `--log-level` flag and the per-invocation decision it feeds. Re-exported
 /// for `main.rs`, which is where the subscriber is installed.
-pub use logging::{LogLevel, LoggingPlan, init_command_logging, plan_logging};
+pub use logging::{LogLevel, LoggingPlan, plan_logging};
 pub mod nonce;
 pub mod order;
 pub mod profile;
@@ -62,8 +61,9 @@ pub use upstream::UpstreamCommand;
 pub use webadmin::AdminCommand;
 
 use crate::cli::filter::FilterCommand;
-pub use crate::cli::style::{ColorChoice, Palette};
+pub use crate::cli::style::ColorChoice;
 use crate::config::Config;
+use crate::palette::Palette;
 use crate::sqlite::db::Database;
 
 #[derive(Parser)]
@@ -367,7 +367,7 @@ pub async fn dispatch(
     config: &Arc<Config>,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
-    let palette = Palette::resolve(
+    let palette = crate::cli::style::resolve(
         color,
         std::io::stdout().is_terminal(),
         std::env::var("NO_COLOR").ok().as_deref(),

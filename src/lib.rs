@@ -273,6 +273,7 @@ pub mod logfields;
 pub mod metrics;
 pub mod middlewares;
 pub mod notify;
+pub mod palette;
 pub mod pemfile;
 pub mod profile;
 pub mod proxy;

@@ -110,7 +110,7 @@ async fn initialise(config: &Config) {
             .expect("the database must open"),
     );
     acme_proxy::cli::init(
-        acme_proxy::cli::Palette::plain(),
+        acme_proxy::palette::Palette::plain(),
         &Arc::new(config.clone()),
         database,
     )

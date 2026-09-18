@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use acme_proxy::audit::ClientContext;
-use acme_proxy::cli::Palette;
 use acme_proxy::cli::account::{AccountCommand, run_account_command};
 use acme_proxy::cli::eab::{EabCommand, run_eab_command};
 use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
@@ -9,6 +8,7 @@ use acme_proxy::cli::order::{OrderCommand, run_order_command};
 use acme_proxy::cli::window::DEFAULT_LIMIT;
 use acme_proxy::config::Config;
 use acme_proxy::identifier::Identifier;
+use acme_proxy::palette::Palette;
 use acme_proxy::sqlite::account::Account;
 use acme_proxy::sqlite::db::Database;
 use acme_proxy::sqlite::order::Order;

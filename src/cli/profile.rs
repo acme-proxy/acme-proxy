@@ -20,8 +20,8 @@ use clap::Subcommand;
 use crate::admin::{self, ProfileSummary};
 use crate::cli::CliError;
 use crate::cli::render;
-use crate::cli::style::Palette;
 use crate::config::Config;
+use crate::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum ProfileCommand {

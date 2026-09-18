@@ -7,8 +7,8 @@ use crate::admin::{self, EabDeleteOutcome};
 use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
-use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use crate::palette::Palette;
 use crate::sqlite::db::Database;
 use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab};
 

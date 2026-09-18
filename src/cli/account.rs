@@ -7,9 +7,9 @@ use crate::admin::{self, DeleteOutcome};
 use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
-use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::config::Config;
+use crate::palette::Palette;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
 

@@ -25,11 +25,9 @@ use std::sync::Arc;
 use clap::Parser;
 
 use acme_proxy::cli::schema::{SchemaPlan, plan_schema};
-use acme_proxy::cli::{
-    Cli, Command, LoggingPlan, Palette, dispatch, generate, init_command_logging, init_logging,
-    plan_logging,
-};
+use acme_proxy::cli::{Cli, Command, LogLevel, LoggingPlan, dispatch, generate, plan_logging};
 use acme_proxy::config::Config;
+use acme_proxy::server::logging::{init_command_logging, init_logging};
 use acme_proxy::sqlite::db::Database;
 
 #[tokio::main]
@@ -40,7 +38,7 @@ async fn main() -> ExitCode {
     // resolves its own against stdout. The two streams are redirected
     // independently, so one answer for both would colour into a log file
     // whenever the other half happened to be a terminal.
-    let palette = Palette::resolve(
+    let palette = acme_proxy::cli::style::resolve(
         cli.color,
         std::io::stderr().is_terminal(),
         std::env::var("NO_COLOR").ok().as_deref(),
@@ -77,8 +75,10 @@ async fn main() -> ExitCode {
     );
     let logging = match installed {
         LoggingPlan::Silent => Ok(()),
-        LoggingPlan::Server => init_logging(&config.logging, cli.log_level),
-        LoggingPlan::Command => init_command_logging(cli.log_level),
+        LoggingPlan::Server => {
+            init_logging(&config.logging, cli.log_level.map(LogLevel::directive))
+        }
+        LoggingPlan::Command => init_command_logging(cli.log_level.map(LogLevel::directive)),
     };
     logging.unwrap_or_else(|error| {
         eprintln!("{}", palette.bad(&error));

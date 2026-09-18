@@ -7,8 +7,8 @@ use crate::admin;
 use crate::audit::ALL_AUDIT_EVENTS;
 use crate::cli::CliError;
 use crate::cli::render;
-use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use crate::palette::Palette;
 use crate::sqlite::audit::AuditQuery;
 use crate::sqlite::db::Database;
 

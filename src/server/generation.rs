@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use tracing::{error, info, warn};
 
-use crate::cli::logging;
+use super::logging;
 use crate::config::Config;
 use crate::tls;
 

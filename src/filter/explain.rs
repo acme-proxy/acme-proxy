@@ -37,8 +37,8 @@ use serde_json::{Value, json};
 
 use super::policy::{Evaluation, FilterPolicy, Outcome, Stage, Verdict};
 use super::{ConnectionContext, EabIdentity, IdentifierContext, IdentifierStage};
-use crate::cli::style::Palette;
 use crate::identifier::Identifier;
+use crate::palette::Palette;
 
 /// Which check kinds reach outside this process when they run.
 ///

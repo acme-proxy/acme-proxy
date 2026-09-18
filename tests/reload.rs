@@ -374,7 +374,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
 ///
 /// Every one of these keys used to be refused — the tracing subscriber being
 /// installed once per process — so raising the log level mid-incident cost a
-/// restart and every live connection with it. `cli::logging` now installs the
+/// restart and every live connection with it. `server::logging` now installs the
 /// whole stack behind a `reload::Layer` handle.
 ///
 /// `LevelFilter::current()` is the assertion that matters: it is the static
@@ -385,7 +385,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
 ///
 /// This test installs the subscriber itself, which is legal only because
 /// nextest gives it its own process — the same licence the two installers in
-/// `src/cli/logging.rs` take. Without it there would be no handle, and
+/// `src/server/logging.rs` take. Without it there would be no handle, and
 /// `logging_reloaded` would honestly report `false`.
 #[tokio::test]
 async fn a_logging_change_reloads_and_moves_the_level() {
@@ -408,7 +408,8 @@ async fn a_logging_change_reloads_and_moves_the_level() {
         "#,
     );
     let config = load_from(&dir);
-    acme_proxy::cli::init_logging(&config.logging, None).expect("the subscriber must install");
+    acme_proxy::server::logging::init_logging(&config.logging, None)
+        .expect("the subscriber must install");
     assert_eq!(LevelFilter::current(), LevelFilter::INFO);
 
     let server = boot(config, false).await;

@@ -9,13 +9,13 @@ use std::net::IpAddr;
 
 use clap::Subcommand;
 
-use super::style::Palette;
 use super::{CliError, resolve_profile};
 use crate::config::Config;
 use crate::filter::explain::{
     Subject, explain, explanation_json, policy_json, render_explanation, render_policy,
 };
 use crate::identifier::Identifier;
+use crate::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum FilterCommand {

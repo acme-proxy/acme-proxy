@@ -24,7 +24,7 @@
 //! thing said to be unmovable was made movable rather than argued with:
 //!
 //! - `[logging]`, the tracing subscriber being installed once per process.
-//!   `cli::logging` now installs the whole stack behind a
+//!   `server::logging` now installs the whole stack behind a
 //!   `tracing_subscriber::reload::Layer`, so all six keys swap with everything
 //!   else. The publishing run does it **first**, since an operator who raised
 //!   the level did it to see what happens next — starting with the reload's own
@@ -108,7 +108,7 @@ pub struct Applied<'a> {
 /// - **Every bind address**, once [`crate::listener`] owned the accept loop and
 ///   a socket stopped being something `axum::serve` consumes.
 /// - **`[logging]`**, once the whole layer stack went behind a `reload::Layer`
-///   handle (`cli::logging`).
+///   handle (`server::logging`).
 /// - **All seven `[jobs]` keys**, once the runner stopped snapshotting its
 ///   pacing at spawn ([`crate::jobs::runner`]).
 /// - **`profiles`, `profiles.*.signer`, `dns.resolver` and `proxy`** — the last
@@ -584,7 +584,7 @@ mod frozen_tests {
     }
 
     /// Every `[logging]` key reloads, where the whole section used to be
-    /// refused: `cli::logging` installs the stack behind a `reload::Layer`
+    /// refused: `server::logging` installs the stack behind a `reload::Layer`
     /// handle, so a swap replaces all six at once. Driven through the two that
     /// change the stack's *shape* as well as the filter, since the filter alone
     /// reloading was the cheap half of the problem.

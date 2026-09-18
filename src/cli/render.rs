@@ -21,10 +21,10 @@
 
 use base64::prelude::*;
 
-use super::style::Palette;
 use super::window::Window;
 use crate::admin::ProfileSummary;
 use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
+use crate::palette::Palette;
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -838,7 +838,6 @@ mod tests {
     use super::*;
     use crate::admin::ops::load_order_detail;
     use crate::audit::ClientContext;
-    use crate::cli::style::ColorChoice;
     use crate::identifier::Identifier;
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
@@ -853,7 +852,7 @@ mod tests {
     /// can see an escape at all, since a test binary's stdout is not a
     /// terminal.
     fn colour() -> Palette {
-        Palette::resolve(ColorChoice::Always, false, None)
+        Palette::new(true)
     }
 
     /// What a coloured rendering must reduce to: strip every SGR sequence and

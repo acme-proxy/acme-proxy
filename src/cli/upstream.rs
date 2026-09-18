@@ -23,10 +23,10 @@ use clap::Subcommand;
 
 use crate::admin;
 use crate::cli::render;
-use crate::cli::style::Palette;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::cli::{CliError, resolve_profile};
 use crate::config::Config;
+use crate::palette::Palette;
 use crate::signer::relay;
 use crate::sqlite::db::Database;
 use crate::sqlite::status::UpstreamOrderStatus;
