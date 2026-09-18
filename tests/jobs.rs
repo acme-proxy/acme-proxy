@@ -211,7 +211,11 @@ async fn a_job_stranded_by_a_dead_process_is_reclaimed_and_finished() {
     let handler = Counting::new("e2e", Duration::ZERO);
     let _stop = start(&queue, handler.clone(), &config);
 
-    until(|| handler.runs() == 1).await;
+    // Waited on the *row*, not on `handler.runs()`: the runner settles after
+    // the handler returns, so the counter reaching one leaves a window in which
+    // the row is still `running`. Wide enough to fail under an instrumented
+    // build, which is how it was found.
+    until_settled("e2e", "stranded", &database).await;
     let settled = Job::find_by_id(claimed.id, &database)
         .await
         .unwrap()
