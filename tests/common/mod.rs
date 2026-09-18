@@ -17,6 +17,7 @@ use acme_proxy::audit::Auditor;
 pub use acme_proxy::audit::ClientContext;
 use acme_proxy::server::{Profile, ProfileParts, build_app};
 
+use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
@@ -528,7 +529,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
             },
         )));
     }
-    let jobs = spawn_validation_runner(&database, &built);
+    let jobs = spawn_worker_runner(&database, &built, test_auditor(database.clone()));
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -540,14 +541,25 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
     (router, database)
 }
 
-/// The queue the app enqueues into, with a runner draining it.
+/// The queue the app enqueues into, with a runner draining it — the worker of
+/// a real deployment.
 ///
-/// Challenge validation is queued work: `POST /chall/{id}` claims the challenge
-/// and returns it `processing`, and the outbound check happens in the job
-/// runner. So a suite that triggers a challenge needs something to perform it,
-/// and this is the same `ChallengeValidateJob` and the same `spawn_runner`
-/// production uses — rather than reaching into the queue by hand, so the suites
-/// go on exercising the real claim, lease and settle path.
+/// Challenge validation and issuance are both queued work: `POST /chall/{id}`
+/// claims the challenge and returns it `processing`, `finalize` claims the order
+/// and returns it `processing`, and the outbound check and the signing happen in
+/// the job runner. So a suite that triggers a challenge or finalizes an order
+/// needs something to perform it, and this is the same `ChallengeValidateJob`,
+/// `SignerIssueJob` and `spawn_runner` production uses — rather than reaching
+/// into the queue by hand, so the suites go on exercising the real claim, lease
+/// and settle path.
+///
+/// Paced for a test rather than a deployment: a 10 ms poll and no backoff, so
+/// a backend failing `Internal` spends its attempt budget in milliseconds and
+/// the order reaches `invalid` while the test is still polling for it.
+///
+/// `audit` is what the worker writes its rows through — the app's own, so an
+/// issuance recorded here is counted into the same registry the app renders,
+/// as the `worker` role's is in production.
 ///
 /// The shutdown sender is deliberately leaked rather than dropped: the loop
 /// treats a closed shutdown channel as a signal (`shutdown.changed()` on a
@@ -555,30 +567,62 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 /// fall out of scope would stop the runner before it claimed anything. The task
 /// is then left to the test's own runtime, which ends with the test — there is
 /// nothing to drain gracefully, the database being in memory and going with it.
-fn spawn_validation_runner(database: &Arc<Database>, profiles: &[Arc<Profile>]) -> JobQueue {
-    let queue = JobQueue::new(database.clone(), &JobsConfig::default());
+fn spawn_worker_runner(
+    database: &Arc<Database>,
+    profiles: &[Arc<Profile>],
+    audit: Arc<Auditor>,
+) -> JobQueue {
+    let config = worker_jobs_config();
+    let queue = JobQueue::new(database.clone(), &config);
     let mut registry = JobRegistry::new();
     registry
         .register(Arc::new(ChallengeValidateJob::new(
             database.clone(),
-            Arc::new(Auditor::offline(database.clone())),
+            audit.clone(),
             profiles
                 .iter()
                 .map(|profile| (profile.name.clone(), profile.clone()))
                 .collect(),
         )))
         .expect("the validation handler registers");
+    // The notifier each profile announces through, as the process-wide map a
+    // worker reads them from. The sender is leaked for the shutdown sender's
+    // reason: the map never changes here, and a dropped sender is harmless to
+    // a `watch` receiver but pointless to keep.
+    let (notifiers_tx, notifiers) = acme_proxy::notify::notifiers_channel(
+        profiles
+            .iter()
+            .map(|profile| (profile.name.clone(), profile.notify.clone()))
+            .collect(),
+    );
+    std::mem::forget(notifiers_tx);
+    registry
+        .register(Arc::new(SignerIssueJob::new(
+            database.clone(),
+            audit,
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.signer.clone()))
+                .collect(),
+            notifiers,
+        )))
+        .expect("the issuance handler registers");
 
     let (shutdown, rx) = tokio::sync::watch::channel(false);
     std::mem::forget(shutdown);
 
-    acme_proxy::jobs::spawn_runner(
-        queue.clone(),
-        Arc::new(registry),
-        &JobsConfig::default(),
-        rx,
-    );
+    acme_proxy::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, rx);
     queue
+}
+
+/// The `[jobs]` pacing [`spawn_worker_runner`] drains at.
+fn worker_jobs_config() -> JobsConfig {
+    JobsConfig {
+        poll_interval_ms: 10,
+        retry_base_seconds: 0,
+        retry_max_seconds: 0,
+        ..JobsConfig::default()
+    }
 }
 
 /// The one place the app is actually constructed: every other `test_app_*`
@@ -598,7 +642,11 @@ pub async fn test_app_full(
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let profile = one_profile(&config, signer, filter, challenges, notify).await;
-    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
+    let jobs = spawn_worker_runner(
+        &database,
+        std::slice::from_ref(&profile),
+        test_auditor(database.clone()),
+    );
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -624,7 +672,11 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
         no_notifications().await,
     )
     .await;
-    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
+    let jobs = spawn_worker_runner(
+        &database,
+        std::slice::from_ref(&profile),
+        test_auditor(database.clone()),
+    );
     build_app(
         database.clone(),
         Arc::new(config),
@@ -674,7 +726,11 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
         no_notifications().await,
     )
     .await;
-    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
+    let jobs = spawn_worker_runner(
+        &database,
+        std::slice::from_ref(&profile),
+        test_auditor(database.clone()),
+    );
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -721,7 +777,7 @@ pub async fn test_app_with_metrics(
         )
         .with_metrics(metrics.clone()),
     );
-    let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
+    let jobs = spawn_worker_runner(&database, std::slice::from_ref(&profile), auditor.clone());
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -1659,6 +1715,93 @@ impl SignerBackend for GatedSigner {
 
     fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
         self.ca.crl_refresher()
+    }
+}
+
+/// A real [`LocalCa`] whose read side parks inside **`crl_der`** until the test
+/// lets it go — so a `GET /crl` holds a genuine request open.
+///
+/// What `tests/admission.rs` stands on. A request that waits on its backend is
+/// the only way to fill an admission slot from outside, and after challenge
+/// validation and then issuance moved into the job queue, the read side is
+/// what a request still asks inline: a `custom` script's `crl` and
+/// `renewal_info` hooks run in the request. Every call parks until released, so
+/// a test holding one request and then releasing one permit frees exactly it.
+pub struct GatedCrlSigner {
+    ca: Arc<LocalCa>,
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: Arc<tokio::sync::Semaphore>,
+}
+
+impl GatedCrlSigner {
+    pub async fn new() -> Self {
+        Self {
+            ca: Arc::new(memory_ca().await),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            entered: Arc::new(tokio::sync::Semaphore::new(0)),
+        }
+    }
+
+    /// `(gate, entered)`: permits added to `gate` release a parked read, and
+    /// `entered` gains one as each read arrives.
+    #[must_use]
+    pub fn handles(&self) -> (Arc<tokio::sync::Semaphore>, Arc<tokio::sync::Semaphore>) {
+        (Arc::clone(&self.gate), Arc::clone(&self.entered))
+    }
+}
+
+#[async_trait]
+impl SignerBackend for GatedCrlSigner {
+    async fn issue(
+        &self,
+        order_id: &str,
+        csr_der: &[u8],
+        identifiers: &[Identifier],
+        validity: RequestedValidity,
+    ) -> Result<IssueOutcome, SignerError> {
+        self.ca
+            .issue(order_id, csr_der, identifiers, validity)
+            .await
+    }
+
+    async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
+        self.ca.revoke(cert_der, reason).await
+    }
+
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
+        self.ca.crl_refresher()
+    }
+
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        Arc::new(GatedCrlInfo {
+            ca: self.ca.info(),
+            gate: self.gate.clone(),
+            entered: self.entered.clone(),
+        })
+    }
+}
+
+/// [`GatedCrlSigner`]'s read side.
+struct GatedCrlInfo {
+    ca: Arc<dyn SignerInfo>,
+    gate: Arc<tokio::sync::Semaphore>,
+    entered: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl SignerInfo for GatedCrlInfo {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
+        self.entered.add_permits(1);
+        let _permit = self
+            .gate
+            .acquire()
+            .await
+            .expect("the gate is never closed while a test holds it");
+        self.ca.crl_der().await
+    }
+
+    fn revocation_route(&self) -> RevocationRoute {
+        self.ca.revocation_route()
     }
 }
 
@@ -2831,7 +2974,53 @@ pub mod acme {
         (account_url, order_url, order)
     }
 
+    /// POST-as-GETs `order_url` until it leaves `processing`, returning the
+    /// order — what a client does after finalizing, RFC 8555 §7.4.
+    pub async fn await_order(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        order_url: &str,
+    ) -> Value {
+        for _ in 0..600 {
+            let order = post_as_get(app, signer, account_url, order_url).await;
+            if order["status"] != "processing" {
+                return order;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("`{order_url}` never left `processing`");
+    }
+
+    /// Finalizes an order and waits for the issuance it queued, returning the
+    /// settled order — `valid` with a certificate URL, or `invalid` with the
+    /// reason as its `error`.
+    ///
+    /// Asserts the finalize request itself was accepted: a synchronous refusal
+    /// is [`finalize`]'s to test.
+    pub async fn finalize_and_settle(
+        app: &Router,
+        signer: &impl TestSigner,
+        account_url: &str,
+        order_url: &str,
+        names: &[&str],
+    ) -> Value {
+        let response = finalize(
+            app,
+            signer,
+            account_url,
+            &format!("{order_url}/finalize"),
+            names,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "finalize");
+        await_order(app, signer, account_url, order_url).await
+    }
+
     /// Finalizes an order with a CSR for `names`, returning the raw response.
+    ///
+    /// A `200` here answers `processing`: the certificate is issued by the
+    /// worker, and [`await_order`] is how a test waits for it.
     pub async fn finalize(
         app: &Router,
         signer: &impl TestSigner,
@@ -2859,7 +3048,7 @@ pub mod acme {
         let response = finalize(app, signer, &account_url, &finalize_url, names).await;
         assert_eq!(response.status(), StatusCode::OK, "finalize");
 
-        let order = post_as_get(app, signer, &account_url, &order_url).await;
+        let order = await_order(app, signer, &account_url, &order_url).await;
         let certificate_url = order["certificate"]
             .as_str()
             .expect("a valid order carries a certificate URL")

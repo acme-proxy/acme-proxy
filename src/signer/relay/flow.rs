@@ -929,18 +929,17 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     info!(event = "upstream_relay_succeeded", outcome = "success", order_id = %order_id, cert_serial = %serial);
 
     // The audit row for this issuance, written here and nowhere else:
-    // `post_finalize` answered `processing` without signing anything, so this is
-    // the moment a certificate came into existence. The client context is the
-    // one that request stored on the mapping row — the relay has no request of
+    // the `signer_issue` job answered `Processing` without signing anything, so
+    // this is the moment a certificate came into existence. The client context
+    // is the one the finalize request parked on the mapping row — the relay has no request of
     // its own, and a row saying "issued, from nowhere, by nobody" is the shape
     // this trail exists to avoid.
     //
-    // The synchronous signer backends (`local_ca`, `custom`) notify from
-    // `finalize`, which has a `Profile` in scope. This backend's completion
-    // happens here instead, long after that request returned — so it looks up
-    // the right profile's dispatcher by `Order.profile` rather than being
-    // handed one directly. `client_ip` is `None`: no request is in scope on
-    // this path at all.
+    // The backends that sign in the job (`local_ca`, `custom`) notify from
+    // `signer_issue`. This backend's completion happens here instead, long
+    // after that job settled — so it looks up the right profile's dispatcher by
+    // `Order.profile` rather than being handed one directly. `client_ip` is
+    // `None`: no request is in scope on this path at all.
     let (actor, client) = relay_actor_and_client(&order, &inner.database).await;
     let dispatcher = inner.notifiers.get(&order.profile);
     crate::acme::order::announce_issuance(

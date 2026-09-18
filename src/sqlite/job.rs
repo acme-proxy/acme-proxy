@@ -146,6 +146,15 @@ impl Job {
     /// which is what makes a retried order and a periodic sweep both expressible
     /// without a second table.
     pub async fn enqueue(row: NewJob<'_>, database: &Database) -> Result<bool, sqlx::Error> {
+        Self::enqueue_on(row, &database.pool).await
+    }
+
+    /// [`enqueue`](Self::enqueue) on a connection of the caller's — inside a
+    /// transaction, so the row lands with the write that owes it or not at all.
+    pub async fn enqueue_on<'e, E>(row: NewJob<'_>, executor: E) -> Result<bool, sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let now = now_secs();
         let queued = sqlx::query(
             "INSERT OR IGNORE INTO jobs \
@@ -162,7 +171,7 @@ impl Job {
         .bind(row.deadline)
         .bind(now)
         .bind(now)
-        .execute(&database.pool)
+        .execute(executor)
         .await?
         .rows_affected()
             == 1;

@@ -177,6 +177,23 @@ pub(crate) fn build_generation(
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
+    // Issuance. `finalize` claims the order and queues the signing, so the
+    // process answering ACME holds no backend. Registered unconditionally for
+    // `SignerRevokeJob`'s reason above, over this generation's backends — none
+    // at all in a process without the worker role, which never claims a row.
+    job_registry
+        .register(Arc::new(crate::acme::issue::SignerIssueJob::new(
+            database.clone(),
+            Arc::new(
+                crate::audit::Auditor::offline(database.clone())
+                    .with_metrics(assembly.metrics.clone()),
+            ),
+            parts.signers.by_profile(),
+            assembly.notifiers.clone(),
+        )))
+        .inspect_err(|error| {
+            error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
+        })?;
     // Challenge validation. `POST /chall/{id}` claims the challenge and queues
     // the outbound check, so the probe of a client-chosen host no longer holds
     // an admission permit for the length of `challenge.timeout_ms`. Registered

@@ -269,9 +269,21 @@ async fn the_order_window_and_the_leaf_window_are_configured_separately() {
     );
     let res = post(&app, finalize_url.strip_prefix(HOST).unwrap(), body).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let cert_url = body_json(res).await["certificate"]
+    // Issuance is queued: poll the order, under this base URL, until the
+    // worker has signed.
+    let mut order = Value::Null;
+    for _ in 0..600 {
+        let n = nonce(&app).await;
+        let body = signer.sign_kid_empty(&account_url, &order_url, &n);
+        order = body_json(post(&app, order_url.strip_prefix(HOST).unwrap(), body).await).await;
+        if order["status"] != "processing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let cert_url = order["certificate"]
         .as_str()
-        .unwrap()
+        .expect("the order settles valid")
         .to_string();
 
     let n = nonce(&app).await;

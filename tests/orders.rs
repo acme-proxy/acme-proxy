@@ -185,8 +185,10 @@ async fn full_lifecycle(signer: impl TestSigner) {
     let body = signer.sign_kid(&account_url, &finalize_url, &nonce, &payload);
     let res = post(&app, finalize_path, body).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
-    assert_eq!(order["status"], "valid");
+    // Issuance is queued work: finalize answers `processing` (RFC 8555 §7.4),
+    // and the certificate is there once the worker has signed it.
+    assert_eq!(body_json(res).await["status"], "processing");
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "valid").await;
     let cert_url = order["certificate"]
         .as_str()
         .expect("certificate URL")
@@ -605,29 +607,21 @@ async fn finalize_internal_signer_failure_marks_order_invalid() {
     let (app, signer, account_url, order_url) =
         setup_ready_order_with_signer(Arc::new(FailingSigner)).await;
 
-    // Finalize with a valid CSR: the signer fails internally → serverInternal.
+    // Finalize with a valid CSR: accepted and queued — the signer is reached by
+    // the worker, not by this request.
     let finalize_url = format!("{order_url}/finalize");
     let finalize_path = finalize_url.strip_prefix(common::HOST).unwrap();
     let nonce = fetch_nonce(&app).await;
     let payload = json!({ "csr": make_csr("example.com") });
     let body = signer.sign_kid(&account_url, &finalize_url, &nonce, &payload);
     let res = post(&app, finalize_path, body).await;
-    assert_problem(
-        res,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "urn:ietf:params:acme:error:serverInternal",
-    )
-    .await;
-
-    // The failure is recorded on the order: POST-as-GET now shows `invalid` and
-    // the same problem document under `error`.
-    let order_path = order_url.strip_prefix(common::HOST).unwrap();
-    let nonce = fetch_nonce(&app).await;
-    let body = signer.sign_kid_empty(&account_url, &order_url, &nonce);
-    let res = post(&app, order_path, body).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
-    assert_eq!(order["status"], "invalid");
+    assert_eq!(body_json(res).await["status"], "processing");
+
+    // The failure is retried, then recorded on the order once the attempts run
+    // out: POST-as-GET shows `invalid` and a `serverInternal` document under
+    // `error`.
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "invalid").await;
     assert_eq!(
         order["error"]["type"],
         "urn:ietf:params:acme:error:serverInternal"
@@ -653,13 +647,12 @@ async fn two_concurrent_finalizes_issue_exactly_one_certificate() {
     let finalize_url = format!("{order_url}/finalize");
     let finalize_path = finalize_url.strip_prefix(common::HOST).unwrap().to_string();
 
-    // Both nonces up front: request A parks inside the signer, so fetching B's
-    // afterwards would be fine, but taking them together keeps the race to the
-    // one thing under test.
+    // Both nonces up front, so the race is the one thing under test.
     let nonce_a = fetch_nonce(&app).await;
     let nonce_b = fetch_nonce(&app).await;
 
-    // A goes first and stalls inside `issue`, holding the claim.
+    // A goes first: it claims the order and queues its issuance, and the
+    // worker then stalls inside `issue` with the order still `processing`.
     let body_a = signer.sign_kid(
         &account_url,
         &finalize_url,
@@ -670,7 +663,8 @@ async fn two_concurrent_finalizes_issue_exactly_one_certificate() {
     let path_a = finalize_path.clone();
     let task_a = tokio::spawn(async move { post(&app_a, &path_a, body_a).await });
 
-    // Wait for A to be genuinely inside the signing call, not for a duration.
+    // Wait for A's issuance to be genuinely inside the signing call, not for a
+    // duration.
     let _ = entered.acquire().await.unwrap();
 
     // B arrives with its own CSR — a different key pair, the same identifiers,
@@ -689,25 +683,22 @@ async fn two_concurrent_finalizes_issue_exactly_one_certificate() {
     )
     .await;
 
-    // Only now let A finish, so the refusal above cannot have been a late loser.
+    // Only now let A's issuance finish, so the refusal above cannot have been
+    // a late loser.
     gate.add_permits(1);
     let res_a = task_a.await.unwrap();
     assert_eq!(res_a.status(), StatusCode::OK);
 
-    // The whole point: B never reached the CA.
+    // The order carries A's certificate, in the terminal state...
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "valid").await;
+    assert!(order["certificate"].as_str().is_some());
+
+    // ...and, the whole point, B never reached the CA.
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "a second certificate was signed"
     );
-
-    // And the order carries A's certificate, in the terminal state.
-    let order_path = order_url.strip_prefix(common::HOST).unwrap();
-    let nonce = fetch_nonce(&app).await;
-    let body = signer.sign_kid_empty(&account_url, &order_url, &nonce);
-    let res = post(&app, order_path, body).await;
-    let order = body_json(res).await;
-    assert_eq!(order["status"], "valid");
 }
 
 #[tokio::test]
@@ -967,12 +958,12 @@ async fn finalize_rejects_a_csr_that_is_not_base64url() {
     assert_eq!(order["status"], "ready");
 }
 
-/// An unparsable chain returned by the backend is a bug in this server — it
-/// just "issued" it. It must result in a 500, and leave the order in `ready`
-/// rather than permanently invalidating a certificate that the CA might
-/// have actually signed.
+/// An unparsable chain returned by the backend is a certificate this server
+/// could never revoke, and signing again would only produce another: the
+/// issuance fails for good, and the client reads `invalid` with a
+/// `serverInternal` document rather than polling for ever.
 #[tokio::test]
-async fn finalize_reports_an_unparsable_issued_chain_as_internal() {
+async fn an_unparsable_issued_chain_invalidates_the_order() {
     let (app, signer, account_url, order_url) =
         setup_ready_order_with_signer(Arc::new(GarbageChainSigner)).await;
 
@@ -985,18 +976,14 @@ async fn finalize_reports_an_unparsable_issued_chain_as_internal() {
     )
     .await;
 
-    assert_problem(
-        res,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "urn:ietf:params:acme:error:serverInternal",
-    )
-    .await;
+    assert_eq!(res.status(), StatusCode::OK);
 
-    let order = post_as_get(&app, &signer, &account_url, &order_url).await;
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "invalid").await;
     assert_eq!(
-        order["status"], "ready",
-        "une chaîne illisible ne doit pas invalider la commande"
+        order["error"]["type"],
+        "urn:ietf:params:acme:error:serverInternal"
     );
+    assert!(order.get("certificate").is_none());
 }
 
 /// RFC 8555 §7.4: "The CSR MUST indicate the exact same set of requested
@@ -1071,7 +1058,8 @@ async fn a_mismatched_csr_never_reaches_the_signer_backend() {
         &make_csr("example.com"),
     )
     .await;
-    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(res.status(), StatusCode::OK);
+    await_order_status(&app, &signer, &account_url, &order_url, "invalid").await;
     assert!(backend.was_called());
 }
 
@@ -1195,7 +1183,8 @@ async fn a_bad_csr_leaves_the_order_finalizable() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    assert_eq!(body_json(res).await["status"], "processing");
+    await_order_status(&app, &signer, &account_url, &order_url, "valid").await;
 }
 
 /// Fetching the certificate before finalizing: there is nothing to serve.
@@ -1288,10 +1277,11 @@ async fn finalize_with_a_delegating_signer_leaves_the_order_processing() {
     assert_eq!(body_json(res).await["status"], "processing");
 }
 
-/// The counterpart: a synchronous backend must be completely unaffected — no
-/// `Retry-After`, and the certificate available immediately.
+/// The counterpart: a local CA answers the same way. Signing needs the key,
+/// which only the worker holds, so every backend's finalize is `processing` +
+/// `Retry-After` — and the certificate follows once the worker has signed it.
 #[tokio::test]
-async fn finalize_with_a_local_signer_still_completes_inline() {
+async fn finalize_with_a_local_signer_is_queued_too() {
     let app = test_app().await;
     let signer = EcSigner::new();
     let (account_url, order_url) = ready_order(&app, &signer).await;
@@ -1303,11 +1293,19 @@ async fn finalize_with_a_local_signer_still_completes_inline() {
     let res = post(&app, finalize_url.strip_prefix(common::HOST).unwrap(), body).await;
 
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(
-        res.headers().get(axum::http::header::RETRY_AFTER).is_none(),
-        "a finished order has nothing to wait for"
+    assert_eq!(
+        res.headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("5"),
+        "a processing order must pace the client's polling"
     );
-    assert_eq!(body_json(res).await["status"], "valid");
+    let order = body_json(res).await;
+    assert_eq!(order["status"], "processing");
+    assert!(order.get("certificate").is_none());
+
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "valid").await;
+    assert!(order["certificate"].as_str().is_some());
 }
 
 /// Two authorizations of one order validated concurrently must both land, and
@@ -1575,10 +1573,11 @@ async fn the_certificate_of_another_account_is_unauthorized() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let certificate_url = body_json(res).await["certificate"]
-        .as_str()
-        .expect("a finalized order carries its certificate URL")
-        .to_string();
+    let certificate_url =
+        await_order_status(&app, &owner, &owner_url, &order_url, "valid").await["certificate"]
+            .as_str()
+            .expect("a finalized order carries its certificate URL")
+            .to_string();
     let certificate_path = certificate_url.strip_prefix(common::HOST).unwrap();
 
     // The owner can read it, so the refusal below is about *who is asking*.

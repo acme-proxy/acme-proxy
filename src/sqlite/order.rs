@@ -1112,8 +1112,8 @@ impl Order {
     /// `Ok(false)` that somebody else already holds it. Keeps `self` in sync
     /// (like [`Order::mark_ready`]) only on the winning branch.
     ///
-    /// **The precondition is the whole point.** `post_finalize` reads the order,
-    /// checks it is `ready`, signs, and writes — three steps with no lock
+    /// **The precondition is the whole point.** `finalize` used to read the
+    /// order, check it was `ready`, sign, and write — three steps with no lock
     /// between them, so N concurrent finalize requests on one order all passed
     /// the check, all reached `SignerBackend::issue`, and all got a certificate
     /// back. Only the last write survived, and the others became valid
@@ -1126,18 +1126,31 @@ impl Order {
     ///
     /// The `relay` backend was never exposed, because `upstream_orders.order_id`
     /// is a primary key and the second insert conflicts — this gives `local_ca`
-    /// and `custom`, which answer inline, the same guard.
+    /// and `custom` the same guard. Now that issuance is queued, the claim is
+    /// also what keys the `signer_issue` job: both land in one transaction.
     ///
     /// The `processing` status needed no migration — the `orders.status`
     /// `CHECK` has always allowed it; until the `relay` backend existed
     /// there was simply no asynchronous issuance to use it.
     pub async fn claim_for_finalize(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
+        self.claim_for_finalize_on(&database.pool).await
+    }
+
+    /// [`claim_for_finalize`](Self::claim_for_finalize) on a connection of the
+    /// caller's — `finalize` takes the claim and queues the issuance that
+    /// settles it in **one** transaction, so an order is never `processing`
+    /// with nothing coming for it. `self` is updated as soon as the statement
+    /// succeeds; a caller whose transaction then fails discards it.
+    pub async fn claim_for_finalize_on<'e, E>(&mut self, executor: E) -> Result<bool, sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         debug!(event = "db_order_mark_processing_started", outcome = "progress", order_id = ?self.id);
         let claimed = sqlx::query(
             "UPDATE orders SET status = 'processing' WHERE id = ? AND status = 'ready';",
         )
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(executor)
         .await?
         .rows_affected()
             == 1;
@@ -1150,35 +1163,6 @@ impl Order {
         self.status = OrderStatus::Processing;
         info!(event = "db_order_marked_processing", outcome = "success", order_id = ?self.id);
         Ok(true)
-    }
-
-    /// Gives the claim back, moving `processing` to `ready` so the client can
-    /// try again — the counterpart to [`Order::claim_for_finalize`] for the
-    /// refusals RFC 8555 §7.4 says must leave the order finalizable (a rejected
-    /// CSR) and for the two arms where issuance succeeded but this server could
-    /// not read what it had just been handed.
-    ///
-    /// Guarded on `processing` for a reason of its own: a §7.5.2 deactivation
-    /// racing this claim demotes the order to `pending`
-    /// ([`Order::mark_pending`], unguarded, since it is the authoritative
-    /// answer to an authorization that stopped being valid). An unguarded
-    /// release would push it back to `ready` and hand the client a finalizable
-    /// order whose authorizations no longer support it.
-    pub async fn release_finalize_claim(&mut self, database: &Database) -> Result<(), sqlx::Error> {
-        let released = sqlx::query(
-            "UPDATE orders SET status = 'ready' WHERE id = ? AND status = 'processing';",
-        )
-        .bind(self.id)
-        .execute(&database.pool)
-        .await?
-        .rows_affected()
-            == 1;
-
-        if released {
-            self.status = OrderStatus::Ready;
-        }
-        debug!(event = "db_order_finalize_claim_released", outcome = "success", order_id = ?self.id, released = released);
-        Ok(())
     }
 
     /// The RFC 8555 order object. URLs are derived from `base_url`; datetimes are
@@ -1561,49 +1545,6 @@ mod tests {
             );
             assert_eq!(order.status, before);
         }
-    }
-
-    /// The release is the counterpart RFC 8555 §7.4 needs for a rejected CSR,
-    /// and it is guarded so a §7.5.2 deactivation racing it wins.
-    #[tokio::test]
-    async fn releasing_a_claim_restores_ready_but_never_overrides_a_demotion() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let acct = account_id(&db).await;
-
-        let mut order = Order::create(
-            "default",
-            acct,
-            vec![Identifier::dns("example.com")],
-            now_secs() + 3600,
-            None,
-            None,
-            &db,
-        )
-        .await
-        .unwrap();
-        order.mark_ready(&db).await.unwrap();
-        assert!(order.claim_for_finalize(&db).await.unwrap());
-
-        order.release_finalize_claim(&db).await.unwrap();
-        assert_eq!(order.status, OrderStatus::Ready);
-        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(reloaded.status, OrderStatus::Ready);
-
-        // Now the race: the claim is held, a deactivation demotes the order,
-        // and the release must not hand the client back a finalizable order
-        // whose authorizations no longer support it.
-        assert!(order.claim_for_finalize(&db).await.unwrap());
-        order.mark_pending(&db).await.unwrap();
-        order.release_finalize_claim(&db).await.unwrap();
-        assert_eq!(order.status, OrderStatus::Pending);
-        let reloaded = Order::find_by_id(order.id.to_string().as_str(), &db)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(reloaded.status, OrderStatus::Pending);
     }
 
     async fn finalized_order(db: Arc<Database>, serial: &str) -> Order {

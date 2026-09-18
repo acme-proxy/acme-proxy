@@ -79,11 +79,13 @@ pub use relay::http01::TokenStore as Http01TokenStore;
 
 /// What [`SignerBackend::issue`] produced: a certificate, or a promise of one.
 ///
-/// A backend that signs locally answers synchronously with [`Issued`]. A
-/// backend that delegates over the network answers [`Processing`] and finishes
-/// the work in the background, because holding the finalize request open for
-/// an upstream CA's own validation cycle could take minutes — RFC 8555 §7.4
-/// has the `processing` order status for exactly this, and the client polls.
+/// A backend that signs locally answers with [`Issued`]. A backend that
+/// delegates over the network answers [`Processing`] and finishes the work in
+/// the background, because holding the `signer_issue` job — and the worker slot
+/// it occupies — for an upstream CA's own validation cycle could take minutes.
+/// Either way the client already holds a `processing` order (RFC 8555 §7.4)
+/// from `finalize`, which queues the issuance rather than waiting for it, and
+/// polls.
 ///
 /// [`Issued`]: IssueOutcome::Issued
 /// [`Processing`]: IssueOutcome::Processing
@@ -93,7 +95,7 @@ pub enum IssueOutcome {
     Issued(String),
     /// The backend accepted the request and will update the `Order` itself
     /// (via `Order::finalize`/`Order::mark_invalid`) once it resolves. The
-    /// handler moves the order to `processing` and returns it as-is.
+    /// `signer_issue` job leaves the order `processing` for it.
     Processing,
 }
 
@@ -377,10 +379,10 @@ pub fn from_config(
             parts.database.clone(),
         )?)),
         // The one backend that reads the metrics registry, because it is the
-        // one that finishes an issuance from a background task: `post_finalize`
-        // answered `processing` and returned, so no request's `Auditor` is in
-        // scope when the certificate actually arrives, and the backend builds
-        // an offline one counting into this registry.
+        // one that finishes an issuance from a task of its own: the
+        // `signer_issue` job answered `Processing` and moved on, so no
+        // `Auditor` of its is in scope when the certificate actually arrives,
+        // and the backend builds an offline one counting into this registry.
         "relay" => Ok(Arc::new(relay::RelaySigner::from_config(
             &cfg.relay, parts,
         )?)),

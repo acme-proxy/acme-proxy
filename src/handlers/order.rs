@@ -131,6 +131,7 @@ pub async fn post_finalize(
         database,
         profile,
         audit,
+        jobs,
         ..
     } = state;
     let base = &profile.base_url;
@@ -143,7 +144,14 @@ pub async fn post_finalize(
     let account = signer_account(account, &profile.name, &pubkey, &database).await?;
     let order = load_owned_order(&id, &account, &database).await?;
     let order = orders
-        .finalize(&account, order, &payload.csr, client_ip, &request_context)
+        .finalize(
+            &account,
+            order,
+            &payload.csr,
+            client_ip,
+            &request_context,
+            &jobs,
+        )
         .await?;
     let authz_ids = order_authz_ids(order.id, &database).await?;
     Ok(order_response(&order, base, &authz_ids))

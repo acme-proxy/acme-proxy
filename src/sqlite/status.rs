@@ -94,9 +94,10 @@ macro_rules! statuses {
 statuses! {
     /// An order's state (RFC 8555 §7.1.6).
     ///
-    /// `processing` is only ever reached by a signer backend that defers
-    /// issuance (`relay`); `local_ca` answers inline and goes straight to
-    /// `valid`. There is deliberately no `revoked`: RFC 8555 defines none, and
+    /// `processing` is every order's state between `finalize` and its
+    /// certificate: the order is claimed and its issuance queued, the worker
+    /// signs, and a delegating backend (`relay`) keeps it `processing` until its
+    /// upstream answers. There is deliberately no `revoked`: RFC 8555 defines none, and
     /// revocation is recorded on its own columns
     /// (see [`Order::revoke`](crate::sqlite::order::Order::revoke)).
     OrderStatus("order status") {

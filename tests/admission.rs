@@ -8,17 +8,17 @@
 //! hang, `/health` answers while the ACME endpoints are saturated, and a slot is
 //! always given back.
 //!
-//! Every test drives a real `POST /order/{id}/finalize` against a signer that
-//! parks inside `issue`, because issuance is what this server still does
-//! *inside* a request — so a gated backend holds a genuine ACME request open
-//! rather than simulating one.
+//! Every test holds a real `GET /crl` open against a read side that parks
+//! inside `crl_der`, because that is what this server still does *inside* a
+//! request: a `custom` signer's `crl` and `renewal_info` script hooks, the one
+//! pair `check_request_timeout` still refuses a short deadline for. So a gated
+//! read side holds a genuine ACME request open rather than simulating one.
 //!
-//! It used to be a blocking `POST /chall/{id}`: challenge validation was the
-//! other inline hook, and the better one to hold open, since the address it
-//! reaches is the client's. That is exactly why it moved into the job queue —
-//! a probe of a client-chosen host no longer holds an admission permit at all —
-//! and with it this suite lost that subject. Finalize is what is left, and it
-//! is the hook `check_request_timeout` still refuses a short deadline for.
+//! It used to be a blocking `POST /chall/{id}`, then a blocking finalize: each
+//! was an inline hook until it moved into the job queue — a probe of a
+//! client-chosen host, then the signing itself, which now happens only in the
+//! process holding the key. Neither holds an admission permit any more, and
+//! with each the suite lost a subject.
 
 use std::sync::Arc;
 
@@ -26,14 +26,13 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
 use acme_proxy::filter::FilterPolicy;
 use common::{
-    EcSigner, GatedSigner, TestSigner, acme, body_json, challenges_with, default_challenges,
-    fetch_nonce, make_csr, no_notifications, p, test_app_full, test_app_with_challenges,
+    GatedCrlSigner, body_json, challenges_with, default_challenges, no_notifications, p,
+    test_app_full, test_app_with_challenges,
 };
 
 use acme_proxy::config::Config;
@@ -72,7 +71,7 @@ fn admission_config(max_concurrent: usize, wait_ms: u64, timeout_ms: u64) -> Con
 /// those knobs down, so this goes through `test_app_full` directly.
 async fn gated_app(
     config: Config,
-    backend: GatedSigner,
+    backend: GatedCrlSigner,
 ) -> (Router, std::sync::Arc<acme_proxy::sqlite::db::Database>) {
     test_app_full(
         config,
@@ -84,43 +83,22 @@ async fn gated_app(
     .await
 }
 
-/// Registers an account, opens an order and proves it, returning the path and
-/// signed body of the finalize request that will block once sent.
-///
-/// The JWS is built here rather than in the task that sends it: `EcSigner` is
-/// not `Clone`, and signing needs a nonce, which needs a request — which would
-/// itself need a slot.
-async fn ready_finalize(app: &Router, signer: &EcSigner) -> (String, String) {
-    let (account_url, order_url, _) = acme::ready_order(app, signer, &["example.com"]).await;
-    let finalize_url = format!("{order_url}/finalize");
-    let nonce = fetch_nonce(app).await;
-    let body = signer.sign_kid(
-        &account_url,
-        &finalize_url,
-        &nonce,
-        &json!({ "csr": make_csr("example.com") }),
-    );
-    (
-        finalize_url.strip_prefix(common::HOST).unwrap().to_string(),
-        body,
-    )
+/// Sends a `GET /crl` that parks inside the read side, holding its slot.
+fn hold_a_slot(app: &Router) -> tokio::task::JoinHandle<Response> {
+    let app = app.clone();
+    tokio::spawn(async move { get(&app, &p("/crl")).await })
 }
 
 /// Past the limit, a request is refused with a problem document — not parked.
 #[tokio::test]
 async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
-    let backend = GatedSigner::new().await;
-    let (_calls, gate, entered) = backend.handles();
+    let backend = GatedCrlSigner::new().await;
+    let (gate, entered) = backend.handles();
     // One slot, and no willingness to wait for it, so this is deterministic.
     let (app, _db) = gated_app(admission_config(1, 0, 30_000), backend).await;
 
-    let signer = EcSigner::new();
-    let (path, body) = ready_finalize(&app, &signer).await;
-    let held = tokio::spawn({
-        let app = app.clone();
-        async move { post(&app, &path, body).await }
-    });
-    // Wait for it to be genuinely inside the signer holding the only slot,
+    let held = hold_a_slot(&app);
+    // Wait for it to be genuinely inside the read holding the only slot,
     // rather than for a duration and a hope.
     let _ = entered.acquire().await.unwrap();
 
@@ -148,16 +126,11 @@ async fn a_request_past_the_limit_is_refused_with_a_problem_document() {
 /// exactly when it needs to.
 #[tokio::test]
 async fn health_answers_while_the_acme_endpoints_are_saturated() {
-    let backend = GatedSigner::new().await;
-    let (_calls, gate, entered) = backend.handles();
+    let backend = GatedCrlSigner::new().await;
+    let (gate, entered) = backend.handles();
     let (app, _db) = gated_app(admission_config(1, 0, 30_000), backend).await;
 
-    let signer = EcSigner::new();
-    let (path, body) = ready_finalize(&app, &signer).await;
-    let held = tokio::spawn({
-        let app = app.clone();
-        async move { post(&app, &path, body).await }
-    });
+    let held = hold_a_slot(&app);
     let _ = entered.acquire().await.unwrap();
 
     // The ACME side is full…
@@ -176,23 +149,20 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
 /// walks down to zero and the server never recovers.
 #[tokio::test]
 async fn a_slot_is_released_after_a_request_exceeds_its_deadline() {
-    let backend = GatedSigner::new().await;
-    let (_calls, gate, entered) = backend.handles();
-    // One slot; a deadline short enough that the blocked issuance trips it.
+    let backend = GatedCrlSigner::new().await;
+    let (gate, entered) = backend.handles();
+    // One slot; a deadline short enough that the parked read trips it.
     let (app, _db) = gated_app(admission_config(1, 500, 200), backend).await;
 
-    let signer = EcSigner::new();
-    let (path, body) = ready_finalize(&app, &signer).await;
-
-    let timed_out = post(&app, &path, body).await;
+    let timed_out = get(&app, &p("/crl")).await;
     assert_eq!(timed_out.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    // The deadline came from the blocked issuance and not from somewhere else
-    // on the way in — otherwise the slot being free below proves nothing about
+    // The deadline came from the parked read and not from somewhere else on
+    // the way in — otherwise the slot being free below proves nothing about
     // the case this test is named for.
     assert_eq!(
         entered.available_permits(),
         1,
-        "the request must have reached the signer before its deadline fired"
+        "the request must have reached the read side before its deadline fired"
     );
     assert_eq!(
         timed_out

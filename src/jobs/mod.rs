@@ -233,30 +233,54 @@ impl JobQueue {
     /// reads it the way `RelaySigner::issue` reads `UpstreamOrder::create`'s
     /// `Ok(None)`: somebody else is already on it.
     pub async fn enqueue(&self, spec: JobSpec) -> Result<bool, sqlx::Error> {
-        let max_attempts = i64::from(
-            spec.max_attempts
-                .unwrap_or_else(|| self.default_max_attempts.load(Ordering::Relaxed)),
-        );
-        let queued = Job::enqueue(
-            crate::sqlite::job::NewJob {
-                id: crate::sqlite::id::mint(),
-                kind: spec.kind,
-                dedup_key: &spec.key,
-                payload: &spec.payload,
-                run_at: spec.run_at,
-                deadline: spec.deadline,
-                max_attempts,
-            },
-            &self.database,
-        )
-        .await?;
-
+        let queued = Job::enqueue(self.new_job(&spec), &self.database).await?;
         if queued {
             // Wakes the runner now rather than at its next tick: the request
             // that queued this is often one an ACME client is already polling.
-            self.notify.notify_one();
+            self.wake();
         }
         Ok(queued)
+    }
+
+    /// Queues one job **inside the caller's transaction**, so the row commits
+    /// with the write that owes it, or neither does.
+    ///
+    /// The atomic form of [`enqueue`](JobQueue::enqueue), for a claim that must
+    /// never be left without the job that settles it: `finalize` moves an order
+    /// to `processing` and queues its issuance in one commit, so no crash can
+    /// strand an order nothing is coming for. It does **not** wake the runner —
+    /// the row is not visible until the caller commits — so the caller calls
+    /// [`wake`](JobQueue::wake) after committing.
+    pub async fn enqueue_in(
+        &self,
+        spec: &JobSpec,
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<bool, sqlx::Error> {
+        Job::enqueue_on(self.new_job(spec), connection).await
+    }
+
+    /// Tells this process's runner that a job is ready, rather than leaving it
+    /// to the next `jobs.poll_interval_ms` tick. A no-op in a process running
+    /// no worker: the row is durable, and the worker's own poll finds it.
+    pub fn wake(&self) {
+        self.notify.notify_one();
+    }
+
+    /// The row `spec` describes, with this queue's `max_attempts` frozen onto
+    /// it unless the spec set its own.
+    fn new_job<'a>(&self, spec: &'a JobSpec) -> crate::sqlite::job::NewJob<'a> {
+        crate::sqlite::job::NewJob {
+            id: crate::sqlite::id::mint(),
+            kind: spec.kind,
+            dedup_key: &spec.key,
+            payload: &spec.payload,
+            run_at: spec.run_at,
+            deadline: spec.deadline,
+            max_attempts: i64::from(
+                spec.max_attempts
+                    .unwrap_or_else(|| self.default_max_attempts.load(Ordering::Relaxed)),
+            ),
+        }
     }
 
     /// [`JobQueue::enqueue`], logging rather than returning a database failure.

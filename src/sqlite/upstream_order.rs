@@ -87,8 +87,9 @@ impl UpstreamOrder {
     ///
     /// A separate `UPDATE` rather than a parameter of [`UpstreamOrder::create`]
     /// because that runs inside `SignerBackend::issue`, which is handed a CSR
-    /// and an order id and deliberately knows nothing about HTTP. `post_finalize`
-    /// calls this the moment the backend answers `Processing`.
+    /// and an order id and deliberately knows nothing about HTTP. The
+    /// `signer_issue` job calls this the moment the backend answers
+    /// `Processing`, with the context `finalize` parked on the job row.
     ///
     /// That leaves a window — between the backend's own `create` and this
     /// `UPDATE` — in which a relay could theoretically settle and find no
@@ -544,7 +545,7 @@ mod tests {
         assert_eq!(mapping.client(), client);
 
         // Setting it for an order with no mapping row is a no-op, not an error:
-        // `post_finalize` calls this straight after the backend answered, and a
+        // `signer_issue` calls this straight after the backend answered, and a
         // backend that answered `Processing` without creating a row would be a
         // different bug that must not surface here as a 500.
         UpstreamOrder::set_client("no-such-order", &client, &database)

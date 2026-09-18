@@ -152,6 +152,35 @@ async fn finalize(
     .await
 }
 
+/// POST-as-GETs `order_url` from `peer` until the worker has settled it —
+/// from the same address as the rest of the ladder, since every signed request
+/// moves the account's last-seen stamp these tests read.
+async fn await_order_from(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    order_url: &str,
+    peer: &str,
+) -> Value {
+    for _ in 0..600 {
+        let nonce = fetch_nonce_from(app, peer).await;
+        let body = signer.sign_kid_empty(account_url, order_url, &nonce);
+        let res = post_from(
+            app,
+            order_url.strip_prefix(common::HOST).unwrap(),
+            body,
+            peer,
+        )
+        .await;
+        let order = body_json(res).await;
+        if order["status"] != "processing" {
+            return order;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{order_url}` never left `processing`");
+}
+
 /// The whole lifecycle, returning the issued `leaf + CA` PEM chain.
 async fn issue(app: &Router, signer: &impl TestSigner, account_url: &str, peer: &str) -> String {
     let order_url = ready_order(app, signer, account_url, peer).await;
@@ -165,7 +194,7 @@ async fn issue(app: &Router, signer: &impl TestSigner, account_url: &str, peer: 
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
+    let order = await_order_from(app, signer, account_url, &order_url, peer).await;
     let cert_url = order["certificate"].as_str().unwrap().to_string();
 
     let nonce = fetch_nonce_from(app, peer).await;

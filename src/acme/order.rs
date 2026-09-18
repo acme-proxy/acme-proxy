@@ -23,9 +23,9 @@ use crate::challenge::ValidationContext;
 use crate::error::Problem;
 use crate::extractors::acme::jwk_thumbprint;
 use crate::filter::{IdentifierStage, Stage as FilterStage};
+use crate::jobs::JobQueue;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::server::Profile;
-use crate::signer::{IssueOutcome, RequestedValidity, SignerError};
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},
@@ -198,34 +198,11 @@ fn is_replaces_conflict(error: &sqlx::Error) -> bool {
         && db.message().contains("orders.replaces"))
 }
 
-/// Gives back the claim [`Order::claim_for_finalize`] took, on the three
-/// `post_finalize` arms that must leave the order finalizable.
-///
-/// A failure here is logged and swallowed rather than replacing the refusal the
-/// caller is already returning: the client is being told its CSR was rejected
-/// (or that this server could not read what it signed), and answering something
-/// else because the *release* also failed would describe the wrong problem. The
-/// order is left `processing` in that case, which the order's own `expires`
-/// eventually retires.
-async fn release_claim(order: &mut Order, database: &Database, id: &str) {
-    if let Err(error) = order.release_finalize_claim(database).await {
-        error!(
-            event = "order_finalize_claim_release_failed",
-            outcome = "failure",
-            order_id = %id,
-            error = %error
-        );
-    }
-}
-
-/// Builds the `certificate_issue_failed` row shared by `post_finalize`'s five
+/// Builds the `certificate_issue_failed` row shared by `finalize`'s four
 /// refusal arms.
 ///
-/// A free function taking `&Order` rather than a closure capturing it: the
-/// arms below sit either side of `order.mark_processing`/`order.finalize`, so a
-/// closure holding a shared borrow of `order` would keep it alive across those
-/// `&mut` calls and fail to compile — for no benefit, since the order is the
-/// one thing that differs between where the closure is built and where it runs.
+/// A free function taking `&Order` rather than a closure capturing it, so the
+/// order stays free to be claimed after the refusals are behind it.
 fn issue_failed(
     profile: &str,
     account_id: Uuid,
@@ -669,9 +646,10 @@ impl OrderService<'_> {
         Ok(())
     }
 
-    /// Finalizes `order` with the base64url CSR a client sent (RFC 8555 §7.4),
-    /// returning the order as it now stands: `valid` with its certificate, or
-    /// `processing` when the backend resolves issuance elsewhere.
+    /// Finalizes `order` with the base64url CSR a client sent (RFC 8555 §7.4):
+    /// checks the CSR, then claims the order and queues its issuance, returning
+    /// it `processing`. The certificate arrives when a worker has run the
+    /// `signer_issue` job ([`super::issue`]); the client polls for it.
     ///
     /// `account` must already own `order` (`access::load_owned_order`).
     pub async fn finalize(
@@ -681,9 +659,10 @@ impl OrderService<'_> {
         csr: &str,
         client_ip: Option<IpAddr>,
         request: &RequestContext,
+        jobs: &JobQueue,
     ) -> Result<Order, Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
-        let (signer, filter) = (&profile.signer, &profile.filter);
+        let filter = &profile.filter;
 
         let id = order.id.to_string();
         if order.status != OrderStatus::Ready {
@@ -770,25 +749,27 @@ impl OrderService<'_> {
             }
         }
 
-        // The order's own `notBefore`/`notAfter` (RFC 8555 §7.4), which the order
-        // object has always echoed back — passing them on is what stops the echo
-        // being a fiction. The backend clamps or ignores them; see
-        // `RequestedValidity`.
-        let validity = RequestedValidity {
-            not_before: order.not_before,
-            not_after: order.not_after,
-        };
-
-        // Claimed here rather than at the `ready` check above, and the placement is
-        // the design: this narrows the guarded window to the one call that can bring
-        // a certificate into existence, so only the arms below owe a release, where
-        // claiming at the check would have made every refusal above owe one too.
+        // Claimed here rather than at the `ready` check above, so no refusal
+        // above owes a release — and claimed **with** the job that settles it,
+        // in one transaction, so no crash can leave an order `processing` with
+        // nothing coming for it.
         //
         // The loser gets §7.4's own answer — `403 orderNotReady`, on which the
         // client POST-as-GETs the order and sees `processing`, then `valid`. No
-        // audit row: like the not-ready refusal above, this is protocol bookkeeping
-        // with no CA action attempted.
-        match order.claim_for_finalize(database).await {
+        // audit row: like the not-ready refusal above, this is protocol
+        // bookkeeping with no CA action attempted.
+        let spec = super::issue::signer_issue_spec(&order, &csr_der, &client, client_ip);
+        let claimed = async {
+            let mut tx = database.transaction().await?;
+            if !order.claim_for_finalize_on(&mut *tx).await? {
+                return Ok(false);
+            }
+            jobs.enqueue_in(&spec, &mut tx).await?;
+            tx.commit().await?;
+            Ok::<bool, sqlx::Error>(true)
+        }
+        .await;
+        match claimed {
             Ok(true) => {}
             Ok(false) => {
                 warn!(
@@ -808,145 +789,9 @@ impl OrderService<'_> {
                 return Err(Problem::server_internal("Order finalize failed").into());
             }
         }
+        jobs.wake();
 
-        let issued = signer
-            .issue(
-                &order.id.to_string(),
-                &csr_der,
-                &order.identifiers,
-                validity,
-            )
-            .await;
-        let chain = match issued {
-            Ok(IssueOutcome::Issued(chain)) => chain,
-            // A delegating backend took the CSR but resolves it elsewhere. It owns
-            // the order from here — it will call `finalize`/`mark_invalid` itself —
-            // so all this handler does is publish the `processing` status the
-            // client polls on (RFC 8555 §7.4). No `CertificateIssued` dispatch
-            // here: the certificate isn't issued yet. That notification fires
-            // later from `signer::relay::settle`, once the backend's
-            // background relay actually completes — not a gap, deliberate.
-            // The claim above already wrote `processing`, which is exactly the
-            // status this arm publishes — so there is nothing left to do to the
-            // order here.
-            Ok(IssueOutcome::Processing) => {
-                // No audit row here — nothing has been signed yet. The one row for
-                // this issuance is written by `signer::relay::flow::settle`
-                // when the upstream actually answers, and this is what lets it
-                // carry the address of the client that asked: the relay runs from a
-                // background task with no request in scope. See
-                // `UpstreamOrder::set_client` for why it is stored rather than
-                // passed, and for the ordering.
-                if let Err(error) =
-                    crate::sqlite::upstream_order::UpstreamOrder::set_client(&id, &client, database)
-                        .await
-                {
-                    warn!(
-                        event = "upstream_order_client_context_failed",
-                        outcome = "failure",
-                        order_id = %id,
-                        error = %error
-                    );
-                }
-                info!(event = "order_finalize_delegated", outcome = "success", order_id = %id);
-                return Ok(order);
-            }
-            Err(SignerError::BadCsr) => {
-                warn!(
-                    event = "order_finalize_bad_csr",
-                    outcome = "failure",
-                    order_id = %id
-                );
-                // §7.4: a rejected CSR "SHOULD leave the order in the 'ready'
-                // state", so the client can correct it and try again. Without the
-                // release the claim would wedge the order in `processing` for ever
-                // — a retry would then hit the claim's own refusal.
-                release_claim(&mut order, database, &id).await;
-                audit
-                    .record(failed(
-                        &order,
-                        "badCSR",
-                        "the signer backend rejected the CSR",
-                    ))
-                    .await;
-                return Err(Problem::bad_csr("CSR invalid or does not match order").into());
-            }
-            Err(SignerError::Internal(detail)) => {
-                error!(
-                    event = "order_finalize_issuance_failed",
-                    outcome = "failure",
-                    order_id = %id,
-                    detail = %detail
-                );
-                let problem = Problem::server_internal("Certificate issuance failed");
-                if let Err(error) = record_issue_failure(
-                    &mut order,
-                    &problem,
-                    &detail,
-                    crate::audit::Actor::acme(account.id),
-                    client,
-                    audit,
-                    database,
-                )
-                .await
-                {
-                    error!(
-                        event = "order_mark_invalid_failed",
-                        outcome = "failure",
-                        order_id = %id,
-                        error = %error
-                    );
-                }
-                return Err(problem.into());
-            }
-        };
-
-        // The two parse failures are `match` arms rather than `map_err(…)?`
-        // because the release has to be awaited and a closure cannot. Both leave
-        // the order `ready`, which is what `tests/orders.rs` already pins: the CSR
-        // was fine and the client can retry, the fault being this server's
-        // inability to read what it just signed.
-        let cert_serial = match record_issuance(&mut order, chain, database).await {
-            Ok(serial) => serial,
-            Err(IssuanceError::Chain(error)) => {
-                error!(event = "order_finalize_chain_unparsable", outcome = "failure", order_id = %id, error = %error);
-                release_claim(&mut order, database, &id).await;
-                return Err(
-                    Problem::server_internal("Issued certificate chain is unparsable").into(),
-                );
-            }
-            Err(IssuanceError::Leaf(error)) => {
-                error!(event = "order_finalize_leaf_unparsable", outcome = "failure", order_id = %id, error = %error);
-                release_claim(&mut order, database, &id).await;
-                return Err(Problem::server_internal("Issued certificate is unparsable").into());
-            }
-            Err(IssuanceError::Persist(error)) => {
-                error!(
-                    event = "order_finalize_persistence_failed",
-                    outcome = "failure",
-                    order_id = %id,
-                    error = %error
-                );
-                return Err(Problem::server_internal("Order finalize failed").into());
-            }
-        };
-
-        info!(
-            event = "order_finalized",
-            outcome = "success",
-            order_id = %id,
-            cert_serial = %cert_serial
-        );
-        announce_issuance(
-            &order,
-            &cert_serial,
-            crate::audit::Actor::acme(account.id.to_string()),
-            client,
-            client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
-            audit,
-            Some(&profile.notify),
-        )
-        .await;
+        info!(event = "order_finalize_queued", outcome = "success", order_id = %id);
         Ok(order)
     }
 }
@@ -1558,38 +1403,11 @@ pub(crate) mod tests {
         assert!(!is_replaces_conflict(&missing));
     }
 
-    /// A signer answering `issue` with whatever the test set.
-    enum Answer {
-        BadCsr,
-        Internal,
-        Chain(&'static str),
-    }
-
-    struct Scripted(Answer);
-
-    #[async_trait::async_trait]
-    impl crate::signer::SignerBackend for Scripted {
-        async fn issue(
-            &self,
-            _order_id: &str,
-            _csr_der: &[u8],
-            _identifiers: &[Identifier],
-            _validity: RequestedValidity,
-        ) -> Result<IssueOutcome, SignerError> {
-            match &self.0 {
-                Answer::BadCsr => Err(SignerError::BadCsr),
-                Answer::Internal => Err(SignerError::Internal("the token is gone".into())),
-                Answer::Chain(chain) => Ok(IssueOutcome::Issued((*chain).to_string())),
-            }
-        }
-
-        async fn revoke(&self, _cert_der: &[u8], _reason: Option<u32>) -> Result<(), SignerError> {
-            Ok(())
-        }
-    }
-
     /// A `ready` order for `a.example.com` plus a CSR matching it, base64url.
-    async fn ready_order(database: &Arc<Database>, account: &Account) -> (Order, String) {
+    pub(crate) async fn ready_order(
+        database: &Arc<Database>,
+        account: &Account,
+    ) -> (Order, String) {
         let (order, _) = pending_order(database, account, &["a.example.com"]).await;
         Order::set_ready(order.id, database.raw_pool())
             .await
@@ -1605,86 +1423,9 @@ pub(crate) mod tests {
         )
     }
 
-    async fn issue_failures(database: &Database) -> Vec<crate::sqlite::audit::AuditEntry> {
-        let query = crate::sqlite::audit::AuditQuery {
-            limit: 50,
-            ..crate::sqlite::audit::AuditQuery::default()
-        };
-        crate::sqlite::audit::AuditEntry::search(&query, database)
-            .await
-            .unwrap()
-            .0
-            .into_iter()
-            .filter(|row| row.event == "certificate_issue_failed")
-            .collect()
-    }
-
-    async fn finalize_with(answer: Answer) -> (Arc<Database>, Order, Result<Order, Error>) {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let profile = profile_with(
-            &database,
-            ChallengeRegistry::default(),
-            Arc::new(Scripted(answer)),
-        );
-        let audit = Auditor::offline(database.clone());
-        let orders = OrderService {
-            database: &database,
-            audit: &audit,
-            profile: &profile,
-        };
-        let account = account(&database).await;
-        let (order, csr) = ready_order(&database, &account).await;
-        let stored = reload(&database, &order).await;
-        let outcome = orders
-            .finalize(&account, order, &csr, None, &RequestContext::default())
-            .await;
-        (database, stored, outcome)
-    }
-
-    /// §7.4: a rejected CSR leaves the order `ready`, so the claim taken before
-    /// the signer ran must be given back.
-    #[tokio::test]
-    async fn a_csr_the_backend_rejects_releases_the_claim() {
-        let (database, order, outcome) = finalize_with(Answer::BadCsr).await;
-        let problem = Problem::from(outcome.unwrap_err()).to_value();
-        assert_eq!(problem["type"], "urn:ietf:params:acme:error:badCSR");
-        assert_eq!(reload(&database, &order).await.status, OrderStatus::Ready);
-        let rows = issue_failures(&database).await;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].reason.as_deref(), Some("badCSR"));
-    }
-
-    #[tokio::test]
-    async fn a_backend_failure_invalidates_the_order_and_records_why() {
-        let (database, order, outcome) = finalize_with(Answer::Internal).await;
-        let problem = Problem::from(outcome.unwrap_err()).to_value();
-        assert_eq!(problem["detail"], "Certificate issuance failed");
-        let reloaded = reload(&database, &order).await;
-        assert_eq!(reloaded.status, OrderStatus::Invalid);
-        assert_eq!(
-            reloaded.error.unwrap()["detail"],
-            "Certificate issuance failed"
-        );
-        let rows = issue_failures(&database).await;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].reason.as_deref(), Some("serverInternal"));
-        assert_eq!(rows[0].detail.as_deref(), Some("the token is gone"));
-    }
-
-    /// A chain this server cannot read is a certificate it could never
-    /// revoke: the order stays `ready` for a retry rather than `valid`.
-    #[tokio::test]
-    async fn an_unreadable_chain_releases_the_claim() {
-        let (database, order, outcome) = finalize_with(Answer::Chain("not a chain")).await;
-        let problem = Problem::from(outcome.unwrap_err()).to_value();
-        assert_eq!(problem["detail"], "Issued certificate chain is unparsable");
-        let reloaded = reload(&database, &order).await;
-        assert_eq!(reloaded.status, OrderStatus::Ready);
-        assert!(reloaded.certificate.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_finalized_order_carries_its_certificate_and_one_issued_row() {
+    /// Finalizes a fresh `ready` order, returning the database, the order as
+    /// it was, and what `finalize` answered.
+    async fn finalize_ready() -> (Arc<Database>, Order, Result<Order, Error>) {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let profile = profile(&database, ChallengeRegistry::default());
         let audit = Auditor::offline(database.clone());
@@ -1695,25 +1436,133 @@ pub(crate) mod tests {
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
+        let before = reload(&database, &order).await;
+        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let outcome = orders
+            .finalize(
+                &account,
+                order,
+                &csr,
+                None,
+                &RequestContext::default(),
+                &jobs,
+            )
+            .await;
+        (database, before, outcome)
+    }
 
-        let issued = orders
-            .finalize(&account, order, &csr, None, &RequestContext::default())
-            .await
-            .unwrap();
-        assert_eq!(issued.status, OrderStatus::Valid);
-        let stored = reload(&database, &issued).await;
-        assert!(stored.certificate.is_some());
-        assert!(stored.cert_serial.is_some());
+    /// Finalize signs nothing: it claims the order and queues its issuance in
+    /// one write, answering `processing` — the process answering ACME holds no
+    /// backend.
+    #[tokio::test]
+    async fn finalize_claims_the_order_and_queues_its_issuance() {
+        let (database, order, outcome) = finalize_ready().await;
+        let answered = outcome.unwrap();
+        assert_eq!(answered.status, OrderStatus::Processing);
+        let stored = reload(&database, &order).await;
+        assert_eq!(stored.status, OrderStatus::Processing);
+        assert!(stored.certificate.is_none(), "nothing was signed here");
 
-        let query = crate::sqlite::audit::AuditQuery {
-            limit: 50,
-            ..crate::sqlite::audit::AuditQuery::default()
+        let job = crate::sqlite::job::Job::find_live(
+            super::super::issue::SIGNER_ISSUE_KIND,
+            &order.id.to_string(),
+            &database,
+        )
+        .await
+        .unwrap()
+        .expect("the issuance is queued");
+        assert_eq!(job.payload["order_id"], order.id.to_string());
+        assert_eq!(job.payload["profile"], "default");
+        assert!(
+            job.payload["csr"]
+                .as_str()
+                .is_some_and(|csr| !csr.is_empty())
+        );
+        assert_eq!(job.deadline, Some(order.expires));
+    }
+
+    /// Two finalizes racing on one order: the loser's claim fails, it is told
+    /// §7.4's `orderNotReady`, and only one issuance is queued.
+    #[tokio::test]
+    async fn a_second_finalize_loses_the_claim() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, ChallengeRegistry::default());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
         };
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(&query, &database)
+        let account = account(&database).await;
+        let (order, csr) = ready_order(&database, &account).await;
+        let jobs = crate::testutil::idle_job_queue(database.clone());
+
+        // Both requests read the order `ready`.
+        let rival = reload(&database, &order).await;
+        orders
+            .finalize(
+                &account,
+                order,
+                &csr,
+                None,
+                &RequestContext::default(),
+                &jobs,
+            )
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].event, "certificate_issued");
-        assert_eq!(rows[0].cert_serial, stored.cert_serial);
+        let error = orders
+            .finalize(
+                &account,
+                rival,
+                &csr,
+                None,
+                &RequestContext::default(),
+                &jobs,
+            )
+            .await
+            .unwrap_err();
+        let problem = Problem::from(error).to_value();
+        assert_eq!(problem["type"], "urn:ietf:params:acme:error:orderNotReady");
+        assert_eq!(problem["detail"], "Order is already being finalized");
+    }
+
+    /// The claim and the job are one write: if the job cannot be queued, the
+    /// order is not claimed either, so it is never `processing` with nothing
+    /// coming for it.
+    #[tokio::test]
+    async fn a_failed_enqueue_leaves_the_order_ready() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, ChallengeRegistry::default());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let (order, csr) = ready_order(&database, &account).await;
+        let jobs = crate::testutil::idle_job_queue(database.clone());
+        sqlx::query("DROP TABLE jobs;")
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+
+        let before = reload(&database, &order).await;
+        let error = orders
+            .finalize(
+                &account,
+                order,
+                &csr,
+                None,
+                &RequestContext::default(),
+                &jobs,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            Problem::from(error).to_value()["detail"],
+            "Order finalize failed"
+        );
+        assert_eq!(reload(&database, &before).await.status, OrderStatus::Ready);
     }
 }

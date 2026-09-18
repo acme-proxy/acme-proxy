@@ -516,7 +516,7 @@ async fn an_issued_order_is_still_readable_after_it_expires() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
+    let order = common::acme::await_order(&app, &signer, &account_url, &order_url).await;
     let cert_url = order["certificate"].as_str().unwrap().to_string();
 
     expire_orders(&db).await;
@@ -646,7 +646,7 @@ async fn a_csr_requesting_ca_powers_yields_a_leaf_without_them() {
 
     let res = finalize(&app, &signer, &account_url, &order_url, &csr_b64).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
+    let order = common::acme::await_order(&app, &signer, &account_url, &order_url).await;
     let cert_url = order["certificate"].as_str().unwrap().to_string();
 
     let path = cert_url.strip_prefix(common::HOST).unwrap();

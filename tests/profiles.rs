@@ -78,6 +78,29 @@ async fn nonce(app: &Router, profile: &str) -> String {
         .to_string()
 }
 
+/// POST-as-GETs `order_url` at `profile` until the worker has settled it,
+/// returning the certificate URL. Issuance is queued work: finalize answers
+/// `processing`, and the client polls.
+async fn await_certificate(
+    app: &Router,
+    profile: &str,
+    signer: &EcSigner,
+    account: &str,
+    order_url: &str,
+) -> String {
+    for _ in 0..600 {
+        let n = nonce(app, profile).await;
+        let body = signer.sign_kid_empty(account, order_url, &n);
+        let order = body_json(post(app, to_path(order_url), body).await).await;
+        if order["status"] != "processing" {
+            assert_eq!(order["status"], "valid", "issuance at {profile}");
+            return order["certificate"].as_str().unwrap().to_string();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{order_url}` never left `processing`");
+}
+
 /// Registers an account at `profile` and returns its account URL.
 async fn register(app: &Router, profile: &str, signer: &EcSigner) -> String {
     let n = nonce(app, profile).await;
@@ -152,10 +175,7 @@ async fn issue(app: &Router, profile: &str, signer: &EcSigner, account: &str, dn
     let body = signer.sign_kid(account, &finalize_url, &n, &json!({ "csr": make_csr(dns) }));
     let res = post(app, to_path(&finalize_url), body).await;
     assert_eq!(res.status(), StatusCode::OK, "finalize at {profile}");
-    let cert_url = body_json(res).await["certificate"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let cert_url = await_certificate(app, profile, signer, account, &order_url).await;
 
     let n = nonce(app, profile).await;
     let body = signer.sign_kid_empty(account, &cert_url, &n);
@@ -441,10 +461,7 @@ async fn a_certificate_cannot_be_revoked_through_another_profile() {
     let body = account_signer.sign_kid(&account, &finalize_url, &n, &json!({ "csr": csr }));
     let res = post(&app, to_path(&finalize_url), body).await;
     assert_eq!(res.status(), StatusCode::OK);
-    let cert_url = body_json(res).await["certificate"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let cert_url = await_certificate(&app, "a", &account_signer, &account, &order_url).await;
 
     let n = nonce(&app, "a").await;
     let body = account_signer.sign_kid_empty(&account, &cert_url, &n);

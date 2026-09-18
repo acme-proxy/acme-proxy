@@ -266,6 +266,34 @@ async fn ready_order(app: &Router, signer: &EcSigner, dns: &str) -> (String, Str
     (account_url, format!("{order_url}/finalize"))
 }
 
+/// POST-as-GETs the order behind `finalize_url` from [`ALLOWED`] until the
+/// worker has settled it — issuance is queued work, and the client polls.
+async fn await_settled(
+    app: &Router,
+    signer: &EcSigner,
+    account_url: &str,
+    finalize_url: &str,
+) -> Value {
+    let order_url = finalize_url.strip_suffix("/finalize").unwrap();
+    for _ in 0..600 {
+        let nonce = fetch_nonce_from(app, ALLOWED).await;
+        let body = signer.sign_kid_empty(account_url, order_url, &nonce);
+        let res = post_from(
+            app,
+            order_url.strip_prefix(common::HOST).unwrap(),
+            body,
+            ALLOWED,
+        )
+        .await;
+        let order = body_json(res).await;
+        if order["status"] != "processing" {
+            return order;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("`{order_url}` never left `processing`");
+}
+
 /// Finalizes with a caller-supplied base64url CSR.
 async fn finalize(
     app: &Router,
@@ -685,7 +713,8 @@ async fn a_permitted_csr_finalizes_normally() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
+    assert_eq!(body_json(res).await["status"], "processing");
+    let order = await_settled(&app, &signer, &account_url, &finalize_url).await;
     assert_eq!(order["status"], "valid");
 }
 

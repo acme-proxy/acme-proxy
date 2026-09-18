@@ -129,9 +129,9 @@ struct Inner {
     notifiers: crate::notify::Notifiers,
     /// Where this backend's settle-time audit rows go, counted into the
     /// process's Prometheus registry. Needed for the same reason `notifiers`
-    /// is: an issuance is recorded from a background task long after
-    /// `post_finalize` answered `processing` and returned, with no request's
-    /// `Auditor` in scope. An offline one — no resolver, since the address
+    /// is: an issuance is recorded from a background task long after the
+    /// `signer_issue` job answered `Processing` and moved on, with no
+    /// `Auditor` of its in scope. An offline one — no resolver, since the address
     /// was resolved during the finalize request and parked on
     /// `upstream_orders` — over the registry, which is *not* rebuilt per
     /// generation and so can be held directly.

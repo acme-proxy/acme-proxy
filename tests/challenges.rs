@@ -293,7 +293,11 @@ async fn a_passing_validator_carries_the_order_through_to_a_certificate() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    assert_eq!(body_json(res).await["status"], "processing");
+    assert_eq!(
+        common::acme::await_order(&app, &signer, &account_url, &order_url).await["status"],
+        "valid"
+    );
 }
 
 /// RFC 8555 §7.5.1: "The server SHOULD provide information about its retry
@@ -843,10 +847,11 @@ async fn a_wildcard_order_issues_a_wildcard_certificate() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let cert_url = body_json(res).await["certificate"]
-        .as_str()
-        .expect("an issued order has a certificate URL")
-        .to_string();
+    let cert_url =
+        common::acme::await_order(&app, &signer, &account_url, &order_url).await["certificate"]
+            .as_str()
+            .expect("an issued order has a certificate URL")
+            .to_string();
 
     let nonce = fetch_nonce(&app).await;
     let res = post(

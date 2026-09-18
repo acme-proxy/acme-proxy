@@ -19,9 +19,13 @@
 //!   identifier stage, and the problem a failed challenge validation maps to.
 //! - [`order`] — [`OrderService`], the order state machine: creating an order,
 //!   deactivating an authorization, claiming and validating a challenge,
-//!   finalizing. Plus the issuance bookkeeping the relay shares with finalize
-//!   (`record_issuance`, `announce_issuance`, `record_issue_failure`), since it
-//!   completes an issuance long after the request that started it.
+//!   finalizing. Plus the issuance bookkeeping the `signer_issue` job and the
+//!   relay share (`record_issuance`, `announce_issuance`,
+//!   `record_issue_failure`), since both complete an issuance long after the
+//!   request that started it.
+//! - [`issue`] — the `signer_issue` job `finalize` queues: the one place a
+//!   backend is asked to sign, and it runs in the `worker` role, the only one
+//!   that holds a backend.
 //! - [`account`] — [`AccountService`]: `newAccount` (with EAB), the account
 //!   update, key rollover and the orders list, plus the deactivation and
 //!   contact update the operator front ends share.
@@ -45,6 +49,7 @@
 pub mod access;
 pub mod account;
 pub mod error;
+pub mod issue;
 pub mod order;
 pub mod policy;
 pub mod revoke;

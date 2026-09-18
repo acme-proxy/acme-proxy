@@ -147,7 +147,10 @@ async fn issue(
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    let order = body_json(res).await;
+    // Issuance is queued work: finalize answers `processing`, and the client
+    // polls until the worker has signed.
+    assert_eq!(body_json(res).await["status"], "processing");
+    let order = common::acme::await_order(app, signer, account_url, &order_url).await;
     assert_eq!(order["status"], "valid");
     let cert_url = order["certificate"].as_str().unwrap().to_string();
 

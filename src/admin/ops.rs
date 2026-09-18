@@ -682,7 +682,8 @@ pub enum CancelJobError {
 /// the ACME order — `Order::mark_invalid` (generic problem document, so the
 /// client stops polling), `UpstreamOrder::mark_invalid` (so `RelayJob::recover`
 /// does not resurrect it), and one `certificate_issue_failed` audit row
-/// attributed to `actor`/`client`.
+/// attributed to `actor`/`client`. An in-flight `signer_issue` job does the
+/// same to its still-`processing` order, minus the mapping row it never had.
 ///
 /// `actor`/`client` come from the caller, exactly as [`revoke_order`]: the CLI
 /// supplies [`Actor::cli`] with an empty context, the web admin
@@ -747,6 +748,32 @@ pub async fn cancel_job(
         if let Some(mut order) = Order::find_by_id(&order_id, &database).await? {
             abandon_relayed_order(
                 &mut order,
+                "issuance cancelled by operator",
+                actor,
+                client,
+                audit,
+                &database,
+            )
+            .await?;
+            return Ok(CancelJobOutcome::CancelledAndOrderAbandoned {
+                job: Box::new(job),
+                order_id,
+            });
+        }
+    }
+
+    if job.kind == crate::acme::issue::SIGNER_ISSUE_KIND && was_in_flight {
+        // An issuance that never reached a backend: the order was claimed with
+        // this row and nothing else will settle it, so it goes `invalid` now
+        // rather than sitting `processing` until it expires. Only while still
+        // `processing` — a deactivation may have demoted it since.
+        let order_id = job.dedup_key.clone();
+        if let Some(mut order) = Order::find_by_id(&order_id, &database).await?
+            && order.status == crate::sqlite::status::OrderStatus::Processing
+        {
+            crate::acme::order::record_issue_failure(
+                &mut order,
+                &crate::error::Problem::server_internal("Certificate issuance failed"),
                 "issuance cancelled by operator",
                 actor,
                 client,

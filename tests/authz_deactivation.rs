@@ -402,7 +402,10 @@ async fn an_issued_order_refuses_deactivation() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(body_json(res).await["status"], "valid");
+    assert_eq!(
+        common::acme::await_order(&app, &signer, &account_url, &order_url).await["status"],
+        "valid"
+    );
 
     let res = deactivate(&app, &signer, &account_url, &authz_url).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);

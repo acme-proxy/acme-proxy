@@ -369,6 +369,35 @@ pub struct ClientContext {
     pub request_id: Option<String>,
 }
 
+impl ClientContext {
+    /// This context as a job payload member, so a row written by work a
+    /// request queued — an issuance, a revocation — can still name the client
+    /// that asked. An absent field is `null`, as `None` is on the row.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ip": self.ip,
+            "ptr": self.ptr,
+            "user_agent": self.user_agent,
+            "request_id": self.request_id,
+        })
+    }
+
+    /// The context [`to_json`](Self::to_json) wrote. Anything missing or not a
+    /// string reads as absent, so a payload written before a field existed
+    /// still yields a context rather than an error.
+    #[must_use]
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        let field = |name: &str| value.get(name).and_then(|v| v.as_str()).map(str::to_string);
+        Self {
+            ip: field("ip"),
+            ptr: field("ptr"),
+            user_agent: field("user_agent"),
+            request_id: field("request_id"),
+        }
+    }
+}
+
 /// What a request carries before the reverse lookup has run.
 ///
 /// An extractor rather than three `Extension`s at each call site: a handler

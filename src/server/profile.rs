@@ -213,29 +213,34 @@ impl Profile {
 /// Refuses a `server.request_timeout_ms` shorter than the work the server does
 /// *inside* a request.
 ///
-/// One hook still runs inline in a handler rather than in the background: the
-/// `custom` signer's script, which `post_finalize` awaits. If the request
-/// deadline is the shorter of the two budgets, an issuance that was going to
-/// succeed is cut off and the client is told the server failed — a
-/// misconfiguration that would look like an intermittent CA outage and be
-/// miserable to diagnose. Cheaper to refuse to start and say which two numbers
-/// disagree.
+/// One hook still runs inline in a handler: a `custom` signer's read-only
+/// script hooks, `crl` (`GET /crl`) and `renewal_info` (`GET /renewalInfo`),
+/// each only when its `supports_*` flag is on. If the request deadline is the
+/// shorter of the two budgets, an answer that was coming is cut off and the
+/// client is told the server failed — a misconfiguration that would look like
+/// an intermittent outage and be miserable to diagnose. Cheaper to refuse to
+/// start and say which two numbers disagree.
 ///
-/// **`challenge.timeout_ms` used to be checked here too, and deliberately is
-/// not any more.** Validation moved into the job queue (`acme::validate`), so
-/// that budget bounds a job attempt rather than a request, and the two numbers
-/// are now independent: a deployment may legitimately give a slow `dns-01`
-/// check longer than it is willing to hold any HTTP request open for.
+/// **Two budgets used to be checked here and deliberately are not any more.**
+/// `challenge.timeout_ms` went when validation moved into the job queue
+/// (`acme::validate`), and the script's `issue` hook when finalize did
+/// (`acme::issue`): both now bound a job attempt rather than a request. A
+/// revocation a `custom` profile delegates waits on its job for at most the
+/// request's own deadline, so it needs no check either.
 fn check_request_timeout(
     config: &Config,
     name: &str,
     sections: &config::ProfileSections,
 ) -> anyhow::Result<()> {
     let deadline = config.server.request_timeout_ms;
-    // Only when that backend is the one actually installed; an unused
-    // `[signer.custom]` section says nothing about this profile.
-    let budget = if sections.signer.backend == "custom" {
-        sections.signer.custom.timeout_ms
+    let custom = &sections.signer.custom;
+    // Only when that backend is the one installed, and only for the hooks a
+    // request runs; an unused `[signer.custom]` section, or one whose read
+    // hooks are off, says nothing about how long this profile's requests take.
+    let budget = if sections.signer.backend == "custom"
+        && (custom.supports_crl || custom.supports_renewal_info)
+    {
+        custom.timeout_ms
     } else {
         0
     };
@@ -243,9 +248,9 @@ fn check_request_timeout(
     anyhow::ensure!(
         deadline > budget,
         "profile `{name}`: server.request_timeout_ms ({deadline}) must exceed \
-         signer.custom.timeout_ms ({budget}) — that hook runs inside the request, so a shorter \
-         deadline would cut off work that was going to succeed and report it to the client as a \
-         server failure",
+         signer.custom.timeout_ms ({budget}) — the script's `crl`/`renewal_info` hooks run inside \
+         the request, so a shorter deadline would cut off an answer that was coming and report it \
+         to the client as a server failure",
     );
     Ok(())
 }
@@ -368,9 +373,9 @@ mod tests {
     }
 
     /// A request deadline shorter than a hook that runs inside the request is a
-    /// misconfiguration that would look like an intermittent CA outage: an
-    /// issuance that was going to succeed gets cut off and reported to the
-    /// client as a server failure. Refuse to start and name both numbers.
+    /// misconfiguration that would look like an intermittent outage: an answer
+    /// that was coming gets cut off and reported to the client as a server
+    /// failure. Refuse to start and name both numbers.
     #[tokio::test]
     async fn build_all_refuses_a_deadline_shorter_than_an_inline_hook() {
         let config = config_from(
@@ -382,6 +387,7 @@ mod tests {
             signer.backend = "custom"
             signer.custom.script_path = "/bin/true"
             signer.custom.timeout_ms = 5000
+            signer.custom.supports_crl = true
             "#,
         );
         let error = match Profile::build_all(
@@ -395,6 +401,30 @@ mod tests {
         assert!(error.contains("profile `le`"), "{error}");
         assert!(error.contains("request_timeout_ms"), "{error}");
         assert!(error.contains("signer.custom.timeout_ms"), "{error}");
+    }
+
+    /// The script's `issue` hook runs in the `signer_issue` job now, so a
+    /// `custom` profile whose read hooks are off has nothing inline for the
+    /// deadline to cut off. A configuration the old check refused must start.
+    #[tokio::test]
+    async fn a_custom_issue_hook_above_the_deadline_is_no_longer_refused() {
+        let config = config_from(
+            r#"
+            [server]
+            request_timeout_ms = 1000
+
+            [profiles.le]
+            signer.backend = "custom"
+            signer.custom.script_path = "/bin/true"
+            signer.custom.timeout_ms = 5000
+            "#,
+        );
+        Profile::build_all(
+            &config,
+            database().await,
+            &crate::testutil::idle_job_queue(database().await),
+        )
+        .expect("issuance no longer runs inside the request");
     }
 
     /// `challenge.timeout_ms` is deliberately **not** checked against the
