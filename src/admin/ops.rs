@@ -770,7 +770,7 @@ pub async fn cancel_job(
         if let Some(mut order) = Order::find_by_id(&order_id, &database).await?
             && order.status == crate::sqlite::status::OrderStatus::Processing
         {
-            crate::acme::order::record_issue_failure(
+            crate::signer::issuance::record_issue_failure(
                 &mut order,
                 &crate::error::Problem::server_internal("Certificate issuance failed"),
                 "issuance cancelled by operator",

@@ -360,7 +360,6 @@ const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("filter", "cli"),
     ("handlers", "server"),
     ("server", "cli"),
-    ("signer", "acme"),
     ("signer", "handlers"),
     ("webadmin", "server"),
 ];

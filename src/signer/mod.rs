@@ -67,6 +67,7 @@ use crate::sqlite::db::Database;
 
 pub mod custom;
 pub mod info;
+pub mod issuance;
 pub mod local_ca;
 pub mod relay;
 

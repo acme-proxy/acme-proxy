@@ -36,9 +36,9 @@ use base64::prelude::*;
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 
-use crate::acme::order::IssuanceError;
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
+use crate::signer::issuance::IssuanceError;
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::Order;
@@ -910,7 +910,8 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
         }
     };
 
-    let serial = match crate::acme::order::record_issuance(&mut order, chain, &inner.database).await
+    let serial = match crate::signer::issuance::record_issuance(&mut order, chain, &inner.database)
+        .await
     {
         Ok(serial) => serial,
         Err(IssuanceError::Chain(error)) => {
@@ -942,7 +943,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     // `None`: no request is in scope on this path at all.
     let (actor, client) = relay_actor_and_client(&order, &inner.database).await;
     let dispatcher = inner.notifiers.get(&order.profile);
-    crate::acme::order::announce_issuance(
+    crate::signer::issuance::announce_issuance(
         &order,
         &serial,
         actor,
@@ -1009,7 +1010,7 @@ pub(crate) async fn abandon_relayed_order(
 ) -> Result<(), sqlx::Error> {
     // The client sees a generic problem document; the real reason is
     // operator-only, on the mapping row and in the audit detail.
-    crate::acme::order::record_issue_failure(
+    crate::signer::issuance::record_issue_failure(
         order,
         &Problem::server_internal("Upstream certificate issuance failed"),
         reason,

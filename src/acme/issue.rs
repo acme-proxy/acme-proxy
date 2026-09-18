@@ -41,11 +41,14 @@ use std::sync::Arc;
 use base64::prelude::*;
 use tracing::{error, info, warn};
 
-use super::order::{IssuanceError, announce_issuance, record_issuance, record_issue_failure};
 use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use crate::auditor::Auditor;
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobSpec};
+use crate::signer::issuance::IssuanceError;
+use crate::signer::issuance::announce_issuance;
+use crate::signer::issuance::record_issuance;
+use crate::signer::issuance::record_issue_failure;
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::{db::Database, job::Job, order::Order, status::OrderStatus};
 
