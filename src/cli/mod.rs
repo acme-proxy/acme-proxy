@@ -45,6 +45,7 @@ pub mod nonce;
 pub mod order;
 pub mod profile;
 pub mod render;
+pub mod schema;
 pub mod style;
 pub mod upstream;
 pub mod webadmin;
@@ -89,10 +90,48 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+/// `--role`'s value parser: a comma-separated role list.
+///
+/// Wired into `clap` rather than parsed in the command body so an unknown role
+/// is refused with usage, at argv time — before `Config::load` and before
+/// `Database::open`, which *creates* its file. A typo would otherwise surface
+/// as whatever the next step complained about.
+fn parse_roles(value: &str) -> Result<crate::server::RoleSet, String> {
+    crate::server::RoleSet::parse(Some(value))
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Run the ACME HTTP(S) server. Default when no subcommand is given.
-    Serve,
+    Serve {
+        /// Which of the server's three jobs this process does, comma-separated:
+        /// `acme`, `admin`, `worker`. Defaults to all three in one process.
+        ///
+        /// A split deployment runs the same binary and the same configuration
+        /// several times, each naming its own roles. Only a process running
+        /// `worker` applies migrations, generates first-run material and drains
+        /// the job queue; the others check the schema and refuse if it is not
+        /// current.
+        ///
+        /// Parsed by `clap` itself, so an unknown name is refused with usage
+        /// before the configuration is read or the database file is created —
+        /// a typo must not be diagnosed as something else further down.
+        #[arg(long, value_name = "ROLES", value_parser = parse_roles)]
+        role: Option<crate::server::RoleSet>,
+    },
+    /// Apply any database migrations that have not run yet, then exit.
+    ///
+    /// Opening the database no longer migrates it, so this is how a schema is
+    /// brought up to date without starting a server. Safe to run repeatedly.
+    Migrate,
+    /// Prepare a deployment: migrate, then generate whatever first-run material
+    /// the configuration calls for (the local CA, an upstream account, a
+    /// self-signed TLS certificate).
+    ///
+    /// The one place that *creates* key material. A process that does not run
+    /// the `worker` role refuses to generate any, so a split deployment runs
+    /// this once before starting anything.
+    Init,
     /// Inspect and manage ACME accounts.
     Account {
         #[command(subcommand)]
@@ -333,8 +372,10 @@ pub async fn dispatch(
         std::io::stdout().is_terminal(),
         std::env::var("NO_COLOR").ok().as_deref(),
     );
-    match command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(config.clone(), database).await,
+    match command.unwrap_or(Command::Serve { role: None }) {
+        Command::Serve { role } => serve(role, config.clone(), database).await,
+        Command::Migrate => migrate(palette, database).await,
+        Command::Init => init(palette, config, database).await,
         Command::Account { command } => {
             account::run_account_command(command, yes, palette, reader, config, database).await
         }
@@ -376,10 +417,65 @@ pub async fn dispatch(
 ///
 /// [`crate::server::run`] logs every failure it returns; this only carries the
 /// message to `main.rs` as a [`CliError`].
-pub async fn serve(config: Arc<Config>, database: Arc<Database>) -> Result<(), CliError> {
-    crate::server::run(config, database)
+pub async fn serve(
+    roles: Option<crate::server::RoleSet>,
+    config: Arc<Config>,
+    database: Arc<Database>,
+) -> Result<(), CliError> {
+    crate::server::run(roles.unwrap_or_default(), config, database)
         .await
         .map_err(|error| CliError::failed(error.to_string()))
+}
+
+/// `acme-proxy migrate` — applies the embedded migrations and reports what it
+/// did.
+///
+/// Idempotent: `sqlx` tracks each file by version and checksum, so a database
+/// already current is a no-op that says so.
+pub async fn migrate(palette: Palette, database: Arc<Database>) -> Result<(), CliError> {
+    let pending = database.pending_migrations().await?;
+    if pending.is_empty() {
+        println!("The schema is already up to date.");
+        return Ok(());
+    }
+
+    println!("Applying {} migration(s)…", pending.len());
+    database
+        .migrate()
+        .await
+        .map_err(|error| CliError::failed(format!("migration failed: {error}")))?;
+    println!("{}", palette.ok("The schema is up to date."));
+    Ok(())
+}
+
+/// `acme-proxy init` — migrate, then generate whatever first-run material the
+/// configuration calls for.
+///
+/// The one command that *creates* key material. A serving process that does not
+/// run the `worker` role refuses to generate any, so a split deployment runs
+/// this once, as the uid that should own the files, before starting anything.
+///
+/// Building the profiles is what generates: `Profile::build_all` constructs
+/// every signer backend, and a `local_ca` with no key writes one, a `relay`
+/// with no account registers one. That is why this goes through the real
+/// builder rather than a separate generation path — there would be two
+/// definitions of "what a fresh deployment needs" otherwise.
+pub async fn init(
+    palette: Palette,
+    config: &Arc<Config>,
+    database: Arc<Database>,
+) -> Result<(), CliError> {
+    migrate(palette, database.clone()).await?;
+
+    let queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let profiles = crate::server::Profile::build_all(config, database, &queue)
+        .map_err(|error| CliError::failed(error.to_string()))?;
+
+    for profile in &profiles {
+        println!("Profile `{}` is ready.", profile.name);
+    }
+    println!("{}", palette.ok("Initialisation complete."));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -458,7 +554,7 @@ mod tests {
         assert!(cli.command.is_none());
 
         let cli = Cli::try_parse_from(["acme-proxy", "serve"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Serve)));
+        assert!(matches!(cli.command, Some(Command::Serve { role: None })));
 
         let cli = Cli::try_parse_from(["acme-proxy", "account", "list", "--json"]).unwrap();
         assert!(matches!(
@@ -1150,7 +1246,7 @@ mod tests {
         let mut reader: &[u8] = &[];
 
         let error = dispatch(
-            Some(Command::Serve),
+            Some(Command::Serve { role: None }),
             true,
             ColorChoice::Never,
             &mut reader,

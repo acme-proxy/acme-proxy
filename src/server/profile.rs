@@ -116,7 +116,15 @@ impl Profile {
         jobs: &crate::jobs::JobQueue,
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let resolved = config.resolve_profiles()?;
-        let (_assembly, first) = Assembly::new(&resolved, database, jobs.clone(), config)?;
+        // All roles: this builder is the CLI's and the tests' path, where the
+        // process is doing everything it is going to do.
+        let (_assembly, first) = Assembly::new(
+            super::RoleSet::default(),
+            &resolved,
+            database,
+            jobs.clone(),
+            config,
+        )?;
         Self::build_all_with(config, &resolved, &first)
     }
 

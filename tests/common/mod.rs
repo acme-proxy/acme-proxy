@@ -657,7 +657,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     init_tracing();
     let path = std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
     let database = Arc::new(
-        Database::connect(&format!("sqlite://{}", path.display()))
+        Database::connect_and_migrate(&format!("sqlite://{}", path.display()))
             .await
             .unwrap(),
     );

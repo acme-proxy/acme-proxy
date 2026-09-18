@@ -1433,7 +1433,7 @@ mod tests {
         let file =
             std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
-        let db = Arc::new(Database::connect(&url).await.unwrap());
+        let db = Arc::new(Database::connect_and_migrate(&url).await.unwrap());
 
         const RACERS: usize = 8;
         let barrier = Arc::new(tokio::sync::Barrier::new(RACERS));

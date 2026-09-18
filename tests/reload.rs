@@ -20,7 +20,8 @@ use std::sync::Arc;
 
 use acme_proxy::config::Config;
 use acme_proxy::reload::{ReloadError, ReloadHandle};
-use acme_proxy::server::serve_on_with_reloads;
+use acme_proxy::server::sockets::Sockets as ServerSockets;
+use acme_proxy::server::{RoleSet, serve_on_with_reloads};
 use acme_proxy::sqlite::db::Database;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -182,7 +183,7 @@ fn load_from(dir: &TempDir) -> Config {
 
 async fn boot(config: Config, with_admin: bool) -> Server {
     let database = Arc::new(
-        Database::connect(&config.database.url)
+        Database::connect_and_migrate(&config.database.url)
             .await
             .expect("the database must open"),
     );
@@ -201,13 +202,18 @@ async fn boot(config: Config, with_admin: bool) -> Server {
     let (reload, reloads) = acme_proxy::reload::channel();
     let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(serve_on_with_reloads(
+        // Every role: this suite's subject is what a reload does to a running
+        // server, not how the roles split.
+        RoleSet::default(),
         Arc::new(config),
         database,
-        acme_listener,
-        admin_listener,
-        // No metrics listener: `src/server/tests.rs`'s three-port test drives
-        // that socket end to end, and nothing here reads a counter.
-        None,
+        ServerSockets {
+            acme: Some(acme_listener),
+            admin: admin_listener,
+            // No metrics listener: `src/server/tests.rs`'s three-port test
+            // drives that socket end to end, and nothing here reads a counter.
+            metrics: None,
+        },
         async {
             let _ = rx.await;
         },

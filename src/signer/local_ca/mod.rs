@@ -1421,7 +1421,7 @@ mod tests {
     /// would serialise the very interleavings those tests are about.
     async fn file_db(dir: &crate::testutil::TempDir) -> Arc<Database> {
         let url = format!("sqlite://{}", dir.join("acme.db").display());
-        Arc::new(Database::connect(&url).await.unwrap())
+        Arc::new(Database::connect_and_migrate(&url).await.unwrap())
     }
 
     /// The CRL `ca` serves, which every one of these tests reads.

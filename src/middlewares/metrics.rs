@@ -97,7 +97,7 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{profile=\"le\",route=\"/order/{id}\",status=\"200\"} 3\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/order/{id}\",status=\"200\"} 3\n"
             ),
             "{rendered}"
         );
@@ -127,13 +127,13 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{profile=\"none\",route=\"/health\",status=\"200\"} 1\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"none\",route=\"/health\",status=\"200\"} 1\n"
             ),
             "{rendered}"
         );
         assert!(
             rendered.contains(
-                "acme_proxy_requests_total{profile=\"le\",route=\"/boom\",status=\"500\"} 1\n"
+                "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/boom\",status=\"500\"} 1\n"
             ),
             "{rendered}"
         );
@@ -154,7 +154,8 @@ mod tests {
         let rendered = metrics.render();
         assert!(
             rendered.contains(&format!(
-                "acme_proxy_requests_total{{profile=\"none\",route=\"{ROUTE_UNMATCHED}\",status=\"404\"}} 3\n"
+                "acme_proxy_requests_total{{role=\"acme,admin,worker\",profile=\"none\",\
+                 route=\"{ROUTE_UNMATCHED}\",status=\"404\"}} 3\n"
             )),
             "{rendered}"
         );

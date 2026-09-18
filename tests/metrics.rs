@@ -41,7 +41,7 @@ async fn an_acme_request_is_counted_under_its_profile_and_route() {
     let rendered = metrics.render();
     assert!(
         rendered.contains(
-            "acme_proxy_requests_total{profile=\"default\",route=\"/directory\",status=\"200\"} 3\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"default\",route=\"/directory\",status=\"200\"} 3\n"
         ),
         "{rendered}"
     );
@@ -63,7 +63,7 @@ async fn issuing_a_certificate_moves_the_issued_counter() {
 
     let rendered = metrics.render();
     assert!(
-        rendered.contains("acme_proxy_certificates_issued_total{profile=\"default\"} 1\n"),
+        rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"default\"} 1\n"),
         "{rendered}"
     );
     // Nothing was refused, so the failure family is declared and empty — which
@@ -73,7 +73,8 @@ async fn issuing_a_certificate_moves_the_issued_counter() {
         "{rendered}"
     );
     assert!(
-        !rendered.contains("acme_proxy_certificate_issue_failures_total{"),
+        !rendered
+            .contains("acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\","),
         "{rendered}"
     );
 }
@@ -106,12 +107,12 @@ async fn a_refused_csr_is_counted_with_its_reason() {
     let rendered = metrics.render();
     assert!(
         rendered.contains(
-            "acme_proxy_certificate_issue_failures_total{profile=\"default\",reason=\"badCSR\"} 1\n"
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"default\",reason=\"badCSR\"} 1\n"
         ),
         "{rendered}"
     );
     assert!(
-        !rendered.contains("acme_proxy_certificates_issued_total{"),
+        !rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\","),
         "nothing was signed: {rendered}"
     );
 }

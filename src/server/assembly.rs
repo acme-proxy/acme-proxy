@@ -128,6 +128,7 @@ impl Assembly {
     /// forgets them, and every later generation builds its own through
     /// [`build_parts`](Self::build_parts).
     pub fn new(
+        roles: super::RoleSet,
         resolved: &[config::ProfileConfig],
         database: Arc<Database>,
         jobs: crate::jobs::JobQueue,
@@ -137,7 +138,7 @@ impl Assembly {
         // issuance from a background task that has no request and no `Auditor`,
         // so it counts that issuance through a handle it was given at
         // construction.
-        let metrics = Arc::new(metrics::Metrics::new(database.clone()));
+        let metrics = Arc::new(metrics::Metrics::new(database.clone()).with_roles(&roles.labels()));
         // Opened over an empty map and republished immediately below, so the
         // handle the signers capture is the one every later generation writes
         // into.

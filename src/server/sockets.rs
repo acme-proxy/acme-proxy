@@ -104,6 +104,23 @@ pub(super) async fn bind_metrics(config: &Arc<Config>) -> anyhow::Result<Option<
     Ok(Some(listener))
 }
 
+/// The three sockets a process may be handed, already bound.
+///
+/// A struct rather than three positional `Option<TcpListener>` parameters, the
+/// `ProfileParts` and `tests/reload.rs::Sockets` convention: they are the same
+/// shape, so a caller swapping two would still compile, in a function whose
+/// whole subject is which socket answers what.
+///
+/// Every field is optional because a role this process does not run holds no
+/// socket — and `admin` and `metrics` were already optional for their own
+/// `enabled` keys.
+#[derive(Default)]
+pub struct Sockets {
+    pub acme: Option<TcpListener>,
+    pub admin: Option<TcpListener>,
+    pub metrics: Option<TcpListener>,
+}
+
 /// One of the three sockets this process may hold.
 ///
 /// An enum rather than the `&'static str` the log field wants, so the reload
@@ -217,6 +234,7 @@ impl SocketPlans {
 /// socket exactly where it is — which is what makes the one case a bind-first
 /// scheme could not serve, an unchanged address, not a case.
 pub(super) fn plan_sockets(
+    roles: super::RoleSet,
     applied: &Config,
     proposed: &Config,
 ) -> Result<SocketPlans, crate::reload::ReloadError> {
@@ -247,23 +265,26 @@ pub(super) fn plan_sockets(
         }
     };
 
-    // The ACME listener is never switched off — there is no `server.enabled`,
-    // and a CA serving no ACME would be a process with nothing to do.
+    // A role this process does not run holds no socket, in either generation,
+    // so it plans `Keep` and nothing is bound for it. `--role` is a command-line
+    // flag and cannot move under a `SIGHUP`, which is what makes comparing the
+    // same set on both sides correct rather than a simplification.
+    let acme_enabled = roles.has(super::ProcessRole::Acme);
+    let admin_enabled =
+        |config: &Config| roles.has(super::ProcessRole::Admin) && config.admin.enabled;
+
+    // Within the roles this process runs, the ACME listener is still never
+    // switched off by a reload — there is no `server.enabled`, and a CA serving
+    // no ACME would be a process with nothing to do.
     let acme = plan(
         Role::Acme,
-        Some(&applied.server.bind_address),
-        Some(&proposed.server.bind_address),
+        acme_enabled.then_some(applied.server.bind_address.as_str()),
+        acme_enabled.then_some(proposed.server.bind_address.as_str()),
     )?;
     let admin = plan(
         Role::Admin,
-        applied
-            .admin
-            .enabled
-            .then_some(applied.admin.bind_address.as_str()),
-        proposed
-            .admin
-            .enabled
-            .then_some(proposed.admin.bind_address.as_str()),
+        admin_enabled(applied).then_some(applied.admin.bind_address.as_str()),
+        admin_enabled(proposed).then_some(proposed.admin.bind_address.as_str()),
     )?;
     let metrics = plan(
         Role::Metrics,

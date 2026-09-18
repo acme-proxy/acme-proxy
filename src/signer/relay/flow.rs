@@ -1135,7 +1135,7 @@ mod tests {
 
         assert!(
             metrics.render().contains(
-                "acme_proxy_certificate_issue_failures_total{profile=\"default\",reason=\"serverInternal\"} 1"
+                "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"default\",reason=\"serverInternal\"} 1"
             ),
             "{}",
             metrics.render()

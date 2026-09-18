@@ -94,9 +94,20 @@ impl Database {
         self.pool.close().await;
     }
 
-    /// Connects to the `SQLite` database at `url`, creating the file if it does
-    /// not exist yet, then runs the embedded migrations.
-    pub async fn connect(url: &str) -> Result<Database, Error> {
+    /// Opens the `SQLite` database at `url`, creating the file if it does not
+    /// exist yet. **Does not migrate.**
+    ///
+    /// Applying the schema is a separate, named act: [`migrate`](Self::migrate),
+    /// `acme-proxy migrate`, or the `worker` role at startup. It used to happen
+    /// here, which meant every subcommand — `audit list`, `completions`, a
+    /// health check — silently upgraded the schema of whatever database it was
+    /// pointed at, and two processes starting together raced `MIGRATOR::run`
+    /// with no lock between them (`SQLite` gives `sqlx` none).
+    ///
+    /// A caller that needs the schema present asks
+    /// [`pending_migrations`](Self::pending_migrations) and refuses by name, or
+    /// uses [`connect_and_migrate`](Self::connect_and_migrate).
+    pub async fn open(url: &str) -> Result<Database, Error> {
         if !Sqlite::database_exists(url).await.unwrap_or(false) {
             info!(event = "db_creation_started", outcome = "progress", database_url = %url);
             Sqlite::create_database(url).await?;
@@ -116,9 +127,54 @@ impl Database {
 
         let pool = SqlitePool::connect_with(options).await?;
 
-        run_migrations(&pool).await?;
-
         Ok(Database { pool })
+    }
+
+    /// [`open`](Self::open) followed by [`migrate`](Self::migrate).
+    ///
+    /// For the two callers that own the schema — `acme-proxy migrate` and
+    /// `acme-proxy init` — and for tests over a file-backed database, which
+    /// want the same thing in one step.
+    pub async fn connect_and_migrate(url: &str) -> Result<Database, Error> {
+        let database = Self::open(url).await?;
+        database.migrate().await?;
+        Ok(database)
+    }
+
+    /// Applies every embedded migration that has not run yet.
+    ///
+    /// Idempotent: `sqlx` tracks each file by version and checksum, so running
+    /// this against an up-to-date database does nothing.
+    pub async fn migrate(&self) -> Result<(), Error> {
+        run_migrations(&self.pool).await
+    }
+
+    /// The versions of the embedded migrations this database has not applied.
+    ///
+    /// Empty means the schema is current. What the roles that must **not**
+    /// migrate check before serving, so an unmigrated database stops them by
+    /// name rather than failing later as a missing table.
+    ///
+    /// A database with no `_sqlx_migrations` table has applied nothing — that
+    /// is a freshly created file, not an error.
+    pub async fn pending_migrations(&self) -> Result<Vec<i64>, Error> {
+        let applied: std::collections::HashSet<i64> =
+            match sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations;")
+                .fetch_all(&self.pool)
+                .await
+            {
+                Ok(versions) => versions.into_iter().collect(),
+                // No such table: nothing has ever been applied here.
+                Err(Error::Database(_)) => std::collections::HashSet::new(),
+                Err(error) => return Err(error),
+            };
+
+        Ok(MIGRATOR
+            .iter()
+            .filter(|migration| !migration.migration_type.is_down_migration())
+            .map(|migration| migration.version)
+            .filter(|version| !applied.contains(version))
+            .collect())
     }
 
     /// Builds a throwaway in-memory database with migrations applied. Pinned to
@@ -161,7 +217,7 @@ mod tests {
             std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
 
-        let database = Database::connect(&url).await.unwrap();
+        let database = Database::connect_and_migrate(&url).await.unwrap();
 
         // Migrations applied: the `nonces` table exists and is queryable.
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nonces;")

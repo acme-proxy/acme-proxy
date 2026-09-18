@@ -387,7 +387,7 @@ async fn from_config_counts_into_the_registry_it_was_given() {
     assert!(
         registry
             .render()
-            .contains("acme_proxy_certificates_issued_total{profile=\"default\"} 1\n"),
+            .contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"default\"} 1\n"),
         "the audit write did not reach the registry:\n{}",
         registry.render()
     );

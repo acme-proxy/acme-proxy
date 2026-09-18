@@ -146,6 +146,60 @@ fn the_cli_never_builds_a_signer() {
     );
 }
 
+/// Applying the schema is the `worker` role's job and nothing else's.
+///
+/// Opening the database used to migrate it as a side effect, which made every
+/// subcommand an upgrade step and let two processes starting together race
+/// `MIGRATOR::run` — `SQLite` gives `sqlx` no migration lock. The split is only
+/// worth anything while it stays a split, so the two functions that apply
+/// migrations may be called from exactly two places: the commands that own the
+/// schema (`acme-proxy migrate` and `init`, in `src/cli/mod.rs`) and the role
+/// gate in `src/server/mod.rs`.
+///
+/// Anywhere else is a silent migration returning, which is the thing this phase
+/// removed.
+#[test]
+fn only_the_schema_owners_apply_migrations() {
+    let root = repo_root();
+    let mut sources = Vec::new();
+    rust_sources(&root.join("src"), &mut sources);
+
+    // The two owners, plus the module the functions themselves live in.
+    const OWNERS: &[&str] = &["src/cli/mod.rs", "src/server/mod.rs", "src/sqlite/db.rs"];
+
+    let mut offenders = Vec::new();
+    for path in sources {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_test_file(&relative) || OWNERS.contains(&relative.as_str()) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a source file must be readable");
+        for (number, line) in production_part(&text).lines().enumerate() {
+            // Documentation, including the crate doc's compiled startup
+            // example, is not production code: it *shows* a caller rather than
+            // being one, and the example is deliberately the owner's path.
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains(".migrate()") || code.contains("connect_and_migrate(") {
+                offenders.push(format!("{relative}:{}: {}", number + 1, code));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "applying the schema belongs to `acme-proxy migrate`/`init` and to the `worker` role's \
+         startup gate; everything else checks `pending_migrations` and refuses by name:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The scanner itself: a stray call above the test module is found, one inside
 /// it is not, and a `#[cfg(test)]` helper function does not end the scan early.
 #[test]

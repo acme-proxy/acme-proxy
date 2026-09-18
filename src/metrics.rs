@@ -84,6 +84,16 @@ pub struct Metrics {
     /// Read at scrape time rather than tracked: `sqlx` already knows, and a
     /// gauge this crate maintained itself could only ever be a worse copy.
     database: Arc<Database>,
+    /// The roles this process runs, on every series it reports.
+    ///
+    /// Counters are per-process memory by design — the whole reason this is a
+    /// `write!` per series and not a façade crate with a global recorder — so a
+    /// split deployment has one scrape target per process and needs a way to
+    /// tell them apart. Constant for the life of the process, which is why it
+    /// is added at render time rather than carried through every increment: a
+    /// label whose value never varies would otherwise be threaded through
+    /// `record_request` and `record_audit` for nothing.
+    roles: String,
 }
 
 impl std::fmt::Debug for Metrics {
@@ -106,6 +116,8 @@ impl Metrics {
             certificates_issued: Mutex::new(BTreeMap::new()),
             certificate_issue_failures: Mutex::new(BTreeMap::new()),
             database,
+            // Every role, matching `serve` with no `--role`.
+            roles: "acme,admin,worker".to_string(),
         }
     }
 
@@ -167,6 +179,18 @@ impl Metrics {
         *guard.entry(labels).or_insert(0) += 1;
     }
 
+    /// Names the roles this process runs, for the `role` label.
+    ///
+    /// A builder step rather than a `new` parameter for `Auditor::with_metrics`'
+    /// reason inverted: every test that builds a registry would otherwise have
+    /// to know about roles, and all-in-one — the default — is what the plain
+    /// constructor already says.
+    #[must_use]
+    pub fn with_roles(mut self, roles: &[&str]) -> Self {
+        self.roles = roles.join(",");
+        self
+    }
+
     /// Renders the whole registry in the Prometheus text exposition format.
     ///
     /// Series come out in `BTreeMap` order, which makes the output stable
@@ -209,13 +233,14 @@ impl Metrics {
             "# HELP acme_proxy_database_pool_connections Connections in the SQLite pool.\n",
         );
         out.push_str("# TYPE acme_proxy_database_pool_connections gauge\n");
+        let role = escape_label(&self.roles);
         let _ = writeln!(
             out,
-            "acme_proxy_database_pool_connections{{state=\"idle\"}} {idle}"
+            "acme_proxy_database_pool_connections{{role=\"{role}\",state=\"idle\"}} {idle}"
         );
         let _ = writeln!(
             out,
-            "acme_proxy_database_pool_connections{{state=\"busy\"}} {}",
+            "acme_proxy_database_pool_connections{{role=\"{role}\",state=\"busy\"}} {}",
             size.saturating_sub(idle)
         );
 
@@ -243,10 +268,14 @@ impl Metrics {
             Err(poisoned) => poisoned.into_inner(),
         };
         for (labels, value) in guard.iter() {
-            let rendered: Vec<String> = labels
-                .iter()
-                .map(|(key, value)| format!("{key}=\"{}\"", escape_label(value)))
-                .collect();
+            // `role` first, so every series of every family carries it in the
+            // same position — the labels themselves are already sorted.
+            let mut rendered = vec![format!("role=\"{}\"", escape_label(&self.roles))];
+            rendered.extend(
+                labels
+                    .iter()
+                    .map(|(key, value)| format!("{key}=\"{}\"", escape_label(value))),
+            );
             let _ = writeln!(out, "{name}{{{}}} {value}", rendered.join(","));
         }
     }
@@ -323,10 +352,10 @@ mod tests {
         ));
         assert!(rendered.contains("# TYPE acme_proxy_requests_total counter\n"));
         assert!(rendered.contains(
-            "acme_proxy_requests_total{profile=\"le\",route=\"/newOrder\",status=\"201\"} 2\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\",status=\"201\"} 2\n"
         ));
         assert!(rendered.contains(
-            "acme_proxy_requests_total{profile=\"le\",route=\"/newOrder\",status=\"400\"} 1\n"
+            "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\",status=\"400\"} 1\n"
         ));
     }
 
@@ -338,18 +367,61 @@ mod tests {
         let rendered = metrics().await.render();
 
         assert!(rendered.contains("# TYPE acme_proxy_certificates_issued_total counter\n"));
-        assert!(!rendered.contains("acme_proxy_certificates_issued_total{"));
+        assert!(
+            !rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",")
+        );
     }
 
     /// The pool gauge is read from `sqlx`, so it reports a real connection
     /// rather than a number this crate maintains in parallel.
+    /// The label a split deployment is told apart by.
+    ///
+    /// Counters are per-process memory, so three role processes are three
+    /// scrape targets reporting the same family names; without this they would
+    /// be indistinguishable at the collector. Asserted on **every** family,
+    /// including the gauge, because a process reporting its pool under no role
+    /// would be the one series nobody could attribute.
+    #[tokio::test]
+    async fn every_series_carries_the_roles_this_process_runs() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let metrics = Metrics::new(database).with_roles(&["acme", "worker"]);
+        metrics.record_request("le", "/newOrder", 201);
+        metrics.record_audit(&AuditRecord::new(
+            AuditEvent::CertificateIssued,
+            "le",
+            Actor::acme("acct-1"),
+        ));
+
+        let rendered = metrics.render();
+        for line in rendered
+            .lines()
+            .filter(|line| line.starts_with("acme_proxy_"))
+        {
+            assert!(
+                line.contains("role=\"acme,worker\""),
+                "every series must name its roles: {line}"
+            );
+        }
+        // And the default really is all three, which is what an all-in-one
+        // deployment — still the default — reports.
+        assert!(
+            Metrics::new(Arc::new(Database::connect_in_memory().await.unwrap()))
+                .render()
+                .contains("role=\"acme,admin,worker\"")
+        );
+    }
+
     #[tokio::test]
     async fn the_pool_gauge_reports_both_states() {
         let rendered = metrics().await.render();
 
         assert!(rendered.contains("# TYPE acme_proxy_database_pool_connections gauge\n"));
-        assert!(rendered.contains("acme_proxy_database_pool_connections{state=\"idle\"}"));
-        assert!(rendered.contains("acme_proxy_database_pool_connections{state=\"busy\"}"));
+        assert!(rendered.contains(
+            "acme_proxy_database_pool_connections{role=\"acme,admin,worker\",state=\"idle\"}"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_database_pool_connections{role=\"acme,admin,worker\",state=\"busy\"}"
+        ));
     }
 
     /// Driving the counters off the audit record is what keeps the metric and
@@ -380,9 +452,11 @@ mod tests {
 
         let rendered = metrics.render();
 
-        assert!(rendered.contains("acme_proxy_certificates_issued_total{profile=\"le\"} 1\n"));
         assert!(rendered.contains(
-            "acme_proxy_certificate_issue_failures_total{profile=\"le\",reason=\"badCSR\"} 1\n"
+            "acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"le\"} 1\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"le\",reason=\"badCSR\"} 1\n"
         ));
         assert!(!rendered.contains("revoked"));
     }
@@ -400,7 +474,7 @@ mod tests {
         ));
 
         assert!(metrics.render().contains(
-            "acme_proxy_certificate_issue_failures_total{profile=\"le\",reason=\"unknown\"} 1\n"
+            "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"le\",reason=\"unknown\"} 1\n"
         ));
     }
 

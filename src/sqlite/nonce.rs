@@ -361,7 +361,7 @@ mod tests {
         let file =
             std::env::temp_dir().join(format!("acme-proxy-test-{}.db", uuid::Uuid::now_v7()));
         let url = format!("sqlite://{}", file.display());
-        let database = Arc::new(Database::connect(&url).await.unwrap());
+        let database = Arc::new(Database::connect_and_migrate(&url).await.unwrap());
 
         let nonce = Nonce::new();
         nonce.save(&database).await.unwrap();

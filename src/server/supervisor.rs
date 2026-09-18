@@ -41,6 +41,7 @@ pub(super) struct Cells {
 /// them. Ends when the last [`crate::reload::ReloadHandle`] is dropped, which is
 /// what makes [`crate::reload::Reloads::none`] cost nothing.
 pub(super) async fn supervise_reloads(
+    roles: crate::server::RoleSet,
     mut reloads: crate::reload::Reloads,
     mut config: Arc<Config>,
     mut resolved: Vec<crate::config::ProfileConfig>,
@@ -73,7 +74,7 @@ pub(super) async fn supervise_reloads(
             let assembly = assembly.clone();
             let logins = logins.clone();
             tokio::task::spawn_blocking(move || {
-                prepare_reload(&config, &resolved, &assembly, logins.as_deref())
+                prepare_reload(roles, &config, &resolved, &assembly, logins.as_deref())
             })
             .await
             .unwrap_or_else(|error| {

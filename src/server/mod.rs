@@ -32,7 +32,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::sqlite::db::Database;
@@ -40,6 +40,7 @@ use crate::sqlite::db::Database;
 pub mod assembly;
 pub mod generation;
 pub mod profile;
+pub mod roles;
 pub mod router;
 pub mod sockets;
 pub mod supervisor;
@@ -48,13 +49,15 @@ mod tests;
 
 pub use assembly::{Assembly, Egress, GenerationParts};
 pub use profile::{Profile, ProfileParts};
+pub use roles::{ProcessRole, RoleSet};
 pub use router::{AppState, build_app, build_router, catch_panic_acme, metrics_app};
 pub(crate) use router::{panic_message, security_headers};
 pub use sockets::check_metrics_config;
 
 use generation::{Generation, announce_profile, build_generation};
 use sockets::{
-    announce_admin_listener, announce_metrics_listener, bind_admin, bind_metrics, bound_address,
+    Sockets, announce_admin_listener, announce_metrics_listener, bind_admin, bind_metrics,
+    bound_address,
 };
 use supervisor::{Cells, supervise_reloads};
 
@@ -64,16 +67,29 @@ use supervisor::{Cells, supervise_reloads};
 /// Every failure is logged here — `server_socket_bind_failed` for the ACME
 /// socket, `server_fatal_error` for anything after it — and returned for the
 /// caller to turn into an exit status.
-pub async fn run(config: Arc<Config>, database: Arc<Database>) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(&config.server.bind_address)
-        .await
-        .map_err(|error| {
-            error!(event = "server_socket_bind_failed",
-                   outcome = "failure",
-                   bind_address = %config.server.bind_address,
-                   error = %error);
-            anyhow::anyhow!("cannot bind {}: {error}", config.server.bind_address)
-        })?;
+pub async fn run(
+    roles: RoleSet,
+    config: Arc<Config>,
+    database: Arc<Database>,
+) -> anyhow::Result<()> {
+    // Only the roles this process runs get a socket. The ACME listener is the
+    // one that used to be unconditional — there is no `server.enabled`, a CA
+    // serving no ACME having been a process with nothing to do — and a role
+    // split is exactly the case where that stops being true.
+    let listener = match roles.has(ProcessRole::Acme) {
+        false => None,
+        true => Some(
+            TcpListener::bind(&config.server.bind_address)
+                .await
+                .map_err(|error| {
+                    error!(event = "server_socket_bind_failed",
+                           outcome = "failure",
+                           bind_address = %config.server.bind_address,
+                           error = %error);
+                    anyhow::anyhow!("cannot bind {}: {error}", config.server.bind_address)
+                })?,
+        ),
+    };
 
     // Installed here, before anything slow: `SIGHUP`'s default disposition is
     // *terminate*, so until the handler exists a reload signal kills the
@@ -86,15 +102,21 @@ pub async fn run(config: Arc<Config>, database: Arc<Database>) -> anyhow::Result
     let fatal = |error: &anyhow::Error| {
         error!(event = "server_fatal_error", outcome = "failure", error = %error);
     };
-    let admin_listener = bind_admin(&config).await.inspect_err(fatal)?;
+    let admin_listener = match roles.has(ProcessRole::Admin) {
+        false => None,
+        true => bind_admin(&config).await.inspect_err(fatal)?,
+    };
     let metrics_listener = bind_metrics(&config).await.inspect_err(fatal)?;
 
     serve_on_with_reloads(
+        roles,
         config,
         database,
-        listener,
-        admin_listener,
-        metrics_listener,
+        Sockets {
+            acme: listener,
+            admin: admin_listener,
+            metrics: metrics_listener,
+        },
         shutdown_signal(),
         reloads,
     )
@@ -172,11 +194,14 @@ pub async fn serve_on_with(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     serve_on_with_reloads(
+        RoleSet::default(),
         config,
         database,
-        listener,
-        admin_listener,
-        metrics_listener,
+        Sockets {
+            acme: Some(listener),
+            admin: admin_listener,
+            metrics: metrics_listener,
+        },
         shutdown,
         crate::reload::Reloads::none(),
     )
@@ -192,22 +217,35 @@ pub async fn serve_on_with(
 ///
 /// See [`crate::reload`] for what a reload may change and what it refuses.
 pub async fn serve_on_with_reloads(
+    roles: RoleSet,
     config: Arc<Config>,
     database: Arc<Database>,
-    listener: TcpListener,
-    admin_listener: Option<TcpListener>,
-    metrics_listener: Option<TcpListener>,
+    sockets: Sockets,
     shutdown: impl Future<Output = ()> + Send + 'static,
     reloads: crate::reload::Reloads,
 ) -> anyhow::Result<()> {
+    let Sockets {
+        acme: listener,
+        admin: admin_listener,
+        metrics: metrics_listener,
+    } = sockets;
+
     info!(
         event = "server_startup",
         outcome = "success",
+        roles = %roles.labels().join(","),
         bind_address = %config.server.bind_address,
         base_url = %config.server.base_url,
         tls = config.server.tls.enabled,
         database_database_url = %config.database.url
     );
+
+    // The schema, before anything reads a row. **One owner**: the `worker` role
+    // applies the migrations, and every other role checks and refuses by name.
+    // Opening the database used to do this as a side effect, which made every
+    // subcommand an upgrade step and let two processes starting together race
+    // `MIGRATOR::run` with no lock between them.
+    apply_or_require_schema(roles, &database).await?;
 
     // One `shutdown` future, several consumers: both listeners and the job
     // runner. Created here rather than beside `axum::serve` below so a signal
@@ -234,10 +272,16 @@ pub async fn serve_on_with_reloads(
     // Everything that outlives a configuration generation — the signer backends
     // above all, which are carried rather than rebuilt. See
     // `crate::server::Assembly`.
-    let (assembly, parts) = Assembly::new(&resolved, database.clone(), job_queue.clone(), &config)
-        .inspect_err(|error| {
-            error!(event = "profile_init_failed", outcome = "failure", error = %error);
-        })?;
+    let (assembly, parts) = Assembly::new(
+        roles,
+        &resolved,
+        database.clone(),
+        job_queue.clone(),
+        &config,
+    )
+    .inspect_err(|error| {
+        error!(event = "profile_init_failed", outcome = "failure", error = %error);
+    })?;
     let assembly = Arc::new(assembly);
 
     let generation =
@@ -277,21 +321,47 @@ pub async fn serve_on_with_reloads(
     // reach the runner without restarting it. `jobs.max_attempts` is the third
     // piece and does not come through here — it belongs to the enqueue side, so
     // it is published onto `job_queue` itself.
+    //
+    // Only the `worker` role runs it. The cells are created either way, so the
+    // supervisor keeps one shape and a reload republishes into them whether or
+    // not anything is draining here.
     let (registry_tx, registry_rx) = tokio::sync::watch::channel(Arc::new(job_registry));
     let (jobs_tx, jobs_rx) = tokio::sync::watch::channel(Arc::new(config.jobs.clone()));
-    let _job_runner = AbortOnDrop(crate::jobs::spawn_runner_watching(
-        job_queue,
-        registry_rx,
-        jobs_rx,
-        shutdown_rx.clone(),
-    ));
+    let _job_runner = roles.has(ProcessRole::Worker).then(|| {
+        AbortOnDrop(crate::jobs::spawn_runner_watching(
+            job_queue,
+            registry_rx,
+            jobs_rx,
+            shutdown_rx.clone(),
+        ))
+    });
+    if !roles.has(ProcessRole::Worker) {
+        // Advisory rather than a refusal: an operator may legitimately start an
+        // `acme` process before the worker, and the rows it queues are durable.
+        // But a deployment that never runs one issues nothing — every relayed
+        // order, notification, sweep and challenge validation waits for ever —
+        // so this has to be visible.
+        warn!(
+            event = "server_role_no_worker",
+            outcome = "advisory",
+            roles = %roles.labels().join(","),
+            "this process runs no worker, so nothing here drains the job queue: \
+             challenge validation, notifications and the periodic sweeps all wait for a \
+             process started with `--role worker`"
+        );
+    }
 
-    info!(
-        event = "server_listening",
-        outcome = "success",
-        bind_address = %config.server.bind_address,
-        protocol = if tls.is_some() { "https" } else { "http" }
-    );
+    // Only when this process actually holds the ACME socket. A worker-only
+    // process announcing an address it never bound would send an operator
+    // looking for a listener that is somebody else's.
+    if roles.has(ProcessRole::Acme) {
+        info!(
+            event = "server_listening",
+            outcome = "success",
+            bind_address = %config.server.bind_address,
+            protocol = if tls.is_some() { "https" } else { "http" }
+        );
+    }
 
     // One accept loop per role, each owning a socket a reload can replace and a
     // TLS mode it can switch — see `crate::listener`. `axum::serve` below is
@@ -300,7 +370,7 @@ pub async fn serve_on_with_reloads(
     // only a restart can change.
     let admin_bound = bound_address(admin_listener.as_ref(), &config.admin.bind_address);
     let metrics_bound = bound_address(metrics_listener.as_ref(), &config.metrics.bind_address);
-    let (acme_socket, acme_handle) = crate::listener::spawn("acme", Some(listener), tls);
+    let (acme_socket, acme_handle) = crate::listener::spawn("acme", listener, tls);
     let (admin_socket, admin_handle) = crate::listener::spawn("admin", admin_listener, admin_tls);
     let (metrics_socket, metrics_handle) =
         crate::listener::spawn("metrics", metrics_listener, None);
@@ -327,7 +397,7 @@ pub async fn serve_on_with_reloads(
         admin_socket,
         shutdown_rx.clone(),
     );
-    if config.admin.enabled {
+    if roles.has(ProcessRole::Admin) && config.admin.enabled {
         announce_admin_listener(&config, &database, &admin_bound).await;
     }
 
@@ -350,6 +420,7 @@ pub async fn serve_on_with_reloads(
     // Aborted on drop, so an error return below does not leave it parked on a
     // channel nothing will ever send to.
     let _reload_supervisor = AbortOnDrop(tokio::spawn(supervise_reloads(
+        roles,
         reloads,
         config.clone(),
         resolved,
@@ -372,6 +443,46 @@ pub async fn serve_on_with_reloads(
     // best-effort five-second drain which still lost anything slower than it.
     tokio::try_join!(acme, admin, metrics)?;
     Ok(())
+}
+
+/// Applies the migrations, or refuses to serve against a schema that is behind.
+///
+/// **The `worker` role owns the schema.** Every other role checks and stops by
+/// name, which is what removes the startup race: `SQLite` gives `sqlx` no
+/// migration lock, so two processes that both ran `MIGRATOR::run` could
+/// interleave. Naming `acme-proxy migrate` in the refusal also means a split
+/// deployment fails at the process that started too early rather than later, as
+/// a missing table in a request.
+///
+/// All-in-one is unaffected: a default `serve` runs `worker`, so a fresh
+/// database is migrated exactly as it always was.
+async fn apply_or_require_schema(roles: RoleSet, database: &Arc<Database>) -> anyhow::Result<()> {
+    if roles.has(ProcessRole::Worker) {
+        return database.migrate().await.map_err(|error| {
+            error!(event = "db_migration_failed", outcome = "failure", error = %error);
+            anyhow::anyhow!("cannot apply the database migrations: {error}")
+        });
+    }
+
+    let pending = database.pending_migrations().await.map_err(|error| {
+        error!(event = "server_schema_check_failed", outcome = "failure", error = %error);
+        anyhow::anyhow!("cannot read the database schema version: {error}")
+    })?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    error!(
+        event = "server_schema_behind",
+        outcome = "failure",
+        pending = pending.len(),
+        roles = %roles.labels().join(","),
+    );
+    anyhow::bail!(
+        "the database is {} migration(s) behind and this process does not run the `worker` \
+         role, which owns the schema: run `acme-proxy migrate` (or start the worker) first",
+        pending.len()
+    )
 }
 
 /// Serves `app` on one role's socket until the process shuts down.

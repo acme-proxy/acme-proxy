@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 
+use acme_proxy::cli::schema::{SchemaPlan, plan_schema};
 use acme_proxy::cli::{
     Cli, Command, LoggingPlan, Palette, dispatch, generate, init_command_logging, init_logging,
     plan_logging,
@@ -85,7 +86,7 @@ async fn main() -> ExitCode {
     });
 
     let database = Arc::new(
-        Database::connect(&config.database.url)
+        Database::open(&config.database.url)
             .await
             .unwrap_or_else(|error| {
                 // stderr rather than the `error!` this used to be: under
@@ -104,6 +105,39 @@ async fn main() -> ExitCode {
                 std::process::exit(1);
             }),
     );
+
+    // Opening the database no longer migrates it, so an invocation that needs
+    // the schema and does not own it stops here, by name. `migrate`, `init` and
+    // a `serve` running the `worker` role own it and apply the migrations
+    // themselves — the first two in their command body, the third in
+    // `server::run`, where it happens before anything reads a row. The rule is
+    // `cli::schema::plan_schema`, which is a table test because this file sits
+    // outside the coverage floor.
+    if plan_schema(cli.command.as_ref()) == SchemaPlan::Require {
+        match database.pending_migrations().await {
+            Ok(pending) if pending.is_empty() => {}
+            Ok(pending) => {
+                eprintln!(
+                    "{}",
+                    palette.bad(&format!(
+                        "database error: the schema is {} migration(s) behind; \
+                         run `acme-proxy migrate` first",
+                        pending.len()
+                    ))
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    palette.bad(&format!(
+                        "database error: cannot read the schema version: {error}"
+                    ))
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     let stdin = std::io::stdin();
     let mut reader = stdin.lock();

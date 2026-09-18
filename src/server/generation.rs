@@ -416,6 +416,7 @@ pub(super) struct Prepared {
 /// building a `relay` backend for the first time contacts its upstream
 /// synchronously.
 pub(super) fn prepare_reload(
+    roles: crate::server::RoleSet,
     config: &Arc<Config>,
     resolved: &[crate::config::ProfileConfig],
     assembly: &Assembly,
@@ -467,7 +468,7 @@ pub(super) fn prepare_reload(
     // privileged port after a `setcap` was lost. Past the publish phase nothing
     // can fail, so the running listeners are never dropped for a configuration
     // that then turns out not to work.
-    let sockets = plan_sockets(config, &next)?;
+    let sockets = plan_sockets(roles, config, &next)?;
 
     // The egress clients, the notification dispatchers and the signer backends.
     // The last is where a newly mounted endpoint gets a backend, a removed one's

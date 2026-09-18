@@ -535,7 +535,7 @@ async fn an_unbindable_address_is_reported() {
     let mut config = Config::default();
     // A port on an address this process does not hold.
     config.server.bind_address = "192.0.2.1:1".to_string();
-    let error = run(Arc::new(config), database)
+    let error = run(RoleSet::default(), Arc::new(config), database)
         .await
         .expect_err("binding an unroutable address must fail");
     assert!(error.to_string().contains("192.0.2.1:1"), "{error}");
