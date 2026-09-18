@@ -10,9 +10,9 @@ use tracing::{error, info, instrument, warn};
 
 use crate::acme::access::{load_owned_authz, load_owned_challenge, signer_account};
 use crate::acme::order::OrderService;
+use crate::client::ClientIp;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest};
-use crate::filter::ClientIp;
 use crate::server::AppState;
 use crate::sqlite::authz::Challenge;
 

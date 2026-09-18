@@ -276,7 +276,7 @@ async fn touch_account(
 ) {
     let ip = request
         .ip
-        .map(crate::filter::canonical)
+        .map(crate::client::canonical)
         .map(|ip| ip.to_string());
     if !account.needs_touch(crate::sqlite::nonce::now_secs(), ip.as_deref()) {
         return;

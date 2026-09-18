@@ -24,10 +24,11 @@ use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
 };
+use acme_proxy::client::ProxyPolicy;
 use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
-use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, ProxyPolicy, Stage};
+use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, Stage};
 use acme_proxy::jobs::{JobQueue, JobRegistry};
 pub use acme_proxy::metrics::Metrics;
 use acme_proxy::notify::{

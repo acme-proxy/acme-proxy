@@ -49,7 +49,8 @@ use async_trait::async_trait;
 use tracing::debug;
 
 use super::policy::{Check, StageSet, Verdict};
-use super::{IdentifierContext, SUBJECT_ONLY_TYPES, canonical};
+use super::{IdentifierContext, SUBJECT_ONLY_TYPES};
+use crate::client::canonical;
 use crate::ipam::{AddressNames, IpamRegistry, normalize};
 
 /// Requires every requested name to be one the inventory associates with the

@@ -242,7 +242,7 @@ pub async fn deactivate_account(
         |profile| state.notifiers.get(profile),
         request_context
             .ip
-            .map(|ip| crate::filter::canonical(ip).to_string()),
+            .map(|ip| crate::client::canonical(ip).to_string()),
     )
     .await?
     .ok_or_else(|| not_found(&id))?;

@@ -612,7 +612,7 @@ impl OrderService<'_> {
                         challenge_type: challenge.typ.clone(),
                         identifier: authz.base_identifier().to_string(),
                         error: error.kind().to_string(),
-                        client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
+                        client_ip: client_ip.map(|ip| crate::client::canonical(ip).to_string()),
                     }))
                     .await;
             }

@@ -78,7 +78,7 @@ pub fn signer_issue_spec(
             "profile": order.profile,
             "csr": BASE64_URL_SAFE_NO_PAD.encode(csr_der),
             "client": client.to_json(),
-            "client_ip": client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
+            "client_ip": client_ip.map(|ip| crate::client::canonical(ip).to_string()),
         }))
         .with_deadline(Some(order.expires))
 }

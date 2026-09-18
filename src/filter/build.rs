@@ -22,7 +22,8 @@ use tracing::{info, warn};
 
 use super::expr::{Condition, is_reserved_word};
 use super::policy::{Check, Effect, FilterPolicy, Mode, Rule, StageSet};
-use super::{ProxyPolicy, custom, eab, identifiers, ip_allow, ipam, path, reverse_dns};
+use super::{custom, eab, identifiers, ip_allow, ipam, path, reverse_dns};
+use crate::client::ProxyPolicy;
 use crate::config::{CheckConfig, DnsConfig, FilterConfig, RuleConfig, validate_key_names};
 use crate::ipam::IpamRegistry;
 

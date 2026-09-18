@@ -45,11 +45,9 @@ use axum::{
 use tracing::{Instrument, debug, field, info, info_span, warn};
 use uuid::Uuid;
 
-pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+use crate::client::RequestId;
 
-/// Extension wrapper for the HTTP Request ID.
-#[derive(Debug, Clone)]
-pub struct RequestId(pub String);
+pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Returns true for the probe routes whose access line belongs at `debug`.
 ///
@@ -130,7 +128,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| crate::filter::canonical(addr.ip()));
+        .map(|ConnectInfo(addr)| crate::client::canonical(addr.ip()));
 
     // `profile` is filled in by each profile router (see `build_router`): this
     // layer is server-wide and mounted above the `/profile/<name>` nesting, so
@@ -155,7 +153,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     if peer.is_some() {
         request
             .extensions_mut()
-            .insert(crate::filter::ClientIp(peer));
+            .insert(crate::client::ClientIp(peer));
     }
 
     let span = info_span!(

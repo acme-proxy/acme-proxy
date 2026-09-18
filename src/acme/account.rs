@@ -161,7 +161,7 @@ impl AccountService<'_> {
                     profile: profile.name.clone(),
                     account_id: account.id.to_string(),
                     contact: account.contact.clone(),
-                    client_ip: client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
+                    client_ip: client_ip.map(|ip| crate::client::canonical(ip).to_string()),
                 }))
                 .await;
         }
@@ -238,7 +238,7 @@ impl AccountService<'_> {
                 &mut account,
                 database,
                 Some(&profile.notify),
-                client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
+                client_ip.map(|ip| crate::client::canonical(ip).to_string()),
             )
             .await
             .map_err(|error| {

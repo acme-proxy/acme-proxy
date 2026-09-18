@@ -7,11 +7,9 @@
 //! documented precedence, six matching rules, a startup vocabulary of refusals
 //! and a credential that must never reach a log.
 //!
-//! Reaching into [`crate::filter`] for [`parse_net`]/[`canonical`] is a choice,
-//! not an accident: that subsystem is inbound policy and this is outbound, but
-//! CIDR parsing is CIDR parsing, and two of them would drift. If a third
-//! consumer ever appears, hoist those four helpers into a neutral module rather
-//! than growing a second copy here.
+//! [`parse_net`]/[`canonical`] are the inbound filters' helpers too, and live in
+//! the neutral [`crate::client`] so both directions share them: CIDR parsing is
+//! CIDR parsing, and two copies would drift.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -21,8 +19,8 @@ use ipnet::IpNet;
 use tracing::info;
 use url::Url;
 
+use crate::client::{canonical, parse_net};
 use crate::config::ProxyConfig;
-use crate::filter::{canonical, parse_net};
 use crate::http_client::Endpoint;
 
 /// One proxy, already picked apart.

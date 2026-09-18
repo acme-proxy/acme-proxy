@@ -278,6 +278,7 @@ fn only_the_schema_owners_apply_migrations() {
 /// [`CRATE_DEPS`].
 const MODULE_CRATE: &[(&str, &str)] = &[
     ("cert", "core"),
+    ("client", "core"),
     ("config", "core"),
     ("eab", "core"),
     ("error", "core"),
@@ -352,15 +353,12 @@ const CRATE_DEPS: &[(&str, &[&str])] = &[
 const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("acme", "server"),
     ("admin", "server"),
-    ("audit", "filter"),
-    ("audit", "middlewares"),
     ("error", "sqlite"),
     ("extractors", "server"),
     ("filter", "cli"),
     ("handlers", "server"),
     ("jobs", "admin"),
     ("notify", "admin"),
-    ("proxy", "filter"),
     ("server", "cli"),
     ("signer", "acme"),
     ("signer", "handlers"),

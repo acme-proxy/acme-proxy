@@ -39,9 +39,8 @@ use regex::Regex;
 use tracing::{debug, info};
 
 use super::policy::{Check, StageSet, Verdict};
-use super::{
-    ConnectionContext, IdentifierContext, ListVerdict, canonical, check_lists, compile_matchers,
-};
+use super::{ConnectionContext, IdentifierContext, ListVerdict, check_lists, compile_matchers};
+use crate::client::canonical;
 use crate::config::DnsConfig;
 use crate::dns::{HickoryResolver, Resolver, resolver_addr};
 

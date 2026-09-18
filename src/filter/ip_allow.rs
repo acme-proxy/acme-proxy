@@ -35,7 +35,8 @@ use ipnet::IpNet;
 use tracing::info;
 
 use super::policy::{Check, StageSet, Verdict};
-use super::{ConnectionContext, IdentifierContext, ListVerdict, check_lists, parse_nets};
+use super::{ConnectionContext, IdentifierContext, ListVerdict, check_lists};
+use crate::client::parse_nets;
 
 /// Resolved `[filter.check.<name>]` settings for `type = "allowed_ip"`.
 #[derive(Debug, Clone, Default)]

@@ -441,7 +441,7 @@ impl RequestContext {
 
     fn gather(headers: &axum::http::HeaderMap, extensions: &axum::http::Extensions) -> Self {
         let ip = extensions
-            .get::<crate::filter::ClientIp>()
+            .get::<crate::client::ClientIp>()
             .and_then(|client| client.0);
         let user_agent = headers
             .get(axum::http::header::USER_AGENT)
@@ -449,7 +449,7 @@ impl RequestContext {
             .map(|value| value.chars().take(USER_AGENT_MAX).collect::<String>())
             .filter(|value| !value.is_empty());
         let request_id = extensions
-            .get::<crate::middlewares::access::RequestId>()
+            .get::<crate::client::RequestId>()
             .map(|id| id.0.clone());
         Self {
             ip,
@@ -703,7 +703,7 @@ impl Auditor {
     /// Resolves a [`RequestContext`] into the [`ClientContext`] a row stores,
     /// running the reverse lookup on the way.
     pub async fn client(&self, request: &RequestContext) -> ClientContext {
-        let canonical = request.ip.map(crate::filter::canonical);
+        let canonical = request.ip.map(crate::client::canonical);
         ClientContext {
             ip: canonical.map(|ip| ip.to_string()),
             ptr: self.reverse(canonical).await,

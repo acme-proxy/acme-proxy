@@ -251,6 +251,7 @@ pub mod audit;
 pub mod cert;
 pub mod challenge;
 pub mod cli;
+pub mod client;
 pub mod config;
 pub mod dns;
 pub mod eab;

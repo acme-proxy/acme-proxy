@@ -154,7 +154,7 @@ impl Check for CustomScriptFilter {
     async fn check_connection(&self, context: &ConnectionContext<'_>) -> Verdict {
         let client_ip_str = context
             .client_ip
-            .map(|ip| super::canonical(ip).to_string())
+            .map(|ip| crate::client::canonical(ip).to_string())
             .unwrap_or_default();
         let envs = [
             ("ACME_FILTER_HOOK", "connection"),
@@ -185,7 +185,7 @@ impl Check for CustomScriptFilter {
 
         let client_ip_str = context
             .client_ip
-            .map(|ip| super::canonical(ip).to_string())
+            .map(|ip| crate::client::canonical(ip).to_string())
             .unwrap_or_default();
         let identifiers_vec: Vec<String> = context
             .identifiers

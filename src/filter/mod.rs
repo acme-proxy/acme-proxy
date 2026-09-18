@@ -67,15 +67,14 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use crate::client::canonical;
 use axum::http::Method;
-use ipnet::IpNet;
 use regex::{Regex, RegexBuilder};
 
 use crate::config::FilterConfig;
 use crate::sqlite::order::Identifier;
 
 pub mod build;
-pub mod client_ip;
 pub mod custom;
 pub mod eab;
 pub mod explain;
@@ -87,7 +86,6 @@ pub mod path;
 pub mod policy;
 pub mod reverse_dns;
 
-pub use client_ip::{ClientIp, ProxyPolicy};
 pub use eab::EabIdentity;
 pub use policy::{
     Check, CheckSummary, Effect, FilterPolicy, Mode, Outcome, Rule, RuleSummary, Stage, StageSet,
@@ -109,8 +107,10 @@ pub(crate) const SUBJECT_ONLY_TYPES: &[&str] = &["cn"];
 /// What a [`Check`] knows about a request before it is dispatched.
 #[derive(Debug)]
 pub struct ConnectionContext<'a> {
-    /// The client address, per [`ProxyPolicy::resolve`]. `None` when the peer
-    /// address is unavailable — checks that need it must fail closed.
+    /// The client address, per
+    /// [`ProxyPolicy::resolve`](crate::client::ProxyPolicy::resolve). `None`
+    /// when the peer address is unavailable — checks that need it must fail
+    /// closed.
     pub client_ip: Option<IpAddr>,
     pub method: &'a Method,
     pub path: &'a str,
@@ -211,45 +211,6 @@ pub fn from_config(
     eab_enabled: bool,
 ) -> anyhow::Result<Arc<FilterPolicy>> {
     build::build(cfg, dns, ipam, eab_enabled).map(Arc::new)
-}
-
-/// Parses one allow-list entry as a network.
-///
-/// Accepts both CIDR notation (`192.168.1.0/24`, `fd00::/8`) and a bare address
-/// (`203.0.113.7`), the latter becoming a host route — writing a `/32` for a
-/// single machine is noise an operator should not have to remember.
-pub(crate) fn parse_net(entry: &str) -> anyhow::Result<IpNet> {
-    if let Ok(net) = entry.parse::<IpNet>() {
-        return Ok(net);
-    }
-    match entry.parse::<IpAddr>() {
-        Ok(addr) => Ok(IpNet::from(addr)),
-        Err(_) => anyhow::bail!("invalid network or address: {entry}"),
-    }
-}
-
-/// Parses a list of network entries, naming the setting in any error.
-pub(crate) fn parse_nets(entries: &[String], setting: &str) -> anyhow::Result<Vec<IpNet>> {
-    entries
-        .iter()
-        .map(|entry| parse_net(entry).map_err(|error| anyhow::anyhow!("{setting}: {error}")))
-        .collect()
-}
-
-/// Normalizes an address for comparison.
-///
-/// The default bind is `[::]:3000`, so an IPv4 client arrives over the
-/// dual-stack socket as `::ffff:192.168.1.5` and would never match a
-/// `192.168.1.0/24` rule. Canonicalizing first makes the operator's v4 rules
-/// mean what they look like they mean.
-pub(crate) fn canonical(ip: IpAddr) -> IpAddr {
-    ip.to_canonical()
-}
-
-/// Whether any network contains `ip`, comparing canonical forms.
-pub(crate) fn nets_contain(nets: &[IpNet], ip: IpAddr) -> bool {
-    let ip = canonical(ip);
-    nets.iter().any(|net| net.contains(&ip))
 }
 
 /// The outcome of an allow/deny pair for one value.
@@ -357,50 +318,6 @@ pub(crate) fn compile_matchers(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_net_accepts_cidr_and_bare_addresses() {
-        assert!(parse_net("192.168.1.0/24").is_ok());
-        assert!(parse_net("fd00::/8").is_ok());
-
-        // A bare address becomes a host route, so an operator does not have to
-        // remember to write `/32`.
-        let host = parse_net("203.0.113.7").unwrap();
-        assert_eq!(host.prefix_len(), 32);
-        assert!(host.contains(&"203.0.113.7".parse::<IpAddr>().unwrap()));
-        assert!(!host.contains(&"203.0.113.8".parse::<IpAddr>().unwrap()));
-
-        let host6 = parse_net("2001:db8::1").unwrap();
-        assert_eq!(host6.prefix_len(), 128);
-
-        assert!(parse_net("not-a-network").is_err());
-        assert!(parse_net("192.168.1.0/99").is_err());
-    }
-
-    #[test]
-    fn nets_contain_canonicalizes_ipv4_mapped_addresses() {
-        let nets = parse_nets(&["192.168.1.0/24".to_string()], "test").unwrap();
-        assert!(nets_contain(&nets, "192.168.1.5".parse().unwrap()));
-        assert!(nets_contain(&nets, "::ffff:192.168.1.5".parse().unwrap()));
-        assert!(!nets_contain(&nets, "10.0.0.1".parse().unwrap()));
-    }
-
-    #[test]
-    fn parse_nets_names_the_offending_setting() {
-        let error = parse_nets(&["garbage".to_string()], "filter.check.net.allow")
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("filter.check.net.allow"), "{error}");
-        assert!(error.contains("garbage"), "{error}");
-    }
-
-    #[test]
-    fn canonical_unmaps_ipv4_in_ipv6() {
-        assert_eq!(
-            canonical("::ffff:10.0.0.1".parse().unwrap()),
-            "10.0.0.1".parse::<IpAddr>().unwrap()
-        );
-    }
 
     #[test]
     fn compile_anchored_prevents_suffix_bypass() {

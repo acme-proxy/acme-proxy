@@ -50,9 +50,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::warn;
 
-use super::client_ip::ProxyPolicy;
 use super::expr::Condition;
 use super::{ConnectionContext, IdentifierContext};
+use crate::client::ProxyPolicy;
 
 /// What one check decided about one request.
 #[derive(Debug, Clone, PartialEq, Eq)]

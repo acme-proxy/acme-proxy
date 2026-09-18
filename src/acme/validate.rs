@@ -64,7 +64,7 @@ pub fn challenge_validate_spec(
     JobSpec::now(CHALLENGE_VALIDATE_KIND, challenge_id)
         .with_payload(serde_json::json!({
             "challenge_id": challenge_id,
-            "client_ip": client_ip.map(|ip| crate::filter::canonical(ip).to_string()),
+            "client_ip": client_ip.map(|ip| crate::client::canonical(ip).to_string()),
         }))
         .with_deadline(Some(authz_expires))
 }

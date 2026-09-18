@@ -9,9 +9,9 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::acme::{AccountService, Error};
+use crate::client::ClientIp;
 use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
-use crate::filter::ClientIp;
 use crate::key_change;
 use crate::server::AppState;
 

@@ -481,9 +481,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::client::ProxyPolicy;
     use crate::filter::expr::Condition;
+    use crate::filter::ip_allow;
     use crate::filter::policy::{Check, Effect, Mode, Rule};
-    use crate::filter::{ProxyPolicy, ip_allow};
     use crate::testutil::dns_identifiers;
 
     fn net(allow: &[&str]) -> Arc<dyn Check> {

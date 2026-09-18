@@ -127,10 +127,10 @@ fn the_request_context_caps_the_user_agent_and_drops_an_empty_one() {
         let mut request = builder.body(()).unwrap();
         request
             .extensions_mut()
-            .insert(crate::filter::ClientIp(Some(ip("203.0.113.7"))));
+            .insert(crate::client::ClientIp(Some(ip("203.0.113.7"))));
         request
             .extensions_mut()
-            .insert(crate::middlewares::access::RequestId("req-9".to_string()));
+            .insert(crate::client::RequestId("req-9".to_string()));
         RequestContext::from_request(&request)
     };
 
