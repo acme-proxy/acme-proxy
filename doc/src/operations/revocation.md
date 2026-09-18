@@ -38,7 +38,12 @@ byte comparison is the safety net.
 
 ### Responses
 
-- **`200 OK`** — revoked.
+- **`200 OK`** — revoked. For a `local_ca` profile the order reads revoked at
+  once and the CRL follows as soon as the worker has signed it.
+- **`503 serverInternal` + `Retry-After`** — `relay` or `custom` only: the
+  revocation was queued for the worker and had not completed by the request's
+  deadline. Nothing failed, and it carries on; asking again waits on the same
+  queued revocation.
 - **`400 alreadyRevoked`** — the certificate was already revoked. This is
   checked *after* authorization, so an unauthorized caller cannot use the
   endpoint to probe whether a certificate has been revoked.
@@ -53,13 +58,23 @@ reasons, and out-of-range values are meaningless; in all three cases
 `acme-proxy` records the revocation with **no reason** rather than refusing it.
 Revoking is always preferable to arguing about why.
 
-## Ordering: the CA acts first
+## Who revokes: never the request
 
-The signer backend's own `revoke` is called **before** the order is marked
-revoked locally. The CA-side action is authoritative, so if the signer fails,
-the order is deliberately left un-revoked and the operation can simply be
-retried. A backend's `revoke` must therefore be **idempotent** — it may
-legitimately be called again for a certificate it has already revoked.
+Withdrawing trust needs what only the `worker` role holds — the CA key, a token
+login, a relay's upstream account — so no request, from a client or from the
+panel, calls a backend itself:
+
+- **`local_ca`:** the revocation is a database row and the order's stamp, in one
+  transaction, and the worker signs it into the CRL (`local_ca_crl_regenerate`).
+  No key is needed to record it.
+- **`relay` / `custom`:** the revocation is a `signer_revoke` job for the
+  worker, and the request waits on it.
+
+For those two, the backend's own `revoke` is called **before** the order is
+marked revoked. The CA-side action is authoritative, so if the backend fails,
+the order is deliberately left un-revoked and the job retries. A backend's
+`revoke` must therefore be **idempotent** — it may legitimately be called again
+for a certificate it has already revoked.
 
 ## Revocation is orthogonal to the order state machine
 
@@ -86,8 +101,9 @@ acme-proxy order revoke <order-id> --reason 1
 It is **not** confirm-gated — unlike `order delete` — because revocation only
 ever tightens trust; there is no destructive outcome to protect against. It
 runs the same checks and writes the same audit row and `certificate_revoked`
-notification as the ACME endpoint, but it never loads the CA key or talks to an
-upstream itself: whatever holds the signing material is the running server.
+notification as the ACME endpoint, and like it never loads the CA key or talks
+to an upstream itself: whatever holds the signing material is the running
+server's worker.
 
 - **`local_ca`:** the command records the revocation in the database and marks
   the order revoked in one transaction, then queues a
@@ -112,9 +128,10 @@ With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
 
 - It is **routed but deliberately not advertised** in the ACME directory. A CRL
   is CA infrastructure, not an ACME resource, so it has no directory entry.
-- A valid, correctly signed **empty** CRL exists from the moment the CA is
-  created, before anything has ever been revoked. Clients fetching it do not
-  have to special-case "no revocations yet".
+- A valid, correctly signed **empty** CRL exists from the moment a worker has
+  started with the CA, before anything has ever been revoked. Clients fetching
+  it do not have to special-case "no revocations yet". Every role serves the
+  stored CRL; none signs one but the worker.
 - It is signed again on every revocation, and by a daily refresh; see below.
 
 The revocations and the current signed CRL live in the **database**, keyed by

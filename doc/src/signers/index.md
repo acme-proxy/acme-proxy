@@ -36,7 +36,11 @@ section, so a `local_ca` at `/profile/dev` can sit beside a relay at
 ## What every backend has to provide
 
 All three implement the same trait, and the shape of it is worth knowing because
-it is what the rest of the server can rely on:
+it is what the rest of the server can rely on. It comes in two halves, split by
+who holds the key: the **backend** — `issue`, `revoke` — is built only by the
+process running the `worker` role, and the **read side** — the CRL, the trust
+anchor, renewal information — is built by every process from public material,
+so the one parsing client requests never holds signing material:
 
 - **`issue`** — the only required capability. It receives the order's
   identifiers and the client's CSR and returns a chain, or refuses with
@@ -48,10 +52,11 @@ it is what the rest of the server can rely on:
   say here". `local_ca` publishes a CRL; the relay passes the upstream's renewal
   window through, [`explanationURL`](../features/renewal_info.md) and all.
 
-A backend may also answer `issue` with **`processing`** rather than a
-certificate, meaning "ask again later". Only the relay does — signing upstream
-takes as long as the upstream takes. `local_ca` and `custom` answer inline, so
-an order under those never passes through the `processing` state.
+`issue` never runs inside a client's request: `finalize` queues it, answers the
+order `processing`, and the worker calls the backend. A backend may itself
+answer **`processing`** rather than a certificate, meaning "this finishes
+later". Only the relay does — signing upstream takes as long as the upstream
+takes — and the order simply stays `processing` until it has.
 
 ## Configuration
 

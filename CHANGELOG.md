@@ -95,6 +95,50 @@ migrated configuration before restarting.
   with `jobs show`. A failed job is exit 1, carrying its error. Already revoked
   and a bad `--reason` are still refused at once, with exit 3. The CLI no longer
   builds any signer backend.
+- **Only the `worker` role holds a signing backend.** Signing and revoking
+  need the CA key, a PKCS#11 login or a relay's upstream account, and a process
+  running `acme` or `admin` without `worker` now builds none of them: it never
+  reads `ca.key`, never logs in to a token and never contacts a relay's
+  upstream, at startup or on reload. It serves the CA's certificate, its CRL,
+  renewal information and relay `http-01` tokens from public material and the
+  database, and queues what needs a key. Such a process that finds no CA
+  certificate refuses to start rather than generating one:
+
+  ```text
+  cannot read the CA certificate `ca.pem`: No such file or directory — run `acme-proxy init` with this configuration, or start the `worker` role first, so the CA exists
+  ```
+
+  A split deployment therefore runs `acme-proxy init` (or starts the worker)
+  before the other roles, which `deployment.md` already documented. All-in-one
+  `serve` is unaffected. `ca.key` needs to be readable only by the worker's uid.
+- **Finalize answers `processing` for every backend.** `POST
+  /order/{id}/finalize` checks the CSR exactly as before — every synchronous
+  refusal, `badCSR` included, is unchanged — then claims the order and queues a
+  `signer_issue` job in one transaction, and answers `200` with the order
+  `processing` plus `Retry-After`. The worker signs; the client polls the order
+  until it is `valid`, as it always did for the `relay` backend and as RFC 8555
+  §7.4 describes. certbot, acme.sh and lego all poll. A script that read
+  `certificate` from finalize's own response must poll the order instead.
+
+  Two outcomes that used to be synchronous are now read off the polled order:
+  a CSR **the backend itself** rejects (a `custom` script's exit 3, or a local
+  CA's own check) makes the order `invalid` with a `badCSR` document, where it
+  used to leave it `ready`; and a backend failure is retried under
+  `jobs.max_attempts` before the order goes `invalid`, where it used to go
+  `invalid` at once. A chain this server cannot read now invalidates the order
+  instead of leaving it `ready`.
+- **`POST /revokeCert` for a `relay` or `custom` profile waits on the worker.**
+  The revocation is a `signer_revoke` job the request waits on, up to
+  `server.request_timeout_ms` less a second. Still running then, it answers
+  `503` + `Retry-After: 1` (`serverInternal`, "The revocation is queued; retry
+  to confirm it") and carries on; asking again follows the same job. A local
+  CA's revocation is a ledger row, as `order revoke`'s already was: the answer
+  is immediate, and the CRL follows once the worker has signed it.
+- **The panel's revoke may answer `202`.** `POST /api/orders/{id}/revoke`
+  answers `202 {"status":"queued","job":"<id>"}` when a relay or custom
+  revocation is still running at the end of its wait, and `/ui` says it was
+  queued. A worker that gives up on it is the same `502 signer_failed` a failing
+  backend always was.
 - **A local CA no longer writes `ca.json`.** Its revocations live in the
   database, and the JSON ledger beside `signer.local_ca.crl_path` is imported
   once, the first time the CA meets the new schema (`local_ca_ledger_imported`),
@@ -195,6 +239,31 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **`check_request_timeout` covers only a `custom` script's read hooks.** The
+  script's `issue` and `revoke` hooks run in the worker now, so
+  `server.request_timeout_ms` must exceed `signer.custom.timeout_ms` only while
+  `supports_crl` or `supports_renewal_info` is on — the hooks a request still
+  runs inline.
+- **In a split deployment the issuance counters move to the worker's scrape
+  target.** `acme_proxy_certificates_issued_total` and
+  `acme_proxy_certificate_issue_failures_total` for a backend's own refusals are
+  counted by the process that signs; the finalize refusals made before
+  anything is queued are still counted by the `acme` process.
+- **The read side never signs a CRL.** `GET /crl` serves the stored row in every
+  role, and the worker stores each CA's first CRL before it serves anything, at
+  startup and before publishing a reload that mounts a new CA. Only the worker
+  writes `ca.crl`.
+- **`jobs cancel` of a live `signer_issue` job invalidates its order**, with one
+  operator-attributed `certificate_issue_failed` row, as cancelling a relay
+  already did. The jobs page's kind filter lists `signer_issue` and
+  `challenge_validate`.
+- **Log events:** the `order_finalize_*` outcomes (`order_finalized`,
+  `order_finalize_bad_csr`, `order_finalize_issuance_failed`,
+  `order_finalize_delegated`, `order_finalize_chain_unparsable`, …) are logged
+  by the worker that signs rather than by the request. New:
+  `order_finalize_queued`, `order_finalize_abandoned`,
+  `certificate_revoke_queued`, `certificate_revoke_queue_failed`,
+  `admin_order_revoke_queued` and `local_ca_crl_not_stored`.
 - **An operator's revocation sends `certificate_revoked`.** `order revoke`, the
   panel and `POST /api/orders/{id}/revoke` now notify exactly as a client's
   `POST /revokeCert` always has: the event is about the certificate, not about
@@ -241,6 +310,11 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A local CA's revocation recorded beside a running server could fail with
+  `database is locked`.** The ledger write read the CA's stored CRL and then
+  wrote, and a CRL the server stored in between made SQLite refuse the upgrade
+  outright (`SQLITE_BUSY_SNAPSHOT`) rather than wait. It now takes the write
+  lock first.
 - **A certificate revoked with `acme-proxy order revoke` while the server was
   running silently left the CRL** at the server's next revocation or daily
   prune, though the order still read as revoked. Each process rewrote

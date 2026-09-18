@@ -113,10 +113,12 @@ queued**.
 **`request_timeout_ms`** (`Integer`) — *Default: `60000` | Env: `ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS`*
 
 Whole-request deadline. It **must exceed** `signer.custom.timeout_ms` when that
-backend is installed, since that hook runs inline inside a request; the server
-refuses to start otherwise. It is deliberately independent of
-`challenge.timeout_ms`, which bounds a job attempt rather than a request — see
-[Challenge Validation](../challenges/index.md).
+backend is installed with its `crl` or `renewal_info` hook enabled, since those
+hooks run inline inside a request; the server refuses to start otherwise. It is
+deliberately independent of `challenge.timeout_ms` and of the script's `issue`
+and `revoke` hooks, which run in the job queue — see [Challenge
+Validation](../challenges/index.md). A relay or custom revocation that a request
+queues is waited on for this long, less a second.
 
 **`max_body_bytes`** (`Integer`) — *Default: `131072` | Env: `ACME_PROXY_SERVER__MAX_BODY_BYTES`*
 

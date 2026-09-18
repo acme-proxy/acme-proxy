@@ -52,9 +52,10 @@ Two consequences fall straight out of the diagram:
 - **The key authorization at the upstream uses the proxy's own thumbprint**,
   never the client's. They are different accounts on different servers, so the
   client could not answer the upstream's challenge even in principle.
-- **`finalize` answers `processing`, not `valid`.** Conversation 2 takes as long
-  as the upstream takes, so the client polls. `local_ca` and `custom` answer
-  inline and never pass through `processing` — see
+- **`finalize` stays `processing` for longer.** Every backend's finalize
+  answers `processing` and is signed by the worker, but here conversation 2
+  takes as long as the upstream takes, so the client polls for minutes rather
+  than for the moment `local_ca` needs — see
   [Core Concepts](../core/concepts.md#order).
 
 ## Challenge strategies

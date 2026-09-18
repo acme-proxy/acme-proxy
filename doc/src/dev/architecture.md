@@ -150,7 +150,7 @@ side must be built first, and the signature is where that ordering is stated
 rather than a borrow error to rediscover. Its state is `AdminState`, not
 `AppState`: the latter holds exactly one `Profile`, and this listener is
 cross-profile by nature (revoking an order needs *that order's own* profile's
-signer, which may be a different CA from any default).
+revocation route, which may name a different CA from any default).
 
 ## Order lifecycle
 
@@ -185,8 +185,12 @@ sequenceDiagram
     Client->>Axum Router: POST /finalize (with CSR)
     Axum Router->>Filters: Re-validate identifiers from CSR
     Filters-->>Axum Router: Allow/Deny
-    Axum Router->>Signer Backend: Request Signature
-    Signer Backend-->>Axum Router: Signed Certificate
+    Axum Router->>Job Queue: claim + enqueue signer_issue
+    Axum Router-->>Client: 200 OK + order (processing)
+    Job Queue->>Signer Backend: Request Signature (worker only)
+    Signer Backend-->>Job Queue: Signed Certificate
+    Job Queue->>Order Manager: Record certificate (order -> valid)
+    Client->>Axum Router: POST-as-GET order (poll)
     Axum Router-->>Client: 200 OK (Certificate URL)
 ```
 
@@ -203,6 +207,11 @@ Three transactional properties hold this together:
 - Challenge validation returns **`200` plus the challenge object whether it
   passed or failed** (§7.5.1). A 4xx would surface as a transport failure to
   certbot's `acme` library rather than as a failed challenge.
+- `finalize` claims the order (`ready → processing`) and queues its
+  `signer_issue` job in **one transaction**, so no crash can leave an order
+  `processing` with nothing coming to settle it. The job runs in the `worker`
+  role — the only one that builds a signing backend — which is what keeps the
+  CA key out of the process parsing client requests.
 
 
 ## Pluggable signing keys

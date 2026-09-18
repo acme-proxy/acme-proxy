@@ -31,9 +31,10 @@ is selected.
 
 **`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS`*
 
-Budget for one invocation. Because issuance runs inline in the `finalize`
-request, this must stay below `server.request_timeout_ms` — the server refuses
-to start otherwise.
+Budget for one invocation. `issue` and `revoke` run in the job queue, so there
+it bounds one attempt. The `crl` and `renewal_info` hooks answer a request
+inline, so while either is enabled this must stay below
+`server.request_timeout_ms` — the server refuses to start otherwise.
 
 **`args`** (`Array`) — *Default: `[]` | Env: `ACME_PROXY_SIGNER__CUSTOM__ARGS`*
 
@@ -77,14 +78,17 @@ Exit codes are the contract:
 - **`0`** — stdout is the PEM chain (leaf first, issuers after). Trailing
   whitespace is trimmed and exactly one newline re-appended, since a strict
   parser needs a newline after the final `-----END CERTIFICATE-----`.
-- **`3`** — reserved: the CSR is bad. The client gets `400 badCSR` and the order
-  stays `ready`, so it can retry with a corrected CSR. Do not use this exit code
-  for backend failures.
-- **anything else** — an internal failure. The client gets `500` and the order
-  is marked `invalid` (terminal, but pollable).
+- **`3`** — reserved: the CSR is bad. The order becomes `invalid` with a
+  `badCSR` error, which the client reads when it polls. Do not use this exit
+  code for backend failures.
+- **anything else** — an internal failure. The issuance is retried under the
+  job queue's attempt budget, and the order is marked `invalid` (terminal, but
+  pollable) once it runs out.
 
-This backend always answers **synchronously**: a shelled-out script cannot call
-back later, so the order never enters the `processing` state.
+The script runs in the `worker` role, in the `signer_issue` job `finalize`
+queues: the client is answered `processing` and polls until the certificate is
+there. It never runs inside a client's request, so it may take as long as its
+`timeout_ms` without holding one open.
 
 > The order's requested `notBefore`/`notAfter` (RFC 8555 §7.4) are **not**
 > passed to the script — there is no contract for it, and inventing one would

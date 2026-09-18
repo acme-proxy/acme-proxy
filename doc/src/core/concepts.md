@@ -91,11 +91,9 @@ stateDiagram-v2
     [*] --> pending: newOrder
     pending --> ready: every authorization valid
     ready --> pending: an authorization is deactivated (§7.5.2)
-    ready --> processing: finalize, deferring backend
-    ready --> valid: finalize, inline backend
-    processing --> valid: upstream issued
-    ready --> invalid: signer failure
-    processing --> invalid: upstream refused
+    ready --> processing: finalize
+    processing --> valid: the worker signed
+    processing --> invalid: signer refused or gave up
     pending --> invalid: an authorization failed, or expires passed
     valid --> [*]
     invalid --> [*]
@@ -111,10 +109,13 @@ to demote it, or the order would be finalizable for a name no longer authorized.
 
 Two details are easy to trip on:
 
-- **`processing` only appears with a deferring backend.** The `relay` backend
-  answers `finalize` with `processing` and completes in the background;
-  `local_ca` and `custom` answer inline, so an order under those backends goes
-  straight from `ready` to `valid` and never passes through `processing`.
+- **Every `finalize` answers `processing`.** Signing needs the CA key, which
+  only the `worker` role holds, so `finalize` checks the CSR, claims the order
+  and queues the signing, and the client polls until the order is `valid`. With
+  `local_ca` that is a moment; with `relay` it is as long as the upstream CA
+  takes. A CSR the backend itself rejects makes the order `invalid` with a
+  `badCSR` error, since the client is already polling by then; a CSR `finalize`
+  can refuse on its own leaves the order `ready` for a corrected one.
 - **Revocation is orthogonal to this machine.** RFC 8555 defines no "revoked"
   order status, so a revoked order's `status` stays `valid`. The revocation
   timestamp and reason are recorded separately, and both admin front ends show

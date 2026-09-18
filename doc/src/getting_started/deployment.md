@@ -69,13 +69,14 @@ too.
    >what the `ExecReload` line above wires up — see [Reloading the
    >Configuration](../operations/reload.md) for what a reload may change and
    >what it refuses.
-   >One case still deserves a quiet period: the `custom` signer script runs
-   >*inside* a request, so a restart during one waits up to
-   >`signer.custom.timeout_ms`. If systemd's `TimeoutStopSec` (90 s by default)
-   >is shorter than your `server.request_timeout_ms`, systemd sends `SIGKILL`
-   >first and the graceful path is skipped — raise it, or lower the request
-   >timeout. Challenge validation is no longer one of these: it runs in the job
-   >queue, and a job left unfinished by a restart is reclaimed by lease expiry.
+   >One case still deserves a quiet period: a request that waits — a `custom`
+   >script's `crl` or `renewal_info` hook, or a relay revocation waiting on its
+   >job — can take up to `server.request_timeout_ms`. If systemd's
+   >`TimeoutStopSec` (90 s by default) is shorter than that, systemd sends
+   >`SIGKILL` first and the graceful path is skipped — raise it, or lower the
+   >request timeout. Challenge validation and issuance are not among these:
+   >they run in the job queue, and a job left unfinished by a restart is
+   >reclaimed by lease expiry.
 
 4. **Enable and start the service:**
    ```bash
@@ -286,7 +287,7 @@ same binary, reading the same configuration.
 | --- | --- | --- |
 | `acme` | Serves ACME to certificate clients | The ACME listener |
 | `admin` | Serves `/ui` and `/api` | The admin listener |
-| `worker` | Drains the job queue; owns the schema and the first-run material | No listener |
+| `worker` | Drains the job queue; signs and revokes; owns the schema and the first-run material | The CA key or token, a relay's upstream account; no listener |
 
 **All-in-one is still the default** and nothing about it changes: `acme-proxy
 serve` with no `--role` behaves exactly as it always did. The split is worth
@@ -295,14 +296,24 @@ CSRs from the internet is then not the one holding operator sessions, and
 neither is the one making outbound connections to client-chosen hosts. Each can
 run under its own uid and its own systemd sandbox.
 
+**Only the worker holds signing material.** `finalize` queues the signing and
+answers `processing`, a revocation is a database row or a queued job, and the
+CA's certificate, its CRL and renewal information are served from `ca.pem` and
+the database. So the `acme` and `admin` processes never read `ca.key`, never log
+in to a PKCS#11 token and never use a relay's upstream account. Make `ca.key`
+(`0600`) readable by the worker's uid alone; the others need `ca.pem` and the
+database. A `custom` signer's script must still be present where `acme` runs if
+it serves the CRL or renewal information, since those hooks answer a request.
+
 Three things to get right:
 
 1. **Initialise once, first.** `acme-proxy init` migrates the database and
    generates the CA key, the upstream account and any self-signed TLS
    certificate. Run it as the uid that should own those files. A process that
    does not run `worker` refuses to start against a schema that is behind,
-   naming `acme-proxy migrate` — so starting the others before the schema
-   exists fails loudly rather than racing.
+   naming `acme-proxy migrate`, and without the CA certificate, naming
+   `acme-proxy init` — so starting the others before the schema or the CA
+   exists fails loudly rather than racing, and never generates a second CA.
 2. **Give each process its own `metrics.bind_address`.** The counters are
    per-process memory, so three processes are three scrape targets; sharing one
    address means the second one to start fails to bind. Set
@@ -312,8 +323,12 @@ Three things to get right:
    one scrape config can tell them apart.
 3. **Run at least one worker.** A process without it logs
    `server_role_no_worker` at startup; a deployment without one issues nothing,
-   because challenge validation, relayed issuance, notifications and the
-   periodic sweeps are all queued work.
+   because challenge validation, issuance, CRL signing, relay and custom
+   revocations, notifications and the periodic sweeps are all queued work. A
+   worker in another process picks a row up within the job poll interval, so
+   clients see a second or so more `processing` than all-in-one; a revocation
+   for a relay or custom profile still running when its request's deadline
+   nears answers `503` with `Retry-After`, and asking again follows it.
 
 A worked topology, one systemd unit per role:
 
