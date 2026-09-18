@@ -110,7 +110,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = Arc::new(Config::load()?);
-//!     let database = Arc::new(Database::connect(&config.database.url).await?);
+//!     let database = Arc::new(Database::connect_and_migrate(&config.database.url).await?);
 //!
 //!     let resolved = config.resolve_profiles()?;
 //!     // The resolver and the proxy policy, resolved before anything can dial:

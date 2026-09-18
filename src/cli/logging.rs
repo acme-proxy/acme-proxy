@@ -177,7 +177,7 @@ pub fn plan_logging(
     match command {
         // A daemon logs; the flag only sharpens what it says. `None` is the
         // default subcommand, i.e. a bare `acme-proxy`.
-        None | Some(super::Command::Serve) => LoggingPlan::Server,
+        None | Some(super::Command::Serve { .. }) => LoggingPlan::Server,
         // `main.rs` answers both before it loads a configuration, so neither
         // reaches here — but answering them keeps this total over `Command`,
         // the rule `dispatch` follows for the same pair.
