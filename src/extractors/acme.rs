@@ -11,8 +11,10 @@ use crate::server::AppState;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::Nonce;
 
-pub use crate::extractors::jws::*;
-pub use crate::extractors::signature::*;
+use crate::jws::signature::{
+    SignatureError, verify_signature_and_get_der, verify_signature_with_spki,
+};
+use crate::jws::{AcmeJwsRequest, ProtectedHeader};
 
 /// ACME request wrapper containing validated JWS data.
 pub struct AcmeRequest<T> {

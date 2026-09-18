@@ -2,7 +2,7 @@ use base64::prelude::*;
 use ring::{digest, signature};
 use simple_asn1::{ASN1Block, BigInt, BigUint};
 
-use crate::extractors::jws::{Jwk, ProtectedHeader};
+use crate::jws::{Jwk, ProtectedHeader};
 
 /// The three ASN.1 object identifiers this module compares against, each in one
 /// place.

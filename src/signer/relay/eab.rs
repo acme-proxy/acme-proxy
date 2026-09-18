@@ -86,7 +86,7 @@ pub(crate) fn decode_secret(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::eab::{EabError, parse_header, verify_payload_and_signature};
-    use crate::extractors::acme::Jwk;
+    use crate::jws::Jwk;
 
     const SECRET: &[u8] = b"01234567890123456789012345678901";
     const URL: &str = "https://upstream.example/newAccount";

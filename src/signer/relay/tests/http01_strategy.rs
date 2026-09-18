@@ -66,7 +66,7 @@ async fn http01_serves_the_key_authorization_triggers_and_retracts() {
     // The served body must be the key authorization VERBATIM — no digest,
     // unlike dns-01 — built from THIS proxy's thumbprint at the upstream,
     // which is the whole reason the end client cannot answer this itself.
-    let thumbprint = crate::extractors::acme::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let thumbprint = crate::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
     assert_eq!(
         upstream.http01_body(),
         Some(format!("{}.{thumbprint}", testsrv::CHALLENGE_TOKEN)),
@@ -365,7 +365,7 @@ async fn http01_answers_past_a_challenge_type_carrying_no_token() {
         .unwrap();
     await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
 
-    let thumbprint = crate::extractors::acme::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let thumbprint = crate::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
     assert_eq!(
         upstream.http01_body(),
         Some(format!("{}.{thumbprint}", testsrv::CHALLENGE_TOKEN)),

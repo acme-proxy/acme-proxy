@@ -133,7 +133,7 @@ for in a certificate authority: the audit trail is the product.
 | 1.4.2 | Prevent integer overflow | 2 | met | Time and TTL arithmetic uses `saturating_add`/`saturating_sub` throughout `src/sqlite/`; release builds are not built with overflow checks disabled beyond the default |
 | 1.4.3 | Release memory and resources; no dangling pointers | 2 | met | Ownership and `Drop`. Script hooks additionally set `kill_on_drop` so a timed-out child is reaped |
 | 1.5.1 | Restrictive XML parser configuration (XXE) | 1 | n/a | No XML parser in the dependency graph |
-| 1.5.2 | Safe deserialization of untrusted data | 2 | met | `serde` into concrete structs. No polymorphic or client-chosen types; `src/extractors/jws.rs` deliberately does not use `deny_unknown_fields` because RFC 8555 §6.2 allows extra header parameters, and every field it acts on is named |
+| 1.5.2 | Safe deserialization of untrusted data | 2 | met | `serde` into concrete structs. No polymorphic or client-chosen types; `src/jws/mod.rs` deliberately does not use `deny_unknown_fields` because RFC 8555 §6.2 allows extra header parameters, and every field it acts on is named |
 | 1.5.3 | Consistent parsers for one data type | 3 | met | One JSON parser (`serde_json`) and one URL parser (`url`) in the tree |
 
 ## V2 Validation and Business Logic
@@ -346,8 +346,8 @@ is a reference token and is assessed under V7.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 9.1.1 | Signature validated before the contents are accepted | 1 | met | `verify_jws` verifies the signature over the protected header and payload before any handler sees the body (`src/extractors/acme.rs`, `src/extractors/signature.rs`) |
-| 9.1.2 | Algorithm allowlist, no `none` | 1 | met | Exactly `ES256` on P-256 and `RS256` are accepted; anything else is `Unsupported algorithm`. The `alg` must additionally agree with the key type *and* the named curve, so `alg` alone never selects the verifier (`src/extractors/signature.rs`) |
+| 9.1.1 | Signature validated before the contents are accepted | 1 | met | `verify_jws` verifies the signature over the protected header and payload before any handler sees the body (`src/extractors/acme.rs`, `src/jws/signature.rs`) |
+| 9.1.2 | Algorithm allowlist, no `none` | 1 | met | Exactly `ES256` on P-256 and `RS256` are accepted; anything else is `Unsupported algorithm`. The `alg` must additionally agree with the key type *and* the named curve, so `alg` alone never selects the verifier (`src/jws/signature.rs`) |
 | 9.1.3 | Key material from trusted pre-configured sources | 1 | met | A `kid` resolves to a stored account key whose URL prefix must match this profile's `base_url`; a `jwk` is the key being registered and is only ever trusted for `newAccount`/`revokeCert` as RFC 8555 §6.2 defines. `jwk` and `kid` together are refused, and a `crit` header is refused outright |
 | 9.2.1 | Validity time span honoured | 1 | met | The equivalent is the nonce: single-use, and refused past `nonce.ttl_seconds`. Unknown, consumed and expired are made indistinguishable on purpose (`src/sqlite/nonce.rs`) |
 | 9.2.2 | Token type checked against the intended purpose | 2 | met | The protected header must carry exactly the fields RFC 8555 §6.2 defines for the request kind; `newAccount` requires a `jwk`, everything else a `kid` |

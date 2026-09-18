@@ -21,9 +21,9 @@ use super::rules::{
 use crate::audit::{Auditor, RequestContext};
 use crate::challenge::ValidationContext;
 use crate::error::Problem;
-use crate::extractors::acme::jwk_thumbprint;
 use crate::filter::{IdentifierStage, Stage as FilterStage};
 use crate::jobs::JobQueue;
+use crate::jws::signature::jwk_thumbprint;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::server::Profile;
 use crate::sqlite::{

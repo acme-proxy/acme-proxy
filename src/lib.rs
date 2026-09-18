@@ -261,6 +261,7 @@ pub mod handlers;
 pub mod http_client;
 pub mod ipam;
 pub mod jobs;
+pub mod jws;
 pub mod key_change;
 pub mod listener;
 pub mod logfields;

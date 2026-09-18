@@ -11,12 +11,12 @@
 //! ## Shape
 //!
 //! The inner object is itself a flattened JWS (RFC 7515), reusing
-//! [`crate::extractors::acme::AcmeJwsRequest`]'s `{protected, payload,
+//! [`crate::jws::AcmeJwsRequest`]'s `{protected, payload,
 //! signature}` shape as [`EabJws`] -- the same three-field envelope,
 //! HMAC-signed rather than public-key-signed.
 //!
 //! Its protected header ([`EabHeader`]) is deliberately its own type rather
-//! than a reuse of [`crate::extractors::acme::ProtectedHeader`]: `kid` is
+//! than a reuse of [`crate::jws::ProtectedHeader`]: `kid` is
 //! required here (a distinct namespace from the account `kid`), there is no
 //! `jwk` member, and there is no `nonce` -- this is a credential bound into a
 //! request the outer JWS already authenticates and replay-protects, not a
@@ -34,11 +34,11 @@ use ring::hmac;
 use serde::Deserialize;
 
 use crate::error::Problem;
-use crate::extractors::acme::Jwk;
+use crate::jws::Jwk;
 
 /// The inner EAB JWS: the same flattened `{protected, payload, signature}`
 /// shape as the outer request JWS.
-pub(crate) type EabJws = crate::extractors::acme::AcmeJwsRequest;
+pub(crate) type EabJws = crate::jws::AcmeJwsRequest;
 
 /// The inner EAB JWS's protected header. See the [module docs](self) for why
 /// this is its own type rather than a reuse of `ProtectedHeader`.

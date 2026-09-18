@@ -24,7 +24,7 @@ use common::{
 };
 
 use acme_proxy::config::Config;
-use acme_proxy::extractors::acme::jwk_thumbprint;
+use acme_proxy::jws::signature::jwk_thumbprint;
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
 const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";

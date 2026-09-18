@@ -562,7 +562,7 @@ async fn relay(
 /// thumbprint is a key problem, not a moment's bad luck, and asking again in
 /// thirty seconds changes nothing.
 fn upstream_thumbprint(inner: &Inner) -> Result<String, RelayFailure> {
-    crate::extractors::acme::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
+    crate::jws::signature::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
         RelayFailure::Permanent(format!(
             "cannot derive the upstream account thumbprint: {error}"
         ))

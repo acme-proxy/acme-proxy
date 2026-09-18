@@ -11,12 +11,8 @@
 //! verified before a handler runs, so the guarantees are structural rather than
 //! a convention each handler has to observe.
 //!
-//! [`jws`] holds the wire types; [`signature`] holds the cryptography, including
-//! the DER-SPKI encoding by hand and the rule that the verification algorithm is
-//! never chosen from the client's `alg` alone.
+//! The wire types and the cryptography they run are [`crate::jws`].
 
 pub mod acme;
-pub mod jws;
-pub mod signature;
 
 pub use acme::*;

@@ -149,7 +149,7 @@ impl AcmeResponse {
 pub struct AccountKey {
     pair: EcdsaKeyPair,
     rng: SystemRandom,
-    /// DER SubjectPublicKeyInfo, so [`crate::extractors::jwk_thumbprint`] can
+    /// DER SubjectPublicKeyInfo, so [`crate::jws::signature::jwk_thumbprint`] can
     /// be reused rather than reimplementing RFC 7638 here.
     spki_der: Vec<u8>,
 }
@@ -181,7 +181,7 @@ impl AccountKey {
         })
     }
 
-    /// DER SPKI, for [`crate::extractors::jwk_thumbprint`].
+    /// DER SPKI, for [`crate::jws::signature::jwk_thumbprint`].
     pub fn spki_der(&self) -> &[u8] {
         &self.spki_der
     }
@@ -198,7 +198,7 @@ impl AccountKey {
 ///
 /// Hand-rolled rather than via `simple_asn1` because every field is fixed for
 /// this one curve: the whole prefix is a constant, and only the 65-byte point
-/// varies. `src/extractors/signature.rs` builds the same structure the general
+/// varies. `src/jws/signature.rs` builds the same structure the general
 /// way, for keys whose parameters are not known in advance.
 fn spki_from_p256_public(point: &[u8]) -> Result<Vec<u8>, UpstreamError> {
     if point.len() != 65 || point[0] != 0x04 {
@@ -562,7 +562,7 @@ mod tests {
         // The SPKI must describe the *same* key as the JWK — the cheapest
         // proof being that the crate's own thumbprint helper accepts it and
         // agrees with a thumbprint computed from the JWK members directly.
-        let thumbprint = crate::extractors::acme::jwk_thumbprint(key.spki_der()).unwrap();
+        let thumbprint = crate::jws::signature::jwk_thumbprint(key.spki_der()).unwrap();
         let canonical = format!(
             r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
             jwk["x"].as_str().unwrap(),

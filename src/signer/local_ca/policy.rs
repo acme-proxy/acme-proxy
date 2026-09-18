@@ -29,7 +29,7 @@ use crate::config::LocalCaConfig;
 
 /// OIDs written into the AIA extension.
 ///
-/// `fn` rather than `const` for the reason `extractors::signature`'s copy of
+/// `fn` rather than `const` for the reason `jws::signature`'s copy of
 /// this pattern states: `simple_asn1`'s `oid!` builds an owned [`OID`], so there
 /// is nothing to make a constant out of.
 mod oids {

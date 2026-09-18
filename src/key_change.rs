@@ -10,12 +10,12 @@
 //! ## Shape
 //!
 //! RFC 8555 §7.3.5's inner object is itself a flattened JWS (RFC 7515),
-//! reusing [`crate::extractors::acme::AcmeJwsRequest`]'s `{protected,
+//! reusing [`crate::jws::AcmeJwsRequest`]'s `{protected,
 //! payload, signature}` shape as [`KeyChangeJws`] -- the same convention
 //! [`crate::eab::EabJws`] uses.
 //!
 //! Its protected header ([`InnerHeader`]) is its own type rather than a reuse
-//! of [`crate::extractors::acme::ProtectedHeader`], for the same reason
+//! of [`crate::jws::ProtectedHeader`], for the same reason
 //! EAB's is: RFC 8555 §7.3.5 requires the inner JWS to **omit `nonce`**
 //! entirely (verified against the RFC text directly) -- this is a request
 //! the outer JWS already replay-protects, not a second signed request in its
@@ -26,9 +26,9 @@
 //! checked against the outer JWS's own `kid`) and restates the *old* key as
 //! a JWK (`oldKey`, checked against the account's stored key). Accounts are
 //! keyed by DER SPKI rather than by JWK (see
-//! [`crate::extractors::acme::jwk_thumbprint`]'s doc comment), so the
+//! [`crate::jws::signature::jwk_thumbprint`]'s doc comment), so the
 //! caller reconstructs a [`Jwk`] from storage via
-//! [`crate::extractors::acme::spki_to_jwk`] and this module compares the two
+//! [`crate::jws::signature::spki_to_jwk`] and this module compares the two
 //! structurally (`Jwk` derives `PartialEq`) -- mirroring exactly how
 //! [`crate::eab::verify_payload_and_signature`] compares its own embedded
 //! JWK against the account's. Both checks exist so a captured inner JWS
@@ -40,11 +40,12 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::error::Problem;
-use crate::extractors::acme::{Jwk, SignatureError, verify_jwk_signature_and_get_der};
+use crate::jws::Jwk;
+use crate::jws::signature::{SignatureError, verify_jwk_signature_and_get_der};
 
 /// The inner keyChange JWS: the same flattened `{protected, payload,
 /// signature}` shape as the outer request JWS.
-pub(crate) type KeyChangeJws = crate::extractors::acme::AcmeJwsRequest;
+pub(crate) type KeyChangeJws = crate::jws::AcmeJwsRequest;
 
 /// The inner keyChange JWS's protected header. See the [module docs](self)
 /// for why this is its own type rather than a reuse of `ProtectedHeader`.
