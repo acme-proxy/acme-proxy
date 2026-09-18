@@ -103,9 +103,12 @@ pub struct GenerationParts {
 ///   configuration change.
 /// - `signers` is the *previous* generation's backend set, kept so the next
 ///   reload can reuse a backend whose configuration did not move (see
-///   [`signer::build_backends`]). Behind a `Mutex` because it is written once per
-///   generation; nothing reads it to serve a request, since a `Profile` holds
-///   its own `Arc<dyn SignerBackend>`.
+///   [`signer::build_backends`]); `infos` the same for their read sides. Behind
+///   a `Mutex` because each is written once per generation; nothing reads
+///   either to serve a request, since a `Profile` holds its own read side.
+/// - `roles` decides whether there are backends at all: only a process running
+///   the `worker` role builds one, so the others never read a CA key, log in to
+///   a token or contact a relay's upstream — not at startup, not on reload.
 /// - `notifiers` is a handle rather than a map, so `[notify]` can reload
 ///   underneath the backends that captured it.
 ///
@@ -121,6 +124,7 @@ pub struct Assembly {
     signers: std::sync::Mutex<signer::SignerSet>,
     /// The previous generation's read sides, kept for `signers`' reason.
     infos: std::sync::Mutex<signer::SignerSet<dyn signer::SignerInfo>>,
+    roles: super::RoleSet,
 }
 
 impl Assembly {
@@ -157,6 +161,7 @@ impl Assembly {
             notifiers_tx,
             signers: std::sync::Mutex::new(signer::SignerSet::default()),
             infos: std::sync::Mutex::new(signer::SignerSet::default()),
+            roles,
         };
         let parts = assembly.build_parts(resolved, config)?;
         // The first generation's map has to reach the handle before anything
@@ -222,10 +227,20 @@ impl Assembly {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let signers = signer::build_backends(resolved, &signer_parts, &previous)?;
+        // The worker's alone. Every other role serves from the read sides below
+        // and queues what needs a key, so it never reads `ca.key`, never logs
+        // in to a PKCS#11 token and never registers with a relay's upstream —
+        // which is also what makes the worker the one process that generates
+        // first-run material.
+        let signers = if self.roles.has(super::ProcessRole::Worker) {
+            signer::build_backends(resolved, &signer_parts, &previous)?
+        } else {
+            signer::SignerSet::default()
+        };
         // After the backends, so that on a fresh directory the one that
         // generates a CA has written its certificate before its read side
-        // looks for it.
+        // looks for it. A process without the worker role finding none is
+        // refused by name: it was started before the process that makes it.
         let previous = self
             .infos
             .lock()

@@ -9,8 +9,9 @@
 //! production code calling it, which would make the private field `pub pool`
 //! under a longer name.
 //!
-//! The same walk keeps the host CLI from building a signing backend, which
-//! would put the CA key in a process that has no business holding it.
+//! The same walk keeps the host CLI from building a signing backend, and every
+//! request-serving module from naming one, since either would put the CA key in
+//! a process that has no business holding it.
 //!
 //! An integration test rather than a `#[cfg(test)]` module for the reason
 //! `logging_convention.rs` gives: a source-walking helper belongs neither in
@@ -142,6 +143,78 @@ fn the_cli_never_builds_a_signer() {
         offenders.is_empty(),
         "the CLI records what it asks of a signer in the database and the job \
          queue, and never builds a backend:\n{}",
+        offenders.join("\n"),
+    );
+}
+
+/// No request-serving code names a signing backend (PLAN.md §9.3).
+///
+/// A request is served from a [`Profile`], whose signer is its read side —
+/// `SignerInfo`, built from public material — and the compiler already keeps
+/// the backend off it. What it cannot keep out is a handler reaching for a
+/// backend some other way: taking a `SignerBackend` from state, building one,
+/// or revoking through `Revoker::Backend`. Any of those would put the CA key
+/// back in the `acme` or `admin` process, the one thing the split exists to
+/// prevent. The backend is the job handlers' alone (`src/acme/issue.rs`,
+/// `src/acme/revoke.rs`'s `SignerRevokeJob`), in the `worker` role.
+///
+/// [`Profile`]: acme_proxy::server::Profile
+#[test]
+fn the_request_path_never_holds_a_signer() {
+    const REQUEST_PATH: &[&str] = &[
+        "src/handlers",
+        "src/extractors",
+        "src/middlewares",
+        "src/webadmin",
+        "src/admin",
+        "src/server/router.rs",
+        "src/server/profile.rs",
+    ];
+    const FORBIDDEN: &[&str] = &[
+        "SignerBackend",
+        "Revoker::Backend(",
+        "signer::from_config(",
+        "build_backends(",
+    ];
+
+    let root = repo_root();
+    let mut files = Vec::new();
+    for entry in REQUEST_PATH {
+        let path = root.join(entry);
+        if path.is_dir() {
+            rust_sources(&path, &mut files);
+        } else {
+            files.push(path);
+        }
+    }
+    assert!(
+        files.len() > REQUEST_PATH.len(),
+        "the walk found the sources"
+    );
+
+    let mut offenders = Vec::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_test_file(&relative) {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        for (index, line) in production_part(&text).lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            if FORBIDDEN.iter().any(|name| code.contains(name)) {
+                offenders.push(format!("{relative}:{}: {}", index + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a request is served from the signer's read side and queues what needs \
+         the key; it never holds a backend:\n{}",
         offenders.join("\n"),
     );
 }

@@ -150,22 +150,28 @@
 //!     let metrics = Arc::new(acme_proxy::metrics::Metrics::new(database.clone()));
 //!
 //!     let mut profiles = Vec::new();
+//!     // Each profile's signer in two halves: the backend, which holds the key
+//!     // and is handed only to the job handlers below, and its read side, which
+//!     // is all a profile — and so a request — ever sees.
+//!     let mut backends = Vec::new();
 //!     for profile in &resolved {
 //!         let sections = &profile.sections;
+//!         let backend = signer::from_config(
+//!             &sections.signer,
+//!             &signer::SignerParts {
+//!                 database: database.clone(),
+//!                 notifiers: notifiers.clone().into(),
+//!                 metrics: metrics.clone(),
+//!                 egress: egress.clone(),
+//!                 jobs: job_queue.clone(),
+//!             },
+//!         )?;
+//!         backends.push((profile.name.clone(), backend.clone()));
 //!         profiles.push(Arc::new(Profile::new(
 //!             &profile.name,
 //!             &config.server.base_url,
 //!             ProfileParts {
-//!                 signer: signer::from_config(
-//!                     &sections.signer,
-//!                     &signer::SignerParts {
-//!                         database: database.clone(),
-//!                         notifiers: notifiers.clone().into(),
-//!                         metrics: metrics.clone(),
-//!                         egress: egress.clone(),
-//!                         jobs: job_queue.clone(),
-//!                     },
-//!                 )?,
+//!                 signer_info: backend.info(),
 //!                 filter: filter::from_config(
 //!                     &sections.filter,
 //!                     &config.dns,
@@ -202,7 +208,7 @@
 //!         database.clone(),
 //!         config.clone(),
 //!         profiles,
-//!         audit,
+//!         audit.clone(),
 //!         metrics.clone(),
 //!         job_queue.clone(),
 //!     );
@@ -216,6 +222,14 @@
 //!     // every profile or backend of its kind and picks the right one per row,
 //!     // since `register` refuses a second handler for a kind it already has.
 //!     let mut registry = jobs::JobRegistry::new();
+//!     // `finalize` queues the signing: this is the one handler that asks a
+//!     // backend to issue, and the one place a backend is handed out.
+//!     registry.register(Arc::new(acme_proxy::acme::issue::SignerIssueJob::new(
+//!         database.clone(),
+//!         audit,
+//!         backends,
+//!         notifiers.clone().into(),
+//!     )))?;
 //!     registry.register(Arc::new(notify::NotifyJob::new(notifiers)))?;
 //!     registry.register(Arc::new(jobs::SweepJob::nonces(
 //!         database.clone(),

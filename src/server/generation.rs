@@ -107,20 +107,22 @@ pub(crate) fn build_generation(
     // backend would take a stale one: a backend whose configuration did not
     // move is reused verbatim across a reload, so a profile newly mounted onto
     // it is not in any list it remembers.
+    //
+    // Both come from this generation's **backends**, which only a process
+    // running the `worker` role builds: everywhere else the set is empty, so
+    // none of these handlers has a backend to reach, and none of them runs
+    // there anyway.
     let mut relays: Vec<(String, crate::signer::relay::RelayState)> = Vec::new();
-    for profile in &profiles {
-        relays.extend(
-            profile
-                .signer
-                .relay_state()
-                .map(|state| (profile.name.clone(), state)),
-        );
-        let identity = Arc::as_ptr(&profile.signer).cast::<()>() as usize;
+    let mut backends = parts.signers.by_profile();
+    backends.sort_by(|a, b| a.0.cmp(&b.0));
+    for (profile, backend) in &backends {
+        relays.extend(backend.relay_state().map(|state| (profile.clone(), state)));
+        let identity = Arc::as_ptr(backend).cast::<()>() as usize;
         if registered.contains(&identity) {
             continue;
         }
         registered.push(identity);
-        refreshers.extend(profile.signer.crl_refresher());
+        refreshers.extend(backend.crl_refresher());
     }
     // The daily CRL refresh, over whichever CAs keep a CRL of their own.
     // Registered only when there is one, the way the audit sweep is registered
@@ -168,10 +170,7 @@ pub(crate) fn build_generation(
                 crate::audit::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
-            profiles
-                .iter()
-                .map(|profile| (profile.name.clone(), profile.signer.clone()))
-                .collect(),
+            backends.clone(),
             assembly.notifiers.clone(),
         )))
         .inspect_err(|error| {
@@ -188,7 +187,7 @@ pub(crate) fn build_generation(
                 crate::audit::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
-            parts.signers.by_profile(),
+            backends.clone(),
             assembly.notifiers.clone(),
         )))
         .inspect_err(|error| {

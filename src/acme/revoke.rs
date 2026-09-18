@@ -598,7 +598,12 @@ impl Revocations<'_> {
                 .map(|(_, not_after)| not_after),
         };
         let written = async {
-            let mut tx = self.database.transaction().await?;
+            // Immediate: this reads the CA's stored CRL and then writes on the
+            // strength of it, while the worker — another process, in a split
+            // deployment — may be storing a CRL for the same issuer. Deferred,
+            // the upgrade would fail with `SQLITE_BUSY_SNAPSHOT` instead of
+            // waiting its turn.
+            let mut tx = self.database.write_transaction().await?;
             if crate::sqlite::crl::StoredCrl::find(issuer, &mut *tx)
                 .await?
                 .is_none()

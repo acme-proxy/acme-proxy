@@ -63,6 +63,21 @@ impl Database {
         Ok(Tx(self.pool.begin().await?))
     }
 
+    /// Begins a transaction that holds the **write lock from its first
+    /// statement** (`BEGIN IMMEDIATE`), for one that reads and then writes on
+    /// what it read while another process may be writing.
+    ///
+    /// A plain [`transaction`](Self::transaction) is deferred: it takes a read
+    /// snapshot at its first `SELECT` and asks for the write lock only at its
+    /// first write. In WAL mode, if another connection committed in between,
+    /// that upgrade fails at once with `SQLITE_BUSY_SNAPSHOT` — `busy_timeout`
+    /// cannot help, since waiting would not make the snapshot current. Taking
+    /// the lock up front makes the transaction wait its turn under
+    /// `busy_timeout` instead, and then read what it writes against.
+    pub async fn write_transaction(&self) -> Result<Tx, Error> {
+        Ok(Tx(self.pool.begin_with("BEGIN IMMEDIATE").await?))
+    }
+
     /// The pool's size and idle count, read now rather than tracked.
     #[must_use]
     pub fn pool_stats(&self) -> PoolStats {

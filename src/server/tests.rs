@@ -540,3 +540,56 @@ async fn an_unbindable_address_is_reported() {
         .expect_err("binding an unroutable address must fail");
     assert!(error.to_string().contains("192.0.2.1:1"), "{error}");
 }
+
+/// Only the `worker` role builds a backend: a process running `acme` and
+/// `admin` alone has an empty backend set — so no job handler of its holds a
+/// key — and serves every profile from a read side over the CA's certificate,
+/// without ever reading, or generating, the key.
+#[tokio::test]
+async fn a_process_without_the_worker_role_builds_no_backend() {
+    let dir = temp_dir();
+    let config = config_in(dir.path(), false);
+    let resolved = config.resolve_profiles().unwrap();
+    let database = Arc::new(
+        crate::sqlite::db::Database::connect_in_memory()
+            .await
+            .unwrap(),
+    );
+    let jobs = crate::testutil::idle_job_queue(database.clone());
+
+    // No CA yet: refused by name, and nothing generated.
+    let roles = RoleSet::parse(Some("acme,admin")).unwrap();
+    let error = match Assembly::new(roles, &resolved, database.clone(), jobs.clone(), &config) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("a process without the worker role must not start without a CA"),
+    };
+    assert!(error.contains("acme-proxy init"), "{error}");
+    assert!(!dir.join("ca.pem").exists() && !dir.join("ca.key").exists());
+
+    // The worker creates it: its assembly builds the backend.
+    let (_, worker) = Assembly::new(
+        RoleSet::parse(Some("worker")).unwrap(),
+        &resolved,
+        database.clone(),
+        jobs.clone(),
+        &config,
+    )
+    .unwrap();
+    assert_eq!(worker.signers.len(), 1);
+    assert!(dir.join("ca.key").exists());
+
+    // Now the other roles start — with the key out of reach — and build none.
+    std::fs::rename(dir.join("ca.key"), dir.join("elsewhere.key")).unwrap();
+    let (_, serving) = Assembly::new(roles, &resolved, database, jobs, &config).unwrap();
+    assert!(serving.signers.is_empty(), "no backend outside the worker");
+    assert_eq!(serving.infos.len(), 1, "every profile has its read side");
+    assert!(
+        !dir.join("ca.key").exists(),
+        "a process without the worker role must not generate a key"
+    );
+    let profiles = crate::server::Profile::build_all_with(&config, &resolved, &serving).unwrap();
+    assert_eq!(
+        profiles[0].signer_info.ca_chain_pem().await,
+        Some(std::fs::read_to_string(dir.join("ca.pem")).unwrap())
+    );
+}

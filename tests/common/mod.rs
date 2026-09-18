@@ -516,18 +516,19 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
     // A `for` loop rather than `map`: resolving the default dispatcher opens a
     // database, so the body has to be able to await.
     let mut built = Vec::with_capacity(profiles.len());
+    let mut backends = Vec::with_capacity(profiles.len());
     for profile in profiles {
         let notify = match profile.notify {
             Some(notify) => notify,
             None => no_notifications().await,
         };
         met_by_a_worker(profile.signer.as_ref()).await;
+        backends.push((profile.name.to_string(), profile.signer.clone()));
         built.push(Arc::new(Profile::new(
             profile.name,
             &config.server.base_url,
             ProfileParts {
                 signer_info: read_side(profile.signer.as_ref(), &database).await,
-                signer: profile.signer,
                 filter: profile.filter,
                 challenges: profile.challenges,
                 order: config.order.clone(),
@@ -537,7 +538,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
             },
         )));
     }
-    let jobs = spawn_worker_runner(&database, &built, test_auditor(database.clone()));
+    let jobs = spawn_worker_runner(&database, &built, &backends, test_auditor(database.clone()));
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -565,6 +566,9 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 /// a backend failing `Internal` spends its attempt budget in milliseconds and
 /// the order reaches `invalid` while the test is still polling for it.
 ///
+/// `backends` is each profile's signer — what a `worker` holds and a
+/// [`Profile`] never does.
+///
 /// `audit` is what the worker writes its rows through — the app's own, so an
 /// issuance recorded here is counted into the same registry the app renders,
 /// as the `worker` role's is in production.
@@ -578,6 +582,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
 fn spawn_worker_runner(
     database: &Arc<Database>,
     profiles: &[Arc<Profile>],
+    backends: &[(String, Arc<dyn SignerBackend>)],
     audit: Arc<Auditor>,
 ) -> JobQueue {
     let config = worker_jobs_config();
@@ -610,10 +615,7 @@ fn spawn_worker_runner(
         .register(Arc::new(SignerIssueJob::new(
             database.clone(),
             audit,
-            profiles
-                .iter()
-                .map(|profile| (profile.name.clone(), profile.signer.clone()))
-                .collect(),
+            backends.to_vec(),
             notifiers,
         )))
         .expect("the issuance handler registers");
@@ -624,16 +626,13 @@ fn spawn_worker_runner(
         .register(Arc::new(SignerRevokeJob::new(
             database.clone(),
             audit_for_revocations,
-            profiles
-                .iter()
-                .map(|profile| (profile.name.clone(), profile.signer.clone()))
-                .collect(),
+            backends.to_vec(),
             revoke_notifiers,
         )))
         .expect("the revocation handler registers");
     let mut refreshers: Vec<Arc<dyn CrlRefresher>> = Vec::new();
-    for profile in profiles {
-        if let Some(refresher) = profile.signer.crl_refresher()
+    for (_, backend) in backends {
+        if let Some(refresher) = backend.crl_refresher()
             && !refreshers
                 .iter()
                 .any(|known| known.issuer() == refresher.issuer())
@@ -680,10 +679,12 @@ pub async fn test_app_full(
 ) -> (Router, Arc<Database>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let profile = one_profile(&database, &config, signer, filter, challenges, notify).await;
+    let (profile, backends) =
+        one_profile(&database, &config, signer, filter, challenges, notify).await;
     let jobs = spawn_worker_runner(
         &database,
         std::slice::from_ref(&profile),
+        &backends,
         test_auditor(database.clone()),
     );
     let router = build_app(
@@ -703,7 +704,7 @@ pub async fn test_app_full(
 pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBackend>) -> Router {
     init_tracing();
     let config = Config::default();
-    let profile = one_profile(
+    let (profile, backends) = one_profile(
         &database,
         &config,
         signer,
@@ -715,6 +716,7 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
     let jobs = spawn_worker_runner(
         &database,
         std::slice::from_ref(&profile),
+        &backends,
         test_auditor(database.clone()),
     );
     build_app(
@@ -758,7 +760,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
             .unwrap(),
     );
     let config = Config::default();
-    let profile = one_profile(
+    let (profile, backends) = one_profile(
         &database,
         &config,
         Arc::new(memory_ca().await),
@@ -770,6 +772,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     let jobs = spawn_worker_runner(
         &database,
         std::slice::from_ref(&profile),
+        &backends,
         test_auditor(database.clone()),
     );
     let router = build_app(
@@ -802,7 +805,7 @@ pub async fn test_app_with_metrics(
     config.metrics.enabled = true;
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let metrics = Arc::new(Metrics::new(database.clone()));
-    let profile = one_profile(
+    let (profile, backends) = one_profile(
         &database,
         &config,
         signer,
@@ -819,7 +822,12 @@ pub async fn test_app_with_metrics(
         )
         .with_metrics(metrics.clone()),
     );
-    let jobs = spawn_worker_runner(&database, std::slice::from_ref(&profile), auditor.clone());
+    let jobs = spawn_worker_runner(
+        &database,
+        std::slice::from_ref(&profile),
+        &backends,
+        auditor.clone(),
+    );
     let router = build_app(
         database.clone(),
         Arc::new(config),
@@ -842,14 +850,13 @@ async fn one_profile(
     filter: Arc<FilterPolicy>,
     challenges: Arc<ChallengeRegistry>,
     notify: Arc<NotifyDispatcher>,
-) -> Arc<Profile> {
+) -> (Arc<Profile>, Vec<(String, Arc<dyn SignerBackend>)>) {
     met_by_a_worker(signer.as_ref()).await;
-    Arc::new(Profile::new(
+    let profile = Arc::new(Profile::new(
         PROFILE,
         &config.server.base_url,
         ProfileParts {
             signer_info: read_side(signer.as_ref(), database).await,
-            signer,
             filter,
             challenges,
             order: config.order.clone(),
@@ -857,7 +864,8 @@ async fn one_profile(
             meta: config.meta.clone(),
             notify,
         },
-    ))
+    ));
+    (profile, vec![(PROFILE.to_string(), signer)])
 }
 
 /// What a worker's first pass leaves behind for `signer`: a local CA's first
@@ -1026,7 +1034,7 @@ async fn admin_app_with_notifiers(
         LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone())
             .expect("an in-memory CA is always available"),
     );
-    let profile = one_profile(
+    let (profile, backends) = one_profile(
         &database,
         &config,
         signer.clone(),
@@ -1038,6 +1046,7 @@ async fn admin_app_with_notifiers(
     let jobs = spawn_worker_runner(
         &database,
         std::slice::from_ref(&profile),
+        &backends,
         test_auditor(database.clone()),
     );
     let router = acme_proxy::webadmin::build_admin_app(

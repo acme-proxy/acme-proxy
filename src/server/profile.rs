@@ -9,7 +9,7 @@ use crate::filter::{self, FilterPolicy};
 use crate::ipam;
 use crate::notify::NotifyDispatcher;
 use crate::routes::{self, PROFILE_PREFIX};
-use crate::signer::{SignerBackend, SignerInfo};
+use crate::signer::SignerInfo;
 use crate::sqlite::db::Database;
 
 use super::{Assembly, GenerationParts};
@@ -29,10 +29,15 @@ pub struct Profile {
     /// The public base for every URL this endpoint hands out and for the
     /// RFC 8555 §6.4 `url` check: `server.base_url` + [`Profile::path`].
     pub base_url: String,
-    pub signer: Arc<dyn SignerBackend>,
     /// What this endpoint's signer publishes — its CRL, anchor, renewal
     /// opinion and `http-01` tokens — and where its revocations go. Built from
     /// public material, so every role has one.
+    ///
+    /// **There is deliberately no backend here.** Signing and revoking need
+    /// the key, which only the `worker` role holds, and only the job handlers
+    /// it runs are handed one (`GenerationParts::signers`). A profile is what
+    /// a request is served from, so leaving the backend off it is what makes
+    /// "a request never signs" a type error rather than a convention.
     pub signer_info: Arc<dyn SignerInfo>,
     pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
@@ -56,7 +61,6 @@ pub struct Profile {
 /// *derives* from rather than stores, and keeping them out of here is what
 /// makes "the path is never configured" visible in the signature.
 pub struct ProfileParts {
-    pub signer: Arc<dyn SignerBackend>,
     pub signer_info: Arc<dyn SignerInfo>,
     pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
@@ -76,7 +80,6 @@ impl Profile {
             name: name.to_string(),
             base_url: format!("{}{path}", base_url.trim_end_matches('/')),
             path,
-            signer: parts.signer,
             signer_info: parts.signer_info,
             filter: parts.filter,
             challenges: parts.challenges,
@@ -139,11 +142,11 @@ impl Profile {
     /// The half of [`build_all`](Self::build_all) a configuration reload runs
     /// again. Everything it touches is cheap and side-effect-free to rebuild —
     /// a filter policy, an IPAM client, a challenge registry — which is exactly
-    /// why the *stateful* half lives in the `Assembly` instead. The signer
-    /// backends are the interesting middle case: they are rebuilt here too, but
-    /// only the ones whose configuration actually moved, and those adopt what
-    /// the outgoing instance held (see
-    /// [`signer::build_backends`](crate::signer::build_backends)).
+    /// why the *stateful* half lives in the `Assembly` instead. A profile takes
+    /// its signer's read side from `generation.infos` — built, like the
+    /// backends, only where the configuration moved (see
+    /// [`signer::build_infos`](crate::signer::build_infos)) — and never the
+    /// backend itself, which stays with the job handlers.
     pub fn build_all_with(
         config: &Config,
         resolved: &[config::ProfileConfig],
@@ -151,7 +154,6 @@ impl Profile {
     ) -> anyhow::Result<Vec<Arc<Profile>>> {
         let egress = &generation.egress;
         let dispatchers = &generation.dispatchers;
-        let backends = &generation.signers;
 
         let mut profiles = Vec::with_capacity(resolved.len());
         for profile in resolved {
@@ -184,12 +186,6 @@ impl Profile {
                 &profile.name,
                 &config.server.base_url,
                 ProfileParts {
-                    signer: backends
-                        .get(&profile.name)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("profile `{}`: no signer backend", profile.name)
-                        })?
-                        .clone(),
                     signer_info: generation
                         .infos
                         .get(&profile.name)
