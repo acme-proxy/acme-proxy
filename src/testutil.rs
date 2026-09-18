@@ -738,3 +738,18 @@ pub(crate) fn admin_session_fixture() -> crate::sqlite::admin_session::AdminSess
         user_agent: Some("curl/8".to_string()),
     }
 }
+
+/// The CRL `backend` serves once a worker has met it — its first CRL stored,
+/// the way the startup `CrlSweepJob` pass leaves it — read through its read
+/// side, which is what `GET /crl` does.
+pub(crate) async fn served_crl(backend: &dyn crate::signer::SignerBackend) -> Vec<u8> {
+    if let Some(refresher) = backend.crl_refresher() {
+        refresher.refresh().await.unwrap();
+    }
+    backend
+        .info()
+        .crl_der()
+        .await
+        .unwrap()
+        .expect("a local CA serves a CRL")
+}

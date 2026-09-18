@@ -2129,6 +2129,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     assert!(body.contains("reason 1"));
     assert!(
         !signer
+            .info()
             .crl_der()
             .await
             .unwrap()

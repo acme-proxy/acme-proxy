@@ -9,7 +9,7 @@ use crate::filter::{self, FilterPolicy};
 use crate::ipam;
 use crate::notify::NotifyDispatcher;
 use crate::routes::{self, PROFILE_PREFIX};
-use crate::signer::SignerBackend;
+use crate::signer::{SignerBackend, SignerInfo};
 use crate::sqlite::db::Database;
 
 use super::{Assembly, GenerationParts};
@@ -30,6 +30,10 @@ pub struct Profile {
     /// RFC 8555 §6.4 `url` check: `server.base_url` + [`Profile::path`].
     pub base_url: String,
     pub signer: Arc<dyn SignerBackend>,
+    /// What this endpoint's signer publishes — its CRL, anchor, renewal
+    /// opinion and `http-01` tokens — and where its revocations go. Built from
+    /// public material, so every role has one.
+    pub signer_info: Arc<dyn SignerInfo>,
     pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
     pub order: config::OrderConfig,
@@ -53,6 +57,7 @@ pub struct Profile {
 /// makes "the path is never configured" visible in the signature.
 pub struct ProfileParts {
     pub signer: Arc<dyn SignerBackend>,
+    pub signer_info: Arc<dyn SignerInfo>,
     pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
     pub order: config::OrderConfig,
@@ -72,6 +77,7 @@ impl Profile {
             base_url: format!("{}{path}", base_url.trim_end_matches('/')),
             path,
             signer: parts.signer,
+            signer_info: parts.signer_info,
             filter: parts.filter,
             challenges: parts.challenges,
             order: parts.order,
@@ -182,6 +188,13 @@ impl Profile {
                         .get(&profile.name)
                         .ok_or_else(|| {
                             anyhow::anyhow!("profile `{}`: no signer backend", profile.name)
+                        })?
+                        .clone(),
+                    signer_info: generation
+                        .infos
+                        .get(&profile.name)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("profile `{}`: no signer read side", profile.name)
                         })?
                         .clone(),
                     filter,

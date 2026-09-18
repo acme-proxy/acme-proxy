@@ -283,6 +283,9 @@ pub async fn serve_on_with_reloads(
         error!(event = "profile_init_failed", outcome = "failure", error = %error);
     })?;
     let assembly = Arc::new(assembly);
+    if roles.has(ProcessRole::Worker) {
+        store_first_crls(&parts.signers).await;
+    }
 
     let generation =
         build_generation(&config, &resolved, &assembly, &parts, None).inspect_err(|error| {
@@ -447,6 +450,25 @@ pub async fn serve_on_with_reloads(
 
 /// Applies the migrations, or refuses to serve against a schema that is behind.
 ///
+/// Stores each local CA's first CRL before this process serves anything.
+///
+/// Every role serves `GET /crl` from the stored row, and the read side never
+/// signs, so a CA nothing has met yet has no CRL to serve. The daily
+/// `CrlSweepJob` stores one on its first pass, but that pass runs on the
+/// runner's first tick — after the listeners are up — so an all-in-one server
+/// would answer `500` for the first moments of its life. Doing it here, once,
+/// in the process that holds the keys, closes that for every topology with a
+/// worker. A failure is logged where it happened
+/// (`local_ca_crl_initialization_failed`) and the sweep's first pass tries
+/// again, so it never stops the process.
+pub(super) async fn store_first_crls(signers: &crate::signer::SignerSet) {
+    for (_, backend) in signers.by_profile() {
+        if let Some(refresher) = backend.crl_refresher() {
+            let _ = refresher.refresh().await;
+        }
+    }
+}
+
 /// **The `worker` role owns the schema.** Every other role checks and stops by
 /// name, which is what removes the startup race: `SQLite` gives `sqlx` no
 /// migration lock, so two processes that both ran `MIGRATOR::run` could

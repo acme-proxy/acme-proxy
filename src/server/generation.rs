@@ -277,7 +277,7 @@ pub(crate) fn build_generation(
     // otherwise, and the CRL refresh's rule applies.
     if profiles
         .iter()
-        .any(|profile| profile.signer.http01_tokens().is_some())
+        .any(|profile| profile.signer_info.http01_tokens().is_some())
     {
         sweeps.push(crate::jobs::SweepJob::http01_tokens(database.clone()));
     }
@@ -400,6 +400,14 @@ pub(super) struct Prepared {
     mounted: Vec<Arc<Profile>>,
     /// The endpoints the previous generation mounted and this one does not.
     unmounted: Vec<String>,
+}
+
+impl Prepared {
+    /// The backends this reload built or carried, for the one step the
+    /// supervisor takes between building and publishing.
+    pub(super) fn signers(&self) -> &crate::signer::SignerSet {
+        &self.parts.signers
+    }
 }
 
 /// The build half of one reload: everything that can fail, and everything that
@@ -578,7 +586,7 @@ pub(super) fn publish_reload(
     // The set the *next* reload compares against, and the point at which the
     // backends this one dropped are finally released — after their replacements
     // were built and adopted their state, never before.
-    assembly.publish_signers(parts.signers);
+    assembly.publish_signers(parts.signers, parts.infos);
     cells
         .job_registry
         .send_replace(Arc::new(built.job_registry));

@@ -60,7 +60,7 @@ pub struct AppState {
 fn http01_stores(profiles: &[Arc<Profile>]) -> Vec<Arc<dyn signer::Http01TokenStore>> {
     let mut stores: Vec<Arc<dyn signer::Http01TokenStore>> = Vec::new();
     for profile in profiles {
-        if let Some(store) = profile.signer.http01_tokens()
+        if let Some(store) = profile.signer_info.http01_tokens()
             && !stores.iter().any(|existing| Arc::ptr_eq(existing, &store))
         {
             stores.push(store);

@@ -43,7 +43,10 @@ use tracing::{debug, info, warn};
 
 use crate::config::RelayConfig;
 use crate::jobs::JobQueue;
-use crate::signer::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
+use crate::signer::{
+    IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
+    SignerInfo,
+};
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
 use crate::sqlite::upstream_order::UpstreamOrder;
@@ -98,7 +101,9 @@ struct PollConfig {
 /// the cheapest way to bridge that; cloning five fields individually would say
 /// the same thing five times.
 struct Inner {
-    client: AcmeClient,
+    /// Shared with [`Inner::info`], so the read side answers from the directory
+    /// this backend already discovered rather than fetching its own.
+    client: Arc<AcmeClient>,
     account: AccountKey,
     /// The account URL the upstream assigned, used as the `kid` on every
     /// signed request after registration.
@@ -131,6 +136,9 @@ struct Inner {
     /// `upstream_orders` — over the registry, which is *not* rebuilt per
     /// generation and so can be held directly.
     audit: Arc<crate::audit::Auditor>,
+    /// The read side over the same directory and token store — what
+    /// [`SignerBackend::info`] hands out.
+    info: Arc<RelayInfo>,
     /// Where an issuance is queued once the upstream order is open.
     ///
     /// The backend holds the *enqueue* side only; the runner that drains it is
@@ -269,8 +277,20 @@ impl RelaySigner {
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("upstream provisioning thread panicked")))
         })?;
 
+        let client = Arc::new(client);
+        let info = Arc::new(RelayInfo {
+            directory_url: cfg.directory_url.clone(),
+            outbound: parts.egress.outbound(),
+            timeout: poll.timeout,
+            client: tokio::sync::OnceCell::new_with(Some(client.clone())),
+            http01: match &strategy {
+                ChallengeStrategy::Http01(tokens) => Some(tokens.clone()),
+                ChallengeStrategy::Bypass | ChallengeStrategy::Dns01(_) => None,
+            },
+        });
         Ok(Self(Arc::new(Inner {
             client,
+            info,
             account,
             kid,
             database: parts.database.clone(),
@@ -420,6 +440,75 @@ impl SignerBackend for RelaySigner {
         }
     }
 
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        self.0.info.clone()
+    }
+}
+
+/// What a request may ask of a relay without its upstream account: the
+/// upstream's renewal opinion and the `http-01` tokens published for it.
+///
+/// Built from configuration by every role. It holds no account key — its one
+/// upstream call, `renewalInfo`, is unauthenticated — and discovers the
+/// upstream directory lazily, on the first request that needs it, so a process
+/// that never serves ARI never dials the upstream at all. A failed discovery is
+/// retried on the next request, and the handler answers the local estimate
+/// meanwhile.
+pub struct RelayInfo {
+    directory_url: String,
+    outbound: crate::http_client::Outbound,
+    timeout: Duration,
+    client: tokio::sync::OnceCell<Arc<AcmeClient>>,
+    http01: Option<Arc<dyn http01::TokenStore>>,
+}
+
+impl RelayInfo {
+    /// The read side of the relay `cfg` describes. Contacts nothing.
+    ///
+    /// The `http-01` store is built over the same table the relay job
+    /// publishes into, which is what lets the route in one process answer a
+    /// fetch for a token a worker in another published.
+    pub fn from_config(
+        cfg: &RelayConfig,
+        parts: &crate::signer::SignerParts,
+    ) -> anyhow::Result<Self> {
+        if cfg.directory_url.is_empty() {
+            anyhow::bail!(
+                "signer.relay.directory_url is empty: the relay backend has no upstream \
+                 to relay to"
+            );
+        }
+        let timeout = Duration::from_secs(cfg.poll_timeout_secs);
+        let http01 = (cfg.challenge_strategy == "http01").then(|| {
+            Arc::new(http01::DbTokenStore::new(
+                parts.database.clone(),
+                timeout + Duration::from_secs(60),
+            )) as Arc<dyn http01::TokenStore>
+        });
+        Ok(Self {
+            directory_url: cfg.directory_url.clone(),
+            outbound: parts.egress.outbound(),
+            timeout,
+            client: tokio::sync::OnceCell::new(),
+            http01,
+        })
+    }
+
+    /// The upstream's directory, discovered on first use.
+    async fn client(&self) -> Result<&Arc<AcmeClient>, SignerError> {
+        self.client
+            .get_or_try_init(|| async {
+                AcmeClient::discover(&self.directory_url, self.outbound.clone(), self.timeout)
+                    .await
+                    .map(Arc::new)
+            })
+            .await
+            .map_err(upstream_to_signer_error)
+    }
+}
+
+#[async_trait]
+impl SignerInfo for RelayInfo {
     /// Asks the upstream when it would like this certificate renewed
     /// (RFC 9773). The upstream is the authority here: it knows its own rate
     /// limits and any planned mass-revocation, which no local computation can.
@@ -429,8 +518,8 @@ impl SignerBackend for RelaySigner {
     /// handler on its local estimate rather than failing the client's request.
     #[tracing::instrument(name = "relay_renewal_info", skip_all)]
     async fn renewal_info(&self, cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
-        let inner = &self.0;
-        let Some(base) = inner.client.directory().renewal_info.clone() else {
+        let client = self.client().await?;
+        let Some(base) = client.directory().renewal_info.clone() else {
             debug!(event = "upstream_has_no_renewal_info", outcome = "success");
             return Ok(None);
         };
@@ -446,8 +535,7 @@ impl SignerBackend for RelaySigner {
         };
 
         let url = format!("{}/{cert_id}", base.trim_end_matches('/'));
-        let response = inner
-            .client
+        let response = client
             .get_unsigned(&url)
             .await
             .map_err(upstream_to_signer_error)?;
@@ -477,10 +565,13 @@ impl SignerBackend for RelaySigner {
     /// into. `None` under every other strategy, so an upstream validated by
     /// DNS or not at all never exposes the well-known path.
     fn http01_tokens(&self) -> Option<Arc<dyn crate::signer::Http01TokenStore>> {
-        match &self.0.strategy {
-            ChallengeStrategy::Http01(tokens) => Some(tokens.clone()),
-            ChallengeStrategy::Bypass | ChallengeStrategy::Dns01(_) => None,
-        }
+        self.http01.clone()
+    }
+
+    /// An upstream CA revokes with this server's upstream account key, which
+    /// only the process holding the backend has.
+    fn revocation_route(&self) -> RevocationRoute {
+        RevocationRoute::Delegated
     }
 }
 

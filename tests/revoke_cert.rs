@@ -661,6 +661,7 @@ async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() 
     // branch is audited as a failure rather than swallowed.
     use acme_proxy::signer::SignerBackend;
     let crl = backend
+        .info()
         .crl_der()
         .await
         .unwrap()

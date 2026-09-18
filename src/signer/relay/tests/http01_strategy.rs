@@ -294,6 +294,7 @@ async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
 
     let running = build(&cfg);
     running
+        .info()
         .http01_tokens()
         .expect("the http01 strategy has a store")
         .publish("tok", "tok.thumbprint")
@@ -306,6 +307,7 @@ async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
     let reloaded = build(&edited);
     assert_eq!(
         reloaded
+            .info()
             .http01_tokens()
             .expect("still the http01 strategy")
             .lookup("tok")
@@ -319,7 +321,7 @@ async fn a_rebuilt_backend_serves_the_key_authorizations_already_published() {
     // not mounted for it.
     let mut bypassing = edited;
     bypassing.challenge_strategy = "bypass".to_string();
-    assert!(build(&bypassing).http01_tokens().is_none());
+    assert!(build(&bypassing).info().http01_tokens().is_none());
 }
 
 /// The `dns01_strategy` regression's twin: a tokenless challenge type ahead of

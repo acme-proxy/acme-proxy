@@ -3390,6 +3390,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
 
     // The CA acted, not just the database: the CRL now names the serial.
     let crl = signer
+        .info()
         .crl_der()
         .await
         .unwrap()

@@ -120,7 +120,7 @@ pub async fn post_revoke_cert(
 /// stop checking, where a failure it retries later.
 #[instrument(name = "get_crl", skip_all)]
 pub async fn get_crl(State(state): State<AppState>) -> Response {
-    match state.profile.signer.crl_der().await {
+    match state.profile.signer_info.crl_der().await {
         Ok(Some(der)) => ([(header::CONTENT_TYPE, "application/pkix-crl")], der).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         // Logged where the backend built it.
@@ -141,7 +141,7 @@ pub async fn get_crl(State(state): State<AppState>) -> Response {
 /// would be worse than saying nothing.
 #[instrument(name = "get_ca_chain", skip_all)]
 pub async fn get_ca_chain(State(state): State<AppState>) -> Response {
-    match state.profile.signer.ca_chain_pem().await {
+    match state.profile.signer_info.ca_chain_pem().await {
         // `application/x-pem-file` rather than `application/pem-certificate-chain`
         // (RFC 8555 §7.4.2): that media type names an *end-entity* chain, leaf
         // first, which is the opposite of what this is.

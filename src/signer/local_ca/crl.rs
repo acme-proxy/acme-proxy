@@ -259,17 +259,17 @@ impl CrlStore {
         Ok(inserted)
     }
 
-    /// The CRL to serve.
+    /// The CRL a request would be served, after whatever first-use
+    /// initialisation this CA still owes — what the tests read. Production
+    /// serves the stored row through `LocalCaInfo`, which never signs.
+    #[cfg(test)]
     pub(super) async fn current_der(&self) -> Result<Vec<u8>, SignerError> {
         self.ensure_initialized().await?;
-        self.stored().await?.map(|crl| crl.der).ok_or_else(|| {
-            error!(
-                event = "local_ca_crl_missing",
-                outcome = "failure",
-                issuer = %self.issuer_id,
-            );
-            SignerError::Internal("this CA has no stored CRL".to_string())
-        })
+        Ok(self
+            .stored()
+            .await?
+            .expect("an initialized CA has a stored CRL")
+            .der)
     }
 
     /// Signs and stores a new CRL, retrying from a fresh snapshot while other

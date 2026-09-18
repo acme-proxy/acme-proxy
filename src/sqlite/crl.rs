@@ -57,6 +57,17 @@ impl StoredCrl {
         .transpose()
     }
 
+    /// [`find`](Self::find) over the pool, for a reader outside `src/sqlite/`
+    /// that holds a [`Database`] rather than a
+    /// connection — the read side of a local CA, which serves the stored CRL
+    /// and never signs one.
+    pub async fn find_current(
+        issuer: &str,
+        database: &Database,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        Self::find(issuer, &database.pool).await
+    }
+
     /// Stores the first CRL for its issuer, answering whether it was written.
     ///
     /// `false` means another writer stored one first, and theirs stands. This

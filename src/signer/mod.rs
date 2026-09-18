@@ -9,10 +9,18 @@
 //! Revocation (RFC 8555 §7.6) is part of the same abstraction:
 //! [`revoke`](SignerBackend::revoke) must actually revoke the certificate at
 //! the backend, not just at the ACME/database layer — for [`local_ca::LocalCa`]
-//! that means a real, CA-signed CRL. [`crl_der`](SignerBackend::crl_der) is how
-//! a backend that maintains one serves it (`GET /crl`); it defaults to `None`
-//! for a backend with no CRL of its own to publish here (e.g. one delegating to
-//! an upstream CA that publishes its own).
+//! that means a real, CA-signed CRL.
+//!
+//! ## Two halves: the backend and its read side
+//!
+//! [`SignerBackend`] is the half that holds the key — `ca.key`, a PKCS#11
+//! login, a relay's upstream account — and only the `worker` role builds it.
+//! [`SignerInfo`] is what a request may ask without the key: the CRL as last
+//! stored (`GET /crl`), the trust anchor (`GET /ca.pem`), a renewal opinion,
+//! the `http-01` tokens a relay publishes, and where a revocation goes. Every
+//! role builds one through [`info_from_config`], which is what lets the process
+//! parsing untrusted JWS and CSRs run with no read access to the key at all.
+//! See [`info`].
 //!
 //! ## Asynchronous by design
 //!
@@ -58,10 +66,13 @@ use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
 
 pub mod custom;
+pub mod info;
 pub mod local_ca;
 pub mod relay;
 
-/// Re-exported so [`SignerBackend::http01_tokens`]'s signature — and the route
+pub use info::{Opaque, SignerInfo, info_from_config};
+
+/// Re-exported so [`SignerInfo::http01_tokens`]'s signature — and the route
 /// in [`crate::server::build_app`] it feeds — do not reach into one backend's
 /// module for a type the generic trait mentions.
 pub use relay::http01::TokenStore as Http01TokenStore;
@@ -180,47 +191,15 @@ pub trait SignerBackend: Send + Sync {
     /// on this server's own side.
     async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError>;
 
-    /// The backend's current certificate revocation list (RFC 5280), DER
-    /// encoded, if it maintains one servable here. `Ok(None)` means the backend
-    /// has no CRL of its own (e.g. a delegating backend whose CRL is only
-    /// ever published by the upstream CA it defers to, at a URL of the
-    /// upstream's choosing).
+    /// What this backend publishes — its CRL, its anchor, its renewal opinion,
+    /// its `http-01` tokens, where its revocations go — as the read side every
+    /// role serves from. See [`info`].
     ///
-    /// An `Err` is a CRL that exists but could not be read — `local_ca`'s
-    /// database being unreachable — which `GET /crl` answers with a 500 rather
-    /// than the 404 that would tell a relying party there is no CRL at all.
-    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
-        Ok(None)
-    }
-
-    /// The certificates a client needs to trust what this backend issues, PEM
-    /// encoded, anchor last — served unauthenticated at `GET /ca.pem`.
-    ///
-    /// `None` means the backend has no trust anchor of its own to hand out, and
-    /// the route answers `404`. That is the honest answer for both delegating
-    /// backends: [`relay`]'s anchor belongs to the upstream CA and is published
-    /// wherever that CA chooses, and a `custom` script's is wherever its
-    /// operator put it. Only [`local_ca::LocalCa`] overrides this, which is
-    /// also the only backend that generates an anchor nothing else knows about
-    /// — the case where "fetch it over HTTP" is the difference between one
-    /// `curl` and finding a file on the server's disk.
-    ///
-    /// A getter on the trait for the same reason
-    /// [`crl_der`](SignerBackend::crl_der) is one.
-    async fn ca_chain_pem(&self) -> Option<String> {
-        None
-    }
-
-    /// The backend's opinion on when `cert_der` should be renewed (ACME
-    /// Renewal Information, RFC 9773) — the same
-    /// [`RenewalWindow`] [`crate::handlers::calculate_suggested_window`]
-    /// produces, so the handler can use either interchangeably.
-    ///
-    /// `Ok(None)` — the default, which [`local_ca::LocalCa`] keeps — means
-    /// "no opinion, compute it locally". Only a backend delegating to an
-    /// upstream CA that publishes its own ARI has anything better to say.
-    async fn renewal_info(&self, _cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
-        Ok(None)
+    /// The default is [`Opaque`]: nothing to publish, revocations delegated to
+    /// the backend itself. The three real backends override it, each returning
+    /// the same type [`info_from_config`] builds for it from configuration.
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        Arc::new(Opaque)
     }
 
     /// This backend's in-flight issuances, as the process-wide relay handler
@@ -232,7 +211,7 @@ pub trait SignerBackend: Send + Sync {
     ///
     /// **State, not a [`JobHandler`](crate::jobs::JobHandler)** — the same
     /// distinction, and for the same reason, as
-    /// [`crl_refresher`](SignerBackend::crl_refresher) above. This method replaced a
+    /// [`crl_refresher`](SignerBackend::crl_refresher) below. This method replaced a
     /// `jobs()` returning one handler per backend, which made two profiles
     /// relaying to *different* upstreams — two backends, since
     /// [`build_backends`] deliberately does not collapse them — a startup
@@ -250,21 +229,6 @@ pub trait SignerBackend: Send + Sync {
         None
     }
 
-    /// The `http-01` token store this backend answers the *upstream's* own
-    /// challenge from, if it has one.
-    ///
-    /// [`crate::server::build_app`] mounts `GET
-    /// /.well-known/acme-challenge/{token}` on the root router when any
-    /// profile's backend returns `Some`, and not at all otherwise — the same "a
-    /// backend that has something to publish over HTTP says so" shape as
-    /// [`crl_der`](SignerBackend::crl_der), and the reason this is a getter on
-    /// the trait rather than a parameter threaded through `build_app`.
-    ///
-    /// Only [`relay`] with `challenge_strategy = "http01"` overrides it.
-    fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
-        None
-    }
-
     /// This backend's CRL, if it keeps one that must be pruned (RFC 5280 §3.3)
     /// and re-signed before it lapses.
     ///
@@ -276,10 +240,10 @@ pub trait SignerBackend: Send + Sync {
     /// would make a supported configuration a startup error. Handing over the
     /// state instead lets `server::generation::build_generation` build one
     /// handler over every CA in the process, the shape
-    /// [`http01_tokens`](SignerBackend::http01_tokens) already has for the same
-    /// reason. [`relay_state`](SignerBackend::relay_state) below is the second
-    /// method of this shape, and the trait deliberately has no third form: a
-    /// backend never returns a handler of its own.
+    /// [`SignerInfo::http01_tokens`] already has for the same reason.
+    /// [`relay_state`](SignerBackend::relay_state) above is the second method of
+    /// this shape, and the trait deliberately has no third form: a backend never
+    /// returns a handler of its own.
     ///
     /// Only [`local_ca::LocalCa`] overrides it. The delegating backends have no
     /// CRL of their own to keep — the upstream or the script keeps it.
@@ -382,24 +346,19 @@ pub enum RevocationRoute {
 
 /// The [`RevocationRoute`] for `cfg`.
 ///
-/// For a local CA this reads `cert_path` (public, and present once a server
-/// has started with this configuration) and nothing else.
+/// For a local CA this reads `cert_path` (public, and present once
+/// `acme-proxy init` or a `worker` has run with this configuration) and nothing
+/// else — the same answer [`SignerInfo::revocation_route`] gives, for a caller
+/// with no read side built.
 pub fn revocation_route(cfg: &SignerConfig) -> anyhow::Result<RevocationRoute> {
     match cfg.backend.as_str() {
-        "local_ca" => {
-            let path = &cfg.local_ca.cert_path;
-            let ca_pem = std::fs::read_to_string(path).map_err(|error| {
-                anyhow::anyhow!(
-                    "cannot read the CA certificate `{path}`: {error} — start `acme-proxy serve` \
-                     with this configuration once, so the CA exists"
-                )
-            })?;
-            Ok(RevocationRoute::Ledger {
-                issuer: local_ca::issuer_id_of(&ca_pem)?,
-            })
-        }
+        "local_ca" => Ok(RevocationRoute::Ledger {
+            issuer: local_ca::issuer_id_of(&local_ca::read_ca_certificate(
+                &cfg.local_ca.cert_path,
+            )?)?,
+        }),
         "relay" | "custom" => Ok(RevocationRoute::Delegated),
-        other => anyhow::bail!("unknown signer backend `{other}`"),
+        other => Err(unknown_backend(other)),
     }
 }
 
@@ -428,44 +387,85 @@ pub fn from_config(
         "custom" => Ok(Arc::new(custom::CustomScriptSigner::from_config(
             &cfg.custom,
         )?)),
+        other => Err(unknown_backend(other)),
+    }
+}
+
+/// The refusal for a `signer.backend` that names no backend — shared by
+/// [`from_config`] and [`info_from_config`], so a process that builds only the
+/// read side still says what is wrong with the configuration.
+fn unknown_backend(name: &str) -> anyhow::Error {
+    match name {
         // The one name worth explaining rather than merely refusing: it was
         // this backend's own until it was renamed away from the host program's
         // name, so an operator hitting it has a written-down configuration and
         // a one-line fix, not a typo. A diagnostic, not a compatibility path —
         // nothing reads the old spelling, and this arm goes at 1.0.0.
-        "acme_proxy" => anyhow::bail!(
+        "acme_proxy" => anyhow::anyhow!(
             "unknown signer backend: acme_proxy — renamed to `relay`. Set \
              signer.backend = \"relay\" and rename the [signer.acme_proxy] table to \
              [signer.relay] (environment: ACME_PROXY_SIGNER__ACME_PROXY__* becomes \
              ACME_PROXY_SIGNER__RELAY__*)"
         ),
-        other => anyhow::bail!("unknown signer backend: {other}"),
+        other => anyhow::anyhow!("unknown signer backend: {other}"),
     }
 }
 
-/// The backends one configuration generation runs, in the two views that are
-/// needed of them.
+/// The backends one configuration generation runs — or their read sides —
+/// in the two views that are needed of them.
 ///
-/// `by_profile` is what a [`Profile`](crate::server::Profile) is handed and the
-/// only thing that serves a request. `by_identity` exists purely so the
+/// `by_profile` is what a [`Profile`](crate::server::Profile) or a job handler
+/// is handed and the only thing that serves. `by_identity` exists purely so the
 /// **next** reload can ask "is this one already built?" — see
 /// [`build_backends`], where answering yes is what keeps a `SIGHUP` from
 /// re-reading a CA key and re-opening a PKCS#11 session for a configuration
 /// that did not move.
-#[derive(Default, Clone)]
-pub struct SignerSet {
-    by_profile: HashMap<String, Arc<dyn SignerBackend>>,
-    by_identity: HashMap<String, Arc<dyn SignerBackend>>,
+///
+/// Generic because a generation holds two: the backends (`T = dyn
+/// SignerBackend`, the default), built only by the `worker` role, and their
+/// read sides (`T = dyn SignerInfo`), built by every role through
+/// [`build_infos`]. Both follow one identity and one reuse rule.
+pub struct SignerSet<T: ?Sized = dyn SignerBackend> {
+    by_profile: HashMap<String, Arc<T>>,
+    by_identity: HashMap<String, Arc<T>>,
 }
 
-impl SignerSet {
-    /// The backend serving `profile`, if that endpoint is mounted.
+impl<T: ?Sized> Default for SignerSet<T> {
+    fn default() -> Self {
+        Self {
+            by_profile: HashMap::new(),
+            by_identity: HashMap::new(),
+        }
+    }
+}
+
+impl<T: ?Sized> Clone for SignerSet<T> {
+    fn clone(&self) -> Self {
+        Self {
+            by_profile: self.by_profile.clone(),
+            by_identity: self.by_identity.clone(),
+        }
+    }
+}
+
+impl<T: ?Sized> SignerSet<T> {
+    /// The instance serving `profile`, if that endpoint is mounted.
     #[must_use]
-    pub fn get(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
+    pub fn get(&self, profile: &str) -> Option<&Arc<T>> {
         self.by_profile.get(profile)
     }
 
-    /// How many distinct backend instances this set holds — one per distinct
+    /// Every mounted profile with its instance, for a job handler that picks
+    /// one per row by the profile the row names.
+    #[must_use]
+    pub fn by_profile(&self) -> Vec<(String, Arc<T>)> {
+        self.by_profile
+            .iter()
+            .map(|(profile, instance)| (profile.clone(), instance.clone()))
+            .collect()
+    }
+
+    /// How many distinct instances this set holds — one per distinct
     /// `[signer]` configuration, not one per profile.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -476,6 +476,59 @@ impl SignerSet {
     pub fn is_empty(&self) -> bool {
         self.by_identity.is_empty()
     }
+}
+
+/// The identity a `[signer]` configuration is shared and reused under; see
+/// [`build_backends`].
+fn identity_key(cfg: &SignerConfig, parts: &SignerParts) -> String {
+    format!("{cfg:?}|{}", parts.egress.identity)
+}
+
+/// One instance per profile, shared between identical configurations and
+/// reused from `previous` where the configuration did not move — the half of
+/// [`build_backends`] that [`build_infos`] shares.
+fn assemble_set<T: ?Sized>(
+    profiles: &[crate::config::ProfileConfig],
+    parts: &SignerParts,
+    previous: &SignerSet<T>,
+    build: impl Fn(&SignerConfig, &SignerParts) -> anyhow::Result<Arc<T>>,
+    reused: impl Fn(&str),
+) -> anyhow::Result<SignerSet<T>> {
+    let mut set = SignerSet::<T>::default();
+    for profile in profiles {
+        let key = identity_key(&profile.sections.signer, parts);
+        let instance = match (set.by_identity.get(&key), previous.by_identity.get(&key)) {
+            (Some(instance), _) => instance.clone(),
+            (None, Some(instance)) => {
+                reused(&profile.name);
+                let instance = instance.clone();
+                set.by_identity.insert(key, instance.clone());
+                instance
+            }
+            (None, None) => {
+                let instance = build(&profile.sections.signer, parts)
+                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
+                set.by_identity.insert(key, instance.clone());
+                instance
+            }
+        };
+        set.by_profile.insert(profile.name.clone(), instance);
+    }
+    Ok(set)
+}
+
+/// The read side of every profile's signer, from configuration alone — what
+/// every role serves `/crl`, `/ca.pem`, `renewalInfo` and `http-01` tokens
+/// from, and where it routes a revocation.
+///
+/// Shared and reused exactly as [`build_backends`] shares and reuses backends,
+/// under the same identity. Never touches a key: see [`info_from_config`].
+pub fn build_infos(
+    profiles: &[crate::config::ProfileConfig],
+    parts: &SignerParts,
+    previous: &SignerSet<dyn SignerInfo>,
+) -> anyhow::Result<SignerSet<dyn SignerInfo>> {
+    assemble_set(profiles, parts, previous, info_from_config, |_| {})
 }
 
 /// Builds one backend per profile, **sharing** the instance between profiles
@@ -514,11 +567,9 @@ pub fn build_backends(
     parts: &SignerParts,
     previous: &SignerSet,
 ) -> anyhow::Result<SignerSet> {
-    let key_of = |cfg: &SignerConfig| format!("{cfg:?}|{}", parts.egress.identity);
-
     let mut owners: HashMap<String, String> = HashMap::new();
     for profile in profiles {
-        let key = key_of(&profile.sections.signer);
+        let key = identity_key(&profile.sections.signer, parts);
         for path in signer_paths(&profile.sections.signer) {
             match owners.get(&path) {
                 Some(existing) if *existing != key => anyhow::bail!(
@@ -534,33 +585,15 @@ pub fn build_backends(
         }
     }
 
-    let mut set = SignerSet::default();
-    for profile in profiles {
-        let key = key_of(&profile.sections.signer);
-        let backend = match (set.by_identity.get(&key), previous.by_identity.get(&key)) {
-            (Some(backend), _) => backend.clone(),
-            (None, Some(backend)) => {
-                debug!(
-                    event = "signer_backend_reused",
-                    outcome = "success",
-                    profile = %profile.name,
-                    "the configuration did not move, so the running backend is carried \
-                     whole rather than rebuilt"
-                );
-                let backend = backend.clone();
-                set.by_identity.insert(key, backend.clone());
-                backend
-            }
-            (None, None) => {
-                let backend = from_config(&profile.sections.signer, parts)
-                    .map_err(|error| anyhow::anyhow!("profile `{}`: {error}", profile.name))?;
-                set.by_identity.insert(key, backend.clone());
-                backend
-            }
-        };
-        set.by_profile.insert(profile.name.clone(), backend);
-    }
-    Ok(set)
+    assemble_set(profiles, parts, previous, from_config, |profile| {
+        debug!(
+            event = "signer_backend_reused",
+            outcome = "success",
+            profile = %profile,
+            "the configuration did not move, so the running backend is carried \
+             whole rather than rebuilt"
+        );
+    })
 }
 
 /// The files a signer configuration owns — what two profiles must not share
@@ -716,7 +749,7 @@ mod tests {
         };
         let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
         outgoing.revoke(&leaf, Some(1)).await.unwrap();
-        let before = outgoing.crl_der().await.expect("a local CA has a CRL");
+        let before = crate::testutil::served_crl(outgoing.as_ref()).await;
 
         // The operator edits one key of `[signer]` and signals.
         let mut edited = cfg;
@@ -729,7 +762,7 @@ mod tests {
             "an edited `[signer]` must really be rebuilt, or the edit did nothing"
         );
         assert_eq!(
-            incoming.crl_der().await.expect("a local CA has a CRL"),
+            crate::testutil::served_crl(incoming.as_ref()).await,
             before,
             "the rebuilt CA must serve the same CRL, revocations and all",
         );
@@ -754,7 +787,7 @@ mod tests {
         let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
         outgoing.revoke(&leaf, None).await.unwrap();
         assert_ne!(
-            incoming.crl_der().await.unwrap(),
+            crate::testutil::served_crl(incoming.as_ref()).await,
             before,
             "a revocation landing on the outgoing instance mid-reload must reach \
              the incoming one",
@@ -870,8 +903,8 @@ mod tests {
         let reloaded = build_backends(&[profile("le", elsewhere)], &parts, &running).unwrap();
 
         assert_ne!(
-            reloaded.get("le").unwrap().crl_der().await.unwrap(),
-            outgoing.crl_der().await.unwrap(),
+            crate::testutil::served_crl(reloaded.get("le").unwrap().as_ref()).await,
+            crate::testutil::served_crl(outgoing.as_ref()).await,
             "a different CA key is a different issuer with its own revocations",
         );
     }
@@ -1018,7 +1051,10 @@ mod tests {
     async fn the_local_ca_backend_has_no_renewal_info_opinion() {
         let (cfg, _dir) = config("local_ca");
         let signer = from_config(&cfg, &parts().await).unwrap();
-        assert!(matches!(signer.renewal_info(&[0x30, 0x00]).await, Ok(None)));
+        assert!(matches!(
+            signer.info().renewal_info(&[0x30, 0x00]).await,
+            Ok(None)
+        ));
     }
 
     /// A typo in `signer.backend` stops the server rather than silently leaving
@@ -1057,6 +1093,146 @@ mod tests {
         ] {
             assert!(error.contains(expected), "{expected} missing from: {error}");
         }
+    }
+
+    /// The two ways to build a read side describe one CA: what every role
+    /// builds from configuration serves the same anchor and routes revocations
+    /// to the same issuer as what the worker's own backend hands out.
+    ///
+    /// Without this the suites — which derive the read side from an in-memory
+    /// backend — could pass while production, which reads `cert_path`, served
+    /// something else.
+    #[tokio::test]
+    async fn info_from_config_agrees_with_the_backends_own_info() {
+        let (cfg, _dir) = config("local_ca");
+        let parts = parts().await;
+        let backend = from_config(&cfg, &parts).unwrap();
+        let from_config = info_from_config(&cfg, &parts).unwrap();
+
+        assert_eq!(
+            from_config.ca_chain_pem().await,
+            backend.info().ca_chain_pem().await
+        );
+        assert_eq!(
+            from_config.revocation_route(),
+            backend.info().revocation_route()
+        );
+        assert!(matches!(
+            from_config.revocation_route(),
+            RevocationRoute::Ledger { .. }
+        ));
+        assert_eq!(
+            from_config.revocation_route(),
+            revocation_route(&cfg).unwrap(),
+            "the CLI's route and the served one agree"
+        );
+
+        // Both serve the CRL the backend stored, once it has stored one.
+        let served = crate::testutil::served_crl(backend.as_ref()).await;
+        assert_eq!(from_config.crl_der().await.unwrap().unwrap(), served);
+    }
+
+    /// The read side never signs: before any worker has stored this CA's first
+    /// CRL it answers an error — not the `404` of a CA with none — and leaves
+    /// the table as it found it.
+    #[tokio::test]
+    async fn a_read_side_with_no_stored_crl_answers_an_error_and_signs_nothing() {
+        let (cfg, _dir) = config("local_ca");
+        let parts = parts().await;
+        // Generates the CA files, and touches no table.
+        from_config(&cfg, &parts).unwrap();
+        let info = info_from_config(&cfg, &parts).unwrap();
+
+        let error = info.crl_der().await.unwrap_err().to_string();
+        assert!(error.contains("no stored CRL"), "{error}");
+        let RevocationRoute::Ledger { issuer } = info.revocation_route() else {
+            panic!("a local CA routes to its ledger")
+        };
+        let mut tx = parts.database.transaction().await.unwrap();
+        assert!(
+            crate::sqlite::crl::StoredCrl::find(&issuer, &mut *tx)
+                .await
+                .unwrap()
+                .is_none(),
+            "reading must not store a CRL"
+        );
+    }
+
+    /// A process that builds only the read side and finds no CA says how to
+    /// make one, and never makes one itself.
+    #[tokio::test]
+    async fn a_read_side_without_a_ca_certificate_names_init() {
+        let (cfg, _dir) = config("local_ca");
+        let error = match info_from_config(&cfg, &parts().await) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("no CA certificate exists yet"),
+        };
+        assert!(error.contains("acme-proxy init"), "{error}");
+        assert!(error.contains("worker"), "{error}");
+        assert!(
+            !std::path::Path::new(&cfg.local_ca.key_path).exists(),
+            "the read side must never generate a key"
+        );
+        assert!(!std::path::Path::new(&cfg.local_ca.cert_path).exists());
+    }
+
+    /// The two delegating backends route every revocation to the process that
+    /// holds them, and publish no anchor of their own.
+    #[tokio::test]
+    async fn a_delegating_read_side_routes_revocations_to_the_backend() {
+        let (mut cfg, _dir) = config("custom");
+        cfg.custom.script_path = "/bin/true".to_string();
+        let info = info_from_config(&cfg, &parts().await).unwrap();
+        assert_eq!(info.revocation_route(), RevocationRoute::Delegated);
+        assert!(info.ca_chain_pem().await.is_none());
+        assert!(info.http01_tokens().is_none());
+
+        let (mut cfg, _dir) = config("relay");
+        cfg.relay.directory_url = "https://127.0.0.1:1/directory".to_string();
+        cfg.relay.challenge_strategy = "http01".to_string();
+        // Contacts nothing: the directory is discovered on first use.
+        let info = info_from_config(&cfg, &parts().await).unwrap();
+        assert_eq!(info.revocation_route(), RevocationRoute::Delegated);
+        assert!(info.http01_tokens().is_some());
+        assert!(
+            info.renewal_info(&[0x30, 0x00]).await.is_err(),
+            "an unreachable upstream is an error the handler falls back from"
+        );
+
+        cfg.relay.directory_url = String::new();
+        assert!(info_from_config(&cfg, &parts().await).is_err());
+        let (cfg, _dir) = config("hashicorp-vault");
+        let error = match info_from_config(&cfg, &parts().await) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("an unknown backend has no read side"),
+        };
+        assert!(error.contains("unknown signer backend"), "{error}");
+    }
+
+    /// Read sides follow the backends' reuse rule: an unmoved configuration
+    /// keeps its instance, an edited one gets a new one.
+    #[tokio::test]
+    async fn read_sides_are_reused_like_backends() {
+        let (cfg, _dir) = config("local_ca");
+        let parts = parts().await;
+        from_config(&cfg, &parts).unwrap();
+
+        let first =
+            build_infos(&[profile("le", cfg.clone())], &parts, &SignerSet::default()).unwrap();
+        let second = build_infos(&[profile("le", cfg.clone())], &parts, &first).unwrap();
+        assert!(Arc::ptr_eq(
+            first.get("le").unwrap(),
+            second.get("le").unwrap()
+        ));
+
+        let mut edited = cfg;
+        edited.local_ca.leaf_validity_days = 30;
+        let third = build_infos(&[profile("le", edited)], &parts, &second).unwrap();
+        assert!(!Arc::ptr_eq(
+            second.get("le").unwrap(),
+            third.get("le").unwrap()
+        ));
+        assert_eq!(third.by_profile().len(), 1);
     }
 
     /// Both variants render. `SignerError` is what a handler logs when

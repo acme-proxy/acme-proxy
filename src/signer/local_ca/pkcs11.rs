@@ -1149,6 +1149,7 @@ mod softhsm {
         ca.revoke(&leaf_der, Some(1)).await.unwrap();
 
         let crl_der = ca
+            .info()
             .crl_der()
             .await
             .unwrap()

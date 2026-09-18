@@ -82,8 +82,16 @@ pub(super) async fn supervise_reloads(
                     "the reload build task did not finish: {error}"
                 )))
             })
+        };
+        // A CA this reload mounted has no stored CRL yet, and the read side
+        // never signs one. Stored here, before the routers that serve it are
+        // published, for startup's reason — see `store_first_crls`.
+        if let Ok(prepared) = &outcome
+            && roles.has(super::ProcessRole::Worker)
+        {
+            super::store_first_crls(prepared.signers()).await;
         }
-        .map(|prepared| {
+        let outcome = outcome.map(|prepared| {
             publish_reload(
                 prepared,
                 &config,

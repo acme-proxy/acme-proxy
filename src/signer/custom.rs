@@ -1,12 +1,23 @@
 //! The `custom` signer backend: delegates issuance and revocation to an
 //! external script.
+//!
+//! Two types over one script. [`CustomScriptSigner`] runs the `issue` and
+//! `revoke` hooks and is built only by the `worker` role;
+//! [`CustomScriptInfo`] runs the read-only `crl` and `renewal_info` hooks,
+//! which a request asks for, and is built by every role. The script is the
+//! same file either way — what differs is which process may run which hook.
 
 use async_trait::async_trait;
 use base64::prelude::*;
 use serde_json::json;
 use tracing::{info, warn};
 
-use super::{IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError};
+use std::sync::Arc;
+
+use super::{
+    IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
+    SignerInfo,
+};
 use crate::config::CustomSignerConfig;
 use crate::script_hook::{ScriptHook, ScriptOutcome, ScriptStdin};
 use crate::sqlite::order::Identifier;
@@ -22,19 +33,32 @@ const BAD_CSR_EXIT_CODE: i32 = 3;
 #[derive(Debug)]
 pub struct CustomScriptSigner {
     hook: ScriptHook,
+    info: Arc<CustomScriptInfo>,
+}
+
+/// The read-only hooks of the same script: `crl` and `renewal_info`, each run
+/// only when its `supports_*` flag is set.
+#[derive(Debug)]
+pub struct CustomScriptInfo {
+    hook: ScriptHook,
     supports_crl: bool,
     supports_renewal_info: bool,
+}
+
+/// The hook `cfg` describes, or the refusal of an empty `script_path`.
+fn hook_from(cfg: &CustomSignerConfig) -> anyhow::Result<ScriptHook> {
+    ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms).ok_or_else(|| {
+        anyhow::anyhow!(
+            "signer.backend is \"custom\" but signer.custom.script_path is empty; \
+             provide a path to an executable script"
+        )
+    })
 }
 
 impl CustomScriptSigner {
     /// Validates the configuration and creates the signer.
     pub fn from_config(cfg: &CustomSignerConfig) -> anyhow::Result<Self> {
-        let Some(hook) = ScriptHook::new(&cfg.script_path, &cfg.args, cfg.timeout_ms) else {
-            anyhow::bail!(
-                "signer.backend is \"custom\" but signer.custom.script_path is empty; \
-                 provide a path to an executable script"
-            );
-        };
+        let hook = hook_from(cfg)?;
 
         info!(
             event = "signer_custom_loaded",
@@ -48,32 +72,43 @@ impl CustomScriptSigner {
 
         Ok(Self {
             hook,
+            info: Arc::new(CustomScriptInfo::from_config(cfg)?),
+        })
+    }
+}
+
+impl CustomScriptInfo {
+    /// The read side of the script `cfg` names. Validates exactly what
+    /// [`CustomScriptSigner::from_config`] does, so a process building only
+    /// this still refuses an empty `script_path`.
+    pub fn from_config(cfg: &CustomSignerConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            hook: hook_from(cfg)?,
             supports_crl: cfg.supports_crl,
             supports_renewal_info: cfg.supports_renewal_info,
         })
     }
+}
 
-    /// Runs the script and returns its raw outcome.
-    ///
-    /// Everything that stopped it answering becomes `SignerError::Internal`; a
-    /// non-zero exit status is deliberately *not* an error here, because each
-    /// hook reads its own exit codes differently — `issue` reserves one for
-    /// "bad CSR", the others do not.
-    async fn run_script(
-        &self,
-        envs: &[(&str, &str)],
-        payload: &serde_json::Value,
-    ) -> Result<ScriptOutcome, SignerError> {
-        self.hook
-            .run(envs, ScriptStdin::Json(payload))
-            .await
-            .map_err(|error| SignerError::Internal(format!("custom signer {error}")))
-    }
+/// Runs the script and returns its raw outcome.
+///
+/// Everything that stopped it answering becomes `SignerError::Internal`; a
+/// non-zero exit status is deliberately *not* an error here, because each
+/// hook reads its own exit codes differently — `issue` reserves one for
+/// "bad CSR", the others do not.
+async fn run_script(
+    hook: &ScriptHook,
+    envs: &[(&str, &str)],
+    payload: &serde_json::Value,
+) -> Result<ScriptOutcome, SignerError> {
+    hook.run(envs, ScriptStdin::Json(payload))
+        .await
+        .map_err(|error| SignerError::Internal(format!("custom signer {error}")))
+}
 
-    /// A one-line reason for a non-zero exit; see [`ScriptHook::detail`].
-    fn detail_from(outcome: &ScriptOutcome) -> String {
-        ScriptHook::detail(outcome, "custom signer script")
-    }
+/// A one-line reason for a non-zero exit; see [`ScriptHook::detail`].
+fn detail_from(outcome: &ScriptOutcome) -> String {
+    ScriptHook::detail(outcome, "custom signer script")
 }
 
 #[async_trait]
@@ -106,7 +141,7 @@ impl SignerBackend for CustomScriptSigner {
             "csr_der_base64": BASE64_STANDARD.encode(csr_der),
         });
 
-        let outcome = self.run_script(&envs, &payload).await?;
+        let outcome = run_script(&self.hook, &envs, &payload).await?;
         let output = &outcome.output;
         if output.status.success() {
             // Trim, then put back exactly one trailing newline: a PEM chain
@@ -125,7 +160,7 @@ impl SignerBackend for CustomScriptSigner {
         if output.status.code() == Some(BAD_CSR_EXIT_CODE) {
             return Err(SignerError::BadCsr);
         }
-        Err(SignerError::Internal(Self::detail_from(&outcome)))
+        Err(SignerError::Internal(detail_from(&outcome)))
     }
 
     async fn revoke(&self, cert_der: &[u8], reason: Option<u32>) -> Result<(), SignerError> {
@@ -140,15 +175,22 @@ impl SignerBackend for CustomScriptSigner {
             "reason": reason,
         });
 
-        let outcome = self.run_script(&envs, &payload).await?;
+        let outcome = run_script(&self.hook, &envs, &payload).await?;
         let output = &outcome.output;
         if output.status.success() {
             Ok(())
         } else {
-            Err(SignerError::Internal(Self::detail_from(&outcome)))
+            Err(SignerError::Internal(detail_from(&outcome)))
         }
     }
 
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        self.info.clone()
+    }
+}
+
+#[async_trait]
+impl SignerInfo for CustomScriptInfo {
     /// A script failure answers `Ok(None)`, the same `404` as a script with
     /// nothing to publish, and is logged: this backend's CRL is the script's,
     /// and a relying party gains nothing from a `500` over a hook it cannot see.
@@ -159,7 +201,7 @@ impl SignerBackend for CustomScriptSigner {
         let envs = [("ACME_SIGNER_HOOK", "crl")];
         let payload = json!({ "hook": "crl" });
 
-        match self.run_script(&envs, &payload).await {
+        match run_script(&self.hook, &envs, &payload).await {
             Ok(outcome) if outcome.output.status.success() => {
                 if outcome.output.stdout.is_empty() {
                     Ok(None)
@@ -175,7 +217,7 @@ impl SignerBackend for CustomScriptSigner {
                 warn!(
                     event = "signer_custom_crl_rejected",
                     outcome = "failure",
-                    detail = %Self::detail_from(&outcome),
+                    detail = %detail_from(&outcome),
                 );
                 Ok(None)
             }
@@ -200,10 +242,10 @@ impl SignerBackend for CustomScriptSigner {
             "cert_der_base64": BASE64_STANDARD.encode(cert_der),
         });
 
-        let outcome = self.run_script(&envs, &payload).await?;
+        let outcome = run_script(&self.hook, &envs, &payload).await?;
         let output = &outcome.output;
         if !output.status.success() {
-            return Err(SignerError::Internal(Self::detail_from(&outcome)));
+            return Err(SignerError::Internal(detail_from(&outcome)));
         }
 
         let text = String::from_utf8_lossy(&output.stdout);
@@ -236,6 +278,12 @@ impl SignerBackend for CustomScriptSigner {
             end,
             explanation_url,
         }))
+    }
+
+    /// A script has no ledger here, so its revocations go to the process that
+    /// runs its `revoke` hook.
+    fn revocation_route(&self) -> RevocationRoute {
+        RevocationRoute::Delegated
     }
 }
 
@@ -307,9 +355,9 @@ mod tests {
             signer.revoke(&[0x30, 0x00], None).await,
             Err(SignerError::Internal(_))
         ));
-        assert!(signer.crl_der().await.unwrap().is_none());
+        assert!(signer.info().crl_der().await.unwrap().is_none());
         assert!(matches!(
-            signer.renewal_info(&[0x30, 0x00]).await,
+            signer.info().renewal_info(&[0x30, 0x00]).await,
             Err(SignerError::Internal(_))
         ));
     }
@@ -501,7 +549,7 @@ exit 0
             &format!("#!/bin/sh\ntouch {}\nexit 0\n", marker.to_str().unwrap()),
         );
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.unwrap().is_none());
+        assert!(signer.info().crl_der().await.unwrap().is_none());
         assert!(!marker.exists(), "crl hook must not run when disabled");
     }
 
@@ -516,7 +564,7 @@ exit 0
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
         assert_eq!(
-            signer.crl_der().await.unwrap(),
+            signer.info().crl_der().await.unwrap(),
             Some(b"fake-der-bytes".to_vec())
         );
     }
@@ -527,7 +575,7 @@ exit 0
         let mut cfg = write_script(&dir, "crl.sh", "#!/bin/sh\ncat > /dev/null\nexit 0\n");
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.unwrap().is_none());
+        assert!(signer.info().crl_der().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -536,7 +584,7 @@ exit 0
         let mut cfg = write_script(&dir, "crl.sh", "#!/bin/sh\ncat > /dev/null\nexit 1\n");
         cfg.supports_crl = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.crl_der().await.unwrap().is_none());
+        assert!(signer.info().crl_der().await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -549,7 +597,10 @@ exit 0
             &format!("#!/bin/sh\ntouch {}\nexit 0\n", marker.to_str().unwrap()),
         );
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert_eq!(signer.renewal_info(&[0x30, 0x00]).await.unwrap(), None);
+        assert_eq!(
+            signer.info().renewal_info(&[0x30, 0x00]).await.unwrap(),
+            None
+        );
         assert!(
             !marker.exists(),
             "renewal_info hook must not run when disabled"
@@ -567,7 +618,7 @@ exit 0
         cfg.supports_renewal_info = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
         assert_eq!(
-            signer.renewal_info(&[0x30, 0x00]).await.unwrap(),
+            signer.info().renewal_info(&[0x30, 0x00]).await.unwrap(),
             Some(RenewalWindow::new(1000, 2000))
         );
     }
@@ -585,7 +636,7 @@ exit 0
         cfg.supports_renewal_info = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
         assert_eq!(
-            signer.renewal_info(&[0x30, 0x00]).await.unwrap(),
+            signer.info().renewal_info(&[0x30, 0x00]).await.unwrap(),
             Some(RenewalWindow {
                 start: 1000,
                 end: 2000,
@@ -607,7 +658,7 @@ exit 0
         cfg.supports_renewal_info = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
         assert!(matches!(
-            signer.renewal_info(&[0x30, 0x00]).await,
+            signer.info().renewal_info(&[0x30, 0x00]).await,
             Err(SignerError::Internal(_))
         ));
     }
@@ -618,7 +669,10 @@ exit 0
         let mut cfg = write_script(&dir, "ari.sh", "#!/bin/sh\ncat > /dev/null\nexit 0\n");
         cfg.supports_renewal_info = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert_eq!(signer.renewal_info(&[0x30, 0x00]).await.unwrap(), None);
+        assert_eq!(
+            signer.info().renewal_info(&[0x30, 0x00]).await.unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -631,7 +685,7 @@ exit 0
         );
         cfg.supports_renewal_info = true;
         let signer = CustomScriptSigner::from_config(&cfg).unwrap();
-        assert!(signer.renewal_info(&[0x30, 0x00]).await.is_err());
+        assert!(signer.info().renewal_info(&[0x30, 0x00]).await.is_err());
     }
 
     /// Two tokens is the right *shape*, so the arity check passes and the
@@ -656,7 +710,7 @@ exit 0
             cfg.supports_renewal_info = true;
             let signer = CustomScriptSigner::from_config(&cfg).unwrap();
 
-            match signer.renewal_info(&[0x30, 0x00]).await {
+            match signer.info().renewal_info(&[0x30, 0x00]).await {
                 Err(SignerError::Internal(detail)) => {
                     assert!(detail.contains(expected), "expected {expected:?}: {detail}")
                 }

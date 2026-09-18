@@ -1930,7 +1930,7 @@ mod tests {
         assert!(reloaded.revoked_at.is_some());
 
         use x509_parser::prelude::FromDer;
-        let der = signer.crl_der().await.unwrap().unwrap();
+        let der = signer.info().crl_der().await.unwrap().unwrap();
         let (_, crl) =
             x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
         assert_eq!(crl.iter_revoked_certificates().count(), 1);

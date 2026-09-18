@@ -41,7 +41,7 @@ async fn renewal_info_uses_the_upstream_window() {
     let _runner = TestRunner::start(queue, &signer);
 
     let leaf = ca_signed_leaf_with_aki();
-    let window = signer.renewal_info(&leaf).await.unwrap();
+    let window = signer.info().renewal_info(&leaf).await.unwrap();
 
     let expected_start = 1785542400; // 2026-08-01T00:00:00Z
     let expected_end = 1786147200; // 2026-08-08T00:00:00Z
@@ -54,6 +54,47 @@ async fn renewal_info_uses_the_upstream_window() {
         upstream.last_cert_id(),
         Some(crate::cert::ari_cert_id(&leaf).unwrap())
     );
+}
+
+/// The read side a process without the worker role builds answers the same
+/// window from configuration alone: no account key, no registration — the
+/// `.kid` sidecar is never written — and the directory discovered on the
+/// first request that needs it, once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_side_built_from_configuration_asks_the_upstream_without_an_account() {
+    let upstream = testsrv::start(Script {
+        renewal_window: Some((
+            "2026-08-01T00:00:00Z".to_string(),
+            "2026-08-08T00:00:00Z".to_string(),
+        )),
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let cfg = config(&upstream, &dir);
+    let info = RelayInfo::from_config(
+        &cfg,
+        &relay_parts(
+            database().await,
+            no_notifiers(),
+            test_queue(database().await),
+        ),
+    )
+    .unwrap();
+
+    let leaf = ca_signed_leaf_with_aki();
+    for _ in 0..2 {
+        assert_eq!(
+            info.renewal_info(&leaf).await.unwrap(),
+            Some(RenewalWindow::new(1785542400, 1786147200))
+        );
+    }
+    assert_eq!(upstream.ari_requests(), 2);
+    assert!(
+        !std::path::Path::new(&cfg.account_key_path).exists(),
+        "the read side must never create the upstream account key"
+    );
+    assert!(stored_kid(&cfg).is_none(), "nor register an account");
 }
 
 /// An upstream predating RFC 9773 advertises no `renewalInfo`. That is not
@@ -76,6 +117,7 @@ async fn no_upstream_renewal_info_means_no_opinion() {
 
     assert_eq!(
         signer
+            .info()
             .renewal_info(&ca_signed_leaf_with_aki())
             .await
             .unwrap(),
@@ -103,7 +145,7 @@ async fn a_certificate_without_an_aki_yields_no_opinion() {
     let params = rcgen::CertificateParams::new(vec!["example.com".to_string()]).unwrap();
     let der = params.self_signed(&key_pair).unwrap().der().to_vec();
 
-    assert_eq!(signer.renewal_info(&der).await.unwrap(), None);
+    assert_eq!(signer.info().renewal_info(&der).await.unwrap(), None);
     assert_eq!(upstream.ari_requests(), 0);
 }
 
@@ -126,6 +168,7 @@ async fn an_unparsable_window_is_an_error() {
     let _runner = TestRunner::start(queue, &signer);
 
     let error = signer
+        .info()
         .renewal_info(&ca_signed_leaf_with_aki())
         .await
         .unwrap_err();

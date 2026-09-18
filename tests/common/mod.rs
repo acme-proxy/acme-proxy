@@ -34,7 +34,8 @@ use acme_proxy::notify::{
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::signer::relay::http01::DbTokenStore;
 use acme_proxy::signer::{
-    Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity, SignerBackend, SignerError,
+    CrlRefresher, Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity,
+    RevocationRoute, SignerBackend, SignerError, SignerInfo,
 };
 use acme_proxy::sqlite::db::Database;
 use acme_proxy::sqlite::order::Identifier;
@@ -511,10 +512,12 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
             Some(notify) => notify,
             None => no_notifications().await,
         };
+        met_by_a_worker(profile.signer.as_ref()).await;
         built.push(Arc::new(Profile::new(
             profile.name,
             &config.server.base_url,
             ProfileParts {
+                signer_info: profile.signer.info(),
                 signer: profile.signer,
                 filter: profile.filter,
                 challenges: profile.challenges,
@@ -594,7 +597,7 @@ pub async fn test_app_full(
 ) -> (Router, Arc<Database>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let profile = one_profile(&config, signer, filter, challenges, notify);
+    let profile = one_profile(&config, signer, filter, challenges, notify).await;
     let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     let router = build_app(
         database.clone(),
@@ -619,7 +622,8 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
         Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications().await,
-    );
+    )
+    .await;
     let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     build_app(
         database.clone(),
@@ -668,7 +672,8 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
         Arc::new(FilterPolicy::default()),
         default_challenges(),
         no_notifications().await,
-    );
+    )
+    .await;
     let jobs = spawn_validation_runner(&database, std::slice::from_ref(&profile));
     let router = build_app(
         database.clone(),
@@ -706,7 +711,8 @@ pub async fn test_app_with_metrics(
         Arc::new(FilterPolicy::default()),
         Arc::new(ChallengeRegistry::default()),
         no_notifications().await,
-    );
+    )
+    .await;
     let auditor = Arc::new(
         Auditor::with_resolver(
             database.clone(),
@@ -731,17 +737,19 @@ pub async fn test_app_with_metrics(
 ///
 /// Factored out rather than copied so `test_admin_app` and `test_app_full`
 /// cannot drift into mounting subtly different endpoints.
-fn one_profile(
+async fn one_profile(
     config: &Config,
     signer: Arc<dyn SignerBackend>,
     filter: Arc<FilterPolicy>,
     challenges: Arc<ChallengeRegistry>,
     notify: Arc<NotifyDispatcher>,
 ) -> Arc<Profile> {
+    met_by_a_worker(signer.as_ref()).await;
     Arc::new(Profile::new(
         PROFILE,
         &config.server.base_url,
         ProfileParts {
+            signer_info: signer.info(),
             signer,
             filter,
             challenges,
@@ -751,6 +759,23 @@ fn one_profile(
             notify,
         },
     ))
+}
+
+/// What a worker's first pass leaves behind for `signer`: a local CA's first
+/// CRL stored.
+///
+/// Production serves `/crl` from the stored row through the read side, which
+/// never signs, and the `worker` role's startup sweep is what stores the first
+/// one. The suite has no startup sweep, so every app builder does this in its
+/// place — otherwise a test reading the CRL before any revocation would see
+/// the brief window a real deployment has before its worker's first tick.
+pub async fn met_by_a_worker(signer: &dyn SignerBackend) {
+    if let Some(refresher) = signer.crl_refresher() {
+        refresher
+            .refresh()
+            .await
+            .expect("an in-memory CA stores its first CRL");
+    }
 }
 
 /// The auditor every test app is built with: **no reverse lookup**.
@@ -824,7 +849,8 @@ async fn admin_app_with_notifiers(
         filter,
         default_challenges(),
         no_notifications().await,
-    );
+    )
+    .await;
     let router = acme_proxy::webadmin::build_admin_app(
         database.clone(),
         Arc::new(config),
@@ -1627,8 +1653,12 @@ impl SignerBackend for GatedSigner {
         self.ca.revoke(cert_der, reason).await
     }
 
-    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
-        self.ca.crl_der().await
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        self.ca.info()
+    }
+
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
+        self.ca.crl_refresher()
     }
 }
 
@@ -1664,8 +1694,12 @@ impl SignerBackend for RevokeFailingSigner {
         Err(SignerError::Internal("the CA refused".to_string()))
     }
 
-    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
-        self.0.crl_der().await
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        self.0.info()
+    }
+
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
+        self.0.crl_refresher()
     }
 }
 
@@ -1732,14 +1766,18 @@ impl SignerBackend for RevokePersistFailingSigner {
         Ok(())
     }
 
-    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
-        self.ca.crl_der().await
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        self.ca.info()
+    }
+
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
+        self.ca.crl_refresher()
     }
 }
 
 /// A signer backend carrying nothing but an `http-01` token store.
 ///
-/// The responder route is mounted off `SignerBackend::http01_tokens`, so this
+/// The responder route is mounted off `SignerInfo::http01_tokens`, so this
 /// is how a test gets it onto the real `build_app` without standing up an
 /// upstream ACME server. Issuance is deliberately unsupported: nothing that
 /// uses this backend is about certificates.
@@ -1778,8 +1816,21 @@ impl SignerBackend for TokenStoreSigner {
         Ok(())
     }
 
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        Arc::new(TokenStoreInfo(self.0.clone()))
+    }
+}
+
+/// [`TokenStoreSigner`]'s read side: the store, and nothing else.
+struct TokenStoreInfo(Arc<DbTokenStore>);
+
+impl SignerInfo for TokenStoreInfo {
     fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
         Some(self.0.clone())
+    }
+
+    fn revocation_route(&self) -> RevocationRoute {
+        RevocationRoute::Delegated
     }
 }
 
@@ -1846,6 +1897,7 @@ impl SignerBackend for DelegatingSigner {
 
 /// What a [`ScriptedAriSigner`] answers when the ARI handler asks it for a
 /// renewal window.
+#[derive(Clone, Copy)]
 pub enum AriAnswer {
     /// The backend has an opinion — what a backend delegating to an upstream CA
     /// returns once that CA has answered.
@@ -1897,6 +1949,34 @@ impl SignerBackend for ScriptedAriSigner {
         self.inner.revoke(cert_der, reason).await
     }
 
+    fn crl_refresher(&self) -> Option<Arc<dyn CrlRefresher>> {
+        self.inner.crl_refresher()
+    }
+
+    fn info(&self) -> Arc<dyn SignerInfo> {
+        Arc::new(ScriptedAriInfo {
+            ca: self.inner.info(),
+            answer: self.answer,
+        })
+    }
+}
+
+/// [`ScriptedAriSigner`]'s read side: the CA's, with a scripted renewal opinion.
+struct ScriptedAriInfo {
+    ca: Arc<dyn SignerInfo>,
+    answer: AriAnswer,
+}
+
+#[async_trait]
+impl SignerInfo for ScriptedAriInfo {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
+        self.ca.crl_der().await
+    }
+
+    async fn ca_chain_pem(&self) -> Option<String> {
+        self.ca.ca_chain_pem().await
+    }
+
     async fn renewal_info(&self, _cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
         match self.answer {
             AriAnswer::Window(start, end) => Ok(Some(RenewalWindow::new(start, end))),
@@ -1909,6 +1989,10 @@ impl SignerBackend for ScriptedAriSigner {
                 Err(SignerError::Internal("upstream unreachable".to_string()))
             }
         }
+    }
+
+    fn revocation_route(&self) -> RevocationRoute {
+        self.ca.revocation_route()
     }
 }
 

@@ -79,7 +79,10 @@ impl Egress {
 pub struct GenerationParts {
     pub egress: Arc<Egress>,
     pub dispatchers: notify::DispatcherMap,
+    /// The backends, which the job handlers sign and revoke through.
     pub signers: signer::SignerSet,
+    /// Their read sides, which the profiles serve from.
+    pub infos: signer::SignerSet<dyn signer::SignerInfo>,
 }
 
 /// What survives a configuration reload.
@@ -116,6 +119,8 @@ pub struct Assembly {
     pub notifiers: notify::Notifiers,
     notifiers_tx: notify::NotifiersSender,
     signers: std::sync::Mutex<signer::SignerSet>,
+    /// The previous generation's read sides, kept for `signers`' reason.
+    infos: std::sync::Mutex<signer::SignerSet<dyn signer::SignerInfo>>,
 }
 
 impl Assembly {
@@ -151,13 +156,14 @@ impl Assembly {
             notifiers,
             notifiers_tx,
             signers: std::sync::Mutex::new(signer::SignerSet::default()),
+            infos: std::sync::Mutex::new(signer::SignerSet::default()),
         };
         let parts = assembly.build_parts(resolved, config)?;
         // The first generation's map has to reach the handle before anything
         // dispatches through it; every later one goes through `publish` in the
         // reload's own synchronous run.
         assembly.publish_notifiers(parts.dispatchers.clone());
-        assembly.publish_signers(parts.signers.clone());
+        assembly.publish_signers(parts.signers.clone(), parts.infos.clone());
         Ok((assembly, parts))
     }
 
@@ -204,27 +210,34 @@ impl Assembly {
                 )?,
             );
         }
+        let signer_parts = signer::SignerParts {
+            database: self.database.clone(),
+            notifiers: self.notifiers.clone(),
+            metrics: self.metrics.clone(),
+            egress: egress.clone(),
+            jobs: self.jobs.clone(),
+        };
         let previous = self
             .signers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let signers = signer::build_backends(
-            resolved,
-            &signer::SignerParts {
-                database: self.database.clone(),
-                notifiers: self.notifiers.clone(),
-                metrics: self.metrics.clone(),
-                egress: egress.clone(),
-                jobs: self.jobs.clone(),
-            },
-            &previous,
-        )?;
+        let signers = signer::build_backends(resolved, &signer_parts, &previous)?;
+        // After the backends, so that on a fresh directory the one that
+        // generates a CA has written its certificate before its read side
+        // looks for it.
+        let previous = self
+            .infos
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let infos = signer::build_infos(resolved, &signer_parts, &previous)?;
 
         Ok(GenerationParts {
             egress,
             dispatchers,
             signers,
+            infos,
         })
     }
 
@@ -243,10 +256,18 @@ impl Assembly {
     /// an unmounted profile's, or the instance a `[signer]` edit replaced — is
     /// finally released. Deliberately after its replacement was built and has
     /// adopted its state, never before.
-    pub fn publish_signers(&self, signers: signer::SignerSet) {
+    pub fn publish_signers(
+        &self,
+        signers: signer::SignerSet,
+        infos: signer::SignerSet<dyn signer::SignerInfo>,
+    ) {
         *self
             .signers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = signers;
+        *self
+            .infos
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = infos;
     }
 }

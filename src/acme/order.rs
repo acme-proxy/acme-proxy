@@ -1232,6 +1232,7 @@ pub(crate) mod tests {
             "default",
             "http://localhost:3000",
             ProfileParts {
+                signer_info: signer.info(),
                 signer,
                 filter: Arc::new(crate::filter::FilterPolicy::default()),
                 challenges: Arc::new(challenges),

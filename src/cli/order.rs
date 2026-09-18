@@ -921,7 +921,7 @@ mod tests {
         let mut order = seed_order(&database, "default").await;
         let ca = issue_onto(&mut order, &config, database.clone()).await;
         // What a server's first pass does: meet the database, store a CRL.
-        ca.crl_der().await.unwrap();
+        ca.crl_refresher().unwrap().refresh().await.unwrap();
 
         let mut reader: &[u8] = &[];
         run_order_command(
@@ -954,7 +954,7 @@ mod tests {
             crl.iter_revoked_certificates()
                 .any(|entry| hex::encode(entry.raw_serial()).eq_ignore_ascii_case(&serial))
         };
-        assert!(!lists(&ca.crl_der().await.unwrap().unwrap()));
+        assert!(!lists(&ca.info().crl_der().await.unwrap().unwrap()));
         let refresher = ca.crl_refresher().unwrap();
         let job = Job::find_live(CRL_REGENERATE_KIND, refresher.issuer(), &database)
             .await
@@ -965,7 +965,7 @@ mod tests {
             handler.run(&job).await,
             crate::jobs::JobOutcome::Done
         ));
-        assert!(lists(&ca.crl_der().await.unwrap().unwrap()));
+        assert!(lists(&ca.info().crl_der().await.unwrap().unwrap()));
 
         let error = run_order_command(
             OrderCommand::Revoke {

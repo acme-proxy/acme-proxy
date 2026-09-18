@@ -12,15 +12,18 @@
 //!
 //! [`LocalCa::revoke`] records a revocation in the database and stores a real,
 //! CA-signed certificate revocation list (RFC 5280) over every revocation of
-//! this CA, via `rcgen`'s CRL support. [`LocalCa::crl_der`] serves the stored
-//! one, so every process over one database serves the same CRL; see [`crl`]
-//! for how that stays correct when several of them write. A CA's first use
-//! stores an initial CRL — importing the JSON sidecar a CA kept beside
-//! `crl_path` before the database did — so there is always one to fetch.
-//! `crl_path` itself is only an export now, never read back.
+//! this CA, via `rcgen`'s CRL support. [`LocalCaInfo`] serves the stored
+//! one — reading `cert_path` and the database, never the key — so every
+//! process over one database serves the same CRL, including those that hold no
+//! backend at all; see [`crl`] for how that stays correct when several of them
+//! write. A CA's first use by a process holding the key stores an initial CRL —
+//! importing the JSON sidecar a CA kept beside `crl_path` before the database
+//! did — and the `worker` role does that before it serves anything. `crl_path`
+//! itself is only an export now, written by the worker and never read back.
 
 mod ca;
 mod crl;
+mod info;
 pub mod key;
 mod policy;
 pub mod sweep;
@@ -53,6 +56,8 @@ use crate::sqlite::db::Database;
 use crate::sqlite::order::Identifier;
 use crate::sqlite::revocation::Revocation;
 
+pub use info::LocalCaInfo;
+pub(crate) use info::read_ca_certificate;
 pub use key::{CaSigningKey, KeySource};
 
 /// A local CA that signs leaf certificates. Holds the issuing key + metadata
@@ -82,6 +87,9 @@ pub struct LocalCa {
     /// an `Arc<dyn CrlRefresher>`; see
     /// [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher).
     crl: Arc<CrlStore>,
+    /// The read side over the same certificate and database — what
+    /// [`SignerBackend::info`] hands out.
+    info: Arc<LocalCaInfo>,
 }
 
 /// Validity of a generated CA certificate, in days (~10 years). rcgen's default
@@ -340,14 +348,20 @@ impl LocalCa {
     ) -> anyhow::Result<Self> {
         // The key, not a path or a profile, is what the revocation state is
         // stored under — see `cert::issuer_id`.
-        let issuer_id = issuer_id_of(&ca_pem)?;
+        let info = Arc::new(LocalCaInfo::new(ca_pem.clone(), database.clone())?);
         let issuer = Arc::new(issuer);
         Ok(Self {
             issuer: issuer.clone(),
             ca_pem,
             leaf_validity_days,
             leaf_policy,
-            crl: Arc::new(CrlStore::new(database, issuer_id, issuer, paths)),
+            crl: Arc::new(CrlStore::new(
+                database,
+                info.issuer().to_string(),
+                issuer,
+                paths,
+            )),
+            info,
         })
     }
 }
@@ -599,24 +613,13 @@ impl SignerBackend for LocalCa {
         Ok(())
     }
 
-    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
-        self.crl.current_der().await.map(Some)
-    }
-
     /// This CA's CRL, for the daily sweep (RFC 5280 §3.3).
     fn crl_refresher(&self) -> Option<Arc<dyn crate::signer::CrlRefresher>> {
         Some(self.crl.clone())
     }
 
-    /// This CA's own certificate — the anchor, and the whole chain, since a
-    /// `LocalCa` is a single self-signed root with `pathLenConstraint: 0` and
-    /// there is nothing between it and a leaf.
-    ///
-    /// The same string `issue` appends to every leaf it signs, so what a client
-    /// installs from `/ca.pem` is byte-identical to what it already received in
-    /// its certificate chain.
-    async fn ca_chain_pem(&self) -> Option<String> {
-        Some(self.ca_pem.clone())
+    fn info(&self) -> Arc<dyn crate::signer::SignerInfo> {
+        self.info.clone()
     }
 }
 
@@ -1426,10 +1429,7 @@ mod tests {
 
     /// The CRL `ca` serves, which every one of these tests reads.
     async fn served(ca: &LocalCa) -> Vec<u8> {
-        ca.crl_der()
-            .await
-            .unwrap()
-            .expect("a local CA always has a CRL")
+        ca.crl.current_der().await.unwrap()
     }
 
     /// Parses `der` as a CRL and returns the hex-encoded serials it lists as
@@ -1943,7 +1943,7 @@ mod tests {
         .unwrap();
         let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
 
-        let error = ca.crl_der().await.unwrap_err().to_string();
+        let error = ca.crl.current_der().await.unwrap_err().to_string();
         assert!(error.contains("not hex"), "{error}");
         assert!(error.contains("entry 0"), "the entry is named: {error}");
         let (leaf, _) = issued(&ca, "a.example.com").await;
