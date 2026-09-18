@@ -345,6 +345,7 @@ pub(crate) fn build_generation(
                 &profiles,
                 auditor.clone(),
                 assembly.notifiers.clone(),
+                assembly.jobs.clone(),
                 previous_logins,
             );
             (Some(router), Some(logins))

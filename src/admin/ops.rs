@@ -132,6 +132,10 @@ pub enum RevokeOutcome {
     NotIssued,
     AlreadyRevoked,
     Revoked(Box<Order>),
+    /// Queued for the worker as this job, which had not answered by the end of
+    /// the wait. Not a failure: the revocation carries on, and the operator is
+    /// told where to follow it.
+    Queued(uuid::Uuid),
 }
 
 /// Why [`revoke_order`] failed.
@@ -145,6 +149,10 @@ pub enum RevokeError {
     Internal(String),
     #[error("unsupported revocation reason code {0}")]
     BadReason(u32),
+    /// The queued revocation was retired without revoking: its backend kept
+    /// failing, or an operator cancelled it.
+    #[error("the revocation failed (job {job}): {reason}")]
+    Abandoned { job: uuid::Uuid, reason: String },
 }
 impl From<sqlx::Error> for RevokeError {
     fn from(error: sqlx::Error) -> Self {
@@ -433,8 +441,10 @@ pub async fn deactivate_account(
 /// agnostic — it is the same reason the destructive operations come in a bare
 /// and a `confirm_*` form.
 ///
-/// `revoker` is what withdraws the trust: the live backend where the caller
-/// has one (the web admin), a local CA's ledger where it does not (the CLI).
+/// `revoker` is what withdraws the trust — for every front end,
+/// [`Revoker::for_route`](crate::acme::revoke::Revoker::for_route): a local
+/// CA's ledger, or the queue a worker drains. Neither front end holds a
+/// backend.
 ///
 /// The operation itself is [`crate::acme::revoke::Revocations::revoke_order`],
 /// the same tail `POST /revokeCert` runs; this wrapper only sorts its answers
@@ -470,6 +480,8 @@ pub async fn revoke_order(
         Err(Refusal::Database(error)) => Err(RevokeError::Database(error)),
         Err(Refusal::Internal(detail)) => Err(RevokeError::Internal(detail)),
         Err(Refusal::Signer(error)) => Err(RevokeError::Signer(error)),
+        Err(Refusal::Pending { job }) => Ok(RevokeOutcome::Queued(job)),
+        Err(Refusal::Abandoned { job, reason }) => Err(RevokeError::Abandoned { job, reason }),
         // Only the ACME door refuses this way; an operator is never turned away.
         Err(Refusal::Refused(problem)) => Err(RevokeError::Internal(
             problem.to_value()["detail"].to_string(),

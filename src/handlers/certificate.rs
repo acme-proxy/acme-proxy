@@ -64,6 +64,11 @@ pub async fn post_certificate(
 }
 
 /// Handles ACME certificate revocation (RFC 8555 §7.6).
+/// How long a client is asked to wait before asking again about a revocation
+/// still queued: a worker picks a row up within `jobs.poll_interval_ms`, so a
+/// second is usually enough.
+const REVOCATION_RETRY_AFTER: &str = "1";
+
 #[instrument(name = "post_revoke_cert", skip_all)]
 pub async fn post_revoke_cert(
     State(state): State<AppState>,
@@ -80,6 +85,8 @@ pub async fn post_revoke_cert(
         database,
         profile,
         audit,
+        config,
+        jobs,
         ..
     } = state;
 
@@ -94,13 +101,21 @@ pub async fn post_revoke_cert(
             Problem::malformed("certificate base64 invalid")
         })?;
 
+    // Never the backend: only the `worker` role holds one. A local CA's
+    // revocation is a ledger row the worker signs into the CRL; anything else
+    // is queued, and this request waits on it within its own deadline.
+    let route = profile.signer_info.revocation_route();
     let revocations = Revocations {
         database: &database,
         audit: &audit,
         notify: Some(&profile.notify),
-        revoker: Revoker::Backend(profile.signer.as_ref()),
+        revoker: Revoker::for_route(
+            &route,
+            &jobs,
+            crate::acme::revoke::request_wait(config.server.request_timeout_ms),
+        ),
     };
-    revocations
+    match revocations
         .revoke_certificate(
             &profile.name,
             &cert_der,
@@ -109,8 +124,21 @@ pub async fn post_revoke_cert(
             account,
             &request_context,
         )
-        .await?;
-    Ok(StatusCode::OK.into_response())
+        .await
+    {
+        Ok(_) => Ok(StatusCode::OK.into_response()),
+        // Still queued when the wait ran out: nothing failed, so the client
+        // is told when to ask again — and asking again waits on the same job.
+        Err(error @ crate::acme::revoke::RevokeError::Pending { .. }) => {
+            let mut response = Problem::from(error).into_response();
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static(REVOCATION_RETRY_AFTER),
+            );
+            Ok(response)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Serves the local CA's certificate revocation list (RFC 5280), DER encoded.

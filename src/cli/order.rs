@@ -297,18 +297,14 @@ pub async fn run_order_command(
                 crate::audit::ClientContext::default(),
             );
 
-            let issuer = match route {
-                signer::RevocationRoute::Ledger { issuer } => issuer,
-                // A backend that must itself be asked: the running server asks
-                // it, and this command waits to hear how that went.
-                signer::RevocationRoute::Delegated => {
-                    return queue_revocation(
-                        &order, reason, actor, wait, config, &database, palette,
-                    )
-                    .await;
-                }
-            };
-            // A local CA: recorded without its key, signed by the server.
+            // A local CA's revocation is recorded here, without its key, and a
+            // running server's worker signs the CRL; a backend only the worker
+            // holds gets the revocation queued, and this waits `--wait` for it.
+            let revoker = crate::acme::revoke::Revoker::for_route(
+                &route,
+                &jobs,
+                std::time::Duration::from_secs(wait),
+            );
             let outcome = admin::revoke_order(
                 &id,
                 reason,
@@ -316,10 +312,7 @@ pub async fn run_order_command(
                 client,
                 &audit,
                 database.clone(),
-                crate::acme::revoke::Revoker::Ledger {
-                    issuer: &issuer,
-                    jobs: &jobs,
-                },
+                revoker,
                 notify,
             )
             .await;
@@ -327,6 +320,9 @@ pub async fn run_order_command(
             // other revoke failure is the host's (a signer or database error).
             match outcome.map_err(|error| match error {
                 admin::RevokeError::BadReason(_) => CliError::bad_request(error.to_string()),
+                admin::RevokeError::Abandoned { job, reason } => CliError::failed(format!(
+                    "the revocation of order {id} failed (job {job}): {reason}"
+                )),
                 other => CliError::failed(other.to_string()),
             })? {
                 admin::RevokeOutcome::NotFound => return Err(not_found(&id)),
@@ -340,20 +336,28 @@ pub async fn run_order_command(
                         "order {id}'s certificate is already revoked"
                     )));
                 }
+                // Running out of time is not a failure: the revocation is
+                // queued, and the message says where to follow it.
+                admin::RevokeOutcome::Queued(job) => println!(
+                    "Revocation of order {id} queued as job {job}; a running server performs it \
+                     (acme-proxy jobs show {job})."
+                ),
                 admin::RevokeOutcome::Revoked(order) => {
                     println!("{}", render::render_order_line(&order, palette));
-                    let job = crate::sqlite::job::Job::find_live(
-                        crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
-                        &issuer,
-                        &database,
-                    )
-                    .await?;
-                    match job {
-                        Some(job) => println!(
-                            "CRL regeneration queued (job {}); a running server signs it.",
-                            job.id
-                        ),
-                        None => println!("CRL regeneration already done."),
+                    if let signer::RevocationRoute::Ledger { issuer } = &route {
+                        let job = crate::sqlite::job::Job::find_live(
+                            crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+                            issuer,
+                            &database,
+                        )
+                        .await?;
+                        match job {
+                            Some(job) => println!(
+                                "CRL regeneration queued (job {}); a running server signs it.",
+                                job.id
+                            ),
+                            None => println!("CRL regeneration already done."),
+                        }
                     }
                 }
             }
@@ -364,90 +368,6 @@ pub async fn run_order_command(
 
 /// How long `order revoke` waits for a queued revocation by default.
 const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
-
-/// `order revoke` for a `relay` or `custom` profile: queue `signer_revoke` for
-/// a running server, then wait up to `wait` seconds for its answer.
-///
-/// The refusals a queued job would only reach later — already revoked, a bad
-/// reason code — are answered here first, with exit 3, so an operator is not
-/// told "queued" for something that can never happen. A job already queued for
-/// the order is waited on rather than duplicated. Running out of time is not a
-/// failure: the revocation is queued, and the message says where to follow it.
-async fn queue_revocation(
-    order: &Order,
-    reason: Option<u32>,
-    actor: crate::audit::Actor,
-    wait: u64,
-    config: &Config,
-    database: &Arc<Database>,
-    palette: Palette,
-) -> Result<(), CliError> {
-    use crate::acme::revoke::{SIGNER_REVOKE_KIND, signer_revoke_spec};
-    use crate::sqlite::job::Job;
-
-    let id = order.id.to_string();
-    if order.revoked_at.is_some() {
-        return Err(CliError::bad_request(format!(
-            "order {id}'s certificate is already revoked"
-        )));
-    }
-    if let Some(code) = reason
-        && !crate::cert::is_valid_revocation_reason(code)
-    {
-        return Err(CliError::bad_request(
-            admin::RevokeError::BadReason(code).to_string(),
-        ));
-    }
-
-    let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
-    jobs.enqueue(signer_revoke_spec(&id, reason, &actor))
-        .await?;
-    let job = Job::find_latest_by_dedup(SIGNER_REVOKE_KIND, &id, database)
-        .await?
-        .ok_or_else(|| CliError::failed(format!("the revocation of order {id} was not queued")))?;
-
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(wait);
-    let pace = std::time::Duration::from_millis(config.jobs.poll_interval_ms.clamp(100, 1000));
-    loop {
-        let current = Job::find_by_id(job.id, database)
-            .await?
-            .ok_or_else(|| CliError::failed(format!("job {} disappeared", job.id)))?;
-        match current.status.as_str() {
-            "done" => {
-                let revoked = Order::find_by_id(&id, database)
-                    .await?
-                    .ok_or_else(|| not_found(&id))?;
-                println!("{}", render::render_order_line(&revoked, palette));
-                return Ok(());
-            }
-            "failed" => {
-                return Err(CliError::failed(format!(
-                    "the revocation of order {id} failed (job {}): {}",
-                    job.id,
-                    current
-                        .last_error
-                        .as_deref()
-                        .unwrap_or("no reason recorded")
-                )));
-            }
-            "cancelled" => {
-                return Err(CliError::failed(format!(
-                    "the revocation of order {id} was cancelled (job {})",
-                    job.id
-                )));
-            }
-            _ if tokio::time::Instant::now() >= deadline => {
-                println!(
-                    "Revocation of order {id} queued as job {}; a running server performs it \
-                     (acme-proxy jobs show {}).",
-                    job.id, job.id
-                );
-                return Ok(());
-            }
-            _ => tokio::time::sleep(pace).await,
-        }
-    }
-}
 
 /// `order list --expiring-in <days>`.
 ///

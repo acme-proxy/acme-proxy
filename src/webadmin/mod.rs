@@ -49,8 +49,8 @@ use crate::sqlite::db::Database;
 /// Not [`crate::server::AppState`]: that one holds exactly one `Profile`, and
 /// this listener is cross-profile by nature — an operator lists accounts from
 /// every endpoint at once, and revoking an order needs *that order's own*
-/// profile's signer, which may be a different CA from the one the request
-/// arrived through.
+/// profile's revocation route, which may name a different CA from the one the
+/// request arrived through.
 #[derive(Clone)]
 pub struct AdminState {
     pub database: Arc<Database>,
@@ -72,6 +72,9 @@ pub struct AdminState {
     /// the process-wide security dispatcher under
     /// [`crate::notify::ADMIN_DISPATCHER_KEY`] via [`AdminState::notify_security`].
     pub notifiers: crate::notify::Notifiers,
+    /// The durable queue: a revocation for a backend only the `worker` role
+    /// holds is queued here, and a local CA's CRL regeneration after one.
+    pub jobs: crate::jobs::JobQueue,
 }
 
 impl AdminState {
@@ -87,8 +90,9 @@ impl AdminState {
         profiles: &[Arc<Profile>],
         audit: Arc<crate::audit::Auditor>,
         notifiers: crate::notify::Notifiers,
+        jobs: crate::jobs::JobQueue,
     ) -> Self {
-        Self::with_logins(database, config, profiles, audit, notifiers, None)
+        Self::with_logins(database, config, profiles, audit, notifiers, jobs, None)
     }
 
     /// [`new`](Self::new), carrying the previous generation's login counters.
@@ -103,6 +107,7 @@ impl AdminState {
         profiles: &[Arc<Profile>],
         audit: Arc<crate::audit::Auditor>,
         notifiers: crate::notify::Notifiers,
+        jobs: crate::jobs::JobQueue,
         previous_logins: Option<&LoginLimiter>,
     ) -> Self {
         let by_name = profiles
@@ -124,6 +129,7 @@ impl AdminState {
             templates: Arc::new(templates),
             audit,
             notifiers,
+            jobs,
         }
     }
 
@@ -371,8 +377,9 @@ pub fn build_admin_app(
     profiles: &[Arc<Profile>],
     audit: Arc<crate::audit::Auditor>,
     notifiers: crate::notify::Notifiers,
+    jobs: crate::jobs::JobQueue,
 ) -> Router {
-    build_admin_app_with_logins(database, config, profiles, audit, notifiers, None).0
+    build_admin_app_with_logins(database, config, profiles, audit, notifiers, jobs, None).0
 }
 
 /// [`build_admin_app`], carrying login counters across a configuration reload.
@@ -386,6 +393,7 @@ pub fn build_admin_app_with_logins(
     profiles: &[Arc<Profile>],
     audit: Arc<crate::audit::Auditor>,
     notifiers: crate::notify::Notifiers,
+    jobs: crate::jobs::JobQueue,
     previous_logins: Option<&LoginLimiter>,
 ) -> (Router, Arc<LoginLimiter>) {
     let state = AdminState::with_logins(
@@ -394,6 +402,7 @@ pub fn build_admin_app_with_logins(
         profiles,
         audit,
         notifiers,
+        jobs,
         previous_logins,
     );
     let logins = state.logins.clone();

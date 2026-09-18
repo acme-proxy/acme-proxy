@@ -410,20 +410,9 @@ async fn revoked_certificate_appears_in_the_served_crl() {
     let body = signer.sign_kid(&account_url, REVOKE_URL, &nonce, &payload);
     assert_eq!(revoke(&app, body).await.status(), StatusCode::OK);
 
-    let res = get(&app, &p("/crl")).await;
-    assert_eq!(res.status(), StatusCode::OK);
-    let der = res.into_body().collect().await.unwrap().to_bytes();
-
-    use x509_parser::prelude::FromDer;
-    let (_, crl) = x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
-    let serials: Vec<String> = crl
-        .iter_revoked_certificates()
-        .map(|r| r.raw_serial_as_string().replace(':', ""))
-        .collect();
-    assert!(
-        serials.iter().any(|s| s.eq_ignore_ascii_case(&serial_hex)),
-        "expected {serial_hex} in {serials:?}"
-    );
+    // The revocation is a ledger row the worker signs into the CRL, so the
+    // CRL follows it rather than changing with the response.
+    common::await_crl_listing(&app, &p("/crl"), &serial_hex).await;
 }
 
 /// `acme-proxy order revoke` beside a running server: the CLI builds its own
@@ -573,8 +562,8 @@ async fn a_signer_revoke_failure_leaves_the_order_revocable() {
 /// than on most routes: it is the one place a database error can leave the
 /// server's record of a certificate and the CA's CRL disagreeing. A closed pool
 /// fails at the first call — the `find_by_cert_serial` lookup — so what this
-/// pins is that the failure is a `serverInternal` and that nothing downstream
-/// of it ran: no CRL entry, and the signer was never asked.
+/// pins is that the failure is a `serverInternal` and that the CRL, which lives
+/// in that same database, is not served stale in its place.
 #[tokio::test]
 async fn revoke_cert_answers_500_and_revokes_nothing_when_the_database_is_gone() {
     let (app, database) = test_app_with_db().await;
@@ -596,21 +585,13 @@ async fn revoke_cert_answers_500_and_revokes_nothing_when_the_database_is_gone()
         "urn:ietf:params:acme:error:serverInternal"
     );
 
-    // The CA was never asked, so the CRL it serves is still empty. `GET /crl`
-    // reads the signer, not the database, so it answers even now.
-    let der = get(&app, &p("/crl"))
-        .await
-        .into_body()
-        .collect()
-        .await
-        .unwrap()
-        .to_bytes();
-    use x509_parser::prelude::FromDer;
-    let (_, crl) = x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
+    // The CRL lives in the same database — every role serves the stored row —
+    // so it is a `500` now too, rather than a stale CRL passed off as current.
+    let res = get(&app, &p("/crl")).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        crl.iter_revoked_certificates().count(),
-        0,
-        "a database failure must not have reached the signer"
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:serverInternal"
     );
 }
 

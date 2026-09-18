@@ -175,8 +175,10 @@ pub async fn download_chain(
 /// `POST /ui/orders/{id}/revoke`
 ///
 /// The operator-side equivalent of `POST /revokeCert`, and it resolves *that
-/// order's own* profile's signer — revoking against whichever backend happened
-/// to be first would write the serial into the wrong CA's CRL.
+/// order's own* profile's revocation route — revoking through whichever
+/// profile happened to be first would write the serial into the wrong CA's
+/// ledger. Like every request, it never reaches a backend: a local CA's
+/// revocation is a ledger row the worker signs, anything else a queued job.
 ///
 /// ## Why a refusal is usually a banner and not a page
 ///
@@ -208,6 +210,7 @@ pub async fn revoke_order(
         Err(error) => flash_error(error.code, error.message),
         Ok(profile) => {
             // The operator, not the certificate's owner — see the API twin.
+            let route = profile.signer_info.revocation_route();
             match admin::revoke_order(
                 &id,
                 reason,
@@ -215,7 +218,7 @@ pub async fn revoke_order(
                 state.audit.client(&request_context).await,
                 &state.audit,
                 state.database.clone(),
-                crate::acme::revoke::Revoker::Backend(profile.signer.as_ref()),
+                crate::webadmin::handlers::orders::revoker(&state, &route),
                 Some(&profile.notify),
             )
             .await
@@ -228,7 +231,22 @@ pub async fn revoke_order(
                                    profile = %order.profile,
                                    reason = ?reason,
                                    username = %session.auth.user.username);
-                    flash("ok", "Certificate revoked. The CRL has been regenerated.")
+                    flash("ok", "Certificate revoked.")
+                }
+                Ok(RevokeOutcome::Queued(job)) => {
+                    tracing::info!(event = "admin_order_revoke_queued",
+                                   outcome = "progress",
+                                   surface = "ui",
+                                   order_id = %id,
+                                   job_id = %job,
+                                   username = %session.auth.user.username);
+                    flash(
+                        "ok",
+                        format!(
+                            "Revocation queued as job {job}; the worker performs it. \
+                             Follow it under Jobs."
+                        ),
+                    )
                 }
                 Ok(RevokeOutcome::NotFound) => return Err(not_found(&id)),
                 Ok(RevokeOutcome::NotIssued) => flash_error(

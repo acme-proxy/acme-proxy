@@ -18,6 +18,7 @@ pub use acme_proxy::audit::ClientContext;
 use acme_proxy::server::{Profile, ProfileParts, build_app};
 
 use acme_proxy::acme::issue::SignerIssueJob;
+use acme_proxy::acme::revoke::SignerRevokeJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
@@ -33,6 +34,7 @@ use acme_proxy::notify::{
     BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
 };
 use acme_proxy::signer::local_ca::LocalCa;
+use acme_proxy::signer::local_ca::sweep::CrlRegenerateJob;
 use acme_proxy::signer::relay::http01::DbTokenStore;
 use acme_proxy::signer::{
     CrlRefresher, Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity,
@@ -189,8 +191,14 @@ pub async fn test_app() -> Router {
 /// close its pool to exercise DB-failure paths. The signer is an in-memory local
 /// CA so the suite stays disk- and network-free.
 pub async fn test_app_with_db() -> (Router, Arc<Database>) {
-    let signer = Arc::new(memory_ca().await);
-    test_app_with_signer(signer).await
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    // Over the app's own database, as a real CA is: a revocation is then a
+    // ledger row the worker signs into the CRL — the production path.
+    let signer = Arc::new(
+        LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone())
+            .expect("an in-memory CA is always available"),
+    );
+    (test_app_over(database.clone(), signer).await, database)
 }
 
 /// An in-memory local CA over its own throwaway database.
@@ -518,7 +526,7 @@ pub async fn test_app_with_profiles(profiles: Vec<TestProfile>) -> (Router, Arc<
             profile.name,
             &config.server.base_url,
             ProfileParts {
-                signer_info: profile.signer.info(),
+                signer_info: read_side(profile.signer.as_ref(), &database).await,
                 signer: profile.signer,
                 filter: profile.filter,
                 challenges: profile.challenges,
@@ -595,7 +603,9 @@ fn spawn_worker_runner(
             .map(|profile| (profile.name.clone(), profile.notify.clone()))
             .collect(),
     );
+    let revoke_notifiers = notifiers.clone();
     std::mem::forget(notifiers_tx);
+    let audit_for_revocations = audit.clone();
     registry
         .register(Arc::new(SignerIssueJob::new(
             database.clone(),
@@ -607,6 +617,35 @@ fn spawn_worker_runner(
             notifiers,
         )))
         .expect("the issuance handler registers");
+    // Revocation, as a request makes it: a local CA's CRL is signed after its
+    // ledger row by `local_ca_crl_regenerate`, and anything else is queued as
+    // `signer_revoke` for the backend only a worker holds.
+    registry
+        .register(Arc::new(SignerRevokeJob::new(
+            database.clone(),
+            audit_for_revocations,
+            profiles
+                .iter()
+                .map(|profile| (profile.name.clone(), profile.signer.clone()))
+                .collect(),
+            revoke_notifiers,
+        )))
+        .expect("the revocation handler registers");
+    let mut refreshers: Vec<Arc<dyn CrlRefresher>> = Vec::new();
+    for profile in profiles {
+        if let Some(refresher) = profile.signer.crl_refresher()
+            && !refreshers
+                .iter()
+                .any(|known| known.issuer() == refresher.issuer())
+        {
+            refreshers.push(refresher);
+        }
+    }
+    if !refreshers.is_empty() {
+        registry
+            .register(Arc::new(CrlRegenerateJob::new(refreshers)))
+            .expect("the CRL handler registers");
+    }
 
     let (shutdown, rx) = tokio::sync::watch::channel(false);
     std::mem::forget(shutdown);
@@ -641,7 +680,7 @@ pub async fn test_app_full(
 ) -> (Router, Arc<Database>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let profile = one_profile(&config, signer, filter, challenges, notify).await;
+    let profile = one_profile(&database, &config, signer, filter, challenges, notify).await;
     let jobs = spawn_worker_runner(
         &database,
         std::slice::from_ref(&profile),
@@ -665,6 +704,7 @@ pub async fn test_app_over(database: Arc<Database>, signer: Arc<dyn SignerBacken
     init_tracing();
     let config = Config::default();
     let profile = one_profile(
+        &database,
         &config,
         signer,
         Arc::new(FilterPolicy::default()),
@@ -719,6 +759,7 @@ pub async fn test_app_on_disk() -> (Router, Arc<Database>, DiskDb) {
     );
     let config = Config::default();
     let profile = one_profile(
+        &database,
         &config,
         Arc::new(memory_ca().await),
         Arc::new(FilterPolicy::default()),
@@ -762,6 +803,7 @@ pub async fn test_app_with_metrics(
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let metrics = Arc::new(Metrics::new(database.clone()));
     let profile = one_profile(
+        &database,
         &config,
         signer,
         Arc::new(FilterPolicy::default()),
@@ -794,6 +836,7 @@ pub async fn test_app_with_metrics(
 /// Factored out rather than copied so `test_admin_app` and `test_app_full`
 /// cannot drift into mounting subtly different endpoints.
 async fn one_profile(
+    database: &Database,
     config: &Config,
     signer: Arc<dyn SignerBackend>,
     filter: Arc<FilterPolicy>,
@@ -805,7 +848,7 @@ async fn one_profile(
         PROFILE,
         &config.server.base_url,
         ProfileParts {
-            signer_info: signer.info(),
+            signer_info: read_side(signer.as_ref(), database).await,
             signer,
             filter,
             challenges,
@@ -834,6 +877,57 @@ pub async fn met_by_a_worker(signer: &dyn SignerBackend) {
     }
 }
 
+/// The read side a test app serves `signer` through.
+///
+/// `signer.info()` itself, unless the backend keeps its revocation state in a
+/// database of its own — a fixture such as [`memory_ca`] built before the app's
+/// database existed. A local CA's revocation from a request is a ledger row in
+/// the *app's* database, which such a CA's CRL would never see; so for those
+/// the read side routes revocations through the backend instead, queued for
+/// the harness's worker — which is what every delegating backend does anyway,
+/// and what a fixture that fails `revoke` on purpose needs to be reached at
+/// all. The builders that own their CA ([`test_app_with_db`], the admin apps)
+/// build it over the app's database, so the ledger route is what they exercise.
+pub async fn read_side(signer: &dyn SignerBackend, database: &Database) -> Arc<dyn SignerInfo> {
+    let info = signer.info();
+    if let RevocationRoute::Ledger { issuer } = info.revocation_route()
+        && acme_proxy::sqlite::crl::StoredCrl::find_current(&issuer, database)
+            .await
+            .unwrap()
+            .is_none()
+    {
+        return Arc::new(OwnDatabase(info));
+    }
+    info
+}
+
+/// A read side whose revocations go to the backend rather than to a ledger in
+/// a database the backend does not keep its state in. See [`read_side`].
+struct OwnDatabase(Arc<dyn SignerInfo>);
+
+#[async_trait]
+impl SignerInfo for OwnDatabase {
+    async fn crl_der(&self) -> Result<Option<Vec<u8>>, SignerError> {
+        self.0.crl_der().await
+    }
+
+    async fn ca_chain_pem(&self) -> Option<String> {
+        self.0.ca_chain_pem().await
+    }
+
+    async fn renewal_info(&self, cert_der: &[u8]) -> Result<Option<RenewalWindow>, SignerError> {
+        self.0.renewal_info(cert_der).await
+    }
+
+    fn http01_tokens(&self) -> Option<Arc<dyn Http01TokenStore>> {
+        self.0.http01_tokens()
+    }
+
+    fn revocation_route(&self) -> RevocationRoute {
+        RevocationRoute::Delegated
+    }
+}
+
 /// The auditor every test app is built with: **no reverse lookup**.
 ///
 /// `audit.reverse_dns` defaults to `true` in production, and deliberately not
@@ -849,6 +943,36 @@ pub fn test_auditor(database: Arc<Database>) -> Arc<Auditor> {
         None,
         std::time::Duration::from_millis(100),
     ))
+}
+
+/// The serials the CRL at `crl_path` lists, once it lists `serial_hex`.
+///
+/// A local CA's revocation is a ledger row that the worker then signs into the
+/// CRL (`local_ca_crl_regenerate`), so the CRL follows a revocation rather than
+/// changing with it. Polls the way a relying party refetching would.
+pub async fn await_crl_listing(app: &Router, crl_path: &str, serial_hex: &str) -> Vec<String> {
+    use x509_parser::prelude::FromDer;
+    let mut serials = Vec::new();
+    for _ in 0..600 {
+        let response = app
+            .clone()
+            .oneshot(Request::get(crl_path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "GET {crl_path}");
+        let der = response.into_body().collect().await.unwrap().to_bytes();
+        let (_, crl) =
+            x509_parser::revocation_list::CertificateRevocationList::from_der(&der).unwrap();
+        serials = crl
+            .iter_revoked_certificates()
+            .map(|entry| entry.raw_serial_as_string().replace(':', ""))
+            .collect();
+        if serials.iter().any(|s| s.eq_ignore_ascii_case(serial_hex)) {
+            return serials;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("expected {serial_hex} in the CRL at {crl_path}, which lists {serials:?}");
 }
 
 /// A `Config` with the web admin enabled at its defaults.
@@ -898,8 +1022,12 @@ async fn admin_app_with_notifiers(
 ) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let signer: Arc<dyn SignerBackend> = Arc::new(memory_ca().await);
+    let signer: Arc<dyn SignerBackend> = Arc::new(
+        LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone())
+            .expect("an in-memory CA is always available"),
+    );
     let profile = one_profile(
+        &database,
         &config,
         signer.clone(),
         filter,
@@ -907,12 +1035,18 @@ async fn admin_app_with_notifiers(
         no_notifications().await,
     )
     .await;
+    let jobs = spawn_worker_runner(
+        &database,
+        std::slice::from_ref(&profile),
+        test_auditor(database.clone()),
+    );
     let router = acme_proxy::webadmin::build_admin_app(
         database.clone(),
         Arc::new(config),
         &[profile],
         test_auditor(database.clone()),
         notifiers,
+        jobs,
     );
     (router, database, signer)
 }

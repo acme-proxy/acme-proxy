@@ -6,6 +6,15 @@
 //! the same operation — the signer first, then the order row, then the trail
 //! and the notification — and that tail is written once, here.
 //!
+//! **No request reaches a backend.** Withdrawing trust needs what only the
+//! `worker` role holds — a CA key, a token login, an upstream account — so a
+//! request records a local CA's revocation in its ledger ([`Revoker::Ledger`],
+//! the worker signing the CRL after) or queues it for the worker
+//! ([`Revoker::Queued`], waiting on the job for the answer). The backend itself
+//! ([`Revoker::Backend`]) is reached only from [`SignerRevokeJob`], in the
+//! process that built it. [`Revoker::for_route`] is the choice every front end
+//! makes, from the profile's [`RevocationRoute`].
+//!
 //! Deliberately not an [`OrderService`](super::OrderService) method: that
 //! bundle carries a mounted [`Profile`](crate::server::Profile), and the host
 //! CLI revokes with no profile mounted. What revocation needs is narrower —
@@ -13,20 +22,23 @@
 //! [`Revocations`] holds.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::audit::{Actor, AuditEvent, AuditRecord, Auditor, ClientContext, RequestContext};
 use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
-use crate::signer::{SignerBackend, SignerError};
+use crate::signer::{RevocationRoute, SignerBackend, SignerError};
 use crate::sqlite::job::Job;
 use crate::sqlite::{account::Account, db::Database, order::Order};
 
 /// What withdraws trust in a certificate.
 pub enum Revoker<'a> {
-    /// The backend that issued it, called inline.
+    /// The backend that issued it, called inline — only ever from
+    /// [`SignerRevokeJob`], in the process that holds the backend.
     Backend(&'a dyn SignerBackend),
     /// A local CA's revocation state, written directly — no key, no signer.
     ///
@@ -40,6 +52,24 @@ pub enum Revoker<'a> {
         issuer: &'a str,
         jobs: &'a JobQueue,
     },
+    /// A backend only the `worker` role holds — an upstream CA or an operator
+    /// script: the revocation is a `signer_revoke` job, and this waits up to
+    /// `wait` for its answer. The job writes the success row and the
+    /// notification; a caller that stops waiting gets [`RevokeError::Pending`],
+    /// and the revocation carries on without it.
+    Queued { jobs: &'a JobQueue, wait: Duration },
+}
+
+impl<'a> Revoker<'a> {
+    /// What a front end with no backend uses for a profile whose read side
+    /// answered `route`: a local CA's ledger, or the queue.
+    #[must_use]
+    pub fn for_route(route: &'a RevocationRoute, jobs: &'a JobQueue, wait: Duration) -> Self {
+        match route {
+            RevocationRoute::Ledger { issuer } => Revoker::Ledger { issuer, jobs },
+            RevocationRoute::Delegated => Revoker::Queued { jobs, wait },
+        }
+    }
 }
 
 /// Where the address and reverse name an audit row stores come from.
@@ -86,6 +116,14 @@ pub enum RevokeError {
     /// The trust was withdrawn but the order row could not say so.
     #[error("database error: {0}")]
     Database(sqlx::Error),
+    /// Queued for the worker, and not answered within the wait. The revocation
+    /// carries on: asking again waits on the same job.
+    #[error("the revocation is queued as job {job} and has not completed yet")]
+    Pending { job: Uuid },
+    /// The queued revocation was retired without revoking — its backend kept
+    /// failing, or an operator cancelled it.
+    #[error("the revocation failed (job {job}): {reason}")]
+    Abandoned { job: Uuid, reason: String },
     /// The stored certificate cannot be read back.
     #[error("internal error: {0}")]
     Internal(String),
@@ -121,9 +159,13 @@ impl From<RevokeError> for Problem {
             RevokeError::BadReason(reason) => Problem::bad_revocation_reason(format!(
                 "Unsupported revocation reason code {reason}"
             )),
-            RevokeError::Signer(_) | RevokeError::Database(_) | RevokeError::Internal(_) => {
-                Problem::server_internal("Revocation failed")
+            RevokeError::Pending { .. } => {
+                Problem::service_unavailable("The revocation is queued; retry to confirm it")
             }
+            RevokeError::Signer(_)
+            | RevokeError::Database(_)
+            | RevokeError::Internal(_)
+            | RevokeError::Abandoned { .. } => Problem::server_internal("Revocation failed"),
         }
     }
 }
@@ -396,6 +438,15 @@ impl Revocations<'_> {
             return Err(RevokeError::BadReason(code));
         }
 
+        if let Revoker::Queued { jobs, wait } = self.revoker {
+            // Everything past this point is the job's: its tail writes the
+            // `certificate_revoked` row and the notification, from the process
+            // that holds the backend.
+            return self
+                .revoke_through_the_queue(&order, reason, &actor, &client, jobs, wait)
+                .await;
+        }
+
         match self.revoker {
             // The signer first, then the order: the CA-side action is
             // authoritative, so a failure there must leave the order un-revoked
@@ -437,6 +488,7 @@ impl Revocations<'_> {
                 jobs.enqueue_or_log(crate::signer::local_ca::sweep::regenerate_spec(issuer))
                     .await;
             }
+            Revoker::Queued { .. } => unreachable!("answered above"),
         }
 
         info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);
@@ -471,6 +523,51 @@ impl Revocations<'_> {
 }
 
 impl Revocations<'_> {
+    /// The queued half of [`Revoker::Queued`]: one `signer_revoke` row for the
+    /// worker, then the wait for its answer.
+    ///
+    /// A row already live for this order is waited on rather than duplicated —
+    /// the identity index refuses a second one — so a client retrying after
+    /// [`RevokeError::Pending`] follows the revocation it already started.
+    async fn revoke_through_the_queue(
+        &self,
+        order: &Order,
+        reason: Option<u32>,
+        actor: &Actor,
+        client: &ClientContext,
+        jobs: &JobQueue,
+        wait: Duration,
+    ) -> Result<Order, RevokeError> {
+        let id = order.id.to_string();
+        jobs.enqueue(signer_revoke_spec(&id, reason, actor, client))
+            .await
+            .inspect_err(|error| {
+                error!(event = "certificate_revoke_queue_failed", outcome = "failure", order_id = %id, error = %error);
+            })?;
+        let job =
+            crate::sqlite::job::Job::find_latest_by_dedup(SIGNER_REVOKE_KIND, &id, self.database)
+                .await?
+                .ok_or_else(|| {
+                    RevokeError::Internal(format!("the revocation of order {id} was not queued"))
+                })?;
+        info!(event = "certificate_revoke_queued", outcome = "progress", order_id = %id, job_id = %job.id);
+
+        match await_job(self.database, job.id, wait).await? {
+            JobSettled::Done => Order::find_by_id(&id, self.database)
+                .await?
+                .ok_or(RevokeError::NotFound),
+            JobSettled::Failed(reason) => Err(RevokeError::Abandoned {
+                job: job.id,
+                reason,
+            }),
+            JobSettled::Cancelled => Err(RevokeError::Abandoned {
+                job: job.id,
+                reason: "cancelled by an operator".to_string(),
+            }),
+            JobSettled::Pending => Err(RevokeError::Pending { job: job.id }),
+        }
+    }
+
     /// The ledger half of [`Revoker::Ledger`]: the `revocations` row and the
     /// order's stamp in one transaction, `order` synced after the commit.
     ///
@@ -554,21 +651,86 @@ pub const SIGNER_REVOKE_KIND: &str = "signer_revoke";
 /// at its backend, on behalf of `actor`.
 ///
 /// Keyed on the order, so asking twice while the first is still queued is one
-/// revocation. The payload names who asked, never the certificate: the row is
-/// read back when it runs, so a retry sees the order as it is then.
+/// revocation. The payload names who asked and from where, never the
+/// certificate: the row is read back when it runs, so a retry sees the order as
+/// it is then, and the `certificate_revoked` row the worker writes still names
+/// the client or operator whose request queued it.
 #[must_use]
-pub fn signer_revoke_spec(order_id: &str, reason: Option<u32>, actor: &Actor) -> JobSpec {
+pub fn signer_revoke_spec(
+    order_id: &str,
+    reason: Option<u32>,
+    actor: &Actor,
+    client: &ClientContext,
+) -> JobSpec {
     JobSpec::now(SIGNER_REVOKE_KIND, order_id).with_payload(serde_json::json!({
         "order_id": order_id,
         "reason": reason,
         "actor_kind": actor.kind.as_str(),
         "actor_id": actor.id,
+        "client": client.to_json(),
     }))
 }
 
-/// Revokes, at the backend that issued it, a certificate an operator asked to
-/// revoke from a process holding no backend — the host CLI, for a `relay` or
-/// `custom` profile, whose revocation is a call to an upstream CA or a script.
+/// How long a request waits for a revocation it queued: its own deadline,
+/// `server.request_timeout_ms`, less a second to answer in — so a slow worker
+/// is told as [`RevokeError::Pending`] rather than cut off as a timeout that
+/// says nothing about the job still running.
+#[must_use]
+pub fn request_wait(request_timeout_ms: u64) -> Duration {
+    Duration::from_millis(request_timeout_ms).saturating_sub(Duration::from_secs(1))
+}
+
+/// How a job a caller is waiting on ended, or that it has not yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobSettled {
+    Done,
+    /// Retired for good, with the reason its last attempt gave.
+    Failed(String),
+    Cancelled,
+    /// Still `ready` or `running` when the wait ran out.
+    Pending,
+}
+
+/// How often [`await_job`] reads the row. A worker in another process picks a
+/// row up within `jobs.poll_interval_ms`, so reading faster than this would
+/// only cost queries.
+const AWAIT_PACE: Duration = Duration::from_millis(100);
+
+/// Waits up to `wait` for job `id` to settle.
+///
+/// Shared by every front end that queues work and answers with its outcome —
+/// `order revoke` from the host, the panel's revoke button, and `revokeCert`
+/// for a backend only the worker holds. A job that vanished is `Failed`:
+/// nothing deletes a live row, so it went with its order.
+pub async fn await_job(
+    database: &Database,
+    id: Uuid,
+    wait: Duration,
+) -> Result<JobSettled, sqlx::Error> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let Some(job) = crate::sqlite::job::Job::find_by_id(id, database).await? else {
+            return Ok(JobSettled::Failed(format!("job {id} disappeared")));
+        };
+        match job.status.as_str() {
+            "done" => return Ok(JobSettled::Done),
+            "failed" => {
+                return Ok(JobSettled::Failed(
+                    job.last_error
+                        .unwrap_or_else(|| "no reason recorded".to_string()),
+                ));
+            }
+            "cancelled" => return Ok(JobSettled::Cancelled),
+            _ if tokio::time::Instant::now() >= deadline => return Ok(JobSettled::Pending),
+            _ => tokio::time::sleep(AWAIT_PACE).await,
+        }
+    }
+}
+
+/// Revokes, at the backend that issued it, a certificate somebody asked to
+/// revoke from a process holding no backend — `revokeCert` in the `acme` role,
+/// the panel in the `admin` role, the host CLI — for a `relay` or `custom`
+/// profile, whose revocation is a call to an upstream CA or a script.
 ///
 /// **One handler over every profile**, the `RelayJob` shape: a row names its
 /// order, the order names its profile, and the profile names the backend.
@@ -656,7 +818,7 @@ impl JobHandler for SignerRevokeJob {
                 order_id,
                 reason,
                 payload_actor(payload),
-                ClientContext::default(),
+                ClientContext::from_json(&payload["client"]),
             )
             .await
         {
@@ -717,7 +879,12 @@ mod tests {
     async fn queued(database: &Arc<Database>, order_id: &str) -> Job {
         let queue = crate::testutil::idle_job_queue(database.clone());
         queue
-            .enqueue(signer_revoke_spec(order_id, None, &Actor::cli()))
+            .enqueue(signer_revoke_spec(
+                order_id,
+                None,
+                &Actor::cli(),
+                &ClientContext::default(),
+            ))
             .await
             .unwrap();
         Job::find_live(SIGNER_REVOKE_KIND, order_id, database)
@@ -745,6 +912,250 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(stored.revoked_at.is_none());
+    }
+
+    /// A backend whose `revoke` always succeeds.
+    struct Succeeding;
+
+    #[async_trait::async_trait]
+    impl SignerBackend for Succeeding {
+        async fn issue(
+            &self,
+            _order_id: &str,
+            _csr_der: &[u8],
+            _identifiers: &[Identifier],
+            _validity: RequestedValidity,
+        ) -> Result<IssueOutcome, SignerError> {
+            Err(SignerError::Internal("not here".into()))
+        }
+        async fn revoke(&self, _cert_der: &[u8], _reason: Option<u32>) -> Result<(), SignerError> {
+            Ok(())
+        }
+    }
+
+    /// A queue drained by a worker running [`SignerRevokeJob`] over `backend`,
+    /// with `max_attempts` of its own and no backoff. The shutdown sender comes
+    /// back so the runner lives exactly as long as the test holds it.
+    fn worker(
+        database: &Arc<Database>,
+        backend: Arc<dyn SignerBackend>,
+        max_attempts: u32,
+    ) -> (JobQueue, tokio::sync::watch::Sender<bool>) {
+        let config = crate::config::JobsConfig {
+            poll_interval_ms: 10,
+            max_attempts,
+            retry_base_seconds: 0,
+            retry_max_seconds: 0,
+            ..crate::config::JobsConfig::default()
+        };
+        let queue = JobQueue::new(database.clone(), &config);
+        let mut registry = crate::jobs::JobRegistry::new();
+        registry
+            .register(Arc::new(SignerRevokeJob::new(
+                database.clone(),
+                Arc::new(Auditor::offline(database.clone())),
+                vec![("default".to_string(), backend)],
+                std::collections::HashMap::new().into(),
+            )))
+            .unwrap();
+        let (shutdown, receiver) = tokio::sync::watch::channel(false);
+        crate::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, receiver);
+        (queue, shutdown)
+    }
+
+    async fn issued(database: &Arc<Database>) -> Order {
+        let account = crate::testutil::account_id(database).await;
+        crate::testutil::issued_order(database, "default", account, &["example.com"], 30).await
+    }
+
+    fn operator_client() -> ClientContext {
+        ClientContext {
+            ip: Some("198.51.100.4".to_string()),
+            ..ClientContext::default()
+        }
+    }
+
+    /// A request in a process holding no backend queues the revocation and
+    /// answers once the worker has performed it — and the one
+    /// `certificate_revoked` row, written by the worker, still names who asked
+    /// and from where.
+    #[tokio::test]
+    async fn a_queued_revocation_answers_once_the_worker_has_revoked() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = issued(&database).await;
+        let (jobs, _worker) = worker(&database, Arc::new(Succeeding), 5);
+        let audit = Auditor::offline(database.clone());
+        let revocations = Revocations {
+            database: &database,
+            audit: &audit,
+            notify: None,
+            revoker: Revoker::Queued {
+                jobs: &jobs,
+                wait: Duration::from_secs(10),
+            },
+        };
+
+        let revoked = revocations
+            .revoke_order(
+                &order.id.to_string(),
+                Some(1),
+                Actor::admin("root"),
+                operator_client(),
+            )
+            .await
+            .unwrap();
+        assert!(revoked.revoked_at.is_some());
+        assert_eq!(revoked.revocation_reason, Some(1));
+
+        let query = crate::sqlite::audit::AuditQuery {
+            limit: 50,
+            ..crate::sqlite::audit::AuditQuery::default()
+        };
+        let (rows, _) = crate::sqlite::audit::AuditEntry::search(&query, &database)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].event, "certificate_revoked");
+        assert_eq!(rows[0].actor_kind, "admin");
+        assert_eq!(rows[0].client_ip.as_deref(), Some("198.51.100.4"));
+    }
+
+    /// Nothing drains the queue within the wait: the caller is told the
+    /// revocation is pending, not that it failed — and asking again waits on
+    /// the same row rather than queueing a second.
+    #[tokio::test]
+    async fn an_unanswered_revocation_is_pending_and_asking_again_follows_it() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = issued(&database).await;
+        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let audit = Auditor::offline(database.clone());
+        let revocations = Revocations {
+            database: &database,
+            audit: &audit,
+            notify: None,
+            revoker: Revoker::Queued {
+                jobs: &jobs,
+                wait: Duration::ZERO,
+            },
+        };
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            match revocations
+                .revoke_order(
+                    &order.id.to_string(),
+                    None,
+                    Actor::cli(),
+                    ClientContext::default(),
+                )
+                .await
+            {
+                Err(RevokeError::Pending { job }) => seen.push(job),
+                other => panic!("expected a pending revocation, got {other:?}"),
+            }
+        }
+        assert_eq!(seen[0], seen[1], "the second ask follows the first job");
+        assert_eq!(
+            Job::count_live(SIGNER_REVOKE_KIND, &database)
+                .await
+                .unwrap(),
+            1
+        );
+        let problem = Problem::from(RevokeError::Pending { job: seen[0] }).to_value();
+        assert_eq!(problem["status"], 503);
+        assert_eq!(problem["type"], "urn:ietf:params:acme:error:serverInternal");
+    }
+
+    /// A revocation the worker gave up on is reported as the failure it was,
+    /// with the job's own reason, and the order stays un-revoked.
+    #[tokio::test]
+    async fn a_revocation_the_worker_gave_up_on_is_abandoned() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = issued(&database).await;
+        let (jobs, _worker) = worker(&database, Arc::new(Failing), 1);
+        let audit = Auditor::offline(database.clone());
+        let revocations = Revocations {
+            database: &database,
+            audit: &audit,
+            notify: None,
+            revoker: Revoker::Queued {
+                jobs: &jobs,
+                wait: Duration::from_secs(10),
+            },
+        };
+
+        let error = revocations
+            .revoke_order(
+                &order.id.to_string(),
+                None,
+                Actor::cli(),
+                ClientContext::default(),
+            )
+            .await
+            .unwrap_err();
+        let RevokeError::Abandoned { reason, .. } = &error else {
+            panic!("expected an abandoned revocation, got {error:?}")
+        };
+        assert!(reason.contains("upstream unreachable"), "{reason}");
+        assert_eq!(
+            Problem::from(error).to_value()["detail"],
+            "Revocation failed"
+        );
+        let stored = Order::find_by_id(&order.id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(stored.revoked_at.is_none());
+    }
+
+    /// An operator cancelling the queued row is an answer too, and a row that
+    /// vanished is a failure — neither leaves the caller waiting out its time.
+    #[tokio::test]
+    async fn a_cancelled_or_vanished_job_settles_the_wait() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = issued(&database).await;
+        let job = queued(&database, &order.id.to_string()).await;
+        Job::cancel_row(job.id, crate::sqlite::status::JobStatus::Ready, &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            await_job(&database, job.id, Duration::from_secs(10))
+                .await
+                .unwrap(),
+            JobSettled::Cancelled
+        );
+        let JobSettled::Failed(reason) = await_job(
+            &database,
+            crate::sqlite::id::mint(),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap() else {
+            panic!("a job that is not there has failed")
+        };
+        assert!(reason.contains("disappeared"), "{reason}");
+    }
+
+    /// Each route picks its revoker, and a request waits a second less than its
+    /// own deadline so it can still answer.
+    #[tokio::test]
+    async fn the_route_picks_the_revoker_and_the_wait_fits_the_deadline() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let jobs = crate::testutil::idle_job_queue(database);
+        let ledger = RevocationRoute::Ledger {
+            issuer: "ab".to_string(),
+        };
+        assert!(matches!(
+            Revoker::for_route(&ledger, &jobs, Duration::ZERO),
+            Revoker::Ledger { issuer: "ab", .. }
+        ));
+        assert!(matches!(
+            Revoker::for_route(&RevocationRoute::Delegated, &jobs, Duration::from_secs(3)),
+            Revoker::Queued { wait, .. } if wait == Duration::from_secs(3)
+        ));
+        assert_eq!(request_wait(60_000), Duration::from_secs(59));
+        assert_eq!(request_wait(500), Duration::ZERO);
     }
 
     /// An order that is gone will not come back: retrying is pointless.

@@ -153,7 +153,7 @@ pub async fn revoke_order(
     request_context: crate::audit::RequestContext,
     AuthenticatedWrite(auth): AuthenticatedWrite,
     body: Option<Json<RevokeRequest>>,
-) -> Result<Json<Value>, AdminError> {
+) -> Result<Response, AdminError> {
     let reason = body.and_then(|Json(body)| body.reason);
 
     // Resolve the profile before doing anything: an order belonging to a
@@ -164,6 +164,7 @@ pub async fn revoke_order(
     // The operator's username, not the order's account: this revocation was an
     // administrative act, and a row attributing it to the certificate's owner
     // would say the opposite of what happened.
+    let route = profile.signer_info.revocation_route();
     let outcome = admin::revoke_order(
         &id,
         reason,
@@ -171,7 +172,7 @@ pub async fn revoke_order(
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),
-        crate::acme::revoke::Revoker::Backend(profile.signer.as_ref()),
+        revoker(&state, &route),
         Some(&profile.notify),
     )
     .await
@@ -200,9 +201,39 @@ pub async fn revoke_order(
                 &order,
                 &state.config.server.base_url,
                 &authz_ids,
-            )))
+            ))
+            .into_response())
+        }
+        // Accepted, not refused: the worker revokes, and the job is where to
+        // follow it.
+        RevokeOutcome::Queued(job) => {
+            tracing::info!(event = "admin_order_revoke_queued",
+                           outcome = "progress",
+                           surface = "api",
+                           order_id = %id,
+                           job_id = %job,
+                           username = %auth.user.username);
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({ "status": "queued", "job": job.to_string() })),
+            )
+                .into_response())
         }
     }
+}
+
+/// How a request on this listener revokes for a profile whose read side
+/// answered `route`: a local CA's ledger, or the queue — never a backend, which
+/// only the `worker` role holds. Waits as long as an ACME request would.
+pub(crate) fn revoker<'a>(
+    state: &'a AdminState,
+    route: &'a crate::signer::RevocationRoute,
+) -> crate::acme::revoke::Revoker<'a> {
+    crate::acme::revoke::Revoker::for_route(
+        route,
+        &state.jobs,
+        crate::acme::revoke::request_wait(state.config.server.request_timeout_ms),
+    )
 }
 
 /// `DELETE /api/orders/{id}` — hard delete, cascading to its authorizations.
@@ -284,15 +315,16 @@ async fn authz_ids(order_id: Uuid, state: &AdminState) -> Result<Vec<Uuid>, Admi
 /// Maps a failed revocation onto a status the operator can act on.
 ///
 /// A signer failure is `502`, not `500`: the CA-side call is what did not
-/// happen, the request itself was fine, and — because `admin::revoke_order`
-/// calls the signer *before* recording anything — the order is still
-/// un-revoked and the request can simply be retried.
+/// happen — the worker's queued revocation was retired without revoking — the
+/// request itself was fine, and since the order is only ever stamped after the
+/// backend succeeds, it is still un-revoked and the request can simply be
+/// retried.
 pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
     match error {
         RevokeError::BadReason(reason) => AdminError::bad_request(format!(
             "unsupported revocation reason code {reason} (RFC 5280 §5.3.1)"
         )),
-        RevokeError::Signer(_) => {
+        RevokeError::Signer(_) | RevokeError::Abandoned { .. } => {
             tracing::error!(event = "admin_revoke_signer_failed", outcome = "failure", error = %error);
             AdminError::signer_failed("the signer backend refused the revocation; retry")
         }
