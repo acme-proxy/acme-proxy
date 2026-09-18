@@ -342,6 +342,17 @@ pub fn actor_kinds() -> [&'static str; 4] {
     ]
 }
 
+/// The `created_at` below which an audit row is past `retention_days`.
+///
+/// One function so `acme-proxy audit cleanup --older-than` and the
+/// `audit.retention_days` sweep delete the identical set — a CLI that computed
+/// its own cutoff would eventually disagree with the timer by a rounding rule.
+#[must_use]
+pub fn audit_cutoff(days: u64) -> i64 {
+    let seconds = i64::try_from(days.saturating_mul(24 * 60 * 60)).unwrap_or(i64::MAX);
+    crate::sqlite::nonce::now_secs().saturating_sub(seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,5 +770,17 @@ mod tests {
     #[test]
     fn the_actor_kinds_helper_lists_every_variant() {
         assert_eq!(actor_kinds(), ["acme", "admin", "cli", "system"]);
+    }
+
+    /// One cutoff function, so `audit cleanup --older-than` and the
+    /// `audit.retention_days` sweep delete the identical set.
+    #[test]
+    fn the_audit_cutoff_is_days_before_now_and_saturates_rather_than_overflowing() {
+        let now = crate::sqlite::nonce::now_secs();
+        assert!((audit_cutoff(0) - now).abs() <= 1);
+        let week = audit_cutoff(7);
+        assert!((now - week - 7 * 24 * 60 * 60).abs() <= 1, "{week}");
+        // A nonsense retention must not panic in a debug build.
+        assert!(audit_cutoff(u64::MAX) <= now);
     }
 }

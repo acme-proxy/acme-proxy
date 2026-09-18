@@ -63,7 +63,6 @@ use async_trait::async_trait;
 use tracing::{debug, error, info};
 
 use super::{CertificatesExpiringData, ExpiringCertificate, Notifiers, NotifyEvent};
-use crate::admin;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
@@ -212,14 +211,15 @@ impl ExpiryDigestJob {
         // about what "expiring" or "already replaced" means. `include_superseded`
         // is always `true` here: supersession is an annotation and never a
         // filter, for the reason in this module's docs.
-        let query = admin::ExpiringQuery {
+        let query = crate::sqlite::expiring::ExpiringQuery {
             profile: Some(profile.to_string()),
             before: now.saturating_add(i64::try_from(settings.lead.as_secs()).unwrap_or(0)),
             include_superseded: true,
             limit: settings.max_entries,
             offset: 0,
         };
-        let (entries, total, _hidden) = admin::list_expiring(&query, self.database.clone()).await?;
+        let (entries, total, _hidden) =
+            crate::sqlite::expiring::list_expiring(&query, self.database.clone()).await?;
         if entries.is_empty() {
             return Ok(None);
         }

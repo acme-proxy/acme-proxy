@@ -380,7 +380,7 @@ const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
 /// Paged like the rest of `order list`, and reporting `hidden` beside the total
 /// exactly as `GET /api/expiring` does -- `total` counts the *window*, not the
 /// answer, because supersession is computed per row and cannot become a SQL
-/// predicate. `admin::annotate_expiring` still reads each account's orders once
+/// predicate. `crate::sqlite::expiring::annotate_expiring` still reads each account's orders once
 /// for the whole page rather than once per row, which is what keeps a page over
 /// a single busy account from re-reading its history fifty times.
 #[allow(clippy::too_many_arguments)]
@@ -424,14 +424,14 @@ async fn run_expiring(
         ));
     }
 
-    let query = admin::ExpiringQuery {
+    let query = crate::sqlite::expiring::ExpiringQuery {
         profile,
-        before: admin::expiring_horizon(days),
+        before: crate::sqlite::expiring::expiring_horizon(days),
         include_superseded: !hide_superseded,
         limit: window.limit,
         offset: window.offset,
     };
-    let (entries, total, hidden) = admin::list_expiring(&query, database).await?;
+    let (entries, total, hidden) = crate::sqlite::expiring::list_expiring(&query, database).await?;
     if json {
         let items = entries.iter().map(admin::render_expiring_json).collect();
         let mut envelope = render::json_page(items, total, window);

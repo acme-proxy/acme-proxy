@@ -24,12 +24,13 @@ use base64::prelude::*;
 use super::style::Palette;
 use super::window::Window;
 use crate::admin::ProfileSummary;
-use crate::admin::ops::{ExpiringEntry, JobDetail, OrderDetail, UpstreamOrderDetail};
+use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
 use crate::sqlite::audit::AuditEntry;
 use crate::sqlite::eab::Eab;
+use crate::sqlite::expiring::ExpiringEntry;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::{Order, rfc3339};
 use crate::sqlite::upstream_order::UpstreamOrderRow;
@@ -779,7 +780,7 @@ fn footer_line(shown: usize, total: i64) -> String {
 
 /// The same line where supersession has dropped rows from the page.
 ///
-/// `total` counts the **window**, not the rows below it: `admin::list_expiring`
+/// `total` counts the **window**, not the rows below it: `sqlite::expiring::list_expiring`
 /// filters superseded certificates in Rust, because the annotation cannot
 /// become a SQL predicate. A bare "1 of 4" over a page that quietly dropped two
 /// is arithmetic an operator cannot reproduce, so the third number is said out
@@ -835,13 +836,13 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::admin::ops::SupersededBy;
     use crate::admin::ops::load_order_detail;
     use crate::audit::ClientContext;
     use crate::cli::style::ColorChoice;
     use crate::identifier::Identifier;
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
+    use crate::sqlite::expiring::SupersededBy;
     use crate::sqlite::status::OrderStatus;
     use crate::testutil::{
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, audit_entry,

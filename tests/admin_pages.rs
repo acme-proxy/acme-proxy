@@ -3504,7 +3504,7 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     assert!(!body.contains("hidden as already replaced"), "{body}");
 
     // Hiding the replaced rows drops them and says how many, leaving `total`
-    // counting the window — the limit documented on `admin::list_expiring`,
+    // counting the window — the limit documented on `sqlite::expiring::list_expiring`,
     // and the reason the page says it out loud.
     let hidden =
         html_body(admin_page(&app, "/ui/expiring?superseded=hide", Some(&session), false).await)

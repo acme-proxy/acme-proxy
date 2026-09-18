@@ -28,6 +28,7 @@ pub mod authz;
 pub mod crl;
 pub mod db;
 pub mod eab;
+pub mod expiring;
 pub mod http01_token;
 pub mod id;
 pub mod job;

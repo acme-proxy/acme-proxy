@@ -358,8 +358,6 @@ const KNOWN_BACK_EDGES: &[(&str, &str)] = &[
     ("extractors", "server"),
     ("filter", "cli"),
     ("handlers", "server"),
-    ("jobs", "admin"),
-    ("notify", "admin"),
     ("server", "cli"),
     ("signer", "acme"),
     ("signer", "handlers"),

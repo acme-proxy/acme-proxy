@@ -66,6 +66,7 @@ use tracing::info;
 
 use crate::config::{ALL_NOTIFY_EVENTS, NotifyConfig, ProfileConfig};
 use crate::jobs::{JobQueue, JobSpec};
+use crate::sqlite::expiring::SupersededBy;
 
 pub mod custom;
 pub mod email;
@@ -249,14 +250,6 @@ pub struct ExpiringCertificate {
     pub days_remaining: i64,
     pub superseded_by: Option<SupersededBy>,
 }
-
-/// Re-exported so this event's payload still names its own members, and so the
-/// serde shape below is unchanged by where the type lives.
-///
-/// It moved to [`crate::admin::ops`] when the panel and the CLI gained expiry
-/// views: the annotation is computed once, there, and the digest is one of its
-/// three consumers rather than its owner. See [`crate::admin::superseded_by`].
-pub use crate::admin::SupersededBy;
 
 /// Payload of [`NotifyEvent::CertificatesExpiring`]: the periodic digest of
 /// what is about to lapse on one profile.

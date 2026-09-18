@@ -69,10 +69,10 @@ pub async fn get_index(
     .await?;
     // The whole window, replaced certificates included, so the number agrees
     // with the list the tile opens rather than with a filter it does not set.
-    let (_, expiring_soon, _) = admin::list_expiring(
-        &admin::ExpiringQuery {
+    let (_, expiring_soon, _) = crate::sqlite::expiring::list_expiring(
+        &crate::sqlite::expiring::ExpiringQuery {
             profile: None,
-            before: admin::expiring_horizon(ATTENTION_EXPIRY_DAYS),
+            before: crate::sqlite::expiring::expiring_horizon(ATTENTION_EXPIRY_DAYS),
             include_superseded: true,
             limit: 1,
             offset: 0,

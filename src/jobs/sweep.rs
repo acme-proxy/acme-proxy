@@ -220,7 +220,7 @@ impl SweepJob {
             SweepTarget::AuditLog { retention_days } => {
                 // The same cutoff arithmetic `audit cleanup --older-than` uses,
                 // so "older than N days" means one thing in the process.
-                let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
+                let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
                 match crate::sqlite::audit::AuditEntry::cleanup(cutoff, &self.database).await {
                     Ok(removed) => info!(
                         event = "audit_reaper_swept",
@@ -251,7 +251,7 @@ impl SweepJob {
                 }
             }
             SweepTarget::Jobs { retention_days } => {
-                let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
+                let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
                 if let Err(error) = Job::cleanup(cutoff, &self.database).await {
                     warn!(event = "job_retention_sweep_failed", outcome = "failure", error = %error);
                 }
@@ -274,7 +274,7 @@ impl SweepJob {
                 // the retention is per-profile, and a profile whose delete
                 // fails must not stop the others being swept.
                 for (profile, retention_days) in retention {
-                    let cutoff = crate::admin::ops::audit_cutoff(*retention_days);
+                    let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
                     match crate::sqlite::order::Order::cleanup(profile, cutoff, &self.database)
                         .await
                     {
@@ -686,7 +686,7 @@ mod tests {
             .await
             .unwrap();
 
-        let removed = Order::cleanup("default", crate::admin::ops::audit_cutoff(30), &database)
+        let removed = Order::cleanup("default", crate::sqlite::audit::audit_cutoff(30), &database)
             .await
             .unwrap();
 
@@ -747,7 +747,7 @@ mod tests {
             ids.push(order.id);
         }
 
-        let removed = Order::cleanup("default", crate::admin::ops::audit_cutoff(30), &database)
+        let removed = Order::cleanup("default", crate::sqlite::audit::audit_cutoff(30), &database)
             .await
             .unwrap();
 

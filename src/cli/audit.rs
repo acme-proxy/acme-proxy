@@ -114,7 +114,7 @@ pub async fn run_audit_command(
                 cert_serial: cert_serial.as_deref().map(crate::cert::normalize_serial),
                 event,
                 outcome,
-                since: since_days.map(admin::audit_cutoff),
+                since: since_days.map(crate::sqlite::audit::audit_cutoff),
                 limit: window.limit,
                 offset: window.offset,
             };
