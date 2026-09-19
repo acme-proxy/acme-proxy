@@ -266,6 +266,34 @@ their own, and exist on crates.io only so `cargo install acme-proxy` can build.
 
    Publishing a workspace in one command needs cargo 1.90 or later, below the
    minimum supported Rust version.
+4. Once that commit is on `main` and its CI run is green, push the bare version
+   as a tag:
+
+   ```bash
+   git tag -a 0.6.0 -m 0.6.0 && git push origin 0.6.0
+   ```
+
+   The tag triggers `.github/workflows/release.yml`, which builds the image on
+   an amd64 and an arm64 runner and publishes `ghcr.io/acme-proxy/acme-proxy`
+   as `X.Y.Z` and `latest`, with a provenance attestation.
+   [ADR 0012](adr/0012-container-images-are-built-natively-per-architecture.md)
+   explains its shape. Its `guard` job stops the release, with nothing
+   published, in three cases:
+
+   - **The tag is not the workspace version, or a crate pin is stale.** The
+     tag is most likely mistyped: delete it and push the right one. If step 1
+     was incomplete, fix the manifest on `main` first.
+   - **There is no CI run on `main` for the commit.** The tag is on a commit
+     that was never pushed to `main`. Move the tag.
+   - **CI is pending or failed.** Wait for it, or fix it, then use
+     "Re-run all jobs" on the release run for the same tag.
+
+   To rehearse the workflow without publishing, run it from a branch under
+   "Run workflow". It builds both architectures and pushes nothing.
+
+   The first time the package is published, it is private, even though the
+   repository is public. In the package's settings, make it inherit access from
+   the repository, then check that `podman pull` works with no credentials.
 
 ## Submitting a pull request
 
