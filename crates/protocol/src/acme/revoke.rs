@@ -473,17 +473,31 @@ impl Revocations<'_> {
                         .await;
                     return Err(RevokeError::Signer(error));
                 }
-                if let Err(error) = order.revoke(reason.map(i64::from), self.database).await {
-                    error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
-                    // The signer already withdrew trust, so the CA-side action
-                    // stands; what failed is this server's record of it. Audited
-                    // as a failure because that is what a later reader needs to
-                    // know — the order still reads un-revoked and a retry is
-                    // expected.
-                    self.audit
-                        .record(refused(&order, "serverInternal", &error.to_string()))
-                        .await;
-                    return Err(RevokeError::Database(error));
+                // A `false` here — another writer stamped the order between the
+                // check above and this write — is the same answer that check
+                // gives, and the signer has withdrawn trust either way.
+                match order.revoke(reason.map(i64::from), self.database).await {
+                    Ok(false) => {
+                        if audited {
+                            self.audit
+                                .record(refused(&order, "alreadyRevoked", "already revoked"))
+                                .await;
+                        }
+                        return Err(RevokeError::AlreadyRevoked);
+                    }
+                    Ok(true) => {}
+                    Err(error) => {
+                        error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
+                        // The signer already withdrew trust, so the CA-side
+                        // action stands; what failed is this server's record of
+                        // it. Audited as a failure because that is what a later
+                        // reader needs to know — the order still reads
+                        // un-revoked and a retry is expected.
+                        self.audit
+                            .record(refused(&order, "serverInternal", &error.to_string()))
+                            .await;
+                        return Err(RevokeError::Database(error));
+                    }
                 }
             }
             // The row and the order together, then the CRL asked for.
@@ -625,19 +639,30 @@ impl Revocations<'_> {
                 .await?
                 .is_none()
             {
-                return Ok(false);
+                return Ok(Recorded::NoCrlYet);
+            }
+            // The order first: its guard is what decides whether this
+            // revocation is the one being recorded. Losing it means another
+            // writer — the CLI beside a running server, or a second request —
+            // got there between the check and here, and the ledger row it wrote
+            // is the one that stands, reason and all.
+            if !Order::set_revoked(order.id, reason.map(i64::from), revoked_at, &mut *tx).await? {
+                return Ok(Recorded::Already);
             }
             row.insert_if_absent(&mut *tx).await?;
-            Order::set_revoked(order.id, reason.map(i64::from), revoked_at, &mut *tx).await?;
             tx.commit().await?;
-            Ok::<bool, sqlx::Error>(true)
+            Ok::<Recorded, sqlx::Error>(Recorded::Yes)
         }
         .await;
         let recorded = written.map_err(|error| {
             error!(event = "certificate_revoke_persist_failed", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex, error = %error);
             RevokeError::Database(error)
         })?;
-        if !recorded {
+        if recorded == Recorded::Already {
+            warn!(event = "certificate_revoke_already_revoked", outcome = "failure", order_id = %order.id, cert_serial = %serial_hex);
+            return Err(RevokeError::AlreadyRevoked);
+        }
+        if recorded == Recorded::NoCrlYet {
             warn!(event = "certificate_revoke_ca_uninitialized", outcome = "failure", order_id = %order.id, issuer = %issuer);
             return Err(RevokeError::Internal(format!(
                 "the CA {issuer} has no stored CRL yet — start `acme-proxy serve` with this \
@@ -648,6 +673,16 @@ impl Revocations<'_> {
         order.revocation_reason = reason.map(i64::from);
         Ok(())
     }
+}
+
+/// What one pass of [`Revocations::record_in_ledger`]'s transaction did.
+#[derive(Debug, PartialEq, Eq)]
+enum Recorded {
+    Yes,
+    /// Another writer had already stamped the order.
+    Already,
+    /// This CA has never stored a CRL, so there is nothing to record against.
+    NoCrlYet,
 }
 
 /// One `certificate_revoke_failed` row.
@@ -1047,6 +1082,73 @@ mod tests {
         assert_eq!(rows[0].event, "certificate_revoked");
         assert_eq!(rows[0].actor_kind, "admin");
         assert_eq!(rows[0].client_ip.as_deref(), Some("198.51.100.4"));
+    }
+
+    /// Two revocations of one certificate at once — a client and an operator,
+    /// or the CLI beside a running server. One of them records the withdrawal
+    /// of trust; the other is told it was already revoked, and writes no second
+    /// `certificate_revoked` row with a different reason and time.
+    #[tokio::test]
+    async fn concurrent_revocations_of_one_certificate_record_one() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let order = issued(&database).await;
+        let audit = Auditor::offline(database.clone());
+        let backend = Succeeding;
+        let revocations = Revocations {
+            database: &database,
+            audit: &audit,
+            notify: None,
+            revoker: Revoker::Backend(&backend),
+        };
+        let order_id = order.id.to_string();
+        let revoke = |reason: u32| {
+            revocations.revoke_order(
+                &order_id,
+                Some(reason),
+                Actor::admin("root"),
+                operator_client(),
+            )
+        };
+
+        let (first, second) = tokio::join!(revoke(1), revoke(4));
+        let outcomes = [first, second];
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_ok()).count(),
+            1,
+            "exactly one revocation records the withdrawal: {outcomes:?}"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, Err(RevokeError::AlreadyRevoked)))
+        );
+
+        let query = acme_proxy_store::audit::AuditQuery {
+            limit: 50,
+            ..acme_proxy_store::audit::AuditQuery::default()
+        };
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(&query, &database)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.event == "certificate_revoked")
+                .count(),
+            1,
+            "{rows:?}"
+        );
+
+        // And the stamp on the order is the one that won, not the last writer's.
+        let winner = outcomes
+            .iter()
+            .find_map(|outcome| outcome.as_ref().ok())
+            .unwrap();
+        let stored = Order::find_by_id(&order.id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.revocation_reason, winner.revocation_reason);
+        assert_eq!(stored.revoked_at, winner.revoked_at);
     }
 
     /// Nothing drains the queue within the wait: the caller is told the

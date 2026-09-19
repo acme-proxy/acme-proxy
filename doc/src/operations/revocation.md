@@ -54,9 +54,18 @@ byte comparison is the safety net.
 ### Reason codes
 
 Reason codes are RFC 5280 §5.3.1 values. Codes 7 and 11 are not valid CRL
-reasons, and out-of-range values are meaningless; in all three cases
-`acme-proxy` records the revocation with **no reason** rather than refusing it.
-Revoking is always preferable to arguing about why.
+reasons, and out-of-range values are meaningless; all three are refused with
+`400 badRevocationReason`, naming the code, so a client that meant a real
+reason can send it rather than have one silently dropped. Omitting `reason`
+entirely is always accepted, and records the revocation with no reason.
+
+**The first revocation of a certificate is the one that counts.** Two at once —
+a client and an operator, or `acme-proxy order revoke` beside a running server —
+are one withdrawal of trust: whichever writes first sets the reason and the
+time, on the order and on the CRL alike, and the other is answered
+`alreadyRevoked`. The same holds for the queued path: a second request while
+the first is still queued joins that job instead of queueing another, so it
+inherits the first request's reason.
 
 ## Who revokes: never the request
 

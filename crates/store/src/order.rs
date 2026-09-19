@@ -965,20 +965,16 @@ impl Order {
         &mut self,
         reason: Option<i64>,
         database: &Database,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<bool, sqlx::Error> {
         let now = now_secs();
         debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?self.id, reason = ?reason);
-        sqlx::query("UPDATE orders SET revoked_at = ?, revocation_reason = ? WHERE id = ?;")
-            .bind(now)
-            .bind(reason)
-            .bind(self.id)
-            .execute(&database.pool)
-            .await?;
+        if !Self::set_revoked(self.id, reason, now, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.revoked_at = Some(now);
         self.revocation_reason = reason;
-        info!(event = "db_order_revoked", outcome = "success", order_id = ?self.id, reason = ?reason);
-        Ok(())
+        Ok(true)
     }
 
     /// The revocation stamp as a bare statement, over any executor.
@@ -987,24 +983,37 @@ impl Order {
     /// round trip (`acme::revoke`'s ledger path) can write the order and the
     /// `revocations` row in **one** transaction. The in-memory sync is the
     /// caller's, after the commit.
+    ///
+    /// **Guarded on the order not being revoked**, and reports whether it
+    /// wrote. A revocation is recorded once: the `revocations` ledger keeps the
+    /// first reason (`ON CONFLICT DO NOTHING`), so an unguarded stamp here
+    /// would leave the order naming a reason and a time the CRL does not, and
+    /// a second caller writing a second audit row and a second notification for
+    /// one withdrawal of trust.
     pub async fn set_revoked<'e, E>(
         id: Uuid,
         reason: Option<i64>,
         revoked_at: i64,
         executor: E,
-    ) -> Result<(), sqlx::Error>
+    ) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
         debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?id, reason = ?reason);
-        sqlx::query("UPDATE orders SET revoked_at = ?, revocation_reason = ? WHERE id = ?;")
-            .bind(revoked_at)
-            .bind(reason)
-            .bind(id)
-            .execute(executor)
-            .await?;
-        info!(event = "db_order_revoked", outcome = "success", order_id = ?id, reason = ?reason);
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE orders SET revoked_at = ?, revocation_reason = ? \
+             WHERE id = ? AND revoked_at IS NULL;",
+        )
+        .bind(revoked_at)
+        .bind(reason)
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        if written == 1 {
+            info!(event = "db_order_revoked", outcome = "success", order_id = ?id, reason = ?reason);
+        }
+        Ok(written == 1)
     }
 
     /// The `invalid` transition as a bare statement, over any executor,

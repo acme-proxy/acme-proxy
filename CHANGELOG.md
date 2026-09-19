@@ -428,6 +428,12 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **Two revocations of one certificate at once record one.** The order's
+  revocation stamp was written unguarded while the ledger kept the first
+  reason, so a client and an operator revoking together could leave the order
+  naming a reason and a time the CRL did not, with two `certificate_revoked`
+  audit rows and two notifications. The stamp is now guarded, and the loser is
+  answered `alreadyRevoked`.
 - **A newOrder naming one identifier twice is one identifier**, not a `500`
   from the order's uniqueness constraint. `A.example.com` and
   `a.example.com.` normalize to the same name, and the second copy tripped the
