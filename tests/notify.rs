@@ -7,6 +7,12 @@
 //! what *requires* the real router — that each handler actually calls
 //! `dispatch(...)` at the right point with the right data, and that a
 //! failing/panicking notify backend never affects the HTTP response.
+//!
+//! Every assertion goes through a real job runner, since `dispatch` only queues
+//! a `notify_deliver` row. That is the point of
+//! `a_dispatch_that_never_ran_is_still_owed_afterwards`: nothing is delivered
+//! when `dispatch` returns, and a runner started afterwards — as a restart
+//! would be — still delivers it.
 
 use std::sync::Arc;
 use std::time::Duration;

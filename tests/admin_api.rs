@@ -3,6 +3,31 @@
 //! Every case enters through the router, so the extractors, the layers and the
 //! error shape are all exercised together — the same way `tests/orders.rs`
 //! drives the ACME side.
+//!
+//! ## The tables a new endpoint must join
+//!
+//! [`mutating_endpoints`] lists every unsafe method and path under `/api`, each
+//! with its [`RequiredTier`] as a third member — so a mutating route added
+//! without a considered classification does not compile. Three guards run over
+//! it:
+//!
+//! - the **CSRF** suite: a missing, a wrong and another session's token are all
+//!   refused, plus the origin gate;
+//! - **`role_gates_every_mutating_endpoint`**: the same table run once per
+//!   tier, with a `NULL` role standing for `admin`;
+//! - **`every_mutation_writes_one_audit_row_naming_the_operator_and_the_address`**:
+//!   each endpoint driven to success, leaving rows that name the caller and the
+//!   address it came from.
+//!
+//! [`mfa_step_endpoints`] is the sibling table for the two routes that run the
+//! origin gate but no CSRF check (the challenge page is a plain form). They are
+//! kept out of the main table because, with an active session, they answer
+//! `401`/`303` rather than `403`. **An endpoint missing from either table is a
+//! review catch.**
+//!
+//! `a_factorless_login_is_completely_unchanged` guards the ~40 cases that sign
+//! in through `admin_login`: a second factor must not change the first step for
+//! an operator who has none.
 
 mod common;
 

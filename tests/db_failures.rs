@@ -7,6 +7,11 @@
 //!
 //! The 500 cases are all the same shape — register if needed, grab a nonce, close
 //! the pool, send one request — so they share a driver; only the request differs.
+//!
+//! Deliberately **not** every write path. The pool is closed before the
+//! request, so a failure *between* two writes cannot be reached this way and
+//! needs a fixture of its own (`RevokePersistFailingSigner`, in
+//! `revoke_cert.rs`).
 
 use std::sync::Arc;
 

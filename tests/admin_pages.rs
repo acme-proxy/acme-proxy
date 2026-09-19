@@ -7,6 +7,14 @@
 //!
 //! Sections, mirroring that file: **Sign-in** → **Auth redirects** → **CSRF**
 //! → **Escaping** → **Fragments** → **Resources** → **Layers**.
+//!
+//! [`mutating_page_endpoints`] is `/ui`'s twin of the API's table, with the
+//! same [`RequiredTier`] member and the same rule: a new mutating page route
+//! joins it. The **Escaping** section is the stored-XSS regression, and it
+//! includes remote text as well as operator text — a reverse name is written by
+//! whoever controls the PTR for a client's address. Signing in, including the
+//! MFA challenge page, must work with JavaScript off, so those pages carry no
+//! htmx.
 
 mod common;
 

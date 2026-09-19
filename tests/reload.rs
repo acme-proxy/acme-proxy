@@ -13,6 +13,22 @@
 //! safe — under plain `cargo test` these would be threads racing one another's
 //! environment. That is the same reason nextest is required rather than
 //! preferred (see the book's Testing & Coverage page).
+//!
+//! **Two assertions must never be dropped**, since they are what refusing a
+//! reload atomically exists for: a frozen key (`database.url`) is refused **with
+//! the old configuration still serving**, and an unbindable address refuses the
+//! reload **while the running socket keeps serving**. Every other case here
+//! shows something being applied; these two show that a refusal applies
+//! nothing.
+//!
+//! Where a section's effect cannot be read off an answer, the test reads it off
+//! what it does: `[jobs]` through `report.job_kinds` gaining and losing
+//! `job_retention_sweep` (the one key a *handler* carries rather than the loop),
+//! `[logging]` through `LevelFilter::current()` rather than the report — which
+//! is also why that test is the one here that installs the process's
+//! subscriber itself. Ports are written into the file before anything binds
+//! them, hence `free_port` and the `Sockets` struct: three same-shaped
+//! addresses a positional triple would let be swapped silently.
 
 mod common;
 
