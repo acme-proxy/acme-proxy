@@ -293,16 +293,19 @@ async fn account_update_kid_lookup_db_error_returns_500() {
     .await;
 }
 
-/// A `jwk`-form request to the update endpoint needs no DB in the extractor's
-/// signature path, so the first failing call is the nonce verification.
+/// A `jwk`-form request — newAccount, one of the two routes §6.2 allows one on
+/// — needs no DB in the extractor's signature path, so the first failing call
+/// is the nonce verification.
 #[tokio::test]
-async fn account_update_nonce_db_error_returns_500() {
-    assert_500_after_pool_close("account update nonce", |app, signer, db| async move {
-        let id = "00000000-0000-0000-0000-000000000000";
-        let account_url = format!("{BASE}/acct/{id}");
+async fn new_account_nonce_db_error_returns_500() {
+    assert_500_after_pool_close("newAccount nonce", |app, signer, db| async move {
         let nonce = fetch_nonce(&app).await;
-        let body = signer.sign(&account_url, &nonce, &json!({ "contact": [] }));
-        (app, db, format!("{PREFIX}/acct/{id}"), body)
+        let body = signer.sign(
+            &format!("{BASE}/newAccount"),
+            &nonce,
+            &json!({ "termsOfServiceAgreed": true, "contact": [] }),
+        );
+        (app, db, p("/newAccount"), body)
     })
     .await;
 }

@@ -10,7 +10,9 @@
 //!    extension, so every value is unrecognised.
 //! 3. The JWS **`url`** against the route actually reached (§6.4).
 //! 4. Exactly one of **`jwk`** or **`kid`** (§6.2; both or neither is
-//!    `malformed`). A `kid` is verified against the account's **stored** SPKI,
+//!    `malformed`), and a `jwk` only on `newAccount` and `revokeCert` — §6.2
+//!    requires every other request to name an existing account with `kid`.
+//!    A `kid` is verified against the account's **stored** SPKI,
 //!    after that SPKI's own algorithm OID is checked against the claimed `alg`,
 //!    so verification never rests on `alg` alone. An unknown `kid` is
 //!    `accountDoesNotExist`.
@@ -187,6 +189,29 @@ where
             return Err(Problem::malformed("jwk and kid are mutually exclusive"));
         }
         (Some(_), None) => {
+            // §6.2: "For all other requests, the request is signed using an
+            // existing account, and there MUST be a `kid` field." Only
+            // newAccount, where no account exists yet, and revokeCert, which
+            // §7.6 also lets a certificate's own key sign, may carry a `jwk`.
+            // Everywhere else an embedded key would have the server find the
+            // account by public key — the same account a `kid` names, reached
+            // by a path the RFC does not define.
+            // The two unauthenticated resources a client may also POST-as-GET
+            // (§7.1, §7.2) are here too: neither names an account, and
+            // requiring one to read the directory would leave a client unable
+            // to find `newAccount` without already having an account.
+            if !matches!(
+                request_path.as_str(),
+                acme_proxy_core::routes::NEW_ACCOUNT
+                    | acme_proxy_core::routes::REVOKE_CERT
+                    | acme_proxy_core::routes::DIRECTORY
+                    | acme_proxy_core::routes::NEW_NONCE
+            ) {
+                warn!(event = "jws_jwk_not_allowed_here", outcome = "failure", url = %header.url, path = %request_path);
+                return Err(Problem::malformed(
+                    "This request must be signed with kid, not an embedded jwk",
+                ));
+            }
             debug!(event = "jws_jwk_verification_started", outcome = "progress", algorithm = %header.alg, url = %header.url);
             verify_signature_and_get_der(&header, &signing_input, &jws.signature)
                 .map_err(map_signature_error)?
@@ -473,9 +498,12 @@ fn map_signature_error(error: SignatureError) -> Problem {
             );
             Problem::unauthorized("Signature JWS invalid")
         }
+        // The detail describes this server's own key handling — which `ring`
+        // call refused what shape — so it goes to the operator's log, not to
+        // the client that could only learn about the internals from it.
         SignatureError::Encoding(detail) => {
             error!(event = "jws_signature_encoding_failed", outcome = "failure", detail = %detail);
-            Problem::server_internal(detail)
+            Problem::server_internal("Signature could not be verified")
         }
     }
 }

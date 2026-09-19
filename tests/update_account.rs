@@ -242,20 +242,21 @@ async fn update_with_kid_for_unknown_account_is_account_does_not_exist() {
 }
 
 #[tokio::test]
-async fn jwk_update_to_unknown_account_is_account_does_not_exist() {
+async fn an_update_to_an_unknown_account_is_account_does_not_exist() {
     let app = test_app().await;
     let signer = EcSigner::new();
 
-    // A `jwk`-signed update whose target account does not exist: the extractor
-    // derives the key without a DB lookup, so it is the handler's own
-    // `find_by_id` (not the extractor's `kid` lookup) that returns the problem.
+    // A real account signing for an account URL that names nobody: the
+    // extractor's `kid` lookup succeeds, so it is the handler's own
+    // `find_by_id` that returns the problem.
+    let account_url = register(&app, &signer).await;
     let fake_path = &p("/acct/00000000-0000-0000-0000-000000000000");
     // From the host, not from BASE: `fake_path` already carries the profile's
     // own prefix, and a doubled one would be refused by the §6.4 url check
     // before the handler ever looked the account up.
     let fake_url = format!("{}{fake_path}", common::HOST);
     let nonce = fetch_nonce(&app).await;
-    let body = signer.sign(&fake_url, &nonce, &json!({ "contact": [] }));
+    let body = signer.sign_kid(&account_url, &fake_url, &nonce, &json!({ "contact": [] }));
 
     let res = post(&app, fake_path, body).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);

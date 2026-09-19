@@ -33,6 +33,12 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **Every request but `newAccount` and `revokeCert` must be signed with `kid`**
+  (RFC 8555 §6.2), plus the two resources a client may POST-as-GET before it
+  has an account, `directory` and `newNonce`. An embedded `jwk` elsewhere —
+  which this server used to accept everywhere, finding the account by public
+  key — is now `400 malformed`. certbot, acme.sh and lego all sign with `kid`
+  there.
 - **Migrations are applied explicitly, not as a side effect of opening the
   database.** `acme-proxy migrate` applies them, and so does `acme-proxy serve`
   when it runs the `worker` role — which the default, role-less `serve` does, so

@@ -373,6 +373,48 @@ async fn jwk_and_kid_must_be_exactly_one() {
     }
 }
 
+/// §6.2: every request but `newAccount` and `revokeCert` "is signed using an
+/// existing account, and there MUST be a `kid` field". An embedded `jwk` would
+/// otherwise have the server find the account by public key — the account a
+/// `kid` names, reached by a path the RFC does not define.
+#[tokio::test]
+async fn a_jwk_is_refused_where_the_rfc_requires_a_kid() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    // A real, registered account, so nothing but the `jwk` is at fault.
+    let _ = common::acme::register(&app, &signer).await;
+
+    let nonce = fetch_nonce(&app).await;
+    let order_url = "http://localhost:3000/profile/default/newOrder";
+    let body = signer.sign(
+        order_url,
+        &nonce,
+        &json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] }),
+    );
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post(p("/newOrder"))
+                .header("content-type", "application/jose+json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("kid"),
+        "the refusal must say what to sign with: {problem}"
+    );
+}
+
 /// §6.4's `url` check runs before the account lookup, so a JWS addressed to
 /// another endpoint is refused without ever reading the database.
 ///
