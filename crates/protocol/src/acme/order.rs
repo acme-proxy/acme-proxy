@@ -752,7 +752,7 @@ impl OrderService<'_> {
         // expensive check, and doing it first guarantees that a filter — or the script
         // of a `custom` backend — never sees anything but a CSR already in agreement with its
         // order.
-        if let Err(problem) = check_csr_matches_order(&csr, &order.identifiers) {
+        if let Err(problem) = check_csr_matches_order(&csr, &csr_der, &order.identifiers) {
             audit
                 .record(failed(
                     &order,

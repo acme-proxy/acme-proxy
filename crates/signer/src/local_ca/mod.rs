@@ -386,9 +386,9 @@ pub fn issuer_id_of(ca_pem: &str) -> anyhow::Result<String> {
 /// Defence in depth. `post_finalize` makes the same check before any backend is
 /// reached, which is what makes the guarantee hold for the backends that cannot
 /// make it themselves (`custom`, `relay`). This one stays because
-/// `admin::ops` and `cli::order` call `issue` directly, so a backend has to be
-/// safe on its own — and because it is the check that decides what this CA
-/// actually signs.
+/// a backend is a unit others build tests against and may be asked to sign
+/// directly, so it has to be safe on its own — and because it is the check that
+/// decides what this CA actually signs.
 fn check_csr_matches_order(
     csr: &CertificateSigningRequestParams,
     identifiers: &[Identifier],

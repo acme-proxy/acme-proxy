@@ -213,6 +213,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

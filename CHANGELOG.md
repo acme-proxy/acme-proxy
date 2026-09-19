@@ -419,6 +419,13 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **The CSR common-name check reads the certificate request's own DER.** It
+  read rcgen's parsed distinguished name, which keeps only the last of several
+  `CommonName` attributes and exposes a BMPString or UniversalString value as
+  neither text nor bytes — so a CN naming a domain the order never authorized
+  could pass unseen and be handed on to a `custom` script or an upstream CA. A
+  CN whose encoding cannot be read is now refused, and a single-label CN is
+  checked when the order itself names single-label identifiers.
 - **A queued issuance re-checks the account and the authorizations before
   signing.** An account deactivated after `finalize` (by its client, or by
   `eab delete --deactivate-accounts`), or an authorization deactivated in the

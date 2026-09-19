@@ -1,3 +1,17 @@
+//! What a request may ask for, as checks over the values themselves.
+//!
+//! No database, no HTTP: an identifier's shape, a contact's, a CSR's agreement
+//! with its order, a datetime's format. The `acme::*` services call these
+//! before anything is written, and the job handlers call the same functions on
+//! the same values, so one rule has one implementation.
+//!
+//! **The CSR checks are the security boundary for `custom` and `relay`.**
+//! Neither backend can check a CSR against the order — one hands it to an
+//! operator's script, the other to an upstream CA that never saw the
+//! authorizations — so whatever passes here is what those backends sign. Read
+//! [`check_csr_matches_order`] before changing any of it, and keep it reading
+//! the DER rather than a re-serialisation of it.
+
 use rcgen::{CertificateSigningRequestParams, DnType, DnValue, SanType};
 use rustls_pki_types::CertificateSigningRequestDer;
 use time::OffsetDateTime;
@@ -28,9 +42,9 @@ pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParam
 /// and `relay` relays it to an upstream CA which only sees *this* server's
 /// account and doesn't know which names the local client has proven.
 /// With either of them, an account authorized for one name could get a certificate
-/// for any other name. The backend check remains as defense in depth — `admin::ops`
-/// and `cli::order` call `issue` directly, so a backend must remain secure on its
-/// own — but this check makes the guarantee independent of the backend.
+/// for any other name. The backend check remains as defense in depth — a backend
+/// is a unit others build tests against, and must be safe when asked to sign
+/// directly — but this check makes the guarantee independent of the backend.
 ///
 /// Raw comparison, without renormalizing the CSR side: the order identifiers
 /// have already been normalized by `post_new_order`, and normalizing here
@@ -39,6 +53,7 @@ pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParam
 /// in agreement byte for byte.
 pub(crate) fn check_csr_matches_order(
     csr: &CertificateSigningRequestParams,
+    csr_der: &[u8],
     identifiers: &[Identifier],
 ) -> Result<(), Problem> {
     // A SAN that is not a DNS name would not be seen by the set comparison
@@ -95,11 +110,24 @@ pub(crate) fn check_csr_matches_order(
     // `LocalCa::issue` goes further and empties the whole distinguished name; this check
     // is what covers backends which transmit the CSR as-is
     // (`custom`, `relay`).
-    if let Some(common_name) = csr.params.distinguished_name.get(&DnType::CommonName)
-        && let Some(text) = dn_text(common_name)
-    {
-        let candidate = normalize_dns_name(&text);
-        if looks_like_dns_name(&candidate) && !want_dns.contains(candidate.as_str()) {
+    //
+    // Read from the **DER**, not from `csr.params`: rcgen's distinguished name
+    // is a map keyed by type, so of two `CommonName` attributes it keeps only
+    // the last, and it exposes a BMPString or UniversalString value as neither
+    // text nor bytes. Either shape is a CN this check would never see, while
+    // the raw CSR — the thing a `custom` script or an upstream CA is handed —
+    // still carries it.
+    // A CN with no dot is prose here ("ACME client"), unless the order itself
+    // deals in single-label names — which this server allows — in which case a
+    // CN shaped like one is a name being asserted like any other.
+    let single_label_order = want_dns.iter().any(|name| !name.contains('.'));
+    for common_name in subject_common_names(csr_der)? {
+        let candidate = normalize_dns_name(&common_name);
+        let asserted = looks_like_dns_name(&candidate)
+            || (single_label_order
+                && well_formed_name(&candidate)
+                && !candidate.chars().any(|c| c.is_ascii_whitespace()));
+        if asserted && !want_dns.contains(candidate.as_str()) {
             warn!(event = "csr_common_name_mismatch", outcome = "failure", common_name = %candidate);
             return Err(Problem::bad_csr(
                 "CSR common name is a domain the order does not cover",
@@ -108,6 +136,37 @@ pub(crate) fn check_csr_matches_order(
     }
 
     Ok(())
+}
+
+/// Every `CommonName` of the CSR's subject, in the order the DER carries them.
+///
+/// Fails closed: a CN whose string encoding this cannot read is refused rather
+/// than skipped, since the check above is the only thing standing between a
+/// `custom` script or an upstream CA and a CN naming a domain the order never
+/// authorized. Reading the DER twice — rcgen has already parsed it — costs one
+/// parse of a few hundred bytes on the finalize path.
+fn subject_common_names(csr_der: &[u8]) -> Result<Vec<String>, Problem> {
+    use x509_parser::prelude::FromDer;
+
+    let (_, request) = x509_parser::certification_request::X509CertificationRequest::from_der(
+        csr_der,
+    )
+    .map_err(|error| {
+        warn!(event = "csr_parse_failed", outcome = "failure", error = %error);
+        Problem::bad_csr("CSR is unparsable")
+    })?;
+
+    request
+        .certification_request_info
+        .subject
+        .iter_common_name()
+        .map(|attribute| {
+            attribute.as_str().map(str::to_string).map_err(|_| {
+                warn!(event = "csr_common_name_unreadable", outcome = "failure");
+                Problem::bad_csr("CSR common name is not a readable string")
+            })
+        })
+        .collect()
 }
 
 /// Whether a subject `CommonName` reads as a host name rather than a human
@@ -614,7 +673,7 @@ mod tests {
         // The order of SANs must not matter: the comparison is on
         // sets, not on lists.
         let identifiers = dns(&["b.example.com", "a.example.com"]);
-        assert!(check_csr_matches_order(&parse_csr(&der).unwrap(), &identifiers).is_ok());
+        assert!(check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &identifiers).is_ok());
     }
 
     #[test]
@@ -623,9 +682,10 @@ mod tests {
             vec![SanType::DnsName("victim.example".try_into().unwrap())],
             None,
         );
-        let value = check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"]))
-            .unwrap_err()
-            .to_value();
+        let value =
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .unwrap_err()
+                .to_value();
         assert_eq!(value["type"], "urn:ietf:params:acme:error:badCSR");
         assert_eq!(value["status"], 400);
     }
@@ -642,7 +702,8 @@ mod tests {
             None,
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"])).is_err()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .is_err()
         );
     }
 
@@ -655,6 +716,7 @@ mod tests {
         assert!(
             check_csr_matches_order(
                 &parse_csr(&der).unwrap(),
+                &der,
                 &dns(&["a.example.com", "b.example.com"]),
             )
             .is_err()
@@ -673,7 +735,8 @@ mod tests {
             None,
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"])).is_err()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .is_err()
         );
     }
 
@@ -684,7 +747,8 @@ mod tests {
             Some("victim.example"),
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"])).is_err()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .is_err()
         );
     }
 
@@ -695,7 +759,8 @@ mod tests {
             Some("a.example.com"),
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"])).is_ok()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .is_ok()
         );
     }
 
@@ -710,11 +775,104 @@ mod tests {
                 Some(label),
             );
             assert!(
-                check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"]))
+                check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
                     .is_ok(),
                 "{label} should not be read as a host name"
             );
         }
+    }
+
+    /// A CN rcgen's own distinguished name cannot render as text — and which
+    /// `dn_text` therefore skipped — still reaches a `custom` script or an
+    /// upstream CA in the DER. Unreadable is refused, not waved through.
+    #[test]
+    fn a_common_name_in_an_unreadable_encoding_is_refused() {
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.subject_alt_names = vec![SanType::DnsName("a.example.com".try_into().unwrap())];
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params.distinguished_name.push(
+            DnType::CommonName,
+            DnValue::BmpString("victim.example".try_into().unwrap()),
+        );
+        let der = params.serialize_request(&key_pair).unwrap().der().to_vec();
+
+        let value =
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .unwrap_err()
+                .to_value();
+        assert_eq!(value["type"], "urn:ietf:params:acme:error:badCSR");
+    }
+
+    /// Two `CommonName` attributes in one subject: rcgen's map keeps the last,
+    /// so a check reading `csr.params` would inspect the harmless one and let
+    /// the other through. Hand-built, because rcgen cannot emit this shape —
+    /// and unsigned, because `subject_common_names` is what is under test.
+    #[test]
+    fn every_common_name_of_the_subject_is_read() {
+        use rcgen::PublicKeyData;
+
+        fn tlv(tag: u8, body: &[u8]) -> Vec<u8> {
+            let mut out = vec![tag];
+            match body.len() {
+                len if len < 0x80 => out.push(len as u8),
+                len if len < 0x100 => out.extend([0x81, len as u8]),
+                len => out.extend([0x82, (len >> 8) as u8, (len & 0xff) as u8]),
+            }
+            out.extend(body);
+            out
+        }
+        fn common_name(value: &str) -> Vec<u8> {
+            // SET { SEQUENCE { OID 2.5.4.3, UTF8String value } }
+            let oid = [0x06, 0x03, 0x55, 0x04, 0x03];
+            let mut attribute = oid.to_vec();
+            attribute.extend(tlv(0x0c, value.as_bytes()));
+            tlv(0x31, &tlv(0x30, &attribute))
+        }
+
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let mut subject = common_name("a.example.com");
+        subject.extend(common_name("victim.example"));
+        let mut info = tlv(0x02, &[0x00]);
+        info.extend(tlv(0x30, &subject));
+        info.extend(key_pair.subject_public_key_info());
+        info.extend(tlv(0xa0, &[]));
+        let mut request = tlv(0x30, &info);
+        // ecdsa-with-SHA256, and an empty signature: nothing here verifies one.
+        request.extend(tlv(
+            0x30,
+            &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02],
+        ));
+        request.extend(tlv(0x03, &[0x00]));
+        let der = tlv(0x30, &request);
+
+        assert_eq!(
+            subject_common_names(&der).unwrap(),
+            vec!["a.example.com".to_string(), "victim.example".to_string()]
+        );
+    }
+
+    /// An order for a single-label name makes a single-label CN a name like
+    /// any other — on the networks that shape exists for, `fileserver`
+    /// resolves.
+    #[test]
+    fn a_single_label_common_name_is_checked_against_a_single_label_order() {
+        let der = csr_with(
+            vec![SanType::DnsName("fileserver".try_into().unwrap())],
+            Some("mailserver"),
+        );
+        assert!(
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["fileserver"]))
+                .is_err()
+        );
+
+        let der = csr_with(
+            vec![SanType::DnsName("fileserver".try_into().unwrap())],
+            Some("fileserver"),
+        );
+        assert!(
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["fileserver"])).is_ok()
+        );
     }
 
     #[test]
@@ -738,7 +896,8 @@ mod tests {
             None,
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["*.example.com"])).is_ok()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["*.example.com"]))
+                .is_ok()
         );
     }
 
@@ -751,7 +910,8 @@ mod tests {
             None,
         );
         assert!(
-            check_csr_matches_order(&parse_csr(&der).unwrap(), &dns(&["a.example.com"])).is_err()
+            check_csr_matches_order(&parse_csr(&der).unwrap(), &der, &dns(&["a.example.com"]))
+                .is_err()
         );
     }
 
