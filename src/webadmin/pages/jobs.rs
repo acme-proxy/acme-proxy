@@ -6,7 +6,6 @@ use axum::response::Html;
 use serde_json::Value;
 
 use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
-use crate::sqlite::job::{Job, JobQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::jobs::JobListParams;
@@ -16,6 +15,8 @@ use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{
     ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
 };
+use acme_proxy_store::job::Job;
+use acme_proxy_store::job::JobQuery;
 
 /// The kinds the filter `<select>` offers. A free-typed `?kind=` still filters
 /// — this is only the dropdown, and a job row's kind is a closed code set.
@@ -82,7 +83,7 @@ pub async fn list_jobs(
     context.insert(
         "statuses".to_string(),
         Value::Array(
-            crate::sqlite::status::JobStatus::ALL
+            acme_proxy_store::status::JobStatus::ALL
                 .iter()
                 .map(|status| Value::from(status.as_str()))
                 .collect(),

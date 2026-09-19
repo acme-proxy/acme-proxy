@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::sqlite::db::Database;
+use crate::db::Database;
 use acme_proxy_core::random::random_token;
 
 /// A replay nonce used for ACME protocol anti-replay protection.
@@ -65,7 +65,7 @@ pub fn fingerprint(value: &str) -> &str {
 
 /// Seconds since the Unix epoch, saturating to `0` for the pre-1970 clocks that
 /// should never occur in practice.
-pub(crate) fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()

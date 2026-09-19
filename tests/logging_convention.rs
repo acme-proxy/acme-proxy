@@ -323,7 +323,7 @@ fn every_storage_layer_event_is_db_prefixed() {
     // deserves. Enforced off the file path, which is the part that cannot rot.
     for site in call_sites() {
         let Some(event) = &site.event else { continue };
-        if !site.file.starts_with("src/sqlite/") {
+        if !site.file.starts_with("crates/store/src/") {
             continue;
         }
         assert!(

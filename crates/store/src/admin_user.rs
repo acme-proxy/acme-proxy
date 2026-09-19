@@ -6,9 +6,9 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::rfc3339;
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::rfc3339;
 
 /// What a web-admin operator's live sessions are allowed to do.
 ///
@@ -164,7 +164,7 @@ pub struct AdminUser {
     /// Always lowercase: [`AdminUser::create`] normalizes before writing, so
     /// `Alice` and `alice` cannot become two logins that read as one.
     pub username: String,
-    /// The encoded KDF output -- see `crate::admin::password`. Never rendered.
+    /// The encoded KDF output -- see `admin::password`. Never rendered.
     pub password_hash: String,
     pub status: String,
     /// The privilege tier, raw from the column. `None` is a row that predates
@@ -240,7 +240,7 @@ impl AdminUser {
     /// here rather than at the call sites, so every path -- the CLI, a future
     /// API -- stores the same thing.
     ///
-    /// `password_hash` is already encoded by `crate::admin::password`: this
+    /// `password_hash` is already encoded by `admin::password`: this
     /// layer never sees a plaintext password and cannot hash one.
     ///
     /// `role` is written **in the same INSERT**. `None` leaves the column
@@ -261,7 +261,7 @@ impl AdminUser {
     ) -> Result<AdminUser, sqlx::Error> {
         let now = now_secs();
         let user = AdminUser {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             username: username.trim().to_lowercase(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),
@@ -770,7 +770,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            AdminUser::find_by_id(crate::sqlite::id::mint(), &db)
+            AdminUser::find_by_id(crate::id::mint(), &db)
                 .await
                 .unwrap()
                 .is_none()

@@ -6,9 +6,9 @@ use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::status::{self, OrderStatus};
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::status::{self, OrderStatus};
 use acme_proxy_core::identifier::Identifier;
 
 /// An ACME order (RFC 8555 §7.1.3). A new order is created in the `pending`
@@ -121,9 +121,9 @@ impl OrderQuery {
         // each contributes its own `&str` and the pair stays one type. The bind
         // is still a parameter, never interpolated SQL. The returned separator
         // is what the predicates below open with — see `sqlite::query`.
-        let mut separator = crate::sqlite::query::push_equalities(
+        let mut separator = crate::query::push_equalities(
             builder,
-            crate::sqlite::query::WHERE,
+            crate::query::WHERE,
             &[
                 ("profile = ", self.profile.as_deref()),
                 ("status = ", self.status.map(OrderStatus::as_str)),
@@ -198,7 +198,7 @@ impl OrderQuery {
 /// for order datetime fields), falling back to an empty string for the
 /// out-of-range timestamps that should never occur in practice. Shared with the
 /// authorization/challenge model, which renders datetimes the same way.
-pub(crate) fn rfc3339(secs: i64) -> String {
+pub fn rfc3339(secs: i64) -> String {
     OffsetDateTime::from_unix_timestamp(secs)
         .ok()
         .and_then(|dt| dt.format(&Rfc3339).ok())
@@ -272,7 +272,7 @@ pub enum GuardedDelete {
 /// comparing against this — the column is documented as "negative means
 /// unparsable". It is named here, beside the column, because three modules now
 /// write or skip it: the digest's backfill, the expiry predicates below, and
-/// the supersession annotation in `crate::admin`.
+/// the supersession annotation in `admin`.
 pub const UNPARSABLE_NOT_AFTER: i64 = -1;
 
 /// The expiry listing's `WHERE`, appended to both [`Order::find_expiring`]'s
@@ -338,7 +338,7 @@ impl Order {
 
     /// Builds a new order in the `pending` state. Pure — nothing is persisted
     /// until [`Order::insert`] runs.
-    pub(crate) fn new(
+    pub fn new(
         profile: &str,
         account_id: Uuid,
         identifiers: Vec<Identifier>,
@@ -347,7 +347,7 @@ impl Order {
         not_after: Option<i64>,
     ) -> Order {
         Order {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             profile: profile.to_string(),
             account_id,
             status: OrderStatus::Pending,
@@ -383,7 +383,7 @@ impl Order {
     /// — every test fixture, and any future path with no client — simply keeps
     /// two `NULL`s, which is the honest answer.
     #[must_use]
-    pub(crate) fn with_client(mut self, client: &acme_proxy_core::audit::ClientContext) -> Order {
+    pub fn with_client(mut self, client: &acme_proxy_core::audit::ClientContext) -> Order {
         self.created_ip = client.ip.clone();
         self.created_ptr = client.ptr.clone();
         self
@@ -395,7 +395,7 @@ impl Order {
     /// authorizations inside one transaction: a half-built order (fewer
     /// authorizations than identifiers) would otherwise be finalizable for names
     /// that were never authorized.
-    pub(crate) async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -452,7 +452,7 @@ impl Order {
 
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE id = ?;"))
@@ -640,7 +640,7 @@ impl Order {
     /// nothing was deleted does a second read tell a refusal from a missing row.
     pub async fn delete(id: &str, database: &Database) -> Result<GuardedDelete, sqlx::Error> {
         debug!(event = "db_order_delete_started", outcome = "progress", order_id = ?id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(GuardedDelete::NotFound);
         };
         let now = now_secs();
@@ -737,7 +737,7 @@ impl Order {
 
     /// The certificates expiring at or before `before`, soonest first, with the
     /// unpaged total beside the page — the digest's whole query
-    /// (`[notify.expiry]`, [`crate::notify::expiry`]) and the admin surfaces'
+    /// (`[notify.expiry]`, `notify::expiry`) and the admin surfaces'
     /// (`GET /api/expiring`, `/ui/expiring`, `order list --expiring-in`).
     ///
     /// Three predicates, each carrying its own reason. `certificate IS NOT
@@ -953,7 +953,7 @@ impl Order {
     /// round trip (`acme::revoke`'s ledger path) can write the order and the
     /// `revocations` row in **one** transaction. The in-memory sync is the
     /// caller's, after the commit.
-    pub(crate) async fn set_revoked<'e, E>(
+    pub async fn set_revoked<'e, E>(
         id: Uuid,
         reason: Option<i64>,
         revoked_at: i64,
@@ -983,11 +983,7 @@ impl Order {
     /// challenge, authorization and order transitions into one transaction. The
     /// in-memory sync stays in `mark_invalid`, since it must not happen until
     /// the transaction has committed.
-    pub(crate) async fn set_invalid<'e, E>(
-        id: Uuid,
-        error: &Value,
-        executor: E,
-    ) -> Result<(), sqlx::Error>
+    pub async fn set_invalid<'e, E>(id: Uuid, error: &Value, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -1001,7 +997,7 @@ impl Order {
     }
 
     /// The `ready` transition as a bare statement; see [`Order::set_invalid`].
-    pub(crate) async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    pub async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -1013,7 +1009,7 @@ impl Order {
     }
 
     /// The `pending` transition as a bare statement; see [`Order::set_invalid`].
-    pub(crate) async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    pub async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -1084,7 +1080,7 @@ impl Order {
     /// /revokeCert` looks an order up by `find_by_cert_serial` and would answer
     /// "unknown certificate", so nothing this server offers could ever revoke
     /// them and the CRL would never learn they exist. `rows_affected` closes it,
-    /// the primitive [`crate::sqlite::nonce::Nonce::verify`] and
+    /// the primitive [`crate::nonce::Nonce::verify`] and
     /// `AdminUser::claim_totp_step` already rest on.
     ///
     /// The `relay` backend was never exposed, because `upstream_orders.order_id`
@@ -1329,7 +1325,7 @@ mod tests {
         .await
         .unwrap();
 
-        let authz = crate::sqlite::id::mint();
+        let authz = crate::id::mint();
         let json = order.to_json("http://localhost:3000", &[authz]);
         assert_eq!(json["status"], "pending");
         assert_eq!(
@@ -1696,7 +1692,7 @@ mod tests {
         .await
         .unwrap();
 
-        let authz = crate::sqlite::authz::Authorization::create(
+        let authz = crate::authz::Authorization::create(
             order.id,
             Identifier::dns("example.com"),
             now_secs() + 3600,
@@ -1704,7 +1700,7 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::sqlite::authz::Challenge::create(authz.id, "http-01", &db)
+        crate::authz::Challenge::create(authz.id, "http-01", &db)
             .await
             .unwrap();
 
@@ -1713,13 +1709,13 @@ mod tests {
             .unwrap();
 
         assert!(
-            crate::sqlite::authz::Authorization::find_by_order(order.id, &db)
+            crate::authz::Authorization::find_by_order(order.id, &db)
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            crate::sqlite::authz::Challenge::find_by_authz(authz.id, &db)
+            crate::authz::Challenge::find_by_authz(authz.id, &db)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1893,7 +1889,7 @@ mod tests {
     async fn search_filters_by_profile_account_and_status_together() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
-        let (other_account, _) = crate::sqlite::account::Account::find_or_create(
+        let (other_account, _) = crate::account::Account::find_or_create(
             "default",
             &[9u8, 9, 9],
             vec![],

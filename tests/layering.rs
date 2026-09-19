@@ -1,7 +1,7 @@
 //! Module boundaries the compiler cannot draw inside one crate, enforced
 //! against the source itself.
 //!
-//! `Database`'s pool is private to `src/sqlite/`, so SQL — and the dialect it
+//! `Database`'s pool is private to `crates/store/`, so SQL — and the dialect it
 //! is written in — lives in one module tree. The integration tests still need
 //! raw SQL for fixtures no table module writes (a back-dated row, a forced
 //! constraint violation), and they are another crate, so the escape hatch,
@@ -24,6 +24,24 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Every Rust source of the workspace: the binary's `src/` and each library
+/// crate's `crates/<name>/src/`.
+fn workspace_sources() -> Vec<PathBuf> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("src"), &mut files);
+    for krate in fs::read_dir(root.join("crates"))
+        .expect("crates/ is readable")
+        .flatten()
+    {
+        let src = krate.path().join("src");
+        if src.is_dir() {
+            rust_sources(&src, &mut files);
+        }
+    }
+    files
+}
+
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("src/ is readable").flatten() {
         let path = entry.path();
@@ -35,11 +53,13 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Whether a whole file is compiled only under `cfg(test)`: a `tests.rs`, a
-/// file under a `tests/` directory, or the crate's `testutil.rs`. Each is
-/// declared behind `#[cfg(test)]` by its parent.
+/// Whether a whole file is compiled only for tests: a `tests.rs`, a file under
+/// a `tests/` directory, or a crate's `testutil.rs`. Each is declared behind
+/// `#[cfg(test)]` (or the `test-util` feature) by its parent.
 fn is_test_file(relative: &str) -> bool {
-    relative.contains("/tests/") || relative.ends_with("/tests.rs") || relative == "src/testutil.rs"
+    relative.contains("/tests/")
+        || relative.ends_with("/tests.rs")
+        || relative.ends_with("/testutil.rs")
 }
 
 /// The part of a file compiled into the shipped library: everything before its
@@ -79,8 +99,7 @@ fn is_mod_decl(line: &str) -> bool {
 #[test]
 fn production_code_never_reaches_the_raw_pool() {
     let root = repo_root();
-    let mut files = Vec::new();
-    rust_sources(&root.join("src"), &mut files);
+    let files = workspace_sources();
 
     let mut offenders = Vec::new();
     for path in files {
@@ -89,7 +108,7 @@ fn production_code_never_reaches_the_raw_pool() {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        if relative.starts_with("src/sqlite/") || is_test_file(&relative) {
+        if relative.starts_with("crates/store/src/") || is_test_file(&relative) {
             continue;
         }
         let text = fs::read_to_string(&path).unwrap();
@@ -103,7 +122,7 @@ fn production_code_never_reaches_the_raw_pool() {
     assert!(
         offenders.is_empty(),
         "`Database::raw_pool` is for test fixtures only; production code goes \
-         through a table module in `src/sqlite/`, `Database::transaction` or \
+         through a table module in `crates/store/`, `Database::transaction` or \
          `Database::pool_stats`:\n{}",
         offenders.join("\n"),
     );
@@ -234,11 +253,14 @@ fn the_request_path_never_holds_a_signer() {
 #[test]
 fn only_the_schema_owners_apply_migrations() {
     let root = repo_root();
-    let mut sources = Vec::new();
-    rust_sources(&root.join("src"), &mut sources);
+    let sources = workspace_sources();
 
     // The two owners, plus the module the functions themselves live in.
-    const OWNERS: &[&str] = &["src/cli/mod.rs", "src/server/mod.rs", "src/sqlite/db.rs"];
+    const OWNERS: &[&str] = &[
+        "src/cli/mod.rs",
+        "src/server/mod.rs",
+        "crates/store/src/db.rs",
+    ];
 
     let mut offenders = Vec::new();
     for path in sources {

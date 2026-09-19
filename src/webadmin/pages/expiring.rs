@@ -29,15 +29,15 @@ pub async fn list_expiring(
     let days = params.lead_days(&state.config);
     let include_superseded = params.include_superseded();
 
-    let query = crate::sqlite::expiring::ExpiringQuery {
+    let query = acme_proxy_store::expiring::ExpiringQuery {
         profile: params.profile.clone(),
-        before: crate::sqlite::expiring::expiring_horizon(days),
+        before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded,
         limit: page.limit,
         offset: page.offset,
     };
     let (entries, total, hidden) =
-        crate::sqlite::expiring::list_expiring(&query, state.database.clone()).await?;
+        acme_proxy_store::expiring::list_expiring(&query, state.database.clone()).await?;
 
     let items: Vec<Value> = entries.iter().map(admin::render_expiring_json).collect();
     let mut context = chrome(&session, "expiring", "Expiring");

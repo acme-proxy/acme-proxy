@@ -164,12 +164,12 @@ use super::http01::TokenStore;
 use super::*;
 use crate::notify::{NotifyDispatcher, NotifyEvent};
 use crate::signer::local_ca::LocalCa;
-use crate::sqlite::account::Account;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::Order;
-use crate::sqlite::status::OrderStatus;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::testutil::TempDir;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::OrderStatus;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use testsrv::{Script, Upstream};
@@ -395,7 +395,7 @@ async fn real_chain() -> String {
         "ecdsa-p256",
         90,
         Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
+            acme_proxy_store::db::Database::connect_in_memory()
                 .await
                 .unwrap(),
         ),

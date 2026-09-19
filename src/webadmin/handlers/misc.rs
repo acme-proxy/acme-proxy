@@ -7,10 +7,10 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 use crate::admin;
-use crate::sqlite::nonce::Nonce;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_store::nonce::Nonce;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupRequest {

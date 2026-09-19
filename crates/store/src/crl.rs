@@ -11,7 +11,7 @@
 use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::sqlite::db::Database;
+use crate::db::Database;
 
 /// A signed CRL as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]

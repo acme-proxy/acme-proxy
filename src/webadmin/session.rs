@@ -45,11 +45,13 @@ use ring::rand::{SecureRandom, SystemRandom};
 use subtle::ConstantTimeEq;
 use tracing::{info, warn};
 
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminUser};
-use crate::sqlite::nonce::{fingerprint, now_secs};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminRole;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::nonce::fingerprint;
+use acme_proxy_store::nonce::now_secs;
 
 /// The session cookie's name.
 ///

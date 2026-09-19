@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::status::OrderStatus;
+use acme_proxy_store::status::OrderStatus;
 
 /// Serves `tokens` on an ephemeral loopback port at the real route path, so
 /// the scripted upstream fetches what a deployment would.

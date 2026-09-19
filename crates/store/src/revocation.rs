@@ -8,7 +8,7 @@
 use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::sqlite::db::Database;
+use crate::db::Database;
 
 /// One revoked certificate.
 #[derive(Debug, Clone, PartialEq, Eq)]

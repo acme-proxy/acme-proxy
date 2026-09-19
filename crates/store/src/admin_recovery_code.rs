@@ -3,15 +3,15 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::rfc3339;
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::rfc3339;
 
-/// One single-use recovery code of an [`crate::sqlite::admin_user::AdminUser`].
+/// One single-use recovery code of an [`crate::admin_user::AdminUser`].
 ///
 /// **This layer never sees a plaintext code.** `code_hash` arrives already
 /// hashed from `admin::mfa`, through the very same
-/// [`crate::admin::password`] this crate hashes operator passwords with -- a
+/// `admin::password` this crate hashes operator passwords with -- a
 /// recovery code is only ever compared, never needed back, so a read of this
 /// table yields nothing replayable. That is the opposite of
 /// `admin_users.totp_secret`, which verification needs in the clear.
@@ -72,7 +72,7 @@ impl AdminRecoveryCode {
                 "INSERT INTO admin_recovery_codes (id, user_id, code_hash, created_at, used_at) \
                  VALUES (?, ?, ?, ?, NULL);",
             )
-            .bind(crate::sqlite::id::mint())
+            .bind(crate::id::mint())
             .bind(user_id)
             .bind(hash)
             .bind(now)
@@ -178,7 +178,7 @@ impl AdminRecoveryCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::admin_user::AdminUser;
+    use crate::admin_user::AdminUser;
     use std::sync::Arc;
 
     async fn db_with_user() -> (Arc<Database>, AdminUser) {
@@ -241,7 +241,7 @@ mod tests {
             "a second consumption of one code must fail, whatever raced it"
         );
         assert!(
-            !AdminRecoveryCode::consume(crate::sqlite::id::mint(), &db)
+            !AdminRecoveryCode::consume(crate::id::mint(), &db)
                 .await
                 .unwrap()
         );

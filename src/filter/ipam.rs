@@ -182,8 +182,8 @@ mod tests {
     use super::*;
     use crate::filter::{ConnectionContext, IdentifierStage};
     use crate::ipam::{Ipam, IpamError};
-    use crate::testutil::identifiers as ids;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::testutil::identifiers as ids;
     use axum::http::Method;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

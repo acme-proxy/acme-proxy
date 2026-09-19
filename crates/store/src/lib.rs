@@ -1,4 +1,7 @@
-//! Persistence: one module per table, over `sqlx` and SQLite.
+//! Persistence: one module per table, over `sqlx` and SQLite — acme-proxy's
+//! storage layer, below everything that reads or writes a row. An internal
+//! crate of the `acme-proxy` binary, published in lockstep with it and with no
+//! semver promise of its own.
 //!
 //! Queries are built with the runtime `sqlx::query` API rather than the
 //! compile-time macros, so `DATABASE_URL` is not needed to build the crate.
@@ -37,4 +40,6 @@ pub mod order;
 pub mod query;
 pub mod revocation;
 pub mod status;
+#[cfg(any(test, feature = "test-util"))]
+pub mod testutil;
 pub mod upstream_order;

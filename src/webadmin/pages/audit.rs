@@ -10,7 +10,6 @@ use axum::response::Html;
 use serde_json::Value;
 
 use crate::admin;
-use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::audit::AuditListParams;
@@ -19,6 +18,8 @@ use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::audit::AuditQuery;
 
 /// `GET /ui/audit?profile=&accountId=&orderId=&certSerial=&event=&outcome=&limit=&offset=`
 pub async fn list_audit(

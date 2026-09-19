@@ -20,8 +20,8 @@
 use super::*;
 use crate::jobs::{JobHandler, JobOutcome, JobRegistry};
 use crate::signer::relay::flow::{RELAY_JOB_KIND, RelayJob};
-use crate::sqlite::job::Job;
-use crate::sqlite::status::OrderStatus;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::status::OrderStatus;
 
 /// Two relay backends over two upstreams, plus the profiles they serve.
 struct TwoUpstreams {
@@ -205,7 +205,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
 /// A claimed row, as the runner would hand one over.
 fn job(payload: serde_json::Value) -> Job {
     Job {
-        id: crate::sqlite::id::mint(),
+        id: acme_proxy_store::id::mint(),
         kind: RELAY_JOB_KIND.to_string(),
         dedup_key: "ord-1".to_string(),
         payload,
@@ -404,10 +404,11 @@ async fn recovery_re_queues_the_in_flight_orders_of_every_backend() {
     handler(&db, &pair).recover(&queue).await;
 
     for (profile, id) in queued {
-        let row = crate::sqlite::job::Job::find_live(RELAY_JOB_KIND, id.to_string().as_str(), &db)
-            .await
-            .unwrap()
-            .unwrap_or_else(|| panic!("order {id} on profile `{profile}` must be re-queued"));
+        let row =
+            acme_proxy_store::job::Job::find_live(RELAY_JOB_KIND, id.to_string().as_str(), &db)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("order {id} on profile `{profile}` must be re-queued"));
         assert_eq!(
             row.payload.get("profile").and_then(|value| value.as_str()),
             Some(profile),

@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 
 use acme_proxy::filter::policy::{Check, StageSet, Verdict};
 use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
-use acme_proxy::sqlite::eab::Eab;
 use acme_proxy_core::config::CheckConfig;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::CustomIpamConfig;
@@ -24,6 +23,7 @@ use acme_proxy_core::config::IpamConfig;
 use acme_proxy_core::config::NetboxConfig;
 use acme_proxy_core::config::PhpIpamConfig;
 use acme_proxy_core::config::RuleConfig;
+use acme_proxy_store::eab::Eab;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;

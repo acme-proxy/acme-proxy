@@ -7,10 +7,10 @@ use crate::admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::sqlite::audit::AuditQuery;
-use crate::sqlite::db::Database;
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::audit::AuditQuery;
+use acme_proxy_store::db::Database;
 
 #[derive(Subcommand)]
 pub enum AuditCommand {
@@ -116,7 +116,7 @@ pub async fn run_audit_command(
                     .map(acme_proxy_core::cert::normalize_serial),
                 event,
                 outcome,
-                since: since_days.map(crate::sqlite::audit::audit_cutoff),
+                since: since_days.map(acme_proxy_store::audit::audit_cutoff),
                 limit: window.limit,
                 offset: window.offset,
             };
@@ -126,7 +126,7 @@ pub async fn run_audit_command(
                 total,
                 window,
                 json,
-                crate::sqlite::audit::AuditEntry::to_json,
+                acme_proxy_store::audit::AuditEntry::to_json,
                 |entry| render::render_audit_line(entry, palette),
             );
         }
@@ -166,9 +166,9 @@ pub async fn run_audit_command(
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
-    use crate::sqlite::audit::AuditEntry;
-    use crate::sqlite::db::Database;
     use acme_proxy_core::audit::{Actor, AuditRecord};
+    use acme_proxy_store::audit::AuditEntry;
+    use acme_proxy_store::db::Database;
 
     async fn db_with_rows() -> Arc<Database> {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());

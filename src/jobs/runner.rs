@@ -1,7 +1,7 @@
 //! The loop that drains the queue: claim, run, settle, back off.
 //!
 //! One task for the process, holding a registry and a concurrency permit pool.
-//! Everything it does to a row is a guarded statement in [`crate::sqlite::job`],
+//! Everything it does to a row is a guarded statement in [`acme_proxy_store::job`],
 //! so two runners over one database — a rolling restart's overlap, or a second
 //! process someone starts by mistake — cannot both run one job.
 //!
@@ -19,10 +19,10 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use super::{JobHandler, JobOutcome, JobQueue, JobRegistry, seconds};
-use crate::sqlite::db::Database;
-use crate::sqlite::job::Job;
-use crate::sqlite::nonce::now_secs;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::nonce::now_secs;
 
 /// How much longer than its own timeout a job's lease runs.
 ///

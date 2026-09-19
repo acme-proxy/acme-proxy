@@ -14,9 +14,9 @@ use std::time::Duration;
 use acme_proxy::filter::FilterPolicy;
 use acme_proxy::jobs::JobRegistry;
 use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
-use acme_proxy::sqlite::job::Job;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_store::job::Job;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -484,13 +484,13 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 #[tokio::test]
 async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     use acme_proxy::notify::expiry::ExpiryDigestJob;
-    use acme_proxy::sqlite::db::Database;
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::config::ExpiryNotifyConfig;
     use acme_proxy_core::config::NotifyConfig;
     use acme_proxy_core::config::ProfileConfig;
     use acme_proxy_core::config::ProfileSections;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::db::Database;
+    use acme_proxy_store::order::Order;
 
     let config = JobsConfig {
         poll_interval_ms: 5,
@@ -502,7 +502,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config);
 
     // An account with a certificate lapsing inside the window.
-    let (account, _created) = acme_proxy::sqlite::account::Account::find_or_create(
+    let (account, _created) = acme_proxy_store::account::Account::find_or_create(
         "default",
         b"a-key",
         Vec::new(),

@@ -36,7 +36,8 @@ use axum::{
     response::IntoResponse,
 };
 
-use crate::sqlite::{self, db::Database};
+use acme_proxy_store as sqlite;
+use acme_proxy_store::db::Database;
 
 const REPLAY_NONCE: HeaderName = HeaderName::from_static("replay-nonce");
 

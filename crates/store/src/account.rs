@@ -4,9 +4,9 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::{GuardedDelete, live_certificate};
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::{GuardedDelete, live_certificate};
 use acme_proxy_core::audit::ClientContext;
 
 /// An ACME account (RFC 8555 §7.1.2), keyed by the client's public key stored as
@@ -105,7 +105,7 @@ pub struct EabAccounts {
 /// a log line for an RSA account carried ~700 hex characters, and the name said
 /// "hash" while the value was the key itself. Public keys are not secret, but
 /// they are not log material either.
-pub(crate) fn pubkey_fingerprint(pubkey: &[u8]) -> String {
+pub fn pubkey_fingerprint(pubkey: &[u8]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, pubkey);
     hex::encode(&digest.as_ref()[..8])
 }
@@ -187,7 +187,7 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_by_id_started", outcome = "progress", profile = %profile, account_id = %id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = sqlx::query(concat!(
@@ -233,7 +233,7 @@ impl Account {
         }
 
         let account = Account {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             profile: profile.to_string(),
             pubkey: pubkey.to_vec(),
             contact,
@@ -476,7 +476,7 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_any_by_id_started", outcome = "progress", account_id = %id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = sqlx::query(concat!(
@@ -494,7 +494,7 @@ impl Account {
     /// One page of accounts, newest first, plus the total the same filter
     /// matches unpaged.
     ///
-    /// The [`Account`] counterpart to [`crate::sqlite::order::Order::search`],
+    /// The [`Account`] counterpart to [`crate::order::Order::search`],
     /// and the **only** listing this model offers: an unpaged `list_all` stood
     /// beside it until `account list` grew a window, and a second listing whose
     /// ordering disagreed with this one was a page control waiting to skip a
@@ -504,7 +504,7 @@ impl Account {
     /// what the credential card links to before an operator deletes it.
     ///
     /// A [`sqlx::QueryBuilder`] with one predicate function shared by the page
-    /// and the count, [`crate::sqlite::query`]'s shape. It was two literal
+    /// and the count, [`crate::query`]'s shape. It was two literal
     /// statements per branch while `profile` was the only filter; a second
     /// optional filter made that four shapes, each a place for the page and the
     /// total to disagree.
@@ -519,15 +519,15 @@ impl Account {
 
         // A kid that is not a UUID names no credential, so it matches nothing:
         // the `find_any_by_kid` answer, rather than an error for a filter.
-        let eab_kid = match eab_kid.map(crate::sqlite::id::parse) {
+        let eab_kid = match eab_kid.map(crate::id::parse) {
             Some(None) => return Ok((Vec::new(), 0)),
             Some(Some(kid)) => Some(kid),
             None => None,
         };
         let push_predicates = |builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>| {
-            let separator = crate::sqlite::query::push_equalities(
+            let separator = crate::query::push_equalities(
                 builder,
-                crate::sqlite::query::WHERE,
+                crate::query::WHERE,
                 &[("profile = ", profile)],
             );
             if let Some(kid) = eab_kid {
@@ -566,10 +566,10 @@ impl Account {
     /// The guard is inside the `DELETE`, as [`Order::delete`]'s is, so an
     /// issuance cannot land between a check and the delete.
     ///
-    /// [`Order::delete`]: crate::sqlite::order::Order::delete
+    /// [`Order::delete`]: crate::order::Order::delete
     pub async fn delete(id: &str, database: &Database) -> Result<GuardedDelete, sqlx::Error> {
         debug!(event = "db_account_delete_started", outcome = "progress", account_id = ?id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(GuardedDelete::NotFound);
         };
         let result = sqlx::query(concat!(
@@ -776,7 +776,7 @@ impl Account {
 /// constraint. Pinned by
 /// `tests::concurrent_find_or_create_for_one_key_yields_one_account`, which
 /// reaches this branch by racing eight callers over one key.
-pub(crate) fn is_pubkey_conflict(error: &sqlx::Error) -> bool {
+pub fn is_pubkey_conflict(error: &sqlx::Error) -> bool {
     matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()
         && db.message().contains("accounts.pubkey"))
 }
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn needs_touch_yields_to_the_interval_but_never_to_a_changed_address() {
         let mut account = Account {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             profile: "default".to_string(),
             pubkey: vec![1],
             contact: vec![],
@@ -1122,7 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn set_eab_kid_persists_and_syncs() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let kid = crate::sqlite::id::mint();
+        let kid = crate::id::mint();
         let (mut account, _) =
             Account::find_or_create("default", &[5u8], vec![], &ClientContext::default(), &db)
                 .await
@@ -1178,7 +1178,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        crate::sqlite::order::Order::create(
+        crate::order::Order::create(
             "default",
             account.id,
             vec![],
@@ -1194,7 +1194,7 @@ mod tests {
             .await
             .unwrap();
 
-        let remaining = crate::sqlite::order::Order::find_by_account(account.id, &db)
+        let remaining = crate::order::Order::find_by_account(account.id, &db)
             .await
             .unwrap();
         assert!(remaining.is_empty());
@@ -1205,7 +1205,7 @@ mod tests {
     /// certificate is revoked the same delete goes through.
     #[tokio::test]
     async fn delete_refuses_an_account_holding_a_live_certificate() {
-        use crate::sqlite::order::Order;
+        use crate::order::Order;
         use crate::testutil::certified_order;
 
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -1251,7 +1251,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let ids = seed_accounts(&db, "default", 3).await;
         seed_accounts(&db, "other", 1).await;
-        let kid = crate::sqlite::id::mint();
+        let kid = crate::id::mint();
         for id in &ids[..2] {
             let mut account = Account::find_any_by_id(id, &db).await.unwrap().unwrap();
             account.set_eab_kid(kid, &db).await.unwrap();
@@ -1288,7 +1288,7 @@ mod tests {
         use crate::testutil::certified_order;
 
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let kid = crate::sqlite::id::mint();
+        let kid = crate::id::mint();
         let mut bound = Vec::new();
         for key in [10u8, 11, 12] {
             let (mut account, _) =
@@ -1307,10 +1307,7 @@ mod tests {
             Account::find_or_create("default", &[13u8], vec![], &ClientContext::default(), &db)
                 .await
                 .unwrap();
-        other
-            .set_eab_kid(crate::sqlite::id::mint(), &db)
-            .await
-            .unwrap();
+        other.set_eab_kid(crate::id::mint(), &db).await.unwrap();
         certified_order(&db, other.id, Some(now_secs() + 86_400)).await;
 
         assert_eq!(
@@ -1324,9 +1321,7 @@ mod tests {
             }
         );
         assert_eq!(
-            Account::eab_summary(crate::sqlite::id::mint(), &db)
-                .await
-                .unwrap(),
+            Account::eab_summary(crate::id::mint(), &db).await.unwrap(),
             EabAccounts::default()
         );
     }

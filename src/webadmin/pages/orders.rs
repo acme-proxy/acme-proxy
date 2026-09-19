@@ -8,7 +8,6 @@ use serde_json::{Map, Value};
 
 use crate::admin;
 use crate::admin::ops::RevokeOutcome;
-use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::orders::{OrderListParams, render_orders, revoke_error};
@@ -18,6 +17,8 @@ use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{
     ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
 };
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
 
 /// The revoke control posts a `<select>`, whose empty option means "no reason".
 #[derive(Debug, Deserialize, Default)]
@@ -81,7 +82,7 @@ pub async fn list_orders(
     context.insert(
         "statuses".to_string(),
         Value::Array(
-            crate::sqlite::status::OrderStatus::ALL
+            acme_proxy_store::status::OrderStatus::ALL
                 .iter()
                 .map(|status| Value::from(status.as_str()))
                 .collect(),
@@ -283,7 +284,7 @@ pub async fn delete_order(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
-    let subject = crate::sqlite::order::Order::find_by_id(&id, &state.database).await?;
+    let subject = acme_proxy_store::order::Order::find_by_id(&id, &state.database).await?;
     let deleted = match admin::delete_order(&id, state.database.clone()).await? {
         admin::Deletion::NotFound => return Err(not_found(&id)),
         // The card, with the refusal beside the button that was pressed: the
@@ -346,7 +347,7 @@ async fn card_context(
 /// button. The handler refuses regardless; this only spares the operator a
 /// button that can only say no.
 async fn live_certificate(id: &str, state: &AdminState) -> Result<bool, PageError> {
-    let Some(order_id) = crate::sqlite::id::parse(id) else {
+    let Some(order_id) = acme_proxy_store::id::parse(id) else {
         return Ok(false);
     };
     Ok(Order::count_live_certificates(order_id, &state.database).await? > 0)

@@ -41,11 +41,11 @@ use acme_proxy::signer::{
     CrlRefresher, Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity,
     RevocationRoute, SignerBackend, SignerError, SignerInfo,
 };
-use acme_proxy::sqlite::db::Database;
 use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_store::db::Database;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
@@ -903,7 +903,7 @@ pub async fn met_by_a_worker(signer: &dyn SignerBackend) {
 pub async fn read_side(signer: &dyn SignerBackend, database: &Database) -> Arc<dyn SignerInfo> {
     let info = signer.info();
     if let RevocationRoute::Ledger { issuer } = info.revocation_route()
-        && acme_proxy::sqlite::crl::StoredCrl::find_current(&issuer, database)
+        && acme_proxy_store::crl::StoredCrl::find_current(&issuer, database)
             .await
             .unwrap()
             .is_none()
@@ -1273,7 +1273,7 @@ pub async fn admin_login_pending(app: &Router, username: &str, password: &str) -
 /// Gives `username` a confirmed second factor, through the same operation layer
 /// the panel uses, and returns the raw secret so the test can compute codes.
 pub async fn enrol_totp(database: Arc<Database>, username: &str) -> Vec<u8> {
-    let mut user = acme_proxy::sqlite::admin_user::AdminUser::find_by_username(username, &database)
+    let mut user = acme_proxy_store::admin_user::AdminUser::find_by_username(username, &database)
         .await
         .unwrap()
         .expect("the operator must exist before enrolling them");
@@ -3216,12 +3216,12 @@ pub mod acme {
 /// An order under `account` holding a certificate that expires at `not_after`
 /// (`None`: never stamped, which counts as live).
 pub async fn certified_order(
-    database: &acme_proxy::sqlite::db::Database,
+    database: &acme_proxy_store::db::Database,
     account: uuid::Uuid,
     not_after: Option<i64>,
-) -> acme_proxy::sqlite::order::Order {
-    use acme_proxy::sqlite::order::Order;
+) -> acme_proxy_store::order::Order {
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::order::Order;
 
     let mut order = Order::create(
         "default",
@@ -3250,12 +3250,12 @@ pub async fn certified_order(
 /// A credential and `count` accounts registered with it, each holding a
 /// certificate that expires at `not_after`.
 pub async fn bound_eab(
-    database: &acme_proxy::sqlite::db::Database,
+    database: &acme_proxy_store::db::Database,
     count: u8,
     not_after: Option<i64>,
 ) -> (String, Vec<uuid::Uuid>) {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::eab::Eab;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::eab::Eab;
 
     let eab = Eab::create(Some("tenant".to_string()), None, database)
         .await

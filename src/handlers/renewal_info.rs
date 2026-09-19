@@ -9,9 +9,9 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::router::AppState;
 use crate::signer::RenewalWindow;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::Order;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
 
 /// One day, in seconds: how far the window returned for a revoked certificate
 /// is shifted into the past.
@@ -176,11 +176,11 @@ pub async fn get_renewal_info(
     let mut suggested = serde_json::Map::new();
     suggested.insert(
         "start".to_string(),
-        json!(crate::sqlite::order::rfc3339(window.start)),
+        json!(acme_proxy_store::order::rfc3339(window.start)),
     );
     suggested.insert(
         "end".to_string(),
-        json!(crate::sqlite::order::rfc3339(window.end)),
+        json!(acme_proxy_store::order::rfc3339(window.end)),
     );
 
     let mut body = serde_json::Map::new();

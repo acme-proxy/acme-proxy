@@ -5,13 +5,13 @@ use acme_proxy::cli::eab::{EabCommand, run_eab_command};
 use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
 use acme_proxy::cli::order::{OrderCommand, run_order_command};
 use acme_proxy::cli::window::DEFAULT_LIMIT;
-use acme_proxy::sqlite::account::Account;
-use acme_proxy::sqlite::db::Database;
-use acme_proxy::sqlite::order::Order;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::order::Order;
 
 #[tokio::test]
 async fn account_cli_list_and_show() {
@@ -382,7 +382,7 @@ async fn eab_cli_create_list_show_revoke() {
     .await
     .unwrap();
 
-    let (keys, _) = acme_proxy::sqlite::eab::Eab::search(50, 0, &db)
+    let (keys, _) = acme_proxy_store::eab::Eab::search(50, 0, &db)
         .await
         .unwrap();
     let kid = keys[0].kid;

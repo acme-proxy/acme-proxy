@@ -11,9 +11,10 @@ use crate::acme::OrderService;
 use crate::acme::access::{load_owned_order, order_authz_ids, signer_account};
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::router::AppState;
-use crate::sqlite::{order::Order, status::OrderStatus};
 use acme_proxy_core::client::ClientIp;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::OrderStatus;
 
 pub use crate::acme::order::{FinalizePayload, NewOrderPayload};
 

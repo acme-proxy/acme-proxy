@@ -8,7 +8,7 @@
 use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::sqlite::db::Database;
+use crate::db::Database;
 
 /// One published key authorization.
 pub struct Http01Token;

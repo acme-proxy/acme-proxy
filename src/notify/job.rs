@@ -12,7 +12,7 @@ use tracing::{info, warn};
 
 use super::{Notifiers, NotifyEvent};
 use crate::jobs::{JobHandler, JobOutcome};
-use crate::sqlite::job::Job;
+use acme_proxy_store::job::Job;
 
 /// The `jobs.kind` one notification delivery is queued under.
 pub const NOTIFY_JOB_KIND: &str = "notify_deliver";
@@ -196,8 +196,8 @@ mod tests {
     use crate::jobs::{JobQueue, JobSpec};
     use crate::notify::tests::RecordingNotifyBackend;
     use crate::notify::{BackendSlot, NotifyDispatcher, NotifyError, ProfileMountedData};
-    use crate::sqlite::db::Database;
     use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
+    use acme_proxy_store::db::Database;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -237,7 +237,7 @@ mod tests {
     /// handler only ever reads `payload` and `attempts`.
     fn row(payload: Value) -> Job {
         Job {
-            id: crate::sqlite::id::mint(),
+            id: acme_proxy_store::id::mint(),
             kind: NOTIFY_JOB_KIND.to_string(),
             dedup_key: "k".to_string(),
             payload,

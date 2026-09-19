@@ -48,12 +48,15 @@ use crate::signer::issuance::announce_issuance;
 use crate::signer::issuance::record_issuance;
 use crate::signer::issuance::record_issue_failure;
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
-use crate::sqlite::{db::Database, job::Job, order::Order, status::OrderStatus};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::OrderStatus;
 
 /// The `jobs.kind` one issuance is queued under.
 pub const SIGNER_ISSUE_KIND: &str = "signer_issue";
@@ -227,7 +230,7 @@ impl JobHandler for SignerIssueJob {
             // request in scope, so the client that asked is parked on the
             // mapping row for it — see `UpstreamOrder::set_client`.
             Ok(IssueOutcome::Processing) => {
-                if let Err(error) = crate::sqlite::upstream_order::UpstreamOrder::set_client(
+                if let Err(error) = acme_proxy_store::upstream_order::UpstreamOrder::set_client(
                     order_id,
                     &client,
                     &self.database,
@@ -386,7 +389,7 @@ mod tests {
             kind: SIGNER_ISSUE_KIND.to_string(),
             dedup_key: spec.key.clone(),
             payload: spec.payload.clone(),
-            ..crate::testutil::job_fixture()
+            ..acme_proxy_store::testutil::job_fixture()
         };
         (order, job)
     }
@@ -409,12 +412,12 @@ mod tests {
             .unwrap()
     }
 
-    async fn audit_rows(database: &Database) -> Vec<crate::sqlite::audit::AuditEntry> {
-        let query = crate::sqlite::audit::AuditQuery {
+    async fn audit_rows(database: &Database) -> Vec<acme_proxy_store::audit::AuditEntry> {
+        let query = acme_proxy_store::audit::AuditQuery {
             limit: 50,
-            ..crate::sqlite::audit::AuditQuery::default()
+            ..acme_proxy_store::audit::AuditQuery::default()
         };
-        crate::sqlite::audit::AuditEntry::search(&query, database)
+        acme_proxy_store::audit::AuditEntry::search(&query, database)
             .await
             .unwrap()
             .0

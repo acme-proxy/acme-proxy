@@ -869,9 +869,9 @@ mod softhsm {
     ];
 
     /// A throwaway database for a CA's revocation state.
-    async fn memory_db() -> std::sync::Arc<crate::sqlite::db::Database> {
+    async fn memory_db() -> std::sync::Arc<acme_proxy_store::db::Database> {
         std::sync::Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
+            acme_proxy_store::db::Database::connect_in_memory()
                 .await
                 .unwrap(),
         )

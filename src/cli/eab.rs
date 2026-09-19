@@ -8,9 +8,11 @@ use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::sqlite::db::Database;
-use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab};
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::eab::BoundAccounts;
+use acme_proxy_store::eab::DeletedEab;
+use acme_proxy_store::eab::Eab;
 
 #[derive(Subcommand)]
 pub enum EabCommand {
@@ -292,11 +294,11 @@ mod tests {
     async fn bound_account(
         database: &Arc<Database>,
         not_after: Option<i64>,
-    ) -> (Eab, crate::sqlite::account::Account) {
+    ) -> (Eab, acme_proxy_store::account::Account) {
         let eab = Eab::create(Some("tenant".to_string()), None, database)
             .await
             .unwrap();
-        let (mut account, _) = crate::sqlite::account::Account::find_or_create(
+        let (mut account, _) = acme_proxy_store::account::Account::find_or_create(
             "default",
             &[7u8],
             vec![],
@@ -306,7 +308,7 @@ mod tests {
         .await
         .unwrap();
         account.set_eab_kid(eab.kid, database).await.unwrap();
-        crate::testutil::certified_order(database, account.id, not_after).await;
+        acme_proxy_store::testutil::certified_order(database, account.id, not_after).await;
         (eab, account)
     }
 
@@ -331,8 +333,8 @@ mod tests {
     }
 
     async fn audit_events(database: &Database) -> Vec<String> {
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
-            &crate::sqlite::audit::AuditQuery {
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(
+            &acme_proxy_store::audit::AuditQuery {
                 limit: 50,
                 ..Default::default()
             },
@@ -369,7 +371,7 @@ mod tests {
         events.sort();
         assert_eq!(events, ["account_deactivated", "eab_deleted"]);
         assert_eq!(
-            crate::sqlite::account::Account::find_any_by_id(
+            acme_proxy_store::account::Account::find_any_by_id(
                 account.id.to_string().as_str(),
                 &database
             )
@@ -400,7 +402,7 @@ mod tests {
 
     #[test]
     fn deleted_line_says_what_became_of_the_accounts() {
-        use crate::sqlite::eab::DeletedEab;
+        use acme_proxy_store::eab::DeletedEab;
 
         let eab = || Eab {
             kid: uuid::Uuid::nil(),

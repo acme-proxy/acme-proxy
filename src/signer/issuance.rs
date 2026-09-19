@@ -9,9 +9,9 @@
 
 use crate::auditor::Auditor;
 use crate::notify::NotifyEvent;
-use crate::sqlite::db::Database;
-use crate::sqlite::order::Order;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::order::Order;
 
 /// Why an issued chain could not be recorded on its order.
 ///

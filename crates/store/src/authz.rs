@@ -4,10 +4,10 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::rfc3339;
-use crate::sqlite::status::{self, AuthzStatus, ChallengeStatus};
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::rfc3339;
+use crate::status::{self, AuthzStatus, ChallengeStatus};
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::random::random_token;
 
@@ -48,7 +48,7 @@ pub struct Authorization {
 /// authorization's identifier.
 ///
 /// Which types an authorization carries is decided by
-/// [`ChallengeRegistry::types_for`](crate::challenge::ChallengeRegistry::types_for)
+/// `ChallengeRegistry::types_for`
 /// — `UNIQUE(authz_id, type)` allows several, one per type. Whether triggering
 /// one performs a real network check or is accepted outright is the registry's
 /// `bypass` setting, not this model's business.
@@ -98,9 +98,9 @@ impl Authorization {
 
     /// Builds a new `pending` authorization for `identifier`. Pure — nothing is
     /// persisted until [`Authorization::insert`] runs.
-    pub(crate) fn new(order_id: Uuid, identifier: Identifier, expires: i64) -> Authorization {
+    pub fn new(order_id: Uuid, identifier: Identifier, expires: i64) -> Authorization {
         Authorization {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             order_id,
             identifier,
             status: AuthzStatus::Pending,
@@ -110,8 +110,8 @@ impl Authorization {
     }
 
     /// Inserts the authorization using any executor — a pool, or a transaction
-    /// (see [`crate::sqlite::order::Order::insert`] for why that matters).
-    pub(crate) async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
+    /// (see [`crate::order::Order::insert`] for why that matters).
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -154,7 +154,7 @@ impl Authorization {
         database: &Database,
     ) -> Result<Option<Authorization>, sqlx::Error> {
         debug!(event = "db_authz_find_by_id_started", outcome = "progress", authz_id = ?id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = sqlx::query(concat!(
@@ -178,7 +178,7 @@ impl Authorization {
         Self::find_by_order_with(order_id, &database.pool).await
     }
 
-    /// How many authorizations an order has. [`crate::sqlite::order::Order::count_by_account`]'s
+    /// How many authorizations an order has. [`crate::order::Order::count_by_account`]'s
     /// counterpart, and for the same reason.
     pub async fn count_by_order(order_id: Uuid, database: &Database) -> Result<i64, sqlx::Error> {
         let row = sqlx::query("SELECT COUNT(*) FROM authorizations WHERE order_id = ?;")
@@ -239,7 +239,7 @@ impl Authorization {
     /// the pool, two concurrent validations of two authorizations of one order
     /// can each read before the other's write commits, so neither sees a
     /// complete set and neither promotes the order.
-    pub(crate) async fn find_by_order_with<'e, E>(
+    pub async fn find_by_order_with<'e, E>(
         order_id: Uuid,
         executor: E,
     ) -> Result<Vec<Authorization>, sqlx::Error>
@@ -266,7 +266,7 @@ impl Authorization {
     /// The in-memory sync stays in `mark_valid`: it must not happen until the
     /// transaction has committed, or a rollback leaves the object claiming a
     /// status the database never took.
-    pub(crate) async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    pub async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -278,7 +278,7 @@ impl Authorization {
     }
 
     /// The `invalid` transition as a bare statement; see [`Authorization::set_valid`].
-    pub(crate) async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    pub async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -299,7 +299,7 @@ impl Authorization {
     /// Bare-statement only: §7.5.2's deactivate-and-demote pair is committed in
     /// one transaction (`handlers::authz`), so there is no persist-and-sync twin
     /// to go with it.
-    pub(crate) async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    pub async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -311,7 +311,7 @@ impl Authorization {
     }
 
     /// Moves the authorization to the `valid` state and keeps `self` in sync (the
-    /// same persist-and-sync pattern as [`crate::sqlite::order::Order::finalize`]).
+    /// same persist-and-sync pattern as [`crate::order::Order::finalize`]).
     pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
         Self::set_valid(self.id, &database.pool).await?;
@@ -426,9 +426,9 @@ impl Challenge {
     /// **Each challenge gets its own token**, even when several are offered for
     /// one authorization: RFC 8555 §8 describes the token as a per-challenge
     /// value, and every key authorization derives from it.
-    pub(crate) fn new(authz_id: Uuid, typ: &str) -> Challenge {
+    pub fn new(authz_id: Uuid, typ: &str) -> Challenge {
         Challenge {
-            id: crate::sqlite::id::mint(),
+            id: crate::id::mint(),
             authz_id,
             typ: typ.to_string(),
             token: random_token(),
@@ -440,8 +440,8 @@ impl Challenge {
     }
 
     /// Inserts the challenge using any executor — a pool, or a transaction
-    /// (see [`crate::sqlite::order::Order::insert`] for why that matters).
-    pub(crate) async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
+    /// (see [`crate::order::Order::insert`] for why that matters).
+    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -480,7 +480,7 @@ impl Challenge {
         database: &Database,
     ) -> Result<Option<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_id_started", outcome = "progress", challenge_id = ?id);
-        let Some(id) = crate::sqlite::id::parse(id) else {
+        let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
         let row = sqlx::query(concat!(
@@ -628,11 +628,7 @@ impl Challenge {
     /// so a caller composing this into a transaction stamps the challenge and
     /// its in-memory copy with the same instant. See
     /// [`Authorization::set_valid`] for why the sync is separate.
-    pub(crate) async fn set_valid<'e, E>(
-        id: Uuid,
-        validated: i64,
-        executor: E,
-    ) -> Result<(), sqlx::Error>
+    pub async fn set_valid<'e, E>(id: Uuid, validated: i64, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -645,11 +641,7 @@ impl Challenge {
     }
 
     /// The `invalid` transition as a bare statement; see [`Challenge::set_valid`].
-    pub(crate) async fn set_invalid<'e, E>(
-        id: Uuid,
-        error: &Value,
-        executor: E,
-    ) -> Result<(), sqlx::Error>
+    pub async fn set_invalid<'e, E>(id: Uuid, error: &Value, executor: E) -> Result<(), sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
@@ -723,9 +715,9 @@ impl Challenge {
 mod tests {
 
     use super::*;
-    use crate::sqlite::account::Account;
-    use crate::sqlite::order::Order;
-    use crate::sqlite::status::OrderStatus;
+    use crate::account::Account;
+    use crate::order::Order;
+    use crate::status::OrderStatus;
     use crate::testutil::account_id;
     use acme_proxy_core::audit::ClientContext;
     use std::sync::Arc;
@@ -765,7 +757,7 @@ mod tests {
 
         // An order with no authorizations is simply absent, which is what
         // `remove(..).unwrap_or_default()` at the call site relies on.
-        let grouped = Authorization::find_ids_by_orders(&[crate::sqlite::id::mint()], &db)
+        let grouped = Authorization::find_ids_by_orders(&[crate::id::mint()], &db)
             .await
             .unwrap();
         assert!(grouped.is_empty());

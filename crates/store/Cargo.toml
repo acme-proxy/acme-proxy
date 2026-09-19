@@ -1,0 +1,37 @@
+[package]
+name = "acme-proxy-store"
+description = "The SQLite storage layer of acme-proxy, one module per table (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+# `migrations/` is inside this package on purpose: `sqlx::migrate!()` embeds it
+# at compile time, so a crates.io build needs it here.
+exclude = ["**/CLAUDE.md"]
+
+[features]
+# The shared row fixtures in `testutil`, for the other crates' unit tests.
+# Turned on from `[dev-dependencies]` only, so it never reaches a normal build.
+test-util = ["dep:rcgen", "acme-proxy-core/test-util"]
+
+[dependencies]
+acme-proxy-core.workspace = true
+hex.workspace = true
+rcgen = { workspace = true, optional = true }
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+base64.workspace = true
+rcgen.workspace = true
+tokio.workspace = true

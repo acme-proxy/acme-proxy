@@ -232,7 +232,7 @@ pub(crate) fn fragment_context(
     );
     context.insert(
         "can_write".to_string(),
-        Value::Bool(auth.user.role() >= crate::sqlite::admin_user::AdminRole::Operator),
+        Value::Bool(auth.user.role() >= acme_proxy_store::admin_user::AdminRole::Operator),
     );
     context
 }

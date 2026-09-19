@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
-use crate::sqlite::db::Database;
+use acme_proxy_store::db::Database;
 
 /// The `route` label of a request that matched no route at all.
 ///

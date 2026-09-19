@@ -16,12 +16,13 @@ use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::sqlite::db::Database;
-use crate::sqlite::job::{Job, JobQuery};
-use crate::sqlite::status::JobStatus;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::job::JobQuery;
+use acme_proxy_store::status::JobStatus;
 
 #[derive(Subcommand)]
 pub enum JobsCommand {
@@ -171,8 +172,8 @@ fn not_found(id: &str) -> CliError {
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
-    use crate::sqlite::job::NewJob;
-    use crate::sqlite::nonce::now_secs;
+    use acme_proxy_store::job::NewJob;
+    use acme_proxy_store::nonce::now_secs;
     use serde_json::json;
 
     async fn db() -> Arc<Database> {
@@ -180,7 +181,7 @@ mod tests {
     }
 
     async fn seed(kind: &str, key: &str, run_at: i64, db: &Database) -> uuid::Uuid {
-        let id = crate::sqlite::id::mint();
+        let id = acme_proxy_store::id::mint();
         Job::enqueue(
             NewJob {
                 id,

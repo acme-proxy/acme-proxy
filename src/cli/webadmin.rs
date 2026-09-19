@@ -28,11 +28,13 @@ use crate::auditor::admin::SessionScope;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminRole;
+use acme_proxy_store::admin_user::AdminStatus;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::db::Database;
 
 #[derive(Subcommand)]
 pub enum AdminCommand {
@@ -767,8 +769,8 @@ fn not_found(username: &str) -> CliError {
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
-    use crate::sqlite::admin_session::NewSession;
     use acme_proxy_core::testutil::TempDir;
+    use acme_proxy_store::admin_session::NewSession;
 
     const GOOD: &str = "a-long-enough-password";
 
@@ -848,7 +850,8 @@ mod tests {
     /// `admin_operator_disabled`).
     #[tokio::test]
     async fn the_operator_lifecycle_writes_cli_audit_rows() {
-        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
 
         let db = db().await;
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
@@ -1125,7 +1128,7 @@ mod tests {
     /// exists to deliver it.
     #[tokio::test]
     async fn a_host_credential_change_queues_its_notification() {
-        use crate::sqlite::job::Job;
+        use acme_proxy_store::job::Job;
 
         let db = db().await;
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
@@ -1430,7 +1433,8 @@ mod tests {
 
     #[tokio::test]
     async fn role_changes_the_tier_revokes_sessions_and_refuses_an_unknown_user() {
-        use crate::sqlite::admin_session::{AdminSession, NewSession};
+        use acme_proxy_store::admin_session::AdminSession;
+        use acme_proxy_store::admin_session::NewSession;
 
         let db = db().await;
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
@@ -1809,7 +1813,7 @@ mod tests {
                 .unwrap();
         let code = admin::totp::totp_at(
             &enrolment.secret,
-            admin::totp::step_at(crate::sqlite::nonce::now_secs()),
+            admin::totp::step_at(acme_proxy_store::nonce::now_secs()),
             admin::totp::DIGITS,
         );
         mfa::confirm_totp_enrolment(&mut user, &code, None, database)
@@ -1942,7 +1946,7 @@ mod tests {
         let user = enrol("alice", db.clone()).await;
 
         let before =
-            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
+            acme_proxy_store::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
                 .await
                 .unwrap();
         assert_eq!(before.len(), 10);
@@ -1958,7 +1962,7 @@ mod tests {
         .unwrap();
 
         let after =
-            crate::sqlite::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
+            acme_proxy_store::admin_recovery_code::AdminRecoveryCode::list_unused(user.id, &db)
                 .await
                 .unwrap();
         assert_eq!(after.len(), 10);

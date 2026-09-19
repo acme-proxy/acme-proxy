@@ -22,8 +22,9 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 mod common;
-use acme_proxy::sqlite::audit::{AuditEntry, AuditQuery};
-use acme_proxy::sqlite::db::Database;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::audit::AuditQuery;
+use acme_proxy_store::db::Database;
 use common::{
     EcSigner, TestSigner, body_json, fetch_nonce_from, first_certificate, make_csr, p, post_from,
     test_app_with_db,

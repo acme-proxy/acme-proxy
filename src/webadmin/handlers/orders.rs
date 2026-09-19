@@ -10,14 +10,16 @@ use uuid::Uuid;
 
 use crate::admin;
 use crate::admin::ops::{RevokeError, RevokeOutcome};
-use crate::sqlite::authz::Authorization;
-use crate::sqlite::order::{Order, OrderQuery};
-use crate::sqlite::status::{OrderStatus, UnknownStatus};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_store::authz::Authorization;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
+use acme_proxy_store::status::OrderStatus;
+use acme_proxy_store::status::UnknownStatus;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].

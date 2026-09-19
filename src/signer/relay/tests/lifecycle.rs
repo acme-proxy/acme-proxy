@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::status::OrderStatus;
+use acme_proxy_store::status::OrderStatus;
 
 #[test]
 fn the_kid_sidecar_sits_next_to_the_key() {
@@ -543,7 +543,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
         OrderStatus::Invalid,
     )
     .await;
-    let job = crate::sqlite::job::Job::find_live(
+    let job = acme_proxy_store::job::Job::find_live(
         crate::signer::relay::flow::RELAY_JOB_KIND,
         order.id.to_string().as_str(),
         &db,
@@ -872,7 +872,7 @@ mod handler {
     use super::*;
     use crate::jobs::{JobHandler, JobOutcome};
     use crate::signer::relay::flow::{OrderContext, RELAY_JOB_KIND, RelayJob};
-    use crate::sqlite::job::Job;
+    use acme_proxy_store::job::Job;
 
     /// Builds a backend with no runner: these tests call the handler by hand.
     ///
@@ -903,7 +903,7 @@ mod handler {
     /// A claimed row, as the runner would hand one over.
     fn job(payload: serde_json::Value) -> Job {
         Job {
-            id: crate::sqlite::id::mint(),
+            id: acme_proxy_store::id::mint(),
             kind: RELAY_JOB_KIND.to_string(),
             dedup_key: "ord-1".to_string(),
             payload,
@@ -1048,8 +1048,8 @@ mod handler {
                 .status,
             OrderStatus::Invalid
         );
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
-            &crate::sqlite::audit::AuditQuery {
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(
+            &acme_proxy_store::audit::AuditQuery {
                 order_id: Some(order.id.clone().to_string()),
                 limit: 10,
                 ..Default::default()

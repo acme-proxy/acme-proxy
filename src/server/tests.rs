@@ -551,7 +551,7 @@ async fn a_process_without_the_worker_role_builds_no_backend() {
     let config = config_in(dir.path(), false);
     let resolved = config.resolve_profiles().unwrap();
     let database = Arc::new(
-        crate::sqlite::db::Database::connect_in_memory()
+        acme_proxy_store::db::Database::connect_in_memory()
             .await
             .unwrap(),
     );

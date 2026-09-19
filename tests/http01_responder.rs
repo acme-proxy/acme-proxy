@@ -213,7 +213,7 @@ async fn the_route_is_not_filtered() {
 #[tokio::test]
 async fn a_token_published_elsewhere_is_served() {
     let database = Arc::new(
-        acme_proxy::sqlite::db::Database::connect_in_memory()
+        acme_proxy_store::db::Database::connect_in_memory()
             .await
             .unwrap(),
     );
@@ -241,7 +241,7 @@ async fn a_token_published_elsewhere_is_served() {
 #[tokio::test]
 async fn an_unreadable_store_is_a_plain_server_error() {
     let database = Arc::new(
-        acme_proxy::sqlite::db::Database::connect_in_memory()
+        acme_proxy_store::db::Database::connect_in_memory()
             .await
             .unwrap(),
     );

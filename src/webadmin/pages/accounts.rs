@@ -13,8 +13,6 @@ use serde_json::{Map, Value};
 
 use crate::admin;
 use crate::auditor::admin as audit_admin;
-use crate::sqlite::account::Account;
-use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::accounts::AccountListParams;
 use crate::webadmin::handlers::orders::render_orders;
@@ -24,6 +22,9 @@ use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{
     ListFilters, chrome, flash, page_value, pager, respond, respond_fragment,
 };
+use acme_proxy_store::account::Account;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
 
 /// The contact editor posts a textarea, not a JSON array.
 #[derive(Debug, Deserialize)]
@@ -362,7 +363,7 @@ async fn card_context(
 /// card's delete button. The handler refuses regardless; this only spares the
 /// operator a button that can only say no.
 async fn live_certificates(id: &str, state: &AdminState) -> Result<u64, PageError> {
-    let Some(account_id) = crate::sqlite::id::parse(id) else {
+    let Some(account_id) = acme_proxy_store::id::parse(id) else {
         return Ok(0);
     };
     Ok(Account::count_live_certificates(account_id, &state.database).await?)

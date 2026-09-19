@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use acme_proxy::sqlite::db::Database;
+use acme_proxy_store::db::Database;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

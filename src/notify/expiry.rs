@@ -64,10 +64,11 @@ use tracing::{debug, error, info};
 
 use super::{CertificatesExpiringData, ExpiringCertificate, Notifiers, NotifyEvent};
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
-use crate::sqlite::db::Database;
-use crate::sqlite::job::Job;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::UNPARSABLE_NOT_AFTER;
 
 /// The `jobs.kind` the digest runs under.
 pub const EXPIRY_JOB_KIND: &str = "notify_expiry_digest";
@@ -211,7 +212,7 @@ impl ExpiryDigestJob {
         // about what "expiring" or "already replaced" means. `include_superseded`
         // is always `true` here: supersession is an annotation and never a
         // filter, for the reason in this module's docs.
-        let query = crate::sqlite::expiring::ExpiringQuery {
+        let query = acme_proxy_store::expiring::ExpiringQuery {
             profile: Some(profile.to_string()),
             before: now.saturating_add(i64::try_from(settings.lead.as_secs()).unwrap_or(0)),
             include_superseded: true,
@@ -219,7 +220,7 @@ impl ExpiryDigestJob {
             offset: 0,
         };
         let (entries, total, _hidden) =
-            crate::sqlite::expiring::list_expiring(&query, self.database.clone()).await?;
+            acme_proxy_store::expiring::list_expiring(&query, self.database.clone()).await?;
         if entries.is_empty() {
             return Ok(None);
         }
@@ -339,9 +340,9 @@ impl JobHandler for ExpiryDigestJob {
 mod tests {
     use super::*;
     use crate::notify::{BackendSlot, NotifyDispatcher};
-    use crate::testutil::account_id;
     use acme_proxy_core::config::ExpiryNotifyConfig;
     use acme_proxy_core::config::JobsConfig;
+    use acme_proxy_store::testutil::account_id;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -350,7 +351,7 @@ mod tests {
     /// A claimed row for `profile`, as the runner would hand one to `run`.
     fn row(profile: &str) -> Job {
         Job {
-            id: crate::sqlite::id::mint(),
+            id: acme_proxy_store::id::mint(),
             kind: EXPIRY_JOB_KIND.to_string(),
             dedup_key: profile.to_string(),
             payload: json!({}),
@@ -400,7 +401,7 @@ mod tests {
     }
 
     /// An issued order on the `default` profile. The real signing lives in
-    /// [`crate::testutil::issued_order`], hoisted there when `admin::ops`
+    /// [`acme_proxy_store::testutil::issued_order`], hoisted there when `admin::ops`
     /// gained the supersession annotation and needed the same row.
     async fn issued(
         db: &Database,
@@ -408,7 +409,8 @@ mod tests {
         names: &[&str],
         not_after_days: i64,
     ) -> Order {
-        crate::testutil::issued_order(db, "default", account, names, not_after_days).await
+        acme_proxy_store::testutil::issued_order(db, "default", account, names, not_after_days)
+            .await
     }
 
     /// The digest's own content: what is expiring, in order, with the days

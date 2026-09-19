@@ -6,18 +6,25 @@ use crate::admin::prompt::confirm;
 use crate::auditor::Auditor;
 use crate::signer::SignerError;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
-use crate::sqlite::account::Account;
-use crate::sqlite::audit::{AuditEntry, AuditQuery};
-use crate::sqlite::authz::{Authorization, Challenge};
-use crate::sqlite::db::Database;
-use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab, EabDeletion};
-use crate::sqlite::job::Job;
-use crate::sqlite::nonce::Nonce;
-use crate::sqlite::order::{GuardedDelete, Order};
-use crate::sqlite::status::JobStatus;
-use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ClientContext;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::audit::AuditQuery;
+use acme_proxy_store::authz::Authorization;
+use acme_proxy_store::authz::Challenge;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::eab::BoundAccounts;
+use acme_proxy_store::eab::DeletedEab;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::eab::EabDeletion;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::nonce::Nonce;
+use acme_proxy_store::order::GuardedDelete;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::JobStatus;
+use acme_proxy_store::upstream_order::UpstreamOrder;
+use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
 /// Outcome of a confirm-gated hard delete.
 ///
@@ -506,7 +513,7 @@ pub async fn find_audit(
 
 /// Deletes audit rows older than `days`, returning how many went.
 pub async fn cleanup_audit(days: u64, database: Arc<Database>) -> Result<u64, sqlx::Error> {
-    AuditEntry::cleanup(crate::sqlite::audit::audit_cutoff(days), &database).await
+    AuditEntry::cleanup(acme_proxy_store::audit::audit_cutoff(days), &database).await
 }
 
 /// Confirms, then runs [`cleanup_audit`]. `None` when the operator declined.
@@ -520,7 +527,7 @@ pub async fn confirm_cleanup_audit(
     reader: &mut impl BufRead,
     database: Arc<Database>,
 ) -> Result<Option<u64>, sqlx::Error> {
-    let cutoff = crate::sqlite::audit::audit_cutoff(days);
+    let cutoff = acme_proxy_store::audit::audit_cutoff(days);
     let doomed = AuditEntry::count_older_than(cutoff, &database).await?;
     let prompt =
         format!("Delete {doomed} audit row(s) older than {days} day(s)? This cannot be undone.");
@@ -600,7 +607,7 @@ pub async fn load_job_detail(
     id: &str,
     database: Arc<Database>,
 ) -> Result<Option<JobDetail>, sqlx::Error> {
-    let Some(job_id) = crate::sqlite::id::parse(id) else {
+    let Some(job_id) = acme_proxy_store::id::parse(id) else {
         return Ok(None);
     };
     let Some(job) = Job::find_by_id(job_id, &database).await? else {
@@ -709,7 +716,7 @@ pub async fn cancel_job(
     audit: &Auditor,
     database: Arc<Database>,
 ) -> Result<CancelJobOutcome, CancelJobError> {
-    let Some(job_id) = crate::sqlite::id::parse(id) else {
+    let Some(job_id) = acme_proxy_store::id::parse(id) else {
         return Ok(CancelJobOutcome::NotFound);
     };
 
@@ -769,7 +776,7 @@ pub async fn cancel_job(
         // `processing` — a deactivation may have demoted it since.
         let order_id = job.dedup_key.clone();
         if let Some(mut order) = Order::find_by_id(&order_id, &database).await?
-            && order.status == crate::sqlite::status::OrderStatus::Processing
+            && order.status == acme_proxy_store::status::OrderStatus::Processing
         {
             crate::signer::issuance::record_issue_failure(
                 &mut order,
@@ -819,7 +826,7 @@ pub async fn confirm_cancel_job(
     // and `confirm_delete_order` already keep: an id that is not one at all
     // used to be parsed as `Uuid::nil()`, so the operator was asked
     // "Cancel job nope?" and only told there was no such job after answering.
-    let Some(job_id) = crate::sqlite::id::parse(id) else {
+    let Some(job_id) = acme_proxy_store::id::parse(id) else {
         return Ok(Some(CancelJobOutcome::NotFound));
     };
     let Some(job) = Job::find_by_id(job_id, &database).await? else {
@@ -873,7 +880,7 @@ pub async fn run_job_now(
     audit: &Auditor,
     database: Arc<Database>,
 ) -> Result<RunJobNowOutcome, sqlx::Error> {
-    let Some(job_id) = crate::sqlite::id::parse(id) else {
+    let Some(job_id) = acme_proxy_store::id::parse(id) else {
         return Ok(RunJobNowOutcome::NotFound);
     };
     if let Some(job) = Job::advance_row(job_id, &database).await? {
@@ -908,11 +915,11 @@ pub async fn run_job_now(
 mod tests {
     use super::*;
     use crate::signer::SignerBackend;
-    use crate::sqlite::nonce::now_secs;
-    use crate::testutil::account_id;
     use acme_proxy_core::audit::AuditEvent;
     use acme_proxy_core::audit::AuditRecord;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::nonce::now_secs;
+    use acme_proxy_store::testutil::account_id;
 
     async fn db() -> Arc<Database> {
         Arc::new(Database::connect_in_memory().await.unwrap())
@@ -973,7 +980,7 @@ mod tests {
 
         // A cutoff in the future takes it.
         assert_eq!(
-            AuditEntry::cleanup(crate::sqlite::audit::audit_cutoff(0) + 3600, &db)
+            AuditEntry::cleanup(acme_proxy_store::audit::audit_cutoff(0) + 3600, &db)
                 .await
                 .unwrap(),
             1
@@ -1194,7 +1201,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1240,7 +1247,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1274,7 +1281,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1284,7 +1291,7 @@ mod tests {
         let authz = Authorization::create(
             order.id,
             Identifier::dns("example.com"),
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             &db,
         )
         .await
@@ -1331,7 +1338,7 @@ mod tests {
                 "default",
                 acct,
                 vec![Identifier::dns("example.com")],
-                crate::sqlite::nonce::now_secs() + 3600,
+                acme_proxy_store::nonce::now_secs() + 3600,
                 None,
                 None,
                 &db,
@@ -1368,7 +1375,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1378,7 +1385,7 @@ mod tests {
         Authorization::create(
             order.id,
             Identifier::dns("example.com"),
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             &db,
         )
         .await
@@ -1405,7 +1412,7 @@ mod tests {
     async fn a_live_certificate_refuses_account_and_order_deletes_before_asking() {
         let db = db().await;
         let acct = account_id(&db).await;
-        let order = crate::testutil::certified_order(&db, acct, None).await;
+        let order = acme_proxy_store::testutil::certified_order(&db, acct, None).await;
         let (acct, order) = (acct.to_string(), order.id.to_string());
 
         let mut reader: &[u8] = &[];
@@ -1451,7 +1458,7 @@ mod tests {
                 .await
                 .unwrap();
         account.set_eab_kid(eab.kid, db).await.unwrap();
-        crate::testutil::certified_order(db, account.id, None).await;
+        acme_proxy_store::testutil::certified_order(db, account.id, None).await;
         (eab, account.id)
     }
 
@@ -1525,7 +1532,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let stale = Nonce {
             value: "stale".to_string(),
-            created_at: crate::sqlite::nonce::now_secs() - 10_000,
+            created_at: acme_proxy_store::nonce::now_secs() - 10_000,
         };
         stale.save(&db).await.unwrap();
         Nonce::new().save(&db).await.unwrap();
@@ -1560,7 +1567,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1624,7 +1631,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1743,7 +1750,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         Nonce {
             value: "stale".to_string(),
-            created_at: crate::sqlite::nonce::now_secs() - 600,
+            created_at: acme_proxy_store::nonce::now_secs() - 600,
         }
         .save(&db)
         .await
@@ -1768,7 +1775,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         Nonce {
             value: "stale".to_string(),
-            created_at: crate::sqlite::nonce::now_secs() - 600,
+            created_at: acme_proxy_store::nonce::now_secs() - 600,
         }
         .save(&db)
         .await
@@ -1883,7 +1890,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1893,7 +1900,7 @@ mod tests {
         let authz = Authorization::create(
             order.id,
             Identifier::dns("example.com"),
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             &db,
         )
         .await
@@ -1913,7 +1920,8 @@ mod tests {
 
     // --- the job queue operator surface ------------------------------------
 
-    use crate::sqlite::job::{Job, NewJob};
+    use acme_proxy_store::job::Job;
+    use acme_proxy_store::job::NewJob;
 
     /// An order, an `upstream_orders` row for it, and a `signer_relay_issue`
     /// job keyed on the order id — the in-flight-relay shape.
@@ -1939,7 +1947,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let id = crate::sqlite::id::mint();
+        let id = acme_proxy_store::id::mint();
         Job::enqueue(
             NewJob {
                 id,
@@ -1960,7 +1968,7 @@ mod tests {
 
     /// A plain `ready` sweep job.
     async fn sweep_job(db: &Arc<Database>) -> Job {
-        let id = crate::sqlite::id::mint();
+        let id = acme_proxy_store::id::mint();
         Job::enqueue(
             NewJob {
                 id,
@@ -2000,7 +2008,7 @@ mod tests {
         // Junk id and unknown id.
         assert!(load_job_detail("nope", db.clone()).await.unwrap().is_none());
         assert!(
-            load_job_detail(crate::sqlite::id::mint().to_string().as_str(), db)
+            load_job_detail(acme_proxy_store::id::mint().to_string().as_str(), db)
                 .await
                 .unwrap()
                 .is_none()
@@ -2295,7 +2303,7 @@ mod tests {
         ));
         assert!(matches!(
             cancel_job(
-                crate::sqlite::id::mint().to_string().as_str(),
+                acme_proxy_store::id::mint().to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
                 &crate::auditor::Auditor::offline(db.clone()),

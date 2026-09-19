@@ -31,14 +31,16 @@ use crate::auditor::Auditor;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
 use crate::signer::{RevocationRoute, SignerBackend, SignerError};
-use crate::sqlite::job::Job;
-use crate::sqlite::{account::Account, db::Database, order::Order};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::order::Order;
 
 /// What withdraws trust in a certificate.
 pub enum Revoker<'a> {
@@ -549,12 +551,15 @@ impl Revocations<'_> {
             .inspect_err(|error| {
                 error!(event = "certificate_revoke_queue_failed", outcome = "failure", order_id = %id, error = %error);
             })?;
-        let job =
-            crate::sqlite::job::Job::find_latest_by_dedup(SIGNER_REVOKE_KIND, &id, self.database)
-                .await?
-                .ok_or_else(|| {
-                    RevokeError::Internal(format!("the revocation of order {id} was not queued"))
-                })?;
+        let job = acme_proxy_store::job::Job::find_latest_by_dedup(
+            SIGNER_REVOKE_KIND,
+            &id,
+            self.database,
+        )
+        .await?
+        .ok_or_else(|| {
+            RevokeError::Internal(format!("the revocation of order {id} was not queued"))
+        })?;
         info!(event = "certificate_revoke_queued", outcome = "progress", order_id = %id, job_id = %job.id);
 
         match await_job(self.database, job.id, wait).await? {
@@ -590,8 +595,8 @@ impl Revocations<'_> {
         serial_hex: &str,
         reason: Option<u32>,
     ) -> Result<(), RevokeError> {
-        let revoked_at = crate::sqlite::nonce::now_secs();
-        let row = crate::sqlite::revocation::Revocation {
+        let revoked_at = acme_proxy_store::nonce::now_secs();
+        let row = acme_proxy_store::revocation::Revocation {
             issuer: issuer.to_string(),
             serial: serial_hex.to_string(),
             revoked_at,
@@ -609,7 +614,7 @@ impl Revocations<'_> {
             // the upgrade would fail with `SQLITE_BUSY_SNAPSHOT` instead of
             // waiting its turn.
             let mut tx = self.database.write_transaction().await?;
-            if crate::sqlite::crl::StoredCrl::find(issuer, &mut *tx)
+            if acme_proxy_store::crl::StoredCrl::find(issuer, &mut *tx)
                 .await?
                 .is_none()
             {
@@ -719,7 +724,7 @@ pub async fn await_job(
 ) -> Result<JobSettled, sqlx::Error> {
     let deadline = tokio::time::Instant::now() + wait;
     loop {
-        let Some(job) = crate::sqlite::job::Job::find_by_id(id, database).await? else {
+        let Some(job) = acme_proxy_store::job::Job::find_by_id(id, database).await? else {
             return Ok(JobSettled::Failed(format!("job {id} disappeared")));
         };
         match job.status.as_str() {
@@ -907,10 +912,15 @@ mod tests {
     #[tokio::test]
     async fn a_failing_backend_is_retried() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let account = crate::testutil::account_id(&database).await;
-        let order =
-            crate::testutil::issued_order(&database, "default", account, &["example.com"], 30)
-                .await;
+        let account = acme_proxy_store::testutil::account_id(&database).await;
+        let order = acme_proxy_store::testutil::issued_order(
+            &database,
+            "default",
+            account,
+            &["example.com"],
+            30,
+        )
+        .await;
         let job = queued(&database, &order.id.to_string()).await;
 
         assert!(matches!(
@@ -974,8 +984,9 @@ mod tests {
     }
 
     async fn issued(database: &Arc<Database>) -> Order {
-        let account = crate::testutil::account_id(database).await;
-        crate::testutil::issued_order(database, "default", account, &["example.com"], 30).await
+        let account = acme_proxy_store::testutil::account_id(database).await;
+        acme_proxy_store::testutil::issued_order(database, "default", account, &["example.com"], 30)
+            .await
     }
 
     fn operator_client() -> ClientContext {
@@ -1017,11 +1028,11 @@ mod tests {
         assert!(revoked.revoked_at.is_some());
         assert_eq!(revoked.revocation_reason, Some(1));
 
-        let query = crate::sqlite::audit::AuditQuery {
+        let query = acme_proxy_store::audit::AuditQuery {
             limit: 50,
-            ..crate::sqlite::audit::AuditQuery::default()
+            ..acme_proxy_store::audit::AuditQuery::default()
         };
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(&query, &database)
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(&query, &database)
             .await
             .unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
@@ -1125,10 +1136,14 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let order = issued(&database).await;
         let job = queued(&database, &order.id.to_string()).await;
-        Job::cancel_row(job.id, crate::sqlite::status::JobStatus::Ready, &database)
-            .await
-            .unwrap()
-            .unwrap();
+        Job::cancel_row(
+            job.id,
+            acme_proxy_store::status::JobStatus::Ready,
+            &database,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(
             await_job(&database, job.id, Duration::from_secs(10))
                 .await
@@ -1137,7 +1152,7 @@ mod tests {
         );
         let JobSettled::Failed(reason) = await_job(
             &database,
-            crate::sqlite::id::mint(),
+            acme_proxy_store::id::mint(),
             Duration::from_secs(10),
         )
         .await
@@ -1172,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn a_vanished_order_fails_for_good() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let job = queued(&database, &crate::sqlite::id::mint().to_string()).await;
+        let job = queued(&database, &acme_proxy_store::id::mint().to_string()).await;
         assert!(matches!(
             handler(&database).run(&job).await,
             JobOutcome::Failed(_)

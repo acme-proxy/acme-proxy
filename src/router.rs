@@ -18,11 +18,11 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{Span, info};
 
-use crate::sqlite::db::Database;
 use crate::{challenge, handlers, metrics, middlewares, signer};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::routes;
+use acme_proxy_store::db::Database;
 
 use crate::profile::Profile;
 

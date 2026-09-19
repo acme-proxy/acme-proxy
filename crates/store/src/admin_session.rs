@@ -6,11 +6,11 @@ use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::{fingerprint, now_secs};
-use crate::sqlite::order::rfc3339;
+use crate::db::Database;
+use crate::nonce::{fingerprint, now_secs};
+use crate::order::rfc3339;
 
-/// One logged-in browser session of an [`crate::sqlite::admin_user::AdminUser`].
+/// One logged-in browser session of an [`crate::admin_user::AdminUser`].
 ///
 /// **This layer never sees the session token.** `token_hash` arrives already
 /// hashed from `webadmin::session`, which is the only place the plaintext
@@ -458,7 +458,7 @@ impl AdminSession {
     /// A **scan**, not a listing: its one caller is
     /// `admin::users::confirm_delete_user`, which counts what the delete will
     /// cascade to so the prompt can name it. Nothing renders it -- see
-    /// [`AdminUser::list_all`](crate::sqlite::admin_user::AdminUser::list_all)
+    /// [`AdminUser::list_all`](crate::admin_user::AdminUser::list_all)
     /// for why that is what lets it sit beside [`AdminSession::search`].
     pub async fn list_all(
         user_id: Option<Uuid>,
@@ -616,7 +616,7 @@ impl AdminSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::admin_user::AdminUser;
+    use crate::admin_user::AdminUser;
     use std::sync::Arc;
 
     const TTL: Duration = Duration::from_secs(43_200);
@@ -681,7 +681,7 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let error = AdminSession::create(
             NewSession {
-                user_id: crate::sqlite::id::mint(),
+                user_id: crate::id::mint(),
                 token_hash: "aaaa",
                 csrf_token: "csrf",
                 created_ip: None,
@@ -1159,7 +1159,7 @@ mod tests {
     fn expiry_and_idleness_are_judged_at_the_boundary_second() {
         let base = AdminSession {
             token_hash: "aaaa".to_string(),
-            user_id: crate::sqlite::id::mint(),
+            user_id: crate::id::mint(),
             csrf_token: "c".to_string(),
             state: "active".to_string(),
             mfa_attempts: 0,

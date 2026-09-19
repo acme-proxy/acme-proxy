@@ -1,11 +1,11 @@
-//! The `jobs` model: the durable queue behind [`crate::jobs`].
+//! The `jobs` model: the durable queue behind `jobs`.
 //!
 //! Every statement here is written so the *database* decides a race, never a
 //! read-then-write in Rust. Two shapes carry all of it:
 //!
 //! - **`INSERT OR IGNORE` + `rows_affected() == 0`** for enqueue, against the
 //!   partial unique index on `(kind, dedup_key)`. A `0` means a live job already
-//!   holds that identity — the same guard [`crate::sqlite::upstream_order::UpstreamOrder::create`]
+//!   holds that identity — the same guard [`crate::upstream_order::UpstreamOrder::create`]
 //!   takes on its primary key.
 //! - **A guarded `UPDATE … RETURNING`** for the claim, and a guarded `UPDATE`
 //!   for every settlement, each carrying `AND status = 'running' AND lease_owner
@@ -22,14 +22,14 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::status::JobStatus;
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::status::JobStatus;
 
 /// One stored job row.
 ///
 /// `status` and `kind` come back as the strings they were stored as, for the
-/// reason [`crate::sqlite::audit::AuditEntry`] keeps `event` a `String`: an
+/// reason [`crate::audit::AuditEntry`] keeps `event` a `String`: an
 /// older binary meeting a row a newer one wrote should render it, not refuse to
 /// load. The runner never claims a `kind` its registry does not hold, so an
 /// unrecognised one is simply left alone.
@@ -86,11 +86,11 @@ pub struct NewJob<'a> {
 /// `CHECK` on the column on purpose), so a value matching nothing is an
 /// acceptable answer rather than one worth an error.
 ///
-/// [`JobStatus`]: crate::sqlite::status::JobStatus
+/// [`JobStatus`]: crate::status::JobStatus
 #[derive(Debug, Clone, Default)]
 pub struct JobQuery {
     pub kind: Option<String>,
-    pub status: Option<crate::sqlite::status::JobStatus>,
+    pub status: Option<crate::status::JobStatus>,
     /// The caller clamps this (`admin.page_size_max` on the HTTP side, the CLI
     /// window otherwise); this layer takes what it is given.
     pub limit: i64,
@@ -102,9 +102,9 @@ impl JobQuery {
     /// function so a filter applied to only one cannot report a total the rows
     /// disagree with. Every value goes through `push_bind`.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
-        crate::sqlite::query::push_equalities(
+        crate::query::push_equalities(
             builder,
-            crate::sqlite::query::WHERE,
+            crate::query::WHERE,
             &[
                 ("kind = ", self.kind.as_deref()),
                 ("status = ", self.status.map(JobStatus::as_str)),
@@ -1073,7 +1073,7 @@ mod tests {
 
     // --- the operator surface: `JobQuery`/`search` and the guarded mutations --
 
-    use crate::sqlite::status::JobStatus;
+    use crate::status::JobStatus;
 
     /// Queues one job of a named kind with `max_attempts` and `run_at` chosen.
     async fn enqueue_kind(

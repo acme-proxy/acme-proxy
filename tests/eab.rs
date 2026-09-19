@@ -3,9 +3,9 @@
 //! (default config) never sets `eab.enabled`, so those tests are an implicit
 //! regression guard that the feature stays off unless configured on.
 
-use acme_proxy::sqlite::account::Account;
-use acme_proxy::sqlite::eab::Eab;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::eab::Eab;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

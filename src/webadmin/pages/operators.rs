@@ -16,8 +16,6 @@ use serde_json::{Map, Value};
 
 use crate::admin;
 use crate::admin::{mfa, users};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminUser};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::verify_current_password;
@@ -29,6 +27,9 @@ use crate::webadmin::pages::auth::{PageAdminRead, PageAdminWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
 use crate::webadmin::session::AdminClientIp;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminRole;
+use acme_proxy_store::admin_user::AdminUser;
 
 /// The `/ui` twin of [`crate::webadmin::handlers::mfa::StepUpRequest`] — the
 /// password a form field collects, pulled in by `hx-include`, the

@@ -19,14 +19,16 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
-use crate::sqlite::account::{Account, pubkey_fingerprint};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
-use crate::sqlite::eab::Eab;
-use crate::sqlite::expiring::ExpiringEntry;
-use crate::sqlite::job::Job;
-use crate::sqlite::order::{Order, rfc3339};
-use crate::sqlite::upstream_order::UpstreamOrderRow;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::account::pubkey_fingerprint;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::expiring::ExpiringEntry;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::rfc3339;
+use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
 /// The public base URL of one endpoint, as the server itself derives it.
 ///
@@ -550,15 +552,20 @@ mod tests {
 
     use super::*;
     use crate::admin::ops::load_order_detail;
-    use crate::sqlite::authz::{Authorization, Challenge};
-    use crate::sqlite::db::Database;
-    use crate::sqlite::status::OrderStatus;
-    use crate::testutil::{
-        account_id, account_seen_from, admin_session_fixture, admin_user_fixture, client_context,
-        job_fixture, order_fixture, upstream_order_row_fixture,
-    };
     use acme_proxy_core::audit::ClientContext;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::authz::Authorization;
+    use acme_proxy_store::authz::Challenge;
+    use acme_proxy_store::db::Database;
+    use acme_proxy_store::status::OrderStatus;
+    use acme_proxy_store::testutil::account_id;
+    use acme_proxy_store::testutil::account_seen_from;
+    use acme_proxy_store::testutil::admin_session_fixture;
+    use acme_proxy_store::testutil::admin_user_fixture;
+    use acme_proxy_store::testutil::client_context;
+    use acme_proxy_store::testutil::job_fixture;
+    use acme_proxy_store::testutil::order_fixture;
+    use acme_proxy_store::testutil::upstream_order_row_fixture;
 
     #[tokio::test]
     async fn render_account_json_includes_id_and_base_fields() {
@@ -603,8 +610,8 @@ mod tests {
 
     #[test]
     fn render_order_json_includes_id_and_authorizations() {
-        let account = crate::sqlite::id::mint();
-        let authz = crate::sqlite::id::mint();
+        let account = acme_proxy_store::id::mint();
+        let authz = acme_proxy_store::id::mint();
         let order = order_fixture(account, OrderStatus::Pending);
         let json = render_order_json(&order, "http://localhost:3000", &[authz]);
         assert_eq!(json["id"], order.id.to_string());
@@ -630,7 +637,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -640,7 +647,7 @@ mod tests {
         let authz = Authorization::create(
             order.id,
             Identifier::dns("example.com"),
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             &db,
         )
         .await
@@ -677,7 +684,7 @@ mod tests {
 
     #[test]
     fn render_order_json_revoked_includes_reason_and_time() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let json = render_order_json(&order, "http://localhost:3000", &[]);
@@ -690,14 +697,14 @@ mod tests {
         // The complaint this member answers: `audit list --cert-serial` and
         // `GET /api/audit?certSerial=` both filter on this value, and until now
         // no order rendering would tell an operator what it was.
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.cert_serial = Some("03a7f1c9".to_string());
         let json = render_order_json(&order, "http://localhost:3000", &[]);
         assert_eq!(json["certSerial"], "03a7f1c9");
 
         // Omitted, not nulled: an order that never issued has no serial, which
         // is a different statement from an empty one.
-        let unissued = order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending);
+        let unissued = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Pending);
         let json = render_order_json(&unissued, "http://localhost:3000", &[]);
         assert!(json.get("certSerial").is_none());
     }

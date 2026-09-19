@@ -4,9 +4,10 @@ use tracing::error;
 
 use crate::challenge::ChallengeError;
 use crate::filter::{EabIdentity, FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
-use crate::sqlite::{account::Account, db::Database};
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::db::Database;
 
 /// Runs the policy's identifier stage and maps a refusal to the ACME error the
 /// sub-stage calls for.
@@ -71,7 +72,7 @@ async fn resolve_eab(
     // Deliberately the unscoped lookup: the credential authorised this account
     // when it was created, and re-checking the profile scope now would make a
     // later narrowing of that scope silently rewrite history.
-    let key = crate::sqlite::eab::Eab::find_any_by_kid(kid.to_string().as_str(), database)
+    let key = acme_proxy_store::eab::Eab::find_any_by_kid(kid.to_string().as_str(), database)
         .await
         .map_err(|error| {
             error!(event = "eab_lookup_failed", outcome = "failure", kid = %kid, error = %error);
@@ -107,7 +108,8 @@ mod tests {
     /// what `eab delete` warns about when it keeps the accounts.
     #[tokio::test]
     async fn an_account_whose_credential_was_deleted_resolves_to_no_credential() {
-        use crate::sqlite::eab::{BoundAccounts, Eab};
+        use acme_proxy_store::eab::BoundAccounts;
+        use acme_proxy_store::eab::Eab;
 
         let database = std::sync::Arc::new(Database::connect_in_memory().await.unwrap());
         let eab = Eab::create(Some("tenant-a".to_string()), None, &database)

@@ -11,11 +11,11 @@
 mod common;
 
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::sqlite::audit::AuditEntry;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
+use acme_proxy_store::audit::AuditEntry;
 use axum::http::{Method, StatusCode, header};
 use common::*;
 use serde_json::json;
@@ -340,7 +340,8 @@ async fn a_half_authenticated_cookie_reaches_no_page() {
 /// at all.
 #[tokio::test]
 async fn finishing_an_enrolment_from_the_page_records_the_row_and_the_message() {
-    use acme_proxy::sqlite::audit::{AuditEntry, AuditQuery};
+    use acme_proxy_store::audit::AuditEntry;
+    use acme_proxy_store::audit::AuditQuery;
 
     let mut config = admin_config();
     config.admin.require_mfa = true;
@@ -638,7 +639,7 @@ async fn the_account_page_runs_the_whole_enrolment_lifecycle() {
             .contains("Two-factor authentication is off")
     );
 
-    let after = acme_proxy::sqlite::admin_user::AdminUser::find_by_username("alice", &database)
+    let after = acme_proxy_store::admin_user::AdminUser::find_by_username("alice", &database)
         .await
         .unwrap()
         .unwrap();
@@ -1146,7 +1147,7 @@ async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
 /// one bucket.
 #[tokio::test]
 async fn role_gates_every_mutating_page_endpoint() {
-    use acme_proxy::sqlite::admin_user::AdminRole;
+    use acme_proxy_store::admin_user::AdminRole;
 
     let (app, database, _session) = test_admin_app_logged_in(admin_config()).await;
     for (name, role) in [
@@ -1213,7 +1214,7 @@ async fn role_gates_every_mutating_page_endpoint() {
 /// htmx swaps the refusal document straight into the element that was clicked.
 #[tokio::test]
 async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
-    use acme_proxy::sqlite::admin_user::AdminRole;
+    use acme_proxy_store::admin_user::AdminRole;
 
     let (app, database, admin) = test_admin_app_logged_in(admin_config()).await;
     acme_proxy::admin::users::create_user(
@@ -1253,8 +1254,8 @@ async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
     // and silently wrong for any fragment rendered from a read. Every fragment
     // now carries `can_write` instead, so ask for them the way htmx does.
     let order_id = {
-        let (orders, _) = acme_proxy::sqlite::order::Order::search(
-            &acme_proxy::sqlite::order::OrderQuery {
+        let (orders, _) = acme_proxy_store::order::Order::search(
+            &acme_proxy_store::order::OrderQuery {
                 limit: 1,
                 ..Default::default()
             },
@@ -1293,7 +1294,7 @@ async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
 /// a page has: a tier that may not act on the surface is not shown the way in.
 #[tokio::test]
 async fn the_operators_pages_are_admin_only_and_the_nav_entry_follows() {
-    use acme_proxy::sqlite::admin_user::AdminRole;
+    use acme_proxy_store::admin_user::AdminRole;
 
     let (app, database, _seed) = test_admin_app_logged_in(admin_config()).await;
     for (name, role) in [
@@ -1423,7 +1424,7 @@ async fn a_stored_script_tag_is_escaped_everywhere_it_is_rendered() {
 /// account card.
 #[tokio::test]
 async fn a_hostile_reverse_name_is_escaped_on_both_account_surfaces() {
-    use acme_proxy::sqlite::account::Account;
+    use acme_proxy_store::account::Account;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     const HOSTILE: &str = "<script>alert(1)</script>";
@@ -1533,13 +1534,10 @@ async fn the_layout_carries_the_csrf_token_every_write_depends_on() {
 /// Every account is created from a real address with a reverse name, since that
 /// is what the pages render — a `ClientContext::default()` would leave the
 /// traceability columns `NULL` and every assertion about them vacuous.
-async fn seed(
-    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
-    count: u8,
-) -> Vec<String> {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
+async fn seed(database: &std::sync::Arc<acme_proxy_store::db::Database>, count: u8) -> Vec<String> {
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
 
     let mut ids = Vec::new();
     for index in 0..count {
@@ -1679,9 +1677,9 @@ async fn an_account_page_shows_the_account_and_its_orders() {
 /// `#account-card` inside the orders table, and the orders vanished.
 #[tokio::test]
 async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -1774,7 +1772,7 @@ async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
 /// not be followed by a blank line where a name would go.
 #[tokio::test]
 async fn an_account_page_shows_an_address_that_never_resolved() {
-    use acme_proxy::sqlite::account::Account;
+    use acme_proxy_store::account::Account;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -1924,7 +1922,7 @@ async fn the_eab_list_pages_and_a_new_credential_lands_on_the_refreshed_page() {
     let mut minted = Vec::new();
     for _ in 0..3 {
         minted.push(
-            acme_proxy::sqlite::eab::Eab::create(None, None, &database)
+            acme_proxy_store::eab::Eab::create(None, None, &database)
                 .await
                 .unwrap()
                 .kid
@@ -2055,9 +2053,9 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy::signer::RequestedValidity;
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
     acme_proxy::admin::users::create_user(
@@ -2166,14 +2164,14 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
 /// because an order carrying a chain is not something `seed` can produce: the
 /// column is only ever written by finalize.
 async fn issue_into_an_order(
-    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    database: &std::sync::Arc<acme_proxy_store::db::Database>,
     signer: &std::sync::Arc<dyn acme_proxy::signer::SignerBackend>,
     name: &str,
 ) -> (String, String) {
     use acme_proxy::signer::RequestedValidity;
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
@@ -2326,8 +2324,8 @@ async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
 async fn downloading_a_chain_from_an_unissued_order_is_a_404() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2364,8 +2362,8 @@ async fn downloading_a_chain_from_an_unissued_order_is_a_404() {
 async fn revoking_an_order_with_no_certificate_is_a_banner_not_a_page() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2395,8 +2393,8 @@ async fn revoking_an_order_with_no_certificate_is_a_banner_not_a_page() {
 async fn revoking_covers_the_refusals_that_are_not_the_rows_state() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2439,8 +2437,8 @@ async fn revoking_covers_the_refusals_that_are_not_the_rows_state() {
 async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2475,8 +2473,8 @@ async fn revoking_an_order_from_an_unmounted_profile_is_a_banner() {
 async fn deleting_an_order_redirects_to_the_list() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2529,8 +2527,8 @@ async fn the_order_list_filters_and_the_detail_links_back_to_its_account() {
     assert!(filtered.contains("host0.example.com"));
     assert!(!filtered.contains("host2.example.com"));
 
-    let (orders, _) = acme_proxy::sqlite::order::Order::search(
-        &acme_proxy::sqlite::order::OrderQuery {
+    let (orders, _) = acme_proxy_store::order::Order::search(
+        &acme_proxy_store::order::OrderQuery {
             account_id: Some(ids[0].clone()),
             limit: 10,
             ..Default::default()
@@ -2975,13 +2973,14 @@ fn now_secs() -> i64 {
 /// An order, an `upstream_orders` row for it, and a `signer_relay_issue` job.
 /// Returns `(job_id, order_id)`.
 async fn seed_relay_job(
-    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    database: &std::sync::Arc<acme_proxy_store::db::Database>,
 ) -> (String, String) {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::job::{Job, NewJob};
-    use acme_proxy::sqlite::order::Order;
-    use acme_proxy::sqlite::upstream_order::UpstreamOrder;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::job::Job;
+    use acme_proxy_store::job::NewJob;
+    use acme_proxy_store::order::Order;
+    use acme_proxy_store::upstream_order::UpstreamOrder;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
@@ -3012,7 +3011,7 @@ async fn seed_relay_job(
     )
     .await
     .unwrap();
-    let job_id = acme_proxy::sqlite::id::mint();
+    let job_id = acme_proxy_store::id::mint();
     Job::enqueue(
         NewJob {
             id: job_id,
@@ -3034,12 +3033,13 @@ async fn seed_relay_job(
 /// `last_error` is escaped; a `viewer` is refused the mutations.
 #[tokio::test]
 async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
-    use acme_proxy::sqlite::job::{Job, NewJob};
+    use acme_proxy_store::job::Job;
+    use acme_proxy_store::job::NewJob;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
 
     // A failed job whose last error is a stored-XSS payload.
-    let failed_id = acme_proxy::sqlite::id::mint();
+    let failed_id = acme_proxy_store::id::mint();
     Job::enqueue(
         NewJob {
             id: failed_id,
@@ -3117,7 +3117,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     );
 
     // A 409 (job not cancellable) is a banner beside the still-present card.
-    let running_id = acme_proxy::sqlite::id::mint();
+    let running_id = acme_proxy_store::id::mint();
     Job::enqueue(
         NewJob {
             id: running_id,
@@ -3168,7 +3168,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     assert!(run_body.contains(r#"id="job-card""#), "{run_body}");
 
     // run-now on a done job: a `job_not_runnable` banner beside the card.
-    let done_id = acme_proxy::sqlite::id::mint();
+    let done_id = acme_proxy_store::id::mint();
     Job::enqueue(
         NewJob {
             id: done_id,
@@ -3234,7 +3234,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     .unwrap();
     acme_proxy::admin::users::set_role(
         "vic",
-        acme_proxy::sqlite::admin_user::AdminRole::Viewer,
+        acme_proxy_store::admin_user::AdminRole::Viewer,
         database.clone(),
     )
     .await
@@ -3256,7 +3256,7 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
 /// columns are escaped.
 #[tokio::test]
 async fn the_upstream_orders_page_is_read_only_and_escapes_untrusted_text() {
-    use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+    use acme_proxy_store::upstream_order::UpstreamOrder;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (_job_id, order_id) = seed_relay_job(&database).await;
@@ -3376,13 +3376,13 @@ async fn the_page_surface_fails_closed_when_the_database_is_gone() {
 /// One issued order whose leaf expires at `not_after`, with a placeholder
 /// chain — `tests/admin_api.rs`'s `expiring` and for its reason.
 async fn expiring_row(
-    database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
+    database: &std::sync::Arc<acme_proxy_store::db::Database>,
     account: uuid::Uuid,
     names: &[&str],
     not_after: i64,
 ) -> String {
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::order::Order;
 
     let mut order = Order::create(
         PROFILE,
@@ -3419,7 +3419,7 @@ async fn expiring_row(
 /// escaping of an identifier, which is text a client chose.
 #[tokio::test]
 async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_write() {
-    use acme_proxy::sqlite::account::Account;
+    use acme_proxy_store::account::Account;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -3869,7 +3869,7 @@ async fn the_operators_pages_show_role_contact_and_recent_addresses() {
     .unwrap();
     acme_proxy::admin::users::set_role(
         "bob",
-        acme_proxy::sqlite::admin_user::AdminRole::Viewer,
+        acme_proxy_store::admin_user::AdminRole::Viewer,
         database.clone(),
     )
     .await
@@ -4003,7 +4003,7 @@ async fn the_operator_card_changes_a_colleagues_role_and_address() {
 /// keeps what was typed so it can be corrected rather than retyped.
 #[tokio::test]
 async fn the_account_page_changes_the_notification_address() {
-    use acme_proxy::sqlite::admin_user::AdminUser;
+    use acme_proxy_store::admin_user::AdminUser;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
 
@@ -4258,8 +4258,8 @@ async fn the_operators_page_refuses_to_target_the_caller() {
 /// `409`, and nothing deleted. Deactivating the accounts is the way out.
 #[tokio::test]
 async fn deletes_that_would_lose_a_live_certificate_are_refused_on_the_cards() {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (kid, accounts) = bound_eab(&database, 2, Some(1)).await;

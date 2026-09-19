@@ -9,13 +9,14 @@ use serde_json::json;
 
 use crate::admin;
 use crate::auditor::admin as audit_admin;
-use crate::sqlite::account::Account;
-use crate::sqlite::order::{Order, OrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_store::account::Account;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
 
 /// Note the window fields are declared inline rather than `#[serde(flatten)]`
 /// over a [`PageParams`]: flatten forces serde through `deserialize_any`, and

@@ -32,6 +32,7 @@ homepage = "https://acme-proxy.github.io/acme-proxy/"
 [workspace.dependencies]
 # The workspace's own crates, pinned exactly: they are released together.
 acme-proxy-core = { path = "crates/core", version = "=0.5.0" }
+acme-proxy-store = { path = "crates/store", version = "=0.5.0" }
 
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
@@ -180,9 +181,10 @@ rust-version.workspace = true
 # Kept out of the published `.crate`: material that only means anything inside
 # the repository. The book is served from GitHub Pages, the vendored RFC text is
 # reference reading, `tests/e2e/` drives containers a `cargo install` will never
-# build, and the `CLAUDE.md` files are contributor notes. `migrations/` is
-# deliberately *not* here — `sqlx::migrate!()` embeds it at compile time, so
-# excluding it would break the build for everyone installing from crates.io.
+# build, and the `CLAUDE.md` files are contributor notes. The library crates
+# under `crates/` are packages of their own and never part of this one —
+# `migrations/` in particular ships inside `acme-proxy-store`, whose
+# `sqlx::migrate!()` embeds it at compile time.
 exclude = [
     "/doc/",
     "/rfc/",
@@ -227,6 +229,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 acme-proxy-core.workspace = true
+acme-proxy-store.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -272,6 +275,7 @@ cryptoki = { workspace = true, optional = true }
 
 [dev-dependencies]
 acme-proxy-core = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
 # `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
 tower = { workspace = true, features = ["util"] }
 testcontainers.workspace = true

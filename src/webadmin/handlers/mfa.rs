@@ -55,7 +55,7 @@ pub struct StepUpRequest {
 /// The refusal is `invalid_credentials`, the same answer sign-in gives, so this
 /// is not a second oracle for whether a password is right.
 pub(crate) fn check_step_up(
-    user: &crate::sqlite::admin_user::AdminUser,
+    user: &acme_proxy_store::admin_user::AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
     logins: &crate::webadmin::session::LoginLimiter,
@@ -76,7 +76,7 @@ pub(crate) fn check_step_up(
 /// exists -- so `handlers::account::change_password` and its `/ui` twin call
 /// this directly instead of `check_step_up`.
 pub(crate) fn verify_current_password(
-    user: &crate::sqlite::admin_user::AdminUser,
+    user: &acme_proxy_store::admin_user::AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
     logins: &crate::webadmin::session::LoginLimiter,
@@ -365,11 +365,11 @@ pub async fn regenerate_recovery_codes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::admin_user::AdminUser;
+    use acme_proxy_store::admin_user::AdminUser;
 
     fn user_with(password_hash: &str, totp: Option<&[u8]>) -> AdminUser {
         AdminUser {
-            id: crate::testutil::ADMIN_FIXTURE_ID,
+            id: acme_proxy_store::testutil::ADMIN_FIXTURE_ID,
             username: "alice".to_string(),
             password_hash: password_hash.to_string(),
             status: "active".to_string(),

@@ -11,8 +11,6 @@ use axum::response::Html;
 use serde_json::Value;
 
 use crate::admin;
-use crate::sqlite::status::UpstreamOrderStatus;
-use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::PageParams;
@@ -20,6 +18,9 @@ use crate::webadmin::handlers::upstream_orders::UpstreamOrderListParams;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
+use acme_proxy_store::status::UpstreamOrderStatus;
+use acme_proxy_store::upstream_order::UpstreamOrder;
+use acme_proxy_store::upstream_order::UpstreamOrderQuery;
 
 /// `GET /ui/upstream-orders?profile=&status=&limit=&offset=`
 pub async fn list_upstream_orders(

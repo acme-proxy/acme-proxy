@@ -7,9 +7,9 @@ use clap::Subcommand;
 use crate::admin;
 use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::Nonce;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::nonce::Nonce;
 
 #[derive(Subcommand)]
 pub enum NonceCommand {
@@ -109,7 +109,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_honours_the_configured_ttl_and_the_prompt() {
         let database = Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
+            acme_proxy_store::db::Database::connect_in_memory()
                 .await
                 .unwrap(),
         );

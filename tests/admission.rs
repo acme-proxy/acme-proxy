@@ -72,7 +72,7 @@ fn admission_config(max_concurrent: usize, wait_ms: u64, timeout_ms: u64) -> Con
 async fn gated_app(
     config: Config,
     backend: GatedCrlSigner,
-) -> (Router, std::sync::Arc<acme_proxy::sqlite::db::Database>) {
+) -> (Router, std::sync::Arc<acme_proxy_store::db::Database>) {
     test_app_full(
         config,
         Arc::new(backend),

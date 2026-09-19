@@ -200,8 +200,8 @@ impl Check for IdentifierList {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::testutil::identifiers as ids;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::testutil::identifiers as ids;
 
     fn globs(allow: &[&str], deny: &[&str]) -> Settings {
         Settings {

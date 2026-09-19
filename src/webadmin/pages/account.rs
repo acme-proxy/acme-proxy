@@ -20,8 +20,6 @@ use crate::admin;
 use crate::admin::password::PasswordContext;
 use crate::admin::users::{self, UserError};
 use crate::admin::{mfa, totp};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
 use crate::webadmin::handlers::paging::PageParams;
@@ -29,6 +27,8 @@ use crate::webadmin::pages::auth::{PageEnrolWrite, PageSelfServiceWrite, PageSes
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond, respond_fragment};
 use crate::webadmin::session::{AdminClientIp, clearing_cookie};
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminUser;
 
 #[derive(Debug, Deserialize)]
 pub struct ConfirmForm {

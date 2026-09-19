@@ -15,9 +15,11 @@ use tracing::{info, warn};
 use crate::admin::ops::DeleteOutcome;
 use crate::admin::password::{self, PasswordContext};
 use crate::admin::prompt::confirm;
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
-use crate::sqlite::db::Database;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminRole;
+use acme_proxy_store::admin_user::AdminStatus;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::db::Database;
 
 /// Why creating or re-passwording an operator failed.
 #[derive(Debug, thiserror::Error)]
@@ -432,7 +434,7 @@ pub async fn authenticate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::admin_session::NewSession;
+    use acme_proxy_store::admin_session::NewSession;
 
     const GOOD: &str = "a-long-enough-password";
 

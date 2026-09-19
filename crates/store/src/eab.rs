@@ -4,10 +4,10 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::sqlite::account::Account;
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::rfc3339;
+use crate::account::Account;
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::rfc3339;
 use acme_proxy_core::random::random_bytes;
 
 /// An External Account Binding credential (RFC 8555 §7.3.4): a pre-shared
@@ -136,7 +136,7 @@ impl Eab {
         database: &Database,
     ) -> Result<Eab, sqlx::Error> {
         let eab = Eab {
-            kid: crate::sqlite::id::mint(),
+            kid: crate::id::mint(),
             secret: random_bytes::<SECRET_LEN>().to_vec(),
             label,
             profile,
@@ -171,7 +171,7 @@ impl Eab {
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
         debug!(event = "db_eab_find_by_kid_started", outcome = "progress", kid = ?kid, profile = %profile);
-        let Some(kid) = crate::sqlite::id::parse(kid) else {
+        let Some(kid) = crate::id::parse(kid) else {
             return Ok(None);
         };
         let row = sqlx::query(
@@ -195,7 +195,7 @@ impl Eab {
         database: &Database,
     ) -> Result<Option<Eab>, sqlx::Error> {
         debug!(event = "db_eab_find_any_by_kid_started", outcome = "progress", kid = ?kid);
-        let Some(kid) = crate::sqlite::id::parse(kid) else {
+        let Some(kid) = crate::id::parse(kid) else {
             return Ok(None);
         };
         let row = sqlx::query(
@@ -267,7 +267,7 @@ impl Eab {
     /// matches the row and reports `true`. Returns whether a row existed.
     pub async fn revoke(kid: &str, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_eab_revoke_started", outcome = "progress", kid = ?kid);
-        let Some(kid) = crate::sqlite::id::parse(kid) else {
+        let Some(kid) = crate::id::parse(kid) else {
             return Ok(false);
         };
         let result = sqlx::query("UPDATE eab_keys SET status = 'revoked' WHERE kid = ?;")
@@ -298,7 +298,7 @@ impl Eab {
         database: &Database,
     ) -> Result<EabDeletion, sqlx::Error> {
         debug!(event = "db_eab_delete_started", outcome = "progress", kid = ?kid, accounts = accounts.as_str());
-        let Some(kid) = crate::sqlite::id::parse(kid) else {
+        let Some(kid) = crate::id::parse(kid) else {
             return Ok(EabDeletion::NotFound);
         };
 
@@ -528,7 +528,7 @@ mod tests {
         db: &Arc<Database>,
         count: u8,
         not_after: Option<i64>,
-    ) -> (Eab, Vec<crate::sqlite::account::Account>) {
+    ) -> (Eab, Vec<crate::account::Account>) {
         use acme_proxy_core::audit::ClientContext;
 
         let eab = Eab::create(Some("tenant".to_string()), None, db)
@@ -562,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn delete_of_an_unknown_kid_is_not_found() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        for kid in ["nope".to_string(), crate::sqlite::id::mint().to_string()] {
+        for kid in ["nope".to_string(), crate::id::mint().to_string()] {
             assert!(matches!(
                 Eab::delete(&kid, BoundAccounts::Delete, &db).await.unwrap(),
                 EabDeletion::NotFound
@@ -627,7 +627,7 @@ mod tests {
 
         for account in &accounts {
             assert_eq!(
-                crate::sqlite::order::Order::find_by_account(account.id, &db)
+                crate::order::Order::find_by_account(account.id, &db)
                     .await
                     .unwrap()
                     .len(),
@@ -689,7 +689,7 @@ mod tests {
         for account in &accounts {
             assert!(!account_exists(account.id, &db).await);
             assert!(
-                crate::sqlite::order::Order::find_by_account(account.id, &db)
+                crate::order::Order::find_by_account(account.id, &db)
                     .await
                     .unwrap()
                     .is_empty()

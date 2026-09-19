@@ -600,7 +600,7 @@ mod tests {
         assert!(parse_csr(&[0xde, 0xad, 0xbe, 0xef]).is_err());
     }
 
-    use crate::testutil::dns_identifiers as dns;
+    use acme_proxy_store::testutil::dns_identifiers as dns;
 
     #[test]
     fn a_csr_matching_the_order_exactly_is_accepted() {

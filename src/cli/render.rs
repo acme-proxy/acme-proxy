@@ -24,16 +24,18 @@ use base64::prelude::*;
 use super::window::Window;
 use crate::admin::ProfileSummary;
 use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
-use crate::sqlite::account::{Account, pubkey_fingerprint};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
-use crate::sqlite::audit::AuditEntry;
-use crate::sqlite::eab::Eab;
-use crate::sqlite::expiring::ExpiringEntry;
-use crate::sqlite::job::Job;
-use crate::sqlite::order::{Order, rfc3339};
-use crate::sqlite::upstream_order::UpstreamOrderRow;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::account::pubkey_fingerprint;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::expiring::ExpiringEntry;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::rfc3339;
+use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
 /// An address and the reverse name it had, as `ip (ptr)`.
 ///
@@ -735,7 +737,7 @@ pub fn render_profile_line(profile: &ProfileSummary, palette: Palette) -> String
 pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> String {
     format!(
         "{}  {}  {}  {}  expires={}  {}",
-        crate::sqlite::nonce::fingerprint(&session.token_hash),
+        acme_proxy_store::nonce::fingerprint(&session.token_hash),
         session.user_id,
         palette.status(&format!("{:<11}", session.state)),
         rfc3339(session.created_at),
@@ -837,16 +839,22 @@ mod tests {
 
     use super::*;
     use crate::admin::ops::load_order_detail;
-    use crate::sqlite::authz::{Authorization, Challenge};
-    use crate::sqlite::db::Database;
-    use crate::sqlite::expiring::SupersededBy;
-    use crate::sqlite::status::OrderStatus;
-    use crate::testutil::{
-        account_id, account_seen_from, admin_session_fixture, admin_user_fixture, audit_entry,
-        client_context, job_fixture, order_fixture, upstream_order_row_fixture,
-    };
     use acme_proxy_core::audit::ClientContext;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::authz::Authorization;
+    use acme_proxy_store::authz::Challenge;
+    use acme_proxy_store::db::Database;
+    use acme_proxy_store::expiring::SupersededBy;
+    use acme_proxy_store::status::OrderStatus;
+    use acme_proxy_store::testutil::account_id;
+    use acme_proxy_store::testutil::account_seen_from;
+    use acme_proxy_store::testutil::admin_session_fixture;
+    use acme_proxy_store::testutil::admin_user_fixture;
+    use acme_proxy_store::testutil::audit_entry;
+    use acme_proxy_store::testutil::client_context;
+    use acme_proxy_store::testutil::job_fixture;
+    use acme_proxy_store::testutil::order_fixture;
+    use acme_proxy_store::testutil::upstream_order_row_fixture;
 
     /// Colour forced on, whatever the stream — the only way these assertions
     /// can see an escape at all, since a test binary's stdout is not a
@@ -1198,7 +1206,7 @@ mod tests {
 
     #[test]
     fn render_order_line_includes_expected_fields() {
-        let order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending);
+        let order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Pending);
         let line = render_order_line(&order, Palette::plain());
         assert!(line.contains(&order.id.to_string()));
         assert!(line.contains("pending"));
@@ -1220,7 +1228,7 @@ mod tests {
             (OrderStatus::Pending, "33"),
             (OrderStatus::Invalid, "31"),
         ] {
-            let order = order_fixture(crate::sqlite::id::mint(), status);
+            let order = order_fixture(acme_proxy_store::id::mint(), status);
             let painted = render_order_line(&order, colour());
             assert!(
                 painted.contains(&format!("\x1b[{code}m{}\x1b[0m", status.as_str())),
@@ -1241,7 +1249,7 @@ mod tests {
             "default",
             acct,
             vec![Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &db,
@@ -1251,7 +1259,7 @@ mod tests {
         let authz = Authorization::create(
             order.id,
             Identifier::dns("example.com"),
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             &db,
         )
         .await
@@ -1288,7 +1296,7 @@ mod tests {
     /// contract and `audit show`'s.
     #[test]
     fn render_order_detail_text_omits_every_absent_field() {
-        let account = crate::sqlite::id::mint();
+        let account = acme_proxy_store::id::mint();
         let mut order = order_fixture(account, OrderStatus::Valid);
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
@@ -1357,7 +1365,7 @@ mod tests {
 
         // Never recorded, so never a line.
         let bare = OrderDetail {
-            order: order_fixture(crate::sqlite::id::mint(), OrderStatus::Pending),
+            order: order_fixture(acme_proxy_store::id::mint(), OrderStatus::Pending),
             authorizations: vec![],
         };
         let text = render_order_detail_text(&bare, Palette::plain());
@@ -1416,7 +1424,7 @@ mod tests {
 
         // Every optional column populated, or an absent one would read as an
         // agreed omission rather than as a member nobody renders.
-        let account = crate::sqlite::id::mint();
+        let account = acme_proxy_store::id::mint();
         let mut order = order_fixture(account, OrderStatus::Valid);
         order.not_before = Some(1700000000);
         order.not_after = Some(1700003600);
@@ -1462,8 +1470,8 @@ mod tests {
     /// `render_order_json` emits no member for it.
     #[test]
     fn an_unparsable_leaf_expiry_prints_no_line() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
-        order.cert_not_after = Some(crate::sqlite::order::UNPARSABLE_NOT_AFTER);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
+        order.cert_not_after = Some(acme_proxy_store::order::UNPARSABLE_NOT_AFTER);
         let detail = OrderDetail {
             order,
             authorizations: vec![],
@@ -1476,7 +1484,7 @@ mod tests {
     /// listing's suffix.
     #[test]
     fn the_order_detail_paints_its_revocation_and_nothing_else_moves() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(4);
         let detail = OrderDetail {
@@ -1496,7 +1504,7 @@ mod tests {
 
     #[test]
     fn render_order_line_revoked_includes_reason_and_time() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let line = render_order_line(&order, Palette::plain());
@@ -1508,7 +1516,7 @@ mod tests {
     /// thing that can carry the news — and it is painted whole.
     #[test]
     fn a_revoked_order_paints_its_suffix_even_though_its_status_is_valid() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.revoked_at = Some(1700000000);
         order.revocation_reason = Some(1);
         let painted = render_order_line(&order, colour());
@@ -1705,9 +1713,9 @@ mod tests {
     /// that only appears where something has replaced the certificate.
     #[test]
     fn the_expiring_line_bands_the_days_and_annotates_only_what_was_replaced() {
-        let id = crate::sqlite::id::mint();
+        let id = acme_proxy_store::id::mint();
         let entry = move |days: i64, superseded: Option<SupersededBy>| {
-            let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+            let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
             order.id = id;
             order.cert_not_after = Some(1_700_000_000);
             ExpiringEntry {
@@ -1753,7 +1761,7 @@ mod tests {
     /// account listing pins, for a field this renderer pads itself.
     #[test]
     fn colour_never_moves_the_expiring_listings_columns() {
-        let mut order = order_fixture(crate::sqlite::id::mint(), OrderStatus::Valid);
+        let mut order = order_fixture(acme_proxy_store::id::mint(), OrderStatus::Valid);
         order.cert_not_after = Some(1_700_000_000);
         let entry = ExpiringEntry {
             order,

@@ -27,9 +27,9 @@
 //!
 //! Three mints in this crate are deliberately **not** row ids and do not come
 //! through [`mint`]: the `x-request-id` fallback
-//! ([`crate::middlewares::access`]), the job runner's lease-owner id
-//! ([`crate::jobs::runner`]) and a notification's `delivery_id`
-//! ([`crate::notify`]). None is the identity of a row, and reaching into the
+//! (`middlewares::access`), the job runner's lease-owner id
+//! (`jobs::runner`) and a notification's `delivery_id`
+//! (`notify`). None is the identity of a row, and reaching into the
 //! storage layer for a value that never reaches storage would be backwards.
 
 use uuid::Uuid;
@@ -37,7 +37,7 @@ use uuid::Uuid;
 /// A fresh row id.
 ///
 /// The single place the version is chosen, which is what lets
-/// `declared_id_widths_match_a_minted_id` (`crate::sqlite::db`) pin it and what
+/// `declared_id_widths_match_a_minted_id` (`crate::db`) pin it and what
 /// would make a move to some later version one line plus one test.
 #[must_use]
 pub fn mint() -> Uuid {

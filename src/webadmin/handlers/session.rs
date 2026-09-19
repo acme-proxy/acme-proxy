@@ -11,8 +11,6 @@ use tracing::{info, warn};
 
 use crate::admin::mfa::MfaOutcome;
 use crate::admin::users::{self, AuthOutcome};
-use crate::sqlite::admin_session::{AdminSession, NewSession};
-use crate::sqlite::admin_user::AdminUser;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::session::{
@@ -20,6 +18,9 @@ use crate::webadmin::session::{
     SelfServiceWrite, check_origin, clearing_cookie, cookie_value, hash_token, log_login,
     mint_csrf_token, mint_token, session_cookie,
 };
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_session::NewSession;
+use acme_proxy_store::admin_user::AdminUser;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
@@ -358,7 +359,7 @@ pub(crate) async fn promote_pending(
 pub(crate) async fn finish_enrolment(
     state: &AdminState,
     client: Option<std::net::IpAddr>,
-    user: &mut crate::sqlite::admin_user::AdminUser,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
     pending_token_hash: &str,
     user_agent: Option<String>,
 ) -> Result<(AdminSession, String), AdminError> {
@@ -395,7 +396,7 @@ async fn notify_sign_in(
                 outcome,
                 client_ip: client_ip_str(client),
                 user_agent,
-                at: crate::sqlite::nonce::now_secs(),
+                at: acme_proxy_store::nonce::now_secs(),
             },
         ))
         .await;
@@ -453,7 +454,7 @@ pub async fn post_session(
 pub async fn get_session_mfa(pending: PendingMfa) -> Json<serde_json::Value> {
     Json(json!({
         "step": pending.step.as_str(),
-        "expiresAt": crate::sqlite::order::rfc3339(pending.session.expires_at),
+        "expiresAt": acme_proxy_store::order::rfc3339(pending.session.expires_at),
     }))
 }
 
@@ -487,7 +488,7 @@ fn signed_in_response(signed_in: &SignedIn) -> Response {
             "mfaRequired": true,
             "step": step.as_str(),
             "csrfToken": signed_in.session.csrf_token,
-            "expiresAt": crate::sqlite::order::rfc3339(signed_in.session.expires_at),
+            "expiresAt": acme_proxy_store::order::rfc3339(signed_in.session.expires_at),
         }),
     };
 
@@ -547,6 +548,6 @@ fn session_body(user: &AdminUser, session: &AdminSession) -> serde_json::Value {
     json!({
         "user": crate::admin::render_admin_user_json(user),
         "csrfToken": session.csrf_token,
-        "expiresAt": crate::sqlite::order::rfc3339(session.expires_at),
+        "expiresAt": acme_proxy_store::order::rfc3339(session.expires_at),
     })
 }

@@ -41,13 +41,15 @@ use serde_json::Value;
 use crate::admin;
 use crate::admin::users::UserError;
 use crate::admin::{mfa, users};
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::{StepUpRequest, verify_current_password};
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, AdminRead, AdminWrite};
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminRole;
+use acme_proxy_store::admin_user::AdminStatus;
+use acme_proxy_store::admin_user::AdminUser;
 
 /// `GET /api/operators?limit=&offset=` — every operator, oldest first.
 ///

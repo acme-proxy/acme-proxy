@@ -9,7 +9,7 @@
 //! [`AuthenticatedWrite`](crate::webadmin::session::AuthenticatedWrite) and why
 //! `tests/admin_api.rs::mutating_endpoints()` has no entry for `/api/expiring`.
 //!
-//! Everything below the extractors is [`crate::sqlite::expiring::list_expiring`], which
+//! Everything below the extractors is [`acme_proxy_store::expiring::list_expiring`], which
 //! `/ui/expiring` and `order list --expiring-in` also call — one query, one
 //! supersession rule, three front ends.
 
@@ -31,7 +31,7 @@ use crate::webadmin::session::Authenticated;
 pub struct ExpiringListParams {
     #[serde(default, deserialize_with = "empty_is_absent")]
     pub profile: Option<String>,
-    /// How far ahead to look. Absent is [`crate::sqlite::expiring::default_lead_days`],
+    /// How far ahead to look. Absent is [`acme_proxy_store::expiring::default_lead_days`],
     /// which is the deployment's own `[notify.expiry] lead_days` wherever the
     /// digest is on — the operator reading this page is the operator who set
     /// it.
@@ -51,7 +51,7 @@ impl ExpiringListParams {
     /// The window in days, resolved against the configuration.
     pub(crate) fn lead_days(&self, config: &acme_proxy_core::config::Config) -> u64 {
         self.days
-            .unwrap_or_else(|| crate::sqlite::expiring::default_lead_days(config))
+            .unwrap_or_else(|| acme_proxy_store::expiring::default_lead_days(config))
     }
 
     /// Whether replaced certificates stay in the answer.
@@ -74,15 +74,15 @@ pub async fn list_expiring(
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
     let days = params.lead_days(&state.config);
-    let query = crate::sqlite::expiring::ExpiringQuery {
+    let query = acme_proxy_store::expiring::ExpiringQuery {
         profile: params.profile.clone(),
-        before: crate::sqlite::expiring::expiring_horizon(days),
+        before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded: params.include_superseded(),
         limit: page.limit,
         offset: page.offset,
     };
     let (entries, total, hidden) =
-        crate::sqlite::expiring::list_expiring(&query, state.database.clone()).await?;
+        acme_proxy_store::expiring::list_expiring(&query, state.database.clone()).await?;
 
     let items = entries.iter().map(admin::render_expiring_json).collect();
     let mut envelope = page_envelope(items, total, page);
@@ -90,7 +90,7 @@ pub async fn list_expiring(
         // `total` counts the *window*, not the rows below it: supersession is
         // computed per row and cannot become a SQL predicate, so a hidden row
         // is still counted. `hidden` is what closes that gap for a caller
-        // doing its own arithmetic — see `crate::sqlite::expiring::list_expiring`.
+        // doing its own arithmetic — see `acme_proxy_store::expiring::list_expiring`.
         object.insert("hidden".to_string(), json!(hidden));
         object.insert("days".to_string(), json!(days));
     }

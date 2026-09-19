@@ -15,14 +15,16 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::admin;
-use crate::sqlite::status::{UnknownStatus, UpstreamOrderStatus};
-use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::jobs::bad_status;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::Authenticated;
+use acme_proxy_store::status::UnknownStatus;
+use acme_proxy_store::status::UpstreamOrderStatus;
+use acme_proxy_store::upstream_order::UpstreamOrder;
+use acme_proxy_store::upstream_order::UpstreamOrderQuery;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].

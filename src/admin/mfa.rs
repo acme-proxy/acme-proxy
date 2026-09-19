@@ -17,11 +17,11 @@ use uuid::Uuid;
 use tracing::{info, warn};
 
 use crate::admin::{password, recovery, totp};
-use crate::sqlite::admin_recovery_code::AdminRecoveryCode;
-use crate::sqlite::admin_session::AdminSession;
-use crate::sqlite::admin_user::AdminUser;
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
+use acme_proxy_store::admin_recovery_code::AdminRecoveryCode;
+use acme_proxy_store::admin_session::AdminSession;
+use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::nonce::now_secs;
 
 /// Which of the two things an accepted submission was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,7 +319,7 @@ async fn revoke_other_sessions(
 mod tests {
     use super::*;
     use crate::admin::totp::{DIGITS, step_at, totp_at};
-    use crate::sqlite::admin_session::NewSession;
+    use acme_proxy_store::admin_session::NewSession;
 
     async fn db() -> Arc<Database> {
         Arc::new(Database::connect_in_memory().await.unwrap())

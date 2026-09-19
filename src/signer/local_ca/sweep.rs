@@ -10,7 +10,7 @@
 //!
 //! Deliberately **not** in [`crate::jobs::sweep`], whose `SweepTarget` is a
 //! `DELETE` per table and needs nothing but a
-//! [`Database`](crate::sqlite::db::Database). This one signs with the CA key.
+//! [`Database`](acme_proxy_store::db::Database). This one signs with the CA key.
 //!
 //! Two shapes it borrows from that module and one it does not:
 //!
@@ -33,7 +33,7 @@ use tracing::{error, info};
 
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::signer::CrlRefresher;
-use crate::sqlite::job::Job;
+use acme_proxy_store::job::Job;
 
 /// The `jobs.kind` the CRL prune runs under.
 pub const CRL_SWEEP_KIND: &str = "local_ca_crl_sweep";

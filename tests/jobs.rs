@@ -1,6 +1,6 @@
 //! The durable job runner, end to end against a real database.
 //!
-//! The inline suites cover the pieces: `src/sqlite/job.rs` pins every guarded
+//! The inline suites cover the pieces: `crates/store/src/job.rs` pins every guarded
 //! statement, and `src/jobs/runner.rs` drives the outcome table with a scripted
 //! handler. What can only be checked here is the property the lease exists for —
 //! **two runners over one database never run one job twice** — because it needs
@@ -23,9 +23,9 @@ use acme_proxy::notify::{
     BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
     ProfileMountedData,
 };
-use acme_proxy::sqlite::db::Database;
-use acme_proxy::sqlite::job::Job;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
 use async_trait::async_trait;
 use tokio::sync::watch;
 

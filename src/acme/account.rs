@@ -14,18 +14,17 @@ use super::rules::validate_contacts;
 use crate::auditor::Auditor;
 use crate::notify::{AccountCreatedData, AccountDeactivatedData, NotifyDispatcher, NotifyEvent};
 use crate::profile::Profile;
-use crate::sqlite::{
-    account::{Account, pubkey_fingerprint},
-    db::Database,
-    eab::Eab,
-    order::Order,
-};
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::eab;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::jws::ProtectedHeader;
 use acme_proxy_core::jws::signature::spki_to_jwk;
 use acme_proxy_core::key_change;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::account::pubkey_fingerprint;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::order::Order;
 
 /// Every field is optional: real clients may omit `contact`, and the two flags
 /// default to `false`.
@@ -341,7 +340,7 @@ impl AccountService<'_> {
             //
             // Re-read rather than reuse `new_pubkey`'s earlier (empty) lookup: the
             // account that won is by definition committed now.
-            if crate::sqlite::account::is_pubkey_conflict(&error)
+            if acme_proxy_store::account::is_pubkey_conflict(&error)
                 && let Ok(Some(winner)) =
                     Account::find_by_pubkey(&profile.name, &new_pubkey, database).await
             {

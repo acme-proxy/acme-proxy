@@ -11,7 +11,7 @@
 //!
 //! This module is generation and normalisation only. Consumption is a single
 //! `UPDATE … WHERE id = ? AND used_at IS NULL` in
-//! [`crate::sqlite::admin_recovery_code`], because "single-use" has to be
+//! [`acme_proxy_store::admin_recovery_code`], because "single-use" has to be
 //! decided by the database rather than by a read followed by a write.
 
 use ring::rand::{SecureRandom, SystemRandom};

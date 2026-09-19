@@ -14,7 +14,7 @@ static MIGRATOR: Migrator = sqlx::migrate!(); // defaults to "./migrations"
 /// module, [`Database::transaction`] or [`Database::pool_stats`]. That is what
 /// keeps SQL — and the dialect it is written in — in one module tree.
 pub struct Database {
-    pub(in crate::sqlite) pool: Pool<Sqlite>,
+    pub(crate) pool: Pool<Sqlite>,
 }
 
 /// One database transaction, handed out by [`Database::transaction`].
@@ -378,7 +378,7 @@ mod tests {
     ///
     /// The [`random_token`] twin above, for the other family of values the
     /// schema declares a type for. Ids are the 16 bytes of a UUID
-    /// ([`crate::sqlite::id`]), stored as a BLOB rather than as the 36
+    /// ([`crate::id`]), stored as a BLOB rather than as the 36
     /// characters of its rendering, and this is what notices a column that went
     /// back to text — or a new table added with a `VARCHAR(36)` id out of
     /// habit.
@@ -392,7 +392,7 @@ mod tests {
     async fn every_id_column_is_declared_a_blob() {
         let database = Database::connect_in_memory().await.unwrap();
 
-        let minted = crate::sqlite::id::mint();
+        let minted = crate::id::mint();
         assert_eq!(
             minted.get_version_num(),
             7,

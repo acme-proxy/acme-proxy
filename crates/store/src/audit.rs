@@ -11,9 +11,9 @@ use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::rfc3339;
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::rfc3339;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ActorKind;
 use acme_proxy_core::audit::AuditEvent;
@@ -77,7 +77,7 @@ pub struct AuditQuery {
 impl AuditQuery {
     /// Appends the `WHERE` clause shared by the page query and the count — one
     /// function rather than two copies, for the reason
-    /// [`crate::sqlite::order::OrderQuery::push_predicates`] gives: a filter
+    /// [`crate::order::OrderQuery::push_predicates`] gives: a filter
     /// applied to only one of them reports a total the rows contradict.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
         let mut separator = " WHERE ";
@@ -354,7 +354,7 @@ pub fn actor_kinds() -> [&'static str; 4] {
 #[must_use]
 pub fn audit_cutoff(days: u64) -> i64 {
     let seconds = i64::try_from(days.saturating_mul(24 * 60 * 60)).unwrap_or(i64::MAX);
-    crate::sqlite::nonce::now_secs().saturating_sub(seconds)
+    crate::nonce::now_secs().saturating_sub(seconds)
 }
 
 #[cfg(test)]
@@ -446,7 +446,7 @@ mod tests {
     async fn a_row_survives_the_account_and_order_it_names_being_deleted() {
         let db = db().await;
         let account_id = crate::testutil::account_id(&db).await;
-        let order = crate::sqlite::order::Order::new(
+        let order = crate::order::Order::new(
             "default",
             account_id,
             vec![acme_proxy_core::identifier::Identifier::dns(
@@ -471,11 +471,11 @@ mod tests {
         .unwrap();
 
         // The cascade takes the order with the account; neither takes the row.
-        crate::sqlite::account::Account::delete(account_id.to_string().as_str(), &db)
+        crate::account::Account::delete(account_id.to_string().as_str(), &db)
             .await
             .unwrap();
         assert!(
-            crate::sqlite::order::Order::find_by_id(order.id.to_string().as_str(), &db)
+            crate::order::Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
                 .unwrap()
                 .is_none()
@@ -784,7 +784,7 @@ mod tests {
     /// `audit.retention_days` sweep delete the identical set.
     #[test]
     fn the_audit_cutoff_is_days_before_now_and_saturates_rather_than_overflowing() {
-        let now = crate::sqlite::nonce::now_secs();
+        let now = crate::nonce::now_secs();
         assert!((audit_cutoff(0) - now).abs() <= 1);
         let week = audit_cutoff(7);
         assert!((now - week - 7 * 24 * 60 * 60).abs() <= 1, "{week}");

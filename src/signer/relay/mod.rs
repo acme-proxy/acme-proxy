@@ -46,10 +46,10 @@ use crate::signer::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
-use crate::sqlite::db::Database;
-use crate::sqlite::upstream_order::UpstreamOrder;
 use acme_proxy_core::config::RelayConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::upstream_order::UpstreamOrder;
 
 pub mod account;
 pub mod client;

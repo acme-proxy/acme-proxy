@@ -7,9 +7,9 @@ use serde::de::DeserializeOwned;
 use tracing::{Span, debug, error, instrument, warn};
 
 use crate::router::AppState;
-use crate::sqlite::account::Account;
-use crate::sqlite::nonce::Nonce;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::nonce::Nonce;
 
 use acme_proxy_core::jws::AcmeJwsRequest;
 use acme_proxy_core::jws::ProtectedHeader;
@@ -212,7 +212,7 @@ where
             warn!(
                 event = "nonce_replayed",
                 outcome = "failure",
-                nonce_fp = %crate::sqlite::nonce::fingerprint(&header.nonce),
+                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
                 path = %request_path
             );
             return Err(Problem::bad_nonce("Nonce invalid"));
@@ -224,7 +224,7 @@ where
             error!(
                 event = "nonce_verification_failed",
                 outcome = "failure",
-                nonce_fp = %crate::sqlite::nonce::fingerprint(&header.nonce),
+                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
                 error = %error
             );
             return Err(Problem::server_internal("Nonce verification failed"));
@@ -279,7 +279,7 @@ async fn touch_account(
         .ip
         .map(acme_proxy_core::client::canonical)
         .map(|ip| ip.to_string());
-    if !account.needs_touch(crate::sqlite::nonce::now_secs(), ip.as_deref()) {
+    if !account.needs_touch(acme_proxy_store::nonce::now_secs(), ip.as_deref()) {
         return;
     }
     let client = app.audit.client(request).await;

@@ -9,12 +9,13 @@ use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::signer;
-use crate::sqlite::authz::Authorization;
-use crate::sqlite::db::Database;
-use crate::sqlite::order::{Order, OrderQuery};
-use crate::sqlite::status::OrderStatus;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::authz::Authorization;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
+use acme_proxy_store::status::OrderStatus;
 
 #[derive(Subcommand)]
 pub enum OrderCommand {
@@ -347,7 +348,7 @@ pub async fn run_order_command(
                 admin::RevokeOutcome::Revoked(order) => {
                     println!("{}", render::render_order_line(&order, palette));
                     if let signer::RevocationRoute::Ledger { issuer } = &route {
-                        let job = crate::sqlite::job::Job::find_live(
+                        let job = acme_proxy_store::job::Job::find_live(
                             crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
                             issuer,
                             &database,
@@ -382,7 +383,7 @@ const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
 /// Paged like the rest of `order list`, and reporting `hidden` beside the total
 /// exactly as `GET /api/expiring` does -- `total` counts the *window*, not the
 /// answer, because supersession is computed per row and cannot become a SQL
-/// predicate. `crate::sqlite::expiring::annotate_expiring` still reads each account's orders once
+/// predicate. `acme_proxy_store::expiring::annotate_expiring` still reads each account's orders once
 /// for the whole page rather than once per row, which is what keeps a page over
 /// a single busy account from re-reading its history fifty times.
 #[allow(clippy::too_many_arguments)]
@@ -426,14 +427,15 @@ async fn run_expiring(
         ));
     }
 
-    let query = crate::sqlite::expiring::ExpiringQuery {
+    let query = acme_proxy_store::expiring::ExpiringQuery {
         profile,
-        before: crate::sqlite::expiring::expiring_horizon(days),
+        before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded: !hide_superseded,
         limit: window.limit,
         offset: window.offset,
     };
-    let (entries, total, hidden) = crate::sqlite::expiring::list_expiring(&query, database).await?;
+    let (entries, total, hidden) =
+        acme_proxy_store::expiring::list_expiring(&query, database).await?;
     if json {
         let items = entries.iter().map(admin::render_expiring_json).collect();
         let mut envelope = render::json_page(items, total, window);
@@ -463,8 +465,8 @@ mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
     use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend};
-    use crate::sqlite::account::Account;
     use acme_proxy_core::audit::ClientContext;
+    use acme_proxy_store::account::Account;
 
     /// A configuration whose single `default` profile signs with a local CA
     /// living under `dir` — what `Revoke` needs, since it rebuilds the signer
@@ -512,7 +514,8 @@ mod tests {
     /// which is the rule for this whole half of the vocabulary.
     #[tokio::test]
     async fn deleting_an_order_writes_a_row_and_a_decline_does_not() {
-        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();
@@ -587,7 +590,7 @@ mod tests {
             profile,
             account.id,
             vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             database,
@@ -837,7 +840,7 @@ mod tests {
     async fn an_issued_order_revokes_once() {
         use crate::jobs::JobHandler;
         use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
-        use crate::sqlite::job::Job;
+        use acme_proxy_store::job::Job;
 
         let dir = temp_dir();
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -961,7 +964,7 @@ mod tests {
     async fn a_delegated_revocation_is_queued_for_the_server() {
         use crate::acme::revoke::{SIGNER_REVOKE_KIND, SignerRevokeJob};
         use crate::jobs::{JobHandler, JobOutcome};
-        use crate::sqlite::job::Job;
+        use acme_proxy_store::job::Job;
 
         let dir = temp_dir();
         let marker = dir.join("revoked");
@@ -998,9 +1001,14 @@ mod tests {
         };
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = seed_order(&database, "default").await.account_id;
-        let order =
-            crate::testutil::issued_order(&database, "default", account, &["example.com"], 30)
-                .await;
+        let order = acme_proxy_store::testutil::issued_order(
+            &database,
+            "default",
+            account,
+            &["example.com"],
+            30,
+        )
+        .await;
         let id = order.id.to_string();
 
         for _ in 0..2 {
@@ -1061,10 +1069,10 @@ mod tests {
         assert_eq!(revoked.revocation_reason, Some(4));
         assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
         // The row names the operator who asked, not the server that acted.
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
-            &crate::sqlite::audit::AuditQuery {
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(
+            &acme_proxy_store::audit::AuditQuery {
                 limit: 5,
-                ..crate::sqlite::audit::AuditQuery::default()
+                ..acme_proxy_store::audit::AuditQuery::default()
             },
             &database,
         )
@@ -1328,11 +1336,20 @@ mod tests {
     #[tokio::test]
     async fn the_expiring_arm_lists_and_renders_both_ways() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let acct = crate::testutil::account_id(&database).await;
-        crate::testutil::issued_order(&database, "default", acct, &["a.example.com"], 3).await;
-        crate::testutil::issued_order(&database, "default", acct, &["b.example.com"], 5).await;
+        let acct = acme_proxy_store::testutil::account_id(&database).await;
+        acme_proxy_store::testutil::issued_order(&database, "default", acct, &["a.example.com"], 3)
+            .await;
+        acme_proxy_store::testutil::issued_order(&database, "default", acct, &["b.example.com"], 5)
+            .await;
         // Renews the first, so one row carries the annotation and one does not.
-        crate::testutil::issued_order(&database, "default", acct, &["a.example.com"], 90).await;
+        acme_proxy_store::testutil::issued_order(
+            &database,
+            "default",
+            acct,
+            &["a.example.com"],
+            90,
+        )
+        .await;
 
         for json in [false, true] {
             list_with(
@@ -1515,8 +1532,8 @@ mod tests {
     #[tokio::test]
     async fn delete_refuses_an_order_holding_a_live_certificate() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let account = crate::testutil::account_id(&database).await;
-        let order = crate::testutil::certified_order(&database, account, None).await;
+        let account = acme_proxy_store::testutil::account_id(&database).await;
+        let order = acme_proxy_store::testutil::certified_order(&database, account, None).await;
 
         let error = run_order_command(
             OrderCommand::Delete {

@@ -37,8 +37,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::db::Database;
 
 pub mod assembly;
 pub mod generation;

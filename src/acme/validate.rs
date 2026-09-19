@@ -27,15 +27,14 @@ use super::order::OrderService;
 use crate::auditor::Auditor;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::profile::Profile;
-use crate::sqlite::{
-    account::Account,
-    authz::{Authorization, Challenge},
-    db::Database,
-    job::Job,
-    nonce::now_secs,
-    order::Order,
-    status::ChallengeStatus,
-};
+use acme_proxy_store::account::Account;
+use acme_proxy_store::authz::Authorization;
+use acme_proxy_store::authz::Challenge;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::ChallengeStatus;
 
 /// The `jobs.kind` one challenge validation is queued under.
 pub const CHALLENGE_VALIDATE_KIND: &str = "challenge_validate";
@@ -374,8 +373,9 @@ mod tests {
     use crate::challenge::{
         ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
     };
-    use crate::sqlite::status::{AuthzStatus, OrderStatus};
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::status::AuthzStatus;
+    use acme_proxy_store::status::OrderStatus;
 
     /// A validator refusing every attempt, so the failure arm is reachable
     /// without a network.
@@ -399,7 +399,7 @@ mod tests {
         let order = Order::create(
             "default",
             account.id,
-            crate::testutil::dns_identifiers(&["a.example.com"]),
+            acme_proxy_store::testutil::dns_identifiers(&["a.example.com"]),
             now_secs() + 3600,
             None,
             None,
@@ -436,7 +436,7 @@ mod tests {
         Job {
             dedup_key: spec.key.clone(),
             payload: spec.payload.clone(),
-            ..crate::testutil::job_fixture()
+            ..acme_proxy_store::testutil::job_fixture()
         }
     }
 
@@ -546,7 +546,7 @@ mod tests {
         let job = handler(&database, ChallengeRegistry::default());
         let row = Job {
             payload: serde_json::json!({}),
-            ..crate::testutil::job_fixture()
+            ..acme_proxy_store::testutil::job_fixture()
         };
         assert!(matches!(job.run(&row).await, JobOutcome::Failed(_)));
     }
@@ -639,7 +639,7 @@ mod tests {
 
         job.recover(&queue).await;
         assert_eq!(
-            crate::sqlite::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
+            acme_proxy_store::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
                 .await
                 .unwrap(),
             1
@@ -648,7 +648,7 @@ mod tests {
         // Safely repeatable: the identity index refuses the duplicate.
         job.recover(&queue).await;
         assert_eq!(
-            crate::sqlite::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
+            acme_proxy_store::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
                 .await
                 .unwrap(),
             1
@@ -667,7 +667,7 @@ mod tests {
             .recover(&queue)
             .await;
         assert_eq!(
-            crate::sqlite::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
+            acme_proxy_store::job::Job::count_live(CHALLENGE_VALIDATE_KIND, &database)
                 .await
                 .unwrap(),
             0

@@ -19,12 +19,12 @@ use serde_json::Value;
 use crate::admin;
 use crate::admin::password::PasswordContext;
 use crate::admin::users::{self, UserError};
-use crate::sqlite::admin_session::AdminSession;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::verify_current_password;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, Authenticated, SelfServiceWrite, clearing_cookie};
+use acme_proxy_store::admin_session::AdminSession;
 
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordRequest {

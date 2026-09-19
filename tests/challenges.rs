@@ -646,11 +646,10 @@ async fn the_key_authorization_matches_what_a_client_would_compute() {
 
     // The thumbprint of the key that registered the account.
     let account_id = account_url.rsplit('/').next().unwrap();
-    let account =
-        acme_proxy::sqlite::account::Account::find_by_id(common::PROFILE, account_id, &db)
-            .await
-            .unwrap()
-            .expect("the account must exist");
+    let account = acme_proxy_store::account::Account::find_by_id(common::PROFILE, account_id, &db)
+        .await
+        .unwrap()
+        .expect("the account must exist");
     let expected = format!("{token}.{}", jwk_thumbprint(&account.pubkey).unwrap());
 
     let recorded = seen.lock().unwrap();

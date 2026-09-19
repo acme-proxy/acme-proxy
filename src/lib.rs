@@ -73,7 +73,7 @@
 //! - [`tls`] - Optional HTTPS termination for either listener
 //! - [`cert`](acme_proxy_core::cert) - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
 //! - [`pemfile`](acme_proxy_core::pemfile) - PEM reading, atomic writing and key-permission warnings
-//! - [`sqlite`] - Database access, one module per table
+//! - [`acme_proxy_store`] - Database access, one module per table
 //! - [`routes`](acme_proxy_core::routes) - The ACME resource paths and the profile namespace
 //! - [`logfields`](acme_proxy_core::logfields) - Typed helpers for structured log fields
 //! - [`config`](acme_proxy_core::config) - Configuration loading from multiple sources
@@ -105,7 +105,7 @@
 //! use std::sync::Arc;
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
-//! use acme_proxy::sqlite::db::Database;
+//! use acme_proxy_store::db::Database;
 //! use acme_proxy::{challenge, filter, ipam, jobs, notify, signer};
 //! use acme_proxy_core::config::Config;
 //!
@@ -270,7 +270,6 @@ pub mod reload;
 pub mod router;
 pub mod server;
 pub mod signer;
-pub mod sqlite;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tls;

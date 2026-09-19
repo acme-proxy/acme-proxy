@@ -12,7 +12,6 @@
 //! tests cannot see it for the same reason and keep their own copy under
 //! `tests/common/`.
 
-use acme_proxy_core::audit::ClientContext;
 use std::sync::Arc;
 
 /// A Prometheus registry for a test that only needs one to exist.
@@ -21,7 +20,7 @@ use std::sync::Arc;
 /// deferred issuance through it; almost no test asserts on the counters, so
 /// this keeps the noise to one call.
 pub(crate) fn test_metrics(
-    database: Arc<crate::sqlite::db::Database>,
+    database: Arc<acme_proxy_store::db::Database>,
 ) -> Arc<crate::metrics::Metrics> {
     Arc::new(crate::metrics::Metrics::new(database))
 }
@@ -49,7 +48,7 @@ pub(crate) fn outbound_with(
 /// never enqueues anything. A test that needs the work actually done starts a
 /// runner over its own queue instead — see `signer::relay::tests::TestRunner`.
 pub(crate) fn idle_job_queue(
-    database: std::sync::Arc<crate::sqlite::db::Database>,
+    database: std::sync::Arc<acme_proxy_store::db::Database>,
 ) -> crate::jobs::JobQueue {
     crate::jobs::JobQueue::new(database, &acme_proxy_core::config::JobsConfig::default())
 }
@@ -77,7 +76,7 @@ pub(crate) fn egress_with(
 /// nothing drains — the same three "throwaway" arguments every one of these call
 /// sites used to spell out one by one before `SignerParts` gathered them.
 pub(crate) fn signer_parts(
-    database: std::sync::Arc<crate::sqlite::db::Database>,
+    database: std::sync::Arc<acme_proxy_store::db::Database>,
     resolver: std::sync::Arc<dyn crate::dns::Resolver>,
 ) -> crate::signer::SignerParts {
     crate::signer::SignerParts {
@@ -212,338 +211,6 @@ impl FakeProxy {
 
     pub(crate) fn connections(&self) -> usize {
         self.connections.load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-/// A list of `(type, value)` pairs as [`Identifier`]s.
-///
-/// The `Identifier::dns`/`Identifier::new` constructors cover the single-name
-/// case, which is most of them; this is the twelfth-copy problem's other half —
-/// two modules had a verbatim `fn ids(&[(&str, &str)])` and several more built
-/// the same `Vec` inline.
-#[cfg(test)]
-pub(crate) fn identifiers(pairs: &[(&str, &str)]) -> Vec<acme_proxy_core::identifier::Identifier> {
-    pairs
-        .iter()
-        .map(|(typ, value)| acme_proxy_core::identifier::Identifier::new(*typ, *value))
-        .collect()
-}
-
-/// The `dns`-only shorthand for [`identifiers`].
-#[cfg(test)]
-pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<acme_proxy_core::identifier::Identifier> {
-    values
-        .iter()
-        .map(|value| acme_proxy_core::identifier::Identifier::dns(*value))
-        .collect()
-}
-
-/// An account in the `default` profile, returning its id.
-///
-/// Three modules had grown a verbatim copy of this (`admin::ops`,
-/// `admin::render`, `sqlite::order`) — the same accumulation as `TempDir` and
-/// the `Identifier` builders, and the reason both now live somewhere shared.
-#[cfg(test)]
-pub(crate) async fn account_id(
-    database: &std::sync::Arc<crate::sqlite::db::Database>,
-) -> uuid::Uuid {
-    let (account, _) = crate::sqlite::account::Account::find_or_create(
-        "default",
-        &[1u8, 2, 3],
-        vec![],
-        &ClientContext::default(),
-        database,
-    )
-    .await
-    .expect("an in-memory database always accepts an account");
-    account.id
-}
-
-/// A `ClientContext` carrying nothing but an address and its reverse name.
-///
-/// The three states a renderer has to tell apart (`ip (ptr)`, the address
-/// alone, neither) are exactly the three ways this is called.
-#[cfg(test)]
-pub(crate) fn client_context(ip: Option<&str>, ptr: Option<&str>) -> ClientContext {
-    ClientContext {
-        ip: ip.map(str::to_string),
-        ptr: ptr.map(str::to_string),
-        ..ClientContext::default()
-    }
-}
-
-/// An account created from `client`, whose traceability columns are therefore
-/// whatever that context carried.
-///
-/// `pubkey` is a parameter because `find_or_create` dedupes on it: two calls
-/// sharing one would hand back the *first* account, contexts and all.
-#[cfg(test)]
-pub(crate) async fn account_seen_from(
-    pubkey: &[u8],
-    client: &ClientContext,
-    database: &std::sync::Arc<crate::sqlite::db::Database>,
-) -> crate::sqlite::account::Account {
-    crate::sqlite::account::Account::find_or_create(
-        "default",
-        pubkey,
-        vec!["mailto:a@example.com".to_string()],
-        client,
-        database,
-    )
-    .await
-    .expect("an in-memory database always accepts an account")
-    .0
-}
-
-/// An unsaved order in the `default` profile, in `status`.
-#[cfg(test)]
-pub(crate) fn order_fixture(
-    account_id: uuid::Uuid,
-    status: crate::sqlite::status::OrderStatus,
-) -> crate::sqlite::order::Order {
-    let mut order = crate::sqlite::order::Order::new(
-        "default",
-        account_id,
-        vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
-        0,
-        None,
-        None,
-    );
-    order.status = status;
-    order
-}
-
-/// A *really issued* order on `profile`: signed by an in-memory local CA, so
-/// the stored chain parses and the RFC 9773 certID the `replaces` signal rests
-/// on can actually be derived from it.
-///
-/// Hoisted out of `notify::expiry`'s suite when the supersession annotation
-/// moved to `admin::ops` — the digest's tests and the annotation's own both
-/// need a row no hand-built fixture can stand in for. Distinct from
-/// [`order_fixture`], which is an unsaved row with no certificate at all.
-#[cfg(test)]
-pub(crate) async fn issued_order(
-    database: &crate::sqlite::db::Database,
-    profile: &str,
-    account: uuid::Uuid,
-    names: &[&str],
-    not_after_days: i64,
-) -> crate::sqlite::order::Order {
-    use crate::sqlite::order::Order;
-    use acme_proxy_core::identifier::Identifier;
-
-    const DAY: i64 = 24 * 60 * 60;
-
-    // Its own throwaway database: this fixture only issues, and a CA's
-    // revocation state is the one thing that would need to share `database`.
-    let signer = crate::signer::local_ca::LocalCa::generate_in_memory(
-        "ecdsa-p256",
-        90,
-        std::sync::Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
-                .await
-                .unwrap(),
-        ),
-    )
-    .unwrap();
-    let mut order = Order::create(
-        profile,
-        account,
-        names.iter().map(|name| Identifier::dns(*name)).collect(),
-        crate::sqlite::nonce::now_secs() + 3600,
-        None,
-        None,
-        database,
-    )
-    .await
-    .unwrap();
-    let key_pair = rcgen::KeyPair::generate().unwrap();
-    let params =
-        rcgen::CertificateParams::new(names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>())
-            .unwrap();
-    let csr = params.serialize_request(&key_pair).unwrap();
-    let chain = match crate::signer::SignerBackend::issue(
-        &signer,
-        order.id.to_string().as_str(),
-        csr.der(),
-        &order.identifiers,
-        crate::signer::RequestedValidity::default(),
-    )
-    .await
-    .unwrap()
-    {
-        crate::signer::IssueOutcome::Issued(chain) => chain,
-        crate::signer::IssueOutcome::Processing => panic!("the in-memory CA is synchronous"),
-    };
-    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
-    let (serial, pubkey) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
-    order
-        .finalize(
-            chain,
-            serial,
-            pubkey,
-            Some(crate::sqlite::nonce::now_secs() + not_after_days * DAY),
-            database,
-        )
-        .await
-        .unwrap();
-    order
-}
-
-/// An order under `account` holding a certificate that expires at `not_after`
-/// (`None`: never stamped), without signing anything.
-///
-/// For the delete guard's tests, which ask only whether a row counts as a
-/// *live* certificate — issued, not revoked, not expired — and never parse the
-/// chain. [`issued_order`] is the one to reach for when the chain has to be
-/// real.
-#[cfg(test)]
-pub(crate) async fn certified_order(
-    database: &crate::sqlite::db::Database,
-    account: uuid::Uuid,
-    not_after: Option<i64>,
-) -> crate::sqlite::order::Order {
-    let mut order = crate::sqlite::order::Order::create(
-        "default",
-        account,
-        vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
-        crate::sqlite::nonce::now_secs() + 3600,
-        None,
-        None,
-        database,
-    )
-    .await
-    .unwrap();
-    order
-        .finalize(
-            "-----BEGIN CERTIFICATE-----\n...".to_string(),
-            order.id.simple().to_string(),
-            vec![1],
-            not_after,
-            database,
-        )
-        .await
-        .unwrap();
-    order
-}
-
-/// One `certificate_issued` row with every optional column filled in, so a
-/// renderer test can blank the ones it wants absent.
-#[cfg(test)]
-pub(crate) fn audit_entry() -> crate::sqlite::audit::AuditEntry {
-    crate::sqlite::audit::AuditEntry {
-        id: 41_812,
-        created_at: 1_700_000_000,
-        event: "certificate_issued".to_string(),
-        outcome: "success".to_string(),
-        profile: "le".to_string(),
-        actor_kind: "acme".to_string(),
-        actor_id: Some("acct-1".to_string()),
-        account_id: Some("acct-1".to_string()),
-        order_id: Some("order-1".to_string()),
-        cert_serial: Some("0a0b".to_string()),
-        identifiers: vec!["a.example.com".to_string(), "b.example.com".to_string()],
-        client_ip: Some("203.0.113.7".to_string()),
-        client_ptr: Some("host.example.com".to_string()),
-        user_agent: Some("certbot/2.9.0".to_string()),
-        request_id: Some("req-1".to_string()),
-        reason: None,
-        detail: None,
-    }
-}
-
-/// One `signer_relay_issue` job with every optional column filled, so a
-/// renderer test can blank the ones it wants absent — the [`audit_entry`]
-/// shape. `#[cfg(test)]` and pure: no database.
-#[cfg(test)]
-pub(crate) fn job_fixture() -> crate::sqlite::job::Job {
-    crate::sqlite::job::Job {
-        id: uuid::uuid!("00000000-0000-7000-8000-00000000abcd"),
-        kind: "signer_relay_issue".to_string(),
-        dedup_key: "order-1".to_string(),
-        payload: serde_json::json!({ "order_id": "order-1", "profile": "le" }),
-        status: "failed".to_string(),
-        run_at: 1_700_000_000,
-        attempts: 3,
-        max_attempts: 5,
-        deadline: Some(1_700_600_000),
-        lease_until: Some(1_700_000_300),
-        lease_owner: Some("runner-1".to_string()),
-        last_error: Some("upstream said no".to_string()),
-        created_at: 1_699_990_000,
-        updated_at: 1_700_000_100,
-    }
-}
-
-/// One `invalid` `upstream_orders` row joined to its local order, every
-/// optional filled. `#[cfg(test)]` and pure.
-#[cfg(test)]
-pub(crate) fn upstream_order_row_fixture() -> crate::sqlite::upstream_order::UpstreamOrderRow {
-    crate::sqlite::upstream_order::UpstreamOrderRow {
-        order_id: uuid::uuid!("00000000-0000-7000-8000-00000000ee01"),
-        upstream_order_url: "https://acme.example/order/9".to_string(),
-        upstream_finalize_url: Some("https://acme.example/order/9/finalize".to_string()),
-        upstream_certificate_url: Some("https://acme.example/cert/9".to_string()),
-        status: "invalid".to_string(),
-        error: Some("urn:ietf:params:acme:error:rejectedIdentifier".to_string()),
-        created_at: 1_699_990_000,
-        updated_at: 1_700_000_100,
-        client_ip: Some("203.0.113.7".to_string()),
-        client_ptr: Some("host.example.com".to_string()),
-        user_agent: Some("lego/4".to_string()),
-        request_id: Some("req-9".to_string()),
-        profile: "le".to_string(),
-        account_id: uuid::uuid!("00000000-0000-7000-8000-0000000acc01"),
-        identifiers: vec![acme_proxy_core::identifier::Identifier::dns(
-            "a.example.com",
-        )],
-        local_status: crate::sqlite::status::OrderStatus::Processing,
-        local_expires: 1_700_600_000,
-    }
-}
-
-/// An `active` operator with no second factor and no login yet.
-///
-/// The id both admin fixtures carry, so the session keeps naming its user.
-#[cfg(test)]
-pub(crate) const ADMIN_FIXTURE_ID: uuid::Uuid = uuid::uuid!("11111111-2222-3333-4444-555555555555");
-
-/// The `password_hash` is a syntactically valid stored hash rather than a
-/// placeholder, because more than one test asserts `pbkdf2` never reaches a
-/// terminal and a fake would pass that vacuously.
-#[cfg(test)]
-pub(crate) fn admin_user_fixture() -> crate::sqlite::admin_user::AdminUser {
-    crate::sqlite::admin_user::AdminUser {
-        id: ADMIN_FIXTURE_ID,
-        username: "alice".to_string(),
-        password_hash: "pbkdf2-sha256$600000$c2FsdA$aGFzaA".to_string(),
-        status: "active".to_string(),
-        role: None,
-        totp_secret: None,
-        totp_pending_secret: None,
-        totp_last_step: None,
-        created_at: 1_700_000_000,
-        updated_at: 1_700_000_000,
-        last_login_at: None,
-        contact_email: None,
-        known_login_ips: Vec::new(),
-    }
-}
-
-/// An `active` session for [`admin_user_fixture`].
-#[cfg(test)]
-pub(crate) fn admin_session_fixture() -> crate::sqlite::admin_session::AdminSession {
-    crate::sqlite::admin_session::AdminSession {
-        token_hash: "0123456789abcdef0123456789abcdef".to_string(),
-        user_id: ADMIN_FIXTURE_ID,
-        csrf_token: "the-csrf-token".to_string(),
-        state: "active".to_string(),
-        mfa_attempts: 0,
-        created_at: 1_700_000_000,
-        expires_at: 1_700_043_200,
-        last_seen_at: 1_700_000_000,
-        created_ip: Some("192.0.2.1".to_string()),
-        user_agent: Some("curl/8".to_string()),
     }
 }
 

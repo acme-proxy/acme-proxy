@@ -1,5 +1,5 @@
 use super::*;
-use crate::sqlite::status::OrderStatus;
+use acme_proxy_store::status::OrderStatus;
 
 /// A `DnsUpdater` that records what it was asked to publish, so a test can
 /// assert on the record without a DNS server.

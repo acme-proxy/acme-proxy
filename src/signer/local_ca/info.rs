@@ -12,9 +12,9 @@ use tracing::error;
 
 use super::issuer_id_of;
 use crate::signer::{RevocationRoute, SignerError, SignerInfo};
-use crate::sqlite::crl::StoredCrl;
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::LocalCaConfig;
+use acme_proxy_store::crl::StoredCrl;
+use acme_proxy_store::db::Database;
 
 /// What a request may ask of a local CA without its key.
 pub struct LocalCaInfo {

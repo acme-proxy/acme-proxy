@@ -10,17 +10,21 @@
 # the repository grows; this does not.
 #
 # What `cargo build` actually reads:
-#   Cargo.toml / Cargo.lock  — the manifest and the pinned graph (`--locked`)
-#   src/                     — including the assets `include_str!`ed from it
-#                              (src/webadmin/static/, src/webadmin/templates/,
-#                              src/notify/templates/)
-#   migrations/              — `sqlx::migrate!()` in src/sqlite/db.rs
+#   Cargo.toml / Cargo.lock  — the workspace manifest and the pinned graph
+#                              (`--locked`)
+#   src/                     — the binary and its command tree
+#   crates/                  — every library crate of the workspace, including
+#                              the assets `include_str!`ed from them
+#                              (crates/*/src/webadmin/static/, the `/ui` and
+#                              notification templates) and
+#                              crates/store/migrations/, which `sqlx::migrate!()`
+#                              embeds
 #
-# `tests/` is deliberately absent: the only thing outside `src/` it is reached for
-# is `tests/fixtures/rsa_test_key.pk8`, `include_bytes!`d from the `#[cfg(test)]`
-# module in src/extractors/signature.rs, which a non-test build never compiles.
+# `tests/` is deliberately absent: the only thing outside the sources it is
+# reached for is `tests/fixtures/rsa_test_key.pk8`, `include_bytes!`d from a
+# `#[cfg(test)]` module in the core crate, which a non-test build never compiles.
 *
 !Cargo.toml
 !Cargo.lock
 !src/
-!migrations/
+!crates/

@@ -14,13 +14,15 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
-use crate::sqlite::job::{Job, JobQuery};
-use crate::sqlite::status::{JobStatus, UnknownStatus};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_store::job::Job;
+use acme_proxy_store::job::JobQuery;
+use acme_proxy_store::status::JobStatus;
+use acme_proxy_store::status::UnknownStatus;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].

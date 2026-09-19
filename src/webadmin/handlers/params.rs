@@ -5,7 +5,7 @@
 //! `<option value="">every profile</option>` arrives as `profile=` rather than
 //! as an omitted key, and `serde_urlencoded` deserializes that into `Some("")`.
 //! Every predicate builder below then honours it — `AND profile = ''` matches
-//! no row, and a `status=` reaches [`crate::sqlite::status`], which refuses an
+//! no row, and a `status=` reaches [`acme_proxy_store::status`], which refuses an
 //! unknown spelling by name and turns the page into a `400`. The CLI never sees
 //! this shape at all: clap yields `None` for an omitted `--profile`, which is
 //! why `order list --expiring-in` was right where `/ui/expiring` was empty.

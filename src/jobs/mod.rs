@@ -53,10 +53,10 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tracing::error;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::job::Job;
-use crate::sqlite::nonce::now_secs;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::nonce::now_secs;
 
 pub mod registry;
 pub mod runner;
@@ -220,7 +220,7 @@ impl JobQueue {
     /// already waiting keeps the budget it was queued under. Raising this to
     /// rescue rows that are about to give up is therefore not what it does —
     /// that would be an `UPDATE` over pending rows, and a deliberately different
-    /// promise from the one `crate::sqlite::job` makes.
+    /// promise from the one `acme_proxy_store::job` makes.
     pub fn set_max_attempts(&self, max_attempts: u32) {
         self.default_max_attempts
             .store(max_attempts, Ordering::Relaxed);
@@ -268,9 +268,9 @@ impl JobQueue {
 
     /// The row `spec` describes, with this queue's `max_attempts` frozen onto
     /// it unless the spec set its own.
-    fn new_job<'a>(&self, spec: &'a JobSpec) -> crate::sqlite::job::NewJob<'a> {
-        crate::sqlite::job::NewJob {
-            id: crate::sqlite::id::mint(),
+    fn new_job<'a>(&self, spec: &'a JobSpec) -> acme_proxy_store::job::NewJob<'a> {
+        acme_proxy_store::job::NewJob {
+            id: acme_proxy_store::id::mint(),
             kind: spec.kind,
             dedup_key: &spec.key,
             payload: &spec.payload,
@@ -385,7 +385,7 @@ mod tests {
     /// wherever the reload happened to be holding a handle.
     ///
     /// And it reaches *future* work only. A row already waiting keeps the budget
-    /// frozen onto it at enqueue, which is the promise `crate::sqlite::job` makes
+    /// frozen onto it at enqueue, which is the promise `acme_proxy_store::job` makes
     /// and the reason raising this is not a way to rescue a backlog.
     #[tokio::test]
     async fn a_reloaded_max_attempts_reaches_the_clones_but_not_the_backlog() {

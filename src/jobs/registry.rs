@@ -75,7 +75,7 @@ impl JobRegistry {
 mod tests {
     use super::*;
     use crate::jobs::JobOutcome;
-    use crate::sqlite::job::Job;
+    use acme_proxy_store::job::Job;
     use async_trait::async_trait;
 
     struct Stub(&'static str);

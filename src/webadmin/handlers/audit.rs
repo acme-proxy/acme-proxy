@@ -14,12 +14,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::admin;
-use crate::sqlite::audit::{AuditEntry, AuditQuery};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::Authenticated;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::audit::AuditQuery;
 
 /// The window fields are inline, not `#[serde(flatten)]` — see the note on
 /// [`super::accounts::AccountListParams`].

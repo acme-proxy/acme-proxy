@@ -76,7 +76,7 @@ mod tests {
 
     async fn registry() -> Arc<Metrics> {
         Arc::new(Metrics::new(Arc::new(
-            crate::sqlite::db::Database::connect_in_memory()
+            acme_proxy_store::db::Database::connect_in_memory()
                 .await
                 .unwrap(),
         )))

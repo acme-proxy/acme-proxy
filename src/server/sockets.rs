@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::db::Database;
 
 use super::supervisor::Cells;
 
@@ -319,7 +319,7 @@ pub(super) async fn announce_admin_listener(
 ) {
     // A listener nobody holds an account for is a running service with no way
     // in; say so once, naming the command that fixes it.
-    if crate::sqlite::admin_user::AdminUser::list_all(database)
+    if acme_proxy_store::admin_user::AdminUser::list_all(database)
         .await
         .is_ok_and(|users| users.is_empty())
     {
@@ -374,7 +374,8 @@ pub(super) async fn announce_admin_listener(
     // Swept once now, then on an interval: sessions outlive a restart, so a
     // startup-only sweep would leak every one an operator never signed out of.
     let idle = Duration::from_secs(config.admin.session_idle_timeout_seconds);
-    if let Err(error) = crate::sqlite::admin_session::AdminSession::cleanup(idle, database).await {
+    if let Err(error) = acme_proxy_store::admin_session::AdminSession::cleanup(idle, database).await
+    {
         error!(event = "admin_session_cleanup_failed", outcome = "failure", error = %error);
     }
 

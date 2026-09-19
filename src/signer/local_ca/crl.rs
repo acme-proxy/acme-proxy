@@ -49,9 +49,9 @@ use tracing::{error, info, warn};
 use super::CLOCK_SKEW_ALLOWANCE;
 use super::key::CaSigningKey;
 use crate::signer::{CrlRefresher, SignerError};
-use crate::sqlite::crl::StoredCrl;
-use crate::sqlite::db::Database;
-use crate::sqlite::revocation::Revocation;
+use acme_proxy_store::crl::StoredCrl;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::revocation::Revocation;
 
 /// The files beside a file-backed CA's CRL, all derived from `crl_path`.
 #[derive(Clone)]

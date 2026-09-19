@@ -2,7 +2,7 @@
 //! backend opened for it at the upstream CA.
 //!
 //! Kept in SQLite alongside the rest of the data model rather than in a
-//! sidecar file the way [`crate::signer::local_ca`]'s revocation ledger is:
+//! sidecar file the way `signer::local_ca`'s revocation ledger is:
 //! this state *is* per-order, so it belongs with the orders.
 //!
 //! ## Methods
@@ -17,9 +17,9 @@ use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::status::{self, OrderStatus, UpstreamOrderStatus};
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::status::{self, OrderStatus, UpstreamOrderStatus};
 use acme_proxy_core::identifier::Identifier;
 
 /// The most rows [`UpstreamOrder::list_processing`] returns in one call.
@@ -27,7 +27,7 @@ use acme_proxy_core::identifier::Identifier;
 /// A restart after a long upstream outage can leave a very large number of
 /// orders `processing`; loading them all at once would spike memory before the
 /// relay semaphore ever got a say in how fast they are worked through.
-pub(crate) const MAX_PROCESSING_BATCH: usize = 500;
+pub const MAX_PROCESSING_BATCH: usize = 500;
 
 #[derive(Debug, Clone)]
 pub struct UpstreamOrder {
@@ -103,7 +103,7 @@ impl UpstreamOrder {
         client: &acme_proxy_core::audit::ClientContext,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
         sqlx::query(
@@ -134,7 +134,7 @@ impl UpstreamOrder {
         csr_der: &[u8],
         database: &Database,
     ) -> Result<Option<UpstreamOrder>, sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
         let now = now_secs();
@@ -181,7 +181,7 @@ impl UpstreamOrder {
         order_id: &str,
         database: &Database,
     ) -> Result<Option<UpstreamOrder>, sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
         let row = sqlx::query("SELECT * FROM upstream_orders WHERE order_id = ?;")
@@ -197,7 +197,7 @@ impl UpstreamOrder {
         certificate_url: Option<&str>,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
         sqlx::query(
@@ -220,7 +220,7 @@ impl UpstreamOrder {
         error: &str,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
         sqlx::query(
@@ -376,9 +376,9 @@ impl UpstreamOrderQuery {
     /// The `WHERE` shared by the page query and the count, over the aliases
     /// `u` (`upstream_orders`) and `o` (`orders`). Every value is `push_bind`.
     fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
-        crate::sqlite::query::push_equalities(
+        crate::query::push_equalities(
             builder,
-            crate::sqlite::query::WHERE,
+            crate::query::WHERE,
             &[
                 ("o.profile = ", self.profile.as_deref()),
                 ("u.status = ", self.status.map(UpstreamOrderStatus::as_str)),
@@ -450,7 +450,7 @@ impl UpstreamOrder {
         order_id: &str,
         database: &Database,
     ) -> Result<Option<UpstreamOrderRow>, sqlx::Error> {
-        let Some(order_id) = crate::sqlite::id::parse(order_id) else {
+        let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
         let mut query = sqlx::QueryBuilder::new(format!(
@@ -467,8 +467,8 @@ impl UpstreamOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::account::Account;
-    use crate::sqlite::order::Order;
+    use crate::account::Account;
+    use crate::order::Order;
     use acme_proxy_core::audit::ClientContext;
     use acme_proxy_core::identifier::Identifier;
     use std::sync::Arc;
@@ -733,7 +733,7 @@ mod tests {
 
     // --- the operator surface: `UpstreamOrderQuery` / `search` ---------------
 
-    use crate::sqlite::status::{OrderStatus, UpstreamOrderStatus};
+    use crate::status::{OrderStatus, UpstreamOrderStatus};
 
     async fn order_on(profile: &str, names: &[&str], database: &Database) -> Order {
         let (account, _) = Account::find_or_create(

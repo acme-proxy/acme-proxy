@@ -26,11 +26,12 @@ use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::cli::{CliError, resolve_profile};
 use crate::signer::relay;
-use crate::sqlite::db::Database;
-use crate::sqlite::status::UpstreamOrderStatus;
-use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderQuery};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::status::UpstreamOrderStatus;
+use acme_proxy_store::upstream_order::UpstreamOrder;
+use acme_proxy_store::upstream_order::UpstreamOrderQuery;
 
 #[derive(Subcommand)]
 pub enum UpstreamCommand {

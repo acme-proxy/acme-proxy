@@ -7,6 +7,7 @@ name = "acme-proxy"
 version = "0.5.0"
 dependencies = [
  "acme-proxy-core",
+ "acme-proxy-store",
  "anyhow",
  "async-trait",
  "axum",
@@ -76,6 +77,25 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "x509-parser",
+]
+
+[[package]]
+name = "acme-proxy-store"
+version = "0.5.0"
+dependencies = [
+ "acme-proxy-core",
+ "base64 0.23.1",
+ "hex",
+ "rcgen",
+ "ring",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

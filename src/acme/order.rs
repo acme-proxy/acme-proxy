@@ -24,18 +24,19 @@ use crate::filter::{IdentifierStage, Stage as FilterStage};
 use crate::jobs::JobQueue;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::profile::Profile;
-use crate::sqlite::{
-    account::Account,
-    authz::{Authorization, Challenge},
-    db::Database,
-    nonce::now_secs,
-    order::Order,
-    status::{AuthzStatus, ChallengeStatus, OrderStatus},
-};
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::jws::signature::jwk_thumbprint;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::authz::Authorization;
+use acme_proxy_store::authz::Challenge;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::AuthzStatus;
+use acme_proxy_store::status::ChallengeStatus;
+use acme_proxy_store::status::OrderStatus;
 
 /// A newOrder payload (RFC 8555 §7.4).
 #[derive(Debug, Default, Deserialize)]
@@ -991,7 +992,7 @@ pub(crate) mod tests {
         let order = Order::create(
             "default",
             account.id,
-            crate::testutil::dns_identifiers(names),
+            acme_proxy_store::testutil::dns_identifiers(names),
             now_secs() + 3600,
             None,
             None,
@@ -1336,7 +1337,7 @@ pub(crate) mod tests {
         assert_eq!(stored.status, OrderStatus::Processing);
         assert!(stored.certificate.is_none(), "nothing was signed here");
 
-        let job = crate::sqlite::job::Job::find_live(
+        let job = acme_proxy_store::job::Job::find_live(
             super::super::issue::SIGNER_ISSUE_KIND,
             &order.id.to_string(),
             &database,

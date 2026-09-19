@@ -13,11 +13,11 @@ use async_trait::async_trait;
 
 use super::*;
 use crate::dns::Resolver;
-use crate::sqlite::db::Database;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::RequestContext;
+use acme_proxy_store::db::Database;
 
 /// A resolver answering from canned data, or failing however the test asks.
 #[derive(Default)]

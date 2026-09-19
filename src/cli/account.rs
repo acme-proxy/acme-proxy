@@ -8,10 +8,10 @@ use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::sqlite::account::Account;
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::db::Database;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
@@ -264,7 +264,8 @@ mod tests {
     /// account's own id and profile; a declined delete leaves none.
     #[tokio::test]
     async fn a_mutation_writes_an_audit_row_and_a_decline_does_not() {
-        use crate::sqlite::audit::{AuditEntry, AuditQuery};
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();
@@ -334,9 +335,10 @@ mod tests {
     /// where it was already computed to word the prompt.
     #[tokio::test]
     async fn deleting_an_account_records_what_actually_cascaded() {
-        use crate::sqlite::audit::{AuditEntry, AuditQuery};
-        use crate::sqlite::order::Order;
         use acme_proxy_core::identifier::Identifier;
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
+        use acme_proxy_store::order::Order;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();
@@ -354,7 +356,7 @@ mod tests {
                 "default",
                 account.id,
                 vec![Identifier::dns(name)],
-                crate::sqlite::nonce::now_secs() + 3600,
+                acme_proxy_store::nonce::now_secs() + 3600,
                 None,
                 None,
                 &database,
@@ -551,8 +553,8 @@ mod tests {
     #[tokio::test]
     async fn delete_refuses_an_account_holding_a_live_certificate() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let account = crate::testutil::account_id(&database).await;
-        crate::testutil::certified_order(&database, account, None).await;
+        let account = acme_proxy_store::testutil::account_id(&database).await;
+        acme_proxy_store::testutil::certified_order(&database, account, None).await;
 
         let error = run_account_command(
             AccountCommand::Delete {
@@ -573,8 +575,8 @@ mod tests {
                 1
             ))
         );
-        let (rows, _) = crate::sqlite::audit::AuditEntry::search(
-            &crate::sqlite::audit::AuditQuery::default(),
+        let (rows, _) = acme_proxy_store::audit::AuditEntry::search(
+            &acme_proxy_store::audit::AuditQuery::default(),
             &database,
         )
         .await

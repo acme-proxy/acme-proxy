@@ -65,10 +65,10 @@ use async_trait::async_trait;
 use tracing::info;
 
 use crate::jobs::{JobQueue, JobSpec};
-use crate::sqlite::expiring::SupersededBy;
 use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
 use acme_proxy_core::config::NotifyConfig;
 use acme_proxy_core::config::ProfileConfig;
+use acme_proxy_store::expiring::SupersededBy;
 
 pub mod custom;
 pub mod email;
@@ -368,7 +368,7 @@ impl AdminCredentialChangeData {
     /// on who the recipient is.
     #[must_use]
     pub fn new(
-        user: &crate::sqlite::admin_user::AdminUser,
+        user: &acme_proxy_store::admin_user::AdminUser,
         change: AdminCredentialChange,
         by_self: bool,
         client_ip: Option<String>,
@@ -384,7 +384,7 @@ impl AdminCredentialChangeData {
             by_self,
             client_ip,
             user_agent,
-            at: crate::sqlite::nonce::now_secs(),
+            at: acme_proxy_store::nonce::now_secs(),
         }
     }
 }
@@ -1079,9 +1079,9 @@ pub(crate) fn render(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::sqlite::db::Database;
-    use crate::sqlite::job::Job;
     use acme_proxy_core::config::CustomNotifyConfig;
+    use acme_proxy_store::db::Database;
+    use acme_proxy_store::job::Job;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 

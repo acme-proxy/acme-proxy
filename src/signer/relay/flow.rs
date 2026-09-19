@@ -38,11 +38,11 @@ use tracing::{error, info, warn};
 
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::signer::issuance::IssuanceError;
-use crate::sqlite::db::Database;
-use crate::sqlite::job::Job;
-use crate::sqlite::order::Order;
-use crate::sqlite::upstream_order::UpstreamOrder;
 use acme_proxy_core::error::Problem;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::upstream_order::UpstreamOrder;
 
 use super::client::{Signer, UpstreamError};
 use super::wire::{UpstreamAuthzView, UpstreamChallengeView, UpstreamOrderView};
@@ -394,7 +394,7 @@ impl JobHandler for RelayJob {
                 outcome = "progress",
                 count = pending.len()
             );
-            if pending.len() >= crate::sqlite::upstream_order::MAX_PROCESSING_BATCH {
+            if pending.len() >= acme_proxy_store::upstream_order::MAX_PROCESSING_BATCH {
                 warn!(
                     event = "upstream_relay_batch_capped",
                     outcome = "advisory",
@@ -1037,10 +1037,11 @@ mod tests {
     /// the registry of the `Auditor` it writes through.
     #[tokio::test]
     async fn abandon_relayed_order_marks_both_rows_and_writes_one_row() {
-        use crate::sqlite::account::Account;
-        use crate::sqlite::audit::{AuditEntry, AuditQuery};
-        use crate::sqlite::db::Database;
         use acme_proxy_core::identifier::Identifier;
+        use acme_proxy_store::account::Account;
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
+        use acme_proxy_store::db::Database;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let metrics = crate::testutil::test_metrics(database.clone());
@@ -1059,7 +1060,7 @@ mod tests {
             "default",
             account.id,
             vec![Identifier::dns("a.example.com")],
-            crate::sqlite::nonce::now_secs() + 3600,
+            acme_proxy_store::nonce::now_secs() + 3600,
             None,
             None,
             &database,

@@ -14,7 +14,6 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value};
 
 use crate::admin::mfa;
-use crate::sqlite::admin_session::AdminSession;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::session::{
     LoginRequest, LogoutQuery, MfaRequest, finish_enrolment, finish_mfa, sign_in,
@@ -23,6 +22,7 @@ use crate::webadmin::pages::auth::{PageMfaPending, PageMfaSubmit, PageSelfServic
 use crate::webadmin::pages::error::{LOGIN_PATH, PageError, redirect};
 use crate::webadmin::pages::templates;
 use crate::webadmin::session::{AdminClientIp, MfaStep, PendingMfa, clearing_cookie};
+use acme_proxy_store::admin_session::AdminSession;
 
 /// Where a successful sign-in lands.
 const PANEL_PATH: &str = "/ui/";
@@ -149,7 +149,7 @@ pub async fn post_login_mfa(
             context.insert("step".to_string(), Value::String(step.as_str().to_string()));
             context.insert(
                 "expiresAt".to_string(),
-                Value::String(crate::sqlite::order::rfc3339(expires_at)),
+                Value::String(acme_proxy_store::order::rfc3339(expires_at)),
             );
             context.insert("flash".to_string(), flash);
             Ok((status, render_challenge(&state, context)?).into_response())
@@ -318,7 +318,7 @@ async fn challenge(
     );
     context.insert(
         "expiresAt".to_string(),
-        Value::String(crate::sqlite::order::rfc3339(pending.session.expires_at)),
+        Value::String(acme_proxy_store::order::rfc3339(pending.session.expires_at)),
     );
     if let Some(flash) = flash {
         context.insert("flash".to_string(), flash);
@@ -336,7 +336,7 @@ async fn challenge(
 /// The `enrolment` object `mfa/_setup.html` reads.
 async fn enrolment_context(
     state: &AdminState,
-    user: &mut crate::sqlite::admin_user::AdminUser,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
 ) -> Result<Value, PageError> {
     let enrolment = mfa::resume_or_begin_totp_enrolment(
         user,

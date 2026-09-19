@@ -61,9 +61,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::debug;
 
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::SignerConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_store::db::Database;
 
 pub mod custom;
 pub mod info;
@@ -1156,7 +1156,7 @@ mod tests {
         };
         let mut tx = parts.database.transaction().await.unwrap();
         assert!(
-            crate::sqlite::crl::StoredCrl::find(&issuer, &mut *tx)
+            acme_proxy_store::crl::StoredCrl::find(&issuer, &mut *tx)
                 .await
                 .unwrap()
                 .is_none(),

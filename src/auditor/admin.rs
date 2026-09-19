@@ -17,12 +17,12 @@
 //! [`Auditor`](crate::auditor::Auditor); the CLI passes [`Actor::cli`] and an
 //! empty [`ClientContext`].
 
-use crate::sqlite::account::Account;
-use crate::sqlite::order::Order;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::order::Order;
 
 /// The actor and (empty) client context a host-CLI administrative action is
 /// attributed with. The web front end builds [`Actor::admin`] with the
@@ -47,7 +47,7 @@ pub fn cli_actor() -> (Actor, ClientContext) {
 /// writes nothing, which is the whole difference between this half of the
 /// vocabulary and the certificate half.
 pub async fn record_cli_action(
-    database: &crate::sqlite::db::Database,
+    database: &acme_proxy_store::db::Database,
     build: impl FnOnce(Actor, ClientContext) -> AuditRecord,
 ) {
     let (actor, client) = cli_actor();
@@ -57,7 +57,7 @@ pub async fn record_cli_action(
 /// [`record_cli_action`] for an action that writes several rows — `eab delete`,
 /// one per account it changed and one for the credential.
 pub async fn record_cli_actions(
-    database: &crate::sqlite::db::Database,
+    database: &acme_proxy_store::db::Database,
     build: impl FnOnce(Actor, ClientContext) -> Vec<AuditRecord>,
 ) {
     let (actor, client) = cli_actor();
@@ -196,9 +196,9 @@ pub fn eab_revoked(
 pub fn eab_deleted(
     actor: Actor,
     client: ClientContext,
-    deleted: &crate::sqlite::eab::DeletedEab,
+    deleted: &acme_proxy_store::eab::DeletedEab,
 ) -> AuditRecord {
-    use crate::sqlite::eab::BoundAccounts;
+    use acme_proxy_store::eab::BoundAccounts;
 
     let eab = &deleted.eab;
     let accounts = match deleted.accounts {
@@ -231,7 +231,7 @@ pub fn eab_deleted(
 pub fn eab_deleted_records(
     actor: Actor,
     client: ClientContext,
-    deleted: &crate::sqlite::eab::DeletedEab,
+    deleted: &acme_proxy_store::eab::DeletedEab,
 ) -> Vec<AuditRecord> {
     let mut records: Vec<AuditRecord> = deleted
         .deactivated
@@ -468,7 +468,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::sqlite::db::Database;
+    use acme_proxy_store::db::Database;
 
     fn cli() -> (Actor, ClientContext) {
         (Actor::cli(), ClientContext::default())
@@ -489,9 +489,12 @@ mod tests {
     #[tokio::test]
     async fn an_account_action_keeps_the_account_id_and_its_profile() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let account =
-            crate::testutil::account_seen_from(&[9u8, 9, 9], &ClientContext::default(), &database)
-                .await;
+        let account = acme_proxy_store::testutil::account_seen_from(
+            &[9u8, 9, 9],
+            &ClientContext::default(),
+            &database,
+        )
+        .await;
         let (actor, client) = cli();
         let record = account_contact_updated(actor, client, &account, &account.contact);
         assert_eq!(record.event, AuditEvent::AccountContactUpdated);
@@ -511,11 +514,17 @@ mod tests {
     /// what became of the accounts.
     #[tokio::test]
     async fn an_eab_delete_records_each_account_then_the_credential() {
-        use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab};
+        use acme_proxy_store::eab::BoundAccounts;
+        use acme_proxy_store::eab::DeletedEab;
+        use acme_proxy_store::eab::Eab;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let account =
-            crate::testutil::account_seen_from(&[8u8], &ClientContext::default(), &database).await;
+        let account = acme_proxy_store::testutil::account_seen_from(
+            &[8u8],
+            &ClientContext::default(),
+            &database,
+        )
+        .await;
         let eab = Eab::create(
             Some("team".to_string()),
             Some("default".to_string()),

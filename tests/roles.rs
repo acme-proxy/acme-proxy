@@ -43,8 +43,8 @@ use std::sync::Arc;
 
 use acme_proxy::server::sockets::Sockets as ServerSockets;
 use acme_proxy::server::{ProcessRole, RoleSet, serve_on_with_reloads};
-use acme_proxy::sqlite::db::Database;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::db::Database;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -301,7 +301,7 @@ async fn an_acme_process_queues_work_a_worker_performs() {
     // Nothing here drains it, however long we wait.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
-        acme_proxy::sqlite::job::Job::count_live("nonce_sweep", &database)
+        acme_proxy_store::job::Job::count_live("nonce_sweep", &database)
             .await
             .unwrap(),
         1,
@@ -313,7 +313,7 @@ async fn an_acme_process_queues_work_a_worker_performs() {
     let mut ran = false;
     for _ in 0..200 {
         let row =
-            acme_proxy::sqlite::job::Job::find_latest_by_dedup("nonce_sweep", "nonces", &database)
+            acme_proxy_store::job::Job::find_latest_by_dedup("nonce_sweep", "nonces", &database)
                 .await
                 .unwrap()
                 .expect("the row exists");
@@ -483,7 +483,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config.jobs);
     let order_id = claimed_order(&database, &queue).await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let order = acme_proxy::sqlite::order::Order::find_by_id(&order_id, &database)
+    let order = acme_proxy_store::order::Order::find_by_id(&order_id, &database)
         .await
         .unwrap()
         .unwrap();
@@ -593,9 +593,9 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
 /// A `ready` order for `a.example.com`, claimed with its `signer_issue` row
 /// queued — what `finalize` leaves behind — returning its id.
 async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQueue) -> String {
-    use acme_proxy::sqlite::account::Account;
-    use acme_proxy::sqlite::order::Order;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::order::Order;
     use base64::prelude::*;
 
     let (account, _) = Account::find_or_create(
@@ -638,13 +638,13 @@ async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQu
 }
 
 /// The order once it has left `processing`.
-async fn settled(database: &Database, id: &str) -> acme_proxy::sqlite::order::Order {
+async fn settled(database: &Database, id: &str) -> acme_proxy_store::order::Order {
     for _ in 0..500 {
-        let order = acme_proxy::sqlite::order::Order::find_by_id(id, database)
+        let order = acme_proxy_store::order::Order::find_by_id(id, database)
             .await
             .unwrap()
             .unwrap();
-        if order.status != acme_proxy::sqlite::status::OrderStatus::Processing {
+        if order.status != acme_proxy_store::status::OrderStatus::Processing {
             return order;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;

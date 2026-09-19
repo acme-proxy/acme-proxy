@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use acme_proxy::metrics::Metrics;
-use acme_proxy::sqlite::db::Database;
+use acme_proxy_store::db::Database;
 use serde_json::Value;
 
 /// Every metric name this build emits, read out of a real exposition.

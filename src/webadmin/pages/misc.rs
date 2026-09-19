@@ -8,18 +8,21 @@ use serde_json::Value;
 use std::time::Duration;
 
 use crate::admin;
-use crate::sqlite::account::Account;
-use crate::sqlite::audit::{AuditEntry, AuditQuery};
-use crate::sqlite::eab::Eab;
-use crate::sqlite::job::{Job, JobQuery};
-use crate::sqlite::nonce::Nonce;
-use crate::sqlite::order::{Order, OrderQuery};
-use crate::sqlite::status::JobStatus;
 use crate::webadmin::AdminState;
 use crate::webadmin::handlers::misc::profile_rows;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
+use acme_proxy_store::account::Account;
+use acme_proxy_store::audit::AuditEntry;
+use acme_proxy_store::audit::AuditQuery;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::job::Job;
+use acme_proxy_store::job::JobQuery;
+use acme_proxy_store::nonce::Nonce;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::order::OrderQuery;
+use acme_proxy_store::status::JobStatus;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupForm {
@@ -69,10 +72,10 @@ pub async fn get_index(
     .await?;
     // The whole window, replaced certificates included, so the number agrees
     // with the list the tile opens rather than with a filter it does not set.
-    let (_, expiring_soon, _) = crate::sqlite::expiring::list_expiring(
-        &crate::sqlite::expiring::ExpiringQuery {
+    let (_, expiring_soon, _) = acme_proxy_store::expiring::list_expiring(
+        &acme_proxy_store::expiring::ExpiringQuery {
             profile: None,
-            before: crate::sqlite::expiring::expiring_horizon(ATTENTION_EXPIRY_DAYS),
+            before: acme_proxy_store::expiring::expiring_horizon(ATTENTION_EXPIRY_DAYS),
             include_superseded: true,
             limit: 1,
             offset: 0,
@@ -83,7 +86,7 @@ pub async fn get_index(
     let (_, refusals) = AuditEntry::search(
         &AuditQuery {
             outcome: Some("failure".to_string()),
-            since: Some(crate::sqlite::nonce::now_secs().saturating_sub(24 * 60 * 60)),
+            since: Some(acme_proxy_store::nonce::now_secs().saturating_sub(24 * 60 * 60)),
             limit: 1,
             ..AuditQuery::default()
         },

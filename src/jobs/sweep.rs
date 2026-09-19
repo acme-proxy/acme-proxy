@@ -34,8 +34,8 @@ use async_trait::async_trait;
 use tracing::{debug, error, info, warn};
 
 use super::{JobHandler, JobOutcome, JobQueue, JobSpec};
-use crate::sqlite::db::Database;
-use crate::sqlite::job::Job;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::job::Job;
 
 /// The one row's `dedup_key`, for every sweep.
 ///
@@ -206,7 +206,7 @@ impl SweepJob {
     async fn sweep(&self) {
         match &self.target {
             SweepTarget::Nonces { ttl } => {
-                match crate::sqlite::nonce::Nonce::cleanup(&self.database, *ttl).await {
+                match acme_proxy_store::nonce::Nonce::cleanup(&self.database, *ttl).await {
                     Ok(removed) => debug!(
                         event = "nonce_reaper_swept",
                         outcome = "success",
@@ -220,8 +220,8 @@ impl SweepJob {
             SweepTarget::AuditLog { retention_days } => {
                 // The same cutoff arithmetic `audit cleanup --older-than` uses,
                 // so "older than N days" means one thing in the process.
-                let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
-                match crate::sqlite::audit::AuditEntry::cleanup(cutoff, &self.database).await {
+                let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
+                match acme_proxy_store::audit::AuditEntry::cleanup(cutoff, &self.database).await {
                     Ok(removed) => info!(
                         event = "audit_reaper_swept",
                         outcome = "success",
@@ -234,7 +234,7 @@ impl SweepJob {
                 }
             }
             SweepTarget::AdminSessions { idle_timeout } => {
-                match crate::sqlite::admin_session::AdminSession::cleanup(
+                match acme_proxy_store::admin_session::AdminSession::cleanup(
                     *idle_timeout,
                     &self.database,
                 )
@@ -251,14 +251,16 @@ impl SweepJob {
                 }
             }
             SweepTarget::Jobs { retention_days } => {
-                let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
+                let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
                 if let Err(error) = Job::cleanup(cutoff, &self.database).await {
                     warn!(event = "job_retention_sweep_failed", outcome = "failure", error = %error);
                 }
             }
             SweepTarget::Http01Tokens => {
-                let now = crate::sqlite::nonce::now_secs();
-                match crate::sqlite::http01_token::Http01Token::cleanup(now, &self.database).await {
+                let now = acme_proxy_store::nonce::now_secs();
+                match acme_proxy_store::http01_token::Http01Token::cleanup(now, &self.database)
+                    .await
+                {
                     Ok(removed) => debug!(
                         event = "http_01_token_reaper_swept",
                         outcome = "success",
@@ -274,8 +276,8 @@ impl SweepJob {
                 // the retention is per-profile, and a profile whose delete
                 // fails must not stop the others being swept.
                 for (profile, retention_days) in retention {
-                    let cutoff = crate::sqlite::audit::audit_cutoff(*retention_days);
-                    match crate::sqlite::order::Order::cleanup(profile, cutoff, &self.database)
+                    let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);
+                    match acme_proxy_store::order::Order::cleanup(profile, cutoff, &self.database)
                         .await
                     {
                         Ok(removed) => info!(
@@ -332,8 +334,9 @@ impl JobHandler for SweepJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sqlite::nonce::{Nonce, now_secs};
     use acme_proxy_core::config::JobsConfig;
+    use acme_proxy_store::nonce::Nonce;
+    use acme_proxy_store::nonce::now_secs;
     use serde_json::json;
 
     async fn setup() -> (Arc<Database>, JobQueue) {
@@ -345,7 +348,7 @@ mod tests {
     /// A claimed row, as the runner would hand one to `run`.
     fn row(kind: &str) -> Job {
         Job {
-            id: crate::sqlite::id::mint(),
+            id: acme_proxy_store::id::mint(),
             kind: kind.to_string(),
             dedup_key: SWEEP_KEY.to_string(),
             payload: json!({}),
@@ -445,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_http01_token_sweep_removes_expired_tokens_and_reschedules() {
-        use crate::sqlite::http01_token::Http01Token;
+        use acme_proxy_store::http01_token::Http01Token;
 
         let (database, _queue) = setup().await;
         let now = now_secs();
@@ -478,7 +481,7 @@ mod tests {
         let (database, _queue) = setup().await;
         // Written through the model, then backdated: the row's shape is the
         // production one, and only its age is a fixture.
-        crate::sqlite::audit::AuditEntry::insert(
+        acme_proxy_store::audit::AuditEntry::insert(
             acme_proxy_core::audit::AuditRecord::new(
                 acme_proxy_core::audit::AuditEvent::CertificateIssued,
                 "default",
@@ -511,15 +514,15 @@ mod tests {
     #[tokio::test]
     async fn the_admin_session_sweep_removes_expired_rows() {
         let (database, _queue) = setup().await;
-        crate::sqlite::admin_user::AdminUser::create("ops", "hash", None, &database)
+        acme_proxy_store::admin_user::AdminUser::create("ops", "hash", None, &database)
             .await
             .unwrap();
-        let user = crate::sqlite::admin_user::AdminUser::find_by_username("ops", &database)
+        let user = acme_proxy_store::admin_user::AdminUser::find_by_username("ops", &database)
             .await
             .unwrap()
             .unwrap();
-        crate::sqlite::admin_session::AdminSession::create(
-            crate::sqlite::admin_session::NewSession {
+        acme_proxy_store::admin_session::AdminSession::create(
+            acme_proxy_store::admin_session::NewSession {
                 user_id: user.id,
                 token_hash: "hash",
                 csrf_token: "csrf",
@@ -559,7 +562,7 @@ mod tests {
         // A real id, not a readable placeholder: `Job::find_by_id` takes a
         // `Uuid`, so a row this test cannot name is a row it cannot assert the
         // absence of — which is the whole assertion below.
-        let old = crate::sqlite::id::mint();
+        let old = acme_proxy_store::id::mint();
         sqlx::query(
             "INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, attempts, \
              max_attempts, created_at, updated_at) \
@@ -639,9 +642,9 @@ mod tests {
     /// exclusion has to be about the *status* and not about the clock.
     #[tokio::test]
     async fn the_order_sweep_spares_valid_orders_and_takes_expired_ones() {
-        use crate::sqlite::account::Account;
-        use crate::sqlite::order::Order;
         use acme_proxy_core::identifier::Identifier;
+        use acme_proxy_store::account::Account;
+        use acme_proxy_store::order::Order;
 
         let (database, _queue) = setup().await;
         let (account, _) = Account::find_or_create(
@@ -686,9 +689,13 @@ mod tests {
             .await
             .unwrap();
 
-        let removed = Order::cleanup("default", crate::sqlite::audit::audit_cutoff(30), &database)
-            .await
-            .unwrap();
+        let removed = Order::cleanup(
+            "default",
+            acme_proxy_store::audit::audit_cutoff(30),
+            &database,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(removed, 1, "only the expired, undecided order goes");
         assert!(
@@ -716,9 +723,9 @@ mod tests {
     /// profile's rows must not go out with the first's.
     #[tokio::test]
     async fn the_order_sweep_is_scoped_to_one_profile() {
-        use crate::sqlite::account::Account;
-        use crate::sqlite::order::Order;
         use acme_proxy_core::identifier::Identifier;
+        use acme_proxy_store::account::Account;
+        use acme_proxy_store::order::Order;
 
         let (database, _queue) = setup().await;
         let ancient = now_secs() - 400 * 24 * 60 * 60;
@@ -747,9 +754,13 @@ mod tests {
             ids.push(order.id);
         }
 
-        let removed = Order::cleanup("default", crate::sqlite::audit::audit_cutoff(30), &database)
-            .await
-            .unwrap();
+        let removed = Order::cleanup(
+            "default",
+            acme_proxy_store::audit::audit_cutoff(30),
+            &database,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(removed, 1);
         assert!(

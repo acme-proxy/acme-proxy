@@ -8,12 +8,15 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::admin;
-use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab, EabDeletion};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_store::eab::BoundAccounts;
+use acme_proxy_store::eab::DeletedEab;
+use acme_proxy_store::eab::Eab;
+use acme_proxy_store::eab::EabDeletion;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateEab {

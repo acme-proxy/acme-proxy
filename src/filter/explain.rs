@@ -484,8 +484,8 @@ mod tests {
     use crate::filter::expr::Condition;
     use crate::filter::ip_allow;
     use crate::filter::policy::{Check, Effect, Mode, Rule};
-    use crate::testutil::dns_identifiers;
     use acme_proxy_core::client::ProxyPolicy;
+    use acme_proxy_store::testutil::dns_identifiers;
 
     fn net(allow: &[&str]) -> Arc<dyn Check> {
         Arc::new(

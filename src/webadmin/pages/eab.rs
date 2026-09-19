@@ -13,8 +13,6 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::admin;
-use crate::sqlite::account::Account;
-use crate::sqlite::eab::Eab;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::eab::{DeleteEabParams, deleted_or_refused};
@@ -23,6 +21,8 @@ use crate::webadmin::handlers::params::non_empty;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_fragment};
+use acme_proxy_store::account::Account;
+use acme_proxy_store::eab::Eab;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateForm {
@@ -275,7 +275,7 @@ async fn insert_bound_accounts(
     kid: &str,
     state: &AdminState,
 ) -> Result<(), PageError> {
-    let summary = match crate::sqlite::id::parse(kid) {
+    let summary = match acme_proxy_store::id::parse(kid) {
         Some(kid) => Account::eab_summary(kid, &state.database).await?,
         None => Default::default(),
     };

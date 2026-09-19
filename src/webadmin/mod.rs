@@ -41,8 +41,8 @@ use tracing::{info, warn};
 
 use crate::middlewares;
 use crate::profile::Profile;
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
+use acme_proxy_store::db::Database;
 
 /// Shared state for every admin route.
 ///
@@ -191,7 +191,7 @@ impl AdminState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn notify_credential_change(
         &self,
-        user: &crate::sqlite::admin_user::AdminUser,
+        user: &acme_proxy_store::admin_user::AdminUser,
         change: crate::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
@@ -229,7 +229,7 @@ impl AdminState {
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
-        user: &crate::sqlite::admin_user::AdminUser,
+        user: &acme_proxy_store::admin_user::AdminUser,
         change: crate::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
@@ -256,7 +256,7 @@ impl AdminState {
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
-        user: &crate::sqlite::admin_user::AdminUser,
+        user: &acme_proxy_store::admin_user::AdminUser,
         previous_recipient: Option<String>,
         by_self: bool,
         client: Option<std::net::IpAddr>,
@@ -280,7 +280,7 @@ impl AdminState {
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
-        user: &crate::sqlite::admin_user::AdminUser,
+        user: &acme_proxy_store::admin_user::AdminUser,
         change: crate::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,

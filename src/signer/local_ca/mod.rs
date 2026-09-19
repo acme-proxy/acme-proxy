@@ -49,14 +49,14 @@ use time::{Duration, OffsetDateTime};
 use tracing::{error, info, warn};
 
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
-use crate::sqlite::db::Database;
-use crate::sqlite::revocation::Revocation;
 use acme_proxy_core::cert::cert_serial_and_spki;
 use acme_proxy_core::config::LocalCaConfig;
 use acme_proxy_core::config::LocalCaSubjectConfig;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::pemfile::warn_if_key_is_readable;
 use acme_proxy_core::pemfile::write_private_key;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::revocation::Revocation;
 
 pub use info::LocalCaInfo;
 pub(crate) use info::read_ca_certificate;
@@ -1478,9 +1478,9 @@ mod tests {
     }
 
     /// The CRL row `ca` has stored, read straight from the table.
-    async fn stored(ca: &LocalCa, database: &Database) -> crate::sqlite::crl::StoredCrl {
+    async fn stored(ca: &LocalCa, database: &Database) -> acme_proxy_store::crl::StoredCrl {
         let mut tx = database.transaction().await.unwrap();
-        crate::sqlite::crl::StoredCrl::find(ca.crl.issuer_id(), &mut *tx)
+        acme_proxy_store::crl::StoredCrl::find(ca.crl.issuer_id(), &mut *tx)
             .await
             .unwrap()
             .expect("the CA has initialised")
@@ -2174,7 +2174,7 @@ mod tests {
     async fn recover_queues_one_row_however_often_it_runs() {
         use crate::jobs::JobHandler;
         use crate::signer::local_ca::sweep::{CRL_SWEEP_KIND, CrlSweepJob};
-        use crate::sqlite::job::Job;
+        use acme_proxy_store::job::Job;
 
         let database = memory_db().await;
         let queue = crate::testutil::idle_job_queue(database.clone());
@@ -2243,10 +2243,10 @@ mod tests {
     /// Writes `serial` straight into `revocations`, the way a revocation
     /// recorded without the CA key lands.
     async fn record_without_key(ca: &LocalCa, database: &Database, leaf: &[u8], serial: &str) {
-        let row = crate::sqlite::revocation::Revocation {
+        let row = acme_proxy_store::revocation::Revocation {
             issuer: ca.crl.issuer_id().to_string(),
             serial: serial.to_string(),
-            revoked_at: crate::sqlite::nonce::now_secs(),
+            revoked_at: acme_proxy_store::nonce::now_secs(),
             reason: None,
             not_after: acme_proxy_core::cert::cert_validity(leaf)
                 .ok()
@@ -2258,10 +2258,10 @@ mod tests {
     }
 
     /// A claimed row, as the runner would hand one to `run`.
-    fn sweep_row() -> crate::sqlite::job::Job {
-        use crate::sqlite::nonce::now_secs;
-        crate::sqlite::job::Job {
-            id: crate::sqlite::id::mint(),
+    fn sweep_row() -> acme_proxy_store::job::Job {
+        use acme_proxy_store::nonce::now_secs;
+        acme_proxy_store::job::Job {
+            id: acme_proxy_store::id::mint(),
             kind: crate::signer::local_ca::sweep::CRL_SWEEP_KIND.to_string(),
             dedup_key: "all".to_string(),
             payload: serde_json::json!({}),

@@ -62,9 +62,9 @@ pub use webadmin::AdminCommand;
 
 use crate::cli::filter::FilterCommand;
 pub use crate::cli::style::ColorChoice;
-use crate::sqlite::db::Database;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_store::db::Database;
 
 #[derive(Parser)]
 #[command(

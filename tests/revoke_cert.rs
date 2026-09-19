@@ -427,7 +427,7 @@ async fn revoked_certificate_appears_in_the_served_crl() {
 async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() {
     use acme_proxy::signer::SignerBackend;
     use acme_proxy::signer::local_ca::LocalCa;
-    use acme_proxy::sqlite::db::Database;
+    use acme_proxy_store::db::Database;
 
     let dir = common::TempDir::new("shared-crl");
     let cfg = acme_proxy_core::config::LocalCaConfig {
@@ -452,7 +452,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
     let cli_ca: Arc<dyn SignerBackend> =
         Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
     let order =
-        acme_proxy::sqlite::order::Order::find_by_cert_serial("default", &serial_hex, &database)
+        acme_proxy_store::order::Order::find_by_cert_serial("default", &serial_hex, &database)
             .await
             .unwrap()
             .expect("the issued order is found by its serial");
@@ -517,7 +517,7 @@ async fn a_signer_revoke_failure_leaves_the_order_revocable() {
 
     // Nothing was recorded: the row is untouched.
     let order =
-        acme_proxy::sqlite::order::Order::find_by_cert_serial("default", &serial_hex, &database)
+        acme_proxy_store::order::Order::find_by_cert_serial("default", &serial_hex, &database)
             .await
             .unwrap()
             .expect("the order is still findable by serial");

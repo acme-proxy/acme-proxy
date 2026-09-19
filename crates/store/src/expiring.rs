@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::nonce::now_secs;
-use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use crate::db::Database;
+use crate::nonce::now_secs;
+use crate::order::{Order, UNPARSABLE_NOT_AFTER};
 use acme_proxy_core::config::Config;
 
 /// The window the panel opens on when the caller names no `days`.
@@ -69,7 +69,7 @@ pub struct ExpiringQuery {
 
 /// The `cert_not_after` at or below which a certificate counts as expiring.
 ///
-/// [`audit_cutoff`](crate::sqlite::audit::audit_cutoff)'s twin, and for its
+/// [`audit_cutoff`](crate::audit::audit_cutoff)'s twin, and for its
 /// reason: one function so the digest, the panel and
 /// `order list --expiring-in` cannot come to disagree by a rounding rule.
 #[must_use]
@@ -105,7 +105,7 @@ pub fn default_lead_days(config: &Config) -> u64 {
 /// Two signals, tried strongest first, and both deliberately narrow. The
 /// annotation errs towards `None` throughout: a wrong "already renewed" is an
 /// operator ignoring a certificate that really is about to lapse, where a
-/// missing one is only noise. `crate::notify::expiry`'s module docs carry that
+/// missing one is only noise. `notify::expiry`'s module docs carry that
 /// argument in full.
 ///
 /// `candidates` is the account's own orders, passed in rather than fetched, so
@@ -393,7 +393,7 @@ mod tests {
         );
 
         // Covers them all and is live, but belongs to somebody else.
-        let (other, _created) = crate::sqlite::account::Account::find_or_create(
+        let (other, _created) = crate::account::Account::find_or_create(
             "default",
             b"other-key",
             Vec::new(),

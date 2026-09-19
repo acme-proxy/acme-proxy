@@ -45,9 +45,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::error;
 
-use crate::sqlite::db::Database;
-use crate::sqlite::http01_token::Http01Token;
-use crate::sqlite::nonce::now_secs;
+use acme_proxy_store::db::Database;
+use acme_proxy_store::http01_token::Http01Token;
+use acme_proxy_store::nonce::now_secs;
 
 /// Holds the key authorizations the responder route serves.
 ///

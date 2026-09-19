@@ -99,7 +99,7 @@ statuses! {
     /// signs, and a delegating backend (`relay`) keeps it `processing` until its
     /// upstream answers. There is deliberately no `revoked`: RFC 8555 defines none, and
     /// revocation is recorded on its own columns
-    /// (see [`Order::revoke`](crate::sqlite::order::Order::revoke)).
+    /// (see [`Order::revoke`](crate::order::Order::revoke)).
     OrderStatus("order status") {
         Pending => "pending",
         Ready => "ready",
