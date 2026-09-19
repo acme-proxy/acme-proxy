@@ -256,6 +256,16 @@ migrated configuration before restarting.
   command takes `--workspace`, and the PKCS#11 tests run with
   `--features acme-proxy-signer/hsm` (see `doc/src/dev/contributing.md`).
 
+- **The book records its design decisions.** A new *Architecture Decisions*
+  chapter under Developer Documentation holds ten ADRs (the pre-1.0
+  compatibility policy, the workspace layering, the migration rules, row ids,
+  vocabularies, the request path, role processes, shared state, dependencies
+  and error types) and indexes the decisions argued on other pages or in module
+  docs. `doc/lint.py` checks every ADR is listed and complete. The developer
+  pages gained what only the contributor notes held — adding a configuration
+  key, the CI jobs they did not list, the schema diagram's missing tables — and
+  lost what was wrong. Nothing an operator configures or runs changes.
+
 - **`check_request_timeout` covers only a `custom` script's read hooks.** The
   script's `issue` and `revoke` hooks run in the worker now, so
   `server.request_timeout_ms` must exceed `signer.custom.timeout_ms` only while

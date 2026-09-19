@@ -55,7 +55,8 @@ internally, that assertion would have passed whether or not the sweep had run.
   outside the process (the request path and job payloads). They are listed in
   `crates/store/src/id.rs`.
 - The conversion migration (`20260827120000_uuid_ids_as_blobs.sql`) is the
-  worked example of the DROP-cascade hazard in ADR 0003.
+  worked example of the DROP-cascade hazard in [ADR
+  0003](0003-migrations-frozen-and-explicit.md).
 - Some fresh values are deliberately not row ids and do not go through `mint()`:
   the `x-request-id` fallback, the job lease owner and a notification's
   `delivery_id`.

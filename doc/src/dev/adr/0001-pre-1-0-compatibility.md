@@ -27,8 +27,9 @@ database is not an upgrade.
 ## Decision
 
 Before 1.0.0 the **database schema is the only compatibility guarantee**:
-`crates/store/migrations/` is append-only (ADR 0003), so an upgrade is starting
-the new binary against the existing database.
+`crates/store/migrations/` is append-only ([ADR
+0003](0003-migrations-frozen-and-explicit.md)), so an upgrade is starting the
+new binary against the existing database.
 
 Everything else may be renamed or removed in any release: configuration keys,
 profile names and the ACME URLs derived from them, the admin JSON API, log event
@@ -60,7 +61,7 @@ The refusals themselves are removed at 1.0.0.
   configuration before a restart.
 - Frozen means frozen: the comments inside committed migrations still say
   `acme_proxy` where the code says `relay`, because editing them would change
-  their checksum (ADR 0003).
+  their checksum ([ADR 0003](0003-migrations-frozen-and-explicit.md)).
 
 The how-to for a rename is in
 [Contributing](../contributing.md#changing-a-configuration-key).

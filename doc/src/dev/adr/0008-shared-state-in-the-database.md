@@ -27,8 +27,8 @@ binary. Each was correct only while exactly one process existed:
 - **Notification delivery.** A delivery queued by one process for a profile
   another process had not yet reloaded was retired as `Failed` for good.
 
-Role processes (ADR 0007) turn every one of these from a latent bug into a
-routine one.
+Role processes ([ADR 0007](0007-role-processes.md)) turn every one of these from
+a latent bug into a routine one.
 
 ## Decision
 

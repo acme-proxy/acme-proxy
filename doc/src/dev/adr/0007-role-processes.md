@@ -28,8 +28,8 @@ the binaries, where one database and one job queue already do the job.
 - **The three roles:**
   - `acme` serves ACME and the root router;
   - `admin` serves the panel;
-  - `worker` drains the job queue and owns the schema (ADR 0003) and the
-    first-run material.
+  - `worker` drains the job queue and owns the schema ([ADR
+    0003](0003-migrations-frozen-and-explicit.md)) and the first-run material.
 
   Each role only enqueues work it does not do itself. Every role may serve its
   own `/metrics`.

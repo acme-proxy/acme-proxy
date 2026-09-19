@@ -6,13 +6,13 @@ Accepted.
 
 ## Context
 
-The schema is the one surface this project promises not to break (ADR 0001),
-and `sqlx` enforces that promise mechanically: it records a checksum for every
-migration it applies. Editing a committed file does not quietly diverge a
-deployment's schema. It makes the next startup fail with a checksum mismatch.
-Before the first release, a schema change meant editing the migration in place
-and deleting `sqlite.db`. That stopped being possible once a database outside
-the repository had run the files.
+The schema is the one surface this project promises not to break ([ADR
+0001](0001-pre-1-0-compatibility.md)), and `sqlx` enforces that promise
+mechanically: it records a checksum for every migration it applies. Editing a
+committed file does not quietly diverge a deployment's schema. It makes the next
+startup fail with a checksum mismatch. Before the first release, a schema change
+meant editing the migration in place and deleting `sqlite.db`. That stopped
+being possible once a database outside the repository had run the files.
 
 SQLite adds its own constraints:
 

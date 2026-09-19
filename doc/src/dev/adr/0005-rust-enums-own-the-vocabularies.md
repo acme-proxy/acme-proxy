@@ -11,9 +11,10 @@ an operator's role, a job's kind. There are two places the list can be enforced:
 a SQL `CHECK` constraint, or a Rust type.
 
 A `CHECK` catches a typo before it parks a row in a state nothing can reach. But
-SQLite cannot alter one without rebuilding the table (ADR 0003). Once a
-vocabulary grows, its constraint becomes a migration per new word, and a rolling
-upgrade breaks: an older binary refuses to write a word only a newer one knows.
+SQLite cannot alter one without rebuilding the table ([ADR
+0003](0003-migrations-frozen-and-explicit.md)). Once a vocabulary grows, its
+constraint becomes a migration per new word, and a rolling upgrade breaks: an
+older binary refuses to write a word only a newer one knows.
 
 String literals in Rust are worse than either. Before
 `crates/store/src/status.rs` existed, about 30 comparisons against literals were
