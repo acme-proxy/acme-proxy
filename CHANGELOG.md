@@ -419,6 +419,11 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **A queued issuance re-checks the account and the authorizations before
+  signing.** An account deactivated after `finalize` (by its client, or by
+  `eab delete --deactivate-accounts`), or an authorization deactivated in the
+  same instant as the claim, now turns the order `invalid` with `unauthorized`
+  instead of getting its certificate.
 - **The RFC 2136 updater verifies the TSIG signature on a successful answer**
   (RFC 8945 §5.3): an unsigned NOERROR, or one signed with another key, for
   another request or outside the time window, is a failed update rather than a

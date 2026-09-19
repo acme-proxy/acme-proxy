@@ -626,7 +626,17 @@ async fn claimed_order(
     )
     .await
     .unwrap();
-    order.mark_ready(database).await.unwrap();
+    // Authorized as `finalize` requires, since the worker re-checks it.
+    let mut authz = acme_proxy_store::authz::Authorization::create(
+        order.id,
+        Identifier::dns("a.example.com"),
+        order.expires,
+        database,
+    )
+    .await
+    .unwrap();
+    assert!(authz.mark_valid(database).await.unwrap());
+    assert!(order.mark_ready(database).await.unwrap());
     assert!(order.claim_for_finalize(database).await.unwrap());
     let csr = BASE64_URL_SAFE_NO_PAD
         .decode(common::make_csr("a.example.com"))

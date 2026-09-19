@@ -23,6 +23,7 @@
 //! | a chain it could not store | unchanged | `Retry` |
 //! | `Processing` (relay) | unchanged — the relay job owns it | `Done` |
 //! | `BadCsr` | `invalid` with `badCSR` — a verdict | `Done` |
+//! | *(not asked)* account or an authorization deactivated since the claim | `invalid` with `unauthorized` | `Done` |
 //! | `Internal` | unchanged | `Retry`, then `invalid` via `abandon` |
 //!
 //! `BadCsr` makes the order `invalid` rather than `ready` again, although §7.4
@@ -58,9 +59,12 @@ use acme_proxy_signer::issuance::IssuanceError;
 use acme_proxy_signer::issuance::announce_issuance;
 use acme_proxy_signer::issuance::record_issuance;
 use acme_proxy_signer::issuance::record_issue_failure;
+use acme_proxy_store::account::Account;
+use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
+use acme_proxy_store::status::AuthzStatus;
 use acme_proxy_store::status::OrderStatus;
 
 /// The `jobs.kind` one issuance is queued under.
@@ -133,6 +137,32 @@ impl SignerIssueJob {
     }
 }
 
+/// Why `order` may no longer be issued, if it may not: its account or one of
+/// its authorizations has been deactivated since `finalize` claimed it.
+async fn authority_withdrawn(
+    order: &Order,
+    database: &Database,
+) -> Result<Option<&'static str>, sqlx::Error> {
+    let account =
+        Account::find_by_id(&order.profile, &order.account_id.to_string(), database).await?;
+    if account.is_none_or(|account| account.status == "deactivated") {
+        return Ok(Some(
+            "the account was deactivated before the certificate was issued",
+        ));
+    }
+    let authzs = Authorization::find_by_order(order.id, database).await?;
+    if authzs.len() != order.identifiers.len()
+        || authzs
+            .iter()
+            .any(|authz| authz.status != AuthzStatus::Valid)
+    {
+        return Ok(Some(
+            "an authorization was deactivated before the certificate was issued",
+        ));
+    }
+    Ok(None)
+}
+
 /// The client a row names, read back out of its payload.
 fn payload_client(job: &Job) -> ClientContext {
     ClientContext::from_json(&job.payload["client"])
@@ -160,11 +190,44 @@ impl JobHandler for SignerIssueJob {
             Ok(None) => return JobOutcome::Failed("the order no longer exists".to_string()),
             Err(error) => return JobOutcome::Retry(format!("reading the order failed: {error}")),
         };
-        // Settled already — the row was redelivered after a lost lease — or
-        // demoted by a §7.5.2 deactivation since it was claimed. Either way
-        // there is nothing left for this row to issue.
+        // Settled already: the row was redelivered after a lost lease, and
+        // there is nothing left for it to issue.
         if order.status != OrderStatus::Processing {
             return JobOutcome::Done;
+        }
+
+        // What `finalize` checked may have been withdrawn while the row
+        // waited: the account deactivated (§7.3.6, or an operator's
+        // `eab delete --deactivate-accounts`), or an authorization deactivated
+        // (§7.5.2) by a request that read the order just before it was
+        // claimed. Either one is a verdict on the order, recorded once.
+        match authority_withdrawn(&order, &self.database).await {
+            Ok(None) => {}
+            Ok(Some(detail)) => {
+                warn!(event = "order_finalize_authority_withdrawn", outcome = "failure", order_id = %order_id, detail = %detail);
+                let problem = Problem::unauthorized(detail);
+                if let Err(error) = order.mark_invalid(problem.to_value(), &self.database).await {
+                    error!(event = "order_mark_invalid_failed", outcome = "failure", order_id = %order_id, error = %error);
+                    return JobOutcome::Retry(format!("recording the refusal failed: {error}"));
+                }
+                self.audit
+                    .record(
+                        AuditRecord::new(
+                            AuditEvent::CertificateIssueFailed,
+                            &order.profile,
+                            Actor::acme(order.account_id),
+                        )
+                        .with_order(order.id, order.account_id, &order.identifiers)
+                        .with_client(payload_client(job))
+                        .with_reason("unauthorized")
+                        .with_detail(detail),
+                    )
+                    .await;
+                return JobOutcome::Done;
+            }
+            Err(error) => {
+                return JobOutcome::Retry(format!("reading the order's authority failed: {error}"));
+            }
         }
         let Some(signer) = self.signer(&order.profile) else {
             return JobOutcome::Retry(format!(
@@ -567,7 +630,12 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (mut order, job) = claimed(&database).await;
         let settled = serde_json::json!({"type": "urn:ietf:params:acme:error:serverInternal"});
-        assert!(order.mark_invalid(settled.clone(), &database).await.unwrap());
+        assert!(
+            order
+                .mark_invalid(settled.clone(), &database)
+                .await
+                .unwrap()
+        );
 
         assert!(matches!(
             handler(&database, Arc::new(Scripted(Answer::Internal)))
@@ -578,6 +646,63 @@ mod tests {
         let stored = reload(&database, &order).await;
         assert_eq!(stored.status, OrderStatus::Invalid);
         assert_eq!(stored.error, Some(settled));
+    }
+
+    /// The account was deactivated while the row waited — by its client
+    /// (§7.3.6), or by `eab delete --deactivate-accounts`. The backend is never
+    /// asked: `Scripted(Internal)` would have answered `Retry`.
+    #[tokio::test]
+    async fn a_deactivated_account_is_not_issued_for() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (order, job) = claimed(&database).await;
+        Account::find_by_id("default", &order.account_id.to_string(), &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .deactivate(&database)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            handler(&database, Arc::new(Scripted(Answer::Internal)))
+                .run(&job)
+                .await,
+            JobOutcome::Done
+        ));
+        let stored = reload(&database, &order).await;
+        assert_eq!(stored.status, OrderStatus::Invalid);
+        assert_eq!(
+            stored.error.unwrap()["type"],
+            "urn:ietf:params:acme:error:unauthorized"
+        );
+        let rows = audit_rows(&database).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reason.as_deref(), Some("unauthorized"));
+    }
+
+    /// An authorization deactivated by a request that read the order just
+    /// before `finalize` claimed it (§7.5.2): the deactivation committed, so
+    /// the certificate must not follow.
+    #[tokio::test]
+    async fn an_authorization_deactivated_after_the_claim_is_not_issued_for() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let (order, job) = claimed(&database).await;
+        let authz = &Authorization::find_by_order(order.id, &database)
+            .await
+            .unwrap()[0];
+        assert!(
+            Authorization::set_deactivated(authz.id, database.raw_pool())
+                .await
+                .unwrap()
+        );
+
+        assert!(matches!(
+            handler(&database, Arc::new(Scripted(Answer::Internal)))
+                .run(&job)
+                .await,
+            JobOutcome::Done
+        ));
+        assert_eq!(reload(&database, &order).await.status, OrderStatus::Invalid);
     }
 
     /// A profile this process does not mount is a question for another

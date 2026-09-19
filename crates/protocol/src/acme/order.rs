@@ -1564,10 +1564,19 @@ pub(crate) mod tests {
         database: &Arc<Database>,
         account: &Account,
     ) -> (Order, String) {
-        let (order, _) = pending_order(database, account, &["a.example.com"]).await;
-        Order::set_ready(order.id, database.raw_pool())
-            .await
-            .unwrap();
+        let (order, authzs) = pending_order(database, account, &["a.example.com"]).await;
+        for (authz, _) in &authzs {
+            assert!(
+                Authorization::set_valid(authz.id, database.raw_pool())
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            Order::set_ready(order.id, database.raw_pool())
+                .await
+                .unwrap()
+        );
         let key = rcgen::KeyPair::generate().unwrap();
         let csr = rcgen::CertificateParams::new(vec!["a.example.com".to_string()])
             .unwrap()
