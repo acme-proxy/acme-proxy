@@ -434,7 +434,8 @@ migrated configuration before restarting.
   `CARGO_PROFILE=e2e` itself. So a bare `podman build .` reproduces the
   published image, and takes a fat-LTO build of tens of minutes where it used
   to take a few; a contributor building the lab image by hand passes the
-  argument.
+  argument. Its Rust toolchain is pinned to an exact release (`RUST_TOOLCHAIN`,
+  1.98.1) instead of rustup's moving `stable`.
 
 ## [0.5.0] — 2026-09-08
 

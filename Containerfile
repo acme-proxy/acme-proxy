@@ -47,8 +47,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl build-essential pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
+# The toolchain is pinned to an exact release, not `stable`: otherwise the
+# published image's compiler is whatever shipped that week, and two builds of
+# one tag months apart differ. It is the same reason every CI tool and action
+# here is pinned. Raise it deliberately, never below `rust-version` in
+# Cargo.toml.
+ARG RUST_TOOLCHAIN=1.98.1
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain stable
+    | sh -s -- -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"
 ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /app
 COPY . .
