@@ -33,7 +33,7 @@ use clap::ValueEnum;
 
 /// `--log-level`: how much this invocation logs.
 ///
-/// A crate-local enum rather than [`tracing::Level`] for two reasons: `off` is
+/// A crate-local enum rather than `tracing::Level` for two reasons: `off` is
 /// not a level, and `clap`'s [`ValueEnum`] cannot be implemented for a foreign
 /// type anyway. Being a `value_enum` is also what puts the six values into the
 /// generated shell completions, which is what `--color` already buys.

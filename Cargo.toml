@@ -216,66 +216,48 @@ default = []
 hsm = ["acme-proxy-signer/hsm"]
 
 [dependencies]
+acme-proxy-admin.workspace = true
 acme-proxy-core.workspace = true
-acme-proxy-store.workspace = true
+acme-proxy-jobs.workspace = true
 acme-proxy-net.workspace = true
 acme-proxy-policy.workspace = true
-acme-proxy-jobs.workspace = true
-acme-proxy-signer.workspace = true
 acme-proxy-protocol.workspace = true
-acme-proxy-admin.workspace = true
 acme-proxy-server.workspace = true
-axum.workspace = true
-tokio.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tower.workspace = true
-tower-http.workspace = true
-sqlx.workspace = true
-config.workspace = true
-uuid.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-base64.workspace = true
-ring.workspace = true
-simple_asn1.workspace = true
-hex.workspace = true
-rcgen.workspace = true
-rustls-pki-types.workspace = true
-time.workspace = true
+acme-proxy-signer.workspace = true
+acme-proxy-store.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-async-trait.workspace = true
-ipnet.workspace = true
-regex.workspace = true
-hickory-resolver.workspace = true
-hickory-proto.workspace = true
-hyper.workspace = true
-hyper-util.workspace = true
-http-body-util.workspace = true
-bytes.workspace = true
-url.workspace = true
-percent-encoding.workspace = true
-rustls.workspace = true
-tokio-rustls.workspace = true
-webpki-roots.workspace = true
-subtle.workspace = true
-x509-parser.workspace = true
+base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 clap_mangen.workspace = true
-lettre.workspace = true
-minijinja.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 acme-proxy-core = { workspace = true, features = ["test-util"] }
-acme-proxy-store = { workspace = true, features = ["test-util"] }
-acme-proxy-net = { workspace = true, features = ["test-util"] }
 acme-proxy-jobs = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
 acme-proxy-signer = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
+async-trait.workspace = true
+axum.workspace = true
+hex.workspace = true
+http-body-util.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls-pki-types.workspace = true
+simple_asn1.workspace = true
+testcontainers.workspace = true
+time.workspace = true
+tokio-rustls.workspace = true
 # `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
 tower = { workspace = true, features = ["util"] }
-testcontainers.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+x509-parser.workspace = true
 
 [profile.release]
 lto = true

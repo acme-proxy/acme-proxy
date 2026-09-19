@@ -65,8 +65,13 @@ jobs:
       # committed and `Containerfile` already builds against it, so without this
       # CI was the one place a semver-compatible upstream release could enter a
       # build — including one `cargo deny` (which reads the lockfile) never saw.
+      #
+      # `--workspace` on every one of them too: at a workspace root that is also
+      # a package, a bare `cargo` command acts on that package alone, so without
+      # it every crate under `crates/` would drop out of the lint, the tests and
+      # the coverage floor without anything going red.
       - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       # Runs the unit + integration tests under instrumentation. `--no-report`
       # keeps the raw profiles on disk instead of rendering one report and
@@ -76,9 +81,10 @@ jobs:
       # `nextest` here is not interchangeable with plain `cargo test`: the
       # `custom` script tests in `signer`/`filter`/`notify` exec a file they
       # just wrote, which intermittently fails `ETXTBSY` when tests share one
-      # process (see the note on `write_script` in `src/signer/custom.rs`).
+      # process (see the note on `write_script` in
+      # `crates/core/src/testutil.rs`).
       - name: Test with coverage
-        run: cargo llvm-cov nextest --locked --no-report
+        run: cargo llvm-cov nextest --locked --workspace --no-report
 
       # The reports themselves, none of which gates: the gate is the next step,
       # kept separate so a run that lands below the floor still publishes the
@@ -140,7 +146,7 @@ jobs:
       # example in `src/lib.rs` is otherwise never compiled — and it calls
       # `build_router`, whose signature changes.
       - name: Doc tests
-        run: cargo test --locked --doc
+        run: cargo test --locked --workspace --doc
 
       # `cargo test --doc` compiles the *examples*; it says nothing about the
       # intra-doc links, of which this crate has a great many — the doc comments
@@ -156,7 +162,7 @@ jobs:
       # and both are worse than a link a `--document-private-items` build
       # resolves.
       - name: Documentation
-        run: cargo doc --locked --no-deps --all-features
+        run: cargo doc --locked --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
 
@@ -191,11 +197,13 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Check
-        run: cargo check --locked --all-targets --all-features
+        run: cargo check --locked --workspace --all-targets --all-features
 
   # The `hsm` feature is off by default, so the job above neither builds nor
-  # lints `src/signer/local_ca/pkcs11.rs` — `--all-targets` does not enable
-  # features. Without this job the whole PKCS#11 path could rot warning-dirty
+  # lints `crates/signer/src/local_ca/pkcs11.rs` — `--all-targets` does not
+  # enable features. It is the signer crate's feature, named as such: the root
+  # package's `hsm` only forwards to it, and the PKCS#11 tests live in the
+  # signer crate, which only `--workspace` reaches. Without this job the whole PKCS#11 path could rot warning-dirty
   # or stop compiling and nobody would find out.
   #
   # Deliberately separate rather than folded into `test`: that job enforces
@@ -234,7 +242,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y softhsm2
 
       - name: Clippy
-        run: cargo clippy --locked --all-targets --features hsm -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --features acme-proxy-signer/hsm -- -D warnings
 
       # `ACME_PROXY_REQUIRE_SOFTHSM` turns `lab_or_skip!` from a skip into a
       # failure. Without it an apt rename, a moved `.so` or a failed install
@@ -242,7 +250,7 @@ jobs:
       # else would notice, since this file is deliberately outside the coverage
       # floor and so has no number that could collapse.
       - name: Test
-        run: cargo nextest run --locked --features hsm
+        run: cargo nextest run --locked --workspace --features acme-proxy-signer/hsm
         env:
           ACME_PROXY_REQUIRE_SOFTHSM: "1"
 
@@ -345,6 +353,9 @@ jobs:
             'walk(if type == "string" then ((if startswith($from) then $to + .[($from | length):] else . end) | gsub("path\\+file:///acme-proxy#acme-proxy@"; "path+file:///acme-proxy#")) else . end) | del(.metadata.timestamp)' \
             sbom.cdx.json > sbom.cdx.json.tmp
           mv sbom.cdx.json.tmp sbom.cdx.json
+          # The tool writes one per workspace member; the committed inventory is
+          # the binary's, whose closure already names every member crate.
+          rm -f crates/*/sbom.cdx.json
 
       - name: Fail on drift
         run: |

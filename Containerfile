@@ -49,7 +49,7 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --profile e2e --locked \
+    cargo build --profile e2e --locked --package acme-proxy \
     && cp target/e2e/acme-proxy /app/acme-proxy
 
 FROM debian:trixie-slim

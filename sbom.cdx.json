@@ -64,6 +64,258 @@
   "components": [
     {
       "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/admin#acme-proxy-admin@0.5.0",
+      "name": "acme-proxy-admin",
+      "version": "0.5.0",
+      "description": "The operation layer and web admin panel of acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-admin@0.5.0?download_url=file://crates/admin",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+      "name": "acme-proxy-core",
+      "version": "0.5.0",
+      "description": "Configuration, ACME wire types and shared vocabulary for acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-core@0.5.0?download_url=file://crates/core",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+      "name": "acme-proxy-jobs",
+      "version": "0.5.0",
+      "description": "The durable job queue, notifications, audit writer and metrics of acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-jobs@0.5.0?download_url=file://crates/jobs",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+      "name": "acme-proxy-net",
+      "version": "0.5.0",
+      "description": "DNS, outbound HTTP, proxies, TLS, listeners and the ACME challenge validators of acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-net@0.5.0?download_url=file://crates/net",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+      "name": "acme-proxy-policy",
+      "version": "0.5.0",
+      "description": "The access policy engine and IPAM inventories of acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-policy@0.5.0?download_url=file://crates/policy",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/protocol#acme-proxy-protocol@0.5.0",
+      "name": "acme-proxy-protocol",
+      "version": "0.5.0",
+      "description": "The ACME (RFC 8555) services, extractors, handlers and routers of acme-proxy (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-protocol@0.5.0?download_url=file://crates/protocol",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/server#acme-proxy-server@0.5.0",
+      "name": "acme-proxy-server",
+      "version": "0.5.0",
+      "description": "The runtime of acme-proxy: role processes, listeners, configuration reload and logging (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-server@0.5.0?download_url=file://crates/server",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+      "name": "acme-proxy-signer",
+      "version": "0.5.0",
+      "description": "The signing backends of acme-proxy: local CA, relay to an upstream ACME server, script (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-signer@0.5.0?download_url=file://crates/signer",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+      "name": "acme-proxy-store",
+      "version": "0.5.0",
+      "description": "The SQLite storage layer of acme-proxy, one module per table (internal crate, no semver promise)",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/acme-proxy-store@0.5.0?download_url=file://crates/store",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "website",
+          "url": "https://acme-proxy.github.io/acme-proxy/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/acme-proxy/acme-proxy"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5",
       "author": "Andrew Gallant <jamslam@gmail.com>",
       "name": "aho-corasick",
@@ -9446,28 +9698,216 @@
     {
       "ref": "path+file:///acme-proxy#0.5.0",
       "dependsOn": [
+        "path+file:///acme-proxy/crates/admin#acme-proxy-admin@0.5.0",
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+        "path+file:///acme-proxy/crates/protocol#acme-proxy-protocol@0.5.0",
+        "path+file:///acme-proxy/crates/server#acme-proxy-server@0.5.0",
+        "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.7",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_complete@4.5.67",
+        "registry+https://github.com/rust-lang/crates.io-index#clap_mangen@0.3.3",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/admin#acme-proxy-admin@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+        "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+        "path+file:///acme-proxy/crates/protocol#acme-proxy-protocol@0.5.0",
+        "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#lettre@0.11.23",
+        "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
+        "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index#subtle@2.6.1",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
+        "registry+https://github.com/rust-lang/crates.io-index#tower-http@0.7.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#config@0.15.25",
+        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
+        "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
+        "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls-pki-types@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#simple_asn1@0.6.4",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
+        "registry+https://github.com/rust-lang/crates.io-index#x509-parser@0.18.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
+        "registry+https://github.com/rust-lang/crates.io-index#http-body-util@0.1.5",
+        "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#lettre@0.11.23",
+        "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
+        "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
         "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
         "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
         "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
         "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
         "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
-        "registry+https://github.com/rust-lang/crates.io-index#clap@4.6.7",
-        "registry+https://github.com/rust-lang/crates.io-index#clap_complete@4.5.67",
-        "registry+https://github.com/rust-lang/crates.io-index#clap_mangen@0.3.3",
-        "registry+https://github.com/rust-lang/crates.io-index#config@0.15.25",
-        "registry+https://github.com/rust-lang/crates.io-index#cryptoki@0.12.1",
-        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
-        "registry+https://github.com/rust-lang/crates.io-index#hickory-proto@0.26.3",
         "registry+https://github.com/rust-lang/crates.io-index#hickory-resolver@0.26.3",
         "registry+https://github.com/rust-lang/crates.io-index#http-body-util@0.1.5",
         "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
         "registry+https://github.com/rust-lang/crates.io-index#hyper-util@0.1.20",
         "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
-        "registry+https://github.com/rust-lang/crates.io-index#lettre@0.11.23",
-        "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
         "registry+https://github.com/rust-lang/crates.io-index#percent-encoding@2.3.2",
         "registry+https://github.com/rust-lang/crates.io-index#rcgen@0.14.10",
+        "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls-pki-types@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#subtle@2.6.1",
+        "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio-rustls@0.26.5",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+        "registry+https://github.com/rust-lang/crates.io-index#webpki-roots@1.0.9",
+        "registry+https://github.com/rust-lang/crates.io-index#x509-parser@0.18.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
+        "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#bytes@1.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#http-body-util@0.1.5",
+        "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#ipnet@2.12.2",
         "registry+https://github.com/rust-lang/crates.io-index#regex@1.13.1",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
+        "registry+https://github.com/rust-lang/crates.io-index#webpki-roots@1.0.9"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/protocol#acme-proxy-protocol@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+        "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
+        "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#rcgen@0.14.10",
+        "registry+https://github.com/rust-lang/crates.io-index#rustls-pki-types@1.15.1",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tower@0.5.3",
+        "registry+https://github.com/rust-lang/crates.io-index#tower-http@0.7.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/server#acme-proxy-server@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/admin#acme-proxy-admin@0.5.0",
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "path+file:///acme-proxy/crates/policy#acme-proxy-policy@0.5.0",
+        "path+file:///acme-proxy/crates/protocol#acme-proxy-protocol@0.5.0",
+        "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#axum@0.8.9",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
+        "registry+https://github.com/rust-lang/crates.io-index#tower@0.5.3",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/signer#acme-proxy-signer@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "path+file:///acme-proxy/crates/jobs#acme-proxy-jobs@0.5.0",
+        "path+file:///acme-proxy/crates/net#acme-proxy-net@0.5.0",
+        "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104",
+        "registry+https://github.com/rust-lang/crates.io-index#async-trait@0.1.92",
+        "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+        "registry+https://github.com/rust-lang/crates.io-index#cryptoki@0.12.1",
+        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#hickory-proto@0.26.3",
+        "registry+https://github.com/rust-lang/crates.io-index#http-body-util@0.1.5",
+        "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
+        "registry+https://github.com/rust-lang/crates.io-index#rcgen@0.14.10",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
         "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
         "registry+https://github.com/rust-lang/crates.io-index#rustls-pki-types@1.15.1",
@@ -9475,19 +9915,28 @@
         "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
         "registry+https://github.com/rust-lang/crates.io-index#simple_asn1@0.6.4",
         "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
-        "registry+https://github.com/rust-lang/crates.io-index#subtle@2.6.1",
         "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
         "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
         "registry+https://github.com/rust-lang/crates.io-index#tokio@1.53.1",
-        "registry+https://github.com/rust-lang/crates.io-index#tokio-rustls@0.26.5",
-        "registry+https://github.com/rust-lang/crates.io-index#tower@0.5.3",
-        "registry+https://github.com/rust-lang/crates.io-index#tower-http@0.7.1",
         "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
-        "registry+https://github.com/rust-lang/crates.io-index#tracing-subscriber@0.3.23",
         "registry+https://github.com/rust-lang/crates.io-index#url@2.5.8",
-        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1",
-        "registry+https://github.com/rust-lang/crates.io-index#webpki-roots@1.0.9",
         "registry+https://github.com/rust-lang/crates.io-index#x509-parser@0.18.1"
+      ]
+    },
+    {
+      "ref": "path+file:///acme-proxy/crates/store#acme-proxy-store@0.5.0",
+      "dependsOn": [
+        "path+file:///acme-proxy/crates/core#acme-proxy-core@0.5.0",
+        "registry+https://github.com/rust-lang/crates.io-index#hex@0.4.3",
+        "registry+https://github.com/rust-lang/crates.io-index#rcgen@0.14.10",
+        "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
+        "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
+        "registry+https://github.com/rust-lang/crates.io-index#serde_json@1.0.151",
+        "registry+https://github.com/rust-lang/crates.io-index#sqlx@0.9.0",
+        "registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20",
+        "registry+https://github.com/rust-lang/crates.io-index#time@0.3.55",
+        "registry+https://github.com/rust-lang/crates.io-index#tracing@0.1.44",
+        "registry+https://github.com/rust-lang/crates.io-index#uuid@1.26.1"
       ]
     },
     {
