@@ -1,7 +1,8 @@
 # Builds the acme-proxy server image, used two ways: by the e2e lab (tests/e2e/)
-# and as the deployment image documented in doc/src/getting_started/deployment.md.
-# Not used by CI's `test` job — the lab is a manual check, plus the nightly `e2e`
-# job in .github/workflows/ci.yml.
+# and as the published deployment image (.github/workflows/release.yml, pushed to
+# ghcr.io on a release tag; see doc/src/getting_started/deployment.md). Not used
+# by CI's `test` job — the lab is a manual check, plus the nightly `e2e` job in
+# .github/workflows/ci.yml.
 #
 # Every stage here (and in every other tests/e2e/*.Containerfile) is FROM
 # debian:trixie-slim — no upstream language images. Debian trixie's own rustc/cargo
@@ -21,9 +22,21 @@
 #     subsumes what chef was buying and drops the `cargo install cargo-chef
 #     --locked` from-source build from every cold start.
 #
-#  2. `--profile e2e` (see Cargo.toml) is release without fat LTO and with 16
-#     codegen units. The lab needs a binary that *behaves* like the release one,
-#     not one optimised for distribution.
+#  2. The cargo profile is a build argument, `CARGO_PROFILE`, and the lab asks
+#     for `e2e` (`--build-arg CARGO_PROFILE=e2e` in tests/e2e/common.rs): release
+#     without fat LTO and with 16 codegen units (see Cargo.toml). The lab needs a
+#     binary that *behaves* like the release one, not one optimised for
+#     distribution.
+#
+#     The default is `release`, the distribution build, which is what
+#     release.yml publishes. A default of `e2e` would make a hand-run
+#     `podman build .` a near miss of the published image that nothing can tell
+#     apart from outside; this way it reproduces it, at the cost of a fat-LTO
+#     build of tens of minutes.
+#
+# The final stage is unnamed and last on purpose: tests/e2e/common.rs builds with
+# no `--target`, so a stage appended after it would silently become the lab's
+# image.
 #
 # Cache mounts need BuildKit when the harness is pointed at docker with the legacy
 # builder (`DOCKER_BUILDKIT=0` fails here); modern docker defaults to BuildKit and
@@ -46,11 +59,18 @@ COPY . .
 # find an empty directory. `sharing=locked` because two cargo processes in one
 # `target/` corrupt it: the lab's own builds are serialised by the `flock` in
 # `ensure_images_built`, but a hand-run `podman build` alongside one is not.
+#
+# The `ARG` sits inside this stage (one declared before the first `FROM` reaches
+# only `FROM` lines) and after `COPY . .`, so changing it invalidates only the
+# build below. Both expansions are quoted because `RUN` is shell form: an empty
+# value would otherwise turn the copy into `cp target//acme-proxy`. Each profile
+# builds into its own `target/<profile>/`, so the two share one cache mount.
+ARG CARGO_PROFILE=release
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --profile e2e --locked --package acme-proxy \
-    && cp target/e2e/acme-proxy /app/acme-proxy
+    cargo build --profile "${CARGO_PROFILE}" --locked --package acme-proxy \
+    && cp "target/${CARGO_PROFILE}/acme-proxy" /app/acme-proxy
 
 FROM debian:trixie-slim
 # openssl is here only for tests/e2e/custom_signer/signer_script.sh, a lab

@@ -91,7 +91,7 @@ pub fn ensure_images_built() {
                 exit 0
             fi
             {runtime} build -t bind-e2e -f tests/e2e/bind.Containerfile tests/e2e &&
-            {runtime} build -t acme-proxy-e2e -f Containerfile . &&
+            {runtime} build --build-arg CARGO_PROFILE=e2e -t acme-proxy-e2e -f Containerfile . &&
             {runtime} build -t netbox-mock-e2e -f tests/e2e/netbox_mock.Containerfile tests/e2e &&
             {runtime} build -t phpipam-mock-e2e -f tests/e2e/phpipam_mock.Containerfile tests/e2e &&
             {runtime} build -t certbot-e2e -f tests/e2e/certbot.Containerfile tests/e2e &&

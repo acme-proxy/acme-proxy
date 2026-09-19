@@ -72,7 +72,7 @@ it rebuilds whenever the crate changes, which is most of the time — so it is
 the one that got tuned. Three things keep it cheap, and all three are needed:
 
 - **The build context is an allowlist.** The root `.dockerignore` admits
-  `Cargo.toml`, `Cargo.lock`, `src/` and `crates/store/migrations/`, and nothing else. It
+  `Cargo.toml`, `Cargo.lock`, `src/` and `crates/`, and nothing else. It
   used to be a blocklist of nine paths, which let `doc/`, `CHANGELOG.md`,
   `CLAUDE.md` and `config.toml.example` through — so editing prose invalidated
   `COPY . .` and forced a full recompile. Adding a file the build genuinely
@@ -89,7 +89,11 @@ the one that got tuned. Three things keep it cheap, and all three are needed:
 - **`--profile e2e`** (`[profile.e2e]` in the root `Cargo.toml`) is release
   without fat LTO and with 16 codegen units. `opt-level` stays at 3, because
   `challenge.timeout_ms` and friends are real budgets these scenarios run
-  against.
+  against. The lab asks for it with `--build-arg CARGO_PROFILE=e2e`; the
+  `Containerfile`'s own default is `release`, the build that is published.
+  So a bare `podman build .` is **not** the lab's build: it is a fat-LTO,
+  one-codegen-unit build that takes tens of minutes. Pass the argument
+  when you build the lab image by hand.
 
 Measured on a 20-core host: ~2m10s from a completely cold cache (every
 dependency compiled), ~7s after a source change — the crate is a single
