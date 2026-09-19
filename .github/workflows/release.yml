@@ -1,49 +1,379 @@
-name: Build container image
+name: Release image
 
+# Publishes the root `Containerfile` to ghcr.io as a multi-architecture image
+# when a release tag is pushed. doc/src/dev/adr/0012-container-images-are-built-
+# natively-per-architecture.md carries the reasoning; the comments below say
+# what each piece prevents. The release procedure that pushes the tag is in
+# doc/src/dev/contributing.md, "Cutting a release".
 on:
+  # Bare `X.Y.Z`, the repository's tag convention. `guard` then checks the tag
+  # against the version in Cargo.toml, so a mistyped tag stops there.
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
+      - "[0-9]+.[0-9]+.[0-9]+"
+  # The rehearsal lever. Run from a branch, it compiles both architectures and
+  # publishes nothing: `guard`'s checks are skipped, `build` exports to the
+  # build cache only, and `publish` does not run. Run from a tag with `publish`
+  # checked, it republishes that tag through the same guards, for example after
+  # a transient registry failure. It never moves `latest`.
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the image (only honoured when run from a release tag)
+        type: boolean
+        default: false
 
+# Least privilege: each job below widens only what it needs.
 permissions:
   contents: read
-  packages: write
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+# Same group expression as ci.yml, but never cancelled. There a cancelled run
+# is a recomputation; here it is a side effect on a registry, and a run killed
+# between the per-architecture pushes and `imagetools create` leaves manifests
+# that no index references.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
+# No build cache, deliberately. Nothing here reads or writes one, and adding
+# one would be a mistake for three reasons:
+#
+# - `type=gha` is scoped to the ref. A tag never reads another tag's entries,
+#   and no tag writes the default branch's, so every release would start cold
+#   anyway.
+# - It cannot hold what the build actually relies on. The Containerfile keeps
+#   the cargo registry and `target/` in `RUN --mount=type=cache` mounts, which
+#   no exporter preserves. The layer cache buys nothing either, because
+#   `COPY . .` sits directly above the one expensive `RUN`.
+# - It is not free. `mode=max` writes gigabytes into the repository's shared
+#   10 GB Actions cache and evicts the `rust-cache` entries every ci.yml job
+#   depends on.
+#
+# A release is a few builds a month; paying the cold build each time is the
+# right trade.
+
+# Every action is pinned to a commit SHA rather than a tag, the same rule
+# `ci.yml` states and for the same reason: a tag is mutable, and these jobs hold
+# a token that can publish the image operators run as their certificate
+# authority. The trailing comment is the tag the SHA stood for when it was
+# pinned; update both together.
 jobs:
-  build:
-    name: Build and publish image
+  # Refuses to publish a tag that does not describe the commit it points at.
+  # CI does not run on tags (ci.yml runs on pushes to `main`), so nothing else
+  # would stop an image being built from a half-bumped manifest, or from a
+  # commit that never passed the suite. On a branch rehearsal every step is
+  # skipped and the job passes, so the rehearsal still exercises the builds.
+  guard:
+    name: Guard the release tag
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      # A publish needs a tag ref: `publish` derives the image tags from it, so
+      # a run from a branch would push an index with no tag at all.
+      publish: ${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish) }}
     steps:
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
-
-      - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.ref_type == 'tag'
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-      - name: Build and push image
+      # The version is read from the `[workspace.package]` table alone: a bare
+      # `grep '^version'` finds the right line in this manifest only because of
+      # where the table happens to sit.
+      #
+      # The pins are the half of the bump that is easy to forget (step 1 of the
+      # release procedure). Only `path = ` lines are pins. The
+      # `acme-proxy-* = { workspace = true, ... }` lines further down carry no
+      # version, and a looser pattern would flag them. The count is checked
+      # against `crates/` so that a crate added without a pin fails here too.
+      - name: The tag is the workspace version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(awk '
+            /^\[/ { in_package = ($0 == "[workspace.package]"); next }
+            in_package && /^version[[:space:]]*=/ {
+              sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit
+            }
+          ' Cargo.toml)
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match [workspace.package] version \"$version\" in Cargo.toml"
+            exit 1
+          fi
+          pins=$(grep -E '^acme-proxy-[a-z]+ = \{.*path = ' Cargo.toml)
+          crates=$(find crates -mindepth 1 -maxdepth 1 -type d | wc -l)
+          if [ "$(printf '%s\n' "$pins" | wc -l)" -ne "$crates" ]; then
+            echo "::error::Cargo.toml pins $(printf '%s\n' "$pins" | wc -l) workspace crates by path, but crates/ holds $crates"
+            exit 1
+          fi
+          stale=$(printf '%s\n' "$pins" | grep -vF "version = \"=$TAG\"" || true)
+          if [ -n "$stale" ]; then
+            echo "::error::workspace crate pins not bumped to =$TAG:"
+            printf '%s\n' "$stale"
+            exit 1
+          fi
+          echo "Tag $TAG matches the workspace version and all $crates crate pins."
+
+      # Only a `push` run on `main` counts. The nightly `schedule` run skips
+      # the test job, so its success says nothing about the commit, and a pull
+      # request run tested a merge that may not be this commit.
+      #
+      # It fails fast rather than polling. The release procedure tags only once
+      # CI is green, and if the tag was early the retry is one click on
+      # "Re-run all jobs" against the same tag.
+      #
+      # The commit is read from the checkout, which has already peeled an
+      # annotated tag down to the commit it names.
+      - name: CI passed on the tagged commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$SHA" --event push --branch main \
+            --json status,conclusion,url --limit 20)
+          if [ "$(jq length <<<"$runs")" -eq 0 ]; then
+            echo "::error::no CI run on main for $SHA; tag a commit that has been pushed to main"
+            exit 1
+          fi
+          status=$(jq -r '.[0].status' <<<"$runs")
+          conclusion=$(jq -r '.[0].conclusion' <<<"$runs")
+          url=$(jq -r '.[0].url' <<<"$runs")
+          if [ "$status" != completed ]; then
+            echo "::error::CI on $SHA is still $status ($url); re-run this workflow once it is green"
+            exit 1
+          fi
+          if [ "$conclusion" != success ]; then
+            echo "::error::CI on $SHA concluded $conclusion ($url)"
+            exit 1
+          fi
+          echo "CI passed on $SHA: $url"
+
+  # One single-architecture image per leg, each on a native runner. QEMU would
+  # emulate a fat-LTO, one-codegen-unit build, which is slow enough to become
+  # the whole release. Each leg pushes its image by digest with no tag, and
+  # `publish` joins the two digests into one manifest list.
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: guard
+    strategy:
+      # When arm64 fails, the amd64 leg is the control that says whether the
+      # failure is the architecture or the change.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    # A ceiling to stop a wedged builder, not an estimate: an uncached fat-LTO
+    # build is expected to take 25-45 minutes, with arm64 at the slower end.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ needs.guard.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # A registry reference must be lowercase; the repository path need not be.
+      - name: Name the image
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Image labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: type=semver,pattern={{version}}
+
+      # Push-by-digest needs the `docker-container` driver that this sets up;
+      # the runner's default `docker` driver cannot do it.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # A rehearsal builds into the cache exporter and discards the result.
+      - name: Choose the output
+        id: output
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            echo "value=type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=type=cacheonly" >> "$GITHUB_OUTPUT"
+          fi
+
+      # - `platforms` is stated although every leg is native, so a runner of
+      #   the wrong architecture fails at the first `RUN` instead of pushing a
+      #   mislabelled image.
+      # - `CARGO_PROFILE=release` is the Containerfile's default, and is passed
+      #   anyway so that changing that default cannot change what is published.
+      # - `provenance` and `sbom` are off because with BuildKit attestations on,
+      #   each leg pushes an *index*, `outputs.digest` is that wrapper's, and
+      #   `imagetools create` would then merge indexes and carry unreferenced
+      #   attestation manifests into the published list. Provenance is attested
+      #   once, on the final index, in `publish`.
+      - name: Build
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: ./Containerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          cache-from: type=gha,scope=acme-proxy
-          cache-to: type=gha,mode=max,scope=acme-proxy
+          file: Containerfile
+          platforms: ${{ matrix.platform }}
+          build-args: CARGO_PROFILE=release
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          sbom: false
+          outputs: ${{ steps.output.outputs.value }}
+
+      # A matrix leg cannot set a job output of its own, so each hands its
+      # digest to `publish` as a file named after it.
+      - name: Record the digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$DIGEST"
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: env.PUBLISH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          # The digest is this job's entire output; an empty upload is a failure.
+          if-no-files-found: error
+          retention-days: 1
+
+  # Joins the per-architecture images into one tagged manifest list, then
+  # attests that list's digest.
+  publish:
+    name: Publish the index
+    needs: [guard, build]
+    if: needs.guard.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Name the image
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # `X.Y.Z`, and `latest` on a tag push only, so a manual republish of an
+      # older tag cannot move `latest` backwards. There is no floating `X.Y`:
+      # before 1.0 a minor release is where breaking changes land. The
+      # annotations go on the index, where a registry reads them; the action's
+      # default `manifest:` level would put them on the wrong object.
+      - name: Tags and annotations
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+
+      # Exactly two sources, checked: a list quietly built from one
+      # architecture is an image that fails only on the machines nobody tried.
+      - name: Create the index
+        env:
+          META: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/digests"
+          digests=(*)
+          if [ "${#digests[@]}" -ne 2 ]; then
+            echo "::error::expected 2 per-architecture digests, found ${#digests[@]}: ${digests[*]}"
+            exit 1
+          fi
+          args=()
+          while IFS= read -r tag; do args+=(--tag "$tag"); done < <(jq -r '.tags[]' <<<"$META")
+          while IFS= read -r annotation; do args+=(--annotation "$annotation"); done < <(jq -r '.annotations[]' <<<"$META")
+          sources=()
+          for digest in "${digests[@]}"; do sources+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}" "${sources[@]}"
+
+      # `imagetools create` does not report the digest it pushed, so it is read
+      # back from the registry.
+      - name: Read the index digest
+        id: index
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          case "$digest" in
+            sha256:*) echo "digest=$digest" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::could not read the index digest of $IMAGE:$VERSION"; exit 1 ;;
+          esac
+
+      # Attests the index, the object a tag resolves to. A platform-specific
+      # digest carries no attestation of its own; see the ADR.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+      # A package that `GITHUB_TOKEN` creates under an organisation starts
+      # private even when the repository is public. The reminder lands on the
+      # run page of the release that needs it.
+      - name: Summary
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: |
+          {
+            echo "### Published \`$IMAGE:$VERSION\`"
+            echo
+            echo "Index digest: \`$DIGEST\`"
+            echo
+            echo '```bash'
+            echo "podman pull $IMAGE:$VERSION"
+            echo "gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY"
+            echo '```'
+            echo
+            echo "On the package's first publish, set its visibility to inherit"
+            echo "access from the source repository (package settings), or nobody"
+            echo "can pull it anonymously."
+          } >> "$GITHUB_STEP_SUMMARY"
