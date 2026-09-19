@@ -56,7 +56,7 @@ macro_rules! statuses {
             /// The exact string the column holds and the wire carries.
             ///
             /// This is the compatibility surface: the `CHECK` constraints in
-            /// `migrations/20260727120000_indexes_and_constraints.sql` are
+            /// `crates/store/migrations/20260727120000_indexes_and_constraints.sql` are
             /// written against these literals and the migrations are frozen, so
             /// changing one is a schema change, not a rename.
             #[must_use]
@@ -137,7 +137,7 @@ statuses! {
         Invalid => "invalid",
     }
 
-    /// A background job's lifecycle (`migrations/20260815120000_add_jobs.sql`).
+    /// A background job's lifecycle (`crates/store/migrations/20260815120000_add_jobs.sql`).
     ///
     /// The runner drives `ready`/`running`/`done`/`failed`; `cancelled` has
     /// been in the `CHECK` since the table was added and is written only by the
@@ -153,7 +153,7 @@ statuses! {
     }
 
     /// A relay `upstream_orders` row's lifecycle
-    /// (`migrations/20260730120000_add_upstream_orders.sql`).
+    /// (`crates/store/migrations/20260730120000_add_upstream_orders.sql`).
     ///
     /// Same Rust-side-only treatment as [`JobStatus`]: `UpstreamOrder::status`
     /// stays a `String`, and this exists so `upstream order list --status` and

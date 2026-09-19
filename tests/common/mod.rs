@@ -367,7 +367,7 @@ impl NotifyHarness {
             .collect();
         // Retries off: these tests assert on the *first* delivery, and a backoff
         // between attempts would only make them wait. The retry behaviour itself
-        // is covered inline, in `src/notify/job.rs`.
+        // is covered inline, in `crates/jobs/src/notify/job.rs`.
         let config = JobsConfig {
             poll_interval_ms: 5,
             max_attempts: 1,
@@ -2829,7 +2829,7 @@ impl TestSigner for RsaSigner {
 /// A scratch directory that removes itself on drop, so a failing assertion
 /// cannot leave files behind.
 ///
-/// The library has its own copy under `src/testutil.rs`; an integration test
+/// The library has its own copy under `crates/signer/src/testutil.rs`; an integration test
 /// cannot see a `#[cfg(test)]` item of the crate it links against, and making
 /// that one a real `pub mod` would ship test scaffolding to every consumer.
 /// Two copies, deliberately — down from seven.
@@ -2860,7 +2860,7 @@ impl Drop for TempDir {
 
 /// Writes an executable script and returns its path.
 ///
-/// See `src/testutil.rs::write_script` for why this suite must run under
+/// See `crates/signer/src/testutil.rs::write_script` for why this suite must run under
 /// `cargo nextest` rather than `cargo test`: every caller exec's a file it has
 /// just written, which intermittently hits `ETXTBSY` when tests share one
 /// process.

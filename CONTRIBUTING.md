@@ -11,19 +11,19 @@ state the three things that trip up a first change.
 
 ## Three things to know before your first change
 
-**Run `cargo nextest run`, not `cargo test`.** This is required, not preferred.
-Several tests execute a script file they have just written; under `cargo test`,
-which runs tests as threads of one process, that intermittently fails with
-`ETXTBSY` — another thread's `Command::spawn` forks while the write descriptor
-is still open. Nothing in the test can avoid it. nextest's process-per-test
-isolation removes it entirely.
+**Run `cargo nextest run --workspace`, not `cargo test`.** This is required, not
+preferred. Several tests execute a script file they have just written; under
+`cargo test`, which runs tests as threads of one process, that intermittently
+fails with `ETXTBSY` — another thread's `Command::spawn` forks while the write
+descriptor is still open. Nothing in the test can avoid it. nextest's
+process-per-test isolation removes it entirely.
 
 ```bash
 cargo install cargo-nextest
-cargo nextest run
+cargo nextest run --workspace
 ```
 
-**`migrations/` is append-only — and it is the only thing that is.** Every file
+**`crates/store/migrations/` is append-only — and it is the only thing that is.** Every file
 there is frozen as of 0.1.0. `sqlx` records each migration's checksum, so
 editing a committed file makes every existing deployment fail at startup with a
 mismatch — it does not silently diverge. A schema change is
@@ -40,13 +40,13 @@ configuration stops the server rather than coming up looking configured. Never
 an alias or a dual syntax — delete the old shape.
 
 **CI is strict about formatting and lints.** `cargo fmt --all --check` and
-`cargo clippy --all-targets -- -D warnings` both gate the build, as does a
-coverage floor. Run them before pushing:
+`cargo clippy --workspace --all-targets -- -D warnings` both gate the build, as
+does a coverage floor. Run them before pushing:
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings
-cargo nextest run
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
 ```
 
 ## Documentation changes

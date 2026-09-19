@@ -2,11 +2,11 @@
 //!
 //! These lived in [`acme_proxy_admin::admin::render`] beside the JSON ones until colour
 //! arrived. The split is where the sharing actually is: every `render_*_json`
-//! is read by both front ends (`src/webadmin/pages/`, `src/webadmin/handlers/`)
+//! is read by both front ends (`crates/admin/src/webadmin/pages/`, `crates/admin/src/webadmin/handlers/`)
 //! and must stay byte-identical for a script parsing `--json`, while **every
 //! renderer here has exactly one consumer, the terminal**. Keeping them
 //! together would have meant either a [`Palette`] argument threaded through
-//! `src/admin/`, which is the front-end-agnostic layer, or colouring whole
+//! `crates/admin/src/admin/`, which is the front-end-agnostic layer, or colouring whole
 //! lines from the print site, which is all a finished padded string allows.
 //!
 //! Two conventions hold throughout:

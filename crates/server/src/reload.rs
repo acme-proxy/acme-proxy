@@ -92,7 +92,7 @@ pub struct Applied<'a> {
 /// The keys a running process cannot change, and how to read each one.
 ///
 /// A projection to `String` rather than `PartialEq` on the config types: nothing
-/// in `src/config/` derives it, and `Debug` is already this crate's config
+/// in `crates/core/src/config/` derives it, and `Debug` is already this crate's config
 /// identity primitive (`signer::build_backends` keys its dedup on
 /// `format!("{cfg:?}")`). The projection form is what lets a refusal **name the
 /// key** — a whole-section comparison could only say "server changed".

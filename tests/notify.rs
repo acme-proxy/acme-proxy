@@ -3,7 +3,7 @@
 //! Deliberately narrow: per-event field-shape assertions (what fields a
 //! `NotifyEvent` carries, template rendering, the `events` filter, the
 //! `custom` script contract) belong to the inline unit tests under
-//! `src/notify/*` and `src/signer/relay/mod.rs`. This file only covers
+//! `crates/jobs/src/notify/*` and `crates/signer/src/relay/mod.rs`. This file only covers
 //! what *requires* the real router — that each handler actually calls
 //! `dispatch(...)` at the right point with the right data, and that a
 //! failing/panicking notify backend never affects the HTTP response.
@@ -478,7 +478,7 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 /// certificate in the database, a registered `ExpiryDigestJob`, and a
 /// `certificates_expiring` event coming out of a backend.
 ///
-/// The inline suite in `src/notify/expiry.rs` drives `collect` and `run`
+/// The inline suite in `crates/jobs/src/notify/expiry.rs` drives `collect` and `run`
 /// directly, which proves the query and the annotation but never that the
 /// event *reaches* anybody — the handler only dispatches, which queues a
 /// second job that a runner then delivers. This is the only test that puts

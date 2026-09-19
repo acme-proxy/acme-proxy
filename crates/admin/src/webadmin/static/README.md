@@ -1,6 +1,6 @@
 # Vendored assets
 
-Everything in this directory is served by `src/webadmin/pages/assets.rs`, from
+Everything in this directory is served by `crates/admin/src/webadmin/pages/assets.rs`, from
 `include_str!`/`include_bytes!` — the files are compiled into the binary, so a
 deployment is still one executable and `tower-http`'s `fs` feature stays off.
 
@@ -32,7 +32,7 @@ pre-release front-end framework belongs.
 ### Refreshing it
 
 ```console
-$ cd src/webadmin/static
+$ cd crates/admin/src/webadmin/static
 $ curl -fsSL https://raw.githubusercontent.com/bigskysoftware/htmx/v<TAG>/dist/htmx.min.js -o htmx.min.js
 $ curl -fsSL https://raw.githubusercontent.com/bigskysoftware/htmx/v<TAG>/LICENSE       -o htmx.LICENSE
 $ sha256sum htmx.min.js

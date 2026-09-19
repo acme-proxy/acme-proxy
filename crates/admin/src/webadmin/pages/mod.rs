@@ -3,7 +3,7 @@
 //! ## Why this is separate from `handlers/`
 //!
 //! `handlers/` answers JSON at `/api`; this answers HTML at `/ui`. Both are
-//! thin layers over the same `src/admin/` operations, which is the whole point:
+//! thin layers over the same `crates/admin/src/admin/` operations, which is the whole point:
 //! neither re-derives data, and neither is where a rule lives. Two small
 //! handlers over one operation beat one handler content-negotiating itself into
 //! two representations — htmx swaps markup, and a `text/html` branch inside a

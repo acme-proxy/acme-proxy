@@ -1,7 +1,7 @@
 //! End-to-end coverage for the `custom` signer backend (`signer.backend =
 //! "custom"`): a real order → finalize → certificate round trip issued by an
 //! external `openssl`-backed script, plus revocation through the same
-//! script. `src/signer/custom.rs`'s inline tests cover the hook contract in
+//! script. `crates/signer/src/custom.rs`'s inline tests cover the hook contract in
 //! isolation (env vars, exit codes, timeouts, the optional `crl`/
 //! `renewal_info` hooks); this file proves the wiring through the real HTTP
 //! router end-to-end, the same way `tests/filters.rs`'s
@@ -57,7 +57,7 @@ cat "$DIR/leaf.pem" "$DIR/ca.pem"
 
 /// A trivial `revoke` script: this file's own point is the `issue` round
 /// trip, so revoke just needs to succeed (idempotency and real CRL
-/// reflection are covered by `src/signer/custom.rs`'s inline tests and the
+/// reflection are covered by `crates/signer/src/custom.rs`'s inline tests and the
 /// `tests/e2e/custom_signer/` lab scenario respectively).
 const REVOKE_SCRIPT: &str = "#!/bin/sh\ncat > /dev/null\nexit 0\n";
 

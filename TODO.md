@@ -6,10 +6,10 @@ keeps its corpses stops being read.
 
 ## Server
 
-- [ ] **PostgreSQL beside SQLite.** Every query goes through `src/sqlite/` as a
+- [ ] **PostgreSQL beside SQLite.** Every query goes through `crates/store/src/` as a
       runtime `sqlx::query`, so most of them port unchanged; what does not is
       `Database::connect`'s two pragmas, the `rows_affected == 1` single-use
-      idiom the nonces and recovery codes rest on, and `migrations/` — frozen
+      idiom the nonces and recovery codes rest on, and `crates/store/migrations/` — frozen
       since 0.1.0 and written in SQLite's dialect. Postgres therefore needs its
       own migration set selected by the URL scheme, never edits to the files
       already there. The declared widths can be transcribed literally: every
@@ -26,19 +26,19 @@ keeps its corpses stops being read.
       Ids need no transcription at all: they are `uuid::Uuid` in Rust and a
       BLOB here, so the Postgres set declares them `uuid` and the same binds
       and `try_get`s work unchanged — `sqlx`'s `uuid` feature already covers
-      both dialects. `every_id_column_is_declared_a_blob` (`src/sqlite/db.rs`)
+      both dialects. `every_id_column_is_declared_a_blob` (`crates/store/src/db.rs`)
       is the list of columns that move, and the two it names as deliberate
       exceptions are the two to leave as text there too. What *is*
       dialect-specific is `sqlite::id::parse`, which exists because a `&str`
       bound against a BLOB matches nothing where Postgres would refuse the
       parameter outright; the seam is already one function, and the eleven
-      callers named in `src/CLAUDE.md` are the whole of what depends on it.
+      callers named in `crates/CLAUDE.md` are the whole of what depends on it.
 
 ## Observability
 
 - [ ] **Histograms — request latency, and issuance latency.** The one thing a
       metrics *library* would genuinely earn over the hand-rolled registry in
-      `src/metrics.rs`, since buckets are where the format stops being a
+      `crates/jobs/src/metrics.rs`, since buckets are where the format stops being a
       `write!` per series. Worth reconsidering the dependency at that point
       rather than hand-rolling bucket boundaries; until then `latency_ms` on
       the access line is what there is.
@@ -100,7 +100,7 @@ keeps its corpses stops being read.
 
 ## IPAM
 
-- [ ] **phpIPAM's user/password session-token auth.** `src/ipam/phpipam/`
+- [ ] **phpIPAM's user/password session-token auth.** `crates/policy/src/ipam/phpipam/`
       implements the static app-code scheme only ("SSL with App code"), which
       is the direct analogue of NetBox's token and rotates in the environment.
       The other scheme exchanges user credentials for a six-hour token, so it

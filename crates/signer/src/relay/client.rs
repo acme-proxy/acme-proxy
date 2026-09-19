@@ -199,7 +199,7 @@ impl AccountKey {
 ///
 /// Hand-rolled rather than via `simple_asn1` because every field is fixed for
 /// this one curve: the whole prefix is a constant, and only the 65-byte point
-/// varies. `src/jws/signature.rs` builds the same structure the general
+/// varies. `crates/core/src/jws/signature.rs` builds the same structure the general
 /// way, for keys whose parameters are not known in advance.
 fn spki_from_p256_public(point: &[u8]) -> Result<Vec<u8>, UpstreamError> {
     if point.len() != 65 || point[0] != 0x04 {

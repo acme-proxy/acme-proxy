@@ -7,8 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Compatibility
 
 **Before 1.0.0, the database schema is the only compatibility guarantee.**
-`migrations/` is append-only: a schema change is a new migration file, never an
-edit to a committed one. Upgrading is therefore just starting the new binary
+`crates/store/migrations/` is append-only: a schema change is a new migration
+file, never an edit to a committed one. Upgrading is therefore just starting the new binary
 against the existing database — there is no dump/restore step, and no upgrade
 procedure beyond replacing the binary.
 
@@ -238,6 +238,23 @@ migrated configuration before restarting.
   today's behaviour.
 
 ### Changed
+
+- **The crate is now a Cargo workspace: the `acme-proxy` binary over nine
+  library crates.** `acme-proxy-core`, `-store`, `-net`, `-policy`, `-jobs`,
+  `-signer`, `-protocol`, `-admin` and `-server`, under `crates/`, each naming
+  only the crates beneath it, so the layering the modules followed by
+  convention is now a compile error to break. Nothing an operator configures,
+  calls or reads changes: the schema, configuration keys, ACME URLs, admin API,
+  CLI and log event names are byte-identical, and the migration files moved to
+  `crates/store/migrations/` unchanged, so a database migrated by an earlier
+  release reads as up to date. `cargo install acme-proxy` and
+  `cargo install acme-proxy --features hsm` work as before; every library crate
+  is published in lockstep with the binary at the same version, as an internal
+  crate with no semver promise of its own. The Rust library paths
+  (`acme_proxy::sqlite::…` is now `acme_proxy_store::…`, and so on) are not a
+  compatibility surface and moved without aliases. Contributors: every cargo
+  command takes `--workspace`, and the PKCS#11 tests run with
+  `--features acme-proxy-signer/hsm` (see `doc/src/dev/contributing.md`).
 
 - **`check_request_timeout` covers only a `custom` script's read hooks.** The
   script's `issue` and `revoke` hooks run in the worker now, so

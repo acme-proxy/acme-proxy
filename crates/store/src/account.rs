@@ -42,7 +42,7 @@ pub struct Account {
     /// The ACME endpoint (`[profiles.<name>]`) this account was registered at.
     /// Accounts are keyed by `(profile, pubkey)`, so the same client key at two
     /// endpoints is two accounts — see the schema comment in
-    /// `migrations/20260722210000_add_accounts.sql` for why that is a security
+    /// `crates/store/migrations/20260722210000_add_accounts.sql` for why that is a security
     /// property and not just tidiness.
     pub profile: String,
     pub pubkey: Vec<u8>,
@@ -60,7 +60,7 @@ pub struct Account {
     pub terms_of_service_agreed: Option<bool>,
     /// Where `newAccount` was called from, and the reverse name that address
     /// had at the time. Traceability only — see the schema comment in
-    /// `migrations/20260722210000_add_accounts.sql` for why nothing ever
+    /// `crates/store/migrations/20260722210000_add_accounts.sql` for why nothing ever
     /// compares against these.
     pub created_ip: Option<String>,
     pub created_ptr: Option<String>,

@@ -17,7 +17,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 [Quick Start](https://acme-proxy.github.io/acme-proxy/getting_started/quick_start.html).
 
 > **Current release: 0.5.0.** Before 1.0.0 the database schema is the *only*
-> compatibility guarantee: `migrations/` is append-only, so upgrading is a
+> compatibility guarantee: `crates/store/migrations/` is append-only, so upgrading is a
 > matter of starting the new binary against the existing database. Everything
 > else — configuration keys, profile names, the JSON admin API, log event names,
 > the CLI — may still be renamed or removed, and every such change is listed
@@ -191,9 +191,9 @@ Requires Rust 1.97 or newer (edition 2024); the MSRV is `rust-version` in
 
 ```bash
 cargo build
-cargo nextest run       # NOT `cargo test` — see the note below
+cargo nextest run --workspace   # NOT `cargo test` — see the note below
 cargo fmt
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 `cargo nextest` is required rather than preferred: several tests execute script
@@ -209,8 +209,8 @@ being able to act on it. The same command locally:
 
 ```bash
 cargo install cargo-llvm-cov          # plus: rustup component add llvm-tools-preview
-cargo llvm-cov nextest --summary-only --ignore-filename-regex 'src/main\.rs'
-cargo llvm-cov nextest --html         # target/llvm-cov/html/index.html
+cargo llvm-cov nextest --workspace --summary-only --ignore-filename-regex 'src/main\.rs'
+cargo llvm-cov nextest --workspace --html   # target/llvm-cov/html/index.html
 ```
 
 Every CI run publishes the per-file table on its own summary page and attaches

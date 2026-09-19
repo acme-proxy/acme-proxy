@@ -6,6 +6,31 @@ The organising ideas are three: RFC 8555's checks are hoisted into an extractor
 so no route can forget them, an ACME endpoint is a profile, and signing,
 filtering and notifying are each a trait with several implementations.
 
+## The workspace
+
+One binary over a Cargo workspace. The root package, `acme-proxy`, holds the
+`clap` command tree (`src/cli/`), `main.rs` and the integration tests; nine
+library crates under `crates/` hold everything else, each naming only the
+crates beneath it:
+
+| Crate | What it holds | Depends on |
+|---|---|---|
+| `acme-proxy-core` | configuration, the ACME wire types, certificate parsing, the audit vocabulary | — |
+| `acme-proxy-store` | the SQLite storage layer, one module per table, and the migrations | core |
+| `acme-proxy-net` | DNS, outbound HTTP and proxies, TLS, listeners, the challenge validators | core |
+| `acme-proxy-policy` | the filter engine and the IPAM inventories | core, net |
+| `acme-proxy-jobs` | the job queue, notifications, the audit writer, metrics | core, net, store |
+| `acme-proxy-signer` | the signing backends and their read side | core, jobs, net, store |
+| `acme-proxy-protocol` | the ACME services, extractors, handlers and routers | all of the above |
+| `acme-proxy-admin` | the operation layer and the web admin panel | protocol and below |
+| `acme-proxy-server` | the runtime: roles, listeners, reload, logging | all of the above |
+
+The crate edges are the layering: a handler cannot reach the runtime that
+serves it, and a job queue cannot reach the filters, because the compiler
+refuses the import. `tests/layering.rs` pins each crate's dependencies to this
+table, so an edge across a layer — which Cargo would accept — is a deliberate
+change rather than a drive-by one.
+
 ## Request flow and extractors
 
 Nearly every ACME endpoint is signed by the client using JSON Web Signatures
@@ -69,16 +94,17 @@ accounts.
 
 The server uses `sqlx` with `sqlite`.
 
-The connection pool is private to `src/sqlite/`. Everything else reaches the
-database through a table module, `Database::transaction()` (a transaction that
-derefs to the connection the table methods take) or `Database::pool_stats()`
-(the metrics gauge), so SQL and its dialect stay in one module tree.
-`Database::raw_pool()` exists only for test fixtures, and `tests/layering.rs`
-fails the build when production code calls it.
+The connection pool is private to `crates/store/src/`. Everything else reaches
+the database through a table module, `Database::transaction()` (a transaction
+that derefs to the connection the table methods take) or
+`Database::pool_stats()` (the metrics gauge), so SQL and its dialect stay in one
+module tree. `Database::raw_pool()` exists only for test fixtures, and
+`tests/layering.rs` fails the build when production code calls it.
 
 ### Migrations
-Database migrations are embedded into the binary using `sqlx::migrate!()` and
-run automatically at startup. The database connects with two crucial pragmas:
+Database migrations are embedded into the binary using
+`sqlx::migrate!()` and run automatically at startup. The database connects with
+two crucial pragmas:
 - `foreign_keys = ON`: Ensures the `ON DELETE CASCADE` constraints work,
   allowing accounts and orders to be genuinely deleted without leaving orphans.
 - `journal_mode = WAL`: Write-Ahead Logging allows high concurrency, crucial
@@ -114,24 +140,26 @@ status.
 
 ## Two front ends, one operation layer
 
-`src/cli/` and `src/webadmin/` are **two front ends**; `src/admin/` is the
-operation layer both dispatch to and neither owns.
+`src/cli/` and `crates/admin/src/webadmin/` are **two front ends**;
+`crates/admin/src/admin/` is the operation layer both dispatch to and neither
+owns.
 
 ```text
-src/cli/            src/webadmin/
+src/cli/            crates/admin/src/webadmin/
    (clap)              (axum)
       \                 /
        \               /
-        src/admin/ops.rs      — delete_account, revoke_order, load_order_detail…
-        src/admin/users.rs    — create_user, authenticate, set_password…
-        src/admin/render.rs   — render_*_line (human) / render_*_json (API)
-        src/admin/password.rs — the KDF, shared by both
+        crates/admin/src/admin/ops.rs      — delete_account, revoke_order, load_order_detail…
+        crates/admin/src/admin/users.rs    — create_user, authenticate, set_password…
+        crates/admin/src/admin/render.rs   — render_*_line (human) / render_*_json (API)
+        crates/admin/src/admin/password.rs — the KDF, shared by both
 ```
 
-A handler in `src/webadmin/handlers/` is a few lines over an `admin::ops` call
-and a `render_*_json`, the same way a `src/cli/` command body is a few lines
-over the same call and a `render_*_line`. That is what keeps the password
-policy, the duplicate check and the rehash-on-login identical between them.
+A handler in `crates/admin/src/webadmin/handlers/` is a few lines over an
+`admin::ops` call and a `render_*_json`, the same way a `src/cli/` command body
+is a few lines over the same call and a `render_*_line`. That is what keeps the
+password policy, the duplicate check and the rehash-on-login identical between
+them.
 
 Two consequences worth knowing:
 
@@ -141,8 +169,9 @@ Two consequences worth knowing:
   terminal's concerns — a caller with no terminal was passing `true` and an
   empty reader, asserting a confirmation that never happened. The CLI calls the
   wrapper; the web calls the bare form.
-- **`src/webadmin/` is not `src/admin/web/`.** That would invert the dependency,
-  putting an HTTP server inside the operation layer.
+- **`crates/admin/src/webadmin/` is not `crates/admin/src/admin/web/`.** That
+  would invert the dependency, putting an HTTP server inside the operation
+  layer.
 
 The admin listener is assembled by `webadmin::build_admin_app`, which takes
 `&[Arc<Profile>]` as a **slice** — `build_app` consumes the `Vec`, so the admin
@@ -245,11 +274,12 @@ generic over it:
 | `params.self_signed(&key)` | `self_signed(&self, signing_key: &impl SigningKey)` |
 
 So `LocalCa` holds an `Issuer<'static, CaSigningKey>` — a small enum in
-`src/signer/local_ca/key.rs` with a `Software(KeyPair)` variant and, behind the
-`hsm` feature, a `Pkcs11(..)` one. Adding a key source (a cloud KMS, a remote
-signer daemon) means adding a variant that implements two rcgen trait methods:
-`sign`, `der_bytes`/`algorithm`. Nothing in `issue`, `revoke`, `crl_der` or the
-CSR sanitisation changes, because none of it ever names the key type.
+`crates/signer/src/local_ca/key.rs` with a `Software(KeyPair)` variant and,
+behind the `hsm` feature, a `Pkcs11(..)` one. Adding a key source (a cloud KMS,
+a remote signer daemon) means adding a variant that implements two rcgen trait
+methods: `sign`, `der_bytes`/`algorithm`. Nothing in `issue`, `revoke`,
+`crl_der` or the CSR sanitisation changes, because none of it ever names the key
+type.
 
 Two consequences worth preserving:
 

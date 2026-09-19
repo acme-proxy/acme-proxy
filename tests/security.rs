@@ -625,7 +625,7 @@ async fn an_order_missing_an_authorization_never_becomes_ready() {
 
 /// The whole flow with a CSR that asks to be a CA. It is signed — the name
 /// matches the order — but the leaf that comes back must not carry the powers
-/// the CSR requested. `src/signer/local_ca.rs` tests the same thing at the unit
+/// the CSR requested. `crates/signer/src/local_ca.rs` tests the same thing at the unit
 /// level; this one proves the wiring in between does not reintroduce it.
 #[tokio::test]
 async fn a_csr_requesting_ca_powers_yields_a_leaf_without_them() {

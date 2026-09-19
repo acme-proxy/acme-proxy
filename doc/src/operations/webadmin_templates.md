@@ -123,12 +123,12 @@ A quick way to see a context in full is to render it:
 
 ## Starting from the shipped version
 
-The defaults are in the source tree under `src/webadmin/templates/`. Copy the
-one you want to change:
+The defaults are in the source tree under
+`crates/admin/src/webadmin/templates/`. Copy the one you want to change:
 
 ```console
 $ mkdir -p /etc/acme-proxy/admin-templates
-$ cp src/webadmin/templates/layout.html /etc/acme-proxy/admin-templates/
+$ cp crates/admin/src/webadmin/templates/layout.html /etc/acme-proxy/admin-templates/
 ```
 
 Then send `SIGHUP` — see [Reloading the Configuration](reload.md). Templates

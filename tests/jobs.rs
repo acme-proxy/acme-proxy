@@ -1,7 +1,7 @@
 //! The durable job runner, end to end against a real database.
 //!
 //! The inline suites cover the pieces: `crates/store/src/job.rs` pins every guarded
-//! statement, and `src/jobs/runner.rs` drives the outcome table with a scripted
+//! statement, and `crates/jobs/src/jobs/runner.rs` drives the outcome table with a scripted
 //! handler. What can only be checked here is the property the lease exists for —
 //! **two runners over one database never run one job twice** — because it needs
 //! two independent runners racing on the same rows rather than one loop driven
@@ -266,8 +266,8 @@ async fn a_kind_this_build_does_not_know_is_left_untouched() {
 /// A notification, end to end through the queue: dispatched by one component,
 /// delivered by the runner, settled on its row.
 ///
-/// The inline suites cover the two halves — `src/notify/mod.rs` proves
-/// `dispatch` writes a row per wanting backend, `src/notify/job.rs` proves the
+/// The inline suites cover the two halves — `crates/jobs/src/notify/mod.rs` proves
+/// `dispatch` writes a row per wanting backend, `crates/jobs/src/notify/job.rs` proves the
 /// handler maps a delivery onto an outcome. What only this file can show is that
 /// they are the same row: that nothing in between has to be woken by hand, and
 /// that a delivered notification leaves no live job behind.

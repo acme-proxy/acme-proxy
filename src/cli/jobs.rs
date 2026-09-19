@@ -1,5 +1,5 @@
 //! `acme-proxy jobs` — inspect and manage the background queue
-//! (`src/jobs/` + `src/sqlite/job.rs`), the subsystem whose whole purpose is
+//! (`crates/jobs/src/jobs/` + `crates/store/src/job.rs`), the subsystem whose whole purpose is
 //! surviving the failures an operator gets paged about.
 //!
 //! `list` and `show` are the read half; `cancel` and `run-now` are the two

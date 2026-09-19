@@ -23,20 +23,20 @@ rustup component add llvm-tools-preview
 
 To run the complete in-memory test suite:
 ```bash
-cargo nextest run
+cargo nextest run --workspace
 ```
 These tests utilize an in-memory SQLite database and an in-memory Local CA. No
 disk writes or network calls are made.
 
 ## The `hsm` feature (PKCS#11)
 
-`src/signer/local_ca/pkcs11.rs` is behind the `hsm` feature, so the command
-above neither compiles nor lints it — `--all-targets` does not enable features.
-Run it explicitly:
+`crates/signer/src/local_ca/pkcs11.rs` is behind the `hsm` feature, so the
+command above neither compiles nor lints it — `--all-targets` does not enable
+features. Run it explicitly:
 
 ```bash
-cargo nextest run --features hsm
-cargo clippy --all-targets --features hsm -- -D warnings
+cargo nextest run --workspace --features acme-proxy-signer/hsm
+cargo clippy --workspace --all-targets --features acme-proxy-signer/hsm -- -D warnings
 ```
 
 The PKCS#11 tests create a **SoftHSM2** token in a temporary directory, generate
@@ -55,7 +55,7 @@ sudo pacman -S softhsm
 
 When no SoftHSM2 module is found the PKCS#11 tests **skip** with a message
 rather than failing, so `--features hsm` stays green without it. CI has a
-dedicated `hsm` job — separate from `test` so the 96% coverage floor, which a
+dedicated `hsm` job — separate from `test` so the 97% coverage floor, which a
 feature-gated file sits outside of entirely, does not fight the feature.
 
 > `cargo nextest` matters more than usual here: `SOFTHSM2_CONF` is
@@ -65,11 +65,12 @@ feature-gated file sits outside of entirely, does not fight the feature.
 
 ## Code coverage
 
-CI enforces a hard floor with `cargo llvm-cov nextest --fail-under-lines 97`
-(`main.rs` is excluded — it is pure socket and exit wiring). Locally:
+CI enforces a hard floor with `cargo llvm-cov nextest --workspace
+--fail-under-lines 97` (`main.rs` is excluded — it is pure socket and exit
+wiring). Locally:
 
 ```bash
-cargo llvm-cov nextest --summary-only
+cargo llvm-cov nextest --workspace --summary-only
 ```
 
 > **Gotcha:** a handler annotated with `#[instrument]` reports far lower
@@ -81,7 +82,8 @@ cargo llvm-cov nextest --summary-only
 > (Installing a `tracing` subscriber in tests does *not* fix this; measured, it
 > moves the total by 0.03 points.)
 
-> **Which is why `src/webadmin/` carries no `#[instrument]` at all.** It is a
+> **Which is why `crates/admin/src/webadmin/` carries no `#[instrument]` at
+all.** It is a
 > rule for that module, not a preference: the access middleware already opens
 > the request span, so the attribute would buy nothing and cost the module's
 > reported coverage.

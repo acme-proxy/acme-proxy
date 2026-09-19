@@ -4128,7 +4128,7 @@ async fn the_upstream_orders_api_is_read_only() {
 /// signal reads the stored `identifiers` and `cert_not_after`, and the
 /// `replaces` signal answers `None` on a chain it cannot parse, which is the
 /// fall-through this fixture wants. The suite for the annotation itself lives
-/// in `src/admin/ops.rs`, over really-signed rows.
+/// in `crates/admin/src/admin/ops.rs`, over really-signed rows.
 async fn expiring(
     database: &std::sync::Arc<acme_proxy_store::db::Database>,
     account: uuid::Uuid,

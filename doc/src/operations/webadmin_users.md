@@ -121,7 +121,7 @@ bytes — including the ones running with `admin.enabled = false` — in exchang
 for nothing. Filtering turns 8.5 MB into 195 KB.
 
 Provenance, the exact rank cut, the size budget it was derived from and the
-refresh command live in `src/admin/corpus/README.md`.
+refresh command live in `crates/admin/src/admin/corpus/README.md`.
 
 Passwords are stored as PBKDF2-HMAC-SHA256 at 600 000 iterations (OWASP's
 current recommendation for the non-Argon2 case), in a self-describing format:

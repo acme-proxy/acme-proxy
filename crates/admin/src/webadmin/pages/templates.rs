@@ -236,7 +236,7 @@ mod tests {
     /// contains names on the escaping side of that line.
     ///
     /// Without it the defence is a naming convention nothing checks. A new
-    /// `partials/card.htm`, or a page copied from `src/notify/templates/` with
+    /// `partials/card.htm`, or a page copied from `crates/jobs/src/notify/templates/` with
     /// its `.j2` intact, would render every account contact, EAB label and
     /// reverse-DNS name unescaped — and every existing test would stay green,
     /// including the four stored-XSS regressions in `tests/admin_pages.rs`,

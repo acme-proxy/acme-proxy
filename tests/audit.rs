@@ -242,7 +242,7 @@ async fn an_account_records_where_it_was_created_and_where_it_was_last_used() {
     assert_eq!(row["last_seen_ip"], "203.0.113.7");
     assert!(row["last_seen_at"].is_i64());
     // The reverse name is absent: the test harness builds an auditor with no
-    // resolver, so there is nothing to look one up with. `src/audit/tests.rs`
+    // resolver, so there is nothing to look one up with. `crates/core/src/audit/tests.rs`
     // drives the PTR half against a stub.
     assert_eq!(row["last_seen_ptr"], Value::Null);
 

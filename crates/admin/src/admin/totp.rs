@@ -15,7 +15,7 @@
 //!
 //! ## Why HMAC-**SHA-1**
 //!
-//! `src/eab.rs` uses HMAC-SHA256, so SHA-256 looks like the house style here.
+//! `crates/core/src/eab.rs` uses HMAC-SHA256, so SHA-256 looks like the house style here.
 //! It is the wrong choice: **Google Authenticator ignores the `algorithm=`
 //! parameter of an `otpauth://` URI and always computes SHA-1**, so an operator
 //! enrolling with the most widely deployed authenticator would get an entry

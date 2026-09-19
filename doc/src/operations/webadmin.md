@@ -10,8 +10,8 @@ because somebody upgraded it.
 
 It has two faces over the same operations: **HTML pages at `/ui`** for a
 browser, and a **JSON API at `/api`** for a script. Neither is built on the
-other; both are thin layers over the same `src/admin/` operations the
-[CLI](cli.md) calls.
+other; both are thin layers over the same `crates/admin/src/admin/` operations
+the [CLI](cli.md) calls.
 
 ```toml
 [admin]
@@ -537,8 +537,8 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
   `Referrer-Policy: same-origin` and HSTS.
 - `htmx.min.js` is a **vendored third-party file**, and `cargo deny` audits the
   crate graph and cannot see it. Its version, source URL, SHA-256 and licence
-  are recorded in `src/webadmin/static/README.md`, which is the only provenance
-  record there is — check it when you update.
+  are recorded in `crates/admin/src/webadmin/static/README.md`, which is the
+  only provenance record there is — check it when you update.
 - A **second factor (TOTP)** is available per operator, and `admin.require_mfa`
   makes it compulsory — see [Operators and
   sessions](webadmin_users.md#second-factor-totp). It is off by default, so the

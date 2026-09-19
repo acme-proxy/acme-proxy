@@ -44,7 +44,7 @@ acme-proxy-server = { path = "crates/server", version = "=0.5.0" }
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
 # used: net/time/process/signal/sync (mpsc) and io-util (AsyncRead/WriteExt,
-# for src/tls.rs and src/filter/custom.rs's piped child stdin). No `fs` — CLI
+# for crates/net/src/tls.rs and crates/policy/src/filter/custom.rs's piped child stdin). No `fs` — CLI
 # stdin reading goes through `std::io::stdin`, not `tokio::io`.
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "net", "time", "process", "signal", "sync", "io-util"] } # Runtime async
 serde = { version = "1.0", features = ["derive"] } # Serialization JSON
@@ -78,7 +78,7 @@ anyhow = "1"
 # Deliberately *not* accompanied by `anyhow`'s `.context()` — see the
 # conventions note in CLAUDE.md about `CliError` staying lossless.
 thiserror = "2"
-# Required by the `Filter` (`src/filter`) and `SignerBackend` (`src/signer`)
+# Required by the `Filter` (`crates/policy/src/filter`) and `SignerBackend` (`crates/signer/src`)
 # traits: `Arc<dyn Trait>` with `async fn` methods is not dyn-safe without it.
 async-trait = "0.1"
 ipnet = "2.12"  # CIDR parsing + containment for the IP allowlist / trusted proxies

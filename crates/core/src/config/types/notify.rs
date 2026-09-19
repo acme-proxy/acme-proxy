@@ -196,7 +196,7 @@ impl Default for CustomNotifyConfig {
 }
 
 /// The lifecycle events the `notify` subsystem can react to. Kept here rather
-/// than in `src/notify` so each backend's `events` default (below) can list
+/// than in `crates/jobs/src/notify` so each backend's `events` default (below) can list
 /// them without creating a dependency from `config` on `notify`.
 ///
 /// `certificates_expiring` is the odd one and worth recognising as such: the

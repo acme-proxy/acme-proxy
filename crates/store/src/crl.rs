@@ -57,7 +57,7 @@ impl StoredCrl {
         .transpose()
     }
 
-    /// [`find`](Self::find) over the pool, for a reader outside `src/sqlite/`
+    /// [`find`](Self::find) over the pool, for a reader outside `crates/store/src/`
     /// that holds a [`Database`] rather than a
     /// connection — the read side of a local CA, which serves the stored CRL
     /// and never signs one.

@@ -2,7 +2,7 @@
 //! finalize round trip against the whole `acme-proxy` HTTP surface, issued by
 //! a script running *inside* the server's own container. The hook contract
 //! itself (env vars, stdin JSON, exit codes, timeouts) is already covered by
-//! `src/signer/custom.rs`'s inline tests, and the wiring through the real
+//! `crates/signer/src/custom.rs`'s inline tests, and the wiring through the real
 //! router is covered host-side by `tests/custom_signer.rs`; this file's own
 //! job is proving the same thing works when the script is a subprocess of a
 //! server running in a container it doesn't control the filesystem of ahead

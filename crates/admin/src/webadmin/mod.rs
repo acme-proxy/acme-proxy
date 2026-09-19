@@ -2,7 +2,7 @@
 //!
 //! ## Where this sits
 //!
-//! `src/cli/` and `src/webadmin/` are the two **front ends**; `src/admin/` is
+//! `src/cli/` and `crates/admin/src/webadmin/` are the two **front ends**; `crates/admin/src/admin/` is
 //! the operation layer both dispatch to and neither owns. A handler here is a
 //! few lines over an `admin::ops` call and an `admin::render_*_json`, the same
 //! way a `src/cli/` command body is a few lines over the same call and a
@@ -133,7 +133,7 @@ impl AdminState {
         }
     }
 
-    /// Writes one administrative audit row (`src/auditor/admin.rs`), attributed to
+    /// Writes one administrative audit row (`crates/jobs/src/auditor/admin.rs`), attributed to
     /// the signed-in operator and the address the shared
     /// [`Auditor`](acme_proxy_jobs::auditor::Auditor) resolves
     /// from `request_context`. Call it **after** the operation has landed; a

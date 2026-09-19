@@ -19,7 +19,7 @@ use crate::order::rfc3339;
 /// and so does the bootstrap operator, who is the only way into the panel.
 ///
 /// Variants are declared low privilege to high, so `role >= AdminRole::Operator`
-/// is the gate the write extractors run (`src/webadmin/session.rs`).
+/// is the gate the write extractors run (`crates/admin/src/webadmin/session.rs`).
 ///
 /// [`Admin`]: AdminRole::Admin
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -88,7 +88,7 @@ impl std::fmt::Display for AdminRole {
 /// as the free strings four call sites used to pass. The migration is frozen
 /// and its spellings are the compatibility surface, so [`AdminStatus::as_str`]
 /// answers the byte-identical value the column already holds -- the
-/// `src/sqlite/status.rs` treatment, kept here beside [`AdminRole`] because the
+/// `crates/store/src/status.rs` treatment, kept here beside [`AdminRole`] because the
 /// two are read together and neither is a state machine the way an order's
 /// status is.
 ///

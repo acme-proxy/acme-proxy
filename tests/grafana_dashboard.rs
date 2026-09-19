@@ -18,7 +18,7 @@
 //! should find the name, not an absence it cannot tell from a typo), and one
 //! this file turns into a guarantee.
 //!
-//! Grepping `src/metrics.rs` for `acme_proxy_` string literals would have been
+//! Grepping `crates/jobs/src/metrics.rs` for `acme_proxy_` string literals would have been
 //! the obvious alternative and is strictly worse: it would pass for a name that
 //! is written in the source but never reaches the wire.
 

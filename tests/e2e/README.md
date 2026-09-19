@@ -72,7 +72,7 @@ it rebuilds whenever the crate changes, which is most of the time — so it is
 the one that got tuned. Three things keep it cheap, and all three are needed:
 
 - **The build context is an allowlist.** The root `.dockerignore` admits
-  `Cargo.toml`, `Cargo.lock`, `src/` and `migrations/`, and nothing else. It
+  `Cargo.toml`, `Cargo.lock`, `src/` and `crates/store/migrations/`, and nothing else. It
   used to be a blocklist of nine paths, which let `doc/`, `CHANGELOG.md`,
   `CLAUDE.md` and `config.toml.example` through — so editing prose invalidated
   `COPY . .` and forced a full recompile. Adding a file the build genuinely
@@ -321,7 +321,7 @@ Running this for the first time caught a real, pre-existing bug: `certbot`
 **500** instead of the expected 403. `reverse_dns.rs`'s unit tests
 deliberately distinguish "no PTR record" (`FilterError::Denied`, the
 client's fault) from "the resolver failed" (`FilterError::Internal`, ours)
-— but `HickoryResolver::reverse`/`forward`/`txt` (`src/dns.rs`) surfaced
+— but `HickoryResolver::reverse`/`forward`/`txt` (`crates/net/src/dns.rs`) surfaced
 *both* NXDOMAIN and an empty NOERROR answer as `Err`, never as `Ok` with
 zero records, so the "no PTR record" branch was unreachable outside of a
 test using a hand-written stub. Every existing Rust unit test for

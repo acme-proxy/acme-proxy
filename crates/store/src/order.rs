@@ -75,7 +75,7 @@ pub struct Order {
     /// Where `newOrder` was called from, and the reverse name that address had
     /// at the time. Traceability only, never compared, and deliberately never
     /// rendered by [`Order::to_json`] — see the schema comment in
-    /// `migrations/20260725120000_add_orders.sql`. There is no update-side
+    /// `crates/store/migrations/20260725120000_add_orders.sql`. There is no update-side
     /// pair: the moment that matters after creation is issuance, which is an
     /// `audit_log` row carrying its own address.
     pub created_ip: Option<String>,
@@ -2089,7 +2089,7 @@ mod tests {
     }
 
     /// A **wildcard** order stores the wildcard form (`*.example.com`, the
-    /// storage convention in `src/CLAUDE.md`), so an exact hunt for a name it
+    /// storage convention in `crates/CLAUDE.md`), so an exact hunt for a name it
     /// covers does not return it, and one for the wildcard string does.
     ///
     /// Asserted rather than fixed. Widening `identifier` to also match

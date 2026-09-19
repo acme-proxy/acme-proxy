@@ -920,7 +920,7 @@ async fn commit_validation_failure(
 }
 
 /// `pub(crate)` so the sibling job suite can reuse `profile` and `account`
-/// rather than growing a second copy of each — the rule `src/testutil.rs`
+/// rather than growing a second copy of each — the rule `crates/signer/src/testutil.rs`
 /// exists for, applied to two fixtures too entangled with this module's
 /// `OrderService` to live there.
 #[cfg(test)]

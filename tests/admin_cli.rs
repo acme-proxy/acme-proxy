@@ -429,7 +429,7 @@ async fn eab_cli_create_list_show_revoke() {
 /// `order list --expiring-in <days>`, both output branches, over a listing
 /// where one row has a successor and one does not.
 ///
-/// The annotation itself is tested in `src/admin/ops.rs` over really-signed
+/// The annotation itself is tested in `crates/admin/src/admin/ops.rs` over really-signed
 /// rows; what this pins is that the CLI arm reaches it, that `--json` and the
 /// human rendering are both driven, and that `--hide-superseded` narrows the
 /// answer rather than erroring.

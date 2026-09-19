@@ -17,7 +17,7 @@
 - **A new configuration key** appears in `config.toml.example`, in the book, and
   — if it is array-valued — in `LIST_KEYS` with `empty_string_is_no_values`, or
   it is silently dropped when set from the environment.
-- **A schema change is a new migration file.** `migrations/` is append-only;
+- **A schema change is a new migration file.** `crates/store/migrations/` is append-only;
   editing a committed file breaks every existing deployment at startup.
 - **A new mutating web-admin route** is added to `mutating_endpoints()` or
   `mutating_page_endpoints()`, which is what proves its CSRF gate exists.

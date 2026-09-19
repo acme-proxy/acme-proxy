@@ -369,7 +369,7 @@ jobs:
   # it: every test is `#[ignore]`d and nothing passed `--run-ignored`. That is
   # the largest gap in the suite by surface area, and the lab has already caught
   # at least one class of bug the unit tests structurally cannot (hickory
-  # reporting an empty NOERROR answer as `Err`, fixed in `src/dns.rs`).
+  # reporting an empty NOERROR answer as `Err`, fixed in `crates/net/src/dns.rs`).
   #
   # Nightly rather than per-push: it builds six container images and starts a
   # DNS server plus three client containers per scenario, which is minutes, not

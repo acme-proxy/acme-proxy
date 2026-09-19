@@ -8,7 +8,8 @@ welcome.
 
 To start developing, ensure you have the following installed:
 - [Rust](https://rustup.rs/) (latest stable version)
-- `sqlite3` (for database inspection, though `sqlx` handles migrations)
+- `sqlite3` (for database inspection, though `sqlx` handles
+  migrations)
 - [mdBook](https://rust-lang.github.io/mdBook/) (if you want to build this
   documentation locally)
 
@@ -29,10 +30,16 @@ it.
 
 Before submitting a pull request, run the full suite with **nextest**:
 ```bash
-cargo nextest run
+cargo nextest run --workspace
 ```
 
-> Use `cargo nextest run`, not `cargo test`. This is a requirement, not a
+`--workspace` is not optional. The repository root is both the `acme-proxy`
+package and the root of a workspace of library crates under `crates/`, and a
+bare cargo command at such a root acts on the root package alone — the unit
+tests of every library crate would simply not run.
+
+> Use `cargo nextest run --workspace`, not `cargo test`. This is a requirement,
+not a
 > preference: several tests execute a script file they have just written, and
 > under `cargo test` — which runs tests as threads of a single process — another
 > thread's `Command::spawn` can fork while the file's write descriptor is still
@@ -46,10 +53,10 @@ Your pull request has to pass all of these:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo llvm-cov nextest --fail-under-lines 97
-cargo test --doc          # llvm-cov skips doc-tests
-cargo deny check          # supply-chain audit, against deny.toml
+cargo clippy --workspace --all-targets -- -D warnings
+cargo llvm-cov nextest --workspace --fail-under-lines 97
+cargo test --workspace --doc   # llvm-cov skips doc-tests
+cargo deny check               # supply-chain audit, against deny.toml
 ```
 
 The `sbom` job additionally regenerates `sbom.cdx.json` and fails if it differs
@@ -70,7 +77,8 @@ See the [Testing & Coverage](testing.md) page for more details.
 ## Code style
 
 - Format your code using `cargo fmt`.
-- Ensure all lints pass by running `cargo clippy --all-targets -- -D warnings`.
+- Ensure all lints pass by running `cargo clippy --workspace --all-targets -- -D
+  warnings`.
 - Document public APIs using rustdoc comments (`///`).
 - Comments, doc comments and error-message strings are written in **English**,
   as are identifiers and log messages.
@@ -83,7 +91,7 @@ See the [Testing & Coverage](testing.md) page for more details.
 
 ## Changing the database schema
 
-**`migrations/` is append-only as of 0.1.0.** Add a migration; never edit a
+**`crates/store/migrations/` is append-only as of 0.1.0.** Add a migration; never edit a
 committed one:
 
 ```bash
@@ -93,11 +101,11 @@ sqlx migrate add add_widget_table
 `sqlx` tracks each migration by a checksum, so editing a file that has already
 run turns every existing deployment into a startup failure. One build-system
 trap while you work: `sqlx::migrate!()` embeds the set at **compile** time and
-adding or removing a file under `migrations/` does not on its own invalidate
-the build, so a test can be run against the previous set — `touch src/lib.rs`
-after changing the directory. This reverses the
-rule that held before the first release, when the server had never been deployed
-and a schema change meant editing the migration and running `rm -f sqlite.db*`.
+adding or removing a file under `crates/store/migrations/` does not on its own
+invalidate the build, so a test can be run against the previous set — `touch
+src/lib.rs` after changing the directory. This reverses the rule that held
+before the first release, when the server had never been deployed and a schema
+change meant editing the migration and running `rm -f sqlite.db*`.
 
 Three consequences:
 
@@ -131,11 +139,12 @@ ever had. What such a change owes:
   [Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility).
 - **A startup error naming the replacement**, where practical, so an unmigrated
   configuration stops the server instead of coming up looking configured and
-  doing nothing. `src/filter/build.rs`'s `refuse_removed_keys` and the
-  `signer.backend = "acme_proxy"` arm in `src/signer/mod.rs` are the worked
-  examples. A key must still *parse* to be refused by name, which is why the
-  removed `[filter]` fields survive in `src/config/types/filter.rs` and in
-  `LIST_KEYS`; an unregistered one fails as an opaque serde error instead.
+  doing nothing. `crates/policy/src/filter/build.rs`'s `refuse_removed_keys` and
+  the `signer.backend = "acme_proxy"` arm in `crates/signer/src/lib.rs` are the
+  worked examples. A key must still *parse* to be refused by name, which is why
+  the removed `[filter]` fields survive in
+  `crates/core/src/config/types/filter.rs` and in `LIST_KEYS`; an unregistered
+  one fails as an opaque serde error instead.
 - **No alias, no dual syntax, no legacy lowering.** Delete the old shape. The
   refusals themselves are one-line diagnostics and go away at 1.0.0.
 
@@ -161,7 +170,12 @@ jq --arg from "path+file://$PWD" --arg to "path+file:///acme-proxy" \
   'walk(if type == "string" then ((if startswith($from) then $to + .[($from | length):] else . end) | gsub("path\\+file:///acme-proxy#acme-proxy@"; "path+file:///acme-proxy#")) else . end) | del(.metadata.timestamp)' \
   sbom.cdx.json > sbom.cdx.json.tmp
 mv sbom.cdx.json.tmp sbom.cdx.json
+rm -f crates/*/sbom.cdx.json
 ```
+
+The tool writes one document per workspace member. The committed one is the
+binary's, whose closure already names every library crate, so the per-member
+copies are deleted rather than committed.
 
 `cargo install cargo-cyclonedx@0.5.9 --locked` provides the generator; keep the
 version in step with the pin in `.github/workflows/ci.yml`, since it is written
@@ -172,6 +186,27 @@ the checkout path — both the absolute directory it embeds and the `name@`
 segment it drops when that directory's basename happens to equal the crate
 name, so the file is identical whether it was regenerated in a worktree named
 `acme-proxy` or anything else.
+
+## Cutting a release
+
+Every crate of the workspace is published to crates.io together, at the
+binary's version: the library crates are internal, with no semver promise of
+their own, and exist on crates.io only so `cargo install acme-proxy` can build.
+
+1. Bump `version` in `[workspace.package]` of the root `Cargo.toml` and every
+   `=x.y.z` pin on an `acme-proxy-*` crate in `[workspace.dependencies]`,
+   together — the exact pins are what keep the crates in step.
+2. Regenerate `sbom.cdx.json` (above); it records the version.
+3. Check the whole set packages and builds from its own archives, then publish
+   it, in dependency order:
+
+   ```bash
+   cargo publish --workspace --dry-run
+   cargo publish --workspace
+   ```
+
+   Publishing a workspace in one command needs cargo 1.90 or later, below the
+   minimum supported Rust version.
 
 ## Submitting a pull request
 

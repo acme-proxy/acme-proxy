@@ -396,6 +396,10 @@ fn crate_dependencies_follow_the_layers() {
     let root = repo_root();
     let mut seen = Vec::new();
     for entry in fs::read_dir(root.join("crates")).unwrap().flatten() {
+        // `crates/CLAUDE.md` sits beside the members.
+        if !entry.path().join("Cargo.toml").is_file() {
+            continue;
+        }
         let manifest = fs::read_to_string(entry.path().join("Cargo.toml")).unwrap();
         let name = manifest
             .lines()

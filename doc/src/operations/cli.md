@@ -25,9 +25,9 @@ transactional across the server's own in-flight requests.
 ## The schema is applied explicitly
 
 Opening the database does **not** migrate it. `acme-proxy migrate` applies any
-migrations that have not run yet, and a `serve` running the `worker` role does
-the same at startup — so a default single-process `acme-proxy serve` against a
-fresh database still just works.
+migrations that have not run yet, and a `serve` running the
+`worker` role does the same at startup — so a default single-process `acme-proxy
+serve` against a fresh database still just works.
 
 Everything else checks the schema and refuses by name:
 
@@ -41,7 +41,8 @@ silently rewrote the schema — and let two processes starting together race the
 migration runner, SQLite offering sqlx no lock to serialise them.
 
 **`acme-proxy migrate`** is idempotent and safe to run repeatedly; it prints how
-many migrations it applied, or says the schema is already up to date.
+many migrations it applied, or says the schema is already up to
+date.
 
 **`acme-proxy init`** migrates and then generates whatever first-run material
 the configuration calls for — the local CA key and certificate, an upstream

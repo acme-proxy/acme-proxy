@@ -35,55 +35,32 @@
 //!
 //! ## Architecture
 //!
-//! The ACME request path, in the order a request meets it:
-//! - [`middlewares`](acme_proxy_protocol::middlewares) - Server-wide layers: request correlation and the access
-//!   line, admission control, the `Replay-Nonce` and `Link: rel="index"` headers
-//! - [`filter`](acme_proxy_policy::filter) - Pluggable request filtering (who may ask at all)
-//! - [`extractors`](acme_proxy_protocol::extractors) - Parse and validate ACME JWS requests, verifying the media
-//!   type, the `crit` header, the signature, the JWS `url` and the nonce before
-//!   any handler runs
-//! - [`handlers`](acme_proxy_protocol::handlers) - One module per ACME resource: the HTTP edge
-//! - [`acme`](acme_proxy_protocol::acme) - The ACME domain rules every front end shares
-//! - [`challenge`](acme_proxy_net::challenge) - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
-//! - [`signer`](acme_proxy_signer) - Pluggable certificate-issuance backends (local CA, ACME relay,
-//!   custom script)
+//! One binary over a workspace of library crates, each naming only the crates
+//! beneath it — so the layering is the compiler's to enforce. Bottom-up:
 //!
-//! Supporting subsystems:
-//! - [`audit`](acme_proxy_core::audit) - The durable record of who asked this CA to sign or revoke
-//! - [`notify`](acme_proxy_jobs::notify) - Pluggable operator notifications on lifecycle events (email,
-//!   webhook, custom)
-//! - [`ipam`](acme_proxy_policy::ipam) - The inventory [`filter`](acme_proxy_policy::filter) asks which names an address owns
-//!   (NetBox, phpIPAM, a custom script), behind one trait
-//! - [`eab`](acme_proxy_core::eab) - Verification of the External Account Binding inner JWS (§7.3.4)
-//! - [`key_change`](acme_proxy_core::key_change) - Verification of account key rollover JWS (§7.3.5)
-//! - [`dns`](acme_proxy_net::dns) - The resolver shared by every subsystem that looks anything up
-//! - [`http_client`](acme_proxy_net::http_client) - The transport every outbound HTTP client is built on,
-//!   including the `CONNECT` tunnel
-//! - [`proxy`](acme_proxy_net::proxy) - Which forward proxy, if any, that transport dials through
-//! - [`script_hook`](acme_proxy_core::script_hook) - The hardened contract every `custom` hook runs under
-//! - [`tls`](acme_proxy_net::tls) - Optional HTTPS termination for either listener
-//! - [`cert`](acme_proxy_core::cert) - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
-//! - [`pemfile`](acme_proxy_core::pemfile) - PEM reading, atomic writing and key-permission warnings
-//! - [`acme_proxy_store`] - Database access, one module per table
-//! - [`routes`](acme_proxy_core::routes) - The ACME resource paths and the profile namespace
-//! - [`logfields`](acme_proxy_core::logfields) - Typed helpers for structured log fields
-//! - [`config`](acme_proxy_core::config) - Configuration loading from multiple sources
-//! - [`error`](acme_proxy_core::error) - ACME error types and problem document rendering
+//! - [`acme_proxy_core`] - Configuration, the ACME wire types (identifiers,
+//!   JWS, problem documents, routes), certificate parsing, EAB and key-change
+//!   verification, and the audit trail's vocabulary
+//! - [`acme_proxy_store`] - The SQLite storage layer, one module per table, and
+//!   the embedded migrations
+//! - [`acme_proxy_net`] - DNS, outbound HTTP and forward proxies, TLS, the
+//!   listeners, and the challenge validators (http-01, dns-01, tls-alpn-01)
+//! - [`acme_proxy_policy`] - The filter engine (who may ask for what) and the
+//!   IPAM inventories one of its checks consults
+//! - [`acme_proxy_jobs`] - The durable job queue, the notifications delivered
+//!   through it, the audit writer and the Prometheus metrics
+//! - [`acme_proxy_signer`] - The signing backends (local CA, ACME relay, custom
+//!   script) and their read side
+//! - [`acme_proxy_protocol`] - The ACME services, the extractors that verify a
+//!   signed request before a handler runs, the handlers, the middlewares, and
+//!   the routers
+//! - [`acme_proxy_admin`] - The operation layer both front ends dispatch to,
+//!   and the web admin panel over it
+//! - [`acme_proxy_server`] - The runtime: role processes, listeners,
+//!   configuration reload and logging
 //!
-//! Process lifecycle — what keeps the server running and lets it be retuned
-//! without a restart:
-//! - [`acme_proxy_server`] - The runtime: profiles, routers, and the generation a startup
-//!   builds and a reload rebuilds and publishes
-//! - [`listener`](acme_proxy_net::listener) - The sockets, and replacing one while it serves
-//! - [`reload`](acme_proxy_server::reload) - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
-//! - [`jobs`](acme_proxy_jobs::jobs) - The durable queue and its runner, so work outlives the process
-//!   that queued it
-//! - [`metrics`](acme_proxy_jobs::metrics) - The Prometheus registry and its text exposition
-//!
-//! Administration, which serves no ACME and is a second listener plus a CLI:
-//! - [`admin`](acme_proxy_admin::admin) - The operation layer both front ends dispatch to
-//! - [`webadmin`](acme_proxy_admin::webadmin) - The optional HTML + JSON admin listener
-//! - [`cli`] - The `clap` command tree
+//! This crate is the binary and its terminal front end: [`cli`], the `clap`
+//! command tree.
 //!
 //! ## Usage
 //!

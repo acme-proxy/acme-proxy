@@ -99,7 +99,7 @@ impl AdminError {
     }
 
     /// `403` — the session is live, but the operator's role does not permit
-    /// this action (`src/sqlite/admin_user.rs`'s `AdminRole`). Not a `401`: the
+    /// this action (`crates/store/src/admin_user.rs`'s `AdminRole`). Not a `401`: the
     /// answer is not "sign in again", so `to_page_error` renders it as a banner
     /// rather than a redirect to the login form.
     pub fn insufficient_role() -> Self {

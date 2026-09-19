@@ -3,7 +3,7 @@
 //!
 //! [`crate::webadmin::handlers::operators`]'s page twin, the `handlers`/`pages`
 //! split every other resource in this tree follows: both call the same
-//! `src/admin/` operations, this one renders HTML. Managing *yourself* stays on
+//! `crates/admin/src/admin/` operations, this one renders HTML. Managing *yourself* stays on
 //! `/ui/account`, which is why `GET /ui/operators/{username}` redirects there
 //! the moment `username` resolves to the caller rather than rendering a
 //! half-disabled copy of this page's own template.

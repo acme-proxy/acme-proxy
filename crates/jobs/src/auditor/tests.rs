@@ -1,7 +1,7 @@
 //! Tests for the auditor: every way a PTR lookup can fail, the two shapes of
 //! `from_config`, and a failed write staying quiet.
 //!
-//! The *write* itself is exercised through `src/sqlite/audit.rs` (the model)
+//! The *write* itself is exercised through `crates/store/src/audit.rs` (the model)
 //! and `tests/audit.rs` (the whole router).
 
 use std::collections::HashMap;

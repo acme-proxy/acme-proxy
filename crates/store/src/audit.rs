@@ -4,7 +4,7 @@
 //! is INSERTed once and thereafter only read or deleted wholesale by
 //! [`AuditEntry::cleanup`]. That is the whole reason the table has no foreign
 //! keys either — see the header comment in
-//! `migrations/20260809120000_add_audit_log.sql`.
+//! `crates/store/migrations/20260809120000_add_audit_log.sql`.
 
 use serde_json::{Value, json};
 use sqlx::Row;

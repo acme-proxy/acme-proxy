@@ -3,7 +3,7 @@
 //!
 //! The same split [`crate::admin::users`] makes: no printing, no HTTP, no
 //! terminal. `src/cli/webadmin.rs` (`admin user totp …`) and
-//! `src/webadmin/handlers/mfa.rs` both come here, which is what keeps the replay
+//! `crates/admin/src/webadmin/handlers/mfa.rs` both come here, which is what keeps the replay
 //! guard, the session revocation and the "shown once" rule identical between
 //! them.
 //!

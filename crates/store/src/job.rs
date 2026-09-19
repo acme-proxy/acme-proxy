@@ -13,7 +13,7 @@
 //!   overwrite the row a second runner now owns: its write affects zero rows and
 //!   says so.
 //!
-//! See `migrations/20260815120000_add_jobs.sql` for why the table has no foreign
+//! See `crates/store/migrations/20260815120000_add_jobs.sql` for why the table has no foreign
 //! key, why `kind` carries no `CHECK`, and why the identity index is partial.
 
 use serde_json::Value;
@@ -61,8 +61,8 @@ const COLUMNS: &str = "id, kind, dedup_key, payload, status, run_at, attempts, m
 /// A struct rather than eight positional parameters — which needed
 /// `#[allow(clippy::too_many_arguments)]`, and put four `&str`/`i64` values in
 /// a row where transposing two would still compile. `JobSpec` (the
-/// `src/jobs/` half) is the caller-facing shape and this is the row it becomes;
-/// they are deliberately separate, so the storage layer names no `src/jobs/`
+/// `crates/jobs/src/jobs/` half) is the caller-facing shape and this is the row it becomes;
+/// they are deliberately separate, so the storage layer names no `crates/jobs/src/jobs/`
 /// type.
 #[derive(Debug)]
 pub struct NewJob<'a> {

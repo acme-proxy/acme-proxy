@@ -812,7 +812,7 @@ async fn a_csr_smuggling_an_ip_san_is_rejected() {
     // something no order could have authorized, and that has to hold whether or
     // not an operator configured a filter. The filter's own projection of
     // `ip`/`email`/`uri` SANs is still covered by the unit tests in
-    // `src/filter/identifiers.rs` and `csr_identifiers`.
+    // `crates/policy/src/filter/identifiers.rs` and `csr_identifiers`.
     let detail = problem["detail"].as_str().unwrap();
     assert!(
         detail.contains("not a DNS name"),
@@ -1293,7 +1293,7 @@ async fn a_refused_netbox_token_is_a_server_error_not_a_denial() {
 
 // The point of the `[ipam]` subsystem, exercised rather than asserted: the same
 // filter, the same router, the same assertions — a different inventory speaking
-// a different protocol, and nothing in `src/filter/` knows.
+// a different protocol, and nothing in `crates/policy/src/filter/` knows.
 
 /// An `[ipam]` config pointing the phpIPAM backend at a loopback stub.
 fn phpipam_config(port: u16) -> IpamConfig {
@@ -1730,7 +1730,7 @@ async fn a_policy_without_an_eab_check_resolves_no_credential() {
 /// rule silently breaks revocation checking for every relying party outside the
 /// allowlist — the parties the extension exists for.
 ///
-/// `src/filter/path.rs` had seven unit tests and nothing above them; `grep
+/// `crates/policy/src/filter/path.rs` had seven unit tests and nothing above them; `grep
 /// '"path"' tests/` returned nothing at all before this.
 #[tokio::test]
 async fn a_path_rule_lets_a_blocked_relying_party_still_fetch_the_crl() {
@@ -1992,7 +1992,7 @@ fn deny_rule_config(message: &str, mode: &str, default: &str) -> FilterConfig {
 /// place of whichever check happened to fail.
 ///
 /// This suite deliberately routes policy tests (`or`, `not`, `warn`) to
-/// `src/filter/policy.rs`, but `message` is a wire-format concern: the words
+/// `crates/policy/src/filter/policy.rs`, but `message` is a wire-format concern: the words
 /// have to survive `Outcome::Deny` → `Problem::access_denied` → the `detail`
 /// member. And the *substitution* is the point — the default wording names the
 /// rule, which is exactly what an operator writing a custom message replaces.

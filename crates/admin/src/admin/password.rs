@@ -99,7 +99,7 @@ const UNIVERSAL_CONTEXT_WORDS: [&str; 2] = ["acme", "proxy"];
 /// 8.5 MB into 195 KB.
 ///
 /// Provenance, the rank cut, the budget it was derived from and the refresh
-/// command are in `src/admin/corpus/README.md`. The invariants this module
+/// command are in `crates/admin/src/admin/corpus/README.md`. The invariants this module
 /// relies on are asserted by the tests below rather than trusted.
 const COMMON_PASSWORDS: &str = include_str!("corpus/common-passwords.txt");
 

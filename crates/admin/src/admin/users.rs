@@ -3,7 +3,7 @@
 //! path runs.
 //!
 //! The operation layer, not a front end: no printing, no HTTP, no terminal.
-//! `src/cli/webadmin.rs` and `src/webadmin/handlers/session.rs` both dispatch
+//! `src/cli/webadmin.rs` and `crates/admin/src/webadmin/handlers/session.rs` both dispatch
 //! here, which is what keeps the password policy, the duplicate check and the
 //! rehash-on-login identical between them.
 

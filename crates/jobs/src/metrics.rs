@@ -13,9 +13,9 @@
 //! not matter. The same objection applies here, and more sharply, because a
 //! global would make two tests' counters each other's.
 //!
-//! This is the same trade `src/admin/totp.rs` (RFC 6238 by hand on `ring`),
-//! `src/signer/relay/client.rs` (an ACME client by hand on `hyper`) and
-//! `src/admin/password.rs` (PBKDF2 rather than four crates for Argon2) already
+//! This is the same trade `crates/admin/src/admin/totp.rs` (RFC 6238 by hand on `ring`),
+//! `crates/signer/src/relay/client.rs` (an ACME client by hand on `hyper`) and
+//! `crates/admin/src/admin/password.rs` (PBKDF2 rather than four crates for Argon2) already
 //! made. Histograms are the thing a library would genuinely earn, and nothing
 //! here exposes one.
 //!

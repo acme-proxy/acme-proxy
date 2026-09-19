@@ -1,8 +1,8 @@
 //! Configuration reload, against a real server on a real socket.
 //!
-//! The inline suites cover the halves — `src/reload.rs` proves the frozen table
-//! refuses by name, `src/jobs/runner.rs` that a swapped registry claims a new
-//! kind, `src/listener.rs` that a socket, a certificate and a TLS mode can each
+//! The inline suites cover the halves — `crates/server/src/reload.rs` proves the frozen table
+//! refuses by name, `crates/jobs/src/jobs/runner.rs` that a swapped registry claims a new
+//! kind, `crates/net/src/listener.rs` that a socket, a certificate and a TLS mode can each
 //! be replaced under a listener that is already serving. Only this file shows
 //! them as one thing: a running server whose answers change — and, when the file
 //! says so, whose ports change — without the process restarting.
@@ -313,9 +313,9 @@ async fn a_reload_changes_what_the_running_socket_answers() {
 /// `retention_days` is the half with an observable in the report: it is the one
 /// key carried by a *handler* rather than by the runner's own loop, so turning it
 /// off has to reach `job_kinds` — which is also what proves the section was
-/// applied rather than merely accepted. `src/reload.rs`'s
+/// applied rather than merely accepted. `crates/server/src/reload.rs`'s
 /// `every_jobs_key_is_reloadable` covers the other six at the freeze, and
-/// `src/jobs/runner.rs` covers them reaching the loop.
+/// `crates/jobs/src/jobs/runner.rs` covers them reaching the loop.
 #[tokio::test]
 async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
     let dir = TempDir::new("reload-jobs");
@@ -656,14 +656,14 @@ async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
 
 /// A **keep-alive** connection sees the new router on its next request.
 ///
-/// This is the property `src/reload.rs` states as the reason `SwapService` is a
+/// This is the property `crates/server/src/reload.rs` states as the reason `SwapService` is a
 /// `fallback_service` and not a make-service: *"a make-service is consulted once
 /// per connection, so an HTTP/1.1 keep-alive client would hold the old router
 /// for its lifetime."*
 ///
 /// Every other test in this file goes through `get`, which sends
 /// `Connection: close` — a fresh TCP connection per request. The inline tests in
-/// `src/reload.rs` use `tower::oneshot`, which has no connection concept at all.
+/// `crates/server/src/reload.rs` use `tower::oneshot`, which has no connection concept at all.
 /// So a regression back to a make-service passed the entire suite, and would
 /// have shipped as "the reload did nothing" for exactly the long-lived clients
 /// (certbot's session, a monitoring poller) most likely to notice.
@@ -1047,7 +1047,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
 
     // The same CA material the running server is issuing with, so the load at
     // the end really re-opens what the reload left behind. The *handover* itself
-    // is proven in `src/signer/` against a live ledger; what only a real server
+    // is proven in `crates/signer/src/` against a live ledger; what only a real server
     // can show is that the endpoint an operator edited keeps serving.
     let ca_dir = dir.join("ca");
     let cfg = acme_proxy_core::config::LocalCaConfig {

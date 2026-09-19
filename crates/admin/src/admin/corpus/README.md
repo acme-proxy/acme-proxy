@@ -1,7 +1,7 @@
 # Vendored corpus
 
 `common-passwords.txt` is compiled into the binary by `include_str!` in
-`src/admin/password.rs` and read by `check_password_policy`. It is the ASVS 5.0
+`crates/admin/src/admin/password.rs` and read by `check_password_policy`. It is the ASVS 5.0
 **V6.2.4** ("check against the top 3000 passwords") and **V6.2.12** ("check
 against breached passwords") control.
 
@@ -20,7 +20,7 @@ against breached passwords") control.
 **This README is the only provenance record.** `cargo deny` audits the crate
 graph and cannot see a text file committed into `src/`, so nothing automated
 will tell you this one is outdated or tampered with — the same reason
-`src/webadmin/static/README.md` exists for the vendored htmx.
+`crates/admin/src/webadmin/static/README.md` exists for the vendored htmx.
 
 MIT is already in `deny.toml`'s `licenses.allow` list, but that entry is about
 crates and grants this file nothing. It is noted only so a future reader does
@@ -57,7 +57,7 @@ picked; the budget is what decides how much of V6.2.12 comes with it.
 ### Refreshing it
 
 ```console
-$ cd src/admin/corpus
+$ cd crates/admin/src/admin/corpus
 $ URL=https://raw.githubusercontent.com/danielmiessler/SecLists/<TAG>/Passwords/Common-Credentials/xato-net-10-million-passwords-1000000.txt
 $ curl -fsSL "$URL" | tee /tmp/upstream.txt | head -n 700000 \
     | awk 'length($0) >= 12' | tr 'A-Z' 'a-z' | LC_ALL=C sort -u \

@@ -1,13 +1,13 @@
 //! Constructors for the administrative half of the audit trail.
 //!
 //! `audit_log` records two kinds of thing now: what the CA did to a certificate
-//! (built in `src/handlers/` and `src/admin/ops.rs`'s `revoke_order`/`cancel_job`,
+//! (built in `crates/protocol/src/handlers/` and `crates/admin/src/admin/ops.rs`'s `revoke_order`/`cancel_job`,
 //! which take an [`Actor`] because the row is written from inside the operation)
 //! and what an operator did to the CA — an account, an EAB credential, an
 //! operator, a session, the nonce or audit tables. Those latter operations are
 //! plain CRUD whose audit row is a side effect of success, so the record is
-//! built **here** and the front end (`src/cli/`, `src/webadmin/handlers/`,
-//! `src/webadmin/pages/`) writes it with [`crate::auditor::write`] once the
+//! built **here** and the front end (`src/cli/`, `crates/admin/src/webadmin/handlers/`,
+//! `crates/admin/src/webadmin/pages/`) writes it with [`crate::auditor::write`] once the
 //! operation has returned success. A not-found or refused operation writes
 //! nothing.
 //!

@@ -358,8 +358,8 @@ reloading all three.
 ## Upgrading
 
 Replace the binary, **migrate**, and restart. The schema is **append-only as of
-0.1.0** — a new release only ever adds migrations, never rewrites the ones your
-database has already applied.
+0.1.0** — a new release only ever adds migrations, never rewrites
+the ones your database has already applied.
 
 Migrations no longer run as a side effect of opening the database. `acme-proxy
 serve` running the `worker` role (which the default does) still applies them at

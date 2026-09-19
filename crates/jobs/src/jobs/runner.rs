@@ -5,7 +5,7 @@
 //! so two runners over one database — a rolling restart's overlap, or a second
 //! process someone starts by mistake — cannot both run one job.
 //!
-//! No `#[instrument]` anywhere in this module, the rule `src/webadmin/` keeps
+//! No `#[instrument]` anywhere in this module, the rule `crates/admin/src/webadmin/` keeps
 //! and for both of its reasons: there is no request span here to enrich, and the
 //! attribute moves a body into a generated async block that reports almost no
 //! coverage — on precisely the timing code that is hardest to cover anyway.

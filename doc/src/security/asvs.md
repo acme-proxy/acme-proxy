@@ -25,9 +25,9 @@ Three surfaces, kept apart because their controls genuinely differ:
 
 | Surface | What it is | Where |
 | --- | --- | --- |
-| ACME listener | Unauthenticated by design, authenticated per request by JWS. Carries the filter chain, admission control and the nonce middleware. | `src/server/`, `src/handlers/`, `src/extractors/`, `src/middlewares/` |
-| Web admin | The only session-based, browser-facing surface. Off by default, loopback by default. | `src/webadmin/`, `src/admin/` |
-| CLI and process | Answers to a shell on the host and holds no session. | `src/cli/`, `src/main.rs`, `src/config/` |
+| ACME listener | Unauthenticated by design, authenticated per request by JWS. Carries the filter chain, admission control and the nonce middleware. | `crates/server/src/`, `crates/protocol/src/handlers/`, `crates/protocol/src/extractors/`, `crates/protocol/src/middlewares/` |
+| Web admin | The only session-based, browser-facing surface. Off by default, loopback by default. | `crates/admin/src/webadmin/`, `crates/admin/src/admin/` |
+| CLI and process | Answers to a shell on the host and holds no session. | `src/cli/`, `src/main.rs`, `crates/core/src/config/` |
 
 Most of V3, V6 and V7 apply only to the web admin. When it is disabled —
 which is the default — those chapters have no surface to apply to at all.
@@ -105,21 +105,21 @@ for in a certificate authority: the audit trail is the product.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 1.1.1 | Decode into canonical form once, before processing | 2 | met | The JWS protected header and payload are base64url-decoded exactly once in `src/extractors/acme.rs`, before any check reads them; a DNS identifier passes `normalize_dns_name` (`src/acme/rules.rs`) once, before storage and before the filter sees it |
-| 1.1.2 | Output encoding as the final step, or by the interpreter | 2 | met | `minijinja` escapes at render time. The rule is per template *name*: `.html` auto-escapes, `.j2` does not — see `src/templating.rs` |
+| 1.1.1 | Decode into canonical form once, before processing | 2 | met | The JWS protected header and payload are base64url-decoded exactly once in `crates/protocol/src/extractors/acme.rs`, before any check reads them; a DNS identifier passes `normalize_dns_name` (`crates/protocol/src/acme/rules.rs`) once, before storage and before the filter sees it |
+| 1.1.2 | Output encoding as the final step, or by the interpreter | 2 | met | `minijinja` escapes at render time. The rule is per template *name*: `.html` auto-escapes, `.j2` does not — see `crates/core/src/templating.rs` |
 | 1.2.1 | Context-correct output encoding for HTTP/HTML | 1 | met | Every panel template is `.html` and therefore auto-escaped; `auto_escaping_is_on_for_pages_and_off_for_notify` pins both directions |
-| 1.2.2 | Encode untrusted data in dynamically built URLs; safe protocols only | 1 | met | Panel URLs are built from server-side ids. The one place an untrusted URL is followed — an `http-01` redirect — is checked against a scheme allowlist in `Http01Validator::redirect_allowed` (`src/challenge/http_01.rs`) |
+| 1.2.2 | Encode untrusted data in dynamically built URLs; safe protocols only | 1 | met | Panel URLs are built from server-side ids. The one place an untrusted URL is followed — an `http-01` redirect — is checked against a scheme allowlist in `Http01Validator::redirect_allowed` (`crates/net/src/challenge/http_01.rs`) |
 | 1.2.3 | Encode when building JavaScript or JSON | 1 | met | All JSON is produced by `serde_json`; no template writes into a `<script>` block |
-| 1.2.4 | Parameterized database queries | 1 | met | Every statement in `src/sqlite/` is a runtime `sqlx::query` with `.bind()`. No query is assembled with `format!` |
-| 1.2.5 | Protection against OS command injection | 1 | met | `ScriptHook::run` uses `Command::new(path)` with an argv vector and no shell (`src/script_hook.rs`); payloads go to stdin as JSON |
+| 1.2.4 | Parameterized database queries | 1 | met | Every statement in `crates/store/src/` is a runtime `sqlx::query` with `.bind()`. No query is assembled with `format!` |
+| 1.2.5 | Protection against OS command injection | 1 | met | `ScriptHook::run` uses `Command::new(path)` with an argv vector and no shell (`crates/core/src/script_hook.rs`); payloads go to stdin as JSON |
 | 1.2.6 | LDAP injection | 2 | n/a | No LDAP client |
 | 1.2.7 | XPath injection | 2 | n/a | No XPath |
 | 1.2.8 | LaTeX injection | 2 | n/a | No LaTeX |
-| 1.2.9 | Escape special characters in regular expressions | 2 | met | `compile_anchored` and the glob translation both run `regex::escape` over everything that is not the wildcard (`src/filter/mod.rs`) |
+| 1.2.9 | Escape special characters in regular expressions | 2 | met | `compile_anchored` and the glob translation both run `regex::escape` over everything that is not the wildcard (`crates/policy/src/filter/mod.rs`) |
 | 1.2.10 | CSV and formula injection | 3 | n/a | No CSV or spreadsheet export; the CLI emits text or JSON |
 | 1.3.1 | Sanitize untrusted HTML from editors | 1 | n/a | No rich-text input anywhere |
 | 1.3.2 | Avoid `eval()` and dynamic code execution | 1 | met | No dynamic code execution. The one place operator-supplied code runs is a `custom` script hook, which is a configured executable, not evaluated input |
-| 1.3.3 | Sanitize before a dangerous context; trim over-long input | 2 | met | Contacts reject control characters, `User-Agent` is truncated to 256 characters before storage (`src/audit/mod.rs`), identifier lists are capped by `order.max_identifiers` |
+| 1.3.3 | Sanitize before a dangerous context; trim over-long input | 2 | met | Contacts reject control characters, `User-Agent` is truncated to 256 characters before storage (`crates/core/src/audit/mod.rs`), identifier lists are capped by `order.max_identifiers` |
 | 1.3.4 | Sanitize user-supplied SVG | 2 | n/a | No user-supplied images |
 | 1.3.5 | Sanitize user-supplied scriptable or template content | 2 | n/a | `template_dir` overrides are operator-supplied files on the host, not user input |
 | 1.3.6 | SSRF protection by allowlist of protocols, domains, paths, ports | 2 | partial | Scheme, port and hop count are allowlisted for `http-01` redirects; **destination addresses deliberately are not**. See [Documented deviations](#documented-deviations) |
@@ -127,13 +127,13 @@ for in a certificate authority: the audit trail is the product.
 | 1.3.8 | JNDI injection | 2 | n/a | No JNDI |
 | 1.3.9 | Sanitize before memcache | 2 | n/a | No memcache |
 | 1.3.10 | Sanitize format strings | 2 | met | Rust format strings are compile-time literals; a runtime string can never become one |
-| 1.3.11 | Sanitize before mail systems (SMTP/IMAP injection) | 2 | met | `contact_shape_error` rejects control characters, `hfields` and multiple addresses before a contact can reach a `notify` template (`src/acme/rules.rs`) |
+| 1.3.11 | Sanitize before mail systems (SMTP/IMAP injection) | 2 | met | `contact_shape_error` rejects control characters, `hfields` and multiple addresses before a contact can reach a `notify` template (`crates/protocol/src/acme/rules.rs`) |
 | 1.3.12 | Regular expressions free from exponential backtracking | 3 | met | The `regex` crate has no backtracking and guarantees linear time; patterns are operator configuration, not request input |
-| 1.4.1 | Memory-safe strings and copies | 2 | met | Safe Rust. The `unsafe` blocks in the tree are `std::env::set_var` in tests and one PKCS#11 `Send` impl (`src/signer/local_ca/pkcs11.rs`) |
-| 1.4.2 | Prevent integer overflow | 2 | met | Time and TTL arithmetic uses `saturating_add`/`saturating_sub` throughout `src/sqlite/`; release builds are not built with overflow checks disabled beyond the default |
+| 1.4.1 | Memory-safe strings and copies | 2 | met | Safe Rust. The `unsafe` blocks in the tree are `std::env::set_var` in tests and one PKCS#11 `Send` impl (`crates/signer/src/local_ca/pkcs11.rs`) |
+| 1.4.2 | Prevent integer overflow | 2 | met | Time and TTL arithmetic uses `saturating_add`/`saturating_sub` throughout `crates/store/src/`; release builds are not built with overflow checks disabled beyond the default |
 | 1.4.3 | Release memory and resources; no dangling pointers | 2 | met | Ownership and `Drop`. Script hooks additionally set `kill_on_drop` so a timed-out child is reaped |
 | 1.5.1 | Restrictive XML parser configuration (XXE) | 1 | n/a | No XML parser in the dependency graph |
-| 1.5.2 | Safe deserialization of untrusted data | 2 | met | `serde` into concrete structs. No polymorphic or client-chosen types; `src/jws/mod.rs` deliberately does not use `deny_unknown_fields` because RFC 8555 §6.2 allows extra header parameters, and every field it acts on is named |
+| 1.5.2 | Safe deserialization of untrusted data | 2 | met | `serde` into concrete structs. No polymorphic or client-chosen types; `crates/core/src/jws/mod.rs` deliberately does not use `deny_unknown_fields` because RFC 8555 §6.2 allows extra header parameters, and every field it acts on is named |
 | 1.5.3 | Consistent parsers for one data type | 3 | met | One JSON parser (`serde_json`) and one URL parser (`url`) in the tree |
 
 ## V2 Validation and Business Logic
@@ -148,10 +148,10 @@ for in a certificate authority: the audit trail is the product.
 | 2.2.3 | Combinations of related data items are reasonable | 2 | met | `a_wildcard_identifier_is_rejected_when_dns_01_is_disabled` and `a_csr_requesting_ca_powers_yields_a_leaf_without_them` in `tests/security.rs` are two of the pinned cases |
 | 2.3.1 | Business logic flows only in the expected step order | 1 | met | The order state machine refuses out-of-sequence transitions: `an_order_missing_an_authorization_never_becomes_ready`, `an_expired_order_cannot_be_finalized`, `a_deactivated_account_cannot_finalize_a_ready_order` (`tests/security.rs`) |
 | 2.3.2 | Business logic limits implemented as documented | 2 | met | `an_order_naming_more_identifiers_than_the_limit_is_refused` (`tests/security.rs`) |
-| 2.3.3 | Transactions succeed in full or roll back | 2 | met | Multi-row writes run inside `pool.begin()`/`commit()` — order creation with its authorizations (`src/handlers/order.rs`), challenge validation (`src/handlers/authz.rs`), session promotion (`src/sqlite/admin_session.rs`) |
-| 2.3.4 | Locking prevents double-booking of limited resources | 2 | met | Single-use resources are claimed by `UPDATE … WHERE … AND <unused>` and decided by `rows_affected == 1`, never by read-then-write: nonces, recovery codes (`src/sqlite/admin_recovery_code.rs`), the TOTP replay step (`src/sqlite/admin_user.rs`) and session promotion |
+| 2.3.3 | Transactions succeed in full or roll back | 2 | met | Multi-row writes run inside `pool.begin()`/`commit()` — order creation with its authorizations (`crates/protocol/src/handlers/order.rs`), challenge validation (`crates/protocol/src/handlers/authz.rs`), session promotion (`crates/store/src/admin_session.rs`) |
+| 2.3.4 | Locking prevents double-booking of limited resources | 2 | met | Single-use resources are claimed by `UPDATE … WHERE … AND <unused>` and decided by `rows_affected == 1`, never by read-then-write: nonces, recovery codes (`crates/store/src/admin_recovery_code.rs`), the TOTP replay step (`crates/store/src/admin_user.rs`) and session promotion |
 | 2.3.5 | Multi-user approval for high-value flows | 3 | gap | Issuance and revocation are single-actor operations. There is no second-operator approval, and no plan to add one — a CA that needs a quorum to sign is a different product |
-| 2.4.1 | Anti-automation on expensive functions | 2 | met | The ACME listener carries an admission limiter with a queue budget and a request deadline (`src/middlewares/admission.rs`); the admin login path is rate-limited per address before the KDF runs (`LoginLimiter`, `src/webadmin/session.rs`) |
+| 2.4.1 | Anti-automation on expensive functions | 2 | met | The ACME listener carries an admission limiter with a queue budget and a request deadline (`crates/protocol/src/middlewares/admission.rs`); the admin login path is rate-limited per address before the KDF runs (`LoginLimiter`, `crates/admin/src/webadmin/session.rs`) |
 | 2.4.2 | Business flows require realistic human timing | 3 | n/a | Every consumer of the ACME API is a machine; timing gates would break the protocol |
 
 ## V3 Web Frontend Security
@@ -165,20 +165,20 @@ this is exposed at all.
 | 3.2.1 | Prevent content being rendered in the wrong context | 1 | met | `default-src 'none'` plus `X-Content-Type-Options: nosniff` on every response; the API is nested under `/api` with its own JSON fallback so a page path never returns an API body |
 | 3.2.2 | Text rendered as text, not HTML | 1 | met | Auto-escaping templates; no `innerHTML` outside htmx's own fragment swap of server-rendered HTML |
 | 3.2.3 | Avoid DOM clobbering | 3 | met | The panel ships no application JavaScript — htmx is the only script, and everything is driven by `hx-*` attributes |
-| 3.3.1 | `Secure` attribute and a `__Secure-`/`__Host-` prefix | 1 | met | `__Host-acme_admin_session`, which browsers accept only with `Secure`, `Path=/` and no `Domain` (`src/webadmin/session.rs`) |
+| 3.3.1 | `Secure` attribute and a `__Secure-`/`__Host-` prefix | 1 | met | `__Host-acme_admin_session`, which browsers accept only with `Secure`, `Path=/` and no `Domain` (`crates/admin/src/webadmin/session.rs`) |
 | 3.3.2 | `SameSite` set according to purpose | 2 | met | `SameSite=Strict` on both the session cookie and its clearing form |
 | 3.3.3 | `__Host-` prefix unless shared with other hosts | 2 | met | Same as 3.3.1 |
 | 3.3.4 | `HttpOnly` for values scripts must not read | 2 | met | `HttpOnly` is set; the CSRF token travels in the page and the `x-csrf-token` request header, never in a readable cookie |
 | 3.3.5 | Cookie name and value under 4096 bytes | 3 | met | A 32-byte token, base64url-encoded, plus a fixed name |
-| 3.4.1 | HSTS on all responses, ≥ 1 year, `includeSubDomains` for L2 | 1 | met | `max-age=31536000; includeSubDomains`, applied by the shared `security_headers()` constructor to **both** listeners (`src/router.rs`). Emitted unconditionally: a browser ignores it over plain HTTP (RFC 6797 §7.2), so gating it on TLS would remove only a header that is already inert. `includeSubDomains` makes the host in `admin.base_url` load-bearing — see [give the panel its own host name](../operations/webadmin.md#give-the-panel-its-own-host-name) |
+| 3.4.1 | HSTS on all responses, ≥ 1 year, `includeSubDomains` for L2 | 1 | met | `max-age=31536000; includeSubDomains`, applied by the shared `security_headers()` constructor to **both** listeners (`crates/protocol/src/router.rs`). Emitted unconditionally: a browser ignores it over plain HTTP (RFC 6797 §7.2), so gating it on TLS would remove only a header that is already inert. `includeSubDomains` makes the host in `admin.base_url` load-bearing — see [give the panel its own host name](../operations/webadmin.md#give-the-panel-its-own-host-name) |
 | 3.4.2 | CORS `Access-Control-Allow-Origin` fixed or allowlisted | 1 | met | No CORS layer exists on either listener, so no `Access-Control-Allow-Origin` is ever emitted |
-| 3.4.3 | CSP with `object-src 'none'` and `base-uri 'none'` | 2 | met | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` — no `unsafe-inline`, no `unsafe-eval` (`src/webadmin/mod.rs`). `object-src` falls back to `default-src 'none'` |
+| 3.4.3 | CSP with `object-src 'none'` and `base-uri 'none'` | 2 | met | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` — no `unsafe-inline`, no `unsafe-eval` (`crates/admin/src/webadmin/mod.rs`). `object-src` falls back to `default-src 'none'` |
 | 3.4.4 | `X-Content-Type-Options: nosniff` | 2 | met | `security_headers()` |
 | 3.4.5 | Referrer policy | 2 | met | `Referrer-Policy: same-origin` on the admin listener |
 | 3.4.6 | CSP `frame-ancestors` on every response | 2 | met | `frame-ancestors 'none'`, with `X-Frame-Options: DENY` alongside for older clients |
 | 3.4.7 | CSP reports a violation-reporting location | 3 | gap | No `report-to`/`report-uri`. For a single-origin panel with no inline script, the report channel would have no consumer |
 | 3.4.8 | `Cross-Origin-Opener-Policy` on document responses | 3 | gap | Not set. `frame-ancestors 'none'` covers framing but not shared `Window` access from a popup |
-| 3.5.1 | Anti-forgery tokens or non-safelisted header fields | 1 | met | A per-session CSRF token in the `x-csrf-token` header on every unsafe method, plus an `Origin` check against `admin.base_url` — the module doc in `src/webadmin/session.rs` explains why `SameSite=Strict` alone is not enough here |
+| 3.5.1 | Anti-forgery tokens or non-safelisted header fields | 1 | met | A per-session CSRF token in the `x-csrf-token` header on every unsafe method, plus an `Origin` check against `admin.base_url` — the module doc in `crates/admin/src/webadmin/session.rs` explains why `SameSite=Strict` alone is not enough here |
 | 3.5.2 | Functionality cannot be called without a preflight | 1 | n/a | The panel does not rely on CORS preflight; it uses the token in 3.5.1 |
 | 3.5.3 | Sensitive functionality uses unsafe HTTP methods | 1 | met | Every mutating route is `POST`/`DELETE`; `GET` routes are read-only. `mutating_endpoints()` and `mutating_page_endpoints()` are the lists that make this checkable |
 | 3.5.4 | Separate applications on different hostnames | 2 | partial | The ACME and admin surfaces are separate *sockets* with separate TLS and separate defaults, and the admin binds loopback unless TLS is on. They are usually two **ports on one host**, and cookies are not port-scoped — see [Documented deviations](#documented-deviations) |
@@ -186,7 +186,7 @@ this is exposed at all.
 | 3.5.6 | No JSONP | 3 | met | None |
 | 3.5.7 | No authorized data in script resources | 3 | met | The only script served is a static, unauthenticated copy of htmx |
 | 3.5.8 | Authenticated resources embeddable only when intended | 3 | met | `Sec-Fetch` is not inspected, but `frame-ancestors 'none'`, `SameSite=Strict` and the CSRF token together mean no cross-origin embed carries the session |
-| 3.6.1 | SRI for externally hosted client assets | 3 | met | Nothing is externally hosted. htmx is vendored under `src/webadmin/static/` and served from the same origin |
+| 3.6.1 | SRI for externally hosted client assets | 3 | met | Nothing is externally hosted. htmx is vendored under `crates/admin/src/webadmin/static/` and served from the same origin |
 | 3.7.1 | Only supported, secure client-side technologies | 2 | met | HTML, CSS and htmx. No plugins |
 | 3.7.2 | Automatic redirects only to allowlisted hosts | 2 | met | The panel's redirects are fixed relative paths (`/ui/`, the sign-in page); there is no `next=` parameter and no open-redirect surface |
 | 3.7.3 | Notify before redirecting outside the application | 3 | n/a | The panel never redirects off-origin |
@@ -197,9 +197,9 @@ this is exposed at all.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 4.1.1 | Accurate `Content-Type` with charset | 1 | met | ACME responses are `application/json` or `application/problem+json`; panel pages are `text/html; charset=utf-8` via `axum::response::Html`; the two static assets set their own type with an explicit charset (`src/webadmin/pages/assets.rs`) |
-| 4.1.2 | Only user-facing endpoints redirect HTTP to HTTPS | 2 | met | Neither listener redirects. `server.tls.enabled` makes the socket speak TLS **instead of** cleartext, not alongside it (`src/tls.rs`) |
-| 4.1.3 | Intermediary-set header fields cannot be overridden by the user | 2 | met | A forwarded-for header is believed only from a hop in `filter.trusted_proxies`; with the list empty the header is ignored entirely and the peer address is used (`src/client.rs`). The admin listener does no forwarded-header handling at all, deliberately |
+| 4.1.1 | Accurate `Content-Type` with charset | 1 | met | ACME responses are `application/json` or `application/problem+json`; panel pages are `text/html; charset=utf-8` via `axum::response::Html`; the two static assets set their own type with an explicit charset (`crates/admin/src/webadmin/pages/assets.rs`) |
+| 4.1.2 | Only user-facing endpoints redirect HTTP to HTTPS | 2 | met | Neither listener redirects. `server.tls.enabled` makes the socket speak TLS **instead of** cleartext, not alongside it (`crates/net/src/tls.rs`) |
+| 4.1.3 | Intermediary-set header fields cannot be overridden by the user | 2 | met | A forwarded-for header is believed only from a hop in `filter.trusted_proxies`; with the list empty the header is ignored entirely and the peer address is used (`crates/core/src/client.rs`). The admin listener does no forwarded-header handling at all, deliberately |
 | 4.1.4 | Only supported HTTP methods are usable | 3 | met | `axum` routes declare their methods and answer `405` otherwise; both routers carry an explicit `method_not_allowed_fallback` so the refusal is a proper problem document rather than an empty body |
 | 4.1.5 | Per-message digital signatures for highly sensitive requests | 3 | met | Every state-changing ACME request is a JWS signed by the account key, verified against a nonce and the request URL (RFC 8555 §6.2) — this is the protocol's own design, not an addition |
 | 4.2.1 | Correct HTTP message framing (request smuggling) | 2 | met | `hyper` performs the framing and rejects conflicting `Content-Length`/`Transfer-Encoding`; the application never parses framing itself |
@@ -231,9 +231,9 @@ embedded static-asset allowlist and the certificate-chain download.
 | 5.2.5 | Reject symlinks in archives | 3 | n/a | No archives |
 | 5.2.6 | Reject over-large images | 3 | n/a | No images |
 | 5.3.1 | Untrusted files in a public folder are not executed | 1 | n/a | Nothing untrusted is written to a served directory |
-| 5.3.2 | File paths built from trusted data, not user filenames | 1 | met | `GET /ui/static/{file}` is a two-arm `match`, not a filesystem lookup — `tower-http`'s `fs` feature is deliberately off (`src/webadmin/pages/assets.rs`). The `http-01` responder looks a token up in an in-memory store and touches no path |
+| 5.3.2 | File paths built from trusted data, not user filenames | 1 | met | `GET /ui/static/{file}` is a two-arm `match`, not a filesystem lookup — `tower-http`'s `fs` feature is deliberately off (`crates/admin/src/webadmin/pages/assets.rs`). The `http-01` responder looks a token up in an in-memory store and touches no path |
 | 5.3.3 | Ignore user path information when decompressing | 3 | n/a | Nothing is decompressed |
-| 5.4.1 | Validate or ignore user filenames; set `Content-Disposition` | 2 | met | The chain download names the file from the **stored** order id, not the path segment, and sets `attachment; filename="…"` (`src/webadmin/pages/orders.rs`) |
+| 5.4.1 | Validate or ignore user filenames; set `Content-Disposition` | 2 | met | The chain download names the file from the **stored** order id, not the path segment, and sets `attachment; filename="…"` (`crates/admin/src/webadmin/pages/orders.rs`) |
 | 5.4.2 | Served filenames are encoded or sanitized | 2 | met | Same: a generated identifier, so there is nothing to encode |
 | 5.4.3 | Antivirus scanning of files from untrusted sources | 2 | n/a | No files are accepted from untrusted sources |
 
@@ -248,35 +248,35 @@ assessed under V9.
 | 6.1.1 | Documented anti-automation and lockout behaviour | 1 | met | [Web Admin](../operations/webadmin.md#authentication) and the `login_max_attempts` / `login_window_seconds` entries in [Configuration Reference](../configuration/reference.md). The limiter is keyed on the peer **address**, never the username, so no attacker can lock an operator out by guessing at them |
 | 6.1.2 | Documented list of context-specific words barred from passwords | 2 | met | Derived and documented: [Password policy](../operations/webadmin_users.md#the-context-specific-word-list) |
 | 6.1.3 | Multiple authentication pathways documented together | 2 | met | There are two — a panel session and a shell on the host — and [Users & Sessions](../operations/webadmin_users.md) states which operations belong to which and why create and `passwd` stay on the host |
-| 6.2.1 | Passwords at least 8 characters | 1 | met | `MIN_PASSWORD_LEN = 12`, counted in characters rather than bytes (`src/admin/password.rs`) |
+| 6.2.1 | Passwords at least 8 characters | 1 | met | `MIN_PASSWORD_LEN = 12`, counted in characters rather than bytes (`crates/admin/src/admin/password.rs`) |
 | 6.2.2 | Users can change their password | 1 | met | The panel's own account page carries a password card (`POST /ui/account/password`, `POST /api/account/password`) beside `acme-proxy admin user passwd`, so an operator with no shell can rotate their own → [Users & Sessions](../operations/webadmin_users.md#changing-your-own-password) |
-| 6.2.3 | Password change requires current and new password | 1 | met | `handlers::mfa::verify_current_password` (`src/webadmin/handlers/mfa.rs`) checks the current password before `admin::users::change_own_password` writes a new one — unconditionally, unlike the second-factor step-up it was split out of, since this requirement has no "nothing yet to protect" exemption. `admin user passwd` still takes only the new one, answering as it does to a process that can already rewrite the row |
-| 6.2.4 | Check against the top 3000 passwords | 1 | met | 13 918 entries compiled in (`src/admin/corpus/`); every shorter entry is already refused on length |
-| 6.2.5 | No composition rules | 1 | met | Deliberately none. The three rules are about length, this deployment's own words and known-common passwords — none dictates shape (`src/admin/password.rs`) |
+| 6.2.3 | Password change requires current and new password | 1 | met | `handlers::mfa::verify_current_password` (`crates/admin/src/webadmin/handlers/mfa.rs`) checks the current password before `admin::users::change_own_password` writes a new one — unconditionally, unlike the second-factor step-up it was split out of, since this requirement has no "nothing yet to protect" exemption. `admin user passwd` still takes only the new one, answering as it does to a process that can already rewrite the row |
+| 6.2.4 | Check against the top 3000 passwords | 1 | met | 13 918 entries compiled in (`crates/admin/src/admin/corpus/`); every shorter entry is already refused on length |
+| 6.2.5 | No composition rules | 1 | met | Deliberately none. The three rules are about length, this deployment's own words and known-common passwords — none dictates shape (`crates/admin/src/admin/password.rs`) |
 | 6.2.6 | Password fields use `type=password` | 1 | met | `templates/login.html`, the step-up field in `templates/account/_card.html`, and the two fields in `templates/account/_password_card.html` |
 | 6.2.7 | Paste and password managers permitted | 1 | met | Standard inputs with `autocomplete="username"` / `"current-password"`; nothing blocks paste |
 | 6.2.8 | Password verified exactly as received | 1 | met | `verify_password` hashes the bytes as received: no trimming, no case folding, and an over-long password is *rejected* rather than truncated. The policy check folds a copy to compare against the corpus and the word list, and never touches what is stored |
 | 6.2.9 | Passwords of at least 64 characters permitted | 2 | met | `MAX_PASSWORD_LEN = 1024` bytes, a denial-of-service bound rather than a policy |
 | 6.2.10 | No forced periodic rotation | 2 | met | Nothing expires a password. The stored form is self-describing, so raising the KDF cost re-encodes a row on its owner's next login instead of forcing a change |
-| 6.2.11 | Context-specific word list used | 2 | met | `PasswordContext` in `src/admin/password.rs`, matched as a substring |
+| 6.2.11 | Context-specific word list used | 2 | met | `PasswordContext` in `crates/admin/src/admin/password.rs`, matched as a substring |
 | 6.2.12 | Check against breached passwords | 2 | met | Same corpus: breach-derived (`xato-net`), filtered to the reachable length range |
-| 6.3.1 | Credential-stuffing and brute-force controls | 1 | met | `LoginLimiter` refuses over the limit **before** the 600 000-iteration KDF runs, which makes it an availability control as much as a credential one (`src/webadmin/session.rs`) |
+| 6.3.1 | Credential-stuffing and brute-force controls | 1 | met | `LoginLimiter` refuses over the limit **before** the 600 000-iteration KDF runs, which makes it an availability control as much as a credential one (`crates/admin/src/webadmin/session.rs`) |
 | 6.3.2 | No default accounts | 1 | met | The `admin_users` migration seeds no rows and there is no sign-up page; the first operator is created by `admin user create` on the host |
 | 6.3.3 | MFA or a combination of single factors | 2 | partial | TOTP with recovery codes is implemented and `admin.require_mfa` enforces it for every operator — but it defaults to `false`, so a stock deployment is single-factor. [Hardening](hardening.md#the-web-admin) tells operators to turn it on. For L3 this would need a hardware factor; see [Documented deviations](#documented-deviations) |
 | 6.3.4 | No undocumented pathways; consistent strength | 2 | met | The panel and API share one session layer, and every mutating route passes through `AuthenticatedWrite`, `PageSessionWrite` or `EnrolWrite`. The host CLI is the second pathway and is documented as such |
-| 6.3.5 | Notify users of suspicious authentication attempts | 3 | met | A completed sign-in from an address not among the operator's recent ones (`admin_users.known_login_ips`, last five), a correct password then a refused second factor, and a per-session second-factor lockout each send an `admin_sign_in` notification to the operator's own `contact_email`, through `[admin.notify]` (`src/webadmin/handlers/session.rs`, `src/notify/`) |
+| 6.3.5 | Notify users of suspicious authentication attempts | 3 | met | A completed sign-in from an address not among the operator's recent ones (`admin_users.known_login_ips`, last five), a correct password then a refused second factor, and a per-session second-factor lockout each send an `admin_sign_in` notification to the operator's own `contact_email`, through `[admin.notify]` (`crates/admin/src/webadmin/handlers/session.rs`, `crates/jobs/src/notify/`) |
 | 6.3.6 | Email not used as an authentication factor | 3 | met | It is not |
 | 6.3.7 | Notify after changes to authentication details | 3 | met | A password change, a second-factor enrol/disable, a recovery-code regeneration, a notification-address change and a colleague-admin second-factor reset send an `admin_credential_changed` notification — from the panel and from the **host CLI** alike (`admin user passwd`, `contact`, `totp reset`, `totp recovery-codes`), the CLI queuing the delivery for the running server's worker |
-| 6.3.8 | Valid users not deducible from failed challenges | 3 | met | An unknown username still pays the KDF, against `password::dummy_hash()`, and every failure returns one `invalid_credentials` whatever the real cause (`src/admin/users.rs`) |
+| 6.3.8 | Valid users not deducible from failed challenges | 3 | met | An unknown username still pays the KDF, against `password::dummy_hash()`, and every failure returns one `invalid_credentials` whatever the real cause (`crates/admin/src/admin/users.rs`) |
 | 6.4.1 | Initial passwords and activation codes are random, policy-compliant and short-lived | 1 | n/a | Nothing generates an initial password; the operator supplies one on stdin or in `--password-file` |
 | 6.4.2 | No password hints or secret questions | 1 | met | Neither exists |
 | 6.4.3 | Secure forgotten-password reset that does not bypass MFA | 2 | met | Reset is `admin user passwd` on the host. It revokes every session the operator held and leaves the enrolled factor untouched, so the next sign-in still needs it |
 | 6.4.4 | Lost MFA factor requires enrolment-level identity proofing | 2 | met | Either a single-use recovery code, or `admin user totp reset` on the host — the second being a strictly stronger proof than the live session plus password that enrolment took |
 | 6.4.5 | Renewal reminders before an authenticator expires | 3 | n/a | No authentication factor expires |
 | 6.4.6 | Administrators can reset but not choose a user's password | 3 | gap | `admin user passwd` sets the password, so whoever runs it knows it. This is a host-root operation on a machine that already holds the hashes |
-| 6.5.1 | Lookup secrets and TOTPs usable only once | 2 | met | `AdminUser::claim_totp_step` is an `UPDATE … WHERE totp_last_step IS NULL OR totp_last_step < ?` decided by `rows_affected`, so a code resubmitted inside its own 30-second window is refused (`src/sqlite/admin_user.rs`); recovery codes are consumed by `UPDATE … WHERE id = ? AND used_at IS NULL` |
+| 6.5.1 | Lookup secrets and TOTPs usable only once | 2 | met | `AdminUser::claim_totp_step` is an `UPDATE … WHERE totp_last_step IS NULL OR totp_last_step < ?` decided by `rows_affected`, so a code resubmitted inside its own 30-second window is refused (`crates/store/src/admin_user.rs`); recovery codes are consumed by `UPDATE … WHERE id = ? AND used_at IS NULL` |
 | 6.5.2 | Sub-112-bit lookup secrets hashed with an approved KDF and a 32-bit salt | 2 | met | Recovery codes carry 50 bits and are stored through `admin::password` — PBKDF2-HMAC-SHA256, 600 000 iterations, a 128-bit per-row salt |
-| 6.5.3 | Seeds and codes from a CSPRNG | 2 | met | `ring::rand::SystemRandom` for the TOTP secret (`src/admin/totp.rs`) and every recovery code (`src/admin/recovery.rs`) |
+| 6.5.3 | Seeds and codes from a CSPRNG | 2 | met | `ring::rand::SystemRandom` for the TOTP secret (`crates/admin/src/admin/totp.rs`) and every recovery code (`crates/admin/src/admin/recovery.rs`) |
 | 6.5.4 | Lookup secrets have at least 20 bits of entropy | 2 | met | Ten characters from a 32-symbol alphabet: 50 bits, with zero modulo bias because 256 is a multiple of 32 |
 | 6.5.5 | Defined lifetime for codes and TOTPs | 2 | met | 30-second step with RFC 6238 §5.2's one step of permitted skew either way (`SKEW_STEPS = 1`). A half-authenticated session additionally dies after `PENDING_MFA_TTL`, five minutes |
 | 6.5.6 | Any factor can be revoked | 3 | met | `admin user totp reset`, `admin user disable`, `admin session revoke [--user <u> [--session <id>] \| --all]`, and recovery codes are superseded as a set on re-enrolment |
@@ -287,7 +287,7 @@ assessed under V9.
 | 6.6.3 | Rate-limit code-based out-of-band mechanisms | 2 | n/a | No out-of-band factor. TOTP guessing is bounded twice — `mfa_attempts` on the pending row and the five-minute `PENDING_MFA_TTL` |
 | 6.6.4 | Rate-limit push notifications | 3 | n/a | No push factor |
 | 6.7.1 | Certificates verifying authentication assertions protected from modification | 3 | met | Account public keys live in `accounts` under the database's file mode; a modified key is a key that no longer verifies its own account's requests |
-| 6.7.2 | Challenge nonce at least 64 bits and unique | 3 | met | 256 bits from `ring::rand::SystemRandom`, unique by primary key and single-use by `rows_affected` (`src/sqlite/nonce.rs`) |
+| 6.7.2 | Challenge nonce at least 64 bits and unique | 3 | met | 256 bits from `ring::rand::SystemRandom`, unique by primary key and single-use by `rows_affected` (`crates/store/src/nonce.rs`) |
 | 6.8.1 | Identity cannot be spoofed across identity providers | 2 | n/a | No identity provider |
 | 6.8.2 | Signatures on authentication assertions validated | 2 | n/a | No external assertions. The equivalent for ACME JWS is V9.1.1 |
 | 6.8.3 | SAML assertions processed once | 2 | n/a | No SAML |
@@ -303,10 +303,10 @@ carries its own signature and its own nonce.
 | 7.1.1 | Documented inactivity timeout and absolute lifetime | 2 | met | `session_ttl_seconds` (12 h, never extended by activity) and `session_idle_timeout_seconds` (1 h) in [Configuration Reference](../configuration/reference.md), restated in [Web Admin](../operations/webadmin.md#authentication) |
 | 7.1.2 | Documented concurrent-session policy | 2 | partial | The behaviour is definite — sessions are unlimited per operator, and `admin session revoke` (`--all`, one operator's, or one session with `--session <id>`) is the lever — but no page states the limit as a policy |
 | 7.1.3 | Federated session coordination documented | 2 | n/a | No federation |
-| 7.2.1 | Session verification at a trusted backend | 1 | met | Every request resolves `hex(SHA-256(token))` against `admin_sessions` and re-checks state, expiry, idleness and the owner's status (`src/webadmin/session.rs`) |
+| 7.2.1 | Session verification at a trusted backend | 1 | met | Every request resolves `hex(SHA-256(token))` against `admin_sessions` and re-checks state, expiry, idleness and the owner's status (`crates/admin/src/webadmin/session.rs`) |
 | 7.2.2 | Dynamically generated tokens, not static secrets | 1 | met | `mint_token` per sign-in; there are no API keys on this listener |
 | 7.2.3 | Reference tokens unique, CSPRNG, ≥ 128 bits | 1 | met | 256 bits from `ring::rand::SystemRandom`, base64url-encoded |
-| 7.2.4 | New token on authentication, old one terminated | 1 | met | Sign-in deletes whatever session the request carried; completing MFA is a **rotation** — `AdminSession::promote` deletes the `pending_mfa` row and inserts a new one with a new token and a new CSRF token, in one transaction (`src/sqlite/admin_session.rs`) |
+| 7.2.4 | New token on authentication, old one terminated | 1 | met | Sign-in deletes whatever session the request carried; completing MFA is a **rotation** — `AdminSession::promote` deletes the `pending_mfa` row and inserts a new one with a new token and a new CSRF token, in one transaction (`crates/store/src/admin_session.rs`) |
 | 7.3.1 | Inactivity timeout | 2 | met | `session_idle_timeout_seconds`, checked per request and swept by the reaper |
 | 7.3.2 | Absolute maximum session lifetime | 2 | met | `expires_at` is set at creation and never advanced |
 | 7.4.1 | Terminated sessions cannot be reused | 1 | met | Sessions are reference tokens in a table; sign-out deletes the row |
@@ -314,7 +314,7 @@ carries its own signature and its own nonce.
 | 7.4.3 | Option to terminate other sessions after a factor changes | 2 | met | `confirm_totp_enrolment` and `disable_totp` both call `revoke_other_sessions`; a password change revokes every session unconditionally |
 | 7.4.4 | Visible logout on every authenticated page | 2 | met | A "Sign out" control in `templates/layout.html`, which every page extends |
 | 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke` on the host terminates globally (`--all`), one operator's (`--user <u>`), or one session (`--user <u> --session <id>`, the id being the fingerprint the listing prints); the panel's [Operators](../operations/webadmin_users.md#managing-operators) page does the individual form over HTTP — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one, gated by `verify_current_password` |
-| 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`src/webadmin/handlers/mfa.rs`) |
+| 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`crates/admin/src/webadmin/handlers/mfa.rs`) |
 | 7.5.2 | Users can view and terminate their own sessions | 2 | met | The account page's Sessions card (`GET /api/account/sessions`, `/ui/account`) lists every one of the caller's own live sessions and terminates one individually (`POST /api/account/sessions/{id}/revoke`) or all at once ("Sign out everywhere") — closing the gap between nothing and everything the panel used to leave → [Sessions](../operations/webadmin_users.md#sessions) |
 | 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`, and the whole `/operators` colleague-management surface by `verify_current_password`, which re-prompts even for an operator with no factor. Certificate revocation and account deletion require at least the `operator` role (`admin_users.role`), but for an operator holding it a live session is still sufficient authority — no password re-prompt on the CA mutations |
 | 7.6.1 | Federated re-authentication behaviour | 2 | n/a | No federation |
@@ -329,7 +329,7 @@ carries its own signature and its own nonce.
 | 8.1.3 | Documented environmental and contextual attributes | 3 | met | Address, reverse name, IPAM ownership, request path and EAB identity are each documented under [Filters](../filters/checks.md), and the trust placed in a forwarded address under [Allowed IP](../filters/allowed_ip.md) |
 | 8.1.4 | Documented use of contextual factors in decisions | 3 | met | The policy expression language, including how an `or` over an address check weakens a conjunction, is written out in [Hardening](hardening.md#an-or-is-a-hole-you-opened-deliberately) |
 | 8.2.1 | Function-level access restricted to explicit permissions | 1 | met | ACME: `POST`-as-`GET` with a `kid` resolving to the owning account. Admin: three extractors every mutating route passes through |
-| 8.2.2 | Data-specific access restricted (IDOR/BOLA) | 1 | met | Order, authorization and certificate reads check the requesting account owns the object; accounts and orders are additionally isolated **per profile**, so a `kid` naming another profile does not resolve (`src/extractors/acme.rs`) |
+| 8.2.2 | Data-specific access restricted (IDOR/BOLA) | 1 | met | Order, authorization and certificate reads check the requesting account owns the object; accounts and orders are additionally isolated **per profile**, so a `kid` naming another profile does not resolve (`crates/protocol/src/extractors/acme.rs`) |
 | 8.2.3 | Field-level access restricted (BOPLA) | 2 | met | Responses are built from explicit serializer functions, never by serializing a row |
 | 8.2.4 | Adaptive controls from contextual attributes | 3 | met | The filter chain evaluates per request, not per session, so a change of address is re-evaluated on the next call |
 | 8.3.1 | Authorization enforced at a trusted service layer | 1 | met | Extractors and middleware, server-side. No decision depends on anything the client sends unsigned |
@@ -346,10 +346,10 @@ is a reference token and is assessed under V7.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 9.1.1 | Signature validated before the contents are accepted | 1 | met | `verify_jws` verifies the signature over the protected header and payload before any handler sees the body (`src/extractors/acme.rs`, `src/jws/signature.rs`) |
-| 9.1.2 | Algorithm allowlist, no `none` | 1 | met | Exactly `ES256` on P-256 and `RS256` are accepted; anything else is `Unsupported algorithm`. The `alg` must additionally agree with the key type *and* the named curve, so `alg` alone never selects the verifier (`src/jws/signature.rs`) |
+| 9.1.1 | Signature validated before the contents are accepted | 1 | met | `verify_jws` verifies the signature over the protected header and payload before any handler sees the body (`crates/protocol/src/extractors/acme.rs`, `crates/core/src/jws/signature.rs`) |
+| 9.1.2 | Algorithm allowlist, no `none` | 1 | met | Exactly `ES256` on P-256 and `RS256` are accepted; anything else is `Unsupported algorithm`. The `alg` must additionally agree with the key type *and* the named curve, so `alg` alone never selects the verifier (`crates/core/src/jws/signature.rs`) |
 | 9.1.3 | Key material from trusted pre-configured sources | 1 | met | A `kid` resolves to a stored account key whose URL prefix must match this profile's `base_url`; a `jwk` is the key being registered and is only ever trusted for `newAccount`/`revokeCert` as RFC 8555 §6.2 defines. `jwk` and `kid` together are refused, and a `crit` header is refused outright |
-| 9.2.1 | Validity time span honoured | 1 | met | The equivalent is the nonce: single-use, and refused past `nonce.ttl_seconds`. Unknown, consumed and expired are made indistinguishable on purpose (`src/sqlite/nonce.rs`) |
+| 9.2.1 | Validity time span honoured | 1 | met | The equivalent is the nonce: single-use, and refused past `nonce.ttl_seconds`. Unknown, consumed and expired are made indistinguishable on purpose (`crates/store/src/nonce.rs`) |
 | 9.2.2 | Token type checked against the intended purpose | 2 | met | The protected header must carry exactly the fields RFC 8555 §6.2 defines for the request kind; `newAccount` requires a `jwk`, everything else a `kid` |
 | 9.2.3 | Audience restriction | 2 | met | The JWS `url` must equal `profile.base_url` plus the request path, byte for byte (RFC 8555 §6.4). A signature captured from one profile does not verify against another |
 | 9.2.4 | Same key across audiences carries an audience restriction | 2 | met | Same mechanism: the audience is in the signed `url`, and the `kid` prefix pins the profile |
@@ -359,24 +359,24 @@ is a reference token and is assessed under V7.
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | 11.1.1 | Documented key management policy and lifecycle | 2 | met | [Security Model](index.md#what-each-secret-protects) names every secret, what its compromise buys and how it is stored; [Secret Rotation](rotation.md) is the lifecycle half — a recommended interval and the early-rotation triggers for each — and [Hardening](hardening.md#the-ca-key) covers the CA key specifically |
-| 11.1.2 | Cryptographic inventory maintained | 2 | met | The table in [Security Model](index.md#what-each-secret-protects), plus the per-algorithm rationale carried in the module docs of `src/admin/password.rs`, `src/admin/totp.rs` and `src/eab.rs` |
+| 11.1.2 | Cryptographic inventory maintained | 2 | met | The table in [Security Model](index.md#what-each-secret-protects), plus the per-algorithm rationale carried in the module docs of `crates/admin/src/admin/password.rs`, `crates/admin/src/admin/totp.rs` and `crates/core/src/eab.rs` |
 | 11.1.3 | Cryptographic discovery mechanisms | 3 | met | One backend: `ring`, plus `rustls` for TLS and `rcgen` for certificate construction. `grep -rn ring src/` is the discovery mechanism, and `cargo deny` fails the build on an unlisted crypto dependency |
 | 11.1.4 | Inventory includes a post-quantum migration path | 3 | gap | No PQC migration plan. The ACME wire algorithms are RFC 8555's to change first |
-| 11.2.1 | Industry-validated implementations | 2 | met | `ring` (BoringSSL-derived) for hashing, HMAC, PBKDF2, signature verification and the RNG; `rustls` for TLS. Nothing hand-rolls a primitive — `src/admin/totp.rs` composes `ring::hmac` per RFC 4226 and is checked against the RFC's published test vectors |
+| 11.2.1 | Industry-validated implementations | 2 | met | `ring` (BoringSSL-derived) for hashing, HMAC, PBKDF2, signature verification and the RNG; `rustls` for TLS. Nothing hand-rolls a primitive — `crates/admin/src/admin/totp.rs` composes `ring::hmac` per RFC 4226 and is checked against the RFC's published test vectors |
 | 11.2.2 | Crypto agility | 2 | met | Password hashes are stored self-describing (`pbkdf2-sha256$600000$…`), so the algorithm or cost can change with a new branch in `verify_password` and `needs_rehash` re-encodes each row at its owner's next login — no migration. The signer backend, the CA key type and the key *source* (file or PKCS#11) are all configuration |
 | 11.2.3 | Minimum 128 bits of security | 2 | partial | ECDSA P-256, SHA-256, HMAC-SHA-256 and 256-bit secrets are all at or above the bar. **RSA is accepted from 2048 bits** (`RSA_PKCS1_2048_8192_SHA256`), which is about 112 — see [Documented deviations](#documented-deviations) |
-| 11.2.4 | Constant-time cryptographic operations | 3 | met | `ring::constant_time::verify_slices_are_equal` under the hood, and `subtle::ConstantTimeEq` for the TOTP comparison (`src/admin/totp.rs`) |
-| 11.2.5 | Cryptographic modules fail securely | 3 | met | A verification failure is a refusal, never a fallback. A corrupt stored password hash is deliberately **not** folded into "wrong password" — it refuses and logs `admin_password_hash_unreadable` (`src/admin/users.rs`) |
+| 11.2.4 | Constant-time cryptographic operations | 3 | met | `ring::constant_time::verify_slices_are_equal` under the hood, and `subtle::ConstantTimeEq` for the TOTP comparison (`crates/admin/src/admin/totp.rs`) |
+| 11.2.5 | Cryptographic modules fail securely | 3 | met | A verification failure is a refusal, never a fallback. A corrupt stored password hash is deliberately **not** folded into "wrong password" — it refuses and logs `admin_password_hash_unreadable` (`crates/admin/src/admin/users.rs`) |
 | 11.3.1 | No insecure block modes or weak padding | 1 | partial | Nothing in the tree encrypts. `RS256` is RSASSA-PKCS1-v1_5, which RFC 8555 requires — a *signature* scheme, not the padding oracle this requirement targets. See [Documented deviations](#documented-deviations) |
 | 11.3.2 | Only approved ciphers and modes | 1 | met | Transport encryption is `rustls` with safe defaults; the application encrypts nothing itself |
 | 11.3.3 | Encrypted data protected against modification | 2 | n/a | No application-layer encryption |
 | 11.3.4 | Single-use numbers not reused across key/data pairs | 3 | n/a | No application-layer encryption. ACME nonces are single-use by construction |
 | 11.3.5 | Encrypt-then-MAC | 3 | n/a | No application-layer encryption |
-| 11.4.1 | Approved hash functions | 1 | met | SHA-256 throughout. The one SHA-1 is `HMAC_SHA1_FOR_LEGACY_USE_ONLY` inside TOTP, which RFC 6238 §1.2 specifies and which every authenticator app assumes — the module doc in `src/admin/totp.rs` is the argument for not "fixing" it |
+| 11.4.1 | Approved hash functions | 1 | met | SHA-256 throughout. The one SHA-1 is `HMAC_SHA1_FOR_LEGACY_USE_ONLY` inside TOTP, which RFC 6238 §1.2 specifies and which every authenticator app assumes — the module doc in `crates/admin/src/admin/totp.rs` is the argument for not "fixing" it |
 | 11.4.2 | Passwords stored with an approved, expensive KDF | 2 | met | PBKDF2-HMAC-SHA256 at 600 000 iterations with a 128-bit per-row salt — OWASP's current recommendation for the non-Argon2 case. See [Documented deviations](#documented-deviations) for why not Argon2id |
 | 11.4.3 | Collision-resistant hashes of adequate length in signatures | 2 | met | SHA-256 for every signature and every integrity use. HMAC-SHA-1's security rests on the PRF property, not collision resistance |
 | 11.4.4 | Approved KDF with key-stretching for password-derived keys | 2 | met | Same PBKDF2 parameters; recovery codes go through the identical path |
-| 11.5.1 | Non-guessable values from a CSPRNG with ≥ 128 bits | 2 | met | Session tokens, CSRF tokens, EAB secrets, challenge tokens and ACME replay nonces are all 256 bits from `ring::rand::SystemRandom`, base64url-encoded, through the one `src/random.rs`. The nonce was a UUID v4 until 0.2.0 — 122 bits, and a form this requirement names explicitly |
+| 11.5.1 | Non-guessable values from a CSPRNG with ≥ 128 bits | 2 | met | Session tokens, CSRF tokens, EAB secrets, challenge tokens and ACME replay nonces are all 256 bits from `ring::rand::SystemRandom`, base64url-encoded, through the one `crates/core/src/random.rs`. The nonce was a UUID v4 until 0.2.0 — 122 bits, and a form this requirement names explicitly |
 | 11.5.2 | RNG works securely under heavy demand | 3 | met | `SystemRandom` draws from the OS CSPRNG; there is no userspace pool to exhaust |
 | 11.6.1 | Approved algorithms for key generation and signatures | 2 | met | `rcgen` generates ECDSA P-256 by default; the accepted account-key algorithms are the two RFC 8555 defines. Key generation can be delegated to a PKCS#11 token, where the key never leaves the device |
 | 11.6.2 | Approved key exchange with secure parameters | 3 | met | `rustls` with `with_safe_default_protocol_versions()`: TLS 1.2 and 1.3 only, and only its own vetted groups |
@@ -387,7 +387,7 @@ is a reference token and is assessed under V7.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 12.1.1 | Only current TLS versions, newest preferred | 1 | met | `with_safe_default_protocol_versions()` on the `rustls` ring provider — TLS 1.3 and 1.2 only (`src/tls.rs`) |
+| 12.1.1 | Only current TLS versions, newest preferred | 1 | met | `with_safe_default_protocol_versions()` on the `rustls` ring provider — TLS 1.3 and 1.2 only (`crates/net/src/tls.rs`) |
 | 12.1.2 | Recommended cipher suites, forward secrecy for L3 | 2 | met | `rustls` ships no suite without forward secrecy and none that is not current; there is no knob to weaken it |
 | 12.1.3 | mTLS client certificates validated before use | 2 | n/a | No mTLS. The one place a client certificate is inspected is `tls-alpn-01` validation, where the certificate *is* the challenge response and is checked for the RFC 8737 `acmeIdentifier` extension rather than for trust |
 | 12.1.4 | Certificate revocation such as OCSP stapling | 3 | partial | As a **CA**, the server publishes a CRL signed over the revocations recorded in its database ([Revocation & CRL](../operations/revocation.md)). As a **TLS server** it does not staple |
@@ -397,7 +397,7 @@ is a reference token and is assessed under V7.
 | 12.3.1 | Encrypted protocols for all inbound and outbound connections | 2 | partial | The relay upstream, webhooks and IPAM are HTTPS. `http-01` validation is HTTP **because RFC 8555 §8.3 defines it that way**, and SQLite is a local file, not a connection |
 | 12.3.2 | TLS clients validate certificates | 2 | met | The relay client validates against `webpki-roots` — there, the certificate is the only thing identifying the CA being handed your CSRs. The IPAM clients validate too; `insecure_skip_verify` exists, defaults off, and warns on **every** startup while on |
 | 12.3.3 | TLS between internal HTTP services | 2 | met | Same set. The `http-01` exception above is the protocol's |
-| 12.3.4 | Internal TLS uses trusted certificates | 2 | met | The IPAM clients take a `ca_bundle` so a NetBox behind an internal PKI is trusted specifically rather than by disabling verification (`src/config/types/ipam.rs`) |
+| 12.3.4 | Internal TLS uses trusted certificates | 2 | met | The IPAM clients take a `ca_bundle` so a NetBox behind an internal PKI is trusted specifically rather than by disabling verification (`crates/core/src/config/types/ipam.rs`) |
 | 12.3.5 | Strong mutual authentication between internal services | 3 | n/a | Single process; there are no intra-service hops |
 
 ## V13 Configuration
@@ -409,16 +409,16 @@ is a reference token and is assessed under V7.
 | 13.1.3 | Documented resource-management strategy per external system | 3 | partial | Timeouts are documented per subsystem and every outbound call has one. **Retry policy** is documented for the job runner but not stated as a policy for the IPAM and webhook clients |
 | 13.1.4 | Documented critical secrets and a rotation schedule | 3 | met | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); [Secret Rotation](rotation.md) gives a recommended interval and the early-rotation triggers for each, with the CA key called out as structural rather than scheduled |
 | 13.2.1 | Authenticated backend communication with non-shared credentials | 2 | partial | The relay upstream authenticates by account key and the IPAM clients by API token, both per-deployment. The database is a local file governed by file mode, not by a credential |
-| 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`src/script_hook.rs`); the systemd unit in [Deployment](../getting_started/deployment.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only |
+| 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`crates/core/src/script_hook.rs`); the systemd unit in [Deployment](../getting_started/deployment.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only |
 | 13.2.3 | No default service credentials | 2 | met | Nothing ships with a credential. Every secret is either operator-supplied or generated on first start |
 | 13.2.4 | Allowlist of external systems the application may contact | 2 | partial | The relay upstream, the IPAM host and the webhook URL are each a single configured destination — an allowlist of one. The `http-01` validator is the exception, and deliberately so |
 | 13.2.5 | Server-level allowlist of destinations | 2 | partial | Same. The containment for `http-01` is scheme, port and hop count rather than destination |
 | 13.2.6 | Documented per-connection configuration followed | 3 | met | Each client is built from its own configuration block at startup, so a broken setting stops the server rather than failing every later call |
 | 13.3.1 | A secrets management solution; no secrets in source or artifacts | 2 | partial | No secret is in the source tree or the image. Every secret can come from the environment rather than the file, and the CA key can live in a **PKCS#11 token** — which is the L3 hardware-backed form. There is no vault integration, and the database necessarily holds EAB and TOTP secrets in retrievable form |
-| 13.3.2 | Least privilege for secret access | 2 | met | Keys are created `0600` with `create_new` rather than chmod'ed afterwards (`src/pemfile.rs`); the database file mode is the documented boundary |
+| 13.3.2 | Least privilege for secret access | 2 | met | Keys are created `0600` with `create_new` rather than chmod'ed afterwards (`crates/core/src/pemfile.rs`); the database file mode is the documented boundary |
 | 13.3.3 | Cryptographic operations inside an isolated security module | 3 | partial | Available but not required: `--features hsm` puts the issuing key in a PKCS#11 token, where it can be used and not copied ([Hardware Keys](../signers/local_ca_hsm.md)) |
 | 13.3.4 | Secrets expire and rotate as documented | 3 | partial | Rotation is now documented per secret in [Secret Rotation](rotation.md). Sessions expire on their own and EAB credentials are revocable live; the CA key, the TSIG key and the API tokens rotate on an operator-run cadence, not a timer |
-| 13.4.1 | No source-control metadata deployed | 1 | met | `.dockerignore` is an **allowlist** — `*` then `!Cargo.toml`, `!Cargo.lock`, `!src/`, `!migrations/` — so `.git` never enters the build context, and the final stage copies only the compiled binary |
+| 13.4.1 | No source-control metadata deployed | 1 | met | `.dockerignore` is an **allowlist** — `*` then `!Cargo.toml`, `!Cargo.lock`, `!src/`, `!crates/store/migrations/` — so `.git` never enters the build context, and the final stage copies only the compiled binary |
 | 13.4.2 | Debug modes disabled in production | 2 | met | Log level is configuration and defaults to `info`; there is no debug endpoint and no development mode. `challenge.bypass`, the one setting that genuinely weakens the server, is off by default and **warns on every startup** while on |
 | 13.4.3 | No directory listings | 2 | met | Nothing is served from a directory. `tower-http`'s `fs` feature is off and static assets are a two-arm `match` |
 | 13.4.4 | HTTP `TRACE` unsupported | 2 | met | Never routed; `axum` answers `405` |
@@ -433,9 +433,9 @@ is a reference token and is assessed under V7.
 | 14.1.1 | Sensitive data identified and classified | 2 | met | [Security Model](index.md#what-each-secret-protects) classifies every secret by what its compromise buys; [Database Schema](../dev/database.md#secrets-are-stored-three-different-ways-on-purpose) classifies each by the *form* it is stored in — one-way, retrievable, or never stored |
 | 14.1.2 | Documented protection requirements per level | 2 | met | The same two pages, plus [Audit Trail](../operations/audit.md#retention) for retention |
 | 14.2.1 | No sensitive data in URLs or query strings | 1 | met | The session token is in a cookie, the CSRF token in a header, the EAB secret in a response body shown once. No credential is ever a path or query parameter |
-| 14.2.2 | Sensitive data not cached in server components | 2 | met | `Cache-Control: no-store` on every admin response — account contacts and a freshly minted EAB secret must not sit in a disk cache after the tab closes (`src/webadmin/mod.rs`) |
+| 14.2.2 | Sensitive data not cached in server components | 2 | met | `Cache-Control: no-store` on every admin response — account contacts and a freshly minted EAB secret must not sit in a disk cache after the tab closes (`crates/admin/src/webadmin/mod.rs`) |
 | 14.2.3 | Sensitive data not sent to untrusted parties | 2 | met | The only outbound payloads are the relay's own ACME traffic, a webhook to an operator-configured URL and IPAM lookups. No analytics, no third-party asset, no CDN |
-| 14.2.4 | Documented controls implemented | 2 | met | Nonces and session tokens reach logs only as fingerprints (`src/sqlite/nonce.rs`, `src/sqlite/admin_session.rs`); proxy URLs are redacted before they are logged or `Debug`-formatted, pinned by `neither_debug_nor_redacted_leaks_the_password` (`src/proxy.rs`) |
+| 14.2.4 | Documented controls implemented | 2 | met | Nonces and session tokens reach logs only as fingerprints (`crates/store/src/nonce.rs`, `crates/store/src/admin_session.rs`); proxy URLs are redacted before they are logged or `Debug`-formatted, pinned by `neither_debug_nor_redacted_leaks_the_password` (`crates/net/src/proxy.rs`) |
 | 14.2.5 | Caching only for expected content types (web cache deception) | 3 | met | `no-store` on the whole admin listener, and an unknown path returns a `404`, never a different valid file |
 | 14.2.6 | Return the minimum sensitive data | 3 | met | An EAB secret is shown exactly once at creation; a session is displayed by the fingerprint of its token hash, never by the hash; `render_admin_session_json` is the one serializer |
 | 14.2.7 | Retention classification and scheduled deletion | 3 | partial | `audit.retention_days` sweeps the trail and the job runner reaps nonces, expired sessions and stale orders. The default is `0` — keep everything — which is the right default for a trail whose value is that it is complete, and is a decision the operator is asked to make |
@@ -450,8 +450,8 @@ is a reference token and is assessed under V7.
 | --- | --- | --- | --- | --- |
 | 15.1.1 | Documented remediation time frames for vulnerable components | 1 | partial | [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) states that fixes land on `main` and in the next release, and `cargo deny` runs advisories on every CI run and on a schedule. No numeric time frame is committed to |
 | 15.1.2 | An SBOM or equivalent inventory is maintained | 2 | met | `sbom.cdx.json` is a committed CycloneDX 1.5 inventory of the shipped dependency closure (`--all-features --target all`, dev-dependencies excluded), regenerated and diffed by the `sbom` CI job and carried in the published crate; `cargo deny check` gates that same closure |
-| 15.1.3 | Documented resource-demanding functionality | 2 | met | The expensive paths are named and bounded: `http-01` and `dns-01` validation have timeouts, the PBKDF2 cost is documented as a denial-of-service lever with the limiter placed before it, and the admission limiter's shed-versus-queue reasoning is written out in `src/middlewares/admission.rs` |
-| 15.1.4 | Risky third-party libraries highlighted | 3 | met | `deny.toml` is the allow list, run with `all-features = true`, and the rationale for *refusing* dependencies is recorded where the refusal was made — `src/admin/password.rs` on Argon2id, `TODO.md` on `webauthn-rs` |
+| 15.1.3 | Documented resource-demanding functionality | 2 | met | The expensive paths are named and bounded: `http-01` and `dns-01` validation have timeouts, the PBKDF2 cost is documented as a denial-of-service lever with the limiter placed before it, and the admission limiter's shed-versus-queue reasoning is written out in `crates/protocol/src/middlewares/admission.rs` |
+| 15.1.4 | Risky third-party libraries highlighted | 3 | met | `deny.toml` is the allow list, run with `all-features = true`, and the rationale for *refusing* dependencies is recorded where the refusal was made — `crates/admin/src/admin/password.rs` on Argon2id, `TODO.md` on `webauthn-rs` |
 | 15.1.5 | Dangerous functionality highlighted | 3 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names the three request-forgery surfaces, and [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) lists the behaviour that looks alarming and is deliberate |
 | 15.2.1 | No components past the documented remediation window | 1 | met | The `Advisories, licenses & sources` CI job fails the build on a RUSTSEC advisory |
 | 15.2.2 | Implemented defenses against availability loss | 2 | met | Admission limiter with a queue budget and a request deadline, body limits on both listeners, a login limiter ahead of the KDF, per-call timeouts on every outbound subsystem, and `kill_on_drop` on script hooks |
@@ -459,25 +459,25 @@ is a reference token and is assessed under V7.
 | 15.2.4 | Dependencies from expected repositories | 3 | met | `cargo deny check sources` restricts registries, and `Cargo.lock` pins every transitive dependency by hash |
 | 15.2.5 | Extra protection around dangerous functionality | 3 | met | Script hooks are the dangerous surface and run in a cleared environment with a minimal `PATH`, a deadline and `kill_on_drop`; the CA key can be moved into a PKCS#11 token; the [Containerfile](https://github.com/acme-proxy/acme-proxy/blob/main/Containerfile) is the network-isolation story |
 | 15.3.1 | Return only the required subset of fields | 1 | met | Explicit serializers per resource; no row is serialized wholesale |
-| 15.3.2 | Do not follow redirects unless intended | 2 | met | Intended, bounded and switchable: `follow_redirects` and `max_redirects` on the `http-01` validator, with scheme and port checked on every hop (`src/challenge/http_01.rs`) |
+| 15.3.2 | Do not follow redirects unless intended | 2 | met | Intended, bounded and switchable: `follow_redirects` and `max_redirects` on the `http-01` validator, with scheme and port checked on every hop (`crates/net/src/challenge/http_01.rs`) |
 | 15.3.3 | Countermeasures against mass assignment | 2 | met | Request bodies deserialize into per-route structs holding only the fields that route accepts; nothing constructs a row from client JSON |
-| 15.3.4 | Original client IP transferred correctly and used for decisions | 2 | met | `filter.trusted_proxies` is the allowlist of hops whose forwarded header is believed; empty means the header is ignored. The admin listener does none of this deliberately, so no caller can choose its own rate-limiter key (`src/client.rs`, `src/webadmin/session.rs`) |
+| 15.3.4 | Original client IP transferred correctly and used for decisions | 2 | met | `filter.trusted_proxies` is the allowlist of hops whose forwarded header is believed; empty means the header is ignored. The admin listener does none of this deliberately, so no caller can choose its own rate-limiter key (`crates/core/src/client.rs`, `crates/admin/src/webadmin/session.rs`) |
 | 15.3.5 | Explicit types and strict comparisons | 2 | met | Rust's type system; there is no coercion to juggle |
 | 15.3.6 | JavaScript written to prevent prototype pollution | 2 | n/a | The panel ships no application JavaScript |
 | 15.3.7 | Defenses against HTTP parameter pollution | 2 | met | `axum` extractors read from one named source per parameter — a path segment, a typed query struct, or a JSON body — never from a merged bag |
 | 15.4.1 | Thread-safe access to shared objects | 3 | met | `Send`/`Sync` are checked at compile time; shared mutable state is behind `Mutex` or `Semaphore` (`LoginLimiter`, `Admission`) |
 | 15.4.2 | State checks and dependent actions are atomic | 3 | met | The single-use idiom is one statement: `UPDATE … WHERE <still unused>` decided by `rows_affected`, never a read followed by a write. Key files are created with `create_new`, which is the atomic form of "exists?" then "create" |
 | 15.4.3 | Consistent locking, contained in the owning code | 3 | met | Locks are held inside the type that owns the resource and never across an `await` |
-| 15.4.4 | Resource allocation prevents starvation | 3 | met | The admission limiter refuses past its queue budget rather than queueing without bound — the reasoning for not using `GlobalConcurrencyLimitLayer` is written out in `src/middlewares/admission.rs` |
+| 15.4.4 | Resource allocation prevents starvation | 3 | met | The admission limiter refuses past its queue budget rather than queueing without bound — the reasoning for not using `GlobalConcurrencyLimitLayer` is written out in `crates/protocol/src/middlewares/admission.rs` |
 
 ## V16 Security Logging and Error Handling
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
 | 16.1.1 | A logging inventory exists | 2 | met | [Monitoring](../operations/monitoring.md#structured-events) enumerates every `event = "…"` name; [Audit Trail](../operations/audit.md) states what the trail records, where it lives, who can read it and how retention works |
-| 16.2.1 | Log entries carry when, where, who, what | 2 | met | The access line carries method, URI, status, latency, client address, profile and a request id (`src/middlewares/access.rs`); an audit row carries actor, address, reverse name, identifiers, `User-Agent` and the same request id |
+| 16.2.1 | Log entries carry when, where, who, what | 2 | met | The access line carries method, URI, status, latency, client address, profile and a request id (`crates/protocol/src/middlewares/access.rs`); an audit row carries actor, address, reverse name, identifiers, `User-Agent` and the same request id |
 | 16.2.2 | Synchronized time sources; UTC or explicit offset | 2 | met | Timestamps come from the host clock as Unix seconds in the database and RFC 3339 in the log; host time sync is the operator's |
-| 16.2.3 | Logs only go to documented destinations | 2 | met | One `tracing` subscriber built in one place — `prepare_logging` in `src/server/logging.rs` — with `logging.target` naming the sink, so a reload cannot drift from startup |
+| 16.2.3 | Logs only go to documented destinations | 2 | met | One `tracing` subscriber built in one place — `prepare_logging` in `crates/server/src/logging.rs` — with `logging.target` naming the sink, so a reload cannot drift from startup |
 | 16.2.4 | Logs readable by the log processor | 2 | met | `logging.json_format` produces one JSON object per line, with `flatten_event` for pipelines that want fields at the top level |
 | 16.2.5 | Sensitive data logged according to its protection level | 2 | met | Nonces and session tokens appear only as fingerprints; proxy credentials are redacted; a password never enters a log or `argv` — `admin user passwd` reads from stdin or `--password-file` |
 | 16.3.1 | All authentication operations logged | 2 | met | `admin_login_*`, `admin_mfa_verified`, `admin_mfa_attempts_exhausted`, `admin_logout` and `admin_password_hash_unreadable`, each with the outcome and the method used |
@@ -524,7 +524,7 @@ and whose password is the *bootstrap* credential in a design that ends in a
 second factor. 600 000 iterations is OWASP's current recommendation for the
 non-Argon2 case, and the stored form is self-describing so the trade can be
 revisited without a migration. The argument is in the module doc of
-`src/admin/password.rs`.
+`crates/admin/src/admin/password.rs`.
 
 **`admin.require_mfa` defaults to `false`** — *V6.3.3.* Defaulting it on would
 brick a panel whose first operator has not enrolled yet, with no way in to fix

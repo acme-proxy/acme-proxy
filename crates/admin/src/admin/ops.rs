@@ -48,7 +48,7 @@ pub enum DeleteOutcome {
     /// Refused: the subject holds this many live certificates, and deleting its
     /// order rows would leave them impossible to revoke. See
     /// [`live_certificates_refusal`] for what to tell the operator, and
-    /// `live_certificate!` in `src/sqlite/order.rs` for what "live" means.
+    /// `live_certificate!` in `crates/store/src/order.rs` for what "live" means.
     ///
     /// Only an account or an order can answer this; an operator holds no
     /// certificate.

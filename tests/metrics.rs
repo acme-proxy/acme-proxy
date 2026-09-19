@@ -1,6 +1,6 @@
 //! The Prometheus counters, moved by real traffic through the real router.
 //!
-//! The unit suites in `src/metrics.rs` and `src/middlewares/metrics.rs` pin the
+//! The unit suites in `crates/jobs/src/metrics.rs` and `crates/protocol/src/middlewares/metrics.rs` pin the
 //! exposition format and the label cardinality against a synthetic router. What
 //! they cannot show is that the counters are wired to anything: that an ACME
 //! request really reaches the middleware, and that an issuance really reaches

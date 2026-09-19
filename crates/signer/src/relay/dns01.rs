@@ -485,8 +485,8 @@ mod tests {
     /// A loopback RFC 2136 responder: one UDP socket and one TCP listener on
     /// the same port, answering whatever the test scripted.
     ///
-    /// Same technique as the loopback servers in `src/tls.rs` and
-    /// `src/filter/netbox/client.rs` — the transport here (framing, the
+    /// Same technique as the loopback servers in `crates/net/src/tls.rs` and
+    /// `crates/policy/src/filter/netbox/client.rs` — the transport here (framing, the
     /// truncation retry) is only meaningfully exercised against a real socket.
     mod stub {
         use super::*;
