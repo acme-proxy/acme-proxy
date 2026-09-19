@@ -172,15 +172,20 @@ lets an order that fails release its claim. See
 
 ## `CHECK` constraints hold the state machines
 
-Five columns carry a `CHECK (… IN (…))`: `accounts.status`, `orders.status`,
-`authorizations.status`, `challenges.status` and `challenges.type`, plus
-`eab_keys.status`, `admin_users.status`, `admin_sessions.state`, and
-`audit_log`'s `event`, `outcome` and `actor_kind`.
+Every `status` column carries a `CHECK (status IN (…))` — `accounts`, `orders`,
+`authorizations`, `challenges`, `jobs`, `upstream_orders`, `eab_keys` and
+`admin_users` — as do `challenges.type`, `admin_sessions.state`, and
+`audit_log`'s `outcome` and `actor_kind`.
 
-They are there because status transitions are raw string literals spread across
-several modules. A typo would otherwise park a row in a state nothing can read
-back, and the row would look fine. With the constraint it is a failed write at
-the moment of the mistake.
+They are there because a typo in a status would otherwise park a row in a state
+nothing can read back, and the row would look fine. With the constraint it is a
+failed write at the moment of the mistake.
+
+Open vocabularies carry none: `audit_log.event` (its `CHECK` was dropped by
+`20260909120000`), `admin_users.role` and `jobs.kind` are validated by a Rust
+enum instead, because each grows with features and a `CHECK` would cost a table
+rebuild per new word. See [ADR
+0005](adr/0005-rust-enums-own-the-vocabularies.md).
 
 This is also why a new `CHECK` is expensive: SQLite cannot add one to an
 existing table, so it needs a full table rebuild in a new migration. Several
@@ -210,6 +215,10 @@ Two more consequences of that decision:
 Rows are only ever `INSERT`ed. There is no setter and no `UPDATE` against this
 table anywhere in the crate; the only statement that removes anything is the
 retention sweep. See [Audit Trail](../operations/audit.md).
+
+`revocations` follows the same rule for the same reason. A local CA's
+revocation must outlive an order an operator deletes, or the serial would drop
+off the CRL, so it has no foreign key to `orders` either.
 
 `accounts.eab_kid` is a similar deliberate non-key: it records which credential
 was used at registration, but an EAB credential is revocable and the account
@@ -281,19 +290,21 @@ CGNAT and mobile clients; pinning it to a User-Agent breaks on the next browser
 update. They answer "who asked for this, and from where" after the fact, and
 nothing else.
 
+One column is compared, and only to decide whether to send a message:
+`admin_users.known_login_ips`, the operator's last five distinct sign-in
+addresses, decides whether a sign-in is reported as coming from a new address.
+It never allows or denies anything.
+
 None of them reaches an ACME object either — the wire format is RFC 8555's and
 stays that way. They surface through the admin CLI and the web admin only.
 
 ## Ids are UUID v7, stored as bytes
 
 Every row this server creates is keyed by a **UUID version 7** (RFC 9562 §5.7),
-minted in one place, `sqlite::id::mint`. Version 7 rather than 4 because its
-leading 48 bits are a millisecond timestamp: ids created close together share a
-prefix, so an index over them is written at its right-hand edge instead of at a
-fresh random leaf per insert, and `ORDER BY created_at, id` — the tie-break the
-paged listings use on a whole-second `created_at` — comes out chronological.
-SQLite feels the first only mildly; PostgreSQL, where a random primary key costs
-a page split and a full-page WAL write per row, would feel it a great deal more.
+minted in one place, `acme_proxy_store::id::mint`. Ids created close together
+share a prefix, and they sort by creation; why that matters, and the rule that
+an id's Rust type says where it came from, are in
+[ADR 0004](adr/0004-uuid-v7-blob-ids.md).
 
 The column holds the **sixteen bytes**, not the thirty-six characters of the
 rendering. Nothing on the wire changes for it — an id is still rendered by
@@ -315,11 +326,8 @@ an RFC 9773 certID, `audit_log.actor_id` may be an account id or an admin
 username, `audit_log.account_id` and `order_id` name a row that may already be
 gone, and `request_id` is whatever the caller sent.
 
-Rows created before this changed were converted in place, keeping the v4 ids
-they were minted with — an id is a foreign key, a `kid` is a credential a client
-stored, and an order id is inside a URL a client polls for weeks, so none of
-them could be reissued. A table therefore holds both versions, and only the v7s
-sort by creation.
+Rows created before this changed were converted in place and keep their v4
+ids, so a table holds both versions and only the v7s sort by creation.
 
 ## Reading it directly
 

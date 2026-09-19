@@ -12,6 +12,25 @@ status. Do not rewrite its argument after the fact.
 
 | ADR | Decision | Status |
 |---|---|---|
+| [0001](0001-pre-1-0-compatibility.md) | Before 1.0.0, only the database schema is a compatibility promise | Accepted |
+| [0002](0002-workspace-layering.md) | One binary over a layered workspace of lockstep crates | Accepted |
+| [0003](0003-migrations-frozen-and-explicit.md) | Migrations are append-only and applied only by the schema owners | Accepted |
+| [0004](0004-uuid-v7-blob-ids.md) | Row ids are UUID v7 stored as BLOBs, and their type says where they came from | Accepted |
+| [0005](0005-rust-enums-own-the-vocabularies.md) | A Rust enum owns each vocabulary, and SQL checks only the closed ones | Accepted |
+
+### Decisions argued on other pages
+
+Some decisions are explained where their subject is documented, and have no
+record here, because a second copy would drift from the first:
+
+- [Secrets are stored three different ways, on
+  purpose](../database.md#secrets-are-stored-three-different-ways-on-purpose)
+- [Columns nothing ever compares
+  against](../database.md#columns-nothing-ever-compares-against): no identity is
+  pinned to an address or a User-Agent.
+- [Evidence has no foreign
+  keys](../database.md#the-audit-trail-has-no-foreign-keys-deliberately): the
+  audit trail and the revocation ledger outlive what they describe.
 
 ## Writing an ADR
 

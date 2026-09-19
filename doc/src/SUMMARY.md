@@ -71,6 +71,11 @@
 # Developer Documentation
 - [Architecture & Design](dev/architecture.md)
 - [Architecture Decisions](dev/adr/index.md)
+  - [ADR 0001: Before 1.0.0, only the database schema is a compatibility promise](dev/adr/0001-pre-1-0-compatibility.md)
+  - [ADR 0002: One binary over a layered workspace of lockstep crates](dev/adr/0002-workspace-layering.md)
+  - [ADR 0003: Migrations are append-only and applied only by the schema owners](dev/adr/0003-migrations-frozen-and-explicit.md)
+  - [ADR 0004: Row ids are UUID v7 stored as BLOBs, and their type says where they came from](dev/adr/0004-uuid-v7-blob-ids.md)
+  - [ADR 0005: A Rust enum owns each vocabulary, and SQL checks only the closed ones](dev/adr/0005-rust-enums-own-the-vocabularies.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)
