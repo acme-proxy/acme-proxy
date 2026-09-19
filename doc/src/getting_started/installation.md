@@ -105,19 +105,30 @@ build, without `hsm`. A deployment that needs it builds its own binary.
 ## Container (Docker / Podman)
 
 Every release is published to the GitHub Container Registry as a
-multi-architecture image, for `linux/amd64` and `linux/arm64`, tagged with its
-version and with `latest`:
+multi-architecture image, for `linux/amd64` and `linux/arm64`:
 
 ```bash
 podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
 
-Pin the version rather than following `latest`. Before 1.0.0 a minor release may
-rename a configuration key, so an unattended pull of `latest` can stop a server
+| Tag      | Points at                                                   |
+|----------|-------------------------------------------------------------|
+| `0.6.0`  | That release. It never moves.                               |
+| `0.6`    | The newest `0.6.x` release: its fixes, never a new minor.   |
+| `latest` | The highest release, whatever its minor.                    |
+| `edge`   | The head of `main`, rebuilt on every merge. Not a release.  |
+| `sha-…`  | One commit of `main`, as `edge` was when it was built.      |
+
+Run a version tag, or `0.6` to take patch releases without a change on your
+side. Avoid `latest` for an unattended deployment. Before 1.0.0 a minor
+release may rename a configuration key, so a pull of `latest` can stop a server
 from starting; the `### Breaking` sections of the
 [changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility)
-list every such change. The image holds the release build with the default
-features: the binary `cargo install acme-proxy` produces.
+list every such change. `edge` is for trying what the next release will hold,
+never for a certificate authority anyone depends on.
+
+Every image holds the release build with the default features: the binary
+`cargo install acme-proxy` produces.
 
 To build the image yourself instead, use the `Containerfile` in a clone of the
 repository:

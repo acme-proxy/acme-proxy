@@ -248,13 +248,21 @@ name, so the file is identical whether it was regenerated in a worktree named
 
 ## Cutting a release
 
+`main` is the trunk: every pull request targets it, and a minor release is a
+tag on it. A patch release comes from a `release/X.Y` branch, cut from the
+`X.Y.0` tag when the first fix needs to ship.
+[ADR 0013](adr/0013-trunk-and-release-branches.md) argues the model.
+
 Every crate of the workspace is published to crates.io together, at the
 binary's version: the library crates are internal, with no semver promise of
 their own, and exist on crates.io only so `cargo install acme-proxy` can build.
 
-1. Bump `version` in `[workspace.package]` of the root `Cargo.toml` and every
-   `=x.y.z` pin on an `acme-proxy-*` crate in `[workspace.dependencies]`,
-   together — the exact pins are what keep the crates in step.
+### A minor release
+
+1. On `main`, bump `version` in `[workspace.package]` of the root `Cargo.toml`
+   and every `=x.y.z` pin on an `acme-proxy-*` crate in
+   `[workspace.dependencies]`, together. The exact pins are what keep the
+   crates in step.
 2. Regenerate `sbom.cdx.json` (above); it records the version.
 3. Check the whole set packages and builds from its own archives, then publish
    it, in dependency order:
@@ -275,16 +283,18 @@ their own, and exist on crates.io only so `cargo install acme-proxy` can build.
 
    The tag triggers `.github/workflows/release.yml`, which builds the image on
    an amd64 and an arm64 runner and publishes `ghcr.io/acme-proxy/acme-proxy`
-   as `X.Y.Z` and `latest`, with a provenance attestation.
+   as `0.6.0`, `0.6` and `latest`, with a provenance attestation.
    [ADR 0012](adr/0012-container-images-are-built-natively-per-architecture.md)
    explains its shape. Its `guard` job stops the release, with nothing
-   published, in three cases:
+   published, in four cases:
 
    - **The tag is not the workspace version, or a crate pin is stale.** The
      tag is most likely mistyped: delete it and push the right one. If step 1
-     was incomplete, fix the manifest on `main` first.
-   - **There is no CI run on `main` for the commit.** The tag is on a commit
-     that was never pushed to `main`. Move the tag.
+     was incomplete, fix the manifest first.
+   - **The tag is off its line.** `X.Y.0` must be on `main`, and `X.Y.Z` on
+     `release/X.Y`. Move the tag.
+   - **There is no CI run on that branch for the commit.** The tag is on a
+     commit that was never pushed to the branch. Move the tag.
    - **CI is pending or failed.** Wait for it, or fix it, then use
      "Re-run all jobs" on the release run for the same tag.
 
@@ -295,9 +305,50 @@ their own, and exist on crates.io only so `cargo install acme-proxy` can build.
    repository is public. In the package's settings, make it inherit access from
    the repository, then check that `podman pull` works with no credentials.
 
+### A patch release
+
+1. If `release/X.Y` does not exist yet, cut it from the minor's tag and push
+   it. The branch ruleset lets a new branch be created without a pull request:
+
+   ```bash
+   git switch -c release/0.6 0.6.0 && git push origin release/0.6
+   ```
+
+2. Backport every fix it ships, as below.
+3. On a topic branch off `release/X.Y`, bump the version and the pins,
+   regenerate the SBOM, and give the changelog its `## [X.Y.Z]` section,
+   holding the backported entries. Merge it into `release/X.Y` by pull request.
+4. Publish the crates from that commit, as in step 3 above.
+5. Once its CI run on `release/X.Y` is green, tag it: `git tag -a 0.6.1 -m
+   0.6.1` on the branch's head, then push the tag. The image is published as
+   `0.6.1` and `0.6`, and as `latest` only when no higher release exists.
+6. Cherry-pick the changelog section onto `main`, so the trunk's changelog
+   lists every release, and take the fixed entries out of `[Unreleased]` there.
+
+### Backporting a fix
+
+A fix is merged on `main` first, and reaches a release branch as a
+cherry-pick, never the other way around:
+
+```bash
+git switch -c backport/0.6/fix-name origin/release/0.6
+git cherry-pick -x <commit on main>
+```
+
+Open the pull request against `release/0.6`. The `-x` trailer names the commit
+on `main` the fix came from. When the cherry-pick conflicts, resolve it on the
+topic branch and say in the pull request what differs from the original.
+
+### Trying the next release
+
+Every merge to `main` publishes `ghcr.io/acme-proxy/acme-proxy:edge`, once
+the whole of `ci.yml` has passed on it. The `image` job at the end of `ci.yml`
+calls `release.yml` for that.
+
 ## Submitting a pull request
 
-1. Fork the repository and create your branch from `main`.
+1. Fork the repository and create your branch from `main`, fixes included.
+   A fix is backported to a release branch after it merges (see above).
 2. Write clear, descriptive commit messages.
 3. If you've added code that should be tested, add tests.
 4. If you've changed APIs, update the documentation in this `mdBook`.

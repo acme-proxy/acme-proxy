@@ -23,7 +23,8 @@ status. Do not rewrite its argument after the fact.
 | [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted; metrics clause superseded by [0011](0011-metrics-on-prometheus-client.md) |
 | [0010](0010-error-types.md) | Errors derive `thiserror`, carry their whole message, and panic only at startup | Accepted. This was re-argued more than once before it was written down, which |
 | [0011](0011-metrics-on-prometheus-client.md) | Metrics are built on `prometheus-client`, one registry per scrape | Accepted |
-| [0012](0012-container-images-are-built-natively-per-architecture.md) | Release images are built natively per architecture, uncached, from a guarded tag | Accepted |
+| [0012](0012-container-images-are-built-natively-per-architecture.md) | Images are built natively per architecture, uncached, and published only past a guard | Accepted |
+| [0013](0013-trunk-and-release-branches.md) | `main` is the trunk, and a patch line is a release branch cut when a fix needs one | Accepted |
 
 ### Decisions argued elsewhere
 

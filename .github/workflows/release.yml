@@ -1,10 +1,19 @@
 name: Release image
 
-# Publishes the root `Containerfile` to ghcr.io as a multi-architecture image
-# when a release tag is pushed. doc/src/dev/adr/0012-container-images-are-built-
-# natively-per-architecture.md carries the reasoning; the comments below say
-# what each piece prevents. The release procedure that pushes the tag is in
-# doc/src/dev/contributing.md, "Cutting a release".
+# Publishes the root `Containerfile` to ghcr.io as a multi-architecture image.
+# doc/src/dev/adr/0012-container-images-are-built-natively-per-architecture.md
+# carries the reasoning, and doc/src/dev/adr/0013-trunk-and-release-branches.md
+# the branch model; the comments below say what each piece prevents. The
+# release procedure that pushes the tag is in doc/src/dev/contributing.md,
+# "Cutting a release".
+#
+# | Run                              | Tags pushed                        |
+# |----------------------------------|------------------------------------|
+# | tag `X.Y.Z` pushed               | `X.Y.Z`, `X.Y`, and `latest` when  |
+# |                                  | `X.Y.Z` is the highest release tag |
+# | `ci.yml` green on a `main` push  | `edge`, `sha-<short commit>`       |
+# | "Run workflow" on a tag, publish | `X.Y.Z` alone                      |
+# | "Run workflow" on a branch       | nothing: a rehearsal               |
 on:
   # Bare `X.Y.Z`, the repository's tag convention. `guard` then checks the tag
   # against the version in Cargo.toml, so a mistyped tag stops there.
@@ -22,17 +31,25 @@ on:
         description: Push the image (only honoured when run from a release tag)
         type: boolean
         default: false
+  # `ci.yml` calls this after every one of its jobs passed on a push to `main`,
+  # which publishes `edge`. A call and not a `workflow_run` trigger: that event
+  # runs the default branch's copy of this file against the default branch's
+  # head, so the commit CI tested would have to be threaded through by hand.
+  # Inside a call, `github.event_name` and `github.ref` are the caller's.
+  workflow_call:
 
 # Least privilege: each job below widens only what it needs.
 permissions:
   contents: read
 
-# Same group expression as ci.yml, but never cancelled. There a cancelled run
-# is a recomputation; here it is a side effect on a registry, and a run killed
-# between the per-architecture pushes and `imagetools create` leaves manifests
-# that no index references.
+# Never cancelled. In ci.yml a cancelled run is a recomputation; here it is a
+# side effect on a registry, and a run killed between the per-architecture
+# pushes and `imagetools create` leaves manifests that no index references.
+# The group is a literal and not `github.workflow`: inside a call that is the
+# caller's name, and a called workflow sharing its caller's group is cancelled
+# as a deadlock.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-image-${{ github.ref }}
   cancel-in-progress: false
 
 # No build cache, deliberately. Nothing here reads or writes one, and adding
@@ -59,10 +76,11 @@ concurrency:
 # pinned; update both together.
 jobs:
   # Refuses to publish a tag that does not describe the commit it points at.
-  # CI does not run on tags (ci.yml runs on pushes to `main`), so nothing else
-  # would stop an image being built from a half-bumped manifest, or from a
-  # commit that never passed the suite. On a branch rehearsal every step is
-  # skipped and the job passes, so the rehearsal still exercises the builds.
+  # CI does not run on tags (ci.yml runs on pushes to branches), so nothing
+  # else would stop an image being built from a half-bumped manifest, from a
+  # commit that never passed the suite, or from a commit off its release line.
+  # On a branch every check is skipped: a rehearsal still exercises the
+  # builds, and a call from ci.yml comes after CI's own jobs passed.
   guard:
     name: Guard the release tag
     runs-on: ubuntu-latest
@@ -71,13 +89,20 @@ jobs:
       contents: read
       actions: read
     outputs:
-      # A publish needs a tag ref: `publish` derives the image tags from it, so
-      # a run from a branch would push an index with no tag at all.
-      publish: ${{ github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish) }}
+      # A tag push publishes, and so does a manual run from a tag with
+      # `publish` checked. On a branch only `main` publishes, and only as a
+      # push, which reaches this workflow solely through ci.yml's call: a
+      # manual run from `main` is a rehearsal like any other branch's.
+      publish: ${{ (github.ref_type == 'tag' && (github.event_name == 'push' || inputs.publish)) || (github.ref == 'refs/heads/main' && github.event_name == 'push') }}
+      # The `tags:` block both metadata-action calls use, so the image labels
+      # and the pushed tags cannot disagree.
+      tags: ${{ steps.tags.outputs.tags }}
     steps:
+      # The whole history, with every branch and tag: the line and newest-tag
+      # checks below read them.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: github.ref_type == 'tag'
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       # The version is read from the `[workspace.package]` table alone: a bare
@@ -119,7 +144,35 @@ jobs:
           fi
           echo "Tag $TAG matches the workspace version and all $crates crate pins."
 
-      # Only a `push` run on `main` counts. The nightly `schedule` run skips
+      # A minor release is tagged on `main`, a patch release on its own
+      # `release/X.Y` branch, cut from `X.Y.0` when the first fix needed one.
+      # A patch tagged on `main` would ship the next minor's changes under a
+      # patch number, which is exactly what the release branches prevent.
+      - name: The tag is on its release line
+        id: line
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          IFS=. read -r major minor patch <<<"$TAG"
+          if [ "$patch" = 0 ]; then
+            branch=main
+          else
+            branch="release/$major.$minor"
+          fi
+          if ! git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+            echo "::error::there is no branch $branch; a patch release is tagged on its release branch, cut from $major.$minor.0"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD "origin/$branch"; then
+            echo "::error::tag $TAG is not on $branch"
+            exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG is on $branch."
+
+      # Only a `push` run on the tag's own branch counts. The nightly `schedule` run skips
       # the test job, so its success says nothing about the commit, and a pull
       # request run tested a merge that may not be this commit.
       #
@@ -133,14 +186,15 @@ jobs:
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.line.outputs.branch }}
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
-            --commit "$SHA" --event push --branch main \
+            --commit "$SHA" --event push --branch "$BRANCH" \
             --json status,conclusion,url --limit 20)
           if [ "$(jq length <<<"$runs")" -eq 0 ]; then
-            echo "::error::no CI run on main for $SHA; tag a commit that has been pushed to main"
+            echo "::error::no CI run on $BRANCH for $SHA; tag a commit that has been pushed to $BRANCH"
             exit 1
           fi
           status=$(jq -r '.[0].status' <<<"$runs")
@@ -155,6 +209,54 @@ jobs:
             exit 1
           fi
           echo "CI passed on $SHA: $url"
+
+      # `latest` is the highest release, not the most recent one: a 0.5.3
+      # published after 0.6.0 must not move it back a minor. Only bare
+      # `X.Y.Z` tags count, the repository's convention.
+      - name: The tag is the highest release
+        id: newest
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          highest=$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$highest" = "$TAG" ]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is not the highest release ($highest), so latest stays where it is."
+          fi
+
+      # A release tag gets its version, the floating `X.Y` (the newest
+      # release of that line; it never crosses a minor, so it never picks up
+      # a breaking change), and `latest`. The two floating tags move on a tag
+      # push only, so a manual republish of an older tag cannot move either
+      # one backwards. `main` gets `edge` and the commit. There is
+      # no floating `X`: before 1.0 a minor is where breaking changes land.
+      # A rehearsal names its branch, for the image labels only.
+      - name: Choose the tags
+        id: tags
+        env:
+          PUSH: ${{ github.event_name == 'push' }}
+          LATEST: ${{ github.event_name == 'push' && steps.newest.outputs.value == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tags="type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}},enable=$PUSH
+          type=raw,value=latest,enable=$LATEST"
+          elif [ "$GITHUB_REF" = refs/heads/main ]; then
+            tags="type=edge,branch=main
+          type=sha"
+          else
+            tags="type=ref,event=branch"
+          fi
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   # One single-architecture image per leg, each on a native runner. QEMU would
   # emulate a fat-LTO, one-codegen-unit build, which is slow enough to become
@@ -198,7 +300,8 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
-          tags: type=semver,pattern={{version}}
+          flavor: latest=false
+          tags: ${{ needs.guard.outputs.tags }}
 
       # Push-by-digest needs the `docker-container` driver that this sets up;
       # the runner's default `docker` driver cannot do it.
@@ -296,11 +399,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # `X.Y.Z`, and `latest` on a tag push only, so a manual republish of an
-      # older tag cannot move `latest` backwards. There is no floating `X.Y`:
-      # before 1.0 a minor release is where breaking changes land. The
-      # annotations go on the index, where a registry reads them; the action's
-      # default `manifest:` level would put them on the wrong object.
+      # The tags are `guard`'s choice. The annotations go on the index, where a
+      # registry reads them; the action's default `manifest:` level would put
+      # them on the wrong object.
       - name: Tags and annotations
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -309,9 +410,7 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           flavor: latest=false
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+          tags: ${{ needs.guard.outputs.tags }}
 
       # Exactly two sources, checked: a list quietly built from one
       # architecture is an image that fails only on the machines nobody tried.
@@ -334,17 +433,21 @@ jobs:
           docker buildx imagetools create "${args[@]}" "${sources[@]}"
 
       # `imagetools create` does not report the digest it pushed, so it is read
-      # back from the registry.
+      # back from the registry, through the first tag it pushed.
       - name: Read the index digest
         id: index
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          META: ${{ steps.meta.outputs.json }}
         run: |
           set -euo pipefail
-          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          ref=$(jq -r '.tags[0]' <<<"$META")
+          digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest)
           case "$digest" in
-            sha256:*) echo "digest=$digest" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::could not read the index digest of $IMAGE:$VERSION"; exit 1 ;;
+            sha256:*)
+              echo "digest=$digest" >> "$GITHUB_OUTPUT"
+              echo "ref=$ref" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::could not read the index digest of $ref"; exit 1 ;;
           esac
 
       # Attests the index, the object a tag resolves to. A platform-specific
@@ -360,17 +463,21 @@ jobs:
       # run page of the release that needs it.
       - name: Summary
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          REF: ${{ steps.index.outputs.ref }}
           DIGEST: ${{ steps.index.outputs.digest }}
+          META: ${{ steps.meta.outputs.json }}
         run: |
           {
-            echo "### Published \`$IMAGE:$VERSION\`"
+            echo "### Published \`$REF\`"
             echo
             echo "Index digest: \`$DIGEST\`"
             echo
+            echo "Tags:"
+            jq -r '.tags[] | "- `" + . + "`"' <<<"$META"
+            echo
             echo '```bash'
-            echo "podman pull $IMAGE:$VERSION"
-            echo "gh attestation verify oci://$IMAGE:$VERSION --repo $GITHUB_REPOSITORY"
+            echo "podman pull $REF"
+            echo "gh attestation verify oci://$REF --repo $GITHUB_REPOSITORY"
             echo '```'
             echo
             echo "On the package's first publish, set its visibility to inherit"

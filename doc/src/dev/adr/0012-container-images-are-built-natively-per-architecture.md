@@ -1,4 +1,4 @@
-# ADR 0012: Release images are built natively per architecture, uncached, from a guarded tag
+# ADR 0012: Images are built natively per architecture, uncached, and published only past a guard
 
 ## Status
 
@@ -48,25 +48,38 @@ operator can check.
 - **No build cache**, and the workflow says why, since an absent cache is the
   first thing a reader would add.
 - **A guard job runs before any build.** It refuses a tag that differs from
-  `[workspace.package].version`, or from any crate's `=x.y.z` pin. It also
-  refuses a tag whose commit has no successful `push` run of `ci.yml` on
-  `main`. It fails rather than waits: the release procedure tags only once CI
-  is green.
+  `[workspace.package].version`, or from any crate's `=x.y.z` pin. It refuses
+  a tag off its release line, `main` for `X.Y.0` and `release/X.Y` for a
+  patch ([ADR 0013](0013-trunk-and-release-branches.md)). It also refuses a
+  tag whose commit has no successful `push` run of `ci.yml` on that branch. It
+  fails rather than waits: the release procedure tags only once CI is green.
 - **Build provenance is attested once, on the manifest list's digest**, and
   pushed to the registry. BuildKit's own per-image attestations are off: with
   them on, each leg pushes an index instead of an image, and joining those
   indexes would carry attestation manifests that nothing references.
-- **Tags are `X.Y.Z` and `latest`.** There is no floating `X.Y`, because before
-  1.0 a minor release is where breaking changes land. Only a tag push moves
-  `latest`; a manual republish of an older tag does not.
+- **A release tag publishes `X.Y.Z`, `X.Y` and `latest`.** The floating `X.Y`
+  is the newest release of its line. It never crosses a minor, so it never
+  picks up a breaking change, and an operator following it gets patch releases
+  unattended. There is no floating `X`: before 1.0 a minor release is where
+  breaking changes land. Both floating tags move only on a tag push, so a
+  manual republish of an older tag moves neither. `latest` also needs the tag
+  to be the highest release, so a patch to an older line leaves it alone.
+- **Every push to `main` publishes `edge` and `sha-<commit>`**, once all of
+  `ci.yml` has passed on it: `ci.yml` calls this workflow as its last job. The
+  build is the same release build, attested the same way; only the tags
+  differ.
 - **The image carries the default feature set**, the same binary
   `cargo install acme-proxy` produces. `hsm` needs a build of one's own.
 
 ## Consequences
 
-- An uncached release build takes tens of minutes per architecture. That is
-  acceptable for a few releases a month, and `timeout-minutes` is set to stop
-  a wedged builder, not as an estimate.
+- An uncached release build takes tens of minutes per architecture, and now
+  runs on every merge to `main` as well as on every release. A public
+  repository's runners are not billed, and `timeout-minutes` is set to stop a
+  wedged builder, not as an estimate. Merges to `main` queue rather than cancel
+  each other, since a cancelled publish leaves orphaned manifests.
+- `edge` and the `sha-` tags accumulate a version per merge in GHCR. Pruning
+  them is a registry policy, and it must keep untagged versions (below).
 - A hand-run `podman build .` is now as slow as a release build. Contributors
   building the lab image by hand pass `--build-arg CARGO_PROFILE=e2e`, as
   `tests/e2e/common.rs` does.
@@ -85,8 +98,11 @@ operator can check.
 
 ## Enforced by
 
-- `guard` in `.github/workflows/release.yml`: the version and pin check, and the
-  CI check.
+- `guard` in `.github/workflows/release.yml`: the version and pin check, the
+  release-line check, the CI check, and the highest-release check that gates
+  `latest`.
+- The `image` job in `.github/workflows/ci.yml`, which `needs:` every other
+  job before it publishes `edge`.
 - The digest-count check in that workflow's `publish` job.
 - `tests/e2e/common.rs`, whose image build names `CARGO_PROFILE=e2e`; nothing
   else selects the lab's profile.

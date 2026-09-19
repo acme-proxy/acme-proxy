@@ -81,6 +81,9 @@ The same binary carries every admin subcommand (`account`, `order`, `jobs`, `aud
 - **sbom** — regenerates `sbom.cdx.json` and fails on drift; regenerate it when `Cargo.lock` changes and when cutting a release.
 - **docs** — `mdbook build doc/` and `python3 doc/lint.py`.
 - **e2e** (nightly) — a subset of the container lab in `tests/e2e/`.
+- **image** (push to `main`, after every job above) — calls `release.yml` to publish `:edge`. A release tag runs `release.yml` directly.
+
+**Branches** ([ADR 0013](doc/src/dev/adr/0013-trunk-and-release-branches.md)): every PR targets `main`, the trunk; `X.Y.0` is tagged there. A patch goes to `main` first and is cherry-picked (`-x`) onto `release/X.Y`, cut from `X.Y.0` when first needed, and tagged there. `release.yml`'s `guard` refuses a tag off its line.
 
 A handler carrying `#[instrument]` reports far lower coverage than it has; check `cargo llvm-cov report --text` for the file before writing tests against the percentage.
 
