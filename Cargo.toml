@@ -208,3 +208,11 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+
+# `ring` optimised in debug and test builds: the operator password KDF
+# (`admin::password`, 600 000 PBKDF2 rounds) costs ~1.1 s unoptimised and
+# ~0.09 s optimised, and every admin suite pays it at least twice per test.
+# Only `ring`, because that loop is compiled entirely inside it. The workspace
+# crates stay at opt-level 0. `doc/src/dev/testing.md` has the measurements.
+[profile.dev.package.ring]
+opt-level = 3

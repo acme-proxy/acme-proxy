@@ -103,15 +103,27 @@ all.** It is a
 ### The password KDF is slow on purpose
 
 `admin::password` runs PBKDF2-HMAC-SHA256 at 600 000 iterations — roughly 85 ms
-in a release build and **1.3 s in a debug build**, which is what the test suite
-runs. Two tests deliberately pay it (the encoding must reflect the real
-constants, and the dummy hash must cost what a real row costs, or an unknown
-username would answer faster and enumerate the operator table). Everything else
-goes through a private `hash_with_iterations` at a cheap setting — the same code
-path, the same salt generation and encoding, at a cost the suite can afford.
+in a release build. Unoptimised, `ring` takes **~1.1 s** for the same hash, and
+the admin suites pay it at least twice per test (the harness creates an
+operator and signs in). With twenty of them in parallel that was most of the
+suite's CPU time and a 40-second critical path. So the workspace `Cargo.toml`
+builds `ring` at `opt-level = 3` in the dev and test profiles
+(`[profile.dev.package.ring]`), which brings a debug build to ~90 ms per hash.
+Only `ring` is raised: the loop is compiled entirely inside it, and optimising
+the workspace crates instead measurably changes nothing.
 
-If you add a test that signs in, expect it to cost one real hash unless you
-build the user with a cheap one.
+The override lives in `Cargo.toml` because nothing else reaches the build
+nextest runs: `cargo --config … nextest run` and
+`CARGO_PROFILE_DEV_PACKAGE_RING_OPT_LEVEL` are both silently ignored there.
+
+The `admin::password` unit tests still mostly go through a private
+`hash_with_iterations` at a cheap setting — the same code path, the same salt
+generation and encoding, without 600 000 rounds dozens of times over. Two
+deliberately pay the real cost: the encoding must reflect the real constants,
+and the dummy hash must cost what a real row costs, or an unknown username would
+answer faster and enumerate the operator table.
+
+If you add a test that signs in, expect it to cost one real hash.
 
 ## Testing the web admin
 

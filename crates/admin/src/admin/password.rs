@@ -55,8 +55,10 @@ const ALGORITHM: &str = "pbkdf2-sha256";
 /// OWASP's current recommendation for PBKDF2-HMAC-SHA256.
 ///
 /// Measured at ~85 ms per verification in a release build on a 2020s desktop
-/// core (and ~1.3 s in a debug build, which is why the tests below mostly do
-/// not use it). That is the login latency, and it is a small denial-of-service
+/// core. A debug build matches it only because the workspace `Cargo.toml`
+/// builds `ring` optimised; unoptimised it is ~1.1 s. Even at 85 ms, the tests
+/// below mostly go through a cheap [`hash_with_iterations`] rather than paying
+/// it dozens of times. That is the login latency, and it is a small denial-of-service
 /// lever -- which is why `webadmin::session` rate-limits login *before* it
 /// reaches here rather than after.
 const ITERATIONS: u32 = 600_000;
