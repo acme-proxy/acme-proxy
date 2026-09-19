@@ -1,12 +1,24 @@
 use std::process::Command;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use testcontainers::{
     ContainerAsync, ContainerRequest, CopyTargetOptions, GenericImage, ImageExt, core::WaitFor,
     runners::AsyncRunner,
 };
 use tokio::process::Command as TokioCommand;
 
+/// Decided once per process, before `ensure_images_built` points `DOCKER_HOST`
+/// at the podman socket. Asked again after that, the probe below would see a
+/// daemon answer on that socket and switch to `docker` — whose 29.x `build`
+/// goes through buildx and, with a `docker-container` builder, leaves the
+/// image in the build cache instead of podman's store. The lab then fails to
+/// pull `bind-e2e` from Docker Hub, or worse, runs stale images left over from
+/// an earlier build.
 fn container_runtime() -> &'static str {
+    static RUNTIME: OnceLock<&'static str> = OnceLock::new();
+    RUNTIME.get_or_init(detect_container_runtime)
+}
+
+fn detect_container_runtime() -> &'static str {
     if let Ok(rt) = std::env::var("CONTAINER_RUNTIME") {
         if rt == "docker" {
             return "docker";
