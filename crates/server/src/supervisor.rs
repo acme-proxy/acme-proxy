@@ -41,7 +41,7 @@ pub(super) struct Cells {
 /// them. Ends when the last [`crate::reload::ReloadHandle`] is dropped, which is
 /// what makes [`crate::reload::Reloads::none`] cost nothing.
 pub(super) async fn supervise_reloads(
-    roles: crate::server::RoleSet,
+    roles: crate::RoleSet,
     mut reloads: crate::reload::Reloads,
     mut config: Arc<Config>,
     mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,

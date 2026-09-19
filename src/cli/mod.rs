@@ -8,7 +8,7 @@
 //! failure mode is ending the process is one nothing else can use.
 //!
 //! `serve` is one arm like the others: the server runtime itself lives in
-//! [`crate::server`], and [`serve`] only turns its failure into a [`CliError`].
+//! [`acme_proxy_server`], and [`serve`] only turns its failure into a [`CliError`].
 //!
 //! The logic behind each admin subcommand lives in [`acme_proxy_admin::admin`], not here;
 //! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
@@ -96,8 +96,8 @@ pub struct Cli {
 /// is refused with usage, at argv time — before `Config::load` and before
 /// `Database::open`, which *creates* its file. A typo would otherwise surface
 /// as whatever the next step complained about.
-fn parse_roles(value: &str) -> Result<crate::server::RoleSet, String> {
-    crate::server::RoleSet::parse(Some(value))
+fn parse_roles(value: &str) -> Result<acme_proxy_server::RoleSet, String> {
+    acme_proxy_server::RoleSet::parse(Some(value))
 }
 
 #[derive(Subcommand)]
@@ -117,7 +117,7 @@ pub enum Command {
         /// before the configuration is read or the database file is created —
         /// a typo must not be diagnosed as something else further down.
         #[arg(long, value_name = "ROLES", value_parser = parse_roles)]
-        role: Option<crate::server::RoleSet>,
+        role: Option<acme_proxy_server::RoleSet>,
     },
     /// Apply any database migrations that have not run yet, then exit.
     ///
@@ -416,14 +416,14 @@ pub async fn dispatch(
 
 /// Runs the ACME HTTP(S) server until a shutdown signal arrives.
 ///
-/// [`crate::server::run`] logs every failure it returns; this only carries the
+/// [`acme_proxy_server::run`] logs every failure it returns; this only carries the
 /// message to `main.rs` as a [`CliError`].
 pub async fn serve(
-    roles: Option<crate::server::RoleSet>,
+    roles: Option<acme_proxy_server::RoleSet>,
     config: Arc<Config>,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
-    crate::server::run(roles.unwrap_or_default(), config, database)
+    acme_proxy_server::run(roles.unwrap_or_default(), config, database)
         .await
         .map_err(|error| CliError::failed(error.to_string()))
 }
@@ -469,7 +469,7 @@ pub async fn init(
     migrate(palette, database.clone()).await?;
 
     let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let profiles = crate::server::profile::build_all(config, database, &queue)
+    let profiles = acme_proxy_server::profile::build_all(config, database, &queue)
         .map_err(|error| CliError::failed(error.to_string()))?;
 
     for profile in &profiles {

@@ -1,0 +1,37 @@
+[package]
+name = "acme-proxy-server"
+description = "The runtime of acme-proxy: role processes, listeners, configuration reload and logging (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+exclude = ["**/CLAUDE.md"]
+
+[dependencies]
+acme-proxy-admin.workspace = true
+acme-proxy-core.workspace = true
+acme-proxy-jobs.workspace = true
+acme-proxy-net.workspace = true
+acme-proxy-policy.workspace = true
+acme-proxy-protocol.workspace = true
+acme-proxy-signer.workspace = true
+acme-proxy-store.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+acme-proxy-jobs = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
+acme-proxy-signer = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
+http-body-util.workspace = true
+tokio-rustls.workspace = true

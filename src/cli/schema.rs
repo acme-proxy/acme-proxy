@@ -56,7 +56,7 @@ pub fn plan_schema(command: Option<&Command>) -> SchemaPlan {
         Some(Command::Serve { role }) => {
             match role
                 .unwrap_or_default()
-                .has(crate::server::ProcessRole::Worker)
+                .has(acme_proxy_server::ProcessRole::Worker)
             {
                 true => SchemaPlan::Migrate,
                 false => SchemaPlan::Require,

@@ -1,6 +1,6 @@
 //! Which invocation gets a subscriber, and at what level — the CLI's half of
 //! `[logging]`. Installing and reloading the stack is
-//! [`crate::server::logging`]'s.
+//! [`acme_proxy_server::logging`]'s.
 //!
 //! # Who gets a subscriber
 //!

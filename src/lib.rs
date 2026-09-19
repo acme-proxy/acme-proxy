@@ -72,10 +72,10 @@
 //!
 //! Process lifecycle — what keeps the server running and lets it be retuned
 //! without a restart:
-//! - [`server`] - The runtime: profiles, routers, and the generation a startup
+//! - [`acme_proxy_server`] - The runtime: profiles, routers, and the generation a startup
 //!   builds and a reload rebuilds and publishes
 //! - [`listener`](acme_proxy_net::listener) - The sockets, and replacing one while it serves
-//! - [`reload`] - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
+//! - [`reload`](acme_proxy_server::reload) - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
 //! - [`jobs`](acme_proxy_jobs::jobs) - The durable queue and its runner, so work outlives the process
 //!   that queued it
 //! - [`metrics`](acme_proxy_jobs::metrics) - The Prometheus registry and its text exposition
@@ -242,7 +242,5 @@
 //! ```
 
 pub mod cli;
-pub mod reload;
-pub mod server;
 
 // Re-export name shape helpers for backwards compatibility

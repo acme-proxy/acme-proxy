@@ -225,7 +225,7 @@ fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
 
 /// A layer stack built from `[logging]` but not yet installed.
 ///
-/// The build/publish split is [`crate::server::Assembly::build_parts`] and
+/// The build/publish split is [`crate::Assembly::build_parts`] and
 /// `publish_notifiers`', for the same reason: a reload must be able to fail
 /// *after* building this and still leave the running configuration untouched.
 pub(crate) struct PreparedLogging {
@@ -238,7 +238,7 @@ pub(crate) struct PreparedLogging {
 /// Resolves `[logging]` into a layer stack, validating every key.
 ///
 /// The one place a stack is built, so startup and a reload cannot drift — the
-/// reasoning behind [`crate::server::generation::build_generation`], applied
+/// reasoning behind [`crate::generation::build_generation`], applied
 /// to one layer.
 pub(crate) fn prepare_logging(
     logging: &acme_proxy_core::config::LoggingConfig,

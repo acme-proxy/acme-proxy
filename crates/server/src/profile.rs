@@ -222,7 +222,7 @@ mod tests {
         let dir = acme_proxy_core::testutil::TempDir::new("build");
         let config = two_profiles_config(&dir);
 
-        let profiles = crate::server::profile::build_all(
+        let profiles = crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -243,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn build_all_refuses_a_configuration_that_mounts_nothing() {
         let config = config_from("[server]\nbase_url = \"http://acme.test\"\n");
-        let error = match crate::server::profile::build_all(
+        let error = match crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -264,7 +264,7 @@ mod tests {
             challenge.enabled = ["not-a-challenge"]
             "#,
         );
-        let error = match crate::server::profile::build_all(
+        let error = match crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -294,7 +294,7 @@ mod tests {
             signer.custom.supports_crl = true
             "#,
         );
-        let error = match crate::server::profile::build_all(
+        let error = match crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -323,7 +323,7 @@ mod tests {
             signer.custom.timeout_ms = 5000
             "#,
         );
-        crate::server::profile::build_all(
+        crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -346,7 +346,7 @@ mod tests {
             challenge.timeout_ms = 5000
             "#,
         );
-        crate::server::profile::build_all(
+        crate::profile::build_all(
             &config,
             database().await,
             &acme_proxy_jobs::testutil::idle_job_queue(database().await),
@@ -373,7 +373,7 @@ mod tests {
             "#,
         );
         assert!(
-            crate::server::profile::build_all(
+            crate::profile::build_all(
                 &config,
                 database().await,
                 &acme_proxy_jobs::testutil::idle_job_queue(database().await)

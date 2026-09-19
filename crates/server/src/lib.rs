@@ -29,7 +29,10 @@
 //! What it serves sits below it: the endpoint itself is
 //! [`acme_proxy_protocol::profile::Profile`], and the routers each listener serves, with
 //! their shared layers, are [`acme_proxy_protocol::router`].
-
+//!
+//! [`reload`] beside it is what a reload may change and what it refuses by
+//! name. An internal crate of the `acme-proxy` binary, published in lockstep
+//! with it and with no semver promise of its own.
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -44,6 +47,7 @@ pub mod assembly;
 pub mod generation;
 pub mod logging;
 pub mod profile;
+pub mod reload;
 pub mod roles;
 pub mod sockets;
 pub mod supervisor;
@@ -272,7 +276,7 @@ pub async fn serve_on_with_reloads(
     })?;
     // Everything that outlives a configuration generation — the signer backends
     // above all, which are carried rather than rebuilt. See
-    // `crate::server::Assembly`.
+    // `crate::Assembly`.
     let (assembly, parts) = Assembly::new(
         roles,
         &resolved,
@@ -463,7 +467,7 @@ pub async fn serve_on_with_reloads(
 /// worker. A failure is logged where it happened
 /// (`local_ca_crl_initialization_failed`) and the sweep's first pass tries
 /// again, so it never stops the process.
-pub(super) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
+pub(crate) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
     for (_, backend) in signers.by_profile() {
         if let Some(refresher) = backend.crl_refresher() {
             let _ = refresher.refresh().await;

@@ -12,6 +12,7 @@ dependencies = [
  "acme-proxy-net",
  "acme-proxy-policy",
  "acme-proxy-protocol",
+ "acme-proxy-server",
  "acme-proxy-signer",
  "acme-proxy-store",
  "anyhow",
@@ -228,6 +229,29 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "acme-proxy-server"
+version = "0.5.0"
+dependencies = [
+ "acme-proxy-admin",
+ "acme-proxy-core",
+ "acme-proxy-jobs",
+ "acme-proxy-net",
+ "acme-proxy-policy",
+ "acme-proxy-protocol",
+ "acme-proxy-signer",
+ "acme-proxy-store",
+ "anyhow",
+ "axum",
+ "http-body-util",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

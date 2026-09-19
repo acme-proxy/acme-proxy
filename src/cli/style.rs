@@ -5,7 +5,7 @@
 //! ([`resolve`]).
 //!
 //! **Precedence deliberately differs from `logging.ansi`.**
-//! [`crate::server::logging`] documents that neither its switch nor `NO_COLOR`
+//! [`acme_proxy_server::logging`] documents that neither its switch nor `NO_COLOR`
 //! can turn colour *on* against the other, which is right for a configuration
 //! file — an ambient setting should not override an ambient veto. A
 //! `--color always` is neither ambient nor a setting: it was typed by the

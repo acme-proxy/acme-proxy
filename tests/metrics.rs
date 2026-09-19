@@ -7,7 +7,7 @@
 //! `Auditor::record`. That is what this file is for.
 //!
 //! Note it never scrapes over HTTP. `/metrics` is served by a **separate
-//! listener** on its own port, which `src/server/tests.rs`'s three-port test
+//! listener** on its own port, which `crates/server/src/tests.rs`'s three-port test
 //! drives end to end — including that the route is a `404` on the ACME socket.
 //! Here the registry is read directly, because what is under test is what moves
 //! it.

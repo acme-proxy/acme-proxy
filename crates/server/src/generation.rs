@@ -64,7 +64,7 @@ pub(crate) fn build_generation(
 ) -> anyhow::Result<Generation> {
     let admin_enabled = config.admin.enabled;
     let database = assembly.database.clone();
-    let profiles = crate::server::profile::build_all_with(config, resolved, parts)?;
+    let profiles = crate::profile::build_all_with(config, resolved, parts)?;
 
     let tls = tls::from_config(&config.server)
         .inspect_err(|error| {
@@ -454,7 +454,7 @@ impl Prepared {
 /// building a `relay` backend for the first time contacts its upstream
 /// synchronously.
 pub(super) fn prepare_reload(
-    roles: crate::server::RoleSet,
+    roles: crate::RoleSet,
     config: &Arc<Config>,
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,

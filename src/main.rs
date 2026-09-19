@@ -26,8 +26,9 @@ use clap::Parser;
 
 use acme_proxy::cli::schema::{SchemaPlan, plan_schema};
 use acme_proxy::cli::{Cli, Command, LogLevel, LoggingPlan, dispatch, generate, plan_logging};
-use acme_proxy::server::logging::{init_command_logging, init_logging};
 use acme_proxy_core::config::Config;
+use acme_proxy_server::logging::init_command_logging;
+use acme_proxy_server::logging::init_logging;
 use acme_proxy_store::db::Database;
 
 #[tokio::main]

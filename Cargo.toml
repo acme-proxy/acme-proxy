@@ -39,6 +39,7 @@ acme-proxy-jobs = { path = "crates/jobs", version = "=0.5.0" }
 acme-proxy-signer = { path = "crates/signer", version = "=0.5.0" }
 acme-proxy-protocol = { path = "crates/protocol", version = "=0.5.0" }
 acme-proxy-admin = { path = "crates/admin", version = "=0.5.0" }
+acme-proxy-server = { path = "crates/server", version = "=0.5.0" }
 
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
@@ -223,6 +224,7 @@ acme-proxy-jobs.workspace = true
 acme-proxy-signer.workspace = true
 acme-proxy-protocol.workspace = true
 acme-proxy-admin.workspace = true
+acme-proxy-server.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

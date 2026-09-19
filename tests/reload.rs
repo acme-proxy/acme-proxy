@@ -18,10 +18,12 @@ mod common;
 
 use std::sync::Arc;
 
-use acme_proxy::reload::{ReloadError, ReloadHandle};
-use acme_proxy::server::sockets::Sockets as ServerSockets;
-use acme_proxy::server::{RoleSet, serve_on_with_reloads};
 use acme_proxy_core::config::Config;
+use acme_proxy_server::RoleSet;
+use acme_proxy_server::reload::ReloadError;
+use acme_proxy_server::reload::ReloadHandle;
+use acme_proxy_server::serve_on_with_reloads;
+use acme_proxy_server::sockets::Sockets as ServerSockets;
 use acme_proxy_store::db::Database;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -199,7 +201,7 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         }
     };
 
-    let (reload, reloads) = acme_proxy::reload::channel();
+    let (reload, reloads) = acme_proxy_server::reload::channel();
     let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(serve_on_with_reloads(
         // Every role: this suite's subject is what a reload does to a running
@@ -210,7 +212,7 @@ async fn boot(config: Config, with_admin: bool) -> Server {
         ServerSockets {
             acme: Some(acme_listener),
             admin: admin_listener,
-            // No metrics listener: `src/server/tests.rs`'s three-port test
+            // No metrics listener: `crates/server/src/tests.rs`'s three-port test
             // drives that socket end to end, and nothing here reads a counter.
             metrics: None,
         },
@@ -385,7 +387,7 @@ async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
 ///
 /// This test installs the subscriber itself, which is legal only because
 /// nextest gives it its own process — the same licence the two installers in
-/// `src/server/logging.rs` take. Without it there would be no handle, and
+/// `crates/server/src/logging.rs` take. Without it there would be no handle, and
 /// `logging_reloaded` would honestly report `false`.
 #[tokio::test]
 async fn a_logging_change_reloads_and_moves_the_level() {
@@ -408,7 +410,7 @@ async fn a_logging_change_reloads_and_moves_the_level() {
         "#,
     );
     let config = load_from(&dir);
-    acme_proxy::server::logging::init_logging(&config.logging, None)
+    acme_proxy_server::logging::init_logging(&config.logging, None)
         .expect("the subscriber must install");
     assert_eq!(LevelFilter::current(), LevelFilter::INFO);
 

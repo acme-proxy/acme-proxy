@@ -41,9 +41,11 @@ mod common;
 
 use std::sync::Arc;
 
-use acme_proxy::server::sockets::Sockets as ServerSockets;
-use acme_proxy::server::{ProcessRole, RoleSet, serve_on_with_reloads};
 use acme_proxy_core::config::Config;
+use acme_proxy_server::ProcessRole;
+use acme_proxy_server::RoleSet;
+use acme_proxy_server::serve_on_with_reloads;
+use acme_proxy_server::sockets::Sockets as ServerSockets;
 use acme_proxy_store::db::Database;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -172,7 +174,7 @@ async fn start(config: &Config, roles: RoleSet) -> Process {
         async {
             let _ = rx.await;
         },
-        acme_proxy::reload::Reloads::none(),
+        acme_proxy_server::reload::Reloads::none(),
     ));
 
     Process {
@@ -370,7 +372,7 @@ async fn a_process_without_the_worker_role_refuses_an_unmigrated_database() {
             metrics: None,
         },
         std::future::pending(),
-        acme_proxy::reload::Reloads::none(),
+        acme_proxy_server::reload::Reloads::none(),
     )
     .await
     .expect_err("an acme process must refuse a schema it does not own");
@@ -580,7 +582,7 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
             metrics: None,
         },
         std::future::pending(),
-        acme_proxy::reload::Reloads::none(),
+        acme_proxy_server::reload::Reloads::none(),
     )
     .await
     .expect_err("an acme process must refuse to start without a CA");

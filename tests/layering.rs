@@ -247,7 +247,7 @@ fn the_request_path_never_holds_a_signer() {
 /// worth anything while it stays a split, so the two functions that apply
 /// migrations may be called from exactly two places: the commands that own the
 /// schema (`acme-proxy migrate` and `init`, in `src/cli/mod.rs`) and the role
-/// gate in `src/server/mod.rs`.
+/// gate in `crates/server/src/lib.rs`.
 ///
 /// Anywhere else is a silent migration returning, which is the thing this phase
 /// removed.
@@ -259,7 +259,7 @@ fn only_the_schema_owners_apply_migrations() {
     // The two owners, plus the module the functions themselves live in.
     const OWNERS: &[&str] = &[
         "src/cli/mod.rs",
-        "src/server/mod.rs",
+        "crates/server/src/lib.rs",
         "crates/store/src/db.rs",
     ];
 
