@@ -1005,3 +1005,73 @@ async fn two_overlapping_triggers_validate_once() {
         "an overlapping trigger must not start a second validation"
     );
 }
+
+/// `challenge.max_in_flight_per_account` is what keeps one account from
+/// filling the runner with probes of addresses it named while signings and
+/// revocations wait behind them. Over the cap the trigger is `429 rateLimited`
+/// with a `Retry-After`, and the challenge is left `pending`, so the client
+/// asks again rather than losing the order.
+#[tokio::test]
+async fn a_trigger_over_the_accounts_validation_cap_is_rate_limited() {
+    let validator = BlockingValidator::gating_the_first("http-01");
+    let (_calls, gate, entered) = validator.handles();
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        Arc::new(
+            Arc::try_unwrap(challenges_with(&["http-01"], vec![Arc::new(validator)]))
+                .expect("the registry is not shared yet")
+                .with_max_in_flight_per_account(1),
+        ),
+    )
+    .await;
+
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let mut challenge_paths = Vec::new();
+    for name in ["a.example.com", "b.example.com"] {
+        let order = body_json(new_order(&app, &signer, &account_url, &[name]).await).await;
+        let authz = read(
+            &app,
+            &signer,
+            &account_url,
+            order["authorizations"][0].as_str().unwrap(),
+        )
+        .await;
+        challenge_paths.push(challenge_url_of_type(&authz, "http-01"));
+    }
+
+    let first_url = challenge_paths[0].clone();
+    let second_url = challenge_paths[1].clone();
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid(&account_url, &first_url, &nonce, &json!({}));
+    let first = tokio::spawn({
+        let (app, path) = (
+            app.clone(),
+            first_url.strip_prefix(common::HOST).unwrap().to_string(),
+        );
+        async move { post(&app, &path, body).await }
+    });
+    // The first validation is genuinely in flight — claimed, `processing`.
+    let _ = entered.acquire().await.unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid(&account_url, &second_url, &nonce, &json!({}));
+    let res = post(&app, second_url.strip_prefix(common::HOST).unwrap(), body).await;
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(res.headers().contains_key("retry-after"));
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:rateLimited"
+    );
+
+    gate.add_permits(1);
+    assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+
+    // Once the first has settled, the second is accepted.
+    let decided = await_decided(&app, &signer, &account_url, &first_url).await;
+    assert_eq!(decided["status"], "valid");
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid(&account_url, &second_url, &nonce, &json!({}));
+    let res = post(&app, second_url.strip_prefix(common::HOST).unwrap(), body).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}

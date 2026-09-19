@@ -26,6 +26,18 @@ pub struct ChallengeConfig {
     /// worth having to ask for.
     pub bypass: bool,
     pub timeout_ms: u64,
+    /// How many of one account's challenges may be validating at once.
+    ///
+    /// A validation is queued work that reaches out to an address the client
+    /// named, and one account can queue as many as it can create orders. The
+    /// cap keeps one busy — or hostile — account from filling the runner with
+    /// outbound probes while signings, revocations and CRLs wait behind them.
+    /// A trigger over the cap is answered `429 rateLimited` with a
+    /// `Retry-After`, and the challenge stays `pending`, so the client retries
+    /// rather than losing the order.
+    ///
+    /// `0` is no limit.
+    pub max_in_flight_per_account: u32,
     pub http_01: Http01Config,
     pub tls_alpn_01: TlsAlpnConfig,
 }
@@ -36,6 +48,7 @@ impl Default for ChallengeConfig {
             enabled: vec!["http-01".to_string()],
             bypass: false,
             timeout_ms: 5000,
+            max_in_flight_per_account: 32,
             http_01: Http01Config::default(),
             tls_alpn_01: TlsAlpnConfig::default(),
         }

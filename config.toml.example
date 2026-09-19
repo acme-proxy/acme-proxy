@@ -711,10 +711,13 @@ enabled = ["http-01"]               # ACME_PROXY_CHALLENGE__ENABLED
 # explicitly, or every challenge will be really validated and issuance will
 # start failing for names this server cannot reach.
 bypass = false                      # ACME_PROXY_CHALLENGE__BYPASS
-# Budget for one validation attempt. Validation runs INSIDE the POST /chall/{id}
-# request — there is no `processing` state and no background task — so this is
-# also the worst case that request can take.
+# Budget for one validation attempt. The trigger queues the work and answers
+# `processing`, so this bounds a job attempt in the runner rather than a request.
 timeout_ms = 5000                   # ACME_PROXY_CHALLENGE__TIMEOUT_MS
+# How many of one account's challenges may be validating at once; 0 is no limit.
+# A trigger over the cap is answered 429 rateLimited with a Retry-After, and the
+# challenge stays pending, so the client simply asks again.
+max_in_flight_per_account = 32      # ACME_PROXY_CHALLENGE__MAX_IN_FLIGHT_PER_ACCOUNT
 
 [challenge.http_01]
 # GET http://<identifier>:<port>/.well-known/acme-challenge/<token>, whose body

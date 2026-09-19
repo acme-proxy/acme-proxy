@@ -33,6 +33,7 @@ use acme_proxy_policy::filter::Stage as FilterStage;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::authz::Challenge;
+use acme_proxy_store::authz::ValidationClaim;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::nonce::now_secs;
 use acme_proxy_store::order::Order;
@@ -531,16 +532,19 @@ impl OrderService<'_> {
     /// Decides whether a challenge trigger (RFC 8555 §7.5.1) starts a
     /// validation, and if so claims the challenge for it.
     ///
-    /// `Ok(false)` is not a refusal: the challenge is already decided — here or
-    /// by a sibling — or another trigger holds the claim, and the caller answers
-    /// with the challenge as it stands. `Ok(true)` obliges the caller to follow
-    /// with [`run_validation`](Self::run_validation).
+    /// [`ValidationClaim::Decided`] is not a refusal: the challenge is already
+    /// decided — here or by a sibling — or another trigger holds the claim, and
+    /// the caller answers with the challenge as it stands.
+    /// [`ValidationClaim::Claimed`] obliges the caller to follow with
+    /// [`run_validation`](Self::run_validation), and
+    /// [`ValidationClaim::Limited`] is `429 rateLimited`: the account has
+    /// `challenge.max_in_flight_per_account` validations running already.
     pub async fn claim_challenge(
         &self,
         challenge: &mut Challenge,
         authz: &Authorization,
         order: &Order,
-    ) -> Result<bool, Error> {
+    ) -> Result<ValidationClaim, Error> {
         if authz.status != AuthzStatus::Valid && authz.expires <= now_secs() {
             warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
             return Err(Problem::malformed("Authorization has expired").into());
@@ -560,7 +564,7 @@ impl OrderService<'_> {
             || challenge.status == ChallengeStatus::Invalid
             || authz.status == AuthzStatus::Valid;
         if decided {
-            return Ok(false);
+            return Ok(ValidationClaim::Decided);
         }
 
         // Undecided, but a sibling challenge failed (§7.1.6: one failure makes
@@ -588,12 +592,15 @@ impl OrderService<'_> {
         // `processing` — §8.2's answer for a challenge the server is still
         // working on.
         let claimed = challenge
-            .claim_for_validation(self.database)
+            .claim_for_validation(self.profile.challenges.max_in_flight_per_account(), self.database)
             .await
             .map_err(|error| {
                 error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
                 Problem::server_internal("Challenge could not be claimed for validation")
             })?;
+        if claimed == ValidationClaim::Limited {
+            warn!(event = "challenge_trigger_rate_limited", outcome = "failure", account_id = %order.account_id, challenge_id = %challenge.id);
+        }
         Ok(claimed)
     }
 
@@ -1140,11 +1147,12 @@ pub(crate) mod tests {
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
 
-        assert!(
+        assert_eq!(
             orders
                 .claim_challenge(challenge, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
         orders
             .run_validation(&account, challenge, authz, &mut order, None)
@@ -1212,17 +1220,19 @@ pub(crate) mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(
+        assert_eq!(
             orders
                 .claim_challenge(challenge, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
-        assert!(
-            !orders
+        assert_eq!(
+            orders
                 .claim_challenge(&mut twin, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Decided
         );
     }
 
@@ -1250,11 +1260,12 @@ pub(crate) mod tests {
         );
 
         let a = async {
-            assert!(
+            assert_eq!(
                 orders
                     .claim_challenge(&mut challenge_a, &authz_a, &order_a)
                     .await
-                    .unwrap()
+                    .unwrap(),
+                ValidationClaim::Claimed
             );
             orders
                 .run_validation(&account, &mut challenge_a, &mut authz_a, &mut order_a, None)
@@ -1262,11 +1273,12 @@ pub(crate) mod tests {
                 .unwrap();
         };
         let b = async {
-            assert!(
+            assert_eq!(
                 orders
                     .claim_challenge(&mut challenge_b, &authz_b, &order_b)
                     .await
-                    .unwrap()
+                    .unwrap(),
+                ValidationClaim::Claimed
             );
             orders
                 .run_validation(&account, &mut challenge_b, &mut authz_b, &mut order_b, None)
@@ -1300,11 +1312,12 @@ pub(crate) mod tests {
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
 
-        assert!(
+        assert_eq!(
             orders
                 .claim_challenge(challenge, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
         orders
             .run_validation(&account, challenge, authz, &mut order, None)
@@ -1408,17 +1421,19 @@ pub(crate) mod tests {
             audit: &audit,
             profile,
         };
-        assert!(
+        assert_eq!(
             on(&passing)
                 .claim_challenge(&mut dns, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
-        assert!(
+        assert_eq!(
             on(&passing)
                 .claim_challenge(http, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
 
         let mut authz_seen_by_second = reload_authz(&database, authz).await;
@@ -1470,11 +1485,12 @@ pub(crate) mod tests {
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
 
-        assert!(
+        assert_eq!(
             orders
                 .claim_challenge(challenge, authz, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
         let mut authz_seen_by_job = reload_authz(&database, authz).await;
         orders.deactivate_authz(authz, &mut order).await.unwrap();
@@ -1497,6 +1513,57 @@ pub(crate) mod tests {
         assert_eq!(reload(&database, &order).await.status, OrderStatus::Pending);
     }
 
+    /// One account's validations are capped: the trigger over the cap is
+    /// `429 rateLimited`, and the challenge is left `pending` so the client
+    /// simply asks again once one of its own has settled.
+    #[tokio::test]
+    async fn an_account_over_its_validation_cap_is_rate_limited() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, bypassing().with_max_in_flight_per_account(1));
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let (first_order, mut first) = pending_order(&database, &account, &["a.example.com"]).await;
+        let (second_order, mut second) =
+            pending_order(&database, &account, &["b.example.com"]).await;
+        let (first_authz, first_challenge) = &mut first[0];
+        let (second_authz, second_challenge) = &mut second[0];
+
+        assert_eq!(
+            orders
+                .claim_challenge(first_challenge, first_authz, &first_order)
+                .await
+                .unwrap(),
+            ValidationClaim::Claimed
+        );
+        assert_eq!(
+            orders
+                .claim_challenge(second_challenge, second_authz, &second_order)
+                .await
+                .unwrap(),
+            ValidationClaim::Limited
+        );
+        assert_eq!(second_challenge.status, ChallengeStatus::Pending);
+
+        // The first settles, and the second is claimable again.
+        let mut order = reload(&database, &first_order).await;
+        orders
+            .run_validation(&account, first_challenge, first_authz, &mut order, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            orders
+                .claim_challenge(second_challenge, second_authz, &second_order)
+                .await
+                .unwrap(),
+            ValidationClaim::Claimed
+        );
+    }
+
     /// Once one authorization has failed, its order is `invalid`, and a trigger
     /// of a challenge under a sibling authorization is refused rather than
     /// probing the client's host for nothing.
@@ -1517,11 +1584,12 @@ pub(crate) mod tests {
         let (authz_a, challenge_a) = &mut first[0];
         let (authz_b, challenge_b) = &mut rest[0];
 
-        assert!(
+        assert_eq!(
             orders
                 .claim_challenge(challenge_a, authz_a, &order)
                 .await
-                .unwrap()
+                .unwrap(),
+            ValidationClaim::Claimed
         );
         orders
             .run_validation(&account, challenge_a, authz_a, &mut order, None)
@@ -1537,7 +1605,13 @@ pub(crate) mod tests {
 
         // And the row-level guard holds on its own, for a caller that read the
         // order before it failed.
-        assert!(!challenge_b.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge_b
+                .claim_for_validation(0, &database)
+                .await
+                .unwrap(),
+            ValidationClaim::Decided
+        );
     }
 
     /// The unique-violation arm in `post_new_order` only fires when two

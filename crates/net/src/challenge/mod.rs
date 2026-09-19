@@ -179,6 +179,9 @@ pub struct ChallengeRegistry {
     enabled: Vec<String>,
     bypass: bool,
     timeout: Duration,
+    /// `challenge.max_in_flight_per_account`, carried here because this is what
+    /// a profile hands the service that claims a challenge. `0` is no limit.
+    max_in_flight_per_account: u32,
 }
 
 impl std::fmt::Debug for ChallengeRegistry {
@@ -210,6 +213,7 @@ impl Default for ChallengeRegistry {
             enabled: vec![HTTP_01.to_string()],
             bypass: true,
             timeout: Duration::from_secs(5),
+            max_in_flight_per_account: 0,
         }
     }
 }
@@ -229,7 +233,24 @@ impl ChallengeRegistry {
             enabled,
             bypass,
             timeout,
+            max_in_flight_per_account: 0,
         }
+    }
+
+    /// The per-account cap on validations in flight, which
+    /// [`from_config`] takes from `challenge.max_in_flight_per_account`.
+    /// Unlimited (`0`) on a registry built by [`ChallengeRegistry::new`], so a
+    /// test opts in rather than tripping over it.
+    #[must_use]
+    pub fn with_max_in_flight_per_account(mut self, limit: u32) -> Self {
+        self.max_in_flight_per_account = limit;
+        self
+    }
+
+    /// See [`ChallengeRegistry::with_max_in_flight_per_account`].
+    #[must_use]
+    pub fn max_in_flight_per_account(&self) -> u32 {
+        self.max_in_flight_per_account
     }
 
     /// The challenge types offered, in the order they were configured.
@@ -396,12 +417,10 @@ pub fn from_config(
              check, so any client that can reach this server can obtain a certificate for \
              any name (set challenge.bypass = false)"
         );
-        return Ok(Arc::new(ChallengeRegistry::new(
-            Vec::new(),
-            cfg.enabled.clone(),
-            true,
-            timeout,
-        )));
+        return Ok(Arc::new(
+            ChallengeRegistry::new(Vec::new(), cfg.enabled.clone(), true, timeout)
+                .with_max_in_flight_per_account(cfg.max_in_flight_per_account),
+        ));
     }
 
     let resolver = build_resolver(addr)?;
@@ -434,12 +453,10 @@ pub fn from_config(
         timeout_ms = cfg.timeout_ms,
     );
 
-    Ok(Arc::new(ChallengeRegistry::new(
-        validators,
-        cfg.enabled.clone(),
-        false,
-        timeout,
-    )))
+    Ok(Arc::new(
+        ChallengeRegistry::new(validators, cfg.enabled.clone(), false, timeout)
+            .with_max_in_flight_per_account(cfg.max_in_flight_per_account),
+    ))
 }
 
 #[cfg(test)]

@@ -52,9 +52,28 @@ the default.
 **`timeout_ms`** (`Integer`) — *Default: `5000` | Env: `ACME_PROXY_CHALLENGE__TIMEOUT_MS`*
 
 Budget for one validation attempt, applied at the registry level whatever the
-type. Validation runs *inside* `POST /chall/{id}`, so this is also that
-request's worst case, and it must stay below `server.request_timeout_ms` —
+type. It bounds a job attempt in the runner, not a request — see
+[Validation runs in the job queue](#validation-runs-in-the-job-queue) — and it
+must stay below `server.request_timeout_ms`, which
 `server::profile::build_all` refuses to start otherwise.
+
+**`max_in_flight_per_account`** (`Integer`) — *Default: `32` | Env:
+`ACME_PROXY_CHALLENGE__MAX_IN_FLIGHT_PER_ACCOUNT`*
+
+How many of one account's challenges may be validating at once. `0` is no
+limit.
+
+A validation is queued work that reaches out to an address the client named,
+and an account can create as many orders as it likes. Without a cap, one busy
+— or hostile — account fills the runner with outbound probes while signings,
+revocations and CRL regenerations wait behind them. A trigger over the cap is
+answered `429 rateLimited` with a `Retry-After`, and the challenge is left
+`pending`: the client re-triggers it once one of its own validations has
+settled, and loses no order.
+
+Raise it for a deployment that renews many certificates at once from one
+account; the ceiling that matters is `jobs.max_concurrent`, which is how many
+validations actually run in parallel.
 
 Per-type keys live under `[challenge.http_01]` and `[challenge.tls_alpn_01]`;
 see those pages. `dns-01` has no table of its own — it is governed by

@@ -449,7 +449,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (order, authz, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         // `ChallengeRegistry::default()` bypasses, so this passes with no network.
         let job = handler(&database, ChallengeRegistry::default());
@@ -489,7 +492,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (order, _, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         let registry = ChallengeRegistry::new(
             vec![Arc::new(Refusing)],
@@ -518,7 +524,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (_, _, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         // A handler mounting nothing: the row's profile is somebody else's.
         let job = ChallengeValidateJob::new(
@@ -562,7 +571,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (_, _, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         let job = handler(&database, ChallengeRegistry::default());
         assert!(matches!(
@@ -597,7 +609,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (order, authz, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         let job = handler(&database, ChallengeRegistry::default());
         job.abandon(
@@ -636,7 +651,10 @@ mod tests {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let account = account(&database).await;
         let (_, _, mut challenge) = subject(&database, &account).await;
-        assert!(challenge.claim_for_validation(&database).await.unwrap());
+        assert_eq!(
+            challenge.claim_for_validation(0, &database).await.unwrap(),
+            acme_proxy_store::authz::ValidationClaim::Claimed
+        );
 
         let queue = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         let job = handler(&database, ChallengeRegistry::default());

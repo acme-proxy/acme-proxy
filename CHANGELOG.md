@@ -176,6 +176,14 @@ migrated configuration before restarting.
 
 ### Added
 
+- **`challenge.max_in_flight_per_account`** (default `32`, `0` for no limit)
+  caps how many of one account's challenges may be validating at once. A
+  validation is queued work that reaches out to an address the client named,
+  and an account can open as many orders as it likes; without a cap one of them
+  fills the runner while signings, revocations and CRL regenerations wait. A
+  trigger over the cap is answered `429 rateLimited` with a `Retry-After` and
+  leaves the challenge `pending`.
+
 - **Latency histograms on `/metrics`.**
   `acme_proxy_request_duration_seconds{role,profile,route}` times each request
   to its response head (buckets from 5 ms to 10 s).

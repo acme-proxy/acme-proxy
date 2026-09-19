@@ -15,6 +15,7 @@ use crate::router::AppState;
 use acme_proxy_core::client::ClientIp;
 use acme_proxy_core::error::Problem;
 use acme_proxy_store::authz::Challenge;
+use acme_proxy_store::authz::ValidationClaim;
 
 /// The one payload RFC 8555 §7.5.2 defines for the authorization resource:
 /// "sending POST requests with the static object `{"status": "deactivated"}`".
@@ -161,10 +162,24 @@ pub async fn post_challenge(
     // §7.1.6 defines for exactly this ("transitions to the `processing` state
     // when the client responds to the challenge") and §8.2 pairs with the
     // `Retry-After` below.
-    if orders
+    let claim = orders
         .claim_challenge(&mut challenge, &authz, &order)
-        .await?
-    {
+        .await?;
+    if claim == ValidationClaim::Limited {
+        // §6.6's answer, with the header §6.6 recommends: the limit is on work
+        // in flight, so waiting is exactly what clears it. The challenge is
+        // untouched and still `pending`, so the retry is a plain re-trigger.
+        let mut response = Problem::rate_limited(
+            "Too many validations are already running for this account; retry shortly",
+        )
+        .into_response();
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_static(PENDING_RETRY_AFTER),
+        );
+        return Ok(response);
+    }
+    if claim == ValidationClaim::Claimed {
         let queued = jobs
             .enqueue(crate::acme::validate::challenge_validate_spec(
                 &id,

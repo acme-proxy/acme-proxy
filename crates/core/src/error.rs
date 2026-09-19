@@ -284,6 +284,13 @@ problems! {
     /// as §6.7 requires for this type.
     user_action_required => (FORBIDDEN, "urn:ietf:params:acme:error:userActionRequired");
 
+    /// The client asked for more than this server will do for it at once
+    /// (RFC 8555 §6.6). HTTP 429.
+    ///
+    /// The caller attaches a `Retry-After`, which §6.6 recommends for this
+    /// type: the limit is on work in flight, so waiting is what clears it.
+    rate_limited => (TOO_MANY_REQUESTS, "urn:ietf:params:acme:error:rateLimited");
+
     /// No resource is routed at the requested path. HTTP 404.
     ///
     /// RFC 8555 defines no type for this either; `malformed` keeps an unknown

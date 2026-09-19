@@ -44,6 +44,20 @@ pub struct Authorization {
     pub created_at: i64,
 }
 
+/// What [`Challenge::claim_for_validation`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationClaim {
+    /// This caller owns the validation and owes it a verdict.
+    Claimed,
+    /// Nothing to do: the challenge, its authorization or its order is already
+    /// decided, here or by a sibling.
+    Decided,
+    /// The account has `challenge.max_in_flight_per_account` validations in
+    /// flight already. The challenge is untouched, so the client may trigger it
+    /// again once one of them has settled.
+    Limited,
+}
+
 /// An ACME challenge (RFC 8555 §8): one proof the client may offer for its
 /// authorization's identifier.
 ///
@@ -570,29 +584,71 @@ impl Challenge {
     /// a sibling already decided, or under an order another authorization has
     /// already failed, has nothing left to prove, and validating it would be an
     /// outbound probe of a client-chosen host for no purpose.
-    pub async fn claim_for_validation(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
+    /// `max_in_flight` is `challenge.max_in_flight_per_account`, counted in the
+    /// same statement — `0` is no limit. One account can create as many orders
+    /// as it likes, and every challenge under them is a probe of an address it
+    /// named; without the cap one account fills the runner while signings,
+    /// revocations and CRLs wait behind it.
+    pub async fn claim_for_validation(
+        &mut self,
+        max_in_flight: u32,
+        database: &Database,
+    ) -> Result<ValidationClaim, sqlx::Error> {
         debug!(event = "db_challenge_claim_started", outcome = "progress", challenge_id = ?self.id);
         let claimed = sqlx::query(
             "UPDATE challenges SET status = 'processing' \
              WHERE id = ? AND status = 'pending' AND EXISTS ( \
                  SELECT 1 FROM authorizations a JOIN orders o ON o.id = a.order_id \
                  WHERE a.id = challenges.authz_id \
-                   AND a.status = 'pending' AND o.status = 'pending');",
+                   AND a.status = 'pending' AND o.status = 'pending') \
+               AND (? = 0 OR ( \
+                 SELECT COUNT(*) FROM challenges c \
+                 JOIN authorizations a ON a.id = c.authz_id \
+                 JOIN orders o ON o.id = a.order_id \
+                 WHERE c.status = 'processing' AND o.account_id = ( \
+                     SELECT o2.account_id FROM authorizations a2 \
+                     JOIN orders o2 ON o2.id = a2.order_id \
+                     WHERE a2.id = challenges.authz_id)) < ?);",
         )
         .bind(self.id)
+        .bind(max_in_flight)
+        .bind(max_in_flight)
         .execute(&database.pool)
         .await?
         .rows_affected()
             == 1;
 
         if !claimed {
+            // Which of the two conditions refused it decides what the client is
+            // told, and only the count can be answered with "come back later".
+            if max_in_flight > 0 && self.in_flight_for_account(database).await? >= max_in_flight {
+                debug!(event = "db_challenge_claim_limited", outcome = "advisory", challenge_id = ?self.id, limit = max_in_flight);
+                return Ok(ValidationClaim::Limited);
+            }
             debug!(event = "db_challenge_claim_refused", outcome = "advisory", challenge_id = ?self.id);
-            return Ok(false);
+            return Ok(ValidationClaim::Decided);
         }
 
         self.status = ChallengeStatus::Processing;
         debug!(event = "db_challenge_claimed", outcome = "success", challenge_id = ?self.id);
-        Ok(true)
+        Ok(ValidationClaim::Claimed)
+    }
+
+    /// How many validations are in flight for the account this challenge
+    /// belongs to.
+    async fn in_flight_for_account(&self, database: &Database) -> Result<u32, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) FROM challenges c \
+             JOIN authorizations a ON a.id = c.authz_id \
+             JOIN orders o ON o.id = a.order_id \
+             WHERE c.status = 'processing' AND o.account_id = ( \
+                 SELECT o2.account_id FROM authorizations a2 \
+                 JOIN orders o2 ON o2.id = a2.order_id WHERE a2.id = ?);",
+        )
+        .bind(self.authz_id)
+        .fetch_one(&database.pool)
+        .await?;
+        Ok(u32::try_from(row.try_get::<i64, _>(0)?).unwrap_or(u32::MAX))
     }
 
     /// Gives a claim back, moving `processing` to `pending`.
