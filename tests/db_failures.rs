@@ -24,7 +24,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
-use common::{EcSigner, PREFIX, TestSigner, body_json, fetch_nonce, p, test_app_with_db};
+use common::{EcSigner, TestSigner, body_json, fetch_nonce, p, test_app_with_db};
 
 const BASE: &str = common::BASE;
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
