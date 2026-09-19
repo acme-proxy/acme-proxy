@@ -41,7 +41,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 Before 1.0.0 the database schema is the **only** compatibility guarantee; config keys, profile names, the admin API, log event names and the CLI may all change ([ADR 0001](doc/src/dev/adr/0001-pre-1-0-compatibility.md), canonical text in `CHANGELOG.md`'s Compatibility section). A breaking change owes exactly three things:
 
 1. An entry under the release's `### Breaking` heading in `CHANGELOG.md`, naming the old spelling and the new one.
-2. A removed or renamed config key **refused by name at startup** wherever practical. A key must still parse to be refused, so removed fields stay in the config types and in `LIST_KEYS`.
+2. A removed or renamed config key **refused by name at startup** wherever practical. A key must still parse to be refused, so removed fields stay in the config types.
 3. **Never an alias, a dual syntax or a legacy lowering.** Delete the old shape.
 
 ## Commands
@@ -100,8 +100,7 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 
 `Config::load()` (`crates/core/src/config/`) layers built-in defaults → an optional `config.toml` (`ACME_PROXY_CONFIG` points elsewhere; `config.toml.example` shows every key) → `ACME_PROXY_*` environment variables, with `__` between nested keys. Global `[signer]`/`[filter]`/`[challenge]`/`[eab]`/`[order]`/`[ipam]`/`[notify]`/`[meta]` are the base each profile overlays **key by key**; arrays replace wholesale. Adding a key is a recipe in `doc/src/dev/contributing.md`. The traps:
 
-- **A list-valued key needs a `LIST_KEYS` entry** (and `list_key`, and the count in `every_registered_list_key_round_trips_through_the_environment`), or its environment variable is silently dropped. A list inside a named table goes in `CHECK_LIST_KEYS` or `NAMED_TABLES`.
-- **Every list field carries `#[serde(deserialize_with = "empty_string_is_no_values")]`**, since a variable set to the empty string splits into one empty element.
+- **Every list field carries `#[serde(deserialize_with = "string_list")]`**: it splits a comma-separated environment variable, at any depth, and reads the empty string as `[]`. There is no list-key registry; `every_list_field_reads_a_comma_separated_string` refuses a field without it.
 - The environment source pins **`prefix_separator("_")`**; without it every `ACME_PROXY_*` variable is ignored.
 - **A key is documented in exactly one book page** (`doc/lint.py` refuses a second).
 

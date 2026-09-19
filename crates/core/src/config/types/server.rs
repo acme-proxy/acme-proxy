@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 
-use super::empty_string_is_no_values;
+use super::string_list;
 
 /// The resolver every DNS lookup this server makes goes through.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -316,6 +316,6 @@ pub struct MetaConfig {
     pub website: String,
     /// The hostnames this CA recognizes in CAA records (RFC 8555 §7.1.1).
     /// Advertised only; this server does not itself check CAA.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub caa_identities: Vec<String>,
 }

@@ -6,13 +6,13 @@
 
 use serde::Deserialize;
 
-use super::empty_string_is_no_values;
+use super::string_list;
 
 /// Challenge configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ChallengeConfig {
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub enabled: Vec<String>,
     /// Skip domain-control validation entirely: a triggered challenge is marked
     /// `valid` with no network check.

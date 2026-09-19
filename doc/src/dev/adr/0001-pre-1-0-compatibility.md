@@ -53,9 +53,8 @@ The refusals themselves are removed at 1.0.0.
 - A redesign costs one changelog entry and one diagnostic, which is what makes
   replacing a subsystem cheaper than accreting around it.
 - A key must still *parse* to be refused by name. The removed `[filter]` fields
-  therefore survive in `crates/core/src/config/types/filter.rs`, and their
-  entries survive in `LIST_KEYS`; an unregistered key would fail as an opaque
-  serde error instead of a named one.
+  therefore survive in `crates/core/src/config/types/filter.rs`; a field that
+  is gone would fail as an opaque serde error instead of a named one.
 - Operators must read the Breaking section before an upgrade. `acme-proxy filter
   show` builds a policy exactly as startup does, so it checks a migrated
   configuration before a restart.

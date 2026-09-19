@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::empty_string_is_no_values;
+use super::string_list;
 
 /// Notification-subsystem configuration: which backends are active, and each
 /// backend's own settings. See `notify`.
@@ -16,7 +16,7 @@ use super::empty_string_is_no_values;
 pub struct NotifyConfig {
     /// Which backends are active: `"email"`, `"webhook"`, `"custom"`.
     /// Empty (default) means no notifications are sent at all.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub enabled: Vec<String>,
     pub email: EmailNotifyConfig,
     /// The periodic expiry digest — off until `lead_days` is non-zero.
@@ -26,7 +26,7 @@ pub struct NotifyConfig {
     /// below, and resolved by the same [`resolve_named_entries`].
     ///
     /// [`resolve_named_entries`]: crate::config::resolve_named_entries
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub webhook_enabled: Vec<String>,
     /// Named HTTP webhook targets, selected and ordered by `webhook_enabled`.
     /// Each name must match `^[a-z0-9-]+$`, same as `custom`'s entries and for
@@ -34,7 +34,7 @@ pub struct NotifyConfig {
     pub webhook: BTreeMap<String, WebhookNotifyConfig>,
     /// Which of `custom`'s entries to run, and in what order, when `custom`
     /// is listed in `enabled` — the same shape as `webhook_enabled`.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub custom_enabled: Vec<String>,
     /// Named external script/webhook configs, selected and ordered by
     /// `custom_enabled`. Each name must match `^[a-z0-9-]+$`, same as
@@ -57,14 +57,14 @@ pub struct EmailNotifyConfig {
     /// `"starttls"` (default) | `"tls"` | `"none"`.
     pub smtp_security: String,
     pub from: String,
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub to: Vec<String>,
     /// Which lifecycle events this backend reacts to. Defaults to all of
     /// them, listed explicitly rather than relying on "empty means all": every
     /// other list field in this codebase treats empty as *off*, so reusing
     /// that convention here would silently mean "no events" the moment an
     /// operator writes `events = []` expecting "all".
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub events: Vec<String>,
     pub timeout_ms: u64,
 }
@@ -149,7 +149,7 @@ pub struct WebhookNotifyConfig {
     /// the `tojson` filter: `.j2` templates have auto-escaping off, so a
     /// message holding a quote or a newline needs it to stay valid JSON.
     pub body: String,
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub events: Vec<String>,
     pub timeout_ms: u64,
 }
@@ -178,9 +178,9 @@ impl Default for WebhookNotifyConfig {
 pub struct CustomNotifyConfig {
     pub script_path: String,
     pub timeout_ms: u64,
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub events: Vec<String>,
 }
 

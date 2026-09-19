@@ -39,6 +39,6 @@ pub struct ProxyConfig {
     ///
     /// Falls back to `$no_proxy`, then `$NO_PROXY`. Loopback and `localhost`
     /// are bypassed unconditionally and need no entry here.
-    #[serde(deserialize_with = "super::empty_string_is_no_values")]
+    #[serde(deserialize_with = "super::string_list")]
     pub no_proxy: Vec<String>,
 }

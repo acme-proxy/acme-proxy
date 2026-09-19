@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use super::empty_string_is_no_values;
+use super::string_list;
 
 /// Which inventory answers "which names does this address own?", and how long
 /// it is given to answer.
@@ -79,12 +79,12 @@ pub struct NetboxConfig {
     /// Which places a permitted name may come from. Empty, or an unknown
     /// entry, is a startup error; order is meaningless, since the result is a
     /// union. See `ipam::Source`.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub sources: Vec<String>,
     /// Which NetBox address roles count as a service address for the `vip`
     /// source. Read only when `vip` is in `sources`, so this is *which* roles
     /// rather than whether to look at all.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub vip_roles: Vec<String>,
     /// Extra CA certificates (PEM) to trust on top of the public roots, for a
     /// NetBox behind an internal PKI. Ignored when `insecure_skip_verify` is on.
@@ -144,7 +144,7 @@ pub struct PhpIpamConfig {
     /// Which places a permitted name may come from. phpIPAM records no
     /// redundancy groups, so `vip` and `fhrp` are refused here by name rather
     /// than quietly ignored.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub sources: Vec<String>,
     /// Extra CA certificates (PEM) to trust on top of the public roots.
     /// Ignored when `insecure_skip_verify` is on.
@@ -184,6 +184,6 @@ pub struct CustomIpamConfig {
     pub script_path: String,
     /// Fixed arguments passed to the script before it is told anything about
     /// the request, which travels in the environment and on stdin.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
 }

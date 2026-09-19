@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use super::empty_string_is_no_values;
+use super::string_list;
 
 /// Request-filtering configuration.
 #[derive(Debug, Clone, Deserialize)]
@@ -26,7 +26,7 @@ pub struct FilterConfig {
     /// than a map because order *is* the policy: first match wins, so a
     /// profile overriding this means to replace the sequence, which is exactly
     /// what wholesale array inheritance does.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub rules: Vec<String>,
     /// What happens at a stage where a rule was applicable and none matched:
     /// `allow` or `deny`.
@@ -36,7 +36,7 @@ pub struct FilterConfig {
     /// a name had been mentioned.
     pub default: String,
     /// CIDRs of reverse proxies whose forwarded-for header is believed.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub trusted_proxies: Vec<String>,
     /// Header carrying the original client address, read only from a trusted
     /// proxy.
@@ -63,14 +63,14 @@ pub struct FilterConfig {
     /// Nothing reads these — a key has to parse before it can be refused *by
     /// name*, and that is the whole job. They are a startup diagnostic rather
     /// than a compatibility path, and go away at 1.0.0 along with the refusals.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub enabled: Vec<String>,
     /// Removed: write a `type = "path"` check and a rule instead. See `enabled`.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub exempt_paths: Vec<String>,
     /// Removed: `custom` is an ordinary check type now, and `rules` already
     /// says which run and in what order. See `enabled`.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub custom_enabled: Vec<String>,
 }
 
@@ -131,7 +131,7 @@ pub struct RuleConfig {
 ///
 /// Every list here defaults to empty, and because an unset environment
 /// variable arrives as `[]` rather than as absent (see
-/// [`empty_string_is_no_values`]), **empty always means "the type's natural
+/// [`string_list`]), **empty always means "the type's natural
 /// default"** and never "none". `stages = []` is "infer from the type";
 /// `allowed_types = []` is `["dns", "cn"]`.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -141,28 +141,28 @@ pub struct CheckConfig {
     pub r#type: String,
     /// Override the stages the type would naturally decide at: `connection`,
     /// `identifiers`, or both. Empty infers.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub stages: Vec<String>,
     /// Permitted entries. CIDRs for `allowed_ip`; globs everywhere else.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub allow: Vec<String>,
     /// Refused entries, checked first and winning over `allow`.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub deny: Vec<String>,
     /// The same as `allow`, written as auto-anchored regexes. Unioned with it.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub allow_regex: Vec<String>,
     /// The same as `deny`, written as auto-anchored regexes. Unioned with it.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub deny_regex: Vec<String>,
     /// `identifiers`: which identifier types may appear at all.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub allowed_types: Vec<String>,
     /// `eab`: credential kids matched exactly, beside the label globs above.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub kids: Vec<String>,
     /// `custom`: arguments passed to the script.
-    #[serde(deserialize_with = "empty_string_is_no_values")]
+    #[serde(deserialize_with = "string_list")]
     pub args: Vec<String>,
     /// `identifiers`: permit `*.example.com`. Defaults to `false`.
     pub allow_wildcards: Option<bool>,

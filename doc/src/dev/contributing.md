@@ -170,21 +170,17 @@ section optional. Beyond the field itself, a new key owes:
   Only `database.url` is refused on `SIGHUP` (`FROZEN` in
   `crates/server/src/reload.rs`); a new key joins it only with a reason.
 
-**A list-valued key has three more obligations**, because the `config` crate
-silently drops an environment variable it was not told to split:
+**A list-valued key has one more obligation, and one thing to know:**
 
-- An entry in `LIST_KEYS` (`crates/core/src/config/mod.rs`), a reader in
-  `list_key`, and the count in
-  `every_registered_list_key_round_trips_through_the_environment` bumped. A list
-  inside a named table (`[filter.check.<name>]`, `[notify.webhook.<name>]`, …)
-  goes in `CHECK_LIST_KEYS` or `NAMED_TABLES` instead, since the entry name is
-  only known at runtime.
-- `#[serde(deserialize_with = "empty_string_is_no_values")]` on the field. A
-  variable set to the empty string (a `${VAR:-}` shell default) is present, not
-  absent, and splits into one empty element; the attribute folds it back to
-  `[]`, where without it the key becomes a startup error.
-- Nothing, but know it: a value containing a literal comma — a regex with
-  `{2,3}` — can only be set from the file, since the comma is the separator.
+- `#[serde(deserialize_with = "string_list")]` on the field. An environment
+  variable can only carry a string, and this is what splits `a,b` into a list,
+  at any depth: inside a profile or inside a named table
+  (`[filter.check.<name>]`, `[notify.webhook.<name>]`, …) alike. It also reads
+  a variable set to the empty string (a `${VAR:-}` shell default) as `[]`.
+  Without it the key loads from a file and fails from the environment;
+  `every_list_field_reads_a_comma_separated_string` refuses the omission.
+- A value containing a literal comma, such as a regex with `{2,3}`, can only be
+  set from the file, since the comma is the separator.
 
 The environment source pins `prefix_separator("_")`. Without it, `config`
 reuses the nested separator `__` after the prefix and silently ignores every
@@ -206,8 +202,8 @@ ever had. What such a change owes:
   the `signer.backend = "acme_proxy"` arm in `crates/signer/src/lib.rs` are the
   worked examples. A key must still *parse* to be refused by name, which is why
   the removed `[filter]` fields survive in
-  `crates/core/src/config/types/filter.rs` and in `LIST_KEYS`; an unregistered
-  one fails as an opaque serde error instead.
+  `crates/core/src/config/types/filter.rs`; a field that is gone fails as an
+  opaque serde error instead.
 - **No alias, no dual syntax, no legacy lowering.** Delete the old shape. The
   refusals themselves are one-line diagnostics and go away at 1.0.0.
 

@@ -1,6 +1,6 @@
 //! ACME Proxy Configuration Management
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
@@ -167,168 +167,19 @@ fn valid_profile_name(name: &str) -> bool {
     valid_config_key_name(name)
 }
 
-/// The list-valued fields of `[filter.check.<name>]`.
-///
-/// Separate from [`LIST_KEYS`] because the entry name is only known at runtime,
-/// so these are registered by scanning the environment rather than by literal.
-/// A new list field on `CheckConfig` needs an entry here or its environment
-/// variable is silently dropped.
-const CHECK_LIST_KEYS: &[&str] = &[
-    "stages",
-    "allow",
-    "deny",
-    "allow_regex",
-    "deny_regex",
-    "allowed_types",
-    "kids",
-    "args",
-];
-
-const LIST_KEYS: &[&str] = &[
-    "challenge.enabled",
-    "filter.rules",
-    "filter.trusted_proxies",
-    // Removed keys. Registered so they still parse from the environment,
-    // which is what lets `filter::build` refuse them by name there as well as
-    // in a file — unregistered, they would fail as an opaque serde type error
-    // instead.
-    "filter.enabled",
-    "filter.exempt_paths",
-    "filter.custom_enabled",
-    "ipam.netbox.sources",
-    "ipam.netbox.vip_roles",
-    "ipam.phpipam.sources",
-    "ipam.custom.args",
-    "signer.relay.contact",
-    "signer.custom.args",
-    "signer.local_ca.crl_distribution_points",
-    "signer.local_ca.ca_issuer_urls",
-    "notify.enabled",
-    "notify.email.to",
-    "notify.email.events",
-    "notify.webhook_enabled",
-    "notify.custom_enabled",
-    // `[admin.notify]` is a whole `NotifyConfig` (see `AdminConfig::notify`),
-    // so every list field above has a twin here. Unregistered, the documented
-    // `ACME_PROXY_ADMIN__NOTIFY__…` spellings arrive as bare strings and fail
-    // to deserialize into a `Vec`.
-    "admin.notify.enabled",
-    "admin.notify.email.to",
-    "admin.notify.email.events",
-    "admin.notify.webhook_enabled",
-    "admin.notify.custom_enabled",
-    "meta.caa_identities",
-    "proxy.no_proxy",
-];
-
 impl Config {
-    #[cfg(test)]
-    fn list_key(&self, key: &str) -> Option<Vec<String>> {
-        let value = match key {
-            "challenge.enabled" => &self.challenge.enabled,
-            "filter.rules" => &self.filter.rules,
-            "filter.trusted_proxies" => &self.filter.trusted_proxies,
-            "filter.enabled" => &self.filter.enabled,
-            "filter.exempt_paths" => &self.filter.exempt_paths,
-            "filter.custom_enabled" => &self.filter.custom_enabled,
-            "ipam.netbox.sources" => &self.ipam.netbox.sources,
-            "ipam.netbox.vip_roles" => &self.ipam.netbox.vip_roles,
-            "ipam.phpipam.sources" => &self.ipam.phpipam.sources,
-            "ipam.custom.args" => &self.ipam.custom.args,
-            "signer.relay.contact" => &self.signer.relay.contact,
-            "signer.custom.args" => &self.signer.custom.args,
-            "signer.local_ca.crl_distribution_points" => {
-                &self.signer.local_ca.crl_distribution_points
-            }
-            "signer.local_ca.ca_issuer_urls" => &self.signer.local_ca.ca_issuer_urls,
-            "notify.enabled" => &self.notify.enabled,
-            "notify.email.to" => &self.notify.email.to,
-            "notify.email.events" => &self.notify.email.events,
-            "notify.webhook_enabled" => &self.notify.webhook_enabled,
-            "notify.custom_enabled" => &self.notify.custom_enabled,
-            "admin.notify.enabled" => &self.admin.notify.enabled,
-            "admin.notify.email.to" => &self.admin.notify.email.to,
-            "admin.notify.email.events" => &self.admin.notify.email.events,
-            "admin.notify.webhook_enabled" => &self.admin.notify.webhook_enabled,
-            "admin.notify.custom_enabled" => &self.admin.notify.custom_enabled,
-            "meta.caa_identities" => &self.meta.caa_identities,
-            "proxy.no_proxy" => &self.proxy.no_proxy,
-            _ => return None,
-        };
-        Some(value.clone())
-    }
-
     /// Loads configuration from defaults, TOML file, and environment variables.
     pub fn load() -> Result<Self, ::config::ConfigError> {
         let path = std::env::var("ACME_PROXY_CONFIG").unwrap_or_else(|_| "config".into());
 
-        let mut environment = ::config::Environment::with_prefix("ACME_PROXY")
+        // No list separator and no list keys: `config` can only split a key it
+        // is told about by its full literal path, which a list inside a profile
+        // or inside an operator-named table never has. Every list field splits
+        // its own string instead, through `types::string_list`.
+        let environment = ::config::Environment::with_prefix("ACME_PROXY")
             .prefix_separator("_")
             .separator("__")
-            .try_parsing(true)
-            .list_separator(",");
-        // Every list-valued key, both globally and inside each profile the
-        // environment mentions. `with_list_parse_key` takes a *literal* key,
-        // and a profile name is only known at runtime — so the names are
-        // scanned for first. Without this, `ACME_PROXY_PROFILES__LE__
-        // CHALLENGE__ENABLED` would be silently dropped, the same trap the
-        // global `LIST_KEYS` registry exists for.
-        let profiles_in_env = profile_names_in_env();
-        for key in LIST_KEYS {
-            environment = environment.with_list_parse_key(key);
-            for name in &profiles_in_env {
-                environment = environment.with_list_parse_key(&format!("profiles.{name}.{key}"));
-            }
-        }
-        // One level deeper: three sections are tables keyed by a name only
-        // known at runtime, each with list-valued fields of its own. Same
-        // reasoning as the profile-scoped loop above (and as `profiles_in_env`
-        // itself) — without registration every one of these is silently
-        // *dropped* from the environment rather than refused, which is the one
-        // failure mode a configuration bug should never have.
-        //
-        // Both scopes of each are registered by walking `None` (global) and
-        // then each profile: the two used to be written out separately, four
-        // times over, each copy repeating the same comment.
-        //
-        // (`notify.webhook.<name>.headers` is a map rather than a list, so it
-        // needs no entry — `config` nests it from `…__HEADERS__<NAME>` without
-        // help.)
-        const NAMED_TABLES: &[(&str, &[&str])] = &[
-            ("filter.check", CHECK_LIST_KEYS),
-            ("notify.custom", &["args", "events"]),
-            ("notify.webhook", &["events"]),
-            // `[admin.notify]`'s twins. `env_segment` turns the dots into
-            // `__`, so `ACME_PROXY_ADMIN__NOTIFY__CUSTOM__<ENTRY>__ARGS` is
-            // scanned for exactly as the per-profile spelling is.
-            ("admin.notify.custom", &["args", "events"]),
-            ("admin.notify.webhook", &["events"]),
-        ];
-        let scopes = std::iter::once(None).chain(profiles_in_env.iter().map(Some));
-        for profile in scopes {
-            for (section, keys) in NAMED_TABLES {
-                let (env_prefix, key_prefix) = match profile {
-                    None => (
-                        format!("ACME_PROXY_{}__", env_segment(section)),
-                        (*section).to_string(),
-                    ),
-                    Some(name) => (
-                        format!(
-                            "ACME_PROXY_PROFILES__{}__{}__",
-                            name.to_ascii_uppercase(),
-                            env_segment(section)
-                        ),
-                        format!("profiles.{name}.{section}"),
-                    ),
-                };
-                for entry in names_in_env(&env_prefix) {
-                    for key in *keys {
-                        environment =
-                            environment.with_list_parse_key(&format!("{key_prefix}.{entry}.{key}"));
-                    }
-                }
-            }
-        }
+            .try_parsing(true);
 
         let built = ::config::Config::builder()
             .add_source(::config::File::with_name(&path).required(false))
@@ -426,35 +277,6 @@ impl Config {
             self.server.base_url
         )
     }
-}
-
-/// A dotted configuration section as its `ACME_PROXY_*` spelling:
-/// `filter.check` becomes `FILTER__CHECK`.
-///
-/// The two spellings of every section used to be written out by hand at each
-/// registration site, which is exactly where one of them goes stale.
-fn env_segment(section: &str) -> String {
-    section.to_ascii_uppercase().replace('.', "__")
-}
-
-// The first `__`-delimited segment after `prefix`, for every environment
-/// variable that starts with it — lowercased, matching what the `config`
-/// crate does to environment keys, so `…__LE__…` and a `[profiles.le]` table
-/// (or `…__CUSTOM__MAIN__…` and a `[filter.custom.main]` table) name the same
-/// entry.
-fn names_in_env(prefix: &str) -> BTreeSet<String> {
-    std::env::vars()
-        .filter_map(|(key, _)| {
-            let rest = key.strip_prefix(prefix)?;
-            let name = rest.split("__").next()?;
-            (!name.is_empty()).then(|| name.to_ascii_lowercase())
-        })
-        .collect()
-}
-
-/// Profile names mentioned by `ACME_PROXY_PROFILES__<NAME>__…` variables.
-fn profile_names_in_env() -> BTreeSet<String> {
-    names_in_env("ACME_PROXY_PROFILES__")
 }
 
 /// A value's table, or an empty one for anything else (including absent).
@@ -788,9 +610,9 @@ mod tests {
         }
     }
 
-    /// A list-valued key inside a profile only survives the environment if its
-    /// *runtime* key was registered for list parsing — the whole reason
-    /// `Config::load` scans for profile names before building the sources.
+    /// A list-valued key inside a profile, whose path holds a name only known
+    /// at runtime. It used to need that runtime path registered for list
+    /// parsing; `types::string_list` now splits it where it lands.
     #[test]
     fn a_profile_list_key_round_trips_through_the_environment() {
         let file = TempConfig::new("[profiles.le]\n");
@@ -880,12 +702,10 @@ mod tests {
         assert_eq!(config.proxy.http_url, ProxyConfig::default().http_url);
     }
 
-    /// `[filter.check.<name>]` entries are named tables, not a list — so unlike
-    /// an ordinary `LIST_KEYS` entry, each of their list-valued fields needs
-    /// its own `with_list_parse_key` registration, keyed by a name only known
-    /// at runtime. Without that scan every one of them is silently dropped
-    /// from the environment rather than refused, which is the single most
-    /// forgettable part of this section.
+    /// `[filter.check.<name>]` entries are named tables, so each of their
+    /// list-valued fields sits under a name only known at runtime. They used to
+    /// need a registration found by scanning the environment, and were silently
+    /// dropped without one; every list field of every entry must load.
     #[test]
     fn env_configures_multiple_named_checks_with_all_their_lists() {
         let _guard = EnvGuard::new(&[
@@ -919,8 +739,9 @@ mod tests {
         assert_eq!(config.filter.rules, vec!["main"]);
     }
 
-    /// The same, scoped to one profile — proving the runtime name scan also
-    /// covers `ACME_PROXY_PROFILES__<NAME>__FILTER__CHECK__<NAME>__…`.
+    /// The same, scoped to one profile:
+    /// `ACME_PROXY_PROFILES__<NAME>__FILTER__CHECK__<NAME>__…`, two runtime
+    /// names deep.
     #[test]
     fn env_configures_a_profile_scoped_named_check() {
         let file = TempConfig::new("[profiles.le]\n");
@@ -950,14 +771,12 @@ mod tests {
         assert_eq!(profiles[0].sections.filter.rules, vec!["only"]);
     }
 
-    /// The two `[notify]` tables, scoped to a profile — the remaining corner of
-    /// the runtime-name scan.
+    /// The two `[notify]` tables, scoped to a profile — two runtime names
+    /// deep, like the profile-scoped check above.
     ///
-    /// All six scopes (three sections × global/per-profile) go through one loop
-    /// now, where they used to be four blocks written out separately. This is
-    /// the one those blocks covered least, and the failure it guards against is
-    /// silent: an unregistered list variable is *dropped*, so `events` would
-    /// quietly revert to all six rather than being refused.
+    /// The failure it guards against is silent: a list variable that does not
+    /// reach its field leaves `events` at its default, all six, rather than
+    /// being refused.
     #[test]
     fn env_configures_profile_scoped_notify_tables() {
         let file = TempConfig::new("[profiles.le]\n");
@@ -996,7 +815,7 @@ mod tests {
         assert_eq!(
             pager.events,
             vec!["certificate_issued", "challenge_failed"],
-            "an unregistered list key is dropped, not refused"
+            "a list key under two runtime names must reach its field"
         );
 
         let slack = &notify.webhook["slack"];
@@ -1004,12 +823,10 @@ mod tests {
         assert_eq!(slack.events, vec!["certificate_revoked"]);
     }
 
-    /// `[notify.webhook.<name>]` is the third table keyed by a runtime name, so
-    /// its `events` needs the same scan-then-register treatment as
-    /// `filter.check` and `notify.custom` — without it the variable is silently
-    /// dropped rather than refused, and the entry quietly reverts to all six
-    /// events. `headers` is the counter-case: a map, which `config` nests from
-    /// `…__HEADERS__<NAME>` with no registration at all.
+    /// `[notify.webhook.<name>]` is the third table keyed by a runtime name:
+    /// its `events` list must load like `filter.check`'s and `notify.custom`'s,
+    /// or the entry quietly reverts to all six events. `headers` is a map,
+    /// which `config` nests from `…__HEADERS__<NAME>`.
     #[test]
     fn env_configures_a_named_webhook_with_its_list_and_its_header_map() {
         let _guard = EnvGuard::new(&[
@@ -1588,14 +1405,10 @@ mod tests {
 
     /// `[admin.notify]` is a whole `NotifyConfig` hung off `[admin]`, and the
     /// book and `config.toml.example` both document its keys under
-    /// `ACME_PROXY_ADMIN__NOTIFY__…`. Every one of its list fields therefore
-    /// needs its own `LIST_KEYS` entry and its own `NAMED_TABLES` row — without
-    /// them the values arrive as bare strings and `Config::load` refuses them,
-    /// which is what happened until this test existed.
-    ///
-    /// Driven through the documented spellings rather than through `LIST_KEYS`,
-    /// so it fails for the named-table half too (which that registry does not
-    /// cover at all).
+    /// `ACME_PROXY_ADMIN__NOTIFY__…`. Its lists, and those of its named
+    /// tables, must load from the environment like the per-profile
+    /// `[notify]`'s. They were once refused, arriving as bare strings, which is
+    /// what happened until this test existed.
     #[test]
     fn the_admin_notify_section_parses_from_the_environment() {
         let _guard = EnvGuard::new(&[
@@ -1640,45 +1453,46 @@ mod tests {
         assert!(config.notify.enabled.is_empty());
     }
 
+    /// Every list field carries `types::string_list`, which is what reads a
+    /// comma-separated environment variable. Without it the field still loads
+    /// from a file, and the environment spelling fails as a type error, so the
+    /// omission would surface only for an operator configuring through the
+    /// environment.
+    ///
+    /// Read from the source, like `tests/logging_convention.rs`: a `Vec`
+    /// field has no runtime marker to enumerate.
     #[test]
-    fn every_registered_list_key_round_trips_through_the_environment() {
-        let known = LIST_KEYS
-            .iter()
-            .filter(|key| Config::default().list_key(key).is_some())
-            .count();
-        assert_eq!(
-            known,
-            LIST_KEYS.len(),
-            "every LIST_KEYS entry must be readable via `list_key`"
-        );
-        assert_eq!(
-            LIST_KEYS.len(),
-            26,
-            "a config `Vec` field was added or removed: update LIST_KEYS, `list_key`, \
-             config.toml.example and this count together"
-        );
-
-        for key in LIST_KEYS {
-            let (first, second) = match *key {
-                "challenge.enabled" => ("http-01", "dns-01"),
-                "filter.rules" => ("mgmt-bypass", "inventory-owned"),
-                "filter.exempt_paths" => ("/health", "/directory"),
-                _ => ("first-value", "second-value"),
-            };
-
-            let env_key: &'static str = Box::leak(
-                format!("ACME_PROXY_{}", key.replace('.', "__").to_uppercase()).into_boxed_str(),
-            );
-            let _guard = EnvGuard::new(&[(env_key, &format!("{first},{second}"))]);
-
-            let config = Config::load().expect("load should succeed");
-            let actual = config.list_key(key);
-            assert_eq!(
-                actual,
-                Some(vec![first.to_string(), second.to_string()]),
-                "{key} (via {env_key}) did not parse as a two-element list; \
-                 is it registered in LIST_KEYS and reachable from `list_key`?"
-            );
+    fn every_list_field_reads_a_comma_separated_string() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/types");
+        let mut fields = 0;
+        let mut missing = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = source.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                let line = line.trim();
+                if !(line.starts_with("pub ") && line.contains(": Vec<")) {
+                    continue;
+                }
+                fields += 1;
+                // The attributes and doc comments directly above the field.
+                let covered = lines[..index]
+                    .iter()
+                    .rev()
+                    .map(|above| above.trim())
+                    .take_while(|above| above.starts_with("#[") || above.starts_with("//"))
+                    .any(|above| above.starts_with("#[") && above.contains("string_list\""));
+                if !covered {
+                    missing.push(format!("{}: {line}", path.display()));
+                }
+            }
         }
+        assert!(fields >= 30, "the scan found only {fields} list fields");
+        assert!(
+            missing.is_empty(),
+            "list fields without `deserialize_with = \"string_list\"`:\n{}",
+            missing.join("\n")
+        );
     }
 }

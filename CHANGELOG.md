@@ -337,6 +337,14 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A list-valued key no longer depends on a registry to be read from the
+  environment.** `ACME_PROXY_*` list variables were split only for keys listed
+  by their full path, found for profiles and named tables by scanning the
+  environment at startup; a key missing from that list arrived as a bare string
+  and was refused or dropped. Each list field now splits its own
+  comma-separated string, so every list at every depth reads the same way. The
+  syntax is unchanged. A file may now also give a one-element list as a bare
+  string (`deny = "example.com"`).
 - **A local CA's revocation recorded beside a running server could fail with
   `database is locked`.** The ledger write read the CA's stored CRL and then
   wrote, and a CRL the server stored in between made SQLite refuse the upgrade
