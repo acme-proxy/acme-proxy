@@ -8,7 +8,7 @@
 //!
 //! So the question lives here and the *policy* built on the answer stays in
 //! [`filter::ipam`](crate::filter::ipam), which is the only consumer. The split
-//! is the same one [`signer`](crate::signer) makes: a backend reports what is
+//! is the same one `signer` makes: a backend reports what is
 //! true, a caller decides what to do about it.
 //!
 //! ## Denied versus Internal

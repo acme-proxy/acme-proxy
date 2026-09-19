@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 use std::collections::BTreeMap;
 
-use acme_proxy::filter::policy::{Check, StageSet, Verdict};
-use acme_proxy::filter::{self, IdentifierContext, IdentifierStage};
 use acme_proxy_core::config::CheckConfig;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::CustomIpamConfig;
@@ -23,6 +21,12 @@ use acme_proxy_core::config::IpamConfig;
 use acme_proxy_core::config::NetboxConfig;
 use acme_proxy_core::config::PhpIpamConfig;
 use acme_proxy_core::config::RuleConfig;
+use acme_proxy_policy::filter;
+use acme_proxy_policy::filter::IdentifierContext;
+use acme_proxy_policy::filter::IdentifierStage;
+use acme_proxy_policy::filter::policy::Check;
+use acme_proxy_policy::filter::policy::StageSet;
+use acme_proxy_policy::filter::policy::Verdict;
 use acme_proxy_store::eab::Eab;
 use async_trait::async_trait;
 use axum::Router;
@@ -63,7 +67,7 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 /// The same, with an `[ipam]` section — the two are built together at startup,
 /// `[ipam]` first, exactly as `server::profile::build_all` does it.
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
-    let inventory = acme_proxy::ipam::from_config(
+    let inventory = acme_proxy_policy::ipam::from_config(
         ipam,
         acme_proxy_net::http_client::Outbound::new(
             test_resolver(),
@@ -106,8 +110,8 @@ fn policy_config(checks: &[(&str, CheckConfig)]) -> FilterConfig {
     let mut rule = BTreeMap::new();
 
     for (stage, label) in [
-        (acme_proxy::filter::Stage::Connection, "connection"),
-        (acme_proxy::filter::Stage::Identifiers, "identifiers"),
+        (acme_proxy_policy::filter::Stage::Connection, "connection"),
+        (acme_proxy_policy::filter::Stage::Identifiers, "identifiers"),
     ] {
         let names: Vec<&str> = checks
             .iter()

@@ -33,8 +33,8 @@
 //!
 //! The other two comma-joined hook variables need no such guard, and it is worth
 //! knowing why rather than rediscovering it: `ACME_SIGNER_IDENTIFIERS`
-//! ([`crate::signer::custom`]) and `ACME_NOTIFY_IDENTIFIERS`
-//! ([`crate::notify::custom`]) are both joined from the *order*'s identifiers,
+//! (`signer::custom`) and `ACME_NOTIFY_IDENTIFIERS`
+//! (`notify::custom`) are both joined from the *order*'s identifiers,
 //! which `well_formed_name` has already refused a delimiter in.
 
 use async_trait::async_trait;

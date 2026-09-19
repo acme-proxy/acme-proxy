@@ -12,7 +12,7 @@
 //! file, an LDAP tree or a Python script against a vendor API this server will
 //! never carry a client for answers the same question through the same
 //! contract [`filter::custom`](crate::filter::custom) and
-//! [`signer::custom`](crate::signer::custom) use, over the shared
+//! `signer::custom` use, over the shared
 //! [`script_hook`](acme_proxy_core::script_hook) hardening.
 //!
 //! ## The contract
@@ -37,7 +37,7 @@
 //! structure would carry that a list of lines does not, and because a contract
 //! needing `jq` for what `echo` already does would be paid for by every script
 //! ever written against it — the same choice
-//! [`signer::custom`](crate::signer::custom) makes for the certificate chain.
+//! `signer::custom` makes for the certificate chain.
 //!
 //! ## Why a reserved exit code
 //!
@@ -65,7 +65,7 @@ use acme_proxy_core::script_hook::ScriptStdin;
 
 /// The exit status meaning "this inventory holds no record of that address".
 ///
-/// Reserved the way [`signer::custom`](crate::signer::custom)'s `BadCsr` code
+/// Reserved the way `signer::custom`'s `BadCsr` code
 /// is, and for the same reason: it is an *answer*, not a failure, and nothing
 /// else in the contract can carry it.
 pub const UNKNOWN_ADDRESS_EXIT_CODE: i32 = 3;

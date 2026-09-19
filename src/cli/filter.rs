@@ -1,7 +1,7 @@
 //! `acme-proxy filter show|explain` — reading the configured access policy.
 //!
 //! Argument marshalling and profile resolution only; everything printed comes
-//! from [`crate::filter::explain`], which is what lets the panel serve `show`
+//! from [`acme_proxy_policy::filter::explain`], which is what lets the panel serve `show`
 //! from the same renderings without moving any logic. `explain` stays here and
 //! only here; why is recorded there.
 
@@ -10,12 +10,15 @@ use std::net::IpAddr;
 use clap::Subcommand;
 
 use super::{CliError, resolve_profile};
-use crate::filter::explain::{
-    Subject, explain, explanation_json, policy_json, render_explanation, render_policy,
-};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_policy::filter::explain::Subject;
+use acme_proxy_policy::filter::explain::explain;
+use acme_proxy_policy::filter::explain::explanation_json;
+use acme_proxy_policy::filter::explain::policy_json;
+use acme_proxy_policy::filter::explain::render_explanation;
+use acme_proxy_policy::filter::explain::render_policy;
 
 #[derive(Subcommand)]
 pub enum FilterCommand {
@@ -129,7 +132,7 @@ fn print_json(value: &serde_json::Value) -> Result<(), CliError> {
 fn build(
     config: &Config,
     wanted: Option<&str>,
-) -> Result<(String, crate::filter::FilterPolicy), CliError> {
+) -> Result<(String, acme_proxy_policy::filter::FilterPolicy), CliError> {
     let profile = resolve_profile(config, wanted)?;
     let sections = &profile.sections;
 
@@ -138,7 +141,7 @@ fn build(
     let proxies = acme_proxy_net::proxy::OutboundProxies::from_config(&config.proxy)
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
-    let inventory = crate::ipam::from_config(
+    let inventory = acme_proxy_policy::ipam::from_config(
         &sections.ipam,
         acme_proxy_net::http_client::Outbound::new(
             std::sync::Arc::new(resolver),
@@ -147,7 +150,7 @@ fn build(
     )
     .map_err(|error| CliError::failed(format!("profile `{}`: {error}", profile.name)))?;
 
-    let policy = crate::filter::build::build(
+    let policy = acme_proxy_policy::filter::build::build(
         &sections.filter,
         &config.dns,
         inventory,

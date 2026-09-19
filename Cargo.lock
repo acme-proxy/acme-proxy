@@ -8,6 +8,7 @@ version = "0.5.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-net",
+ "acme-proxy-policy",
  "acme-proxy-store",
  "anyhow",
  "async-trait",
@@ -109,6 +110,33 @@ dependencies = [
  "url",
  "webpki-roots",
  "x509-parser",
+]
+
+[[package]]
+name = "acme-proxy-policy"
+version = "0.5.0"
+dependencies = [
+ "acme-proxy-core",
+ "acme-proxy-net",
+ "acme-proxy-store",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "ipnet",
+ "rcgen",
+ "regex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "webpki-roots",
 ]
 
 [[package]]

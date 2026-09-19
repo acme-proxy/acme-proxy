@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use acme_proxy::filter::FilterPolicy;
 use acme_proxy_core::config::Config;
+use acme_proxy_policy::filter::FilterPolicy;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

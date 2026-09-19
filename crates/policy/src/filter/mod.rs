@@ -48,7 +48,7 @@
 //! defaulting to "pass":
 //!
 //! - [`check_connection`](Check::check_connection) runs in
-//!   [`add_filter_middleware`](crate::middlewares::filter::add_filter_middleware)
+//!   `add_filter_middleware`
 //!   for every request.
 //! - [`check_identifiers`](Check::check_identifiers) runs at `newOrder` (the
 //!   order's identifiers) and again at `finalize` (the CSR's subject

@@ -11,8 +11,11 @@
 
 use std::sync::Arc;
 
-use acme_proxy::filter::policy::{Check, StageSet, Verdict};
-use acme_proxy::filter::{ConnectionContext, IdentifierContext};
+use acme_proxy_policy::filter::ConnectionContext;
+use acme_proxy_policy::filter::IdentifierContext;
+use acme_proxy_policy::filter::policy::Check;
+use acme_proxy_policy::filter::policy::StageSet;
+use acme_proxy_policy::filter::policy::Verdict;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;

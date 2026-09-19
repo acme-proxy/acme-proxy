@@ -2,10 +2,14 @@ use std::net::IpAddr;
 
 use tracing::error;
 
-use crate::filter::{EabIdentity, FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_net::challenge::ChallengeError;
+use acme_proxy_policy::filter::EabIdentity;
+use acme_proxy_policy::filter::FilterPolicy;
+use acme_proxy_policy::filter::IdentifierContext;
+use acme_proxy_policy::filter::IdentifierStage;
+use acme_proxy_policy::filter::Outcome;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::db::Database;
 

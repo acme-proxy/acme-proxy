@@ -34,6 +34,7 @@ homepage = "https://acme-proxy.github.io/acme-proxy/"
 acme-proxy-core = { path = "crates/core", version = "=0.5.0" }
 acme-proxy-store = { path = "crates/store", version = "=0.5.0" }
 acme-proxy-net = { path = "crates/net", version = "=0.5.0" }
+acme-proxy-policy = { path = "crates/policy", version = "=0.5.0" }
 
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
@@ -232,6 +233,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 acme-proxy-core.workspace = true
 acme-proxy-store.workspace = true
 acme-proxy-net.workspace = true
+acme-proxy-policy.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

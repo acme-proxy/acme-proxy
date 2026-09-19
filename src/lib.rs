@@ -47,7 +47,7 @@
 //! The ACME request path, in the order a request meets it:
 //! - [`middlewares`] - Server-wide layers: request correlation and the access
 //!   line, admission control, the `Replay-Nonce` and `Link: rel="index"` headers
-//! - [`filter`] - Pluggable request filtering (who may ask at all)
+//! - [`filter`](acme_proxy_policy::filter) - Pluggable request filtering (who may ask at all)
 //! - [`extractors`] - Parse and validate ACME JWS requests, verifying the media
 //!   type, the `crit` header, the signature, the JWS `url` and the nonce before
 //!   any handler runs
@@ -61,7 +61,7 @@
 //! - [`audit`](acme_proxy_core::audit) - The durable record of who asked this CA to sign or revoke
 //! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
 //!   webhook, custom)
-//! - [`ipam`] - The inventory [`filter`] asks which names an address owns
+//! - [`ipam`](acme_proxy_policy::ipam) - The inventory [`filter`](acme_proxy_policy::filter) asks which names an address owns
 //!   (NetBox, phpIPAM, a custom script), behind one trait
 //! - [`eab`](acme_proxy_core::eab) - Verification of the External Account Binding inner JWS (§7.3.4)
 //! - [`key_change`](acme_proxy_core::key_change) - Verification of account key rollover JWS (§7.3.5)
@@ -106,7 +106,8 @@
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
 //! use acme_proxy_store::db::Database;
-//! use acme_proxy::{filter, ipam, jobs, notify, signer};
+//! use acme_proxy::{jobs, notify, signer};
+//! use acme_proxy_policy::{filter, ipam};
 //! use acme_proxy_net::challenge;
 //! use acme_proxy_core::config::Config;
 //!
@@ -253,9 +254,7 @@ pub mod admin;
 pub mod auditor;
 pub mod cli;
 pub mod extractors;
-pub mod filter;
 pub mod handlers;
-pub mod ipam;
 pub mod jobs;
 pub mod metrics;
 pub mod middlewares;

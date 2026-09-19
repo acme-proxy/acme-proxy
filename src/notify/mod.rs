@@ -1,6 +1,6 @@
 //! Operator notifications for ACME lifecycle events.
 //!
-//! The shape mirrors [`filter`](crate::filter)/[`signer`](crate::signer): a
+//! The shape mirrors [`filter`](acme_proxy_policy::filter)/[`signer`](crate::signer): a
 //! trait, an error type, and a [`from_config`] selector building the
 //! configured set at startup. Three backends exist today —
 //! [`email`], [`webhook`] (any HTTP endpoint, with the URL, method, headers

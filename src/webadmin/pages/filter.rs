@@ -11,13 +11,13 @@
 use axum::extract::{Path, State};
 use axum::response::Html;
 
-use crate::filter::explain::policy_json;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::misc::profile_row;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, respond};
+use acme_proxy_policy::filter::explain::policy_json;
 
 /// `GET /ui/profiles/{name}/filter` — every check, and every rule in
 /// evaluation order with its condition re-parenthesized.

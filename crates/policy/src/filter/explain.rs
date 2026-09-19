@@ -1,7 +1,7 @@
 //! Rendering a policy, and what it would do to one hypothetical request.
 //!
 //! Everything `acme-proxy filter show` and `acme-proxy filter explain` print
-//! lives here; [`crate::cli::filter`] marshals arguments and does nothing else.
+//! lives here; `cli::filter` marshals arguments and does nothing else.
 //! That split is the one the rest of the admin surface uses, and it is what
 //! lets the web panel serve `show` — `GET /api/profiles/{name}/filter` and
 //! `/ui/profiles/{name}/filter` render [`policy_json`], the same document

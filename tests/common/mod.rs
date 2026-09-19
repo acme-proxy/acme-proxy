@@ -23,9 +23,6 @@ use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::filter::expr::Condition;
-use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
-use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, Stage};
 use acme_proxy::jobs::{JobQueue, JobRegistry};
 pub use acme_proxy::metrics::Metrics;
 use acme_proxy::notify::{
@@ -46,6 +43,17 @@ use acme_proxy_net::challenge::ChallengeError;
 use acme_proxy_net::challenge::ChallengeRegistry;
 use acme_proxy_net::challenge::ChallengeValidator;
 use acme_proxy_net::challenge::ValidationContext;
+use acme_proxy_policy::filter::ConnectionContext;
+use acme_proxy_policy::filter::FilterPolicy;
+use acme_proxy_policy::filter::IdentifierContext;
+use acme_proxy_policy::filter::Stage;
+use acme_proxy_policy::filter::expr::Condition;
+use acme_proxy_policy::filter::policy::Check;
+use acme_proxy_policy::filter::policy::Effect;
+use acme_proxy_policy::filter::policy::Mode;
+use acme_proxy_policy::filter::policy::Rule;
+use acme_proxy_policy::filter::policy::StageSet;
+use acme_proxy_policy::filter::policy::Verdict;
 use acme_proxy_store::db::Database;
 use async_trait::async_trait;
 use axum::Router;
@@ -1164,7 +1172,7 @@ pub fn test_filter_policy() -> Arc<FilterPolicy> {
         ..FilterConfig::default()
     };
 
-    acme_proxy::filter::from_config(
+    acme_proxy_policy::filter::from_config(
         &filter,
         &acme_proxy_core::config::DnsConfig::default(),
         None,

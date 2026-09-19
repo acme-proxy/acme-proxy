@@ -43,9 +43,11 @@ use axum::{
 };
 use tracing::{Span, field, warn};
 
-use crate::filter::{ConnectionContext, FilterPolicy, Outcome};
 use acme_proxy_core::client::ClientIp;
 use acme_proxy_core::error::Problem;
+use acme_proxy_policy::filter::ConnectionContext;
+use acme_proxy_policy::filter::FilterPolicy;
+use acme_proxy_policy::filter::Outcome;
 
 pub async fn add_filter_middleware(
     State(policy): State<Arc<FilterPolicy>>,
@@ -119,8 +121,8 @@ mod tests {
     use axum::{Router, middleware, routing::get};
     use tower::ServiceExt;
 
-    use crate::filter::Effect;
     use acme_proxy_core::client::ProxyPolicy;
+    use acme_proxy_policy::filter::Effect;
 
     /// The two layers as `build_router` stacks them: the access middleware
     /// outermost (it owns the `request` span), this one inside it.

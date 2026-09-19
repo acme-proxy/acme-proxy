@@ -1,13 +1,13 @@
 //! `GET /api/profiles/{name}/filter` — one endpoint's resolved access policy.
 //!
-//! **`show`, never `explain`.** [`crate::filter::explain::explain`] executes
+//! **`show`, never `explain`.** [`acme_proxy_policy::filter::explain::explain`] executes
 //! the operator's `custom` scripts and issues real IPAM and DNS requests
 //! against an address and names the *caller* chose; behind a session that is
 //! script execution plus SSRF from one stolen cookie, on a listener that
 //! deliberately carries no filter chain and no admission control. That refusal
 //! stands, and there is no route for it here. This one builds a document from
-//! [`crate::filter::explain::policy_json`], which calls four accessors on a
-//! [`FilterPolicy`](crate::filter::FilterPolicy) and reaches nothing outside
+//! [`acme_proxy_policy::filter::explain::policy_json`], which calls four accessors on a
+//! [`FilterPolicy`](acme_proxy_policy::filter::FilterPolicy) and reaches nothing outside
 //! the process — it is not even `async` under the handler's own `async`.
 //!
 //! Read-only, so this file contributes nothing to
@@ -29,10 +29,10 @@ use axum::Json;
 use axum::extract::{Path, State};
 use serde_json::Value;
 
-use crate::filter::explain::policy_json;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::session::Authenticated;
+use acme_proxy_policy::filter::explain::policy_json;
 
 /// `GET /api/profiles/{name}/filter` — the resolved access policy.
 ///

@@ -29,7 +29,7 @@ use axum::response::Response;
 use tower::ServiceExt;
 
 mod common;
-use acme_proxy::filter::FilterPolicy;
+use acme_proxy_policy::filter::FilterPolicy;
 use common::{
     GatedCrlSigner, body_json, challenges_with, default_challenges, no_notifications, p,
     test_app_full, test_app_with_challenges,

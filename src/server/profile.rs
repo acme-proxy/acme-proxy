@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use crate::filter;
-use crate::ipam;
 use crate::profile::{Profile, ProfileParts};
 use acme_proxy_core::config;
 use acme_proxy_core::config::Config;
 use acme_proxy_net::challenge;
+use acme_proxy_policy::filter;
+use acme_proxy_policy::ipam;
 use acme_proxy_store::db::Database;
 
 use super::{Assembly, GenerationParts};

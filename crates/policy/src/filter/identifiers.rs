@@ -11,7 +11,7 @@
 //! addresses, email addresses or URIs, and its subject can carry a common name
 //! that no SAN mentions. All of them are projected into the same
 //! [`Identifier`](acme_proxy_core::identifier::Identifier) list by the caller (see
-//! `csr_identifiers` in [`crate::acme::rules`]), so a
+//! `csr_identifiers` in `acme::rules`), so a
 //! `deny` pattern cannot be sidestepped by moving a name from a DNS SAN to the
 //! common name, or from a DNS SAN to an IP SAN.
 //!

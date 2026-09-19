@@ -11,11 +11,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acme_proxy::filter::FilterPolicy;
 use acme_proxy::jobs::JobRegistry;
 use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_policy::filter::FilterPolicy;
 use acme_proxy_store::job::Job;
 use axum::Router;
 use axum::body::Body;

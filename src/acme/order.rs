@@ -19,7 +19,6 @@ use super::rules::{
     parse_rfc3339, well_formed_name,
 };
 use crate::auditor::Auditor;
-use crate::filter::{IdentifierStage, Stage as FilterStage};
 use crate::jobs::JobQueue;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::profile::Profile;
@@ -28,6 +27,8 @@ use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::jws::signature::jwk_thumbprint;
 use acme_proxy_net::challenge::ValidationContext;
+use acme_proxy_policy::filter::IdentifierStage;
+use acme_proxy_policy::filter::Stage as FilterStage;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::authz::Challenge;
@@ -955,7 +956,7 @@ pub(crate) mod tests {
             "http://localhost:3000",
             ProfileParts {
                 signer_info: signer.info(),
-                filter: Arc::new(crate::filter::FilterPolicy::default()),
+                filter: Arc::new(acme_proxy_policy::filter::FilterPolicy::default()),
                 challenges: Arc::new(challenges),
                 order: acme_proxy_core::config::OrderConfig::default(),
                 eab: acme_proxy_core::config::EabConfig::default(),

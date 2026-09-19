@@ -9,9 +9,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acme_proxy::filter::FilterPolicy;
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy_core::config::Config;
+use acme_proxy_policy::filter::FilterPolicy;
 use acme_proxy_store::db::Database;
 use axum::Router;
 use axum::body::Body;
