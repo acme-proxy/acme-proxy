@@ -97,7 +97,7 @@ pub async fn disable_operator(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     act(
@@ -121,7 +121,7 @@ pub async fn enable_operator(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     act(
@@ -145,7 +145,7 @@ pub async fn reset_operator_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     act(
@@ -173,7 +173,7 @@ pub async fn revoke_operator_session(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     act(
@@ -216,7 +216,7 @@ pub async fn set_operator_contact(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<OperatorContactForm>,
 ) -> Result<Response, PageError> {
     let banner = if form.contact.trim().is_empty() {
@@ -253,7 +253,7 @@ pub async fn set_operator_role(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageAdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<OperatorRoleForm>,
 ) -> Result<Response, PageError> {
     let role = match form.role.parse::<AdminRole>() {
@@ -309,7 +309,7 @@ async fn act(
     password: &str,
     client: Option<std::net::IpAddr>,
     headers: &HeaderMap,
-    request_context: &crate::audit::RequestContext,
+    request_context: &acme_proxy_core::audit::RequestContext,
     action: OperatorAction<'_>,
     banner: Value,
 ) -> Result<Response, PageError> {

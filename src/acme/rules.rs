@@ -4,8 +4,8 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::warn;
 
-use crate::error::Problem;
-use crate::identifier::Identifier;
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::identifier::Identifier;
 
 /// Parses a PKCS#10 CSR, which also verifies its own self-signature.
 ///

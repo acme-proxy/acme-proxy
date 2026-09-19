@@ -36,7 +36,7 @@ use tracing::info;
 
 use super::policy::{Check, StageSet, Verdict};
 use super::{ConnectionContext, IdentifierContext, ListVerdict, check_lists};
-use crate::client::parse_nets;
+use acme_proxy_core::client::parse_nets;
 
 /// Resolved `[filter.check.<name>]` settings for `type = "allowed_ip"`.
 #[derive(Debug, Clone, Default)]
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn it_decides_the_same_way_at_the_identifier_stage() {
         let check = check(&["10.0.0.0/8"]);
-        let identifiers = vec![crate::identifier::Identifier::dns("example.com")];
+        let identifiers = vec![acme_proxy_core::identifier::Identifier::dns("example.com")];
 
         let verdict = check
             .check_identifiers(&IdentifierContext {

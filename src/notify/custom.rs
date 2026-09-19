@@ -8,8 +8,9 @@ use async_trait::async_trait;
 use tracing::info;
 
 use super::{NotifyBackend, NotifyError, NotifyEvent};
-use crate::config::CustomNotifyConfig;
-use crate::script_hook::{ScriptHook, ScriptStdin};
+use acme_proxy_core::config::CustomNotifyConfig;
+use acme_proxy_core::script_hook::ScriptHook;
+use acme_proxy_core::script_hook::ScriptStdin;
 
 /// Executes an external script/binary to deliver one notification.
 #[derive(Debug)]
@@ -105,13 +106,13 @@ impl NotifyBackend for CustomScriptNotifier {
 mod tests {
     use super::*;
     use crate::notify::{CertificateIssuedData, ProfileMountedData};
-    use crate::testutil::TempDir;
+    use acme_proxy_core::testutil::TempDir;
     use std::time::Duration;
 
     /// Writes an executable script and returns the configuration pointing at it.
-    /// The `ETXTBSY` reasoning lives in `crate::testutil::write_script`.
+    /// The `ETXTBSY` reasoning lives in `acme_proxy_core::testutil::write_script`.
     fn write_script(dir: &TempDir, name: &str, body: &str) -> CustomNotifyConfig {
-        let script_path = crate::testutil::write_script(dir, name, body);
+        let script_path = acme_proxy_core::testutil::write_script(dir, name, body);
         CustomNotifyConfig {
             script_path: script_path.to_str().unwrap().to_string(),
             ..Default::default()

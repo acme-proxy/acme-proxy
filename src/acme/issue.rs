@@ -41,9 +41,7 @@ use std::sync::Arc;
 use base64::prelude::*;
 use tracing::{error, info, warn};
 
-use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use crate::auditor::Auditor;
-use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobSpec};
 use crate::signer::issuance::IssuanceError;
 use crate::signer::issuance::announce_issuance;
@@ -51,6 +49,11 @@ use crate::signer::issuance::record_issuance;
 use crate::signer::issuance::record_issue_failure;
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::{db::Database, job::Job, order::Order, status::OrderStatus};
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::error::Problem;
 
 /// The `jobs.kind` one issuance is queued under.
 pub const SIGNER_ISSUE_KIND: &str = "signer_issue";
@@ -82,7 +85,7 @@ pub fn signer_issue_spec(
             "profile": order.profile,
             "csr": BASE64_URL_SAFE_NO_PAD.encode(csr_der),
             "client": client.to_json(),
-            "client_ip": client_ip.map(|ip| crate::client::canonical(ip).to_string()),
+            "client_ip": client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
         }))
         .with_deadline(Some(order.expires))
 }
@@ -325,7 +328,7 @@ impl JobHandler for SignerIssueJob {
 mod tests {
     use super::*;
     use crate::acme::order::tests::{account, ready_order};
-    use crate::identifier::Identifier;
+    use acme_proxy_core::identifier::Identifier;
 
     /// A signer answering `issue` with whatever the test set.
     enum Answer {

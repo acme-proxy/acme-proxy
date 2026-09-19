@@ -94,7 +94,7 @@ impl ExpirySettings {
     /// off, and is why a profile with the default configuration never gets a
     /// row.
     #[must_use]
-    pub fn from_config(config: &crate::config::ExpiryNotifyConfig) -> Option<Self> {
+    pub fn from_config(config: &acme_proxy_core::config::ExpiryNotifyConfig) -> Option<Self> {
         if config.lead_days == 0 {
             return None;
         }
@@ -129,7 +129,7 @@ impl ExpiryDigestJob {
     /// for.
     #[must_use]
     pub fn from_profiles(
-        resolved: &[crate::config::ProfileConfig],
+        resolved: &[acme_proxy_core::config::ProfileConfig],
         notifiers: Notifiers,
         database: Arc<Database>,
         queue: JobQueue,
@@ -267,9 +267,9 @@ impl ExpiryDigestJob {
 
 /// The leaf's notAfter out of a stored PEM chain, or [`UNPARSABLE_NOT_AFTER`].
 fn leaf_not_after(chain: &str) -> i64 {
-    crate::cert::leaf_der_from_chain(chain)
+    acme_proxy_core::cert::leaf_der_from_chain(chain)
         .ok()
-        .and_then(|der| crate::cert::cert_validity(&der).ok())
+        .and_then(|der| acme_proxy_core::cert::cert_validity(&der).ok())
         .map_or(UNPARSABLE_NOT_AFTER, |(_, not_after)| not_after)
 }
 
@@ -338,9 +338,10 @@ impl JobHandler for ExpiryDigestJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ExpiryNotifyConfig, JobsConfig};
     use crate::notify::{BackendSlot, NotifyDispatcher};
     use crate::testutil::account_id;
+    use acme_proxy_core::config::ExpiryNotifyConfig;
+    use acme_proxy_core::config::JobsConfig;
     use serde_json::json;
     use std::collections::HashMap;
 

@@ -23,8 +23,8 @@ use common::{
     test_app_with_challenges,
 };
 
-use acme_proxy::config::Config;
-use acme_proxy::jws::signature::jwk_thumbprint;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::jws::signature::jwk_thumbprint;
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
 const NEW_ORDER_URL: &str = "http://localhost:3000/profile/default/newOrder";

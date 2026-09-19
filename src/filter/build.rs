@@ -23,9 +23,13 @@ use tracing::{info, warn};
 use super::expr::{Condition, is_reserved_word};
 use super::policy::{Check, Effect, FilterPolicy, Mode, Rule, StageSet};
 use super::{custom, eab, identifiers, ip_allow, ipam, path, reverse_dns};
-use crate::client::ProxyPolicy;
-use crate::config::{CheckConfig, DnsConfig, FilterConfig, RuleConfig, validate_key_names};
 use crate::ipam::IpamRegistry;
+use acme_proxy_core::client::ProxyPolicy;
+use acme_proxy_core::config::CheckConfig;
+use acme_proxy_core::config::DnsConfig;
+use acme_proxy_core::config::FilterConfig;
+use acme_proxy_core::config::RuleConfig;
+use acme_proxy_core::config::validate_key_names;
 
 /// What one check type is called, where it can decide, and which of the
 /// flattened `[filter.check.<name>]` keys are its own.
@@ -614,9 +618,10 @@ fn check_stage_intersection(rule: &Rule, stages: &BTreeMap<&str, StageSet>) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::IpamConfig;
     use crate::filter::Stage;
-    use crate::testutil::{TempDir, write_script};
+    use acme_proxy_core::config::IpamConfig;
+    use acme_proxy_core::testutil::TempDir;
+    use acme_proxy_core::testutil::write_script;
 
     fn no_ipam() -> Option<Arc<IpamRegistry>> {
         None
@@ -625,10 +630,10 @@ mod tests {
     fn inventory() -> Option<Arc<IpamRegistry>> {
         let cfg = IpamConfig {
             backend: "netbox".to_string(),
-            netbox: crate::config::NetboxConfig {
+            netbox: acme_proxy_core::config::NetboxConfig {
                 url: "http://127.0.0.1:1".to_string(),
                 token: "t".to_string(),
-                ..crate::config::NetboxConfig::default()
+                ..acme_proxy_core::config::NetboxConfig::default()
             },
             ..IpamConfig::default()
         };

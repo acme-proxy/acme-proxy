@@ -10,7 +10,7 @@
 //! never writes it anywhere — no bootstrap secret is left readable on disk
 //! for the life of the server, unlike the alternative of setting
 //! `signer.relay.eab` in configuration (see
-//! [`crate::config::RelayEabConfig`]), which trades that property away
+//! [`acme_proxy_core::config::RelayEabConfig`]), which trades that property away
 //! for not needing this separate step. The secret is deliberately not
 //! accepted as a command-line flag either way: argv is visible to every
 //! process on the host via `ps` and is routinely written to shell history.
@@ -25,12 +25,12 @@ use crate::admin;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::cli::{CliError, resolve_profile};
-use crate::config::Config;
-use crate::palette::Palette;
 use crate::signer::relay;
 use crate::sqlite::db::Database;
 use crate::sqlite::status::UpstreamOrderStatus;
 use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderQuery};
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum UpstreamCommand {
@@ -276,7 +276,7 @@ fn read_secret(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::ENV_LOCK;
+    use acme_proxy_core::config::ENV_LOCK;
 
     /// Loads a `Config` from TOML the way the server does, so `resolve_profiles`
     /// has the raw sources it needs for per-key inheritance.
@@ -284,7 +284,7 @@ mod tests {
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = crate::testutil::TempDir::new("upstream");
+        let dir = acme_proxy_core::testutil::TempDir::new("upstream");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
         unsafe {
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn the_secret_can_come_from_a_file() {
         let secret = b"01234567890123456789012345678901";
-        let dir = crate::testutil::TempDir::new("eab");
+        let dir = acme_proxy_core::testutil::TempDir::new("eab");
         let path = dir.join("key.b64");
         // Trailing newline is what an editor or `echo` leaves behind.
         std::fs::write(
@@ -461,7 +461,7 @@ mod tests {
     /// `register` is a one-shot operator command.
     #[tokio::test]
     async fn an_unreachable_upstream_is_reported() {
-        let dir = crate::testutil::TempDir::new("upstream");
+        let dir = acme_proxy_core::testutil::TempDir::new("upstream");
 
         // Port 1 on loopback: nothing listens, so the directory fetch fails
         // fast rather than hanging on a routable-but-silent address.

@@ -190,7 +190,7 @@ pub async fn download_chain(
 pub async fn revoke_order(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     session: PageSessionWrite,
     // A plain `Form`, not `Option<Form>`: axum implements the optional
     // extractor for `Json` but not for `Form`, and every caller here is a
@@ -214,7 +214,7 @@ pub async fn revoke_order(
             match admin::revoke_order(
                 &id,
                 reason,
-                crate::audit::Actor::admin(&session.auth.user.username),
+                acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
                 state.audit.client(&request_context).await,
                 &state.audit,
                 state.database.clone(),
@@ -281,7 +281,7 @@ pub async fn delete_order(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let subject = crate::sqlite::order::Order::find_by_id(&id, &state.database).await?;
     let deleted = match admin::delete_order(&id, state.database.clone()).await? {

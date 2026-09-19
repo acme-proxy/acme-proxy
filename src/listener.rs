@@ -500,8 +500,9 @@ impl Listener for RoleListener {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ServerConfig, TlsConfig};
-    use crate::testutil::TempDir;
+    use acme_proxy_core::config::ServerConfig;
+    use acme_proxy_core::config::TlsConfig;
+    use acme_proxy_core::testutil::TempDir;
     use axum::extract::ConnectInfo;
     use axum::routing::get;
     use axum::{Router, serve};

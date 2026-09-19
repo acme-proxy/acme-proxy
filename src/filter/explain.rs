@@ -37,8 +37,8 @@ use serde_json::{Value, json};
 
 use super::policy::{Evaluation, FilterPolicy, Outcome, Stage, Verdict};
 use super::{ConnectionContext, EabIdentity, IdentifierContext, IdentifierStage};
-use crate::identifier::Identifier;
-use crate::palette::Palette;
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::palette::Palette;
 
 /// Which check kinds reach outside this process when they run.
 ///
@@ -481,11 +481,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::client::ProxyPolicy;
     use crate::filter::expr::Condition;
     use crate::filter::ip_allow;
     use crate::filter::policy::{Check, Effect, Mode, Rule};
     use crate::testutil::dns_identifiers;
+    use acme_proxy_core::client::ProxyPolicy;
 
     fn net(allow: &[&str]) -> Arc<dyn Check> {
         Arc::new(
@@ -654,8 +654,9 @@ mod tests {
 
     #[tokio::test]
     async fn checks_that_reach_outside_the_process_are_named() {
-        let dir = crate::testutil::TempDir::new("filter-explain");
-        let script = crate::testutil::write_script(&dir, "hook.sh", "#!/bin/sh\nexit 0\n");
+        let dir = acme_proxy_core::testutil::TempDir::new("filter-explain");
+        let script =
+            acme_proxy_core::testutil::write_script(&dir, "hook.sh", "#!/bin/sh\nexit 0\n");
         let hook: Arc<dyn Check> = Arc::new(
             crate::filter::custom::CustomScriptFilter::from_settings(
                 "hook",

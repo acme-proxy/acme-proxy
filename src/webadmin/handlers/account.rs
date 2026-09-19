@@ -56,7 +56,7 @@ pub async fn change_contact(
     AdminClientIp(client): AdminClientIp,
     headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<ChangeContactRequest>>,
 ) -> Result<Response, AdminError> {
     let body = body.unwrap_or_default();
@@ -91,7 +91,7 @@ pub async fn change_password(
     AdminClientIp(client): AdminClientIp,
     headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = auth.user;
@@ -169,7 +169,7 @@ pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let session = AdminSession::find_by_user_and_fingerprint(auth.user.id, &id, &state.database)
         .await?

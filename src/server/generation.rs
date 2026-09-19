@@ -8,8 +8,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use super::logging;
-use crate::config::Config;
 use crate::tls;
+use acme_proxy_core::config::Config;
 
 use super::sockets::{Role, SocketPlans, check_metrics_config, plan_sockets};
 use super::supervisor::Cells;
@@ -57,7 +57,7 @@ pub(crate) struct Generation {
 /// listener to serve them.
 pub(crate) fn build_generation(
     config: &Arc<Config>,
-    resolved: &[crate::config::ProfileConfig],
+    resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
     previous_logins: Option<&crate::webadmin::LoginLimiter>,
@@ -382,7 +382,7 @@ pub(crate) fn build_generation(
 pub(super) struct Reloaded {
     pub(super) report: crate::reload::ReloadReport,
     pub(super) config: Arc<Config>,
-    pub(super) resolved: Vec<crate::config::ProfileConfig>,
+    pub(super) resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     pub(super) logins: Option<Arc<crate::webadmin::LoginLimiter>>,
     /// Each socket this reload bound, with the address it landed on. Announced
     /// by the supervisor rather than here, because saying a listener is up
@@ -406,7 +406,7 @@ pub(super) struct Reloaded {
 /// point is what makes a generation unobservable half-applied.
 pub(super) struct Prepared {
     config: Arc<Config>,
-    resolved: Vec<crate::config::ProfileConfig>,
+    resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     parts: GenerationParts,
     generation: Generation,
     sockets: SocketPlans,
@@ -445,7 +445,7 @@ impl Prepared {
 pub(super) fn prepare_reload(
     roles: crate::server::RoleSet,
     config: &Arc<Config>,
-    resolved: &[crate::config::ProfileConfig],
+    resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     logins: Option<&crate::webadmin::LoginLimiter>,
 ) -> Result<Prepared, crate::reload::ReloadError> {

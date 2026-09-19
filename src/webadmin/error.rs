@@ -1,6 +1,6 @@
 //! The admin API's error type.
 //!
-//! Deliberately **not** [`crate::error::Problem`]. Every `Problem` type is a
+//! Deliberately **not** [`acme_proxy_core::error::Problem`]. Every `Problem` type is a
 //! hardcoded `urn:ietf:params:acme:error:*` URN, and nothing on this listener
 //! is an ACME error — answering a failed admin login with an ACME problem
 //! document would be a category error that a client library might even try to

@@ -11,13 +11,7 @@ use uuid::Uuid;
 use super::access::signer_account;
 use super::error::Error;
 use super::rules::validate_contacts;
-use crate::audit::RequestContext;
 use crate::auditor::Auditor;
-use crate::eab;
-use crate::error::Problem;
-use crate::jws::ProtectedHeader;
-use crate::jws::signature::spki_to_jwk;
-use crate::key_change;
 use crate::notify::{AccountCreatedData, AccountDeactivatedData, NotifyDispatcher, NotifyEvent};
 use crate::profile::Profile;
 use crate::sqlite::{
@@ -26,6 +20,12 @@ use crate::sqlite::{
     eab::Eab,
     order::Order,
 };
+use acme_proxy_core::audit::RequestContext;
+use acme_proxy_core::eab;
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::jws::ProtectedHeader;
+use acme_proxy_core::jws::signature::spki_to_jwk;
+use acme_proxy_core::key_change;
 
 /// Every field is optional: real clients may omit `contact`, and the two flags
 /// default to `false`.
@@ -162,7 +162,8 @@ impl AccountService<'_> {
                     profile: profile.name.clone(),
                     account_id: account.id.to_string(),
                     contact: account.contact.clone(),
-                    client_ip: client_ip.map(|ip| crate::client::canonical(ip).to_string()),
+                    client_ip: client_ip
+                        .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
                 }))
                 .await;
         }
@@ -239,7 +240,7 @@ impl AccountService<'_> {
                 &mut account,
                 database,
                 Some(&profile.notify),
-                client_ip.map(|ip| crate::client::canonical(ip).to_string()),
+                client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
             )
             .await
             .map_err(|error| {

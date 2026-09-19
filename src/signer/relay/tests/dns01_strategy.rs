@@ -211,7 +211,8 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     // The value must be the digest of a key authorization built from THIS
     // proxy's thumbprint at the upstream — not the end client's, which is
     // the whole reason the client cannot answer this itself.
-    let thumbprint = crate::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let thumbprint =
+        acme_proxy_core::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
     let expected =
         crate::challenge::dns_01::expected_value(&format!("upstream-token-value.{thumbprint}"));
     assert_eq!(value, &expected);
@@ -507,7 +508,8 @@ async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
 
     // The record published must still be the dns-01 one, derived from the
     // token of the challenge the relay actually answered.
-    let thumbprint = crate::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let thumbprint =
+        acme_proxy_core::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
     let expected = crate::challenge::dns_01::expected_value(&format!(
         "{}.{thumbprint}",
         testsrv::CHALLENGE_TOKEN

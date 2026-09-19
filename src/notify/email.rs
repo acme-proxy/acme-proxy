@@ -10,7 +10,7 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::info;
 
 use super::{NotifyBackend, NotifyError, NotifyEvent, render};
-use crate::config::EmailNotifyConfig;
+use acme_proxy_core::config::EmailNotifyConfig;
 
 /// Delivers a subject + body per event over SMTP.
 #[derive(Debug)]

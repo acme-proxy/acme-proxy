@@ -28,7 +28,7 @@ use axum::http::{HeaderMap, HeaderName};
 use ipnet::IpNet;
 
 /// The client address for a request, inserted into the request extensions by
-/// [`add_filter_middleware`](crate::middlewares::filter::add_filter_middleware)
+/// `add_filter_middleware`
 /// so handlers can pass it to the identifier hook.
 ///
 /// `None` means the peer address was unavailable — the socket was not served
@@ -136,7 +136,7 @@ fn parse_forwarded_entry(entry: &str) -> Option<IpAddr> {
 /// Accepts both CIDR notation (`192.168.1.0/24`, `fd00::/8`) and a bare address
 /// (`203.0.113.7`), the latter becoming a host route — writing a `/32` for a
 /// single machine is noise an operator should not have to remember.
-pub(crate) fn parse_net(entry: &str) -> anyhow::Result<IpNet> {
+pub fn parse_net(entry: &str) -> anyhow::Result<IpNet> {
     if let Ok(net) = entry.parse::<IpNet>() {
         return Ok(net);
     }
@@ -147,7 +147,7 @@ pub(crate) fn parse_net(entry: &str) -> anyhow::Result<IpNet> {
 }
 
 /// Parses a list of network entries, naming the setting in any error.
-pub(crate) fn parse_nets(entries: &[String], setting: &str) -> anyhow::Result<Vec<IpNet>> {
+pub fn parse_nets(entries: &[String], setting: &str) -> anyhow::Result<Vec<IpNet>> {
     entries
         .iter()
         .map(|entry| parse_net(entry).map_err(|error| anyhow::anyhow!("{setting}: {error}")))
@@ -160,7 +160,7 @@ pub(crate) fn parse_nets(entries: &[String], setting: &str) -> anyhow::Result<Ve
 /// dual-stack socket as `::ffff:192.168.1.5` and would never match a
 /// `192.168.1.0/24` rule. Canonicalizing first makes the operator's v4 rules
 /// mean what they look like they mean.
-pub(crate) fn canonical(ip: IpAddr) -> IpAddr {
+pub fn canonical(ip: IpAddr) -> IpAddr {
     ip.to_canonical()
 }
 

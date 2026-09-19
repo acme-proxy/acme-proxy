@@ -92,7 +92,7 @@ pub enum LoggingPlan {
 /// from the coverage floor: every rule below is a row of a table test.
 ///
 /// `rust_log` counts only when **non-empty**, which is
-/// [`no_color_set`](crate::palette::no_color_set)'s judgement applied to the other ambient
+/// [`no_color_set`](acme_proxy_core::palette::no_color_set)'s judgement applied to the other ambient
 /// environment variable this CLI reads. A `RUST_LOG=` left behind by a
 /// `${RUST_LOG:-}`-style shell default is not somebody asking for logs, and
 /// treating it as one would put records back in the pipe this exists to keep

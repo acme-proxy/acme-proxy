@@ -49,7 +49,7 @@ pub struct ExpiringListParams {
 
 impl ExpiringListParams {
     /// The window in days, resolved against the configuration.
-    pub(crate) fn lead_days(&self, config: &crate::config::Config) -> u64 {
+    pub(crate) fn lead_days(&self, config: &acme_proxy_core::config::Config) -> u64 {
         self.days
             .unwrap_or_else(|| crate::sqlite::expiring::default_lead_days(config))
     }

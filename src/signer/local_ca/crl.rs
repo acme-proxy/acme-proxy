@@ -4,7 +4,7 @@
 //! `Issuer<'static, CaSigningKey>` they sign with.
 //!
 //! **The database is the only store.** What this CA has revoked is the
-//! `revocations` rows under its issuer id ([`crate::cert::issuer_id`]), and the
+//! `revocations` rows under its issuer id ([`acme_proxy_core::cert::issuer_id`]), and the
 //! CRL it serves is its `crls` row. Every process over one database therefore
 //! sees one CA: `acme-proxy order revoke` beside a running `serve` lands a row
 //! the server's very next `GET /crl` already reflects. That is what this module
@@ -392,7 +392,11 @@ impl CrlStore {
             return Ok(());
         };
         tokio::task::spawn_blocking(move || {
-            crate::pemfile::write_atomic(&paths.crl_path, crl_pem(&crl.der).as_bytes(), 0o644)?;
+            acme_proxy_core::pemfile::write_atomic(
+                &paths.crl_path,
+                crl_pem(&crl.der).as_bytes(),
+                0o644,
+            )?;
             drop(lock);
             anyhow::Ok(())
         })
@@ -648,7 +652,7 @@ fn crl_pem(der: &[u8]) -> String {
 
 /// Maps an RFC 5280 §5.3.1 `CRLReason` code to rcgen's enum. `post_revoke_cert`/
 /// `admin::revoke_order` already validate against
-/// [`crate::cert::ALLOWED_REVOCATION_REASONS`] before a reason ever reaches
+/// [`acme_proxy_core::cert::ALLOWED_REVOCATION_REASONS`] before a reason ever reaches
 /// here, so `None` (an unrecognized code) should not occur in practice; it is
 /// treated as "no reason recorded" rather than a hard error, since refusing to
 /// revoke a certificate over a cosmetic reason-code mismatch would be worse.
@@ -727,7 +731,7 @@ mod tests {
     /// by name, rather than followed or locked as if it were one.
     #[test]
     fn a_lock_path_that_is_not_a_regular_file_is_refused() {
-        let dir = crate::testutil::TempDir::new("crl-lock");
+        let dir = acme_proxy_core::testutil::TempDir::new("crl-lock");
         let lock = dir.join("ca.json.lock");
         fs::create_dir(&lock).unwrap();
 

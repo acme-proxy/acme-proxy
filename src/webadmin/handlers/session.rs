@@ -512,7 +512,7 @@ pub async fn delete_session(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let scope = if query.all {
         let revoked = AdminSession::delete_for_user(auth.user.id, &state.database).await?;

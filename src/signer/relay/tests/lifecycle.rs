@@ -464,7 +464,7 @@ async fn a_transient_upstream_outage_is_retried_into_a_certificate() {
     let db = database().await;
     // Retries on, unlike the default fixture: this test is about them. The
     // budget is written onto the job row at enqueue, so the *queue* carries it.
-    let jobs = crate::config::JobsConfig {
+    let jobs = acme_proxy_core::config::JobsConfig {
         max_attempts: 5,
         ..test_jobs_config()
     };
@@ -514,7 +514,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
     let db = database().await;
     // A generous budget, so reaching `invalid` proves the *classification*
     // rather than merely the budget running out.
-    let jobs = crate::config::JobsConfig {
+    let jobs = acme_proxy_core::config::JobsConfig {
         max_attempts: 20,
         ..test_jobs_config()
     };
@@ -719,7 +719,7 @@ async fn revoke_reaches_the_upstream() {
     let _runner = TestRunner::start(queue, &signer);
 
     let chain = real_chain().await;
-    let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
     signer.revoke(&leaf, Some(1)).await.unwrap();
     assert_eq!(upstream.revoked(), 1);
 }
@@ -743,7 +743,7 @@ async fn revoke_treats_already_revoked_as_success() {
     .unwrap();
     let _runner = TestRunner::start(queue, &signer);
 
-    let leaf = crate::cert::leaf_der_from_chain(&real_chain().await).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&real_chain().await).unwrap();
     signer
         .revoke(&leaf, None)
         .await

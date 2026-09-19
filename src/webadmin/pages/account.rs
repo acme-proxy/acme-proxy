@@ -169,7 +169,7 @@ pub async fn confirm_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageEnrolWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<ConfirmForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.enrol.user;
@@ -241,7 +241,7 @@ pub async fn disable_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if state.config.admin.require_mfa {
@@ -316,7 +316,7 @@ pub async fn regenerate_recovery_codes(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     if !session.auth.user.has_totp() {
@@ -422,7 +422,7 @@ pub async fn change_contact(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<ContactForm>,
 ) -> Result<Response, PageError> {
     let caller = session.auth.user.clone();
@@ -529,7 +529,7 @@ pub async fn change_password(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<ChangePasswordForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
@@ -615,7 +615,7 @@ pub async fn revoke_own_session(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let target =
         AdminSession::find_by_user_and_fingerprint(session.auth.user.id, &id, &state.database)

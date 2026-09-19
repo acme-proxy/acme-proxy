@@ -52,7 +52,7 @@ use tracing::warn;
 
 use super::expr::Condition;
 use super::{ConnectionContext, IdentifierContext};
-use crate::client::ProxyPolicy;
+use acme_proxy_core::client::ProxyPolicy;
 
 /// What one check decided about one request.
 #[derive(Debug, Clone, PartialEq, Eq)]

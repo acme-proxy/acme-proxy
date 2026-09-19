@@ -37,8 +37,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::config::Config;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
 
 pub mod assembly;
 pub mod generation;

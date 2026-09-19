@@ -28,11 +28,11 @@ use crate::auditor::admin::SessionScope;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::config::Config;
-use crate::palette::Palette;
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::{AdminRole, AdminStatus, AdminUser};
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum AdminCommand {
@@ -768,7 +768,7 @@ mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
     use crate::sqlite::admin_session::NewSession;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::testutil::TempDir;
 
     const GOOD: &str = "a-long-enough-password";
 
@@ -1158,9 +1158,9 @@ mod tests {
         config.admin.notify.custom_enabled = vec!["pager".to_string()];
         config.admin.notify.custom.insert(
             "pager".to_string(),
-            crate::config::CustomNotifyConfig {
+            acme_proxy_core::config::CustomNotifyConfig {
                 script_path: "/bin/true".to_string(),
-                ..crate::config::CustomNotifyConfig::default()
+                ..acme_proxy_core::config::CustomNotifyConfig::default()
             },
         );
         run_with_config(passwd(), "yet-another-long-password\n", &config, db.clone())

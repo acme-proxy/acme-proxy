@@ -15,7 +15,7 @@
 //! a small JSON document, both trust the public roots plus an operator's own
 //! CA, both treat an unreachable inventory as this server's failure rather than
 //! the client's. Writing that out twice is the shape
-//! [`script_hook`](crate::script_hook) exists to prevent — it owns the hardening
+//! [`script_hook`](acme_proxy_core::script_hook) exists to prevent — it owns the hardening
 //! the three `custom` hooks used to repeat token-for-token.
 //!
 //! What stays per-backend is what genuinely differs: the header name, the paths,
@@ -226,7 +226,7 @@ pub(crate) fn tls_config(
 
     if !ca_cert_path.trim().is_empty() {
         let path = std::path::Path::new(ca_cert_path.trim());
-        let extra = crate::pemfile::read_certificates(path)
+        let extra = acme_proxy_core::pemfile::read_certificates(path)
             .map_err(|error| anyhow::anyhow!("{setting}: {error}"))?;
         for certificate in extra {
             roots.add(certificate).map_err(|error| {

@@ -45,7 +45,7 @@ use axum::{
 use tracing::{Instrument, debug, field, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::client::RequestId;
+use acme_proxy_core::client::RequestId;
 
 pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -60,7 +60,7 @@ fn is_probe(method: &Method, path: &str) -> bool {
 
 /// Longest `x-request-id` accepted from a caller.
 ///
-/// `crate::audit::USER_AGENT_MAX`'s reasoning, for a header that goes further:
+/// `acme_proxy_core::audit::USER_AGENT_MAX`'s reasoning, for a header that goes further:
 /// a UUID is 36 characters and the longest correlation id any reverse proxy
 /// generates is well inside this, while the value reaches the `request` span
 /// (so every log line of the request), the response header, and the
@@ -128,7 +128,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| crate::client::canonical(addr.ip()));
+        .map(|ConnectInfo(addr)| acme_proxy_core::client::canonical(addr.ip()));
 
     // `profile` is filled in by each profile router (see `build_router`): this
     // layer is server-wide and mounted above the `/profile/<name>` nesting, so
@@ -153,7 +153,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
     if peer.is_some() {
         request
             .extensions_mut()
-            .insert(crate::client::ClientIp(peer));
+            .insert(acme_proxy_core::client::ClientIp(peer));
     }
 
     let span = info_span!(
@@ -171,7 +171,7 @@ pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> im
 
     let started = Instant::now();
     let mut response = next.run(request).instrument(span.clone()).await;
-    let latency_ms = crate::logfields::millis(started.elapsed());
+    let latency_ms = acme_proxy_core::logfields::millis(started.elapsed());
     let status = response.status().as_u16();
 
     span.in_scope(|| {
@@ -229,8 +229,8 @@ mod tests {
 
     /// Drives one request under a subscriber capturing the `request` span, and
     /// returns what it recorded.
-    async fn fields_for(request: Request<Body>) -> crate::testutil::SpanFields {
-        crate::testutil::capture_request_span(app().oneshot(request)).await
+    async fn fields_for(request: Request<Body>) -> acme_proxy_core::testutil::SpanFields {
+        acme_proxy_core::testutil::capture_request_span(app().oneshot(request)).await
     }
 
     /// The seeded half: with no filter middleware in front, the peer address is

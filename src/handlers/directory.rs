@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::extractors::acme::AcmePostAsGet;
 use crate::router::AppState;
-use crate::routes;
+use acme_proxy_core::routes;
 
 /// The `Cache-Control` RFC 8555 §7.2 requires on `newNonce` responses: a cached
 /// nonce is a nonce that will be rejected as already used.
@@ -29,7 +29,7 @@ pub async fn get_directory(State(state): State<AppState>) -> Json<Value> {
     // Every advertised URL is the *endpoint's* own, prefix included: this is
     // where a client learns which profile it is talking to.
     let base = &state.profile.base_url;
-    // Every path comes from `crate::routes`, the same constants `build_router`
+    // Every path comes from `acme_proxy_core::routes`, the same constants `build_router`
     // mounts: a directory advertising something nothing serves is a client that
     // fails on its first request.
     let mut directory = json!({

@@ -11,7 +11,7 @@
 //! verified before a handler runs, so the guarantees are structural rather than
 //! a convention each handler has to observe.
 //!
-//! The wire types and the cryptography they run are [`crate::jws`].
+//! The wire types and the cryptography they run are [`acme_proxy_core::jws`].
 
 pub mod acme;
 

@@ -42,7 +42,7 @@ async fn from_config_registers_with_a_credential_supplied_in_config() {
     .await;
     let dir = TempDir::new("upstream");
     let cfg = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
@@ -79,7 +79,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     let dir = TempDir::new("upstream");
 
     let kid_only = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: String::new(),
         },
@@ -96,7 +96,7 @@ async fn a_half_supplied_config_credential_is_a_startup_error() {
     assert!(error.contains("hmac_key"), "{error}");
 
     let secret_only = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: String::new(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
@@ -121,7 +121,7 @@ async fn a_config_credential_with_bad_base64_is_a_startup_error() {
     let upstream = testsrv::start(Script::default()).await;
     let dir = TempDir::new("upstream");
     let cfg = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: "not base64!!!".to_string(),
         },
@@ -151,7 +151,7 @@ async fn an_upstream_rejecting_the_configured_credential_says_so() {
     .await;
     let dir = TempDir::new("upstream");
     let cfg = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },
@@ -185,7 +185,7 @@ async fn a_leftover_config_credential_does_not_block_a_later_startup() {
     .await;
     let dir = TempDir::new("upstream");
     let cfg = RelayConfig {
-        eab: crate::config::RelayEabConfig {
+        eab: acme_proxy_core::config::RelayEabConfig {
             kid: "eab-kid-1".to_string(),
             hmac_key: BASE64_URL_SAFE_NO_PAD.encode(b"secret-bytes-secret-bytes!!"),
         },

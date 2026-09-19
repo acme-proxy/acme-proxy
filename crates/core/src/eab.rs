@@ -2,10 +2,10 @@
 //! JWS a `newAccount` payload may carry, proving the client holds a
 //! pre-shared credential an operator issued out-of-band.
 //!
-//! Pure verification logic only -- no database access. [`crate::sqlite::eab`]
+//! Pure verification logic only -- no database access. `sqlite::eab`
 //! is the persistence layer for the credentials themselves (create/find/list/
 //! revoke); this module only checks an already-looked-up secret against an
-//! already-parsed request. The same split [`crate::dns`] and
+//! already-parsed request. The same split `dns` and
 //! [`crate::pemfile`] draw between "how" and "where from".
 //!
 //! ## Shape
@@ -38,12 +38,12 @@ use crate::jws::Jwk;
 
 /// The inner EAB JWS: the same flattened `{protected, payload, signature}`
 /// shape as the outer request JWS.
-pub(crate) type EabJws = crate::jws::AcmeJwsRequest;
+pub type EabJws = crate::jws::AcmeJwsRequest;
 
 /// The inner EAB JWS's protected header. See the [module docs](self) for why
 /// this is its own type rather than a reuse of `ProtectedHeader`.
 #[derive(Debug, Deserialize)]
-pub(crate) struct EabHeader {
+pub struct EabHeader {
     pub alg: String,
     pub kid: String,
     pub url: String,
@@ -56,7 +56,7 @@ pub(crate) struct EabHeader {
 /// `kid` is not represented here at all: that decision needs the database, so
 /// the caller (`verify_eab` in `lib.rs`) makes it directly.
 #[derive(Debug)]
-pub(crate) enum EabError {
+pub enum EabError {
     Malformed(&'static str),
     BadSignature,
 }
@@ -73,7 +73,7 @@ const SUPPORTED_ALG: &str = "HS256";
 /// Returns the header so the caller can look up `kid`'s HMAC secret (a DB
 /// operation this module does not perform) before finishing verification with
 /// [`verify_payload_and_signature`].
-pub(crate) fn parse_header(eab: &EabJws, expected_url: &str) -> Result<EabHeader, EabError> {
+pub fn parse_header(eab: &EabJws, expected_url: &str) -> Result<EabHeader, EabError> {
     let protected_bytes = BASE64_URL_SAFE_NO_PAD
         .decode(&eab.protected)
         .map_err(|_| EabError::Malformed("EAB protected base64 invalid"))?;
@@ -95,7 +95,7 @@ pub(crate) fn parse_header(eab: &EabJws, expected_url: &str) -> Result<EabHeader
 /// the inner payload must decode to a [`Jwk`] structurally equal to the
 /// account's own embedded JWK (`outer_jwk`), and the HS256 signature over
 /// `protected_b64.payload_b64` must verify against `hmac_secret`.
-pub(crate) fn verify_payload_and_signature(
+pub fn verify_payload_and_signature(
     eab: &EabJws,
     hmac_secret: &[u8],
     outer_jwk: &Jwk,
@@ -126,7 +126,7 @@ pub(crate) fn verify_payload_and_signature(
 /// (400), mirroring how the outer JWS's own `SignatureError` splits shape
 /// problems from signature-validity ones. A signature that simply does not
 /// verify is `unauthorized` (401), the same as a bad outer JWS signature.
-pub(crate) fn eab_problem(error: EabError) -> Problem {
+pub fn eab_problem(error: EabError) -> Problem {
     match error {
         EabError::Malformed(detail) => Problem::malformed(detail),
         EabError::BadSignature => {

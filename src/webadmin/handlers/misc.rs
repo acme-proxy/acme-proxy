@@ -38,7 +38,7 @@ pub async fn get_nonces(
 pub async fn cleanup_nonces(
     State(state): State<AdminState>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<CleanupRequest>>,
 ) -> Result<Json<Value>, AdminError> {
     let seconds = body

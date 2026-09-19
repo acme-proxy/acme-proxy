@@ -169,7 +169,7 @@ pub async fn get_nonces(
 pub async fn cleanup_nonces(
     State(state): State<AdminState>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<CleanupForm>,
 ) -> Result<Html<String>, PageError> {
     let seconds = match form.ttl_seconds.trim() {

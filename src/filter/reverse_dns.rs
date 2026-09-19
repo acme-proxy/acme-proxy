@@ -40,9 +40,9 @@ use tracing::{debug, info};
 
 use super::policy::{Check, StageSet, Verdict};
 use super::{ConnectionContext, IdentifierContext, ListVerdict, check_lists, compile_matchers};
-use crate::client::canonical;
-use crate::config::DnsConfig;
 use crate::dns::{HickoryResolver, Resolver, resolver_addr};
+use acme_proxy_core::client::canonical;
+use acme_proxy_core::config::DnsConfig;
 
 /// Resolved `[filter.check.<name>]` settings for `type = "reverse_dns"`.
 #[derive(Debug, Clone)]

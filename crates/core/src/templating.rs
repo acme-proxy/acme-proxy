@@ -1,8 +1,8 @@
 //! The one thing the two `minijinja` environments in this crate share: how a
 //! template is *found*.
 //!
-//! [`notify`](crate::notify) renders `.j2` messages and
-//! [`webadmin::pages`](crate::webadmin::pages) renders `.html` pages, and the
+//! `notify` renders `.j2` messages and
+//! `webadmin::pages` renders `.html` pages, and the
 //! two had byte-identical loader closures — check `template_dir` for a file of
 //! this name, fall back to the compiled-in default — differing only in which
 //! table they closed over.
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// The override is per *file*, not per directory: a `template_dir` holding only
 /// `layout.html` changes the chrome of every page and leaves everything else at
 /// its default.
-pub(crate) fn loader_env(
+pub fn loader_env(
     template_dir: &str,
     embedded: &'static HashMap<&'static str, &'static str>,
 ) -> minijinja::Environment<'static> {

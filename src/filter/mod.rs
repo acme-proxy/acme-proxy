@@ -67,12 +67,12 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use crate::client::canonical;
+use acme_proxy_core::client::canonical;
 use axum::http::Method;
 use regex::{Regex, RegexBuilder};
 
-use crate::config::FilterConfig;
-use crate::identifier::Identifier;
+use acme_proxy_core::config::FilterConfig;
+use acme_proxy_core::identifier::Identifier;
 
 pub mod build;
 pub mod custom;
@@ -108,7 +108,7 @@ pub(crate) const SUBJECT_ONLY_TYPES: &[&str] = &["cn"];
 #[derive(Debug)]
 pub struct ConnectionContext<'a> {
     /// The client address, per
-    /// [`ProxyPolicy::resolve`](crate::client::ProxyPolicy::resolve). `None`
+    /// [`ProxyPolicy::resolve`](acme_proxy_core::client::ProxyPolicy::resolve). `None`
     /// when the peer address is unavailable — checks that need it must fail
     /// closed.
     pub client_ip: Option<IpAddr>,
@@ -188,7 +188,7 @@ pub(crate) fn require_client_ip(client_ip: Option<IpAddr>) -> Result<IpAddr, Ver
 /// Builds the configured policy. Called once at startup, so it may fail fast
 /// (the caller exits on error).
 ///
-/// `dns` is [`crate::config::Config::dns`], not a field of `cfg`: the one check
+/// `dns` is [`acme_proxy_core::config::Config::dns`], not a field of `cfg`: the one check
 /// that resolves anything builds its own **cached** resolver from it, because a
 /// PTR lookup for an address that keeps connecting is exactly what a cache is
 /// for, while the shared resolver is deliberately uncached so a `dns-01` record
@@ -206,7 +206,7 @@ pub(crate) fn require_client_ip(client_ip: Option<IpAddr>) -> Result<IpAddr, Ver
 /// policy is one of its consumers rather than its owner.
 pub fn from_config(
     cfg: &FilterConfig,
-    dns: &crate::config::DnsConfig,
+    dns: &acme_proxy_core::config::DnsConfig,
     ipam: Option<Arc<crate::ipam::IpamRegistry>>,
     eab_enabled: bool,
 ) -> anyhow::Result<Arc<FilterPolicy>> {
@@ -273,7 +273,7 @@ pub(crate) fn compile_anchored(patterns: &[String], setting: &str) -> anyhow::Re
 ///
 /// A function rather than a `const` because an unset list arrives as `[]` from
 /// the environment and the resolver has to substitute this — see
-/// [`CheckConfig`](crate::config::CheckConfig).
+/// [`CheckConfig`](acme_proxy_core::config::CheckConfig).
 pub(crate) fn default_identifier_types() -> Vec<String> {
     vec!["dns".to_string(), "cn".to_string()]
 }

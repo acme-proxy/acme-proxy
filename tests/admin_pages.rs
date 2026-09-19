@@ -11,8 +11,11 @@
 mod common;
 
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use acme_proxy::sqlite::audit::AuditEntry;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
 use axum::http::{Method, StatusCode, header};
 use common::*;
 use serde_json::json;
@@ -1534,9 +1537,9 @@ async fn seed(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
     count: u8,
 ) -> Vec<String> {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut ids = Vec::new();
     for index in 0..count {
@@ -1676,9 +1679,9 @@ async fn an_account_page_shows_the_account_and_its_orders() {
 /// `#account-card` inside the orders table, and the orders vanished.
 #[tokio::test]
 async fn paging_an_accounts_orders_swaps_the_orders_table_and_not_the_card() {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -2051,10 +2054,10 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
 /// act on and the CA-side ledger belongs to the same object that serves the CRL.
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
     acme_proxy::admin::users::create_user(
@@ -2110,7 +2113,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
         other => panic!("expected an inline issuance, got {other:?}"),
     };
     let (serial, spki) =
-        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+        acme_proxy_core::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     order
         .finalize(chain, serial, spki, None, &database)
         .await
@@ -2167,10 +2170,10 @@ async fn issue_into_an_order(
     signer: &std::sync::Arc<dyn acme_proxy::signer::SignerBackend>,
     name: &str,
 ) -> (String, String) {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
@@ -2212,11 +2215,11 @@ async fn issue_into_an_order(
         other => panic!("expected an inline issuance, got {other:?}"),
     };
     let leaf_der = first_certificate(&chain);
-    let (serial, spki) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    let (serial, spki) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
     // The leaf's own `notAfter`, exactly as `post_finalize` stamps it — the
     // helper is only useful to the extent it produces the row production does,
     // and the card now renders this column.
-    let cert_not_after = acme_proxy::cert::cert_validity(&leaf_der)
+    let cert_not_after = acme_proxy_core::cert::cert_validity(&leaf_der)
         .ok()
         .map(|(_, not_after)| not_after);
     order
@@ -2277,7 +2280,8 @@ async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
     // report or `/api/audit?certSerial=` is keyed on, and until the order
     // renderings were made to agree, no surface would tell an operator what it
     // was for an order they were looking at.
-    let (serial, _) = acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+    let (serial, _) =
+        acme_proxy_core::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     assert!(
         body.contains("<dt>Serial</dt>"),
         "the card must name the serial"
@@ -2973,17 +2977,17 @@ fn now_secs() -> i64 {
 async fn seed_relay_job(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
 ) -> (String, String) {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::job::{Job, NewJob};
     use acme_proxy::sqlite::order::Order;
     use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+    use acme_proxy_core::identifier::Identifier;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
         &[7u8, 7],
         Vec::new(),
-        &acme_proxy::audit::ClientContext::default(),
+        &acme_proxy_core::audit::ClientContext::default(),
         database,
     )
     .await
@@ -3261,9 +3265,9 @@ async fn the_upstream_orders_page_is_read_only_and_escapes_untrusted_text() {
         .unwrap();
     UpstreamOrder::set_client(
         &order_id,
-        &acme_proxy::audit::ClientContext {
+        &acme_proxy_core::audit::ClientContext {
             user_agent: Some("<script>alert('ua')</script>".to_string()),
-            ..acme_proxy::audit::ClientContext::default()
+            ..acme_proxy_core::audit::ClientContext::default()
         },
         &database,
     )
@@ -3377,8 +3381,8 @@ async fn expiring_row(
     names: &[&str],
     not_after: i64,
 ) -> String {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut order = Order::create(
         PROFILE,

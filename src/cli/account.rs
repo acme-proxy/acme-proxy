@@ -8,10 +8,10 @@ use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::config::Config;
-use crate::palette::Palette;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum AccountCommand {
@@ -179,7 +179,7 @@ fn not_found(id: &str) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::ClientContext;
+    use acme_proxy_core::audit::ClientContext;
 
     /// Every arm taking an id reports the same thing for one that does not
     /// exist — and reports it as a value, so the caller decides the exit code.
@@ -334,9 +334,9 @@ mod tests {
     /// where it was already computed to word the prompt.
     #[tokio::test]
     async fn deleting_an_account_records_what_actually_cascaded() {
-        use crate::identifier::Identifier;
         use crate::sqlite::audit::{AuditEntry, AuditQuery};
         use crate::sqlite::order::Order;
+        use acme_proxy_core::identifier::Identifier;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let config = Config::default();

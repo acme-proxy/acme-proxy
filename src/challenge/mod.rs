@@ -8,15 +8,15 @@
 //!
 //! The shape mirrors the [`signer`](crate::signer) and [`filter`](crate::filter)
 //! subsystems — a trait, an error enum the *caller* maps to a
-//! [`Problem`](crate::error::Problem), and a `from_config` selector that fails
+//! [`Problem`](acme_proxy_core::error::Problem), and a `from_config` selector that fails
 //! fast. Like them, this module never mentions `error.rs`: what a failed
 //! validation means in HTTP terms is the handler's business.
 //!
 //! ## Two independent knobs
 //!
-//! [`ChallengeConfig::enabled`](crate::config::ChallengeConfig::enabled) shapes
+//! [`ChallengeConfig::enabled`](acme_proxy_core::config::ChallengeConfig::enabled) shapes
 //! the **authorization object** — which challenges a client is offered, and
-//! therefore which it may choose. [`bypass`](crate::config::ChallengeConfig::bypass)
+//! therefore which it may choose. [`bypass`](acme_proxy_core::config::ChallengeConfig::bypass)
 //! decides whether triggering one does any work.
 //!
 //! They are separate because they answer different questions, and because
@@ -55,8 +55,9 @@ use async_trait::async_trait;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
-use crate::config::{ChallengeConfig, DnsConfig};
 use crate::dns::{HickoryResolver, Resolver, resolver_addr};
+use acme_proxy_core::config::ChallengeConfig;
+use acme_proxy_core::config::DnsConfig;
 
 pub mod dns_01;
 pub mod http_01;
@@ -315,7 +316,7 @@ impl ChallengeRegistry {
                     typ,
                     identifier = ctx.identifier,
                     challenge_id = ctx.challenge_id,
-                    timeout_ms = crate::logfields::millis(self.timeout),
+                    timeout_ms = acme_proxy_core::logfields::millis(self.timeout),
                 );
                 Err(ChallengeError::Connection(format!(
                     "{typ} validation of {} timed out after {}ms",
@@ -364,7 +365,7 @@ pub fn build_resolver(addr: Option<std::net::SocketAddr>) -> anyhow::Result<Arc<
 /// Builds the configured challenge registry. Called once at startup, so it may
 /// fail fast (the caller exits on error).
 ///
-/// `dns` is [`crate::config::Config::dns`], not a field of `cfg`: the resolver
+/// `dns` is [`acme_proxy_core::config::Config::dns`], not a field of `cfg`: the resolver
 /// it selects is shared with [`filter::from_config`](crate::filter::from_config)
 /// (`reverse_dns`), since both answer the same question — which nameserver this
 /// process trusts — and a deployment overriding it wants that answered

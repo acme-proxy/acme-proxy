@@ -33,7 +33,7 @@ impl Default for SignerConfig {
     }
 }
 /// Configuration for the `custom` signer backend: issuance/revocation
-/// delegated to an external script (see [`crate::signer::custom`]).
+/// delegated to an external script (see `signer::custom`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CustomSignerConfig {

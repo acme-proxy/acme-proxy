@@ -52,7 +52,7 @@ async fn renewal_info_uses_the_upstream_window() {
     assert_eq!(upstream.ari_requests(), 1);
     assert_eq!(
         upstream.last_cert_id(),
-        Some(crate::cert::ari_cert_id(&leaf).unwrap())
+        Some(acme_proxy_core::cert::ari_cert_id(&leaf).unwrap())
     );
 }
 

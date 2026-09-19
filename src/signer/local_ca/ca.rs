@@ -12,7 +12,7 @@ use rcgen::{
 };
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::config::LocalCaSubjectConfig;
+use acme_proxy_core::config::LocalCaSubjectConfig;
 
 use super::{CA_VALIDITY_DAYS, CLOCK_SKEW_ALLOWANCE};
 

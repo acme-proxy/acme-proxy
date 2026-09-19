@@ -64,7 +64,7 @@ pub fn challenge_validate_spec(
     JobSpec::now(CHALLENGE_VALIDATE_KIND, challenge_id)
         .with_payload(serde_json::json!({
             "challenge_id": challenge_id,
-            "client_ip": client_ip.map(|ip| crate::client::canonical(ip).to_string()),
+            "client_ip": client_ip.map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
         }))
         .with_deadline(Some(authz_expires))
 }
@@ -374,8 +374,8 @@ mod tests {
     use crate::challenge::{
         ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
     };
-    use crate::identifier::Identifier;
     use crate::sqlite::status::{AuthzStatus, OrderStatus};
+    use acme_proxy_core::identifier::Identifier;
 
     /// A validator refusing every attempt, so the failure arm is reachable
     /// without a network.

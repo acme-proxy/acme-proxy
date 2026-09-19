@@ -4,10 +4,10 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::audit::ClientContext;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::{GuardedDelete, live_certificate};
+use acme_proxy_core::audit::ClientContext;
 
 /// An ACME account (RFC 8555 §7.1.2), keyed by the client's public key stored as
 /// DER SPKI. `contact` is persisted as a JSON array of strings.

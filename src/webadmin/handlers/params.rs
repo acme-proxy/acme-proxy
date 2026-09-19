@@ -49,13 +49,13 @@ where
 /// from memory: it is pasted out of `openssl x509 -serial` or an abuse report,
 /// in whatever case and separator style that tool used, against a column that
 /// only ever holds lowercase unseparated hex. See
-/// [`crate::cert::normalize_serial`] for why an un-normalized value was worse
+/// [`acme_proxy_core::cert::normalize_serial`] for why an un-normalized value was worse
 /// than a refusal.
 pub(crate) fn empty_is_absent_serial<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Ok(empty_is_absent(deserializer)?.map(|value| crate::cert::normalize_serial(&value)))
+    Ok(empty_is_absent(deserializer)?.map(|value| acme_proxy_core::cert::normalize_serial(&value)))
 }
 
 #[cfg(test)]

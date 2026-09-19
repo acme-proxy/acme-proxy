@@ -219,7 +219,7 @@ pub async fn confirm_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     enrol: EnrolWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<ConfirmRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
@@ -279,7 +279,7 @@ pub async fn disable_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     if state.config.admin.require_mfa {
@@ -329,7 +329,7 @@ pub async fn regenerate_recovery_codes(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     if !auth.user.has_totp() {

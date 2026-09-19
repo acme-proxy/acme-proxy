@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-use crate::config::Config;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
 
 use super::supervisor::Cells;
 

@@ -43,7 +43,9 @@ use tracing::info;
 
 use super::policy::{Check, StageSet, Verdict};
 use super::{ConnectionContext, IdentifierContext};
-use crate::script_hook::{ScriptError, ScriptHook, ScriptStdin};
+use acme_proxy_core::script_hook::ScriptError;
+use acme_proxy_core::script_hook::ScriptHook;
+use acme_proxy_core::script_hook::ScriptStdin;
 
 /// Resolved `[filter.check.<name>]` settings for `type = "custom"`.
 #[derive(Debug, Clone)]
@@ -154,7 +156,7 @@ impl Check for CustomScriptFilter {
     async fn check_connection(&self, context: &ConnectionContext<'_>) -> Verdict {
         let client_ip_str = context
             .client_ip
-            .map(|ip| crate::client::canonical(ip).to_string())
+            .map(|ip| acme_proxy_core::client::canonical(ip).to_string())
             .unwrap_or_default();
         let envs = [
             ("ACME_FILTER_HOOK", "connection"),
@@ -185,7 +187,7 @@ impl Check for CustomScriptFilter {
 
         let client_ip_str = context
             .client_ip
-            .map(|ip| crate::client::canonical(ip).to_string())
+            .map(|ip| acme_proxy_core::client::canonical(ip).to_string())
             .unwrap_or_default();
         let identifiers_vec: Vec<String> = context
             .identifiers
@@ -236,7 +238,7 @@ impl Check for CustomScriptFilter {
 /// evaluated here — this CSR asks for something the policy cannot express, which
 /// is a refusal the client can act on (`badCSR`, 400) rather than a server-side
 /// unknown it would retry against for ever.
-fn delimiter_free(identifiers: &[crate::identifier::Identifier]) -> Option<Verdict> {
+fn delimiter_free(identifiers: &[acme_proxy_core::identifier::Identifier]) -> Option<Verdict> {
     let offender = identifiers
         .iter()
         .find(|identifier| identifier.value.contains(',') || contains_control(&identifier.value))?;
@@ -258,18 +260,18 @@ fn contains_control(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::identifier::Identifier;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_core::testutil::TempDir;
     use axum::http::Method;
     use std::time::Duration;
 
     /// Writes an executable script and returns the configuration pointing at it.
     ///
     /// The `ETXTBSY` reasoning that used to live here — and, verbatim, in two
-    /// other modules — is now in `crate::testutil::write_script`, which this
+    /// other modules — is now in `acme_proxy_core::testutil::write_script`, which this
     /// wraps.
     fn write_script(dir: &TempDir, name: &str, body: &str) -> Settings {
-        let script_path = crate::testutil::write_script(dir, name, body);
+        let script_path = acme_proxy_core::testutil::write_script(dir, name, body);
         Settings {
             script_path: script_path.to_str().unwrap().to_string(),
             ..Default::default()

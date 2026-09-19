@@ -106,7 +106,7 @@ pub async fn disable_operator(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     act(
@@ -130,7 +130,7 @@ pub async fn enable_operator(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     act(
@@ -156,7 +156,7 @@ pub async fn reset_operator_totp(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     act(
@@ -180,7 +180,7 @@ pub async fn revoke_operator_session(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     act(
@@ -224,7 +224,7 @@ pub async fn set_operator_contact(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<SetOperatorContactRequest>>,
 ) -> Result<Response, AdminError> {
     let body = body.unwrap_or_default();
@@ -258,7 +258,7 @@ pub async fn set_operator_role(
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<SetOperatorRoleRequest>>,
 ) -> Result<Response, AdminError> {
     let body = body.unwrap_or_default();
@@ -292,7 +292,7 @@ async fn act(
     password: &str,
     client: Option<std::net::IpAddr>,
     headers: &HeaderMap,
-    request_context: &crate::audit::RequestContext,
+    request_context: &acme_proxy_core::audit::RequestContext,
     action: OperatorAction<'_>,
 ) -> Result<(), AdminError> {
     let mut target = find(username, state).await?;
@@ -350,7 +350,7 @@ pub(crate) async fn apply_operator_action(
     action: OperatorAction<'_>,
     client: Option<std::net::IpAddr>,
     headers: &HeaderMap,
-    request_context: &crate::audit::RequestContext,
+    request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
     match action {
@@ -530,7 +530,7 @@ pub(crate) async fn apply_contact_change(
     contact: Option<&str>,
     client: Option<std::net::IpAddr>,
     headers: &HeaderMap,
-    request_context: &crate::audit::RequestContext,
+    request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
     let previous = target.contact_email.clone();

@@ -116,7 +116,7 @@ pub(crate) fn template_names() -> Vec<&'static str> {
 /// `layout.html` changes the chrome of every page and nothing else.
 #[must_use]
 pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'static> {
-    let mut env = crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES);
+    let mut env = acme_proxy_core::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES);
     env.add_filter("ago", ago);
     env
 }
@@ -215,7 +215,7 @@ pub(crate) fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::testutil::TempDir;
 
     #[test]
     fn every_embedded_template_compiles() {

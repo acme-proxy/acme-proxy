@@ -87,7 +87,7 @@ async fn directory_lists_only_routed_endpoints() {
 ///
 /// The two used to be written out separately — once as routes in
 /// `build_router`, once as URLs in `get_directory` — and agreed only by
-/// inspection. They now share `acme_proxy::routes`, and this drives each
+/// inspection. They now share `acme_proxy_core::routes`, and this drives each
 /// advertised URL as a real request to prove the constants are wired to both
 /// sides rather than merely existing.
 #[tokio::test]

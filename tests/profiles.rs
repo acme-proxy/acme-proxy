@@ -525,7 +525,7 @@ async fn renewal_info_does_not_answer_for_another_profiles_certificate() {
     // collided — but the isolation being tested here is the profile-scoped
     // lookup, which is why the assertion below is about `b` specifically.
     let leaf = first_certificate(&chain);
-    let cert_id = acme_proxy::cert::ari_cert_id(&leaf).unwrap();
+    let cert_id = acme_proxy_core::cert::ari_cert_id(&leaf).unwrap();
 
     let at_a = get(&app, &path("a", &format!("/renewalInfo/{cert_id}"))).await;
     assert_eq!(at_a.status(), StatusCode::OK);

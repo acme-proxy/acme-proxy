@@ -25,7 +25,7 @@ use simple_asn1::{ASN1Block, ASN1Class, BigUint, OID};
 use tracing::info;
 use url::Url;
 
-use crate::config::LocalCaConfig;
+use acme_proxy_core::config::LocalCaConfig;
 
 /// OIDs written into the AIA extension.
 ///

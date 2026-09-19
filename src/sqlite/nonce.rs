@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use sqlx::Row;
 use tracing::{debug, info};
 
-use crate::random::random_token;
 use crate::sqlite::db::Database;
+use acme_proxy_core::random::random_token;
 
 /// A replay nonce used for ACME protocol anti-replay protection.
 ///

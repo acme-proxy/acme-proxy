@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::config::Config;
+use acme_proxy_core::config::Config;
 
 /// Rows per page when the caller does not say.
 const DEFAULT_PAGE_SIZE: i64 = 50;

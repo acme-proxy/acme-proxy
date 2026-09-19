@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 use crate::acme::OrderService;
 use crate::acme::access::{load_owned_order, order_authz_ids, signer_account};
-use crate::client::ClientIp;
-use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::router::AppState;
 use crate::sqlite::{order::Order, status::OrderStatus};
+use acme_proxy_core::client::ClientIp;
+use acme_proxy_core::error::Problem;
 
 pub use crate::acme::order::{FinalizePayload, NewOrderPayload};
 
@@ -22,7 +22,7 @@ pub use crate::acme::order::{FinalizePayload, NewOrderPayload};
 pub async fn post_new_order(
     State(state): State<AppState>,
     Extension(ClientIp(client_ip)): Extension<ClientIp>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     AcmeRequest {
         header,
         payload,
@@ -114,7 +114,7 @@ pub async fn post_finalize(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Extension(ClientIp(client_ip)): Extension<ClientIp>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     AcmeRequest {
         payload,
         pubkey,

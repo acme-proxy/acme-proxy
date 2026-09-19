@@ -2,9 +2,9 @@
 //! cleared environment, JSON on stdin, an exit code for the verdict.
 //!
 //! Three subsystems delegate to an operator-supplied script —
-//! [`signer::custom`](crate::signer::custom) (issue/revoke/crl/renewal_info),
-//! [`filter::custom`](crate::filter::custom) (connection/identifiers) and
-//! [`notify::custom`](crate::notify::custom) (one event). They differ in what
+//! `signer::custom` (issue/revoke/crl/renewal_info),
+//! `filter::custom` (connection/identifiers) and
+//! `notify::custom` (one event). They differ in what
 //! they put in the environment, what they do with stdout, and how they read the
 //! exit code. They differ in nothing else.
 //!
@@ -51,14 +51,14 @@ pub(crate) const MAX_SCRIPT_OUTPUT_BYTES: usize = 1024 * 1024;
 
 /// An operator-supplied script, and the budget it runs under.
 #[derive(Debug, Clone)]
-pub(crate) struct ScriptHook {
+pub struct ScriptHook {
     path: PathBuf,
     args: Vec<String>,
     timeout: Duration,
 }
 
 /// What to hand the script on stdin.
-pub(crate) enum ScriptStdin<'a> {
+pub enum ScriptStdin<'a> {
     /// `/dev/null`. The script gets no payload and cannot block on a read.
     Null,
     /// A JSON object, written and then closed.
@@ -68,7 +68,7 @@ pub(crate) enum ScriptStdin<'a> {
 /// Why a script produced no verdict at all — as opposed to producing one this
 /// caller did not like, which is [`ScriptOutcome`]'s business.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ScriptError {
+pub enum ScriptError {
     #[error("failed to spawn script {}: {detail}", path.display())]
     Spawn { path: PathBuf, detail: String },
     #[error("failed to serialize JSON stdin: {0}")]
@@ -89,7 +89,7 @@ pub(crate) enum ScriptError {
 
 /// What a script answered, plus whether it ever read the question.
 #[derive(Debug)]
-pub(crate) struct ScriptOutcome {
+pub struct ScriptOutcome {
     pub output: Output,
     /// Set when writing the JSON payload to the child's stdin failed — in
     /// practice `EPIPE`, a script that exited without reading it.
@@ -109,7 +109,7 @@ impl ScriptHook {
     /// Each subsystem words its own "you enabled this but gave no path" startup
     /// error, because only it knows which configuration key to name and what to
     /// tell the operator to remove.
-    pub(crate) fn new(script_path: &str, args: &[String], timeout_ms: u64) -> Option<Self> {
+    pub fn new(script_path: &str, args: &[String], timeout_ms: u64) -> Option<Self> {
         if script_path.trim().is_empty() {
             return None;
         }
@@ -120,12 +120,12 @@ impl ScriptHook {
         })
     }
 
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Runs the script with `envs` in an otherwise empty environment.
-    pub(crate) async fn run(
+    pub async fn run(
         &self,
         envs: &[(&str, &str)],
         stdin: ScriptStdin<'_>,
@@ -242,7 +242,7 @@ impl ScriptHook {
     /// prefixed with the stdin failure when there was one, since a script that
     /// never received its payload failed for a completely different reason than
     /// one that read it and objected.
-    pub(crate) fn detail(outcome: &ScriptOutcome, noun: &str) -> String {
+    pub fn detail(outcome: &ScriptOutcome, noun: &str) -> String {
         let stdout = String::from_utf8_lossy(&outcome.output.stdout);
         let stderr = String::from_utf8_lossy(&outcome.output.stderr);
         let first_line = stdout

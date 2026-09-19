@@ -20,7 +20,7 @@ use common::{
     EcSigner, TestSigner, body_json, fetch_nonce, make_csr, p, test_app, test_app_with_challenges,
 };
 
-use acme_proxy::config::Config;
+use acme_proxy_core::config::Config;
 use common::{StubValidator, challenges_with};
 use std::sync::Arc;
 

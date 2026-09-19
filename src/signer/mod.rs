@@ -61,9 +61,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::debug;
 
-use crate::config::SignerConfig;
-use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::SignerConfig;
+use acme_proxy_core::identifier::Identifier;
 
 pub mod custom;
 pub mod info;
@@ -264,7 +264,7 @@ pub trait SignerBackend: Send + Sync {
 #[async_trait]
 pub trait CrlRefresher: Send + Sync {
     /// Which CA this is, for logging: its issuer id
-    /// ([`crate::cert::issuer_id`]), the key its revocation state is stored
+    /// ([`acme_proxy_core::cert::issuer_id`]), the key its revocation state is stored
     /// under. Two profiles sharing one CA name one issuer.
     fn issuer(&self) -> &str;
 
@@ -491,7 +491,7 @@ fn identity_key(cfg: &SignerConfig, parts: &SignerParts) -> String {
 /// reused from `previous` where the configuration did not move — the half of
 /// [`build_backends`] that [`build_infos`] shares.
 fn assemble_set<T: ?Sized>(
-    profiles: &[crate::config::ProfileConfig],
+    profiles: &[acme_proxy_core::config::ProfileConfig],
     parts: &SignerParts,
     previous: &SignerSet<T>,
     build: impl Fn(&SignerConfig, &SignerParts) -> anyhow::Result<Arc<T>>,
@@ -527,7 +527,7 @@ fn assemble_set<T: ?Sized>(
 /// Shared and reused exactly as [`build_backends`] shares and reuses backends,
 /// under the same identity. Never touches a key: see [`info_from_config`].
 pub fn build_infos(
-    profiles: &[crate::config::ProfileConfig],
+    profiles: &[acme_proxy_core::config::ProfileConfig],
     parts: &SignerParts,
     previous: &SignerSet<dyn SignerInfo>,
 ) -> anyhow::Result<SignerSet<dyn SignerInfo>> {
@@ -566,7 +566,7 @@ pub fn build_infos(
 /// reload that changed either would keep dialling through the old policy with
 /// nothing saying so.
 pub fn build_backends(
-    profiles: &[crate::config::ProfileConfig],
+    profiles: &[acme_proxy_core::config::ProfileConfig],
     parts: &SignerParts,
     previous: &SignerSet,
 ) -> anyhow::Result<SignerSet> {
@@ -639,12 +639,12 @@ mod tests {
     fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
         std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
     }
-    use crate::config::LocalCaConfig;
+    use acme_proxy_core::config::LocalCaConfig;
 
     /// A `SignerConfig` writing its CA material into a throwaway directory, so
     /// the `local_ca` arm can run without touching the repository's `ca.pem`.
-    fn config(backend: &str) -> (SignerConfig, crate::testutil::TempDir) {
-        let dir = crate::testutil::TempDir::new("signer");
+    fn config(backend: &str) -> (SignerConfig, acme_proxy_core::testutil::TempDir) {
+        let dir = acme_proxy_core::testutil::TempDir::new("signer");
         let cfg = SignerConfig {
             backend: backend.to_string(),
             local_ca: LocalCaConfig {
@@ -681,12 +681,12 @@ mod tests {
         parts
     }
 
-    fn profile(name: &str, signer: SignerConfig) -> crate::config::ProfileConfig {
-        crate::config::ProfileConfig {
+    fn profile(name: &str, signer: SignerConfig) -> acme_proxy_core::config::ProfileConfig {
+        acme_proxy_core::config::ProfileConfig {
             name: name.to_string(),
-            sections: crate::config::ProfileSections {
+            sections: acme_proxy_core::config::ProfileSections {
                 signer,
-                ..crate::config::ProfileSections::default()
+                ..acme_proxy_core::config::ProfileSections::default()
             },
         }
     }
@@ -750,7 +750,7 @@ mod tests {
             IssueOutcome::Issued(chain) => chain,
             IssueOutcome::Processing => panic!("local_ca issues synchronously"),
         };
-        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
         outgoing.revoke(&leaf, Some(1)).await.unwrap();
         let before = crate::testutil::served_crl(outgoing.as_ref()).await;
 
@@ -787,7 +787,7 @@ mod tests {
             IssueOutcome::Issued(chain) => chain,
             IssueOutcome::Processing => unreachable!(),
         };
-        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
         outgoing.revoke(&leaf, None).await.unwrap();
         assert_ne!(
             crate::testutil::served_crl(incoming.as_ref()).await,
@@ -898,7 +898,10 @@ mod tests {
             panic!("local_ca issues synchronously")
         };
         outgoing
-            .revoke(&crate::cert::leaf_der_from_chain(&chain).unwrap(), None)
+            .revoke(
+                &acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap(),
+                None,
+            )
             .await
             .unwrap();
 
@@ -1012,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn builds_the_custom_backend_and_it_can_issue() {
-        let dir = crate::testutil::TempDir::new("signer");
+        let dir = acme_proxy_core::testutil::TempDir::new("signer");
         let script_path = dir.join("issue.sh");
         std::fs::write(
             &script_path,
@@ -1027,7 +1030,7 @@ mod tests {
 
         let cfg = SignerConfig {
             backend: "custom".to_string(),
-            custom: crate::config::CustomSignerConfig {
+            custom: acme_proxy_core::config::CustomSignerConfig {
                 script_path: script_path.to_string_lossy().into_owned(),
                 ..Default::default()
             },

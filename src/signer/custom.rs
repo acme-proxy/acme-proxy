@@ -18,9 +18,11 @@ use super::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
-use crate::config::CustomSignerConfig;
-use crate::identifier::Identifier;
-use crate::script_hook::{ScriptHook, ScriptOutcome, ScriptStdin};
+use acme_proxy_core::config::CustomSignerConfig;
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::script_hook::ScriptHook;
+use acme_proxy_core::script_hook::ScriptOutcome;
+use acme_proxy_core::script_hook::ScriptStdin;
 
 /// Exit code reserved for "the CSR is bad" on the `issue` hook — any other
 /// non-zero exit is treated as an internal signer failure. `1` is
@@ -290,13 +292,13 @@ impl SignerInfo for CustomScriptInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::testutil::TempDir;
     use std::time::Duration;
 
     /// Writes an executable script and returns the configuration pointing at it.
-    /// The `ETXTBSY` reasoning lives in `crate::testutil::write_script`.
+    /// The `ETXTBSY` reasoning lives in `acme_proxy_core::testutil::write_script`.
     fn write_script(dir: &TempDir, name: &str, body: &str) -> CustomSignerConfig {
-        let script_path = crate::testutil::write_script(dir, name, body);
+        let script_path = acme_proxy_core::testutil::write_script(dir, name, body);
         CustomSignerConfig {
             script_path: script_path.to_str().unwrap().to_string(),
             ..Default::default()

@@ -1,6 +1,6 @@
 //! Writing the CA's audit trail, and resolving the reverse names that go in it.
 //!
-//! Two things live here, beside the vocabulary in [`crate::audit`]:
+//! Two things live here, beside the vocabulary in [`acme_proxy_core::audit`]:
 //!
 //! - the **reverse lookup**, which is the only part that touches the network and
 //!   the only part an operator can switch off (`audit.reverse_dns`);
@@ -15,11 +15,14 @@ use std::time::Duration;
 
 use tracing::{debug, error, info};
 
-use crate::audit::{AuditRecord, ClientContext, RequestContext};
-use crate::config::{AuditConfig, DnsConfig};
 use crate::dns::{HickoryResolver, Resolver, resolver_addr};
 use crate::sqlite::audit::AuditEntry;
 use crate::sqlite::db::Database;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::audit::RequestContext;
+use acme_proxy_core::config::AuditConfig;
+use acme_proxy_core::config::DnsConfig;
 
 pub mod admin;
 
@@ -141,7 +144,7 @@ impl Auditor {
                     event = "audit_reverse_dns_timeout",
                     outcome = "failure",
                     ip = %ip,
-                    timeout_ms = crate::logfields::millis(self.ptr_timeout),
+                    timeout_ms = acme_proxy_core::logfields::millis(self.ptr_timeout),
                 );
                 None
             }
@@ -163,7 +166,7 @@ impl Auditor {
     /// Resolves a [`RequestContext`] into the [`ClientContext`] a row stores,
     /// running the reverse lookup on the way.
     pub async fn client(&self, request: &RequestContext) -> ClientContext {
-        let canonical = request.ip.map(crate::client::canonical);
+        let canonical = request.ip.map(acme_proxy_core::client::canonical);
         ClientContext {
             ip: canonical.map(|ip| ip.to_string()),
             ptr: self.reverse(canonical).await,

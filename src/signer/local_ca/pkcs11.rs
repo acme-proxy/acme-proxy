@@ -43,7 +43,7 @@ use ring::digest;
 use simple_asn1::{ASN1Block, BigInt, BigUint};
 use tracing::{error, info, warn};
 
-use crate::config::LocalCaConfig;
+use acme_proxy_core::config::LocalCaConfig;
 
 /// The DER encoding of the `secp256r1` (P-256) curve OID, `1.2.840.10045.3.1.7`,
 /// as it appears in `CKA_EC_PARAMS`.
@@ -847,12 +847,13 @@ mod tests {
 #[cfg(test)]
 mod softhsm {
     use super::*;
-    use crate::config::{LocalCaConfig, Pkcs11Config};
     use crate::signer::local_ca::LocalCa;
+    use acme_proxy_core::config::LocalCaConfig;
+    use acme_proxy_core::config::Pkcs11Config;
     // `issue`/`revoke`/`crl_der` are trait methods, so the trait has to be in
     // scope even though the concrete type is what the tests hold.
     use crate::signer::SignerBackend;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::testutil::TempDir;
     use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
     use std::path::Path;
     use std::sync::OnceLock;
@@ -1103,7 +1104,7 @@ mod softhsm {
             .issue(
                 "ord-hsm",
                 &make_csr_der("example.com"),
-                &[crate::identifier::Identifier::dns("example.com")],
+                &[acme_proxy_core::identifier::Identifier::dns("example.com")],
                 crate::signer::RequestedValidity::default(),
             )
             .await
@@ -1114,10 +1115,11 @@ mod softhsm {
         };
         assert_eq!(chain.matches("-----BEGIN CERTIFICATE-----").count(), 2);
 
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let ca_der =
-            crate::cert::leaf_der_from_chain(&std::fs::read_to_string(&lab.ca_pem_path).unwrap())
-                .unwrap();
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(
+            &std::fs::read_to_string(&lab.ca_pem_path).unwrap(),
+        )
+        .unwrap();
         let (_, leaf) = x509_parser::parse_x509_certificate(&leaf_der).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
@@ -1135,7 +1137,9 @@ mod softhsm {
             .issue(
                 "ord-hsm",
                 &make_csr_der("revoke.example"),
-                &[crate::identifier::Identifier::dns("revoke.example")],
+                &[acme_proxy_core::identifier::Identifier::dns(
+                    "revoke.example",
+                )],
                 crate::signer::RequestedValidity::default(),
             )
             .await
@@ -1143,8 +1147,8 @@ mod softhsm {
         let crate::signer::IssueOutcome::Issued(chain) = outcome else {
             panic!("local_ca issues synchronously");
         };
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf_der).unwrap();
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
 
         ca.revoke(&leaf_der, Some(1)).await.unwrap();
 
@@ -1240,7 +1244,7 @@ mod softhsm {
             .issue(
                 "ord-file",
                 &make_csr_der("example.com"),
-                &[crate::identifier::Identifier::dns("example.com")],
+                &[acme_proxy_core::identifier::Identifier::dns("example.com")],
                 crate::signer::RequestedValidity::default(),
             )
             .await

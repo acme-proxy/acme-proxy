@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use crate::challenge;
-use crate::config::{self, Config};
 use crate::filter;
 use crate::ipam;
 use crate::profile::{Profile, ProfileParts};
 use crate::sqlite::db::Database;
+use acme_proxy_core::config;
+use acme_proxy_core::config::Config;
 
 use super::{Assembly, GenerationParts};
 
@@ -167,10 +168,10 @@ mod tests {
     /// Holds the crate-wide `ENV_LOCK` while it does: this points
     /// `ACME_PROXY_CONFIG` at its own file, and the environment is process-wide.
     fn config_from(body: &str) -> Config {
-        let _lock = crate::config::ENV_LOCK
+        let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = crate::testutil::TempDir::new("lib");
+        let dir = acme_proxy_core::testutil::TempDir::new("lib");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test; the variable is removed before return.
         unsafe {
@@ -217,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_all_assembles_every_endpoint_from_its_own_configuration() {
-        let dir = crate::testutil::TempDir::new("build");
+        let dir = acme_proxy_core::testutil::TempDir::new("build");
         let config = two_profiles_config(&dir);
 
         let profiles = crate::server::profile::build_all(

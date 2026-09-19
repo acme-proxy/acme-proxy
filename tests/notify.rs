@@ -11,11 +11,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::FilterPolicy;
 use acme_proxy::jobs::JobRegistry;
 use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
 use acme_proxy::sqlite::job::Job;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::config::JobsConfig;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -407,7 +408,7 @@ impl acme_proxy::notify::NotifyBackend for SlowBackend {
 async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
     let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let queue = common::test_job_queue().await;
-    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+    let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
         .iter()
         .map(|kind| (*kind).to_string())
         .collect();
@@ -482,11 +483,14 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 /// registered but never wired to a dispatcher.
 #[tokio::test]
 async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
-    use acme_proxy::config::{ExpiryNotifyConfig, NotifyConfig, ProfileConfig, ProfileSections};
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::notify::expiry::ExpiryDigestJob;
     use acme_proxy::sqlite::db::Database;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::config::ExpiryNotifyConfig;
+    use acme_proxy_core::config::NotifyConfig;
+    use acme_proxy_core::config::ProfileConfig;
+    use acme_proxy_core::config::ProfileSections;
+    use acme_proxy_core::identifier::Identifier;
 
     let config = JobsConfig {
         poll_interval_ms: 5,
@@ -502,7 +506,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         "default",
         b"a-key",
         Vec::new(),
-        &acme_proxy::audit::ClientContext::default(),
+        &acme_proxy_core::audit::ClientContext::default(),
         &database,
     )
     .await
@@ -534,7 +538,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         .unwrap();
 
     let recorder = Arc::new(common::RecordingNotifyBackend::default());
-    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+    let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
         .iter()
         .map(|kind| (*kind).to_string())
         .collect();

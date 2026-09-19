@@ -25,7 +25,7 @@ use super::{
     Http01TokenStore, RenewalWindow, RevocationRoute, SignerError, SignerParts, custom, local_ca,
     relay,
 };
-use crate::config::SignerConfig;
+use acme_proxy_core::config::SignerConfig;
 
 /// What a request may ask of a signer backend without holding its key.
 #[async_trait]

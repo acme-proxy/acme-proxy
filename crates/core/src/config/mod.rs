@@ -107,7 +107,7 @@ pub(crate) fn valid_config_key_name(name: &str) -> bool {
 /// `enabled_key` the key selecting from it; both are used only to word the
 /// errors, so an operator is told which key to go and look at. `backend` is the
 /// value in `<subsystem>.enabled` that turned the table on.
-pub(crate) fn resolve_named_entries<'a, T>(
+pub fn resolve_named_entries<'a, T>(
     table: &str,
     enabled_key: &str,
     backend: &str,
@@ -144,7 +144,7 @@ pub(crate) fn resolve_named_entries<'a, T>(
 /// times: a table key is also an environment-variable segment, and the `config`
 /// crate lowercases those, so anything outside the permitted set could name one
 /// entry in a file and a silently different one through the environment.
-pub(crate) fn validate_key_names<'a>(
+pub fn validate_key_names<'a>(
     prefix: &str,
     keys: impl Iterator<Item = &'a String>,
 ) -> anyhow::Result<()> {
@@ -493,8 +493,8 @@ fn merge_values(base: &::config::Value, overlay: &::config::Value) -> ::config::
 /// makes the second read the first's variables. One lock for the whole crate,
 /// not one per module — three independent locks serialise a module against
 /// itself and against nothing else, which is the same as no lock at all.
-#[cfg(test)]
-pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(any(test, feature = "test-util"))]
+pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -1203,7 +1203,10 @@ mod tests {
     fn the_example_config_documents_the_real_defaults() {
         // Copied as-is, the example must actually boot — which now means it has
         // to declare a profile, since a configuration with none is refused.
-        let body = std::fs::read_to_string("config.toml.example").unwrap();
+        // At the repository root, two levels above this crate's manifest.
+        let example_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config.toml.example");
+        let body = std::fs::read_to_string(&example_path).unwrap();
         let profiles = load_toml(&body)
             .resolve_profiles()
             .expect("config.toml.example must define at least one profile");
@@ -1216,8 +1219,7 @@ mod tests {
 
         let example = ::config::Config::builder()
             .add_source(
-                ::config::File::from(std::path::Path::new("config.toml.example"))
-                    .format(::config::FileFormat::Toml),
+                ::config::File::from(example_path.as_path()).format(::config::FileFormat::Toml),
             )
             .build()
             .expect("config.toml.example must be valid TOML")

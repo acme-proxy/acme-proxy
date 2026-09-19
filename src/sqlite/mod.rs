@@ -17,7 +17,7 @@
 //!   against it anywhere in the crate.
 //!
 //! Methods return `Result<_, sqlx::Error>` and leave the mapping to a
-//! [`crate::error::Problem`] to their caller.
+//! [`acme_proxy_core::error::Problem`] to their caller.
 
 pub mod account;
 pub mod admin_recovery_code;

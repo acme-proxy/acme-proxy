@@ -4,7 +4,7 @@
 //! algorithm is never chosen from the client's `alg` alone.
 //!
 //! Free of any HTTP type: the axum extractors that run it on every request are
-//! [`crate::extractors`], and the two nested-JWS surfaces ([`crate::eab`],
+//! `extractors`, and the two nested-JWS surfaces ([`crate::eab`],
 //! [`crate::key_change`]) and the relay's upstream client verify and sign with it
 //! too.
 

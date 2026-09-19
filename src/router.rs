@@ -18,11 +18,11 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{Span, info};
 
-use crate::config::Config;
-use crate::error::Problem;
-use crate::routes;
 use crate::sqlite::db::Database;
 use crate::{challenge, handlers, metrics, middlewares, signer};
+use acme_proxy_core::config::Config;
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::routes;
 
 use crate::profile::Profile;
 
@@ -269,7 +269,7 @@ pub fn build_app(
 /// Builds the metrics listener's router: `GET /metrics` and nothing else.
 ///
 /// A **third socket**, not a route on either of the other two. The port is the
-/// access control — see [`crate::config::MetricsConfig`] — which is why there
+/// access control — see [`acme_proxy_core::config::MetricsConfig`] — which is why there
 /// is no session extractor here and no filter chain, and why the exposition can
 /// name every profile without that being a decision about the public listener.
 ///

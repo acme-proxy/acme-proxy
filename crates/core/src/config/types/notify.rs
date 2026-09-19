@@ -10,7 +10,7 @@ use serde::Deserialize;
 use super::empty_string_is_no_values;
 
 /// Notification-subsystem configuration: which backends are active, and each
-/// backend's own settings. See [`crate::notify`].
+/// backend's own settings. See `notify`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct NotifyConfig {
@@ -85,7 +85,7 @@ impl Default for EmailNotifyConfig {
     }
 }
 /// `[notify.expiry]` — the periodic digest of certificates approaching expiry
-/// (see [`crate::notify::expiry`]).
+/// (see `notify::expiry`).
 ///
 /// One message per profile per `interval_days`, listing what lapses inside
 /// `lead_days`, and **not** one message per certificate: a renewal is a new
@@ -127,7 +127,7 @@ impl Default for ExpiryNotifyConfig {
 ///
 /// This is what makes a chat provider configuration rather than a backend —
 /// Slack, Mattermost, Teams, Telegram and Matrix differ only in these four
-/// values. See [`crate::notify::webhook`].
+/// values. See `notify::webhook`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WebhookNotifyConfig {

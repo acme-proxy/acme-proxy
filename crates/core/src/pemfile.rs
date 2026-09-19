@@ -1,10 +1,10 @@
 //! PEM material on disk: reading a certificate chain or a private key, and
 //! writing a key that is never briefly world-readable.
 //!
-//! Two subsystems provision key material at startup — [`crate::signer::local_ca`]
-//! generates and reloads the CA, [`crate::tls`] does the same for the HTTPS
+//! Two subsystems provision key material at startup — `signer::local_ca`
+//! generates and reloads the CA, `tls` does the same for the HTTPS
 //! listener's certificate — so the file hygiene lives here rather than in either
-//! of them, the way [`crate::dns`] holds the resolver that both `filter` and
+//! of them, the way `dns` holds the resolver that both `filter` and
 //! `challenge` need.
 //!
 //! Reading goes through `x509-parser`'s label-agnostic PEM iterator, already in
@@ -28,7 +28,7 @@ const CERTIFICATE: &str = "CERTIFICATE";
 ///
 /// Blocks with any other label are skipped, so a file holding both the chain and
 /// its key is read correctly.
-pub(crate) fn read_certificates(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+pub fn read_certificates(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let bytes = read_file(path)?;
 
     let mut chain = Vec::new();
@@ -52,7 +52,7 @@ pub(crate) fn read_certificates(path: &Path) -> anyhow::Result<Vec<CertificateDe
 /// told: `PRIVATE KEY` is PKCS#8, `EC PRIVATE KEY` is SEC1, `RSA PRIVATE KEY` is
 /// PKCS#1. An unknown label is reported *by name* — "expected a private key,
 /// found CERTIFICATE" is the whole diagnosis of a swapped `cert_path`/`key_path`.
-pub(crate) fn read_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
+pub fn read_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     let bytes = read_file(path)?;
 
     let mut skipped: Vec<String> = Vec::new();
@@ -87,7 +87,7 @@ pub(crate) fn read_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'sta
 /// and only tighten it afterwards, leaving a window in which any local user can
 /// read the key. Passing the mode to `open` closes that race. `create_new`
 /// additionally refuses to follow a pre-planted symlink.
-pub(crate) fn write_private_key(path: &Path, pem: &str) -> anyhow::Result<()> {
+pub fn write_private_key(path: &Path, pem: &str) -> anyhow::Result<()> {
     use std::io::Write;
 
     let mut options = fs::OpenOptions::new();
@@ -134,7 +134,7 @@ pub(crate) fn write_private_key(path: &Path, pem: &str) -> anyhow::Result<()> {
 /// The cost is that a crash leaves litter rather than a file the next run
 /// reuses, which is the right way round — a leftover temporary is inert, and
 /// the alternative was a shared mutable one.
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Result<()> {
     use std::io::Write;
 
     let temp = {
@@ -193,7 +193,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> anyhow::Resu
 /// exemption `tests/logging_convention.rs` grants: four subsystems share one
 /// warning rather than writing it out four times. Every caller passes
 /// `<subsystem>_key_permissive`.
-pub(crate) fn warn_if_key_is_readable(event: &'static str, path: &Path) {
+pub fn warn_if_key_is_readable(event: &'static str, path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

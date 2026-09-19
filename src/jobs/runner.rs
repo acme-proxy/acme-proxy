@@ -19,10 +19,10 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use super::{JobHandler, JobOutcome, JobQueue, JobRegistry, seconds};
-use crate::config::JobsConfig;
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::nonce::now_secs;
+use acme_proxy_core::config::JobsConfig;
 
 /// How much longer than its own timeout a job's lease runs.
 ///
@@ -275,7 +275,7 @@ fn retuned(runner_id: &str, config: RunnerConfig) {
         event = "job_runner_retuned",
         outcome = "success",
         runner_id = %runner_id,
-        poll_interval_ms = crate::logfields::millis(config.poll_interval),
+        poll_interval_ms = acme_proxy_core::logfields::millis(config.poll_interval),
         lease_seconds = config.lease.as_secs(),
         retry_base_seconds = config.retry_base.as_secs(),
         retry_max_seconds = config.retry_max.as_secs(),
@@ -470,7 +470,7 @@ async fn run_one(
 
     let started = std::time::Instant::now();
     let outcome = run_attempt(&job, &handler, budget).await;
-    let elapsed = crate::logfields::millis(started.elapsed());
+    let elapsed = acme_proxy_core::logfields::millis(started.elapsed());
 
     match outcome {
         JobOutcome::Done => {

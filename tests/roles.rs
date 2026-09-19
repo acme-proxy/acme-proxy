@@ -41,10 +41,10 @@ mod common;
 
 use std::sync::Arc;
 
-use acme_proxy::config::Config;
 use acme_proxy::server::sockets::Sockets as ServerSockets;
 use acme_proxy::server::{ProcessRole, RoleSet, serve_on_with_reloads};
 use acme_proxy::sqlite::db::Database;
+use acme_proxy_core::config::Config;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -110,7 +110,7 @@ async fn initialise(config: &Config) {
             .expect("the database must open"),
     );
     acme_proxy::cli::init(
-        acme_proxy::palette::Palette::plain(),
+        acme_proxy_core::palette::Palette::plain(),
         &Arc::new(config.clone()),
         database,
     )
@@ -515,8 +515,8 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     .revoke_order(
         &order_id,
         Some(1),
-        acme_proxy::audit::Actor::cli(),
-        acme_proxy::audit::ClientContext::default(),
+        acme_proxy_core::audit::Actor::cli(),
+        acme_proxy_core::audit::ClientContext::default(),
     )
     .await
     .expect("a local CA's revocation needs no key");
@@ -593,16 +593,16 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
 /// A `ready` order for `a.example.com`, claimed with its `signer_issue` row
 /// queued — what `finalize` leaves behind — returning its id.
 async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQueue) -> String {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
     use base64::prelude::*;
 
     let (account, _) = Account::find_or_create(
         "default",
         &[1, 2, 3],
         vec![],
-        &acme_proxy::audit::ClientContext::default(),
+        &acme_proxy_core::audit::ClientContext::default(),
         database,
     )
     .await
@@ -628,7 +628,7 @@ async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQu
             .enqueue(acme_proxy::acme::issue::signer_issue_spec(
                 &order,
                 &csr,
-                &acme_proxy::audit::ClientContext::default(),
+                &acme_proxy_core::audit::ClientContext::default(),
                 None,
             ))
             .await

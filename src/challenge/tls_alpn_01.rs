@@ -32,7 +32,7 @@ use tracing::{debug, info};
 use x509_parser::prelude::*;
 
 use super::{ChallengeError, ChallengeValidator, TLS_ALPN_01, ValidationContext};
-use crate::config::TlsAlpnConfig;
+use acme_proxy_core::config::TlsAlpnConfig;
 
 /// The ALPN protocol identifier RFC 8737 §3 reserves for this challenge. A
 /// server that does not negotiate it is not answering the challenge.

@@ -18,14 +18,10 @@ use super::rules::{
     check_csr_matches_order, csr_identifiers, is_wildcard, normalize_dns_name, parse_csr,
     parse_rfc3339, well_formed_name,
 };
-use crate::audit::RequestContext;
 use crate::auditor::Auditor;
 use crate::challenge::ValidationContext;
-use crate::error::Problem;
 use crate::filter::{IdentifierStage, Stage as FilterStage};
-use crate::identifier::Identifier;
 use crate::jobs::JobQueue;
-use crate::jws::signature::jwk_thumbprint;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::profile::Profile;
 use crate::sqlite::{
@@ -36,6 +32,10 @@ use crate::sqlite::{
     order::Order,
     status::{AuthzStatus, ChallengeStatus, OrderStatus},
 };
+use acme_proxy_core::audit::RequestContext;
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::jws::signature::jwk_thumbprint;
 
 /// A newOrder payload (RFC 8555 §7.4).
 #[derive(Debug, Default, Deserialize)]
@@ -105,7 +105,7 @@ async fn check_replaces(
     // Parsed with the same helper `GET /renewalInfo/{certID}` uses: §5 defines
     // the field as "constructed in the same way as the path component for GET
     // requests described in Section 4.1", so the two must not drift.
-    let parsed = crate::cert::parse_ari_cert_id(cert_id).map_err(|error| {
+    let parsed = acme_proxy_core::cert::parse_ari_cert_id(cert_id).map_err(|error| {
         warn!(event = "replaces_malformed", outcome = "failure", replaces = %cert_id, error = %error);
         Problem::malformed(format!("Invalid `replaces` certID: {error}"))
     })?;
@@ -126,8 +126,8 @@ async fn check_replaces(
     // Certificates issued before the local CA emitted an AKI have none, so a
     // missing extension means "cannot check" rather than "reject".
     if let Some(certificate) = predecessor.certificate.as_ref()
-        && let Ok(leaf_der) = crate::cert::leaf_der_from_chain(certificate)
-        && let Ok((aki, _)) = crate::cert::ari_cert_id_parts(&leaf_der)
+        && let Ok(leaf_der) = acme_proxy_core::cert::leaf_der_from_chain(certificate)
+        && let Ok((aki, _)) = acme_proxy_core::cert::ari_cert_id_parts(&leaf_der)
         && aki != parsed.aki
     {
         warn!(event = "replaces_aki_mismatch", outcome = "failure", replaces = %cert_id);
@@ -209,14 +209,14 @@ fn issue_failed(
     profile: &str,
     account_id: Uuid,
     order: &Order,
-    client: &crate::audit::ClientContext,
+    client: &acme_proxy_core::audit::ClientContext,
     reason: &'static str,
     detail: &str,
-) -> crate::audit::AuditRecord {
-    crate::audit::AuditRecord::new(
-        crate::audit::AuditEvent::CertificateIssueFailed,
+) -> acme_proxy_core::audit::AuditRecord {
+    acme_proxy_core::audit::AuditRecord::new(
+        acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
         profile,
-        crate::audit::Actor::acme(account_id),
+        acme_proxy_core::audit::Actor::acme(account_id),
     )
     .with_order(order.id, order.account_id, &order.identifiers)
     .with_client(client.clone())
@@ -614,7 +614,8 @@ impl OrderService<'_> {
                         challenge_type: challenge.typ.clone(),
                         identifier: authz.base_identifier().to_string(),
                         error: error.kind().to_string(),
-                        client_ip: client_ip.map(|ip| crate::client::canonical(ip).to_string()),
+                        client_ip: client_ip
+                            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
                     }))
                     .await;
             }
@@ -923,9 +924,9 @@ async fn commit_validation_failure(
 pub(crate) mod tests {
     use super::*;
     use crate::challenge::{ChallengeError, ChallengeRegistry, ChallengeValidator};
-    use crate::identifier::Identifier;
     use crate::notify::NotifyDispatcher;
     use crate::profile::ProfileParts;
+    use acme_proxy_core::identifier::Identifier;
     use std::time::Duration;
 
     /// A `default` profile over `database`: an in-memory CA, no filter, no
@@ -953,9 +954,9 @@ pub(crate) mod tests {
                 signer_info: signer.info(),
                 filter: Arc::new(crate::filter::FilterPolicy::default()),
                 challenges: Arc::new(challenges),
-                order: crate::config::OrderConfig::default(),
-                eab: crate::config::EabConfig::default(),
-                meta: crate::config::MetaConfig::default(),
+                order: acme_proxy_core::config::OrderConfig::default(),
+                eab: acme_proxy_core::config::EabConfig::default(),
+                meta: acme_proxy_core::config::MetaConfig::default(),
                 notify: Arc::new(NotifyDispatcher::disabled(crate::testutil::idle_job_queue(
                     database.clone(),
                 ))),
@@ -972,7 +973,7 @@ pub(crate) mod tests {
             "default",
             &key.subject_public_key_info(),
             vec![],
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             database,
         )
         .await

@@ -8,7 +8,7 @@
 //!
 //! Two sites deliberately stay outside this module, both because their failure
 //! handling differs rather than their randomness:
-//! [`crate::signer::local_ca`]'s serial generator returns a `Result`, and the
+//! `signer::local_ca`'s serial generator returns a `Result`, and the
 //! job runner's retry jitter falls back to an unjittered delay rather than
 //! panicking.
 
@@ -24,7 +24,7 @@ const TOKEN_BYTES: usize = 32;
 /// An unavailable system RNG is unrecoverable and threading the error out
 /// would only move the panic, so this panics.
 #[must_use]
-pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
+pub fn random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     SystemRandom::new()
         .fill(&mut bytes)
@@ -39,7 +39,7 @@ pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
 /// challenge token and §6.5.1 of a `Replay-Nonce`, and it is header-safe and
 /// URL-safe everywhere else the value is carried.
 #[must_use]
-pub(crate) fn random_token() -> String {
+pub fn random_token() -> String {
     BASE64_URL_SAFE_NO_PAD.encode(random_bytes::<TOKEN_BYTES>())
 }
 

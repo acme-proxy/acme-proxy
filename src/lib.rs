@@ -58,26 +58,26 @@
 //!   custom script)
 //!
 //! Supporting subsystems:
-//! - [`audit`] - The durable record of who asked this CA to sign or revoke
+//! - [`audit`](acme_proxy_core::audit) - The durable record of who asked this CA to sign or revoke
 //! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
 //!   webhook, custom)
 //! - [`ipam`] - The inventory [`filter`] asks which names an address owns
 //!   (NetBox, phpIPAM, a custom script), behind one trait
-//! - [`eab`] - Verification of the External Account Binding inner JWS (§7.3.4)
-//! - [`key_change`] - Verification of account key rollover JWS (§7.3.5)
+//! - [`eab`](acme_proxy_core::eab) - Verification of the External Account Binding inner JWS (§7.3.4)
+//! - [`key_change`](acme_proxy_core::key_change) - Verification of account key rollover JWS (§7.3.5)
 //! - [`dns`] - The resolver shared by every subsystem that looks anything up
 //! - [`http_client`] - The transport every outbound HTTP client is built on,
 //!   including the `CONNECT` tunnel
 //! - [`proxy`] - Which forward proxy, if any, that transport dials through
-//! - [`script_hook`] - The hardened contract every `custom` hook runs under
+//! - [`script_hook`](acme_proxy_core::script_hook) - The hardened contract every `custom` hook runs under
 //! - [`tls`] - Optional HTTPS termination for either listener
-//! - [`cert`] - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
-//! - [`pemfile`] - PEM reading, atomic writing and key-permission warnings
+//! - [`cert`](acme_proxy_core::cert) - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
+//! - [`pemfile`](acme_proxy_core::pemfile) - PEM reading, atomic writing and key-permission warnings
 //! - [`sqlite`] - Database access, one module per table
-//! - [`routes`] - The ACME resource paths and the profile namespace
-//! - [`logfields`] - Typed helpers for structured log fields
-//! - [`config`] - Configuration loading from multiple sources
-//! - [`error`] - ACME error types and problem document rendering
+//! - [`routes`](acme_proxy_core::routes) - The ACME resource paths and the profile namespace
+//! - [`logfields`](acme_proxy_core::logfields) - Typed helpers for structured log fields
+//! - [`config`](acme_proxy_core::config) - Configuration loading from multiple sources
+//! - [`error`](acme_proxy_core::error) - ACME error types and problem document rendering
 //!
 //! Process lifecycle — what keeps the server running and lets it be retuned
 //! without a restart:
@@ -106,7 +106,8 @@
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
 //! use acme_proxy::sqlite::db::Database;
-//! use acme_proxy::{challenge, config::Config, filter, ipam, jobs, notify, signer};
+//! use acme_proxy::{challenge, filter, ipam, jobs, notify, signer};
+//! use acme_proxy_core::config::Config;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -248,44 +249,28 @@
 
 pub mod acme;
 pub mod admin;
-pub mod audit;
 pub mod auditor;
-pub mod cert;
 pub mod challenge;
 pub mod cli;
-pub mod client;
-pub mod config;
 pub mod dns;
-pub mod eab;
 pub mod egress;
-pub mod error;
 pub mod extractors;
 pub mod filter;
 pub mod handlers;
 pub mod http_client;
-pub mod identifier;
 pub mod ipam;
 pub mod jobs;
-pub mod jws;
-pub mod key_change;
 pub mod listener;
-pub mod logfields;
 pub mod metrics;
 pub mod middlewares;
 pub mod notify;
-pub mod palette;
-pub mod pemfile;
 pub mod profile;
 pub mod proxy;
-mod random;
 pub mod reload;
 pub mod router;
-pub mod routes;
-pub mod script_hook;
 pub mod server;
 pub mod signer;
 pub mod sqlite;
-mod templating;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub mod tls;

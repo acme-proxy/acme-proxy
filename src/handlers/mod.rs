@@ -13,7 +13,7 @@
 //! what stays here is what only HTTP has (a `Location`, a `Retry-After`, a
 //! `Link`).
 //!
-//! Errors are [`crate::error::Problem`] values, which render as RFC 8555
+//! Errors are [`acme_proxy_core::error::Problem`] values, which render as RFC 8555
 //! `application/problem+json`.
 
 pub mod account;

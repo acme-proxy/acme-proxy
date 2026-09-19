@@ -62,9 +62,9 @@ pub use webadmin::AdminCommand;
 
 use crate::cli::filter::FilterCommand;
 pub use crate::cli::style::ColorChoice;
-use crate::config::Config;
-use crate::palette::Palette;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Parser)]
 #[command(
@@ -240,7 +240,7 @@ pub(crate) fn offline_notifiers(
 pub(crate) fn resolve_profile(
     config: &Config,
     wanted: Option<&str>,
-) -> Result<crate::config::ProfileConfig, CliError> {
+) -> Result<acme_proxy_core::config::ProfileConfig, CliError> {
     let profiles = config
         .resolve_profiles()
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;

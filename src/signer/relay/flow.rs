@@ -36,13 +36,13 @@ use base64::prelude::*;
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 
-use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::signer::issuance::IssuanceError;
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::Order;
 use crate::sqlite::upstream_order::UpstreamOrder;
+use acme_proxy_core::error::Problem;
 
 use super::client::{Signer, UpstreamError};
 use super::wire::{UpstreamAuthzView, UpstreamChallengeView, UpstreamOrderView};
@@ -562,7 +562,7 @@ async fn relay(
 /// thumbprint is a key problem, not a moment's bad luck, and asking again in
 /// thirty seconds changes nothing.
 fn upstream_thumbprint(inner: &Inner) -> Result<String, RelayFailure> {
-    crate::jws::signature::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
+    acme_proxy_core::jws::signature::jwk_thumbprint(inner.account.spki_der()).map_err(|error| {
         RelayFailure::Permanent(format!(
             "cannot derive the upstream account thumbprint: {error}"
         ))
@@ -964,7 +964,10 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
 async fn relay_actor_and_client(
     order: &Order,
     database: &Database,
-) -> (crate::audit::Actor, crate::audit::ClientContext) {
+) -> (
+    acme_proxy_core::audit::Actor,
+    acme_proxy_core::audit::ClientContext,
+) {
     let mapping = UpstreamOrder::find_by_order_id(&order.id.to_string(), database)
         .await
         .unwrap_or_else(|error| {
@@ -973,12 +976,12 @@ async fn relay_actor_and_client(
         });
     match &mapping {
         Some(mapping) => (
-            crate::audit::Actor::acme(order.account_id.to_string()),
+            acme_proxy_core::audit::Actor::acme(order.account_id.to_string()),
             mapping.client(),
         ),
         None => (
-            crate::audit::Actor::system(),
-            crate::audit::ClientContext::default(),
+            acme_proxy_core::audit::Actor::system(),
+            acme_proxy_core::audit::ClientContext::default(),
         ),
     }
 }
@@ -1003,8 +1006,8 @@ async fn relay_actor_and_client(
 pub(crate) async fn abandon_relayed_order(
     order: &mut Order,
     reason: &str,
-    actor: crate::audit::Actor,
-    client: crate::audit::ClientContext,
+    actor: acme_proxy_core::audit::Actor,
+    client: acme_proxy_core::audit::ClientContext,
     audit: &crate::auditor::Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
@@ -1034,10 +1037,10 @@ mod tests {
     /// the registry of the `Auditor` it writes through.
     #[tokio::test]
     async fn abandon_relayed_order_marks_both_rows_and_writes_one_row() {
-        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
         use crate::sqlite::audit::{AuditEntry, AuditQuery};
         use crate::sqlite::db::Database;
+        use acme_proxy_core::identifier::Identifier;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let metrics = crate::testutil::test_metrics(database.clone());
@@ -1045,9 +1048,9 @@ mod tests {
             crate::auditor::Auditor::offline(database.clone()).with_metrics(metrics.clone());
         let (account, _) = Account::find_or_create(
             "default",
-            &crate::random::random_bytes::<16>(),
+            &acme_proxy_core::random::random_bytes::<16>(),
             Vec::new(),
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             &database,
         )
         .await
@@ -1076,10 +1079,10 @@ mod tests {
         abandon_relayed_order(
             &mut order,
             "cancelled by operator",
-            crate::audit::Actor::admin("root"),
-            crate::audit::ClientContext {
+            acme_proxy_core::audit::Actor::admin("root"),
+            acme_proxy_core::audit::ClientContext {
                 ip: Some("203.0.113.9".to_string()),
-                ..crate::audit::ClientContext::default()
+                ..acme_proxy_core::audit::ClientContext::default()
             },
             &audit,
             &database,

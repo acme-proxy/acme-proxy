@@ -1,6 +1,6 @@
 //! Small X.509 helpers shared by the certificate revocation paths: the ACME
-//! `POST /revokeCert` handler ([`crate::handlers::post_revoke_cert`]) and the `order
-//! revoke` admin CLI command ([`crate::admin::revoke_order`]). Both need to
+//! `POST /revokeCert` handler (`handlers::post_revoke_cert`) and the `order
+//! revoke` admin CLI command (`admin::revoke_order`). Both need to
 //! pull a certificate's serial/public key out of raw DER, and pull the leaf
 //! back out of a stored `leaf + CA` PEM chain, so the parsing lives here once
 //! rather than twice.
@@ -12,7 +12,7 @@ use x509_parser::pem::Pem;
 /// RFC 5280 §5.3.1 `CRLReason` codes RFC 8555 §7.6 permits in a revocation
 /// request's `reason` — every value except the reserved `7`. Shared with
 /// `rcgen::RevocationReason`'s own numbering (see
-/// [`crate::signer::local_ca`]).
+/// `signer::local_ca`).
 pub const ALLOWED_REVOCATION_REASONS: [u32; 10] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
 
 /// Whether `reason` is one of the `CRLReason` codes RFC 8555 §7.6 permits.
@@ -67,8 +67,8 @@ pub fn leaf_der_from_chain(chain_pem: &str) -> anyhow::Result<Vec<u8>> {
 /// base64url(serial)`, both unpadded.
 ///
 /// Used in both directions: to ask an upstream CA about a certificate
-/// ([`crate::signer::relay`]) and to check an inbound certID against the
-/// certificate it claims to name ([`crate::handlers::get_renewal_info`]).
+/// (`signer::relay`) and to check an inbound certID against the
+/// certificate it claims to name (`handlers::get_renewal_info`).
 ///
 /// Fails when the certificate carries no Authority Key Identifier extension,
 /// or one with no `keyIdentifier` field — without it there is no certID to

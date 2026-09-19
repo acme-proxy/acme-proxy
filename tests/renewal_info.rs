@@ -149,7 +149,7 @@ fn cert_field(chain_pem: &str) -> String {
 /// local CA actually *emitting* an Authority Key Identifier: without it,
 /// `ari_cert_id` fails and every test in this file panics here.
 fn cert_id(chain_pem: &str) -> String {
-    acme_proxy::cert::ari_cert_id(&first_certificate(chain_pem))
+    acme_proxy_core::cert::ari_cert_id(&first_certificate(chain_pem))
         .expect("an issued leaf must carry an AKI, or no client can build a certID for it")
 }
 
@@ -515,7 +515,7 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     // celui que la commande a enregistré — c'est ce que produisait `local_ca`
     // avant que `use_authority_key_identifier_extension` ne soit posé.
     let leaf = first_certificate(&chain);
-    let (serial_hex, _) = acme_proxy::cert::cert_serial_and_spki(&leaf).unwrap();
+    let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
     let serial_bytes = hex::decode(&serial_hex).unwrap();
 
     let key = rcgen::KeyPair::generate().unwrap();
@@ -523,7 +523,7 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     params.serial_number = Some(rcgen::SerialNumber::from_slice(&serial_bytes));
     let no_aki = params.self_signed(&key).unwrap();
     assert!(
-        acme_proxy::cert::ari_cert_id(no_aki.der()).is_err(),
+        acme_proxy_core::cert::ari_cert_id(no_aki.der()).is_err(),
         "précondition : ce certificat ne porte pas d'AKI"
     );
 

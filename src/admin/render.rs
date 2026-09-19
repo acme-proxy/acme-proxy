@@ -38,7 +38,7 @@ pub fn profile_base_url(base_url: &str, profile: &str) -> String {
     format!(
         "{}{}/{profile}",
         base_url.trim_end_matches('/'),
-        crate::routes::PROFILE_PREFIX
+        acme_proxy_core::routes::PROFILE_PREFIX
     )
 }
 
@@ -516,7 +516,7 @@ impl ProfileSummary {
     /// is mapped over is already the mounted set, minus the fact of being
     /// mounted.
     #[must_use]
-    pub fn configured(base_url: &str, profile: &crate::config::ProfileConfig) -> Self {
+    pub fn configured(base_url: &str, profile: &acme_proxy_core::config::ProfileConfig) -> Self {
         Self {
             name: profile.name.clone(),
             base_url: profile_base_url(base_url, &profile.name),
@@ -528,7 +528,7 @@ impl ProfileSummary {
     /// Where a client fetches this endpoint's directory (RFC 8555 §7.1.1).
     #[must_use]
     pub fn directory_url(&self) -> String {
-        format!("{}{}", self.base_url, crate::routes::DIRECTORY)
+        format!("{}{}", self.base_url, acme_proxy_core::routes::DIRECTORY)
     }
 }
 
@@ -550,8 +550,6 @@ mod tests {
 
     use super::*;
     use crate::admin::ops::load_order_detail;
-    use crate::audit::ClientContext;
-    use crate::identifier::Identifier;
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
     use crate::sqlite::status::OrderStatus;
@@ -559,6 +557,8 @@ mod tests {
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, client_context,
         job_fixture, order_fixture, upstream_order_row_fixture,
     };
+    use acme_proxy_core::audit::ClientContext;
+    use acme_proxy_core::identifier::Identifier;
 
     #[tokio::test]
     async fn render_account_json_includes_id_and_base_fields() {

@@ -9,7 +9,8 @@
 //! lines apart. Every one of those was individually reasonable and collectively
 //! made a prefix grep miss half its family.
 //!
-//! So the rules are checked rather than described. This walks `src/`, extracts
+//! So the rules are checked rather than described. This walks `src/` and every
+//! `crates/*/src/` of the workspace, extracts
 //! every `info!`/`warn!`/`error!`/`debug!`/`trace!` invocation by balanced-paren
 //! scan, and asserts the nine rules stated in `CLAUDE.md`. It is the sibling of
 //! `admin_api.rs`'s `mutating_endpoints()`: a new call site that strays fails
@@ -79,7 +80,7 @@ const OUTCOMES: &[&str] = &["success", "failure", "progress", "advisory"];
 /// `pemfile::warn_if_key_is_readable` takes its event name as a `&'static str`
 /// so four subsystems share one warning. The only place `event` is not a bare
 /// literal, and the reasoning is in that function's doc comment.
-const NON_LITERAL_EVENT_EXEMPT: &str = "src/pemfile.rs";
+const NON_LITERAL_EVENT_EXEMPT: &str = "crates/core/src/pemfile.rs";
 
 /// The access line is emitted at three levels by response status, which
 /// `doc/src/operations/monitoring.md` documents as a table. The only name that
@@ -122,6 +123,25 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Every Rust source of the workspace: the binary's `src/` and each library
+/// crate's `crates/<name>/src/`.
+fn workspace_sources() -> Vec<PathBuf> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("src"), &mut files);
+    for krate in fs::read_dir(root.join("crates"))
+        .expect("crates/ is readable")
+        .flatten()
+    {
+        let src = krate.path().join("src");
+        if src.is_dir() {
+            rust_sources(&src, &mut files);
+        }
+    }
+    files.sort();
+    files
+}
+
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("src/ is readable").flatten() {
         let path = entry.path();
@@ -155,15 +175,13 @@ fn matching_paren(text: &[u8], open: usize) -> usize {
     text.len()
 }
 
-/// Every `tracing` macro invocation under `src/`, with its event, outcome and
+/// Every `tracing` macro invocation in the workspace's sources, with its event, outcome and
 /// field names pulled out.
 fn call_sites() -> Vec<Site> {
     const LEVELS: &[&str] = &["info", "warn", "error", "debug", "trace"];
 
     let root = repo_root();
-    let mut files = Vec::new();
-    rust_sources(&root.join("src"), &mut files);
-    files.sort();
+    let files = workspace_sources();
 
     let mut sites = Vec::new();
     for path in files {
@@ -319,7 +337,7 @@ fn every_storage_layer_event_is_db_prefixed() {
 
 #[test]
 fn every_site_carries_an_outcome_from_the_closed_set() {
-    // No exemption here, `src/pemfile.rs` included: only the *event* may be a
+    // No exemption here, `crates/core/src/pemfile.rs` included: only the *event* may be a
     // parameter there, and the outcome of a permissions warning is knowable.
     for site in call_sites() {
         let outcome = site.outcome.as_deref().unwrap_or_else(|| {
@@ -437,7 +455,7 @@ fn durations_go_through_the_millis_helper() {
     for site in call_sites() {
         assert!(
             !site.body.contains("as_millis()"),
-            "{}: a duration field goes through `acme_proxy::logfields::millis`, never \
+            "{}: a duration field goes through `acme_proxy_core::logfields::millis`, never \
              `Duration::as_millis()` -- the latter lands in JSON as a string",
             site.at(),
         );

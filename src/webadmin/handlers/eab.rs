@@ -92,7 +92,7 @@ pub async fn get_eab(
 pub async fn create_eab(
     State(state): State<AdminState>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<CreateEab>>,
 ) -> Result<Response, AdminError> {
     let Json(body) = body.unwrap_or_default();
@@ -135,7 +135,7 @@ pub async fn revoke_eab(
     State(state): State<AdminState>,
     Path(kid): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<StatusCode, AdminError> {
     let subject = Eab::find_any_by_kid(&kid, &state.database).await?;
     if !Eab::revoke(&kid, &state.database).await? {
@@ -168,7 +168,7 @@ pub async fn delete_eab(
     Path(kid): Path<String>,
     Query(params): Query<DeleteEabParams>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Json<Value>, AdminError> {
     let accounts = params.resolve()?;
     let deleted = deleted_or_refused(

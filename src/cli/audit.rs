@@ -4,13 +4,13 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin;
-use crate::audit::ALL_AUDIT_EVENTS;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::palette::Palette;
 use crate::sqlite::audit::AuditQuery;
 use crate::sqlite::db::Database;
+use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum AuditCommand {
@@ -65,7 +65,7 @@ pub enum AuditCommand {
 /// single most misleading answer an audit tool can give.
 fn check_filters(event: Option<&str>, outcome: Option<&str>) -> Result<(), CliError> {
     if let Some(event) = event
-        && crate::audit::AuditEvent::parse(event).is_none()
+        && acme_proxy_core::audit::AuditEvent::parse(event).is_none()
     {
         let known: Vec<&str> = ALL_AUDIT_EVENTS.iter().map(|e| e.as_str()).collect();
         return Err(CliError::bad_request(format!(
@@ -111,7 +111,9 @@ pub async fn run_audit_command(
                 order_id,
                 // See `order list --cert-serial`: the same fold, for the same
                 // reason, on the same column.
-                cert_serial: cert_serial.as_deref().map(crate::cert::normalize_serial),
+                cert_serial: cert_serial
+                    .as_deref()
+                    .map(acme_proxy_core::cert::normalize_serial),
                 event,
                 outcome,
                 since: since_days.map(crate::sqlite::audit::audit_cutoff),
@@ -164,13 +166,9 @@ pub async fn run_audit_command(
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
-    use acme_proxy_self::audit::{Actor, AuditRecord};
-    use acme_proxy_self::sqlite::audit::AuditEntry;
-    use acme_proxy_self::sqlite::db::Database;
-
-    // The crate refers to itself as `crate`; this alias keeps the imports above
-    // readable next to the `crate::` paths in the module body.
-    use crate as acme_proxy_self;
+    use crate::sqlite::audit::AuditEntry;
+    use crate::sqlite::db::Database;
+    use acme_proxy_core::audit::{Actor, AuditRecord};
 
     async fn db_with_rows() -> Arc<Database> {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());

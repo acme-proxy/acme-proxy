@@ -43,9 +43,9 @@ use axum::{
 };
 use tracing::{Span, field, warn};
 
-use crate::client::ClientIp;
-use crate::error::Problem;
 use crate::filter::{ConnectionContext, FilterPolicy, Outcome};
+use acme_proxy_core::client::ClientIp;
+use acme_proxy_core::error::Problem;
 
 pub async fn add_filter_middleware(
     State(policy): State<Arc<FilterPolicy>>,
@@ -119,8 +119,8 @@ mod tests {
     use axum::{Router, middleware, routing::get};
     use tower::ServiceExt;
 
-    use crate::client::ProxyPolicy;
     use crate::filter::Effect;
+    use acme_proxy_core::client::ProxyPolicy;
 
     /// The two layers as `build_router` stacks them: the access middleware
     /// outermost (it owns the `request` span), this one inside it.
@@ -162,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn a_trusted_proxys_forwarded_client_replaces_the_peer_on_the_span() {
         let app = app(&["10.0.0.0/8".to_string()]);
-        let fields = crate::testutil::capture_request_span(
+        let fields = acme_proxy_core::testutil::capture_request_span(
             app.oneshot(request([10, 0, 0, 1], Some("198.51.100.9"))),
         )
         .await;
@@ -176,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn an_untrusted_peers_forwarded_header_is_ignored() {
         let app = app(&[]);
-        let fields = crate::testutil::capture_request_span(
+        let fields = acme_proxy_core::testutil::capture_request_span(
             app.oneshot(request([203, 0, 113, 5], Some("198.51.100.9"))),
         )
         .await;

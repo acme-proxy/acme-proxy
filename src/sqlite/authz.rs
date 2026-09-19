@@ -4,12 +4,12 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::identifier::Identifier;
-use crate::random::random_token;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
 use crate::sqlite::status::{self, AuthzStatus, ChallengeStatus};
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::random::random_token;
 
 /// An ACME authorization (RFC 8555 §7.1.4). One authorization is created per
 /// order identifier when the order is created, starting in the `pending` state
@@ -723,11 +723,11 @@ impl Challenge {
 mod tests {
 
     use super::*;
-    use crate::audit::ClientContext;
     use crate::sqlite::account::Account;
     use crate::sqlite::order::Order;
     use crate::sqlite::status::OrderStatus;
     use crate::testutil::account_id;
+    use acme_proxy_core::audit::ClientContext;
     use std::sync::Arc;
 
     /// The listing paths' N+1 fix: one query for a whole page.

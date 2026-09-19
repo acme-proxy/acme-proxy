@@ -570,7 +570,7 @@ mod tests {
         assert!(matches!(error, UserError::Policy(_)));
         assert!(error.to_string().contains("commonly used"));
 
-        let mut config = crate::config::Config::default();
+        let mut config = acme_proxy_core::config::Config::default();
         config.server.base_url = "https://ca.example.com".to_string();
         let context = PasswordContext::from_config(&config, "alice");
         let error = create_user("alice", "acmeproxy2026!!", &context, None, db.clone())

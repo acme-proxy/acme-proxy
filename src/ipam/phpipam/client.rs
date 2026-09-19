@@ -38,8 +38,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::{PhpIpamAddress, PhpIpamApi};
-use crate::config::PhpIpamConfig;
 use crate::ipam::http::{JsonApi, JsonApiError, tls_config};
+use acme_proxy_core::config::PhpIpamConfig;
 
 /// phpIPAM's own header name for the application's app code.
 const TOKEN_HEADER: &str = "token";

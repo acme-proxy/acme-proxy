@@ -13,7 +13,7 @@
 //! never carry a client for answers the same question through the same
 //! contract [`filter::custom`](crate::filter::custom) and
 //! [`signer::custom`](crate::signer::custom) use, over the shared
-//! [`script_hook`](crate::script_hook) hardening.
+//! [`script_hook`](acme_proxy_core::script_hook) hardening.
 //!
 //! ## The contract
 //!
@@ -58,8 +58,10 @@ use serde_json::json;
 use tracing::info;
 
 use super::{AddressNames, Ipam, IpamError};
-use crate::config::CustomIpamConfig;
-use crate::script_hook::{ScriptError, ScriptHook, ScriptStdin};
+use acme_proxy_core::config::CustomIpamConfig;
+use acme_proxy_core::script_hook::ScriptError;
+use acme_proxy_core::script_hook::ScriptHook;
+use acme_proxy_core::script_hook::ScriptStdin;
 
 /// The exit status meaning "this inventory holds no record of that address".
 ///
@@ -86,7 +88,7 @@ impl std::fmt::Debug for CustomIpamBackend {
 impl CustomIpamBackend {
     /// Validates the configuration and builds the hook. Runs nothing.
     ///
-    /// `timeout_ms` is [`IpamConfig::timeout_ms`](crate::config::IpamConfig),
+    /// `timeout_ms` is [`IpamConfig::timeout_ms`](acme_proxy_core::config::IpamConfig),
     /// not a budget of this section's own: the registry already wraps every
     /// lookup in it, and giving the hook the same value is what makes the
     /// child actually killed at the deadline rather than left to
@@ -171,7 +173,8 @@ impl Ipam for CustomIpamBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TempDir, write_script};
+    use acme_proxy_core::testutil::TempDir;
+    use acme_proxy_core::testutil::write_script;
     use std::time::Duration;
 
     const CLIENT: &str = "203.0.113.5";

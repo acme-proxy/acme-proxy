@@ -34,7 +34,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use tokio::net::{TcpStream, UdpSocket};
 use tracing::debug;
 
-use crate::config::Rfc2136Config;
+use acme_proxy_core::config::Rfc2136Config;
 
 /// Publishes and retracts the TXT records an upstream `dns-01` challenge needs.
 ///

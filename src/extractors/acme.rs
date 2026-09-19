@@ -6,15 +6,16 @@ use base64::prelude::*;
 use serde::de::DeserializeOwned;
 use tracing::{Span, debug, error, instrument, warn};
 
-use crate::error::Problem;
 use crate::router::AppState;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::Nonce;
+use acme_proxy_core::error::Problem;
 
-use crate::jws::signature::{
-    SignatureError, verify_signature_and_get_der, verify_signature_with_spki,
-};
-use crate::jws::{AcmeJwsRequest, ProtectedHeader};
+use acme_proxy_core::jws::AcmeJwsRequest;
+use acme_proxy_core::jws::ProtectedHeader;
+use acme_proxy_core::jws::signature::SignatureError;
+use acme_proxy_core::jws::signature::verify_signature_and_get_der;
+use acme_proxy_core::jws::signature::verify_signature_with_spki;
 
 /// ACME request wrapper containing validated JWS data.
 pub struct AcmeRequest<T> {
@@ -68,7 +69,7 @@ where
     let request_path = req.uri().path().to_string();
     // Read before the body is consumed below, and kept for the `last_seen_*`
     // stamp at the very end of this function.
-    let request_context = crate::audit::RequestContext::from_request(&req);
+    let request_context = acme_proxy_core::audit::RequestContext::from_request(&req);
     debug!(event = "jws_request_received", outcome = "progress", path = %request_path);
 
     // RFC 8555 §6.2: an ACME request body is a flattened JWS and so "must have
@@ -271,12 +272,12 @@ where
 ///   client arriving over IPv4 and IPv6 must not read as two addresses.
 async fn touch_account(
     account: &mut Account,
-    request: &crate::audit::RequestContext,
+    request: &acme_proxy_core::audit::RequestContext,
     app: &AppState,
 ) {
     let ip = request
         .ip
-        .map(crate::client::canonical)
+        .map(acme_proxy_core::client::canonical)
         .map(|ip| ip.to_string());
     if !account.needs_touch(crate::sqlite::nonce::now_secs(), ip.as_deref()) {
         return;

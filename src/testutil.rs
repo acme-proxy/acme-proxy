@@ -12,10 +12,8 @@
 //! tests cannot see it for the same reason and keep their own copy under
 //! `tests/common/`.
 
-use crate::audit::ClientContext;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use acme_proxy_core::audit::ClientContext;
+use std::sync::Arc;
 
 /// A Prometheus registry for a test that only needs one to exist.
 ///
@@ -26,199 +24,6 @@ pub(crate) fn test_metrics(
     database: Arc<crate::sqlite::db::Database>,
 ) -> Arc<crate::metrics::Metrics> {
     Arc::new(crate::metrics::Metrics::new(database))
-}
-
-/// Captures the fields of one named tracing span.
-///
-/// The only way to assert on a *span* field: unlike an event field, nothing in
-/// a response or a captured log line says whether it was recorded or what with.
-/// Both halves of the deferred-record pattern are collected — `on_new_span` for
-/// the fields set at creation, `on_record` for the ones a later layer fills in
-/// (`client_ip`, `profile`, `alg`, `account_id`).
-#[derive(Clone)]
-pub(crate) struct SpanFields {
-    name: &'static str,
-    fields: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl SpanFields {
-    pub(crate) fn capturing(name: &'static str) -> Self {
-        Self {
-            name,
-            fields: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// The recorded value of `field`, or `None` when it was never recorded —
-    /// which is what a `field::Empty` nobody filled in looks like.
-    pub(crate) fn get(&self, field: &str) -> Option<String> {
-        self.fields.lock().unwrap().get(field).cloned()
-    }
-}
-
-impl tracing::field::Visit for SpanFields {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.fields
-            .lock()
-            .unwrap()
-            .insert(field.name().to_string(), format!("{value:?}"));
-    }
-}
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SpanFields {
-    fn on_new_span(
-        &self,
-        attrs: &tracing::span::Attributes<'_>,
-        _id: &tracing::Id,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if attrs.metadata().name() == self.name {
-            attrs.record(&mut self.clone());
-        }
-    }
-
-    fn on_record(
-        &self,
-        _id: &tracing::Id,
-        values: &tracing::span::Record<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        values.record(&mut self.clone());
-    }
-}
-
-/// Runs `body` under a subscriber capturing the `request` span, and returns
-/// what it recorded.
-///
-/// `#[tokio::test]` is a current-thread runtime, so the thread-local default
-/// this installs covers the whole future including its awaits.
-pub(crate) async fn capture_request_span<F, T>(body: F) -> SpanFields
-where
-    F: std::future::Future<Output = T>,
-{
-    use tracing_subscriber::layer::SubscriberExt;
-
-    let captured = SpanFields::capturing("request");
-    let subscriber = tracing_subscriber::registry().with(captured.clone());
-    let _guard = tracing::subscriber::set_default(subscriber);
-    body.await;
-    captured
-}
-
-/// A scratch directory that removes itself on drop, so a failing assertion
-/// cannot leave files behind.
-pub(crate) struct TempDir(PathBuf);
-
-impl TempDir {
-    /// Creates a uniquely named directory; `label` only makes it recognisable
-    /// if one ever survives a hard crash.
-    pub(crate) fn new(label: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir_all(&path).expect("temp directory must be creatable");
-        Self(path)
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.0
-    }
-
-    /// The path of `name` inside this directory, without creating it.
-    pub(crate) fn join(&self, name: &str) -> PathBuf {
-        self.0.join(name)
-    }
-
-    /// Writes `contents` to `name` and returns its path.
-    pub(crate) fn write(&self, name: &str, contents: &str) -> PathBuf {
-        let path = self.join(name);
-        std::fs::write(&path, contents).expect("temp file must be writable");
-        path
-    }
-}
-
-/// So a `TempDir` drops straight into anything taking a path — `std::fs`,
-/// `Path::join`, a config field — without `.path()` at every call site. Most of
-/// the callers this replaced were passing `&dir` to exactly those.
-impl AsRef<Path> for TempDir {
-    fn as_ref(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// Writes an executable script and returns its path.
-///
-/// ## Why the suite must run under `cargo nextest`, not `cargo test`
-///
-/// Every caller of this exec's a file it has just written. Under plain
-/// `cargo test`, which runs tests as threads of a single process, that
-/// intermittently fails with `ETXTBSY`: another thread's `Command::spawn` forks
-/// while this file's write descriptor is still open, and the forked child holds
-/// that descriptor until its own `exec`. The kernel refuses to execute a file
-/// any process holds open for writing.
-///
-/// Nothing here can avoid it. The check is against the inode, so writing
-/// elsewhere and renaming into place does not help either, and the window is
-/// owned by an unrelated thread. `cargo test --lib` fails roughly one run in
-/// three because of it. `nextest`'s process-per-test isolation removes it
-/// entirely, which is why it is a requirement of this project rather than a
-/// preference.
-#[cfg(unix)]
-pub(crate) fn write_script(dir: &TempDir, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
-    let path = dir.write(name, body);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("script must be made executable");
-    path
-}
-
-/// Sets `ACME_PROXY_*`-style variables for the life of the guard, holding
-/// [`crate::config::ENV_LOCK`] throughout.
-///
-/// Environment variables are process state, so a test setting one while another
-/// calls `Config::load()` makes the second read the first's. Lives here rather
-/// than inside `config::tests` because [`crate::proxy`] reads the conventional
-/// `http_proxy` family and needs exactly the same serialisation — a second copy
-/// would take a *different* lock and serialise nothing.
-///
-/// `ACME_PROXY_CONFIG` is always pinned at a path that does not exist, so a
-/// `config.toml` in the working directory cannot leak into a test.
-pub(crate) struct EnvGuard {
-    keys: Vec<String>,
-    _lock: std::sync::MutexGuard<'static, ()>,
-}
-
-impl EnvGuard {
-    pub(crate) fn new(vars: &[(&str, &str)]) -> Self {
-        let _lock = crate::config::ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut keys = vec!["ACME_PROXY_CONFIG".to_string()];
-        unsafe {
-            std::env::set_var("ACME_PROXY_CONFIG", "/nonexistent/acme-proxy-config");
-            for (key, value) in vars {
-                std::env::set_var(key, value);
-                keys.push((*key).to_string());
-            }
-        }
-        Self { keys, _lock }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            for key in &self.keys {
-                std::env::remove_var(key);
-            }
-        }
-    }
 }
 
 /// No proxy at all — what every test that is not *about* proxying wants.
@@ -246,7 +51,7 @@ pub(crate) fn outbound_with(
 pub(crate) fn idle_job_queue(
     database: std::sync::Arc<crate::sqlite::db::Database>,
 ) -> crate::jobs::JobQueue {
-    crate::jobs::JobQueue::new(database, &crate::config::JobsConfig::default())
+    crate::jobs::JobQueue::new(database, &acme_proxy_core::config::JobsConfig::default())
 }
 
 /// Egress for a test: the given resolver, no proxy, and an identity nothing
@@ -417,19 +222,19 @@ impl FakeProxy {
 /// two modules had a verbatim `fn ids(&[(&str, &str)])` and several more built
 /// the same `Vec` inline.
 #[cfg(test)]
-pub(crate) fn identifiers(pairs: &[(&str, &str)]) -> Vec<crate::identifier::Identifier> {
+pub(crate) fn identifiers(pairs: &[(&str, &str)]) -> Vec<acme_proxy_core::identifier::Identifier> {
     pairs
         .iter()
-        .map(|(typ, value)| crate::identifier::Identifier::new(*typ, *value))
+        .map(|(typ, value)| acme_proxy_core::identifier::Identifier::new(*typ, *value))
         .collect()
 }
 
 /// The `dns`-only shorthand for [`identifiers`].
 #[cfg(test)]
-pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<crate::identifier::Identifier> {
+pub(crate) fn dns_identifiers(values: &[&str]) -> Vec<acme_proxy_core::identifier::Identifier> {
     values
         .iter()
-        .map(|value| crate::identifier::Identifier::dns(*value))
+        .map(|value| acme_proxy_core::identifier::Identifier::dns(*value))
         .collect()
 }
 
@@ -499,7 +304,7 @@ pub(crate) fn order_fixture(
     let mut order = crate::sqlite::order::Order::new(
         "default",
         account_id,
-        vec![crate::identifier::Identifier::dns("example.com")],
+        vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
         0,
         None,
         None,
@@ -524,8 +329,8 @@ pub(crate) async fn issued_order(
     names: &[&str],
     not_after_days: i64,
 ) -> crate::sqlite::order::Order {
-    use crate::identifier::Identifier;
     use crate::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     const DAY: i64 = 24 * 60 * 60;
 
@@ -570,8 +375,8 @@ pub(crate) async fn issued_order(
         crate::signer::IssueOutcome::Issued(chain) => chain,
         crate::signer::IssueOutcome::Processing => panic!("the in-memory CA is synchronous"),
     };
-    let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
-    let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+    let (serial, pubkey) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
     order
         .finalize(
             chain,
@@ -601,7 +406,7 @@ pub(crate) async fn certified_order(
     let mut order = crate::sqlite::order::Order::create(
         "default",
         account,
-        vec![crate::identifier::Identifier::dns("example.com")],
+        vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
         crate::sqlite::nonce::now_secs() + 3600,
         None,
         None,
@@ -689,7 +494,9 @@ pub(crate) fn upstream_order_row_fixture() -> crate::sqlite::upstream_order::Ups
         request_id: Some("req-9".to_string()),
         profile: "le".to_string(),
         account_id: uuid::uuid!("00000000-0000-7000-8000-0000000acc01"),
-        identifiers: vec![crate::identifier::Identifier::dns("a.example.com")],
+        identifiers: vec![acme_proxy_core::identifier::Identifier::dns(
+            "a.example.com",
+        )],
         local_status: crate::sqlite::status::OrderStatus::Processing,
         local_expires: 1_700_600_000,
     }

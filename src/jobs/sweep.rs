@@ -332,8 +332,8 @@ impl JobHandler for SweepJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::JobsConfig;
     use crate::sqlite::nonce::{Nonce, now_secs};
+    use acme_proxy_core::config::JobsConfig;
     use serde_json::json;
 
     async fn setup() -> (Arc<Database>, JobQueue) {
@@ -479,10 +479,10 @@ mod tests {
         // Written through the model, then backdated: the row's shape is the
         // production one, and only its age is a fixture.
         crate::sqlite::audit::AuditEntry::insert(
-            crate::audit::AuditRecord::new(
-                crate::audit::AuditEvent::CertificateIssued,
+            acme_proxy_core::audit::AuditRecord::new(
+                acme_proxy_core::audit::AuditEvent::CertificateIssued,
                 "default",
-                crate::audit::Actor::system(),
+                acme_proxy_core::audit::Actor::system(),
             ),
             &database,
         )
@@ -639,16 +639,16 @@ mod tests {
     /// exclusion has to be about the *status* and not about the clock.
     #[tokio::test]
     async fn the_order_sweep_spares_valid_orders_and_takes_expired_ones() {
-        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
         use crate::sqlite::order::Order;
+        use acme_proxy_core::identifier::Identifier;
 
         let (database, _queue) = setup().await;
         let (account, _) = Account::find_or_create(
             "default",
             &[3u8; 8],
             vec![],
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             &database,
         )
         .await
@@ -716,9 +716,9 @@ mod tests {
     /// profile's rows must not go out with the first's.
     #[tokio::test]
     async fn the_order_sweep_is_scoped_to_one_profile() {
-        use crate::identifier::Identifier;
         use crate::sqlite::account::Account;
         use crate::sqlite::order::Order;
+        use acme_proxy_core::identifier::Identifier;
 
         let (database, _queue) = setup().await;
         let ancient = now_secs() - 400 * 24 * 60 * 60;
@@ -728,7 +728,7 @@ mod tests {
                 profile,
                 &[index as u8 + 40; 8],
                 vec![],
-                &crate::audit::ClientContext::default(),
+                &acme_proxy_core::audit::ClientContext::default(),
                 &database,
             )
             .await

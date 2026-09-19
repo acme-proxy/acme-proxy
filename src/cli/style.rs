@@ -1,7 +1,7 @@
 //! Whether the admin CLI's human-readable output is coloured.
 //!
 //! The palette itself — what colour *means*, and the pad-first rule — is
-//! [`crate::palette`]; this module decides whether a run gets one that is on
+//! [`acme_proxy_core::palette`]; this module decides whether a run gets one that is on
 //! ([`resolve`]).
 //!
 //! **Precedence deliberately differs from `logging.ansi`.**
@@ -12,7 +12,8 @@
 //! person reading the output, one command ago, and it beats both the TTY test
 //! and `NO_COLOR`. That is what makes piping into `less -R` work.
 
-use crate::palette::{Palette, no_color_set};
+use acme_proxy_core::palette::Palette;
+use acme_proxy_core::palette::no_color_set;
 
 /// When to colour human-readable output — the `--color` flag's values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]

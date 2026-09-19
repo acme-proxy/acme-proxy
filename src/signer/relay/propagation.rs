@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use tracing::debug;
 
-use crate::config::Dns01PropagationConfig;
+use acme_proxy_core::config::Dns01PropagationConfig;
 
 /// What `answer_dns01` waits for between publishing a record and asking the
 /// upstream to validate it.
@@ -90,7 +90,7 @@ impl Propagation {
                     event = "signer_relay_dns_01_propagation_waited",
                     outcome = "progress",
                     name = %name,
-                    delay_ms = crate::logfields::millis(*delay),
+                    delay_ms = acme_proxy_core::logfields::millis(*delay),
                 );
                 tokio::time::sleep(*delay).await;
             }

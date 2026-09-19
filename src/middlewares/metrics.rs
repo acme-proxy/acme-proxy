@@ -67,7 +67,10 @@ mod tests {
 
         Router::new()
             .route("/health", get(|| async { "ok" }))
-            .nest(&format!("{}/le", crate::routes::PROFILE_PREFIX), inner)
+            .nest(
+                &format!("{}/le", acme_proxy_core::routes::PROFILE_PREFIX),
+                inner,
+            )
             .layer(middleware::from_fn_with_state(metrics, record_request))
     }
 

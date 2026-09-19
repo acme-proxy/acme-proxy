@@ -35,7 +35,7 @@ use common::{
     test_app_full, test_app_with_challenges,
 };
 
-use acme_proxy::config::Config;
+use acme_proxy_core::config::Config;
 
 async fn post(app: &Router, path: &str, body: String) -> Response {
     app.clone()

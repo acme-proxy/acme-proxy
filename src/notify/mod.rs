@@ -37,7 +37,7 @@
 //!
 //! ## Per-backend event filtering
 //!
-//! Unlike [`FilterConfig::rules`](crate::config::FilterConfig), where every
+//! Unlike [`FilterConfig::rules`](acme_proxy_core::config::FilterConfig), where every
 //! filter must agree, notify backends are independent broadcast side-channels
 //! — an operator plausibly wants email only for issuance/revocation and a chat
 //! webhook for everything including failures. Each backend's own `events`
@@ -64,9 +64,11 @@ use std::sync::{Arc, LazyLock};
 use async_trait::async_trait;
 use tracing::info;
 
-use crate::config::{ALL_NOTIFY_EVENTS, NotifyConfig, ProfileConfig};
 use crate::jobs::{JobQueue, JobSpec};
 use crate::sqlite::expiring::SupersededBy;
+use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
+use acme_proxy_core::config::NotifyConfig;
+use acme_proxy_core::config::ProfileConfig;
 
 pub mod custom;
 pub mod email;
@@ -81,7 +83,7 @@ pub use job::{NOTIFY_JOB_KIND, NotifyJob};
 ///
 /// Not a profile: `[admin]` is process-wide and the web admin has no
 /// `Profile`. The underscores make it un-collidable with a real profile name
-/// (`^[a-z0-9-]+$`, `crate::routes::PROFILE_PREFIX`), so [`NotifyJob`] routes a
+/// (`^[a-z0-9-]+$`, `acme_proxy_core::routes::PROFILE_PREFIX`), so [`NotifyJob`] routes a
 /// `notify_deliver` row naming it to this dispatcher with no special case, and
 /// a reload republishes it in the same map as every profile's.
 pub const ADMIN_DISPATCHER_KEY: &str = "__admin__";
@@ -842,7 +844,7 @@ pub fn from_config(
 /// that is not a valid environment-variable segment, so the id is safe to build
 /// from it.
 fn build_custom_slots(cfg: &NotifyConfig) -> anyhow::Result<Vec<BackendSlot>> {
-    crate::config::resolve_named_entries(
+    acme_proxy_core::config::resolve_named_entries(
         "notify.custom",
         "notify.custom_enabled",
         "custom",
@@ -875,7 +877,7 @@ fn build_webhook_slots(
     env: &minijinja::Environment<'static>,
     outbound: crate::http_client::Outbound,
 ) -> anyhow::Result<Vec<BackendSlot>> {
-    crate::config::resolve_named_entries(
+    acme_proxy_core::config::resolve_named_entries(
         "notify.webhook",
         "notify.webhook_enabled",
         "webhook",
@@ -1040,7 +1042,7 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
 /// operator can override a single message and leave every other one at its
 /// default.
 pub(crate) fn build_environment(template_dir: &str) -> minijinja::Environment<'static> {
-    crate::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
+    acme_proxy_core::templating::loader_env(template_dir, &EMBEDDED_TEMPLATES)
 }
 
 /// The names of every embedded notify template.
@@ -1077,9 +1079,9 @@ pub(crate) fn render(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::config::CustomNotifyConfig;
     use crate::sqlite::db::Database;
     use crate::sqlite::job::Job;
+    use acme_proxy_core::config::CustomNotifyConfig;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -1092,7 +1094,7 @@ pub(crate) mod tests {
     /// the rows `dispatch` wrote.
     pub(crate) async fn test_queue() -> JobQueue {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        JobQueue::new(database, &crate::config::JobsConfig::default())
+        JobQueue::new(database, &acme_proxy_core::config::JobsConfig::default())
     }
 
     /// How a backend failed, when it is configured to.
@@ -1635,7 +1637,7 @@ pub(crate) mod tests {
     async fn each_backend_name_builds_its_own_backend() {
         let cfg = NotifyConfig {
             enabled: vec!["email".to_string(), "webhook".to_string()],
-            email: crate::config::EmailNotifyConfig {
+            email: acme_proxy_core::config::EmailNotifyConfig {
                 smtp_host: "smtp.example.com".to_string(),
                 from: "acme@example.com".to_string(),
                 to: vec!["ops@example.com".to_string()],
@@ -1643,7 +1645,7 @@ pub(crate) mod tests {
                 smtp_security: "none".to_string(),
                 smtp_username: "user".to_string(),
                 smtp_password: "pass".to_string(),
-                ..crate::config::EmailNotifyConfig::default()
+                ..acme_proxy_core::config::EmailNotifyConfig::default()
             },
             webhook_enabled: vec!["chat".to_string()],
             webhook: BTreeMap::from([("chat".to_string(), webhook_entry())]),
@@ -1662,10 +1664,10 @@ pub(crate) mod tests {
         assert!(rendered.contains("webhook:chat"), "{rendered}");
     }
 
-    fn webhook_entry() -> crate::config::WebhookNotifyConfig {
-        crate::config::WebhookNotifyConfig {
+    fn webhook_entry() -> acme_proxy_core::config::WebhookNotifyConfig {
+        acme_proxy_core::config::WebhookNotifyConfig {
             url: "https://chat.example.com/hooks/abc".to_string(),
-            ..crate::config::WebhookNotifyConfig::default()
+            ..acme_proxy_core::config::WebhookNotifyConfig::default()
         }
     }
 
@@ -1749,12 +1751,12 @@ pub(crate) mod tests {
     fn email_config(smtp_security: &str) -> NotifyConfig {
         NotifyConfig {
             enabled: vec!["email".to_string()],
-            email: crate::config::EmailNotifyConfig {
+            email: acme_proxy_core::config::EmailNotifyConfig {
                 smtp_host: "smtp.example.com".to_string(),
                 from: "acme@example.com".to_string(),
                 to: vec!["ops@example.com".to_string()],
                 smtp_security: smtp_security.to_string(),
-                ..crate::config::EmailNotifyConfig::default()
+                ..acme_proxy_core::config::EmailNotifyConfig::default()
             },
             ..NotifyConfig::default()
         }
@@ -1782,7 +1784,7 @@ pub(crate) mod tests {
             webhook_enabled: vec!["chat".to_string()],
             webhook: BTreeMap::from([(
                 "chat".to_string(),
-                crate::config::WebhookNotifyConfig {
+                acme_proxy_core::config::WebhookNotifyConfig {
                     events: vec!["certificate_exploded".to_string()],
                     ..webhook_entry()
                 },
@@ -1884,10 +1886,10 @@ pub(crate) mod tests {
     async fn an_unknown_event_name_is_a_startup_error() {
         let cfg = NotifyConfig {
             enabled: vec!["email".to_string()],
-            email: crate::config::EmailNotifyConfig {
+            email: acme_proxy_core::config::EmailNotifyConfig {
                 smtp_host: "localhost".to_string(),
                 events: vec!["orders_shipped".to_string()],
-                ..crate::config::EmailNotifyConfig::default()
+                ..acme_proxy_core::config::EmailNotifyConfig::default()
             },
             ..NotifyConfig::default()
         };
@@ -1973,11 +1975,11 @@ pub(crate) mod tests {
         let profiles = vec![
             ProfileConfig {
                 name: "a".to_string(),
-                sections: crate::config::ProfileSections::default(),
+                sections: acme_proxy_core::config::ProfileSections::default(),
             },
             ProfileConfig {
                 name: "b".to_string(),
-                sections: crate::config::ProfileSections::default(),
+                sections: acme_proxy_core::config::ProfileSections::default(),
             },
         ];
         let registry = build_registry(
@@ -1996,8 +1998,9 @@ pub(crate) mod tests {
     /// both, so the slot id is built from the configuration key instead.
     #[tokio::test]
     async fn two_custom_entries_get_distinct_slot_ids() {
-        let dir = crate::testutil::TempDir::new("notify-slot");
-        let script = crate::testutil::write_script(&dir, "notify.sh", "#!/bin/sh\nexit 0\n");
+        let dir = acme_proxy_core::testutil::TempDir::new("notify-slot");
+        let script =
+            acme_proxy_core::testutil::write_script(&dir, "notify.sh", "#!/bin/sh\nexit 0\n");
         let entry = || CustomNotifyConfig {
             script_path: script.display().to_string(),
             ..CustomNotifyConfig::default()
@@ -2072,7 +2075,7 @@ pub(crate) mod tests {
 
     #[test]
     fn template_dir_override_wins_over_the_embedded_default() {
-        let dir = crate::testutil::TempDir::new("notify");
+        let dir = acme_proxy_core::testutil::TempDir::new("notify");
         std::fs::create_dir_all(dir.join("email")).unwrap();
         std::fs::write(
             dir.join("email/profile_mounted.subject.j2"),
@@ -2110,7 +2113,7 @@ pub(crate) mod tests {
             .expect_err("there is no such template");
         assert!(!missing.retryable(), "{missing}");
 
-        let dir = crate::testutil::TempDir::new("notify-broken");
+        let dir = acme_proxy_core::testutil::TempDir::new("notify-broken");
         std::fs::create_dir_all(dir.join("email")).unwrap();
         std::fs::write(dir.join("email/profile_mounted.body.j2"), "{{ unclosed").unwrap();
         let env = build_environment(dir.path().to_str().unwrap());

@@ -20,8 +20,8 @@ use clap::Subcommand;
 use crate::admin::{self, ProfileSummary};
 use crate::cli::CliError;
 use crate::cli::render;
-use crate::config::Config;
-use crate::palette::Palette;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum ProfileCommand {
@@ -73,7 +73,7 @@ pub async fn run_profile_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ENV_LOCK;
+    use acme_proxy_core::config::ENV_LOCK;
 
     /// Loads a `Config` the way the server does, so `resolve_profiles` has the
     /// raw sources per-key inheritance needs — `cli::upstream`'s helper, and
@@ -82,7 +82,7 @@ mod tests {
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = crate::testutil::TempDir::new("profile");
+        let dir = acme_proxy_core::testutil::TempDir::new("profile");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
         unsafe {

@@ -59,7 +59,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value};
 use tracing::{info, warn};
 
-use crate::config::IpamConfig;
+use acme_proxy_core::config::IpamConfig;
 
 /// What an inventory knows about one address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,10 +600,10 @@ mod tests {
         let netbox = from_config(
             &IpamConfig {
                 backend: "netbox".to_string(),
-                netbox: crate::config::NetboxConfig {
+                netbox: acme_proxy_core::config::NetboxConfig {
                     url: "https://netbox.example.com".to_string(),
                     token: "t0ken".to_string(),
-                    ..crate::config::NetboxConfig::default()
+                    ..acme_proxy_core::config::NetboxConfig::default()
                 },
                 ..IpamConfig::default()
             },
@@ -616,10 +616,10 @@ mod tests {
         let phpipam = from_config(
             &IpamConfig {
                 backend: "phpipam".to_string(),
-                phpipam: crate::config::PhpIpamConfig {
+                phpipam: acme_proxy_core::config::PhpIpamConfig {
                     url: "https://ipam.example.com".to_string(),
                     token: "t0ken".to_string(),
-                    ..crate::config::PhpIpamConfig::default()
+                    ..acme_proxy_core::config::PhpIpamConfig::default()
                 },
                 ..IpamConfig::default()
             },
@@ -629,14 +629,15 @@ mod tests {
         .unwrap();
         assert_eq!(phpipam.backend_name(), "phpIPAM");
 
-        let dir = crate::testutil::TempDir::new("ipam-from-config");
-        let script = crate::testutil::write_script(&dir, "ipam.sh", "#!/bin/sh\nexit 3\n");
+        let dir = acme_proxy_core::testutil::TempDir::new("ipam-from-config");
+        let script =
+            acme_proxy_core::testutil::write_script(&dir, "ipam.sh", "#!/bin/sh\nexit 3\n");
         let custom = from_config(
             &IpamConfig {
                 backend: "custom".to_string(),
-                custom: crate::config::CustomIpamConfig {
+                custom: acme_proxy_core::config::CustomIpamConfig {
                     script_path: script.display().to_string(),
-                    ..crate::config::CustomIpamConfig::default()
+                    ..acme_proxy_core::config::CustomIpamConfig::default()
                 },
                 ..IpamConfig::default()
             },

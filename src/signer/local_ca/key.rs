@@ -21,7 +21,7 @@ use std::path::Path;
 
 use rcgen::{KeyPair, PublicKeyData, SignatureAlgorithm, SigningKey};
 
-use crate::config::LocalCaConfig;
+use acme_proxy_core::config::LocalCaConfig;
 
 /// The key that signs this CA's leaves and CRLs.
 pub enum CaSigningKey {
@@ -120,7 +120,7 @@ pub fn read_pin(cfg: &LocalCaConfig) -> anyhow::Result<String> {
         let path = Path::new(&pkcs11.pin_file);
         // The PIN unlocks the CA's signing key; a world-readable file holding
         // it is worth the same nag `ca.key` gets.
-        crate::pemfile::warn_if_key_is_readable("local_ca_pkcs11_pin_permissive", path);
+        acme_proxy_core::pemfile::warn_if_key_is_readable("local_ca_pkcs11_pin_permissive", path);
         let raw = std::fs::read_to_string(path).map_err(|error| {
             anyhow::anyhow!(
                 "local_ca pkcs11 pin_file `{}` could not be read: {error}",
@@ -148,8 +148,8 @@ pub fn read_pin(cfg: &LocalCaConfig) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Pkcs11Config;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::config::Pkcs11Config;
+    use acme_proxy_core::testutil::TempDir;
     use rcgen::{CertificateParams, Issuer};
 
     fn config_with(pkcs11: Pkcs11Config) -> LocalCaConfig {

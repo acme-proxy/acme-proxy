@@ -18,11 +18,11 @@ mod common;
 
 use std::sync::Arc;
 
-use acme_proxy::config::Config;
 use acme_proxy::reload::{ReloadError, ReloadHandle};
 use acme_proxy::server::sockets::Sockets as ServerSockets;
 use acme_proxy::server::{RoleSet, serve_on_with_reloads};
 use acme_proxy::sqlite::db::Database;
+use acme_proxy_core::config::Config;
 use common::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -1047,11 +1047,11 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
     // is proven in `src/signer/` against a live ledger; what only a real server
     // can show is that the endpoint an operator edited keeps serving.
     let ca_dir = dir.join("ca");
-    let cfg = acme_proxy::config::LocalCaConfig {
+    let cfg = acme_proxy_core::config::LocalCaConfig {
         cert_path: format!("{}.pem", ca_dir.display()),
         key_path: format!("{}.key", ca_dir.display()),
         crl_path: format!("{}.crl", ca_dir.display()),
-        ..acme_proxy::config::LocalCaConfig::default()
+        ..acme_proxy_core::config::LocalCaConfig::default()
     };
 
     let before = status_of(server.acme, "/profile/default/crl").await;

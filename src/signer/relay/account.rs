@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::config::RelayConfig;
+use acme_proxy_core::config::RelayConfig;
 
 use super::client::{AccountKey, AcmeClient, Signer, UpstreamError};
 use super::eab;
@@ -136,7 +136,11 @@ fn write_kid(cfg: &RelayConfig, kid: &str) -> anyhow::Result<()> {
     // in that directory. Atomic for the same reason the CA's ledger is: a
     // truncated sidecar reads as "never registered" and sends the next startup
     // to `newAccount` again.
-    crate::pemfile::write_atomic(&kid_path(&cfg.account_key_path), kid.as_bytes(), 0o600)?;
+    acme_proxy_core::pemfile::write_atomic(
+        &kid_path(&cfg.account_key_path),
+        kid.as_bytes(),
+        0o600,
+    )?;
     Ok(())
 }
 
@@ -209,17 +213,17 @@ pub async fn register_upstream_account(
 
 /// Reads the PKCS#8 account key, generating and writing a P-256 one if absent
 /// — the same load-or-generate shape as `LocalCa::load_or_generate`, and the
-/// same `0600`-from-creation guarantee via [`crate::pemfile::write_private_key`].
+/// same `0600`-from-creation guarantee via [`acme_proxy_core::pemfile::write_private_key`].
 pub(super) fn load_or_generate_key(path: &str) -> anyhow::Result<AccountKey> {
     let path = Path::new(path);
     if path.exists() {
-        crate::pemfile::warn_if_key_is_readable("upstream_account_key_permissive", path);
-        let key = crate::pemfile::read_private_key(path)?;
+        acme_proxy_core::pemfile::warn_if_key_is_readable("upstream_account_key_permissive", path);
+        let key = acme_proxy_core::pemfile::read_private_key(path)?;
         return Ok(AccountKey::from_pkcs8(key.secret_der())?);
     }
 
     let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
-    crate::pemfile::write_private_key(path, &key_pair.serialize_pem())?;
+    acme_proxy_core::pemfile::write_private_key(path, &key_pair.serialize_pem())?;
     info!(event = "upstream_account_key_generated", outcome = "success", file_path = ?path);
     Ok(AccountKey::from_pkcs8(&key_pair.serialize_der())?)
 }

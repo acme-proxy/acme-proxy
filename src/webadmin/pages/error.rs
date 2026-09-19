@@ -1,7 +1,7 @@
 //! The page layer's error type.
 //!
 //! Deliberately **not** [`AdminError`], for the same reason `AdminError` is not
-//! [`crate::error::Problem`]: its `IntoResponse` is hardcoded to
+//! [`acme_proxy_core::error::Problem`]: its `IntoResponse` is hardcoded to
 //! `application/json`, and a browser navigating to `/ui/accounts` without a
 //! session must land on the sign-in page, not on a JSON document.
 //!

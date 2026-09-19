@@ -45,7 +45,8 @@ use ring::pbkdf2;
 use ring::rand::{SecureRandom, SystemRandom};
 use url::Url;
 
-use crate::config::{Config, LocalCaSubjectConfig};
+use acme_proxy_core::config::Config;
+use acme_proxy_core::config::LocalCaSubjectConfig;
 
 /// The only algorithm this version writes. `verify_password` matches on it, so
 /// adding a second is additive.
@@ -848,10 +849,10 @@ mod tests {
     /// verbatim, and for the same reason: a `Config` deserialized directly
     /// carries no raw layer and resolves no profiles at all.
     fn load(body: &str) -> Config {
-        let _lock = crate::config::ENV_LOCK
+        let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = crate::testutil::TempDir::new("password-context");
+        let dir = acme_proxy_core::testutil::TempDir::new("password-context");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
         unsafe {

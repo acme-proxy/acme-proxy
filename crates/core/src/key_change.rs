@@ -45,12 +45,12 @@ use crate::jws::signature::{SignatureError, verify_jwk_signature_and_get_der};
 
 /// The inner keyChange JWS: the same flattened `{protected, payload,
 /// signature}` shape as the outer request JWS.
-pub(crate) type KeyChangeJws = crate::jws::AcmeJwsRequest;
+pub type KeyChangeJws = crate::jws::AcmeJwsRequest;
 
 /// The inner keyChange JWS's protected header. See the [module docs](self)
 /// for why this is its own type rather than a reuse of `ProtectedHeader`.
 #[derive(Debug, Deserialize)]
-pub(crate) struct InnerHeader {
+pub struct InnerHeader {
     pub alg: String,
     pub jwk: Jwk,
     pub url: String,
@@ -58,7 +58,7 @@ pub(crate) struct InnerHeader {
 
 /// The inner keyChange JWS's payload -- RFC 8555 §7.3.5's `keyChange` object.
 #[derive(Debug, Deserialize)]
-pub(crate) struct InnerPayload {
+pub struct InnerPayload {
     pub account: String,
     #[serde(rename = "oldKey")]
     pub old_key: Jwk,
@@ -71,7 +71,7 @@ pub(crate) struct InnerPayload {
 /// stored account key this server itself cannot decode (`Internal`, 500 --
 /// our bug, not the client's).
 #[derive(Debug)]
-pub(crate) enum KeyChangeError {
+pub enum KeyChangeError {
     Malformed(&'static str),
     BadSignature,
     Internal(&'static str),
@@ -101,7 +101,7 @@ impl From<SignatureError> for KeyChangeError {
 /// §7.3.5 requires the inner JWS to omit it entirely, and an extra field a
 /// client sends anyway is silently ignored, like any unknown field the
 /// payload types in this codebase accept.
-pub(crate) fn parse_header(
+pub fn parse_header(
     inner: &KeyChangeJws,
     expected_url: &str,
 ) -> Result<InnerHeader, KeyChangeError> {
@@ -124,7 +124,7 @@ pub(crate) fn parse_header(
 /// Verifies the inner JWS's self-signature (RFC 8555 §7.3.5 check #4 -- the
 /// new key signs its own request) and returns that key as DER SPKI, the form
 /// accounts are keyed by.
-pub(crate) fn verify_signature(
+pub fn verify_signature(
     inner: &KeyChangeJws,
     header: &InnerHeader,
 ) -> Result<Vec<u8>, KeyChangeError> {
@@ -144,7 +144,7 @@ pub(crate) fn verify_signature(
 /// caller, mirroring [`crate::eab::verify_payload_and_signature`]'s own
 /// embedded-JWK check -- a mismatch is `Malformed`, not `BadSignature`: it is
 /// a claim about identity, not a cryptographic failure.
-pub(crate) fn verify_payload(
+pub fn verify_payload(
     inner: &KeyChangeJws,
     expected_account_url: &str,
     expected_old_key: &Jwk,
@@ -177,7 +177,7 @@ pub(crate) fn verify_payload(
 /// existed, a forged inner JWS on `POST /keyChange` (a bid to take over
 /// somebody else's account) left no trace at all: the handler sees only the
 /// `Problem`, never which check refused it.
-pub(crate) fn key_change_problem(error: KeyChangeError) -> Problem {
+pub fn key_change_problem(error: KeyChangeError) -> Problem {
     let (reason, detail) = match &error {
         KeyChangeError::Malformed(detail) => ("malformed", *detail),
         KeyChangeError::BadSignature => ("bad_signature", "inner JWS signature invalid"),

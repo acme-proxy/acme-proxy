@@ -8,9 +8,9 @@ use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::palette::Palette;
 use crate::sqlite::db::Database;
 use crate::sqlite::eab::{BoundAccounts, DeletedEab, Eab};
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum EabCommand {
@@ -300,7 +300,7 @@ mod tests {
             "default",
             &[7u8],
             vec![],
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             database,
         )
         .await

@@ -222,7 +222,7 @@ async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    use crate::random::random_token;
+    use acme_proxy_core::random::random_token;
 
     #[tokio::test]
     async fn connect_creates_file_and_runs_migrations() {
@@ -355,12 +355,15 @@ mod tests {
     }
 
     /// The width `revocations.issuer` and `crls.issuer` declare is the length of
-    /// [`crate::cert::issuer_id`], the `declared_token_widths_match_random_token`
+    /// [`acme_proxy_core::cert::issuer_id`], the `declared_token_widths_match_random_token`
     /// rule applied to the other derived value this schema stores.
     #[tokio::test]
     async fn declared_issuer_widths_match_the_issuer_id() {
         let database = Database::connect_in_memory().await.unwrap();
-        let expected = format!("VARCHAR({})", crate::cert::issuer_id(b"any key").len());
+        let expected = format!(
+            "VARCHAR({})",
+            acme_proxy_core::cert::issuer_id(b"any key").len()
+        );
 
         for (table, column) in [("revocations", "issuer"), ("crls", "issuer")] {
             assert_eq!(

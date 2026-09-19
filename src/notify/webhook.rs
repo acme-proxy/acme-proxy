@@ -42,7 +42,7 @@ use tracing::info;
 use url::Url;
 
 use super::{NotifyBackend, NotifyError, NotifyEvent, render};
-use crate::config::WebhookNotifyConfig;
+use acme_proxy_core::config::WebhookNotifyConfig;
 
 use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
 

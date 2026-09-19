@@ -3,7 +3,7 @@
 //! Not an ACME resource, and mounted on the root router beside `/health`: it
 //! carries no nonce, no `Link: rel="index"` and no filter chain, and it is
 //! deliberately absent from the directory. See [`crate::metrics`] for what it
-//! exposes and [`crate::config::MetricsConfig`] for why it is off by default.
+//! exposes and [`acme_proxy_core::config::MetricsConfig`] for why it is off by default.
 
 use std::sync::Arc;
 

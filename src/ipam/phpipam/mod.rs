@@ -50,7 +50,7 @@ use serde_json::{Map, Value};
 use tracing::{info, warn};
 
 use super::{AddressNames, Ipam, IpamError, Source, Sources, field_values, parse_sources};
-use crate::config::PhpIpamConfig;
+use acme_proxy_core::config::PhpIpamConfig;
 
 /// One phpIPAM address object, reduced to what this backend reads.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -8,7 +8,7 @@
 //! [`crate::admin::password`]'s module doc sets when it rejects Argon2id.
 //!
 //! This module holds no database access and no I/O -- the split
-//! [`crate::eab`] (pure verification) and `sqlite::eab` (persistence) already
+//! [`acme_proxy_core::eab`] (pure verification) and `sqlite::eab` (persistence) already
 //! make. The replay guard RFC 6238 §5.2 asks for needs a row, so it lives in
 //! `AdminUser::claim_totp_step`; [`verify`] deliberately knows nothing about
 //! it.

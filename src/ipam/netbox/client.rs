@@ -25,8 +25,8 @@ use tracing::debug;
 use url::form_urlencoded::Serializer;
 
 use super::{AssignedKind, AssignedRef, NetboxApi, NetboxIp};
-use crate::config::NetboxConfig;
 use crate::ipam::http::{JsonApi, JsonApiError, tls_config};
+use acme_proxy_core::config::NetboxConfig;
 
 /// NetBox's own labels for the two interface types an address can hang off.
 pub(super) const DEVICE_INTERFACE: &str = "dcim.interface";

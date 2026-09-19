@@ -1,6 +1,6 @@
 //! Why an ACME operation did not happen.
 
-use crate::error::Problem;
+use acme_proxy_core::error::Problem;
 
 /// The error an [`OrderService`](super::order::OrderService) or
 /// [`AccountService`](super::account::AccountService) operation returns.

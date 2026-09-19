@@ -23,7 +23,7 @@
 //! ## Why a string and not nested TOML
 //!
 //! An `all`/`any`/`none` table would need no parser, but
-//! [`Config::merged_sections`](crate::config::Config) merges a profile's
+//! [`Config::merged_sections`](acme_proxy_core::config::Config) merges a profile's
 //! configuration onto the global one **per key** for tables and *wholesale* for
 //! everything else. A global `all = [...]` and a profile's `any = [...]` would
 //! therefore merge into one table carrying both keys, and the profile would have

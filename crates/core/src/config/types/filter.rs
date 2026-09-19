@@ -7,7 +7,7 @@
 //! This is the *TOML shape* and nothing else. Each check type's resolved
 //! settings live beside the check that reads them (`filter::ip_allow::Settings`
 //! and friends), built from a [`CheckConfig`] by
-//! [`filter::build`](crate::filter::build) — which is also the only place that
+//! `filter::build` — which is also the only place that
 //! knows which of the flattened keys below belong to which `type`.
 
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ pub struct FilterConfig {
     /// reason: an unknown key is silently ignored by the `config` crate, so
     /// without somewhere for it to land, a configuration written against the
     /// old shape would come up looking configured and filtering nothing.
-    /// [`filter::build`](crate::filter::build) refuses each of these by name.
+    /// `filter::build` refuses each of these by name.
     ///
     /// Nothing reads these — a key has to parse before it can be refused *by
     /// name*, and that is the whole job. They are a startup diagnostic rather
@@ -101,7 +101,7 @@ impl Default for FilterConfig {
 #[serde(default)]
 pub struct RuleConfig {
     /// A boolean expression over check names — see
-    /// [`filter::expr`](crate::filter::expr).
+    /// `filter::expr`.
     pub when: String,
     /// `allow` or `deny`. No default: a rule that does not say what a match
     /// means is a rule whose author has not finished writing it.
@@ -120,7 +120,7 @@ pub struct RuleConfig {
 /// The keys are **flattened** — `allow`, not `allowed_ip.allow` — so every
 /// check reads the same way whatever its type. The cost is that a key
 /// belonging to another type would otherwise be silently ignored, which is why
-/// [`filter::build`](crate::filter::build) holds a per-type allowlist and
+/// `filter::build` holds a per-type allowlist and
 /// refuses a misplaced key by name.
 ///
 /// `#[serde(tag = "type")]` on an enum would give per-variant fields for free,

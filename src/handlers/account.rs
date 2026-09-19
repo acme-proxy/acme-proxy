@@ -9,11 +9,11 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::acme::{AccountService, Error};
-use crate::client::ClientIp;
-use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
-use crate::key_change;
 use crate::router::AppState;
+use acme_proxy_core::client::ClientIp;
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::key_change;
 
 pub use crate::acme::account::{NewAccountPayload, UpdateAccountPayload, verify_eab};
 
@@ -22,7 +22,7 @@ pub use crate::acme::account::{NewAccountPayload, UpdateAccountPayload, verify_e
 pub async fn post_new_account(
     State(state): State<AppState>,
     Extension(ClientIp(client_ip)): Extension<ClientIp>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     AcmeRequest {
         header,
         payload,

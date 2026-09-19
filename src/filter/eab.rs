@@ -200,8 +200,8 @@ impl Check for EabList {
 mod tests {
     use super::*;
     use crate::filter::IdentifierStage;
-    use crate::identifier::Identifier;
     use crate::testutil::dns_identifiers;
+    use acme_proxy_core::identifier::Identifier;
 
     fn identity(label: Option<&str>, active: bool) -> EabIdentity {
         EabIdentity {

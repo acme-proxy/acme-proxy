@@ -9,9 +9,9 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::acme::access::load_owned_order;
 use crate::acme::revoke::{Revocations, Revoker};
-use crate::error::Problem;
 use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
 use crate::router::AppState;
+use acme_proxy_core::error::Problem;
 
 /// A revokeCert payload (RFC 8555 §7.6).
 #[derive(Debug, Deserialize)]
@@ -72,7 +72,7 @@ const REVOCATION_RETRY_AFTER: &str = "1";
 #[instrument(name = "post_revoke_cert", skip_all)]
 pub async fn post_revoke_cert(
     State(state): State<AppState>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     AcmeRequest {
         payload,
         pubkey,

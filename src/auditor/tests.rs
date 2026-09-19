@@ -12,9 +12,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::*;
-use crate::audit::{Actor, AuditEvent, AuditRecord, RequestContext};
 use crate::dns::Resolver;
 use crate::sqlite::db::Database;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::RequestContext;
 
 /// A resolver answering from canned data, or failing however the test asks.
 #[derive(Default)]
@@ -158,7 +161,7 @@ async fn the_client_context_canonicalizes_the_address_before_storing_or_looking_
 #[tokio::test]
 async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let dns = crate::config::DnsConfig::default();
+    let dns = acme_proxy_core::config::DnsConfig::default();
 
     let off = Auditor::from_config(
         &AuditConfig {
@@ -182,7 +185,7 @@ async fn from_config_builds_a_resolver_only_when_the_lookup_is_on() {
             reverse_dns_timeout_ms: 1,
             ..AuditConfig::default()
         },
-        &crate::config::DnsConfig {
+        &acme_proxy_core::config::DnsConfig {
             resolver: Some("127.0.0.1:5399".to_string()),
         },
         database.clone(),
@@ -223,7 +226,7 @@ async fn from_config_counts_into_the_registry_it_was_given() {
             reverse_dns: false,
             ..AuditConfig::default()
         },
-        &crate::config::DnsConfig::default(),
+        &acme_proxy_core::config::DnsConfig::default(),
         database,
         registry.clone(),
     )

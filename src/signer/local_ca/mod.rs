@@ -48,13 +48,15 @@ use rustls_pki_types::CertificateSigningRequestDer;
 use time::{Duration, OffsetDateTime};
 use tracing::{error, info, warn};
 
-use crate::cert::cert_serial_and_spki;
-use crate::config::{LocalCaConfig, LocalCaSubjectConfig};
-use crate::identifier::Identifier;
-use crate::pemfile::{warn_if_key_is_readable, write_private_key};
 use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use crate::sqlite::db::Database;
 use crate::sqlite::revocation::Revocation;
+use acme_proxy_core::cert::cert_serial_and_spki;
+use acme_proxy_core::config::LocalCaConfig;
+use acme_proxy_core::config::LocalCaSubjectConfig;
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::pemfile::warn_if_key_is_readable;
+use acme_proxy_core::pemfile::write_private_key;
 
 pub use info::LocalCaInfo;
 pub(crate) use info::read_ca_certificate;
@@ -265,7 +267,7 @@ impl LocalCa {
         // The cross-check described above. Both sides are a full DER
         // SubjectPublicKeyInfo, so this compares the algorithm identifier as
         // well as the key itself.
-        let ca_der = crate::cert::leaf_der_from_chain(&ca_pem)
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca_pem)
             .map_err(|error| anyhow::anyhow!("cert_path `{}`: {error}", cfg.cert_path))?;
         let (_, parsed) = x509_parser::parse_x509_certificate(&ca_der)
             .map_err(|error| anyhow::anyhow!("cert_path `{}`: {error}", cfg.cert_path))?;
@@ -366,17 +368,17 @@ impl LocalCa {
     }
 }
 
-/// The issuer id ([`crate::cert::issuer_id`]) of the CA certificate `ca_pem`:
+/// The issuer id ([`acme_proxy_core::cert::issuer_id`]) of the CA certificate `ca_pem`:
 /// the key its revocation state is stored under.
 ///
 /// Public material only, which is the point: a process that must record a
 /// revocation for this CA without holding its key — the host CLI — derives the
 /// same id from `cert_path` as the process that signs.
 pub fn issuer_id_of(ca_pem: &str) -> anyhow::Result<String> {
-    let ca_der = crate::cert::leaf_der_from_chain(ca_pem)?;
+    let ca_der = acme_proxy_core::cert::leaf_der_from_chain(ca_pem)?;
     let (_, spki) = cert_serial_and_spki(&ca_der)
         .map_err(|error| anyhow::anyhow!("the CA certificate does not parse: {error}"))?;
-    Ok(crate::cert::issuer_id(&spki))
+    Ok(acme_proxy_core::cert::issuer_id(&spki))
 }
 
 /// Refuses a CSR that does not ask for exactly the order's DNS identifiers.
@@ -602,7 +604,7 @@ impl SignerBackend for LocalCa {
             // field we only want for housekeeping would be the worse outcome,
             // the same call `reason_from_u32` makes for an unrecognized reason
             // code. `None` simply means this entry is never pruned.
-            not_after: crate::cert::cert_validity(cert_der)
+            not_after: acme_proxy_core::cert::cert_validity(cert_der)
                 .ok()
                 .map(|(_, not_after)| not_after),
         };
@@ -692,7 +694,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_ca_subject_is_common_name_only() {
         let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, memory_db().await).unwrap();
-        let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
         let subject = ca_cert.subject();
@@ -722,7 +724,7 @@ mod tests {
             locality: Some("San Francisco".to_string()),
         };
         let (_key_pair, ca_pem) = generate_ca("ecdsa-p256", &subject).unwrap();
-        let ca_der = crate::cert::leaf_der_from_chain(&ca_pem).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
         let s = ca_cert.subject();
@@ -763,7 +765,7 @@ mod tests {
             ..Default::default()
         };
         let (_key_pair, ca_pem) = generate_ca("ecdsa-p256", &subject).unwrap();
-        let ca_der = crate::cert::leaf_der_from_chain(&ca_pem).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
 
         let cn = ca_cert
@@ -780,7 +782,7 @@ mod tests {
     /// `generate_ca` helper in isolation — the real entrypoint operators use.
     #[tokio::test]
     async fn load_or_generate_applies_a_configured_subject() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = LocalCaConfig {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
             key_path: dir.join("ca.key").to_string_lossy().into_owned(),
@@ -795,7 +797,7 @@ mod tests {
         };
 
         let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
-        let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
         let org = ca_cert
             .subject()
@@ -842,12 +844,12 @@ mod tests {
         .await
         .unwrap();
 
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (aki, _serial) = crate::cert::ari_cert_id_parts(&leaf_der)
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let (aki, _serial) = acme_proxy_core::cert::ari_cert_id_parts(&leaf_der)
             .expect("an issued leaf must carry an Authority Key Identifier");
 
         // The CA's own Subject Key Identifier, read off its certificate.
-        let ca_der = crate::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
         let (_, ca_cert) = x509_parser::parse_x509_certificate(&ca_der).unwrap();
         let ski_ext = ca_cert
             .get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)
@@ -865,7 +867,7 @@ mod tests {
 
         // …and the whole certID round-trips, which is what a client actually
         // builds and this server then has to recognize.
-        assert!(crate::cert::ari_cert_id(&leaf_der).is_ok());
+        assert!(acme_proxy_core::cert::ari_cert_id(&leaf_der).is_ok());
     }
 
     /// Goes through `load_or_generate` rather than handing a policy to a
@@ -880,7 +882,7 @@ mod tests {
             OID_X509_EXT_CRL_DISTRIBUTION_POINTS,
         };
 
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = LocalCaConfig {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
             key_path: dir.join("ca.key").to_string_lossy().into_owned(),
@@ -901,7 +903,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
         let (_, leaf) = x509_parser::parse_x509_certificate(&leaf_der).unwrap();
 
         let cdp = leaf
@@ -970,7 +972,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
         let (_, leaf) = x509_parser::parse_x509_certificate(&leaf_der).unwrap();
 
         assert!(
@@ -1081,8 +1083,8 @@ mod tests {
         .await
         .unwrap();
 
-        let leaf_der = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (_, not_after) = crate::cert::cert_validity(&leaf_der).unwrap();
+        let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let (_, not_after) = acme_proxy_core::cert::cert_validity(&leaf_der).unwrap();
 
         // X.509 stores seconds, so compare at that resolution.
         assert_eq!(not_after, wanted_end.unix_timestamp());
@@ -1373,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn load_or_generate_persists_then_reloads() {
         // A unique temp dir so the generate-then-load branches both run.
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
 
         // First call generates and writes both files.
@@ -1408,7 +1410,7 @@ mod tests {
 
     /// A CA configuration over `dir`, the spelling every disk-backed test here
     /// uses.
-    fn ca_config(dir: &crate::testutil::TempDir) -> LocalCaConfig {
+    fn ca_config(dir: &acme_proxy_core::testutil::TempDir) -> LocalCaConfig {
         LocalCaConfig {
             cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
             key_path: dir.join("ca.key").to_string_lossy().into_owned(),
@@ -1422,7 +1424,7 @@ mod tests {
     /// A file-backed database in `dir`, for the tests that need two
     /// connections at once: `connect_in_memory` pins its pool to one, which
     /// would serialise the very interleavings those tests are about.
-    async fn file_db(dir: &crate::testutil::TempDir) -> Arc<Database> {
+    async fn file_db(dir: &acme_proxy_core::testutil::TempDir) -> Arc<Database> {
         let url = format!("sqlite://{}", dir.join("acme.db").display());
         Arc::new(Database::connect_and_migrate(&url).await.unwrap())
     }
@@ -1471,7 +1473,7 @@ mod tests {
             .await
             .unwrap();
         let leaf = first_certificate(&chain);
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
+        let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
         (leaf, serial_hex)
     }
 
@@ -1586,7 +1588,7 @@ mod tests {
         let (leaf, _) = issued(&ca, "example.com").await;
         ca.revoke(&leaf, Some(1)).await.unwrap();
 
-        let (_, not_after) = crate::cert::cert_validity(&leaf).unwrap();
+        let (_, not_after) = acme_proxy_core::cert::cert_validity(&leaf).unwrap();
         assert_eq!(rows(&ca, &database).await[0].not_after, Some(not_after));
     }
 
@@ -1612,7 +1614,7 @@ mod tests {
         for (code, wanted) in expected {
             assert_eq!(reason_from_u32(code), wanted, "code {code}");
             assert!(
-                crate::cert::is_valid_revocation_reason(code),
+                acme_proxy_core::cert::is_valid_revocation_reason(code),
                 "code {code} must also be accepted at the ACME edge"
             );
         }
@@ -1636,7 +1638,7 @@ mod tests {
     /// restart. Now the server's very next read lists it, in both directions.
     #[tokio::test]
     async fn a_revocation_by_another_instance_is_served_immediately() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let database = file_db(&dir).await;
         let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
@@ -1678,7 +1680,7 @@ mod tests {
     /// served CRL carries the number that was stored.
     #[tokio::test]
     async fn the_crl_number_never_goes_backwards_across_instances() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let database = file_db(&dir).await;
         let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
@@ -1710,7 +1712,7 @@ mod tests {
     /// *first* revocation's time and reason.
     #[tokio::test]
     async fn revoking_what_another_instance_already_revoked_keeps_one_entry() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let database = file_db(&dir).await;
         let server = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
@@ -1734,7 +1736,7 @@ mod tests {
     /// other's serial is the compare-and-swap on `crl_number` and its retry.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_revocations_through_two_instances_are_all_kept() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let database = file_db(&dir).await;
         let server = Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
@@ -1796,7 +1798,7 @@ mod tests {
     /// one of its own at construction.
     #[tokio::test]
     async fn a_new_instance_serves_the_stored_crl_rather_than_signing_its_own() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let database = file_db(&dir).await;
         let first = LocalCa::load_or_generate(&cfg, database.clone()).unwrap();
@@ -1814,7 +1816,7 @@ mod tests {
     /// imported, and its entries survive.
     #[tokio::test]
     async fn a_v1_sidecar_is_imported_and_keeps_its_entries() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         fs::write(
             dir.join("ca.json"),
@@ -1843,7 +1845,7 @@ mod tests {
     /// revoked.
     #[tokio::test]
     async fn a_v1_sidecar_resumes_above_the_number_it_last_published() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         fs::write(
             dir.join("ca.json"),
@@ -1865,7 +1867,7 @@ mod tests {
     /// empties the list still raises it.
     #[tokio::test]
     async fn the_crl_number_rises_across_the_import_and_a_prune_that_shortens_the_list() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let expired =
             OffsetDateTime::now_utc().unix_timestamp() - Duration::days(365).whole_seconds();
@@ -1900,7 +1902,7 @@ mod tests {
     /// nothing, and nothing writes the sidecar again.
     #[tokio::test]
     async fn the_sidecar_is_imported_once_and_never_written() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let sidecar = dir.join("ca.json");
         fs::write(
@@ -1934,7 +1936,7 @@ mod tests {
     /// truncate.
     #[tokio::test]
     async fn a_corrupted_sidecar_is_reported_and_retried_once_fixed() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         fs::write(
             dir.join("ca.json"),
@@ -1966,7 +1968,7 @@ mod tests {
     /// use onwards and after every change.
     #[tokio::test]
     async fn the_exported_crl_is_the_stored_one() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let exported = || {
@@ -2000,7 +2002,7 @@ mod tests {
     /// logged, and the revocation it followed still stands and is served.
     #[tokio::test]
     async fn an_unwritable_export_does_not_fail_the_revocation() {
-        let dir = crate::testutil::TempDir::new("ca");
+        let dir = acme_proxy_core::testutil::TempDir::new("ca");
         let cfg = ca_config(&dir);
         let ca = LocalCa::load_or_generate(&cfg, memory_db().await).unwrap();
         let (leaf, serial) = issued(&ca, "a.example.com").await;
@@ -2094,8 +2096,8 @@ mod tests {
 
         let database = memory_db().await;
         let dirs = [
-            crate::testutil::TempDir::new("ca-one"),
-            crate::testutil::TempDir::new("ca-two"),
+            acme_proxy_core::testutil::TempDir::new("ca-one"),
+            acme_proxy_core::testutil::TempDir::new("ca-two"),
         ];
         let cas: Vec<_> = dirs
             .iter()
@@ -2246,7 +2248,9 @@ mod tests {
             serial: serial.to_string(),
             revoked_at: crate::sqlite::nonce::now_secs(),
             reason: None,
-            not_after: crate::cert::cert_validity(leaf).ok().map(|(_, na)| na),
+            not_after: acme_proxy_core::cert::cert_validity(leaf)
+                .ok()
+                .map(|(_, na)| na),
         };
         let mut tx = database.transaction().await.unwrap();
         row.insert_if_absent(&mut *tx).await.unwrap();

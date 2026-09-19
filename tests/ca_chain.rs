@@ -40,7 +40,7 @@ async fn the_local_cas_certificate_is_served_and_parses() {
     )
     .unwrap();
 
-    let der = acme_proxy::cert::leaf_der_from_chain(&pem)
+    let der = acme_proxy_core::cert::leaf_der_from_chain(&pem)
         .expect("served bytes must parse as a PEM certificate");
     let (_, cert) = x509_parser::certificate::X509Certificate::from_der(&der)
         .expect("and as a valid X.509 certificate");

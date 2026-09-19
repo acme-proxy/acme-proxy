@@ -138,14 +138,14 @@ impl Metrics {
 
     /// Counts one CA action from the audit record that describes it.
     ///
-    /// Driven off [`crate::audit::AuditRecord`] rather than called separately at
+    /// Driven off [`acme_proxy_core::audit::AuditRecord`] rather than called separately at
     /// each issuance site, so the counter and the audit trail cannot disagree
     /// about what happened: both are written from the same value. Events this
     /// exposes no series for are ignored rather than enumerated, which is what
     /// keeps a new `AuditEvent` variant from being a compile error in a
     /// subsystem that has no opinion about it.
-    pub fn record_audit(&self, record: &crate::audit::AuditRecord) {
-        use crate::audit::AuditEvent;
+    pub fn record_audit(&self, record: &acme_proxy_core::audit::AuditRecord) {
+        use acme_proxy_core::audit::AuditEvent;
         match record.event {
             AuditEvent::CertificateIssued => self.bump(
                 &self.certificates_issued,
@@ -307,7 +307,7 @@ fn escape_label(value: &str) -> String {
 /// (`/profile/le/order/{id}`), so this is what turns one string into the two
 /// dimensions a query wants: "how many 500s did `le` serve" and "how many 500s
 /// did `/newOrder` serve anywhere". The split is unambiguous because
-/// [`PROFILE_PREFIX`](crate::routes::PROFILE_PREFIX) is reserved and a profile
+/// [`PROFILE_PREFIX`](acme_proxy_core::routes::PROFILE_PREFIX) is reserved and a profile
 /// name matches `^[a-z0-9-]+$`, so the second segment can never itself contain
 /// a slash.
 #[must_use]
@@ -315,7 +315,7 @@ pub fn split_matched_path(matched: Option<&str>) -> (String, String) {
     let Some(matched) = matched else {
         return (PROFILE_NONE.to_string(), ROUTE_UNMATCHED.to_string());
     };
-    let prefix = format!("{}/", crate::routes::PROFILE_PREFIX);
+    let prefix = format!("{}/", acme_proxy_core::routes::PROFILE_PREFIX);
     let Some(rest) = matched.strip_prefix(&prefix) else {
         return (PROFILE_NONE.to_string(), matched.to_string());
     };
@@ -330,7 +330,9 @@ pub fn split_matched_path(matched: Option<&str>) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::{Actor, AuditEvent, AuditRecord};
+    use acme_proxy_core::audit::Actor;
+    use acme_proxy_core::audit::AuditEvent;
+    use acme_proxy_core::audit::AuditRecord;
 
     async fn metrics() -> Metrics {
         Metrics::new(Arc::new(Database::connect_in_memory().await.unwrap()))

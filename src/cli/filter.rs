@@ -10,12 +10,12 @@ use std::net::IpAddr;
 use clap::Subcommand;
 
 use super::{CliError, resolve_profile};
-use crate::config::Config;
 use crate::filter::explain::{
     Subject, explain, explanation_json, policy_json, render_explanation, render_policy,
 };
-use crate::identifier::Identifier;
-use crate::palette::Palette;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::identifier::Identifier;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum FilterCommand {
@@ -161,7 +161,7 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ENV_LOCK;
+    use acme_proxy_core::config::ENV_LOCK;
 
     /// Loads a `Config` from TOML the way the server does, so
     /// `resolve_profiles` has the raw sources per-key inheritance needs — the
@@ -172,7 +172,7 @@ mod tests {
         let _lock = ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = crate::testutil::TempDir::new("cli-filter");
+        let dir = acme_proxy_core::testutil::TempDir::new("cli-filter");
         std::fs::write(dir.join("config.toml"), body).unwrap();
         // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
         unsafe {

@@ -170,7 +170,7 @@ pub fn cookie_value(headers: &HeaderMap) -> Option<String> {
 
 /// The peer address of an admin request, if the socket carried one.
 ///
-/// Its own extractor rather than [`crate::client::ClientIp`],
+/// Its own extractor rather than [`acme_proxy_core::client::ClientIp`],
 /// because that one is populated by the ACME filter middleware and this
 /// listener deliberately runs none (see `build_admin_app`).
 ///

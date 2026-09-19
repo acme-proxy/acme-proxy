@@ -417,7 +417,7 @@ mod tests {
     }
 
     fn rsa_test_key() -> RsaKeyPair {
-        let pkcs8 = include_bytes!("../../tests/fixtures/rsa_test_key.pk8");
+        let pkcs8 = include_bytes!("../../../../tests/fixtures/rsa_test_key.pk8");
         RsaKeyPair::from_pkcs8(pkcs8).unwrap()
     }
 

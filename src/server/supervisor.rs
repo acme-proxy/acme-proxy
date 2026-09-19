@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tracing::{error, info, warn};
 
-use crate::config::Config;
+use acme_proxy_core::config::Config;
 
 use super::Assembly;
 use super::generation::{announce_profile, prepare_reload, publish_reload};
@@ -25,7 +25,7 @@ pub(super) struct Cells {
     /// The runner's own pacing. Separate from the registry above because the two
     /// reach it by different routes: the registry carries what a *handler*
     /// captured, this carries what the *loop* re-reads each pass.
-    pub(super) jobs: tokio::sync::watch::Sender<Arc<crate::config::JobsConfig>>,
+    pub(super) jobs: tokio::sync::watch::Sender<Arc<acme_proxy_core::config::JobsConfig>>,
     /// The three sockets. Each carries its role's TLS mode as well, since both
     /// are read by the same accept loop and both are published the same
     /// synchronous way — see [`crate::listener::ListenerHandle`].
@@ -44,7 +44,7 @@ pub(super) async fn supervise_reloads(
     roles: crate::server::RoleSet,
     mut reloads: crate::reload::Reloads,
     mut config: Arc<Config>,
-    mut resolved: Vec<crate::config::ProfileConfig>,
+    mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     assembly: Arc<Assembly>,
     cells: Cells,
     mut logins: Option<Arc<crate::webadmin::LoginLimiter>>,
@@ -119,7 +119,7 @@ pub(super) async fn supervise_reloads(
                     admin_tls_reloaded = report.admin_tls_reloaded,
                     listeners_rebound = ?report.listeners_rebound,
                     logging_reloaded = report.logging_reloaded,
-                    duration_ms = crate::logfields::millis(report.duration),
+                    duration_ms = acme_proxy_core::logfields::millis(report.duration),
                 );
                 // After the reload's own line, and under the new configuration,
                 // since that is what these describe. Each is the same

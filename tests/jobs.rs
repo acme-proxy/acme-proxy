@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use acme_proxy::config::JobsConfig;
 use acme_proxy::jobs::{
     JobHandler, JobOutcome, JobQueue, JobRegistry, JobSpec, SweepJob, spawn_runner,
 };
@@ -26,6 +25,7 @@ use acme_proxy::notify::{
 };
 use acme_proxy::sqlite::db::Database;
 use acme_proxy::sqlite::job::Job;
+use acme_proxy_core::config::JobsConfig;
 use async_trait::async_trait;
 use tokio::sync::watch;
 
@@ -272,7 +272,7 @@ async fn a_dispatched_notification_is_delivered_through_the_queue() {
 
     let delivered = Arc::new(AtomicUsize::new(0));
     let backend = Arc::new(CountingNotifier(delivered.clone()));
-    let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+    let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
         .iter()
         .map(|kind| (*kind).to_string())
         .collect();

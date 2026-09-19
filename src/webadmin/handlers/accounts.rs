@@ -118,7 +118,7 @@ pub async fn patch_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     if let Some(rejection) = crate::acme::rules::contact_shape_error(&body.contact) {
@@ -153,7 +153,7 @@ pub async fn deactivate_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Json<serde_json::Value>, AdminError> {
     let account = admin::deactivate_account(
         &id,
@@ -161,7 +161,7 @@ pub async fn deactivate_account(
         |profile| state.notifiers.get(profile),
         request_context
             .ip
-            .map(|ip| crate::client::canonical(ip).to_string()),
+            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
     )
     .await?
     .ok_or_else(|| not_found(&id))?;
@@ -185,7 +185,7 @@ pub async fn delete_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     // Captured before the delete so the audit row can name the account's own
     // profile and id; `delete_account` returns only the cascade count.

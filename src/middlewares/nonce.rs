@@ -60,7 +60,7 @@ const REPLAY_NONCE: HeaderName = HeaderName::from_static("replay-nonce");
 /// `/profile/<name>` before this layer sees the request, the same reason
 /// `verify_jws` can reconstruct the §6.4 URL from `base_url + path`.
 fn mints_nonce(method: &Method, path: &str) -> bool {
-    method == Method::POST || path == crate::routes::NEW_NONCE
+    method == Method::POST || path == acme_proxy_core::routes::NEW_NONCE
 }
 
 pub async fn add_nonce_middleware(

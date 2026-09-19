@@ -22,7 +22,7 @@ use common::{
     test_app_full, test_app_with_signer,
 };
 
-use acme_proxy::config::Config;
+use acme_proxy_core::config::Config;
 
 /// The well-known path, as an upstream CA would build it.
 fn well_known(token: &str) -> String {

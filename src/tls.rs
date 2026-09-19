@@ -22,7 +22,7 @@
 //! `cert_path`/`key_path` are loaded when **both** exist; otherwise a self-signed
 //! certificate for the host of `server.base_url` is generated and written, the
 //! way [`crate::signer::local_ca`] provisions the CA and `sqlite.db` provisions
-//! itself. The key is created `0600` (see [`crate::pemfile`]).
+//! itself. The key is created `0600` (see [`acme_proxy_core::pemfile`]).
 //!
 //! ## Two rustls constraints
 //!
@@ -44,8 +44,9 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{info, warn};
 use url::{Host, Url};
 
-use crate::config::{ServerConfig, TlsConfig};
-use crate::pemfile;
+use acme_proxy_core::config::ServerConfig;
+use acme_proxy_core::config::TlsConfig;
+use acme_proxy_core::pemfile;
 
 /// Validity of a generated self-signed certificate, in days (~10 years).
 ///
@@ -102,7 +103,9 @@ pub fn from_config(cfg: &ServerConfig) -> anyhow::Result<Option<TlsAcceptor>> {
 /// bind is loopback (see [`crate::webadmin::check_config`]), and on loopback it
 /// is the documented default rather than something to complain about on every
 /// boot.
-pub fn admin_from_config(cfg: &crate::config::AdminConfig) -> anyhow::Result<Option<TlsAcceptor>> {
+pub fn admin_from_config(
+    cfg: &acme_proxy_core::config::AdminConfig,
+) -> anyhow::Result<Option<TlsAcceptor>> {
     if !cfg.enabled || !cfg.tls.enabled {
         return Ok(None);
     }
@@ -254,8 +257,8 @@ impl TlsSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TlsConfig;
-    use crate::testutil::TempDir;
+    use acme_proxy_core::config::TlsConfig;
+    use acme_proxy_core::testutil::TempDir;
     use std::fs;
 
     /// A scratch directory that removes itself, so a failing assertion cannot
@@ -284,18 +287,18 @@ mod tests {
     }
 
     /// An `AdminConfig` with the panel *and* its TLS on, material inside `dir`.
-    fn admin_config(dir: &TempDir, base_url: &str) -> crate::config::AdminConfig {
-        crate::config::AdminConfig {
+    fn admin_config(dir: &TempDir, base_url: &str) -> acme_proxy_core::config::AdminConfig {
+        acme_proxy_core::config::AdminConfig {
             enabled: true,
             bind_address: "127.0.0.1:0".to_string(),
             base_url: base_url.to_string(),
-            tls: crate::config::AdminTlsConfig {
+            tls: acme_proxy_core::config::AdminTlsConfig {
                 enabled: true,
                 cert_path: dir.join("admin.pem").display().to_string(),
                 key_path: dir.join("admin.key").display().to_string(),
                 handshake_timeout_ms: 5_000,
             },
-            ..crate::config::AdminConfig::default()
+            ..acme_proxy_core::config::AdminConfig::default()
         }
     }
 
@@ -371,8 +374,8 @@ mod tests {
         let cfg = admin_config(&admin_dir, "https://localhost:3001");
         admin_from_config(&cfg).unwrap();
 
-        let crossed = crate::config::AdminConfig {
-            tls: crate::config::AdminTlsConfig {
+        let crossed = acme_proxy_core::config::AdminConfig {
+            tls: acme_proxy_core::config::AdminTlsConfig {
                 key_path: acme.tls.key_path.clone(),
                 ..cfg.tls.clone()
             },

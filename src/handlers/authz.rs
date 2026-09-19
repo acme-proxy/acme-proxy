@@ -10,11 +10,11 @@ use tracing::{error, info, instrument, warn};
 
 use crate::acme::access::{load_owned_authz, load_owned_challenge, signer_account};
 use crate::acme::order::OrderService;
-use crate::client::ClientIp;
-use crate::error::Problem;
 use crate::extractors::acme::{AcmeOptionalPayload, AcmeRequest};
 use crate::router::AppState;
 use crate::sqlite::authz::Challenge;
+use acme_proxy_core::client::ClientIp;
+use acme_proxy_core::error::Problem;
 
 /// The one payload RFC 8555 §7.5.2 defines for the authorization resource:
 /// "sending POST requests with the static object `{"status": "deactivated"}`".

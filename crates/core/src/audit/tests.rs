@@ -1,6 +1,6 @@
 //! Tests for the audit vocabulary: the enums the stored strings and the
 //! schema's `CHECK` constraints mirror, the request-context gathering, and the
-//! record builders. The writer and its reverse lookup are `crate::auditor`'s.
+//! record builders. The writer and its reverse lookup are `auditor`'s.
 
 use std::net::IpAddr;
 

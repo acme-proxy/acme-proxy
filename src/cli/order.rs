@@ -8,13 +8,13 @@ use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::config::Config;
-use crate::palette::Palette;
 use crate::signer;
 use crate::sqlite::authz::Authorization;
 use crate::sqlite::db::Database;
 use crate::sqlite::order::{Order, OrderQuery};
 use crate::sqlite::status::OrderStatus;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum OrderCommand {
@@ -154,7 +154,9 @@ pub async fn run_order_command(
                 // Folded here rather than bound raw: an operator pastes a
                 // serial out of `openssl` or an abuse report, and the column
                 // only ever holds lowercase unseparated hex.
-                cert_serial: cert_serial.as_deref().map(crate::cert::normalize_serial),
+                cert_serial: cert_serial
+                    .as_deref()
+                    .map(acme_proxy_core::cert::normalize_serial),
                 limit: window.limit,
                 offset: window.offset,
             };
@@ -293,8 +295,8 @@ pub async fn run_order_command(
             // `Actor::cli` and an empty client context: there is no request
             // here, and the audit row says so rather than inventing an address.
             let (actor, client) = (
-                crate::audit::Actor::cli(),
-                crate::audit::ClientContext::default(),
+                acme_proxy_core::audit::Actor::cli(),
+                acme_proxy_core::audit::ClientContext::default(),
             );
 
             // A local CA's revocation is recorded here, without its key, and a
@@ -459,17 +461,17 @@ fn not_found(id: &str) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::ClientContext;
     use crate::cli::CliErrorKind;
     use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend};
     use crate::sqlite::account::Account;
+    use acme_proxy_core::audit::ClientContext;
 
     /// A configuration whose single `default` profile signs with a local CA
     /// living under `dir` — what `Revoke` needs, since it rebuilds the signer
     /// from the profile that issued the certificate.
     fn config_in(dir: impl AsRef<std::path::Path>, profile: &str) -> Config {
         let dir = dir.as_ref();
-        let _lock = crate::config::ENV_LOCK
+        let _lock = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ca = dir.join("ca");
@@ -498,8 +500,8 @@ mod tests {
         config
     }
 
-    fn temp_dir() -> crate::testutil::TempDir {
-        crate::testutil::TempDir::new("cli-order")
+    fn temp_dir() -> acme_proxy_core::testutil::TempDir {
+        acme_proxy_core::testutil::TempDir::new("cli-order")
     }
 
     /// `order delete` records what it removed.
@@ -584,7 +586,7 @@ mod tests {
         Order::create(
             profile,
             account.id,
-            vec![crate::identifier::Identifier::dns("example.com")],
+            vec![acme_proxy_core::identifier::Identifier::dns("example.com")],
             crate::sqlite::nonce::now_secs() + 3600,
             None,
             None,
@@ -629,9 +631,11 @@ mod tests {
             IssueOutcome::Issued(chain) => chain,
             IssueOutcome::Processing => panic!("the local CA issues synchronously"),
         };
-        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-        let not_after = crate::cert::cert_validity(&leaf).ok().map(|(_, na)| na);
+        let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let (serial, pubkey) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
+        let not_after = acme_proxy_core::cert::cert_validity(&leaf)
+            .ok()
+            .map(|(_, na)| na);
         order
             .finalize(chain, serial, pubkey, not_after, &database)
             .await
@@ -961,7 +965,7 @@ mod tests {
 
         let dir = temp_dir();
         let marker = dir.join("revoked");
-        let script = crate::testutil::write_script(
+        let script = acme_proxy_core::testutil::write_script(
             &dir,
             "signer.sh",
             &format!(
@@ -970,7 +974,7 @@ mod tests {
             ),
         );
         let config = {
-            let _lock = crate::config::ENV_LOCK
+            let _lock = acme_proxy_core::config::ENV_LOCK
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::fs::write(

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::admin::prompt::confirm;
-use crate::audit::{Actor, ClientContext};
 use crate::auditor::Auditor;
 use crate::signer::SignerError;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
@@ -17,6 +16,8 @@ use crate::sqlite::nonce::Nonce;
 use crate::sqlite::order::{GuardedDelete, Order};
 use crate::sqlite::status::JobStatus;
 use crate::sqlite::upstream_order::{UpstreamOrder, UpstreamOrderRow};
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::ClientContext;
 
 /// Outcome of a confirm-gated hard delete.
 ///
@@ -772,7 +773,7 @@ pub async fn cancel_job(
         {
             crate::signer::issuance::record_issue_failure(
                 &mut order,
-                &crate::error::Problem::server_internal("Certificate issuance failed"),
+                &acme_proxy_core::error::Problem::server_internal("Certificate issuance failed"),
                 "issuance cancelled by operator",
                 actor,
                 client,
@@ -906,11 +907,12 @@ pub async fn run_job_now(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::{AuditEvent, AuditRecord};
-    use crate::identifier::Identifier;
     use crate::signer::SignerBackend;
     use crate::sqlite::nonce::now_secs;
     use crate::testutil::account_id;
+    use acme_proxy_core::audit::AuditEvent;
+    use acme_proxy_core::audit::AuditRecord;
+    use acme_proxy_core::identifier::Identifier;
 
     async fn db() -> Arc<Database> {
         Arc::new(Database::connect_in_memory().await.unwrap())
@@ -1584,9 +1586,11 @@ mod tests {
                 panic!("the in-memory local CA issues synchronously")
             }
         };
-        let leaf = crate::cert::leaf_der_from_chain(&chain).unwrap();
-        let (serial, pubkey) = crate::cert::cert_serial_and_spki(&leaf).unwrap();
-        let not_after = crate::cert::cert_validity(&leaf).ok().map(|(_, na)| na);
+        let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+        let (serial, pubkey) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
+        let not_after = acme_proxy_core::cert::cert_validity(&leaf)
+            .ok()
+            .map(|(_, na)| na);
         order
             .finalize(chain, serial, pubkey, not_after, &db)
             .await

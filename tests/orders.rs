@@ -1139,7 +1139,7 @@ async fn the_issued_leaf_carries_no_common_name_from_the_csr() {
     let body = signer.sign_kid_empty(&account_url, &cert_url, &nonce);
     let chain = body_text(post(&app, path, body).await).await;
 
-    let leaf = acme_proxy::cert::leaf_der_from_chain(&chain).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
     let (_, parsed) = x509_parser::parse_x509_certificate(&leaf).unwrap();
     assert!(
         parsed.subject().iter_common_name().next().is_none(),
@@ -1431,8 +1431,8 @@ async fn a_requested_not_after_reaches_the_issued_certificate() {
     assert_eq!(res.status(), StatusCode::OK);
     let chain = common::acme::body_text(res).await;
 
-    let leaf = acme_proxy::cert::leaf_der_from_chain(&chain).unwrap();
-    let (_not_before, cert_not_after) = acme_proxy::cert::cert_validity(&leaf).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+    let (_not_before, cert_not_after) = acme_proxy_core::cert::cert_validity(&leaf).unwrap();
 
     // To the second: the clamp narrows to exactly what was asked for when the
     // request is inside the CA's own window.
@@ -1490,8 +1490,8 @@ async fn a_not_after_beyond_the_ca_window_is_clamped_rather_than_honoured() {
     let res = post(&app, &common::acme::path_of(&certificate_url), body).await;
     let chain = common::acme::body_text(res).await;
 
-    let leaf = acme_proxy::cert::leaf_der_from_chain(&chain).unwrap();
-    let (_not_before, cert_not_after) = acme_proxy::cert::cert_validity(&leaf).unwrap();
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
+    let (_not_before, cert_not_after) = acme_proxy_core::cert::cert_validity(&leaf).unwrap();
 
     assert!(
         cert_not_after < far_future.unix_timestamp(),

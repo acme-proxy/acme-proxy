@@ -8,10 +8,10 @@
 //! callers and sits below those services.
 
 use crate::auditor::Auditor;
-use crate::error::Problem;
 use crate::notify::NotifyEvent;
 use crate::sqlite::db::Database;
 use crate::sqlite::order::Order;
+use acme_proxy_core::error::Problem;
 
 /// Why an issued chain could not be recorded on its order.
 ///
@@ -38,9 +38,9 @@ pub async fn record_issuance(
     chain: String,
     database: &Database,
 ) -> Result<String, IssuanceError> {
-    let leaf_der = crate::cert::leaf_der_from_chain(&chain)
+    let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain)
         .map_err(|error| IssuanceError::Chain(error.to_string()))?;
-    let (cert_serial, cert_pubkey) = crate::cert::cert_serial_and_spki(&leaf_der)
+    let (cert_serial, cert_pubkey) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der)
         .map_err(|error| IssuanceError::Leaf(error.to_string()))?;
 
     // Best-effort, unlike the two above: the serial and the public key are
@@ -48,7 +48,7 @@ pub async fn record_issuance(
     // from is a failed issuance, while the expiry is housekeeping for the
     // expiry digest. A leaf whose validity will not parse is still an issued
     // certificate, and the digest's own sweep will try again later.
-    let cert_not_after = crate::cert::cert_validity(&leaf_der)
+    let cert_not_after = acme_proxy_core::cert::cert_validity(&leaf_der)
         .ok()
         .map(|(_, not_after)| not_after);
 
@@ -76,16 +76,16 @@ pub async fn record_issuance(
 pub async fn announce_issuance(
     order: &Order,
     serial: &str,
-    actor: crate::audit::Actor,
-    client: crate::audit::ClientContext,
+    actor: acme_proxy_core::audit::Actor,
+    client: acme_proxy_core::audit::ClientContext,
     client_ip: Option<String>,
     audit: &Auditor,
     notify: Option<&crate::notify::NotifyDispatcher>,
 ) {
     audit
         .record(
-            crate::audit::AuditRecord::new(
-                crate::audit::AuditEvent::CertificateIssued,
+            acme_proxy_core::audit::AuditRecord::new(
+                acme_proxy_core::audit::AuditEvent::CertificateIssued,
                 &order.profile,
                 actor,
             )
@@ -121,15 +121,15 @@ pub async fn record_issue_failure(
     order: &mut Order,
     problem: &Problem,
     detail: &str,
-    actor: crate::audit::Actor,
-    client: crate::audit::ClientContext,
+    actor: acme_proxy_core::audit::Actor,
+    client: acme_proxy_core::audit::ClientContext,
     audit: &Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
     audit
         .record(
-            crate::audit::AuditRecord::new(
-                crate::audit::AuditEvent::CertificateIssueFailed,
+            acme_proxy_core::audit::AuditRecord::new(
+                acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
                 &order.profile,
                 actor,
             )

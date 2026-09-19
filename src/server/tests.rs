@@ -12,7 +12,7 @@ use super::*;
 /// under `dir`, so a test never touches the repository.
 fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
     let dir = dir.as_ref();
-    let _lock = crate::config::ENV_LOCK
+    let _lock = acme_proxy_core::config::ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ca = dir.join("ca");
@@ -60,7 +60,7 @@ fn two_relay_profiles(
     second: &crate::signer::relay::testsrv::Upstream,
 ) -> Config {
     let dir = dir.as_ref();
-    let _lock = crate::config::ENV_LOCK
+    let _lock = acme_proxy_core::config::ENV_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let body = format!(
@@ -96,8 +96,8 @@ fn two_relay_profiles(
     config
 }
 
-fn temp_dir() -> crate::testutil::TempDir {
-    crate::testutil::TempDir::new("serve")
+fn temp_dir() -> acme_proxy_core::testutil::TempDir {
+    acme_proxy_core::testutil::TempDir::new("serve")
 }
 
 /// Boots `serve_on` on an ephemeral loopback port and returns it with

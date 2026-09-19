@@ -27,14 +27,18 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext, RequestContext};
 use crate::auditor::Auditor;
-use crate::error::Problem;
 use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
 use crate::signer::{RevocationRoute, SignerBackend, SignerError};
 use crate::sqlite::job::Job;
 use crate::sqlite::{account::Account, db::Database, order::Order};
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::audit::RequestContext;
+use acme_proxy_core::error::Problem;
 
 /// What withdraws trust in a certificate.
 pub enum Revoker<'a> {
@@ -210,7 +214,7 @@ impl Revocations<'_> {
         request: &RequestContext,
     ) -> Result<Order, RevokeError> {
         let database = self.database;
-        let (serial_hex, _) = crate::cert::cert_serial_and_spki(cert_der).map_err(|error| {
+        let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(cert_der).map_err(|error| {
             warn!(event = "certificate_revoke_parse_failed", outcome = "failure", error = %error);
             RevokeError::Refused(Problem::malformed("certificate is unparsable"))
         })?;
@@ -225,7 +229,7 @@ impl Revocations<'_> {
                 order
                     .certificate
                     .as_deref()
-                    .and_then(|chain| crate::cert::leaf_der_from_chain(chain).ok())
+                    .and_then(|chain| acme_proxy_core::cert::leaf_der_from_chain(chain).ok())
                     .is_some_and(|leaf| leaf == cert_der)
             })
             .ok_or(());
@@ -356,14 +360,14 @@ impl Revocations<'_> {
         let Some(chain) = order.certificate.as_deref() else {
             return Err(RevokeError::NotIssued);
         };
-        let cert_der = crate::cert::leaf_der_from_chain(chain).map_err(|error| {
+        let cert_der = acme_proxy_core::cert::leaf_der_from_chain(chain).map_err(|error| {
             RevokeError::Internal(format!("stored certificate chain is unparsable: {error}"))
         })?;
         // The stored serial where there is one, since that is the column the
         // trail is searched by; re-read from the leaf otherwise.
         let serial = match order.cert_serial.clone() {
             Some(serial) => serial,
-            None => crate::cert::cert_serial_and_spki(&cert_der)
+            None => acme_proxy_core::cert::cert_serial_and_spki(&cert_der)
                 .map(|(serial, _)| serial)
                 .map_err(|error| {
                     RevokeError::Internal(format!("stored certificate is unparsable: {error}"))
@@ -420,7 +424,7 @@ impl Revocations<'_> {
         }
 
         if let Some(code) = reason
-            && !crate::cert::is_valid_revocation_reason(code)
+            && !acme_proxy_core::cert::is_valid_revocation_reason(code)
         {
             if audited {
                 warn!(
@@ -594,7 +598,7 @@ impl Revocations<'_> {
             reason,
             // Best-effort, as on the signer's own path: an expiry this server
             // cannot read only means the entry is never pruned.
-            not_after: crate::cert::cert_validity(cert_der)
+            not_after: acme_proxy_core::cert::cert_validity(cert_der)
                 .ok()
                 .map(|(_, not_after)| not_after),
         };
@@ -769,10 +773,10 @@ impl SignerRevokeJob {
 fn payload_actor(payload: &serde_json::Value) -> Actor {
     let id = payload["actor_id"].as_str().map(str::to_string);
     let kind = match payload["actor_kind"].as_str() {
-        Some("admin") => crate::audit::ActorKind::Admin,
-        Some("acme") => crate::audit::ActorKind::Acme,
-        Some("system") => crate::audit::ActorKind::System,
-        _ => crate::audit::ActorKind::Cli,
+        Some("admin") => acme_proxy_core::audit::ActorKind::Admin,
+        Some("acme") => acme_proxy_core::audit::ActorKind::Acme,
+        Some("system") => acme_proxy_core::audit::ActorKind::System,
+        _ => acme_proxy_core::audit::ActorKind::Cli,
     };
     Actor { kind, id }
 }
@@ -850,9 +854,9 @@ impl JobHandler for SignerRevokeJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identifier::Identifier;
     use crate::jobs::JobHandler;
     use crate::signer::{IssueOutcome, RequestedValidity};
+    use acme_proxy_core::identifier::Identifier;
 
     /// A backend whose `revoke` always fails.
     struct Failing;
@@ -947,12 +951,12 @@ mod tests {
         backend: Arc<dyn SignerBackend>,
         max_attempts: u32,
     ) -> (JobQueue, tokio::sync::watch::Sender<bool>) {
-        let config = crate::config::JobsConfig {
+        let config = acme_proxy_core::config::JobsConfig {
             poll_interval_ms: 10,
             max_attempts,
             retry_base_seconds: 0,
             retry_max_seconds: 0,
-            ..crate::config::JobsConfig::default()
+            ..acme_proxy_core::config::JobsConfig::default()
         };
         let queue = JobQueue::new(database.clone(), &config);
         let mut registry = crate::jobs::JobRegistry::new();

@@ -4,11 +4,11 @@ use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::random::random_bytes;
 use crate::sqlite::account::Account;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
+use acme_proxy_core::random::random_bytes;
 
 /// An External Account Binding credential (RFC 8555 §7.3.4): a pre-shared
 /// `kid` + HMAC secret an operator issues out-of-band, presented by a client
@@ -529,7 +529,7 @@ mod tests {
         count: u8,
         not_after: Option<i64>,
     ) -> (Eab, Vec<crate::sqlite::account::Account>) {
-        use crate::audit::ClientContext;
+        use acme_proxy_core::audit::ClientContext;
 
         let eab = Eab::create(Some("tenant".to_string()), None, db)
             .await

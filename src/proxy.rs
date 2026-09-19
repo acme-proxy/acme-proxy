@@ -8,7 +8,7 @@
 //! and a credential that must never reach a log.
 //!
 //! [`parse_net`]/[`canonical`] are the inbound filters' helpers too, and live in
-//! the neutral [`crate::client`] so both directions share them: CIDR parsing is
+//! the neutral [`acme_proxy_core::client`] so both directions share them: CIDR parsing is
 //! CIDR parsing, and two copies would drift.
 
 use std::net::IpAddr;
@@ -19,9 +19,10 @@ use ipnet::IpNet;
 use tracing::info;
 use url::Url;
 
-use crate::client::{canonical, parse_net};
-use crate::config::ProxyConfig;
 use crate::http_client::Endpoint;
+use acme_proxy_core::client::canonical;
+use acme_proxy_core::client::parse_net;
+use acme_proxy_core::config::ProxyConfig;
 
 /// One proxy, already picked apart.
 ///
@@ -406,7 +407,7 @@ pub fn from_config(cfg: &ProxyConfig) -> anyhow::Result<Arc<OutboundProxies>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::EnvGuard;
+    use acme_proxy_core::testutil::EnvGuard;
 
     fn config(http: &str, https: &str, no_proxy: &[&str]) -> ProxyConfig {
         ProxyConfig {

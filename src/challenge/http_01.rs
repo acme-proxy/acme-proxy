@@ -36,7 +36,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 use super::{ChallengeError, ChallengeValidator, HTTP_01, ValidationContext};
-use crate::config::Http01Config;
+use acme_proxy_core::config::Http01Config;
 
 /// The well-known path RFC 8555 §8.3 reserves for this challenge.
 ///

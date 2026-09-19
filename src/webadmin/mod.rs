@@ -39,10 +39,10 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{info, warn};
 
-use crate::config::Config;
 use crate::middlewares;
 use crate::profile::Profile;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::Config;
 
 /// Shared state for every admin route.
 ///
@@ -141,14 +141,14 @@ impl AdminState {
     /// cannot fail the request.
     pub(crate) async fn record_admin_action(
         &self,
-        request_context: &crate::audit::RequestContext,
+        request_context: &acme_proxy_core::audit::RequestContext,
         username: &str,
         build: impl FnOnce(
-            crate::audit::Actor,
-            crate::audit::ClientContext,
-        ) -> crate::audit::AuditRecord,
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> acme_proxy_core::audit::AuditRecord,
     ) {
-        let actor = crate::audit::Actor::admin(username);
+        let actor = acme_proxy_core::audit::Actor::admin(username);
         let client = self.audit.client(request_context).await;
         self.audit.record(build(actor, client)).await;
     }
@@ -157,14 +157,14 @@ impl AdminState {
     /// rows, resolving the client address once for all of them.
     pub(crate) async fn record_admin_actions(
         &self,
-        request_context: &crate::audit::RequestContext,
+        request_context: &acme_proxy_core::audit::RequestContext,
         username: &str,
         build: impl FnOnce(
-            crate::audit::Actor,
-            crate::audit::ClientContext,
-        ) -> Vec<crate::audit::AuditRecord>,
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> Vec<acme_proxy_core::audit::AuditRecord>,
     ) {
-        let actor = crate::audit::Actor::admin(username);
+        let actor = acme_proxy_core::audit::Actor::admin(username);
         let client = self.audit.client(request_context).await;
         for record in build(actor, client) {
             self.audit.record(record).await;
@@ -227,7 +227,7 @@ impl AdminState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_credential_change(
         &self,
-        request_context: &crate::audit::RequestContext,
+        request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &crate::sqlite::admin_user::AdminUser,
         change: crate::notify::AdminCredentialChange,
@@ -254,7 +254,7 @@ impl AdminState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_contact_change(
         &self,
-        request_context: &crate::audit::RequestContext,
+        request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &crate::sqlite::admin_user::AdminUser,
         previous_recipient: Option<String>,
@@ -278,7 +278,7 @@ impl AdminState {
     #[allow(clippy::too_many_arguments)]
     async fn record_change(
         &self,
-        request_context: &crate::audit::RequestContext,
+        request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &crate::sqlite::admin_user::AdminUser,
         change: crate::notify::AdminCredentialChange,
@@ -348,7 +348,7 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
             // email body. Uncapped, the sender decides how large those get.
             value
                 .chars()
-                .take(crate::audit::USER_AGENT_MAX)
+                .take(acme_proxy_core::audit::USER_AGENT_MAX)
                 .collect::<String>()
         })
         .filter(|value| !value.is_empty())
@@ -795,13 +795,14 @@ fn binds_loopback_only(bind: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdminConfig, Config};
+    use acme_proxy_core::config::AdminConfig;
+    use acme_proxy_core::config::Config;
 
     /// `[admin]` enabled, with everything else at its default.
     ///
     /// Built by mutation rather than struct-update syntax: `Config` keeps a
     /// private `raw` field, so `..Config::default()` is not available outside
-    /// `crate::config`.
+    /// `acme_proxy_core::config`.
     fn enabled() -> Config {
         let mut config = Config::default();
         config.admin = AdminConfig {
@@ -839,7 +840,7 @@ mod tests {
 
     #[test]
     fn a_template_dir_that_is_not_a_directory_is_refused() {
-        let dir = crate::testutil::TempDir::new("admin-template-dir");
+        let dir = acme_proxy_core::testutil::TempDir::new("admin-template-dir");
         let file = dir.write("not-a-directory", "");
 
         let error = check_templates(file.to_str().unwrap()).unwrap_err();
@@ -850,7 +851,7 @@ mod tests {
     /// the morning — the same fail-fast posture as the rest of startup.
     #[test]
     fn an_override_that_does_not_compile_is_refused_at_startup() {
-        let dir = crate::testutil::TempDir::new("admin-bad-template");
+        let dir = acme_proxy_core::testutil::TempDir::new("admin-bad-template");
         dir.write("index.html", "{% for x in %}");
 
         let error = check_templates(dir.path().to_str().unwrap()).unwrap_err();
@@ -861,7 +862,7 @@ mod tests {
 
     #[test]
     fn a_valid_override_directory_starts() {
-        let dir = crate::testutil::TempDir::new("admin-good-template");
+        let dir = acme_proxy_core::testutil::TempDir::new("admin-good-template");
         dir.write("login.html", "<p>{{ flash }}</p>");
 
         check_templates(dir.path().to_str().unwrap())

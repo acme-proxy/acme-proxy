@@ -50,8 +50,8 @@ use tracing::debug;
 
 use super::policy::{Check, StageSet, Verdict};
 use super::{IdentifierContext, SUBJECT_ONLY_TYPES};
-use crate::client::canonical;
 use crate::ipam::{AddressNames, IpamRegistry, normalize};
+use acme_proxy_core::client::canonical;
 
 /// Requires every requested name to be one the inventory associates with the
 /// client's address.
@@ -173,7 +173,7 @@ impl Check for IpamFilter {
 }
 
 /// Whether this identifier is subject metadata this filter leaves alone.
-fn is_subject_only(identifier: &crate::identifier::Identifier) -> bool {
+fn is_subject_only(identifier: &acme_proxy_core::identifier::Identifier) -> bool {
     SUBJECT_ONLY_TYPES.contains(&identifier.typ.to_ascii_lowercase().as_str())
 }
 
@@ -181,9 +181,9 @@ fn is_subject_only(identifier: &crate::identifier::Identifier) -> bool {
 mod tests {
     use super::*;
     use crate::filter::{ConnectionContext, IdentifierStage};
-    use crate::identifier::Identifier;
     use crate::ipam::{Ipam, IpamError};
     use crate::testutil::identifiers as ids;
+    use acme_proxy_core::identifier::Identifier;
     use axum::http::Method;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

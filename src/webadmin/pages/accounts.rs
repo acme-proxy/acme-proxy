@@ -180,7 +180,7 @@ pub async fn post_account_contact(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<ContactForm>,
 ) -> Result<Html<String>, PageError> {
     let contact: Vec<String> = form
@@ -234,7 +234,7 @@ pub async fn deactivate_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
     let account = admin::deactivate_account(
         &id,
@@ -242,7 +242,7 @@ pub async fn deactivate_account(
         |profile| state.notifiers.get(profile),
         request_context
             .ip
-            .map(|ip| crate::client::canonical(ip).to_string()),
+            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
     )
     .await?
     .ok_or_else(|| not_found(&id))?;
@@ -280,7 +280,7 @@ pub async fn delete_account(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let subject = Account::find_any_by_id(&id, &state.database).await?;
     let deleted = match admin::delete_account(&id, state.database.clone()).await? {

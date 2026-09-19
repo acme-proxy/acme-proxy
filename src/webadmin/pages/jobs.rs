@@ -128,12 +128,12 @@ pub async fn get_job(
 pub async fn cancel_job(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     session: PageSessionWrite,
 ) -> Result<Html<String>, PageError> {
     let banner = match admin::cancel_job(
         &id,
-        crate::audit::Actor::admin(&session.auth.user.username),
+        acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),
@@ -180,11 +180,11 @@ pub async fn run_job(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
     let banner = match admin::run_job_now(
         &id,
-        crate::audit::Actor::admin(&session.auth.user.username),
+        acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),

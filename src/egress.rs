@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use crate::config::Config;
 use crate::{challenge, dns, http_client, proxy};
+use acme_proxy_core::config::Config;
 
 /// The outbound plumbing one configuration generation dials through, and the
 /// identity of the configuration it came from.

@@ -108,7 +108,7 @@ pub async fn get_login_mfa(
 pub async fn post_login_mfa(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     session: PageMfaSubmit,
     Form(body): Form<MfaRequest>,
 ) -> Result<Response, PageError> {
@@ -166,7 +166,7 @@ pub async fn post_login_mfa(
 async fn confirm_enrolment(
     state: &AdminState,
     client: Option<std::net::IpAddr>,
-    request_context: &crate::audit::RequestContext,
+    request_context: &acme_proxy_core::audit::RequestContext,
     pending: PendingMfa,
     code: &str,
 ) -> Result<Response, PageError> {
@@ -237,7 +237,7 @@ pub async fn post_logout(
     State(state): State<AdminState>,
     Query(query): Query<LogoutQuery>,
     session: PageSelfServiceWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let scope = if query.all {
         let revoked = AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;

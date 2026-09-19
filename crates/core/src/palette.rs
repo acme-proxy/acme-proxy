@@ -1,7 +1,7 @@
 //! Colour for the admin CLI's human-readable output: whether it is on, and what
 //! each colour means.
 //!
-//! Hand-rolled and dependency-free, for [`crate::metrics`]'s reason: an SGR
+//! Hand-rolled and dependency-free, for `metrics`'s reason: an SGR
 //! sequence is `\x1b[<n>m` and a reset, which is a `write!`, and every colour
 //! crate in the ecosystem brings either a global state cell or a second opinion
 //! about what a terminal is.
@@ -76,7 +76,7 @@ impl Palette {
 
     /// A palette that colours when `on` is.
     ///
-    /// Deciding `on` is the CLI's — `crate::cli::style::resolve` weighs the
+    /// Deciding `on` is the CLI's — `cli::style::resolve` weighs the
     /// `--color` flag, the stream and `NO_COLOR`.
     #[must_use]
     pub const fn new(on: bool) -> Self {

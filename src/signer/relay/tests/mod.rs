@@ -35,15 +35,15 @@ mod renewal;
 /// assert on the *first* outcome, and a retried failure would make them wait out
 /// a backoff before the order reached `invalid` — so retrying is opted into by
 /// the two tests that are about it, not out of by the rest.
-fn test_jobs_config() -> crate::config::JobsConfig {
-    crate::config::JobsConfig {
+fn test_jobs_config() -> acme_proxy_core::config::JobsConfig {
+    acme_proxy_core::config::JobsConfig {
         poll_interval_ms: 5,
         max_attempts: 1,
         retry_base_seconds: 0,
         retry_max_seconds: 0,
         lease_seconds: 5,
         retention_days: 0,
-        ..crate::config::JobsConfig::default()
+        ..acme_proxy_core::config::JobsConfig::default()
     }
 }
 
@@ -63,7 +63,7 @@ fn test_queue(database: Arc<Database>) -> crate::jobs::JobQueue {
 /// writes the row, and handing only the runner a bigger budget changes nothing.
 fn test_queue_with(
     database: Arc<Database>,
-    config: &crate::config::JobsConfig,
+    config: &acme_proxy_core::config::JobsConfig,
 ) -> crate::jobs::JobQueue {
     crate::jobs::JobQueue::new(database, config)
 }
@@ -102,7 +102,7 @@ impl TestRunner {
     fn start_with(
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
-        config: crate::config::JobsConfig,
+        config: acme_proxy_core::config::JobsConfig,
     ) -> Self {
         Self::start_inner(queue, signer, Self::DEFAULT_PROFILES, config, None)
     }
@@ -111,7 +111,7 @@ impl TestRunner {
         queue: crate::jobs::JobQueue,
         signer: &RelaySigner,
         profiles: &[&str],
-        config: crate::config::JobsConfig,
+        config: acme_proxy_core::config::JobsConfig,
         notifiers: Option<crate::notify::Notifiers>,
     ) -> Self {
         let mut registry = crate::jobs::JobRegistry::new();
@@ -162,14 +162,14 @@ use super::client::UpstreamError;
 use super::flow::settle;
 use super::http01::TokenStore;
 use super::*;
-use crate::audit::ClientContext;
 use crate::notify::{NotifyDispatcher, NotifyEvent};
 use crate::signer::local_ca::LocalCa;
 use crate::sqlite::account::Account;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::Order;
 use crate::sqlite::status::OrderStatus;
-use crate::testutil::TempDir;
+use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::testutil::TempDir;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use testsrv::{Script, Upstream};
@@ -347,7 +347,7 @@ async fn await_recorded(recorder: &Arc<RecordingNotifyBackend>) {
 
 /// A recorder as a dispatcher slot, wanting every event kind.
 fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> crate::notify::BackendSlot {
-    let every: Vec<String> = crate::config::ALL_NOTIFY_EVENTS
+    let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
         .iter()
         .map(|kind| (*kind).to_string())
         .collect();
@@ -359,7 +359,7 @@ fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> crate::notify::Backe
 async fn ready_order_for(profile: &str, database: Arc<Database>) -> Order {
     let (account, _) = Account::find_or_create(
         profile,
-        &crate::random::random_bytes::<16>(),
+        &acme_proxy_core::random::random_bytes::<16>(),
         Vec::new(),
         &ClientContext::default(),
         &database,
@@ -422,7 +422,7 @@ async fn real_chain() -> String {
 async fn ready_order(database: Arc<Database>) -> Order {
     let (account, _) = Account::find_or_create(
         "default",
-        &crate::random::random_bytes::<16>(),
+        &acme_proxy_core::random::random_bytes::<16>(),
         Vec::new(),
         &ClientContext::default(),
         &database,

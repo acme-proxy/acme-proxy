@@ -69,7 +69,8 @@ use axum::routing::RouterIntoService;
 use tokio::sync::{mpsc, oneshot, watch};
 use tower::Service;
 
-use crate::config::{Config, ProfileConfig};
+use acme_proxy_core::config::Config;
+use acme_proxy_core::config::ProfileConfig;
 
 /// One resolved configuration, as the frozen-key check sees it.
 ///
@@ -412,7 +413,7 @@ mod channel_tests {
 #[cfg(test)]
 mod frozen_tests {
     use super::*;
-    use crate::config::ProfileSections;
+    use acme_proxy_core::config::ProfileSections;
 
     fn profile(name: &str) -> ProfileConfig {
         ProfileConfig {

@@ -4,10 +4,10 @@
 //! [`AuditEvent`], [`Actor`], [`ClientContext`], [`RequestContext`] and
 //! [`AuditRecord`] are what every call site builds a row from. Writing one, and
 //! the reverse lookup that fills in a client's name, are
-//! [`crate::auditor`]'s: the vocabulary sits below the storage layer, which
+//! `auditor`'s: the vocabulary sits below the storage layer, which
 //! stores these very types, while the writer sits above it.
 //!
-//! ## Why this is not [`notify`](crate::notify)
+//! ## Why this is not `notify`
 //!
 //! The two fire at nearly the same call sites and carry nearly the same fields,
 //! which invites merging them. They answer different questions. A notification
@@ -406,7 +406,7 @@ pub struct RequestContext {
 /// `pub(crate)` for `webadmin::user_agent_of`, which caps the *same* header on
 /// the way into a notification payload. One constant, so the two answers to
 /// "how much of this do we keep?" cannot drift.
-pub(crate) const USER_AGENT_MAX: usize = 256;
+pub const USER_AGENT_MAX: usize = 256;
 
 impl RequestContext {
     /// Reads the address the filter middleware resolved, plus the two headers.

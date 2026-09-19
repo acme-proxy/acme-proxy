@@ -140,7 +140,7 @@ struct ResolvedFilter {
 /// two disagreeing about what the server is running would be worse than the
 /// override itself.
 fn build_env_filter(
-    logging: &crate::config::LoggingConfig,
+    logging: &acme_proxy_core::config::LoggingConfig,
     flag: Option<&str>,
 ) -> Result<ResolvedFilter, String> {
     if let Some(directive) = flag {
@@ -214,13 +214,13 @@ fn parse_span_events(span_events: &str) -> Result<FmtSpan, String> {
 /// the other.
 ///
 /// Per the convention, `NO_COLOR` counts only when set to a non-empty value —
-/// which is [`no_color_set`](crate::palette::no_color_set)'s judgement, shared with the admin
+/// which is [`no_color_set`](acme_proxy_core::palette::no_color_set)'s judgement, shared with the admin
 /// CLI's own `--color` so the two answers cannot drift. Note the *precedence*
 /// deliberately does not match: a `--color always` outranks `NO_COLOR` where
 /// this key cannot, because a flag is typed and a configuration file is
 /// ambient. `cli::style`'s module doc has the argument.
 fn ansi_enabled(configured: bool, no_color: Option<&str>) -> bool {
-    configured && !crate::palette::no_color_set(no_color)
+    configured && !acme_proxy_core::palette::no_color_set(no_color)
 }
 
 /// A layer stack built from `[logging]` but not yet installed.
@@ -241,7 +241,7 @@ pub(crate) struct PreparedLogging {
 /// reasoning behind [`crate::server::generation::build_generation`], applied
 /// to one layer.
 pub(crate) fn prepare_logging(
-    logging: &crate::config::LoggingConfig,
+    logging: &acme_proxy_core::config::LoggingConfig,
     flag: Option<&str>,
 ) -> Result<PreparedLogging, String> {
     let ResolvedFilter { filter, source } = build_env_filter(logging, flag)?;
@@ -305,7 +305,7 @@ pub(crate) fn publish_logging(prepared: PreparedLogging) -> bool {
 /// at a log level or to a destination its operator did not ask for is worse
 /// than one that refuses to start and says why.
 pub fn init_logging(
-    logging: &crate::config::LoggingConfig,
+    logging: &acme_proxy_core::config::LoggingConfig,
     directive: Option<String>,
 ) -> Result<(), String> {
     let prepared = prepare_logging(logging, directive.as_deref())?;
@@ -334,14 +334,14 @@ pub fn init_logging(
 /// Human-readable rather than `logging.json_format`'s shape for the same
 /// reason: the audience is the terminal the command was typed into. `NO_COLOR`
 /// still vetoes the colour, through the shared [`ansi_enabled`].
-fn command_logging_config() -> crate::config::LoggingConfig {
-    crate::config::LoggingConfig {
+fn command_logging_config() -> acme_proxy_core::config::LoggingConfig {
+    acme_proxy_core::config::LoggingConfig {
         target: "stderr".to_string(),
         // The compiled default, deliberately, and not the operator's own
         // `logging.filter`. It is reached only when `--log-level` was not
         // given, i.e. when a non-empty `RUST_LOG` is what asked — and that
         // outranks it, so this is a fallback nothing normally reads.
-        ..crate::config::LoggingConfig::default()
+        ..acme_proxy_core::config::LoggingConfig::default()
     }
 }
 
@@ -365,7 +365,7 @@ mod tests {
     /// configuration error was handled cleanly.
     #[test]
     fn a_malformed_logging_filter_is_reported_rather_than_panicking() {
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             filter: "this is not=a=valid=filter".to_string(),
             ..Default::default()
         };
@@ -376,12 +376,12 @@ mod tests {
 
     #[test]
     fn a_valid_logging_filter_builds() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=debug".to_string(),
             ..Default::default()
         };
@@ -397,12 +397,12 @@ mod tests {
     /// `logging.filter` would change nothing.
     #[test]
     fn rust_log_wins_and_says_so() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("RUST_LOG", "acme_proxy=warn") };
 
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=trace".to_string(),
             ..Default::default()
         };
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn prepare_logging_reports_each_bad_key_by_name() {
         for (logging, expected) in bad_key_cases() {
-            let _guard = crate::config::ENV_LOCK
+            let _guard = acme_proxy_core::config::ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::remove_var("RUST_LOG") };
@@ -487,12 +487,12 @@ mod tests {
     /// `ReloadReport::logging_reloaded` carries, so an operator is told.
     #[test]
     fn publishing_without_an_installed_subscriber_is_a_no_op() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
-        let prepared = prepare_logging(&crate::config::LoggingConfig::default(), None)
+        let prepared = prepare_logging(&acme_proxy_core::config::LoggingConfig::default(), None)
             .expect("the defaults build");
         assert!(!publish_logging(prepared));
     }
@@ -505,12 +505,12 @@ mod tests {
     /// new layer nothing asks. Its own process, like the two installers below.
     #[test]
     fn a_reloaded_filter_changes_what_is_enabled() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
-        let at_info = crate::config::LoggingConfig {
+        let at_info = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=info".to_string(),
             target: "stderr".to_string(),
             ..Default::default()
@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(LevelFilter::current(), LevelFilter::INFO);
         assert!(!tracing::enabled!(target: "acme_proxy", tracing::Level::DEBUG));
 
-        let at_debug = crate::config::LoggingConfig {
+        let at_debug = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=debug".to_string(),
             target: "stderr".to_string(),
             ..Default::default()
@@ -536,13 +536,13 @@ mod tests {
     /// reloadable. Human-readable to JSON is the biggest such change there is.
     #[test]
     fn a_reloaded_format_swaps_the_whole_stack() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
         init_logging(
-            &crate::config::LoggingConfig {
+            &acme_proxy_core::config::LoggingConfig {
                 target: "stderr".to_string(),
                 ansi: false,
                 ..Default::default()
@@ -551,7 +551,7 @@ mod tests {
         )
         .expect("the subscriber installs");
 
-        let as_json = crate::config::LoggingConfig {
+        let as_json = acme_proxy_core::config::LoggingConfig {
             json_format: true,
             flatten_event: true,
             target: "stderr".to_string(),
@@ -575,24 +575,24 @@ mod tests {
     /// The three keys whose value can be wrong, and the name each must be
     /// refused by. Shared so `init_logging` and `prepare_logging` cannot drift
     /// on which of them they check.
-    fn bad_key_cases() -> Vec<(crate::config::LoggingConfig, &'static str)> {
+    fn bad_key_cases() -> Vec<(acme_proxy_core::config::LoggingConfig, &'static str)> {
         vec![
             (
-                crate::config::LoggingConfig {
+                acme_proxy_core::config::LoggingConfig {
                     filter: "not=a=filter".to_string(),
                     ..Default::default()
                 },
                 "logging.filter",
             ),
             (
-                crate::config::LoggingConfig {
+                acme_proxy_core::config::LoggingConfig {
                     target: "nowhere".to_string(),
                     ..Default::default()
                 },
                 "logging.target",
             ),
             (
-                crate::config::LoggingConfig {
+                acme_proxy_core::config::LoggingConfig {
                     span_events: "sometimes".to_string(),
                     ..Default::default()
                 },
@@ -610,7 +610,7 @@ mod tests {
         for (logging, expected) in bad_key_cases() {
             // `RUST_LOG` wins over `logging.filter`, so the filter case is only
             // reachable with it unset — which the crate-wide lock guarantees.
-            let _guard = crate::config::ENV_LOCK
+            let _guard = acme_proxy_core::config::ENV_LOCK
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             unsafe { std::env::remove_var("RUST_LOG") };
@@ -629,7 +629,7 @@ mod tests {
     /// nextest for an unrelated reason; see the Testing notes.)
     #[test]
     fn the_human_readable_subscriber_installs() {
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             target: "stderr".to_string(),
             ansi: false,
             span_events: "close".to_string(),
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn the_json_subscriber_installs() {
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             json_format: true,
             flatten_event: true,
             span_events: "full".to_string(),
@@ -654,12 +654,12 @@ mod tests {
     /// outranking `NO_COLOR`, applied to the filter.
     #[test]
     fn the_flag_outranks_rust_log_and_the_file() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("RUST_LOG", "acme_proxy=warn") };
 
-        let logging = crate::config::LoggingConfig {
+        let logging = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=error".to_string(),
             ..Default::default()
         };
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn a_command_run_logs_to_stderr_whatever_logging_target_says() {
         assert_eq!(
-            crate::config::LoggingConfig::default().target,
+            acme_proxy_core::config::LoggingConfig::default().target,
             "stdout",
             "the default this must not inherit",
         );
@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn an_unparseable_flag_directive_is_refused_by_name() {
         let error = build_env_filter(
-            &crate::config::LoggingConfig::default(),
+            &acme_proxy_core::config::LoggingConfig::default(),
             Some("not=a=filter"),
         )
         .unwrap_err();
@@ -723,7 +723,7 @@ mod tests {
     /// the records on stderr. Its own process, like the three installers above.
     #[test]
     fn a_command_subscriber_installs_at_the_flags_level() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
@@ -741,14 +741,14 @@ mod tests {
     /// writes a `OnceLock`.
     #[test]
     fn the_flag_survives_a_reload() {
-        let _guard = crate::config::ENV_LOCK
+        let _guard = acme_proxy_core::config::ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("RUST_LOG") };
 
         assert!(flag_override().is_none(), "nothing is set before startup");
 
-        let at_error = crate::config::LoggingConfig {
+        let at_error = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=error".to_string(),
             target: "stderr".to_string(),
             ..Default::default()
@@ -760,7 +760,7 @@ mod tests {
 
         // The reload's own call, verbatim: a new file with a different filter,
         // rebuilt through the flag the cell remembers.
-        let edited = crate::config::LoggingConfig {
+        let edited = acme_proxy_core::config::LoggingConfig {
             filter: "acme_proxy=error".to_string(),
             target: "stderr".to_string(),
             span_events: "close".to_string(),

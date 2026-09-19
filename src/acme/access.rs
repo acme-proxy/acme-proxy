@@ -3,7 +3,6 @@ use uuid::Uuid;
 
 use tracing::{error, warn};
 
-use crate::error::Problem;
 use crate::sqlite::{
     account::Account,
     authz::{Authorization, Challenge},
@@ -12,6 +11,7 @@ use crate::sqlite::{
     order::Order,
     status::OrderStatus,
 };
+use acme_proxy_core::error::Problem;
 
 /// Resolves the account that signed the request, within the endpoint it
 /// reached: an account registered at another profile is simply unknown here.

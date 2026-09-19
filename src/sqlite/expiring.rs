@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::config::Config;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::{Order, UNPARSABLE_NOT_AFTER};
+use acme_proxy_core::config::Config;
 
 /// The window the panel opens on when the caller names no `days`.
 ///
@@ -256,16 +256,16 @@ pub async fn list_expiring(
 
 /// The RFC 9773 certID of a stored chain's leaf, for the `replaces` lookup.
 fn ari_cert_id(chain: &str) -> Option<String> {
-    crate::cert::leaf_der_from_chain(chain)
+    acme_proxy_core::cert::leaf_der_from_chain(chain)
         .ok()
-        .and_then(|der| crate::cert::ari_cert_id(&der).ok())
+        .and_then(|der| acme_proxy_core::cert::ari_cert_id(&der).ok())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identifier::Identifier;
     use crate::testutil::{account_id, issued_order};
+    use acme_proxy_core::identifier::Identifier;
 
     const DAY: i64 = 24 * 60 * 60;
 
@@ -397,7 +397,7 @@ mod tests {
             "default",
             b"other-key",
             Vec::new(),
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             &db,
         )
         .await

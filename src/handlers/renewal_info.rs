@@ -7,11 +7,11 @@ use axum::{
 use serde_json::{Value, json};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::error::Problem;
 use crate::router::AppState;
 use crate::signer::RenewalWindow;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::Order;
+use acme_proxy_core::error::Problem;
 
 /// One day, in seconds: how far the window returned for a revoked certificate
 /// is shifted into the past.
@@ -71,7 +71,7 @@ pub async fn get_renewal_info(
     // not name the issuer of the certificate it claims is not an identifier for
     // that certificate, and answering anyway would let a caller learn a window
     // for someone else's certificate that happens to share a serial.
-    let cert_id = crate::cert::parse_ari_cert_id(&id).map_err(|error| {
+    let cert_id = acme_proxy_core::cert::parse_ari_cert_id(&id).map_err(|error| {
         warn!(event = "renewal_info_invalid_id_format", outcome = "failure", cert_id = %id, error = %error);
         Problem::malformed(format!("Invalid certID: {error}"))
     })?;
@@ -96,16 +96,17 @@ pub async fn get_renewal_info(
         Problem::malformed("Order does not have a certificate")
     })?;
 
-    let leaf_der = crate::cert::leaf_der_from_chain(certificate_pem).map_err(|error| {
-        error!(event = "renewal_info_cert_parse_failed", outcome = "failure", error = %error);
-        Problem::server_internal("Stored certificate is unparsable")
-    })?;
+    let leaf_der =
+        acme_proxy_core::cert::leaf_der_from_chain(certificate_pem).map_err(|error| {
+            error!(event = "renewal_info_cert_parse_failed", outcome = "failure", error = %error);
+            Problem::server_internal("Stored certificate is unparsable")
+        })?;
 
     // Now that the certificate is in hand, hold the AKI half to account. A
     // certificate issued before this server's local CA emitted the extension has
     // no AKI to compare against — there, "cannot check" is not "reject", or
     // every certificate issued by an older build would become unqueryable.
-    match crate::cert::ari_cert_id_parts(&leaf_der) {
+    match acme_proxy_core::cert::ari_cert_id_parts(&leaf_der) {
         Ok((aki, _serial)) if aki != cert_id.aki => {
             warn!(event = "renewal_info_aki_mismatch", outcome = "failure", cert_id = %id, cert_serial = %serial_hex);
             return Err(Problem::malformed(
@@ -124,7 +125,7 @@ pub async fn get_renewal_info(
         }
     }
 
-    let (not_before, not_after) = crate::cert::cert_validity(&leaf_der).map_err(|error| {
+    let (not_before, not_after) = acme_proxy_core::cert::cert_validity(&leaf_der).map_err(|error| {
         error!(event = "renewal_info_cert_validity_parse_failed", outcome = "failure", error = %error);
         Problem::server_internal("Failed to parse certificate validity")
     })?;

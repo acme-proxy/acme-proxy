@@ -7,9 +7,12 @@
 mod common;
 
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use acme_proxy::sqlite::admin_session::AdminSession;
 use acme_proxy::sqlite::audit::AuditEntry;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use common::*;
@@ -2075,9 +2078,9 @@ async fn seed(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
     count: u8,
 ) -> Vec<String> {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut ids = Vec::new();
     for index in 0..count {
@@ -2605,9 +2608,9 @@ async fn an_unknown_order_status_filter_is_refused_rather_than_matching_nothing(
 
 #[tokio::test]
 async fn an_order_detail_carries_its_authorizations() {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::authz::{Authorization, Challenge};
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let ids = seed(&database, 1).await;
@@ -2703,9 +2706,9 @@ async fn revoking_an_order_covers_every_outcome() {
 /// and says so rather than reaching for whatever signer is at hand.
 #[tokio::test]
 async fn revoking_an_order_from_an_unmounted_profile_is_a_conflict() {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
     let (account, _) = Account::find_or_create(
@@ -3300,10 +3303,10 @@ async fn the_admin_listener_serves_no_acme() {
 /// other revoke test cannot reach, and the one that actually touches the CA.
 #[tokio::test]
 async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::signer::RequestedValidity;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut config = admin_config();
     config.admin.enabled = true;
@@ -3364,7 +3367,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     // The leaf's DER out of the PEM chain: `cert_serial_and_spki` parses one
     // certificate, not a chain.
     let (serial, spki) =
-        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+        acme_proxy_core::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     let expected_serial = serial.clone();
     order
         .finalize(chain, serial, spki, None, &database)
@@ -3826,11 +3829,11 @@ async fn seed_sweep_job(database: &std::sync::Arc<acme_proxy::sqlite::db::Databa
 async fn seed_relay_job(
     database: &std::sync::Arc<acme_proxy::sqlite::db::Database>,
 ) -> (String, String) {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::account::Account;
     use acme_proxy::sqlite::job::{Job, NewJob};
     use acme_proxy::sqlite::order::Order;
     use acme_proxy::sqlite::upstream_order::UpstreamOrder;
+    use acme_proxy_core::identifier::Identifier;
 
     let (account, _) = Account::find_or_create(
         PROFILE,
@@ -4131,8 +4134,8 @@ async fn expiring(
     names: &[&str],
     not_after: i64,
 ) -> String {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut order = Order::create(
         PROFILE,

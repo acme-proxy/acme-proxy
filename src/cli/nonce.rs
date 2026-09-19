@@ -7,9 +7,9 @@ use clap::Subcommand;
 use crate::admin;
 use crate::auditor::admin as audit_admin;
 use crate::cli::CliError;
-use crate::config::Config;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::Nonce;
+use acme_proxy_core::config::Config;
 
 #[derive(Subcommand)]
 pub enum NonceCommand {

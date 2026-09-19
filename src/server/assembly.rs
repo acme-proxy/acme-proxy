@@ -4,10 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::config::{self, Config};
 use crate::egress::Egress;
 use crate::sqlite::db::Database;
 use crate::{metrics, notify, signer};
+use acme_proxy_core::config;
+use acme_proxy_core::config::Config;
 
 /// The three things one configuration generation contributes to its profiles,
 /// built before any of them is published.

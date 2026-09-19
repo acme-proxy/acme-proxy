@@ -14,7 +14,7 @@ use serde::Deserialize;
 ///
 /// Each key falls back to its conventional environment variable when left
 /// empty; the precedence and the one variable deliberately *not* read are
-/// documented on [`crate::proxy::OutboundProxies::from_config`].
+/// documented on `proxy::OutboundProxies::from_config`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ProxyConfig {

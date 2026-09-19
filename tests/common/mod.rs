@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use acme_proxy::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
-pub use acme_proxy::audit::ClientContext;
 use acme_proxy::profile::Profile;
 use acme_proxy::profile::ProfileParts;
 use acme_proxy::router::build_app;
+pub use acme_proxy_core::audit::ClientContext;
 
 use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
@@ -26,12 +26,9 @@ use acme_proxy::admin::password::PasswordContext;
 use acme_proxy::challenge::{
     ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
 };
-use acme_proxy::client::ProxyPolicy;
-use acme_proxy::config::{Config, JobsConfig};
 use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
 use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, Stage};
-use acme_proxy::identifier::Identifier;
 use acme_proxy::jobs::{JobQueue, JobRegistry};
 pub use acme_proxy::metrics::Metrics;
 use acme_proxy::notify::{
@@ -45,6 +42,10 @@ use acme_proxy::signer::{
     RevocationRoute, SignerBackend, SignerError, SignerInfo,
 };
 use acme_proxy::sqlite::db::Database;
+use acme_proxy_core::client::ProxyPolicy;
+use acme_proxy_core::config::Config;
+use acme_proxy_core::config::JobsConfig;
+use acme_proxy_core::identifier::Identifier;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
@@ -155,7 +156,7 @@ pub fn make_csr_and_keypair(dns: &str) -> (String, EcSigner) {
 /// The leaf out of a `leaf + CA` PEM chain, as DER — the first `CERTIFICATE`
 /// block.
 pub fn first_certificate(chain: &str) -> Vec<u8> {
-    acme_proxy::cert::leaf_der_from_chain(chain).unwrap()
+    acme_proxy_core::cert::leaf_der_from_chain(chain).unwrap()
 }
 
 /// The server-level base URL — `server.base_url`, naming the process rather
@@ -342,7 +343,7 @@ impl NotifyHarness {
     }
 
     async fn over_key(key: &str, recorder: Arc<RecordingNotifyBackend>) -> Self {
-        let every: Vec<String> = acme_proxy::config::ALL_NOTIFY_EVENTS
+        let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
             .iter()
             .map(|kind| (*kind).to_string())
             .collect();
@@ -455,8 +456,8 @@ pub struct TestProfile {
     pub signer: Arc<dyn SignerBackend>,
     pub filter: Arc<FilterPolicy>,
     pub challenges: Arc<ChallengeRegistry>,
-    pub eab: acme_proxy::config::EabConfig,
-    pub meta: acme_proxy::config::MetaConfig,
+    pub eab: acme_proxy_core::config::EabConfig,
+    pub meta: acme_proxy_core::config::MetaConfig,
     pub notify: Option<Arc<NotifyDispatcher>>,
 }
 
@@ -470,8 +471,8 @@ impl TestProfile {
             signer: Arc::new(memory_ca().await),
             filter: Arc::new(FilterPolicy::default()),
             challenges: default_challenges(),
-            eab: acme_proxy::config::EabConfig::default(),
-            meta: acme_proxy::config::MetaConfig::default(),
+            eab: acme_proxy_core::config::EabConfig::default(),
+            meta: acme_proxy_core::config::MetaConfig::default(),
             // Resolved when the app is built: a dispatcher needs a `JobQueue`
             // over the app's own database, which does not exist yet.
             notify: None,
@@ -1111,7 +1112,9 @@ pub async fn test_admin_app_logged_in_with_security_notify(
 /// panel and the CLI must print back is `names or (mgmt-net and names)`, and
 /// that re-parenthesization is the reason either surface exists.
 pub fn test_filter_policy() -> Arc<FilterPolicy> {
-    use acme_proxy::config::{CheckConfig, FilterConfig, RuleConfig};
+    use acme_proxy_core::config::CheckConfig;
+    use acme_proxy_core::config::FilterConfig;
+    use acme_proxy_core::config::RuleConfig;
 
     let filter = FilterConfig {
         rules: vec!["mgmt-bypass".to_string(), "corp".to_string()],
@@ -1162,7 +1165,7 @@ pub fn test_filter_policy() -> Arc<FilterPolicy> {
 
     acme_proxy::filter::from_config(
         &filter,
-        &acme_proxy::config::DnsConfig::default(),
+        &acme_proxy_core::config::DnsConfig::default(),
         None,
         false,
     )
@@ -3217,8 +3220,8 @@ pub async fn certified_order(
     account: uuid::Uuid,
     not_after: Option<i64>,
 ) -> acme_proxy::sqlite::order::Order {
-    use acme_proxy::identifier::Identifier;
     use acme_proxy::sqlite::order::Order;
+    use acme_proxy_core::identifier::Identifier;
 
     let mut order = Order::create(
         "default",
@@ -3263,7 +3266,7 @@ pub async fn bound_eab(
             "default",
             &[eab.kid.as_bytes()[15], index, 99],
             vec![],
-            &acme_proxy::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             database,
         )
         .await

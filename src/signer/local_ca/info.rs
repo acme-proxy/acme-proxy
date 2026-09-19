@@ -11,17 +11,17 @@ use async_trait::async_trait;
 use tracing::error;
 
 use super::issuer_id_of;
-use crate::config::LocalCaConfig;
 use crate::signer::{RevocationRoute, SignerError, SignerInfo};
 use crate::sqlite::crl::StoredCrl;
 use crate::sqlite::db::Database;
+use acme_proxy_core::config::LocalCaConfig;
 
 /// What a request may ask of a local CA without its key.
 pub struct LocalCaInfo {
     /// The CA certificate PEM — the anchor `GET /ca.pem` serves, byte-identical
     /// to what `LocalCa::issue` appends to every chain.
     ca_pem: String,
-    /// [`crate::cert::issuer_id`] of that certificate: the key its revocations
+    /// [`acme_proxy_core::cert::issuer_id`] of that certificate: the key its revocations
     /// and its CRL are stored under.
     issuer: String,
     database: Arc<Database>,

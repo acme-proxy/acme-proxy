@@ -6,10 +6,10 @@ use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
 use uuid::Uuid;
 
-use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::status::{self, OrderStatus};
+use acme_proxy_core::identifier::Identifier;
 
 /// An ACME order (RFC 8555 §7.1.3). A new order is created in the `pending`
 /// state with one authorization per identifier; once every authorization is
@@ -383,7 +383,7 @@ impl Order {
     /// — every test fixture, and any future path with no client — simply keeps
     /// two `NULL`s, which is the honest answer.
     #[must_use]
-    pub(crate) fn with_client(mut self, client: &crate::audit::ClientContext) -> Order {
+    pub(crate) fn with_client(mut self, client: &acme_proxy_core::audit::ClientContext) -> Order {
         self.created_ip = client.ip.clone();
         self.created_ptr = client.ptr.clone();
         self
@@ -691,7 +691,7 @@ impl Order {
     /// Records a successful issuance: stores the PEM `chain` plus the leaf's
     /// `cert_serial` (hex), `cert_pubkey` (DER SPKI) and `cert_not_after` —
     /// all three populated by the caller from that same chain via
-    /// [`crate::cert::cert_serial_and_spki`] and [`crate::cert::cert_validity`],
+    /// [`acme_proxy_core::cert::cert_serial_and_spki`] and [`acme_proxy_core::cert::cert_validity`],
     /// since parsing needs error handling the DB layer doesn't otherwise deal
     /// in — moves the order to the terminal `valid` state, and keeps `self`
     /// in sync so a following [`Order::to_json`] reflects the change without
@@ -1181,7 +1181,7 @@ impl Order {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::ClientContext;
+    use acme_proxy_core::audit::ClientContext;
 
     /// `with_client` is set between `new` and `insert`, the way `replaces` is,
     /// and — like `replaces` — it has to survive the round trip. An order built
@@ -2199,7 +2199,10 @@ mod tests {
             0,
             "the model compares raw; the front ends normalize"
         );
-        assert_eq!(crate::cert::normalize_serial("0A:1B:2C:3D"), "0a1b2c3d");
+        assert_eq!(
+            acme_proxy_core::cert::normalize_serial("0A:1B:2C:3D"),
+            "0a1b2c3d"
+        );
     }
 
     /// A helper for the expiry suite: an issued order whose leaf expires at

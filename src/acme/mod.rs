@@ -41,7 +41,7 @@
 //! `#[instrument]`: the handler's span already covers the request, and the
 //! attribute hides a body from coverage.
 //!
-//! Refusals the client reads as they are travel as [`crate::error::Problem`]
+//! Refusals the client reads as they are travel as [`acme_proxy_core::error::Problem`]
 //! values, wrapped in [`Error`]. `Problem` is a data type as much as a response
 //! — the documents stored in `challenges.error` and `orders.error` are its
 //! RFC 7807 JSON — and only its `IntoResponse` impl belongs to the edge.

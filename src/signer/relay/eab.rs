@@ -2,7 +2,7 @@
 //! JWS this server attaches to its own `newAccount` request when the upstream
 //! CA requires a pre-shared credential.
 //!
-//! The exact mirror of [`crate::eab`], which does the same thing in the other
+//! The exact mirror of [`acme_proxy_core::eab`], which does the same thing in the other
 //! direction — verifying the EAB a *client* of this server presents. Same
 //! envelope, same `HS256`, same `ring::hmac`; only the direction differs, so
 //! the types are reused rather than redefined and the round-trip is testable
@@ -21,9 +21,9 @@ use base64::prelude::*;
 use ring::hmac;
 use serde_json::Value;
 
-use crate::eab::EabJws;
+use acme_proxy_core::eab::EabJws;
 
-/// Only supported MAC algorithm, matching what [`crate::eab`] accepts on the
+/// Only supported MAC algorithm, matching what [`acme_proxy_core::eab`] accepts on the
 /// way in and what RFC 8555 §7.3.4 recommends.
 const ALG: &str = "HS256";
 
@@ -85,8 +85,10 @@ pub(crate) fn decode_secret(value: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eab::{EabError, parse_header, verify_payload_and_signature};
-    use crate::jws::Jwk;
+    use acme_proxy_core::eab::EabError;
+    use acme_proxy_core::eab::parse_header;
+    use acme_proxy_core::eab::verify_payload_and_signature;
+    use acme_proxy_core::jws::Jwk;
 
     const SECRET: &[u8] = b"01234567890123456789012345678901";
     const URL: &str = "https://upstream.example/newAccount";
@@ -104,7 +106,7 @@ mod tests {
     }
 
     /// The whole point: what this module builds must be exactly what the
-    /// inbound verifier accepts. Checking it against `crate::eab` rather than
+    /// inbound verifier accepts. Checking it against `acme_proxy_core::eab` rather than
     /// against a hand-written expectation is what stops the two halves
     /// drifting apart — a mismatch here is a credential a real upstream would
     /// reject, which is otherwise only discoverable against a live CA.

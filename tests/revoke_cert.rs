@@ -403,7 +403,7 @@ async fn revoked_certificate_appears_in_the_served_crl() {
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
     let leaf_der = first_certificate(&chain);
-    let (serial_hex, _) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
 
     let nonce = fetch_nonce(&app).await;
     let payload = json!({ "certificate": cert_field(&chain) });
@@ -430,11 +430,11 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
     use acme_proxy::sqlite::db::Database;
 
     let dir = common::TempDir::new("shared-crl");
-    let cfg = acme_proxy::config::LocalCaConfig {
+    let cfg = acme_proxy_core::config::LocalCaConfig {
         cert_path: dir.join("ca.pem").to_string_lossy().into_owned(),
         key_path: dir.join("ca.key").to_string_lossy().into_owned(),
         crl_path: dir.join("ca.crl").to_string_lossy().into_owned(),
-        ..acme_proxy::config::LocalCaConfig::default()
+        ..acme_proxy_core::config::LocalCaConfig::default()
     };
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let server_ca = Arc::new(LocalCa::load_or_generate(&cfg, database.clone()).unwrap());
@@ -444,7 +444,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
     let (serial_hex, _) =
-        acme_proxy::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
+        acme_proxy_core::cert::cert_serial_and_spki(&first_certificate(&chain)).unwrap();
     // Served once before the other process acts, so the server has already
     // produced whatever it would have held on to.
     assert_eq!(get(&app, &p("/crl")).await.status(), StatusCode::OK);
@@ -459,7 +459,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
     let outcome = acme_proxy::admin::revoke_order(
         &order.id.to_string(),
         Some(1),
-        acme_proxy::audit::Actor::cli(),
+        acme_proxy_core::audit::Actor::cli(),
         common::ClientContext::default(),
         &acme_proxy::auditor::Auditor::offline(database.clone()),
         database.clone(),
@@ -503,7 +503,7 @@ async fn a_signer_revoke_failure_leaves_the_order_revocable() {
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
     let leaf_der = first_certificate(&chain);
-    let (serial_hex, _) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
 
     let payload = json!({ "certificate": cert_field(&chain) });
     let nonce = fetch_nonce(&app).await;
@@ -617,7 +617,7 @@ async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() 
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
     let leaf_der = first_certificate(&chain);
-    let (serial_hex, _) = acme_proxy::cert::cert_serial_and_spki(&leaf_der).unwrap();
+    let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf_der).unwrap();
 
     let payload = json!({ "certificate": cert_field(&chain) });
     let nonce = fetch_nonce(&app).await;

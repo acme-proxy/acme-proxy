@@ -150,7 +150,7 @@ pub async fn get_order(
 pub async fn revoke_order(
     State(state): State<AdminState>,
     Path(id): Path<String>,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     AuthenticatedWrite(auth): AuthenticatedWrite,
     body: Option<Json<RevokeRequest>>,
 ) -> Result<Response, AdminError> {
@@ -168,7 +168,7 @@ pub async fn revoke_order(
     let outcome = admin::revoke_order(
         &id,
         reason,
-        crate::audit::Actor::admin(&auth.user.username),
+        acme_proxy_core::audit::Actor::admin(&auth.user.username),
         state.audit.client(&request_context).await,
         &state.audit,
         state.database.clone(),
@@ -241,7 +241,7 @@ pub async fn delete_order(
     State(state): State<AdminState>,
     Path(id): Path<String>,
     AuthenticatedWrite(auth): AuthenticatedWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
     let subject = Order::find_by_id(&id, &state.database).await?;
     let deleted = match admin::delete_order(&id, state.database.clone()).await? {

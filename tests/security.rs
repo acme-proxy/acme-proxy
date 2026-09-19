@@ -713,7 +713,9 @@ async fn an_order_naming_more_identifiers_than_the_limit_is_refused() {
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
 
-    let limit = acme_proxy::config::Config::default().order.max_identifiers;
+    let limit = acme_proxy_core::config::Config::default()
+        .order
+        .max_identifiers;
     let names: Vec<String> = (0..=limit).map(|n| format!("h{n}.example.com")).collect();
 
     let res = order_naming(&app, &signer, &account_url, &names).await;

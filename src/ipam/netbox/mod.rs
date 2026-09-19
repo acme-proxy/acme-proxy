@@ -60,7 +60,7 @@ use serde_json::{Map, Value};
 use tracing::{debug, info, warn};
 
 use super::{AddressNames, Ipam, IpamError, Source, Sources, field_values, parse_sources};
-use crate::config::NetboxConfig;
+use acme_proxy_core::config::NetboxConfig;
 
 /// Which kind of NetBox object an address is assigned to.
 ///

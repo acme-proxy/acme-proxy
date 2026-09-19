@@ -149,7 +149,7 @@ impl AcmeResponse {
 pub struct AccountKey {
     pair: EcdsaKeyPair,
     rng: SystemRandom,
-    /// DER SubjectPublicKeyInfo, so [`crate::jws::signature::jwk_thumbprint`] can
+    /// DER SubjectPublicKeyInfo, so [`acme_proxy_core::jws::signature::jwk_thumbprint`] can
     /// be reused rather than reimplementing RFC 7638 here.
     spki_der: Vec<u8>,
 }
@@ -181,7 +181,7 @@ impl AccountKey {
         })
     }
 
-    /// DER SPKI, for [`crate::jws::signature::jwk_thumbprint`].
+    /// DER SPKI, for [`acme_proxy_core::jws::signature::jwk_thumbprint`].
     pub fn spki_der(&self) -> &[u8] {
         &self.spki_der
     }
@@ -562,7 +562,7 @@ mod tests {
         // The SPKI must describe the *same* key as the JWK — the cheapest
         // proof being that the crate's own thumbprint helper accepts it and
         // agrees with a thumbprint computed from the JWK members directly.
-        let thumbprint = crate::jws::signature::jwk_thumbprint(key.spki_der()).unwrap();
+        let thumbprint = acme_proxy_core::jws::signature::jwk_thumbprint(key.spki_der()).unwrap();
         let canonical = format!(
             r#"{{"crv":"P-256","kty":"EC","x":"{}","y":"{}"}}"#,
             jwk["x"].as_str().unwrap(),

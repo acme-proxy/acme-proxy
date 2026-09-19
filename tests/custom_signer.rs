@@ -10,9 +10,9 @@
 
 use std::sync::Arc;
 
-use acme_proxy::config::CustomSignerConfig;
 use acme_proxy::signer::SignerBackend;
 use acme_proxy::signer::custom::CustomScriptSigner;
+use acme_proxy_core::config::CustomSignerConfig;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

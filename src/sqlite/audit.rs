@@ -11,10 +11,14 @@ use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 
-use crate::audit::{Actor, ActorKind, AuditEvent, AuditRecord, ClientContext};
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::order::rfc3339;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::ActorKind;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
 
 /// One stored audit row.
 ///
@@ -331,7 +335,7 @@ impl AuditEntry {
 }
 
 /// The `actor_kind` values, for the CLI help and the page filter. Mirrors
-/// [`crate::audit::ActorKind`]; the `CHECK` in the migration is the authority.
+/// [`acme_proxy_core::audit::ActorKind`]; the `CHECK` in the migration is the authority.
 #[must_use]
 pub fn actor_kinds() -> [&'static str; 4] {
     [
@@ -356,7 +360,9 @@ pub fn audit_cutoff(days: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::{Actor, AuditEvent, ClientContext};
+    use acme_proxy_core::audit::Actor;
+    use acme_proxy_core::audit::AuditEvent;
+    use acme_proxy_core::audit::ClientContext;
     use std::sync::Arc;
 
     async fn db() -> Arc<Database> {
@@ -443,7 +449,9 @@ mod tests {
         let order = crate::sqlite::order::Order::new(
             "default",
             account_id,
-            vec![crate::identifier::Identifier::dns("a.example.com")],
+            vec![acme_proxy_core::identifier::Identifier::dns(
+                "a.example.com",
+            )],
             0,
             None,
             None,
@@ -765,7 +773,7 @@ mod tests {
         }
     }
 
-    /// Mirrors `crate::audit::ActorKind`, and is what the CLI help and the page
+    /// Mirrors `acme_proxy_core::audit::ActorKind`, and is what the CLI help and the page
     /// filter read.
     #[test]
     fn the_actor_kinds_helper_lists_every_variant() {

@@ -13,14 +13,15 @@ use std::sync::Arc;
 use clap::Subcommand;
 
 use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
-use crate::audit::{Actor, ClientContext};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::palette::Palette;
 use crate::sqlite::db::Database;
 use crate::sqlite::job::{Job, JobQuery};
 use crate::sqlite::status::JobStatus;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::palette::Palette;
 
 #[derive(Subcommand)]
 pub enum JobsCommand {

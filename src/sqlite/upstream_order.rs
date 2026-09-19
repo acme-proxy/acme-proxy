@@ -17,10 +17,10 @@ use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 use uuid::Uuid;
 
-use crate::identifier::Identifier;
 use crate::sqlite::db::Database;
 use crate::sqlite::nonce::now_secs;
 use crate::sqlite::status::{self, OrderStatus, UpstreamOrderStatus};
+use acme_proxy_core::identifier::Identifier;
 
 /// The most rows [`UpstreamOrder::list_processing`] returns in one call.
 ///
@@ -74,8 +74,8 @@ impl UpstreamOrder {
 
     /// The stored finalize context, in the shape an audit row takes.
     #[must_use]
-    pub fn client(&self) -> crate::audit::ClientContext {
-        crate::audit::ClientContext {
+    pub fn client(&self) -> acme_proxy_core::audit::ClientContext {
+        acme_proxy_core::audit::ClientContext {
             ip: self.client_ip.clone(),
             ptr: self.client_ptr.clone(),
             user_agent: self.user_agent.clone(),
@@ -100,7 +100,7 @@ impl UpstreamOrder {
     /// order and not a wrong answer.
     pub async fn set_client(
         order_id: &str,
-        client: &crate::audit::ClientContext,
+        client: &acme_proxy_core::audit::ClientContext,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let Some(order_id) = crate::sqlite::id::parse(order_id) else {
@@ -351,8 +351,8 @@ impl UpstreamOrderRow {
     /// The stored finalize context, in the shape an audit row takes — the
     /// [`UpstreamOrder::client`] equivalent for the joined row.
     #[must_use]
-    pub fn client(&self) -> crate::audit::ClientContext {
-        crate::audit::ClientContext {
+    pub fn client(&self) -> acme_proxy_core::audit::ClientContext {
+        acme_proxy_core::audit::ClientContext {
             ip: self.client_ip.clone(),
             ptr: self.client_ptr.clone(),
             user_agent: self.user_agent.clone(),
@@ -467,10 +467,10 @@ impl UpstreamOrder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audit::ClientContext;
-    use crate::identifier::Identifier;
     use crate::sqlite::account::Account;
     use crate::sqlite::order::Order;
+    use acme_proxy_core::audit::ClientContext;
+    use acme_proxy_core::identifier::Identifier;
     use std::sync::Arc;
 
     /// `upstream_orders.order_id` is a foreign key, so a real order has to
@@ -478,7 +478,7 @@ mod tests {
     async fn order(database: &Database) -> Order {
         let (account, _) = Account::find_or_create(
             "default",
-            &crate::random::random_bytes::<16>(),
+            &acme_proxy_core::random::random_bytes::<16>(),
             Vec::new(),
             &ClientContext::default(),
             database,
@@ -738,7 +738,7 @@ mod tests {
     async fn order_on(profile: &str, names: &[&str], database: &Database) -> Order {
         let (account, _) = Account::find_or_create(
             profile,
-            &crate::random::random_bytes::<16>(),
+            &acme_proxy_core::random::random_bytes::<16>(),
             Vec::new(),
             &ClientContext::default(),
             database,

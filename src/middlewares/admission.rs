@@ -31,7 +31,7 @@ use axum::{
 use tokio::sync::Semaphore;
 use tracing::warn;
 
-use crate::error::Problem;
+use acme_proxy_core::error::Problem;
 
 /// The shared state of the admission middleware: a fixed number of slots, and
 /// the two budgets that decide what happens when they are all taken.
@@ -105,7 +105,7 @@ pub async fn admission_middleware(
                 outcome = "failure",
                 method = %method,
                 path = %path,
-                deadline_ms = crate::logfields::millis(admission.deadline),
+                deadline_ms = acme_proxy_core::logfields::millis(admission.deadline),
             );
             Problem::server_internal("The request took too long to process").into_response()
         }

@@ -101,7 +101,7 @@ pub async fn get_eab(
 pub async fn create_eab(
     State(state): State<AdminState>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
     // See `pages::orders::revoke_order`: `Option<Form<_>>` is not an axum
     // extractor, and this is only ever reached from a browser form.
     axum::Form(form): axum::Form<CreateForm>,
@@ -167,7 +167,7 @@ pub async fn revoke_eab(
     State(state): State<AdminState>,
     Path(kid): Path<String>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
     // Idempotent, so a second revoke is not an error — but the row still has to
     // exist, or the operator is being told something happened to nothing.
@@ -214,7 +214,7 @@ pub async fn delete_eab(
     Path(kid): Path<String>,
     Query(params): Query<DeleteEabParams>,
     session: PageSessionWrite,
-    request_context: crate::audit::RequestContext,
+    request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
     let accounts = match params.resolve() {
         Ok(accounts) => accounts,

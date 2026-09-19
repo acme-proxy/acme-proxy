@@ -193,18 +193,18 @@ impl JobHandler for NotifyJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ALL_NOTIFY_EVENTS;
     use crate::jobs::{JobQueue, JobSpec};
     use crate::notify::tests::RecordingNotifyBackend;
     use crate::notify::{BackendSlot, NotifyDispatcher, NotifyError, ProfileMountedData};
     use crate::sqlite::db::Database;
+    use acme_proxy_core::config::ALL_NOTIFY_EVENTS;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Arc;
 
     async fn queue() -> JobQueue {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        JobQueue::new(database, &crate::config::JobsConfig::default())
+        JobQueue::new(database, &acme_proxy_core::config::JobsConfig::default())
     }
 
     fn every_kind() -> Vec<String> {

@@ -78,7 +78,7 @@ pub struct NetboxConfig {
     pub custom_field: String,
     /// Which places a permitted name may come from. Empty, or an unknown
     /// entry, is a startup error; order is meaningless, since the result is a
-    /// union. See [`crate::ipam::Source`].
+    /// union. See `ipam::Source`.
     #[serde(deserialize_with = "empty_string_is_no_values")]
     pub sources: Vec<String>,
     /// Which NetBox address roles count as a service address for the `vip`

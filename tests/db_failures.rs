@@ -486,8 +486,8 @@ async fn replaces_lookup_db_error_returns_500() {
         let (account_url, _order_url, pem) =
             common::acme::issue_certificate(&app, &signer, &["example.com"]).await;
 
-        let leaf = acme_proxy::cert::leaf_der_from_chain(&pem).unwrap();
-        let cert_id = acme_proxy::cert::ari_cert_id(&leaf).unwrap();
+        let leaf = acme_proxy_core::cert::leaf_der_from_chain(&pem).unwrap();
+        let cert_id = acme_proxy_core::cert::ari_cert_id(&leaf).unwrap();
 
         let new_order_url = format!("{BASE}/newOrder");
         let nonce = fetch_nonce(&app).await;

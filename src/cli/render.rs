@@ -24,7 +24,6 @@ use base64::prelude::*;
 use super::window::Window;
 use crate::admin::ProfileSummary;
 use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
-use crate::palette::Palette;
 use crate::sqlite::account::{Account, pubkey_fingerprint};
 use crate::sqlite::admin_session::AdminSession;
 use crate::sqlite::admin_user::AdminUser;
@@ -34,6 +33,7 @@ use crate::sqlite::expiring::ExpiringEntry;
 use crate::sqlite::job::Job;
 use crate::sqlite::order::{Order, rfc3339};
 use crate::sqlite::upstream_order::UpstreamOrderRow;
+use acme_proxy_core::palette::Palette;
 
 /// An address and the reverse name it had, as `ip (ptr)`.
 ///
@@ -837,8 +837,6 @@ mod tests {
 
     use super::*;
     use crate::admin::ops::load_order_detail;
-    use crate::audit::ClientContext;
-    use crate::identifier::Identifier;
     use crate::sqlite::authz::{Authorization, Challenge};
     use crate::sqlite::db::Database;
     use crate::sqlite::expiring::SupersededBy;
@@ -847,6 +845,8 @@ mod tests {
         account_id, account_seen_from, admin_session_fixture, admin_user_fixture, audit_entry,
         client_context, job_fixture, order_fixture, upstream_order_row_fixture,
     };
+    use acme_proxy_core::audit::ClientContext;
+    use acme_proxy_core::identifier::Identifier;
 
     /// Colour forced on, whatever the stream — the only way these assertions
     /// can see an escape at all, since a test binary's stdout is not a

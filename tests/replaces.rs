@@ -170,7 +170,7 @@ async fn issue(
 /// constructed in the same way as the path component for GET requests described
 /// in Section 4.1", so a client builds this from the certificate it holds.
 fn cert_id(chain_pem: &str) -> String {
-    acme_proxy::cert::ari_cert_id(&first_certificate(chain_pem)).unwrap()
+    acme_proxy_core::cert::ari_cert_id(&first_certificate(chain_pem)).unwrap()
 }
 
 /// §5: "If the server accepts a newOrder request with a `replaces` field, it

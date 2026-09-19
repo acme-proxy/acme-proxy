@@ -3,10 +3,10 @@ use std::net::IpAddr;
 use tracing::error;
 
 use crate::challenge::ChallengeError;
-use crate::error::Problem;
 use crate::filter::{EabIdentity, FilterPolicy, IdentifierContext, IdentifierStage, Outcome};
-use crate::identifier::Identifier;
 use crate::sqlite::{account::Account, db::Database};
+use acme_proxy_core::error::Problem;
+use acme_proxy_core::identifier::Identifier;
 
 /// Runs the policy's identifier stage and maps a refusal to the ACME error the
 /// sub-stage calls for.
@@ -117,7 +117,7 @@ mod tests {
             "default",
             &[9u8],
             vec![],
-            &crate::audit::ClientContext::default(),
+            &acme_proxy_core::audit::ClientContext::default(),
             &database,
         )
         .await

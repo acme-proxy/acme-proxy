@@ -22,7 +22,7 @@ use hickory_resolver::{
     proto::rr::{Name, RData, rdata::TXT},
 };
 
-use crate::config::DnsConfig;
+use acme_proxy_core::config::DnsConfig;
 
 /// The DNS lookups this crate needs.
 ///

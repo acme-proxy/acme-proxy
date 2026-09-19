@@ -53,10 +53,10 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tracing::error;
 
-use crate::config::JobsConfig;
 use crate::sqlite::db::Database;
 use crate::sqlite::job::Job;
 use crate::sqlite::nonce::now_secs;
+use acme_proxy_core::config::JobsConfig;
 
 pub mod registry;
 pub mod runner;

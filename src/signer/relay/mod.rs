@@ -41,8 +41,6 @@ use base64::prelude::*;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::config::RelayConfig;
-use crate::identifier::Identifier;
 use crate::jobs::JobQueue;
 use crate::signer::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
@@ -50,6 +48,8 @@ use crate::signer::{
 };
 use crate::sqlite::db::Database;
 use crate::sqlite::upstream_order::UpstreamOrder;
+use acme_proxy_core::config::RelayConfig;
+use acme_proxy_core::identifier::Identifier;
 
 pub mod account;
 pub mod client;
@@ -526,7 +526,7 @@ impl SignerInfo for RelayInfo {
 
         // The certID is derived from the certificate itself, so nothing extra
         // has to be stored per order for this to work.
-        let cert_id = match crate::cert::ari_cert_id(cert_der) {
+        let cert_id = match acme_proxy_core::cert::ari_cert_id(cert_der) {
             Ok(cert_id) => cert_id,
             Err(error) => {
                 debug!(event = "upstream_renewal_info_cert_id_underivable", outcome = "failure", error = %error);

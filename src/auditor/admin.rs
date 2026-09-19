@@ -17,9 +17,12 @@
 //! [`Auditor`](crate::auditor::Auditor); the CLI passes [`Actor::cli`] and an
 //! empty [`ClientContext`].
 
-use crate::audit::{Actor, AuditEvent, AuditRecord, ClientContext};
 use crate::sqlite::account::Account;
 use crate::sqlite::order::Order;
+use acme_proxy_core::audit::Actor;
+use acme_proxy_core::audit::AuditEvent;
+use acme_proxy_core::audit::AuditRecord;
+use acme_proxy_core::audit::ClientContext;
 
 /// The actor and (empty) client context a host-CLI administrative action is
 /// attributed with. The web front end builds [`Actor::admin`] with the
