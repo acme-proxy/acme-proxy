@@ -23,9 +23,9 @@ SQLite adds its own constraints:
 - It gives `sqlx` no migration lock.
 
 Migrations used to run inside `Database::connect`. That made every subcommand an
-upgrade step. Once the server could run as several processes
-(ADR@role-processes), two processes starting together raced `MIGRATOR::run` with
-nothing to serialise them.
+upgrade step. Once the server could run as several processes ([ADR
+0007](0007-role-processes.md)), two processes starting together raced
+`MIGRATOR::run` with nothing to serialise them.
 
 ## Decision
 
@@ -78,7 +78,7 @@ The connection pins two pragmas:
 - `sqlx::migrate!()` embeds the migration set at compile time. Adding a file
   does not invalidate the build on its own; touch `crates/store/src/db.rs`.
 - SQL, and the dialect it is written in, lives in one crate. That is what keeps
-  a second backend (PLAN.md #2) a contained change.
+  a second backend (the PostgreSQL item in `TODO.md`) a contained change.
 
 ## Enforced by
 

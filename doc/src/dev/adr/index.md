@@ -17,12 +17,22 @@ status. Do not rewrite its argument after the fact.
 | [0003](0003-migrations-frozen-and-explicit.md) | Migrations are append-only and applied only by the schema owners | Accepted |
 | [0004](0004-uuid-v7-blob-ids.md) | Row ids are UUID v7 stored as BLOBs, and their type says where they came from | Accepted |
 | [0005](0005-rust-enums-own-the-vocabularies.md) | A Rust enum owns each vocabulary, and SQL checks only the closed ones | Accepted |
+| [0006](0006-no-slow-or-privileged-work-in-a-request.md) | A request does no slow or privileged work; it queues it | Accepted |
+| [0007](0007-role-processes.md) | One binary runs as role processes, and only the worker holds the CA key | Accepted |
+| [0008](0008-shared-state-in-the-database.md) | State that more than one process can see lives in the database | Accepted. One exception stands, the web admin's login limiter, for as long as |
 
-### Decisions argued on other pages
+### Decisions argued elsewhere
 
-Some decisions are explained where their subject is documented, and have no
-record here, because a second copy would drift from the first:
+Some decisions are explained where their subject lives, and have no record
+here, because a second copy would drift from the first.
 
+In the book:
+
+- [Hoisting the JWS checks into an
+  extractor](../architecture.md#request-flow-and-extractors), and the two
+  security properties it must keep.
+- [Pluggable signing keys](../architecture.md#pluggable-signing-keys): `rcgen`'s
+  own `SigningKey` as the seam, and signing on the blocking pool.
 - [Secrets are stored three different ways, on
   purpose](../database.md#secrets-are-stored-three-different-ways-on-purpose)
 - [Columns nothing ever compares
@@ -31,6 +41,14 @@ record here, because a second copy would drift from the first:
 - [Evidence has no foreign
   keys](../database.md#the-audit-trail-has-no-foreign-keys-deliberately): the
   audit trail and the revocation ledger outlive what they describe.
+
+In a module's own documentation (`//!`), where the decision concerns that
+module alone:
+
+- `crates/jobs/src/jobs/mod.rs`: why background work is a durable queue and not
+  a `tokio::spawn`, and the `Retry`/`Failed` split every handler must honour.
+- `crates/signer/src/local_ca/crl.rs`: how the CRL number stays monotonic across
+  processes.
 
 ## Writing an ADR
 

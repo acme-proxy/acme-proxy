@@ -102,29 +102,15 @@ module tree. `Database::raw_pool()` exists only for test fixtures, and
 `tests/layering.rs` fails the build when production code calls it.
 
 ### Migrations
-Database migrations are embedded into the binary using
-`sqlx::migrate!()` and run automatically at startup. The database connects with
-two crucial pragmas:
-- `foreign_keys = ON`: Ensures the `ON DELETE CASCADE` constraints work,
-  allowing accounts and orders to be genuinely deleted without leaving orphans.
-- `journal_mode = WAL`: Write-Ahead Logging allows high concurrency, crucial
-  because every single request consumes and mints a nonce.
 
-**The migration set is frozen as of 0.1.0 and append-only from here.** A schema
-change is a new `sqlx migrate add` file, never an edit to a committed one:
-`sqlx` records each migration's checksum, so editing a file that has already run
-somewhere fails that deployment at startup. See
-[Contributing](contributing.md#changing-the-database-schema) for the two
-consequences that catch people out — a new column is a new file, and a new
-`CHECK`/`UNIQUE`/foreign key needs a full table rebuild because SQLite cannot
-add one in place.
-
-Because upgrading is therefore just "run the new binary against the existing
-database", there is no separate upgrade procedure and no dump/restore step. The
-schema is also the *only* frozen surface before 1.0.0 — configuration keys and
-the rest may still move, which is what
-[Compatibility](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility)
-sets out.
+Migrations are embedded with `sqlx::migrate!()`, frozen once committed, and
+applied only by `acme-proxy migrate`/`init` and a process running the `worker`
+role; every other entry point refuses a database whose schema is behind. The
+rules and the reasons are in
+[ADR 0003](adr/0003-migrations-frozen-and-explicit.md), and the how-to in
+[Contributing](contributing.md#changing-the-database-schema). The schema is
+also the *only* frozen surface before 1.0.0
+([ADR 0001](adr/0001-pre-1-0-compatibility.md)).
 
 ### Schema details
 
