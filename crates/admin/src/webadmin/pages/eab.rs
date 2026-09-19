@@ -15,7 +15,10 @@ use serde_json::{Map, Value};
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::eab::{DeleteEabParams, deleted_or_refused};
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::eab::{
+    DeleteEabParams, apply_create_eab, apply_delete_eab, apply_revoke_eab,
+};
 use crate::webadmin::handlers::paging::{Page, PageParams};
 use crate::webadmin::handlers::params::non_empty;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
@@ -106,36 +109,14 @@ pub async fn create_eab(
     // extractor, and this is only ever reached from a browser form.
     axum::Form(form): axum::Form<CreateForm>,
 ) -> Result<Response, PageError> {
-    let label = non_empty(&form.label);
-    let profile = non_empty(&form.profile);
-
-    super::super::handlers::eab::require_mounted_profile(
+    let eab = apply_create_eab(
         &state,
-        profile.as_deref(),
+        &Caller::ui(&session.auth, &request_context),
+        non_empty(&form.label),
+        non_empty(&form.profile),
         "leave it unset",
-    )?;
-
-    let eab = Eab::create(label, profile, &state.database).await?;
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, client| {
-                acme_proxy_jobs::auditor::admin::eab_created(
-                    actor,
-                    client,
-                    &eab.kid.to_string(),
-                    eab.profile.as_deref(),
-                    eab.label.as_deref(),
-                )
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_eab_created",
-                   outcome = "success",
-                   surface = "ui",
-                   kid = %eab.kid,
-                   username = %session.auth.user.username);
+    )
+    .await?;
 
     // The **first** page, whatever page the form was posted from, and the
     // reason `Eab::search` is newest first: a credential minted a moment ago is
@@ -169,30 +150,7 @@ pub async fn revoke_eab(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
-    // Idempotent, so a second revoke is not an error — but the row still has to
-    // exist, or the operator is being told something happened to nothing.
-    let subject = Eab::find_any_by_kid(&kid, &state.database).await?;
-    if !Eab::revoke(&kid, &state.database).await? {
-        return Err(not_found(&kid));
-    }
-    if subject.as_ref().is_some_and(|eab| eab.status == "active") {
-        let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
-        state
-            .record_admin_action(
-                &request_context,
-                &session.auth.user.username,
-                |actor, client| {
-                    acme_proxy_jobs::auditor::admin::eab_revoked(actor, client, &kid, profile)
-                },
-            )
-            .await;
-    }
-
-    tracing::info!(event = "admin_eab_revoked",
-                   outcome = "success",
-                   surface = "ui",
-                   kid = %kid,
-                   username = %session.auth.user.username);
+    apply_revoke_eab(&state, &Caller::ui(&session.auth, &request_context), &kid).await?;
 
     let mut context = card_context(&kid, &state, &session).await?;
     context.insert(
@@ -222,28 +180,15 @@ pub async fn delete_eab(
         Ok(accounts) => accounts,
         Err(error) => return refuse(&kid, &state, &session, &error).await,
     };
-    let deletion = admin::delete_eab(&kid, accounts, state.database.clone()).await?;
-    let deleted = match deleted_or_refused(&kid, deletion) {
-        Ok(deleted) => deleted,
-        Err(error) if error.status == StatusCode::NOT_FOUND => return Err(error.into()),
+    let caller = Caller::ui(&session.auth, &request_context);
+    match apply_delete_eab(&state, &caller, &kid, accounts).await {
+        Ok(_) => {}
+        // Nothing to show a card for, or not about this credential at all.
+        Err(error) if error.status == StatusCode::NOT_FOUND || error.status.is_server_error() => {
+            return Err(error.into());
+        }
         Err(error) => return refuse(&kid, &state, &session, &error).await,
-    };
-
-    state
-        .record_admin_actions(
-            &request_context,
-            &session.auth.user.username,
-            |actor, client| {
-                acme_proxy_jobs::auditor::admin::eab_deleted_records(actor, client, &deleted)
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_eab_deleted",
-                   outcome = "success",
-                   surface = "ui",
-                   kid = %kid,
-                   accounts = accounts.as_str(),
-                   username = %session.auth.user.username);
+    }
 
     Ok(redirect("/ui/eab", session.hx))
 }

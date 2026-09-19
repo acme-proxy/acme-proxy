@@ -2,13 +2,16 @@
 //! two things an operator can do to it.
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::Html;
 use serde_json::Value;
 
-use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
+use crate::admin;
 use crate::webadmin::AdminState;
-use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::jobs::JobListParams;
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::jobs::{
+    Cancelled, JobListParams, Ran, apply_cancel_job, apply_run_job,
+};
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
@@ -132,46 +135,24 @@ pub async fn cancel_job(
     request_context: acme_proxy_core::audit::RequestContext,
     session: PageSessionWrite,
 ) -> Result<Html<String>, PageError> {
-    let banner = match admin::cancel_job(
-        &id,
-        acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
-        state.audit.client(&request_context).await,
-        &state.audit,
-        state.database.clone(),
-    )
-    .await
-    .map_err(|admin::CancelJobError::Database(error)| PageError::from(AdminError::from(error)))?
-    {
-        CancelJobOutcome::NotFound => return Err(not_found(&id)),
-        CancelJobOutcome::NotCancellable(status) => flash_error(
-            "job_not_cancellable",
-            format!("Job {id} is {status}; only ready or failed jobs can be cancelled."),
-        ),
-        CancelJobOutcome::Cancelled(job) => {
-            tracing::info!(event = "admin_job_cancelled",
-                           outcome = "success",
-                           surface = "ui",
-                           job_id = %id,
-                           job_kind = %job.kind,
-                           order_abandoned = false,
-                           username = %session.auth.user.username);
-            flash("ok", "Job cancelled.")
-        }
-        CancelJobOutcome::CancelledAndOrderAbandoned { job, order_id } => {
-            tracing::info!(event = "admin_job_cancelled",
-                           outcome = "success",
-                           surface = "ui",
-                           job_id = %id,
-                           job_kind = %job.kind,
-                           order_id = %order_id,
-                           order_abandoned = true,
-                           username = %session.auth.user.username);
-            flash(
+    let banner =
+        match apply_cancel_job(&state, &Caller::ui(&session.auth, &request_context), &id).await {
+            Ok(Cancelled {
+                abandoned_order: None,
+                ..
+            }) => flash("ok", "Job cancelled."),
+            Ok(Cancelled {
+                abandoned_order: Some(order_id),
+                ..
+            }) => flash(
                 "ok",
                 format!("Job cancelled. Order {order_id} was marked invalid."),
-            )
-        }
-    };
+            ),
+            Err(error) if error.status == StatusCode::CONFLICT => {
+                flash_error(error.code, error.message)
+            }
+            Err(error) => return Err(error.into()),
+        };
 
     fragment(&state, &session, &id, banner).await
 }
@@ -183,44 +164,21 @@ pub async fn run_job(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
-    let banner = match admin::run_job_now(
-        &id,
-        acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
-        state.audit.client(&request_context).await,
-        &state.audit,
-        state.database.clone(),
-    )
-    .await?
-    {
-        RunJobNowOutcome::NotFound => return Err(not_found(&id)),
-        RunJobNowOutcome::Refused(status) => flash_error(
-            "job_not_runnable",
-            format!("Job {id} is {status}; run-now applies to ready or failed jobs."),
-        ),
-        RunJobNowOutcome::Nudged(_) => {
-            tracing::info!(event = "admin_job_advanced",
-                           outcome = "success",
-                           surface = "ui",
-                           job_id = %id,
-                           username = %session.auth.user.username);
-            flash("ok", "Job will run at the next queue poll.")
-        }
-        RunJobNowOutcome::Revived(job) => {
-            tracing::info!(event = "admin_job_revived",
-                           outcome = "success",
-                           surface = "ui",
-                           job_id = %id,
-                           attempts = job.attempts,
-                           username = %session.auth.user.username);
-            flash(
+    let banner =
+        match apply_run_job(&state, &Caller::ui(&session.auth, &request_context), &id).await {
+            Ok(Ran::Nudged(_)) => flash("ok", "Job will run at the next queue poll."),
+            Ok(Ran::Revived(job)) => flash(
                 "ok",
                 format!(
                     "Job revived: status ready, attempts {}/{} (one more attempt).",
                     job.attempts, job.max_attempts
                 ),
-            )
-        }
-    };
+            ),
+            Err(error) if error.status == StatusCode::CONFLICT => {
+                flash_error(error.code, error.message)
+            }
+            Err(error) => return Err(error.into()),
+        };
 
     fragment(&state, &session, &id, banner).await
 }

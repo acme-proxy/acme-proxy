@@ -13,6 +13,7 @@ use crate::admin::mfa::MfaOutcome;
 use crate::admin::users::{self, AuthOutcome};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::session::{
     AdminClientIp, Authenticated, MfaStep, PENDING_MFA_TTL, PendingMfa, PendingMfaSubmit,
     SelfServiceWrite, check_origin, clearing_cookie, cookie_value, hash_token, log_login,
@@ -515,17 +516,33 @@ pub async fn delete_session(
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
-    let scope = if query.all {
-        let revoked = AdminSession::delete_for_user(auth.user.id, &state.database).await?;
-        // "Sign out everywhere" ends sessions the operator is not holding, so
-        // it is a revoke worth recording; a plain single logout is not.
+    apply_logout(&state, &Caller::api(&auth, &request_context), query.all).await?;
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(header::SET_COOKIE, clearing_cookie())],
+    )
+        .into_response())
+}
+
+/// Signs the caller out: the session making the request, or with `all` every
+/// session they hold. Only "everywhere" writes an audit row, since it ends
+/// sessions the operator is not holding; a plain logout is not a revoke.
+///
+/// The caller's front end clears the cookie; this ends the row it named.
+pub(crate) async fn apply_logout(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    all: bool,
+) -> Result<(), AdminError> {
+    let scope = if all {
+        let revoked = AdminSession::delete_for_user(caller.auth.user.id, &state.database).await?;
         state
-            .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
+            .record_admin_action(caller.request, caller.username(), |actor, ctx| {
                 acme_proxy_jobs::auditor::admin::session_revoked(
                     actor,
                     ctx,
                     acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
-                        auth.user.username.clone(),
+                        caller.username().to_string(),
                     ),
                     revoked,
                 )
@@ -533,16 +550,16 @@ pub async fn delete_session(
             .await;
         "all"
     } else {
-        AdminSession::delete(&auth.session.token_hash, &state.database).await?;
+        AdminSession::delete(&caller.auth.session.token_hash, &state.database).await?;
         "one"
     };
 
-    tracing::info!(event = "admin_logout", outcome = "success", surface = "api", username = %auth.user.username, scope = scope);
-    Ok((
-        StatusCode::NO_CONTENT,
-        [(header::SET_COOKIE, clearing_cookie())],
-    )
-        .into_response())
+    tracing::info!(event = "admin_logout",
+                   outcome = "success",
+                   surface = caller.surface,
+                   username = %caller.username(),
+                   scope = scope);
+    Ok(())
 }
 
 /// The body both `POST` and `GET /api/session` return.

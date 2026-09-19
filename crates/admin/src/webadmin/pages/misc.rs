@@ -5,11 +5,10 @@ use axum::extract::State;
 use axum::response::Html;
 use serde::Deserialize;
 use serde_json::Value;
-use std::time::Duration;
 
-use crate::admin;
 use crate::webadmin::AdminState;
-use crate::webadmin::handlers::misc::profile_rows;
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::misc::{apply_cleanup_nonces, profile_rows};
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{chrome, flash, respond, respond_fragment};
@@ -184,26 +183,12 @@ pub async fn cleanup_nonces(
         })?,
     };
 
-    let removed =
-        admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
-    // See the `/api` twin: a sweep that removed nothing writes no row.
-    if removed > 0 {
-        state
-            .record_admin_action(
-                &request_context,
-                &session.auth.user.username,
-                |actor, client| {
-                    acme_proxy_jobs::auditor::admin::nonce_cleanup_completed(actor, client, removed)
-                },
-            )
-            .await;
-    }
-    tracing::info!(event = "admin_nonces_cleaned",
-                   outcome = "success",
-                   surface = "ui",
-                   rows_removed = removed,
-                   ttl_seconds = seconds,
-                   username = %session.auth.user.username);
+    let removed = apply_cleanup_nonces(
+        &state,
+        &Caller::ui(&session.auth, &request_context),
+        seconds,
+    )
+    .await?;
 
     let count = Nonce::count(&state.database).await?;
     let mut context = super::fragment_context(&session.auth);

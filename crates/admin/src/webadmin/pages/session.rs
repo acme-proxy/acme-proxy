@@ -15,6 +15,8 @@ use serde_json::{Map, Value};
 
 use crate::admin::mfa;
 use crate::webadmin::AdminState;
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::session::apply_logout;
 use crate::webadmin::handlers::session::{
     LoginRequest, LogoutQuery, MfaRequest, finish_enrolment, finish_mfa, sign_in,
 };
@@ -22,7 +24,6 @@ use crate::webadmin::pages::auth::{PageMfaPending, PageMfaSubmit, PageSelfServic
 use crate::webadmin::pages::error::{LOGIN_PATH, PageError, redirect};
 use crate::webadmin::pages::templates;
 use crate::webadmin::session::{AdminClientIp, MfaStep, PendingMfa, clearing_cookie};
-use acme_proxy_store::admin_session::AdminSession;
 
 /// Where a successful sign-in lands.
 const PANEL_PATH: &str = "/ui/";
@@ -239,37 +240,12 @@ pub async fn post_logout(
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
-    let scope = if query.all {
-        let revoked = AdminSession::delete_for_user(session.auth.user.id, &state.database).await?;
-        // "Sign out everywhere" ends sessions this request is not holding, so
-        // it is a revoke worth recording; a plain logout is not.
-        state
-            .record_admin_action(
-                &request_context,
-                &session.auth.user.username,
-                |actor, ctx| {
-                    acme_proxy_jobs::auditor::admin::session_revoked(
-                        actor,
-                        ctx,
-                        acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
-                            session.auth.user.username.clone(),
-                        ),
-                        revoked,
-                    )
-                },
-            )
-            .await;
-        "all"
-    } else {
-        AdminSession::delete(&session.auth.session.token_hash, &state.database).await?;
-        "one"
-    };
-
-    tracing::info!(event = "admin_logout",
-                   outcome = "success",
-                   surface = "ui",
-                   username = %session.auth.user.username,
-                   scope = scope);
+    apply_logout(
+        &state,
+        &Caller::ui(&session.auth, &request_context),
+        query.all,
+    )
+    .await?;
 
     // The redirect and the cookie together: leaving the cookie behind would
     // send the browser to the sign-in page still carrying a token the server

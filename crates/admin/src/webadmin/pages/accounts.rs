@@ -7,13 +7,17 @@
 //! a URL copied between them stops meaning the same thing.
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::admin;
 use crate::webadmin::AdminState;
-use crate::webadmin::handlers::accounts::AccountListParams;
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::accounts::{
+    AccountListParams, apply_deactivate_account, apply_delete_account, apply_update_account_contact,
+};
 use crate::webadmin::handlers::orders::render_orders;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
@@ -21,7 +25,6 @@ use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{
     ListFilters, chrome, flash, page_value, pager, respond, respond_fragment,
 };
-use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;
@@ -192,42 +195,33 @@ pub async fn post_account_contact(
         .map(str::to_string)
         .collect();
 
-    // The same validator `newAccount` and `PATCH /api/accounts/{id}` call, so
-    // three front doors cannot come to disagree on what a valid contact is.
-    // The refusal is a banner rather than an error page: the operator is
-    // looking at the box they need to correct.
-    if let Some(rejection) = acme_proxy_protocol::acme::rules::contact_shape_error(&contact) {
-        let account = load(&id, &state).await?;
-        return card(
-            &state,
-            &session,
-            account,
-            super::flash_error("bad_request", rejection.detail),
-        )
-        .await;
+    // The same action `PATCH /api/accounts/{id}` runs, whose validator is the
+    // one `newAccount` calls. A refusal is a banner rather than an error page:
+    // the operator is looking at the box they need to correct.
+    match apply_update_account_contact(
+        &state,
+        &Caller::ui(&session.auth, &request_context),
+        &id,
+        contact,
+    )
+    .await
+    {
+        Ok(account) => {
+            let rendered = admin::render_account_json(&account, &state.config.server.base_url);
+            card(&state, &session, rendered, flash("ok", "Contact updated.")).await
+        }
+        Err(error) if error.status == StatusCode::BAD_REQUEST => {
+            let account = load(&id, &state).await?;
+            card(
+                &state,
+                &session,
+                account,
+                super::flash_error(error.code, error.message),
+            )
+            .await
+        }
+        Err(error) => Err(error.into()),
     }
-
-    let account = admin::update_account_contact(&id, contact, state.database.clone())
-        .await
-        .map_err(crate::webadmin::handlers::accounts::contact_error)?
-        .ok_or_else(|| not_found(&id))?;
-
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, client| {
-                audit_admin::account_contact_updated(actor, client, &account, &account.contact)
-            },
-        )
-        .await;
-    tracing::info!(event = "admin_account_contact_updated",
-                   outcome = "success",
-                   account_id = %id,
-                   username = %session.auth.user.username);
-
-    let rendered = admin::render_account_json(&account, &state.config.server.base_url);
-    card(&state, &session, rendered, flash("ok", "Contact updated.")).await
 }
 
 /// `POST /ui/accounts/{id}/deactivate`
@@ -237,28 +231,8 @@ pub async fn deactivate_account(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Html<String>, PageError> {
-    let account = admin::deactivate_account(
-        &id,
-        state.database.clone(),
-        |profile| state.notifiers.get(profile),
-        request_context
-            .ip
-            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
-    )
-    .await?
-    .ok_or_else(|| not_found(&id))?;
-
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, client| audit_admin::account_deactivated(actor, client, &account),
-        )
-        .await;
-    tracing::info!(event = "admin_account_deactivated",
-                   outcome = "success",
-                   account_id = %id,
-                   username = %session.auth.user.username);
+    let account =
+        apply_deactivate_account(&state, &Caller::ui(&session.auth, &request_context), &id).await?;
 
     let rendered = admin::render_account_json(&account, &state.config.server.base_url);
     card(
@@ -283,45 +257,17 @@ pub async fn delete_account(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
-    let subject = Account::find_any_by_id(&id, &state.database).await?;
-    let deleted = match admin::delete_account(&id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(&id)),
+    match apply_delete_account(&state, &Caller::ui(&session.auth, &request_context), &id).await {
+        Ok(_) => {}
         // The card, with the refusal beside the button that was pressed: the
         // account is still there, and so is every order that has to be revoked
         // before it can go.
-        admin::Deletion::LiveCertificates(live) => {
+        Err(error) if error.status == StatusCode::CONFLICT => {
             let context = card_context(&state, &session, load(&id, &state).await?).await?;
-            return super::refuse_with_card(
-                &state,
-                "accounts/_card.html",
-                context,
-                &crate::webadmin::error::AdminError::conflict(
-                    "live_certificates",
-                    admin::live_certificates_refusal(&format!("account {id}"), live),
-                ),
-            );
+            return super::refuse_with_card(&state, "accounts/_card.html", context, &error);
         }
-        admin::Deletion::Deleted(deleted) => deleted,
-    };
-
-    if let Some(account) = subject {
-        state
-            .record_admin_action(
-                &request_context,
-                &session.auth.user.username,
-                |actor, client| {
-                    audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
-                },
-            )
-            .await;
+        Err(error) => return Err(error.into()),
     }
-
-    tracing::info!(event = "admin_account_deleted",
-                   outcome = "success",
-                   surface = "ui",
-                   account_id = %id,
-                   username = %session.auth.user.username,
-                   cascaded_orders = deleted.cascaded);
 
     Ok(redirect("/ui/accounts", session.hx))
 }

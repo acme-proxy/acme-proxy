@@ -2,15 +2,18 @@
 //! two things an operator can do to it.
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::admin;
-use crate::admin::ops::RevokeOutcome;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::orders::{OrderListParams, render_orders, revoke_error};
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::orders::{
+    OrderListParams, Revoked, apply_delete_order, apply_revoke_order, render_orders,
+};
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
@@ -207,66 +210,21 @@ pub async fn revoke_order(
         })?),
     };
 
-    let banner = match crate::webadmin::handlers::resolve_order_profile(&state, &id).await {
-        Err(error) => flash_error(error.code, error.message),
-        Ok(profile) => {
-            // The operator, not the certificate's owner — see the API twin.
-            let route = profile.signer_info.revocation_route();
-            match admin::revoke_order(
-                &id,
-                reason,
-                acme_proxy_core::audit::Actor::admin(&session.auth.user.username),
-                state.audit.client(&request_context).await,
-                &state.audit,
-                state.database.clone(),
-                crate::webadmin::handlers::orders::revoker(&state, &route),
-                Some(&profile.notify),
-            )
-            .await
-            {
-                Ok(RevokeOutcome::Revoked(order)) => {
-                    tracing::info!(event = "admin_order_revoked",
-                                   outcome = "success",
-                                   surface = "ui",
-                                   order_id = %id,
-                                   profile = %order.profile,
-                                   reason = ?reason,
-                                   username = %session.auth.user.username);
-                    flash("ok", "Certificate revoked.")
-                }
-                Ok(RevokeOutcome::Queued(job)) => {
-                    tracing::info!(event = "admin_order_revoke_queued",
-                                   outcome = "progress",
-                                   surface = "ui",
-                                   order_id = %id,
-                                   job_id = %job,
-                                   username = %session.auth.user.username);
-                    flash(
-                        "ok",
-                        format!(
-                            "Revocation queued as job {job}; the worker performs it. \
-                             Follow it under Jobs."
-                        ),
-                    )
-                }
-                Ok(RevokeOutcome::NotFound) => return Err(not_found(&id)),
-                Ok(RevokeOutcome::NotIssued) => flash_error(
-                    "order_not_issued",
-                    format!("Order {id} has no certificate to revoke."),
-                ),
-                Ok(RevokeOutcome::AlreadyRevoked) => flash_error(
-                    "already_revoked",
-                    format!("Order {id} was already revoked."),
-                ),
-                Err(error) => {
-                    let error = revoke_error(error);
-                    if error.status.is_server_error() {
-                        return Err(error.into());
-                    }
-                    flash_error(error.code, error.message)
-                }
-            }
+    let caller = Caller::ui(&session.auth, &request_context);
+    let banner = match apply_revoke_order(&state, &caller, &id, reason).await {
+        Ok(Revoked::Now(_)) => flash("ok", "Certificate revoked."),
+        Ok(Revoked::Queued(job)) => flash(
+            "ok",
+            format!(
+                "Revocation queued as job {job}; the worker performs it. \
+                 Follow it under Jobs."
+            ),
+        ),
+        // No order to show a card for, or not about this order at all.
+        Err(error) if error.status == StatusCode::NOT_FOUND || error.status.is_server_error() => {
+            return Err(error.into());
         }
+        Err(error) => flash_error(error.code, error.message),
     };
 
     // Re-read rather than reuse: the revocation stamped columns the card shows,
@@ -284,49 +242,16 @@ pub async fn delete_order(
     session: PageSessionWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
-    let subject = acme_proxy_store::order::Order::find_by_id(&id, &state.database).await?;
-    let deleted = match admin::delete_order(&id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(&id)),
+    match apply_delete_order(&state, &Caller::ui(&session.auth, &request_context), &id).await {
+        Ok(_) => {}
         // The card, with the refusal beside the button that was pressed: the
         // order is still there, and revoking it is one panel up.
-        admin::Deletion::LiveCertificates(live) => {
+        Err(error) if error.status == StatusCode::CONFLICT => {
             let context = card_context(&id, &state, &session).await?;
-            return super::refuse_with_card(
-                &state,
-                "orders/_card.html",
-                context,
-                &AdminError::conflict(
-                    "live_certificates",
-                    admin::live_certificates_refusal(&format!("order {id}"), live),
-                ),
-            );
+            return super::refuse_with_card(&state, "orders/_card.html", context, &error);
         }
-        admin::Deletion::Deleted(deleted) => deleted,
-    };
-
-    if let Some(order) = subject {
-        state
-            .record_admin_action(
-                &request_context,
-                &session.auth.user.username,
-                |actor, client| {
-                    acme_proxy_jobs::auditor::admin::order_deleted(
-                        actor,
-                        client,
-                        &order,
-                        deleted.cascaded,
-                    )
-                },
-            )
-            .await;
+        Err(error) => return Err(error.into()),
     }
-
-    tracing::info!(event = "admin_order_deleted",
-                   outcome = "success",
-                   surface = "ui",
-                   order_id = %id,
-                   username = %session.auth.user.username,
-                   cascaded_authorizations = deleted.cascaded);
 
     Ok(redirect("/ui/orders", session.hx))
 }

@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 use acme_proxy_store::nonce::Nonce;
 
@@ -46,23 +47,34 @@ pub async fn cleanup_nonces(
         .unwrap_or(state.config.nonce.ttl_seconds);
 
     let removed =
+        apply_cleanup_nonces(&state, &Caller::api(&auth, &request_context), seconds).await?;
+    Ok(Json(json!({ "removed": removed })))
+}
+
+/// Deletes every nonce older than `seconds`, answering how many went.
+pub(crate) async fn apply_cleanup_nonces(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    seconds: u64,
+) -> Result<u64, AdminError> {
+    let removed =
         admin::cleanup_nonces(Duration::from_secs(seconds), state.database.clone()).await?;
     // Only when it removed something, the rule `audit cleanup` follows: a
     // sweep that changed nothing is not an administrative action worth a row.
     if removed > 0 {
         state
-            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            .record_admin_action(caller.request, caller.username(), |actor, client| {
                 acme_proxy_jobs::auditor::admin::nonce_cleanup_completed(actor, client, removed)
             })
             .await;
     }
     tracing::info!(event = "admin_nonces_cleaned",
                    outcome = "success",
-                   surface = "api",
+                   surface = caller.surface,
                    rows_removed = removed,
                    ttl_seconds = seconds,
-                   username = %auth.user.username);
-    Ok(Json(json!({ "removed": removed })))
+                   username = %caller.username());
+    Ok(removed)
 }
 
 /// `GET /api/profiles` — the endpoints this process is serving.

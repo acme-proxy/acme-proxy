@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
@@ -99,27 +100,14 @@ pub async fn create_eab(
     body: Option<Json<CreateEab>>,
 ) -> Result<Response, AdminError> {
     let Json(body) = body.unwrap_or_default();
-
-    require_mounted_profile(&state, body.profile.as_deref(), "omit `profile`")?;
-
-    let eab = Eab::create(body.label, body.profile, &state.database).await?;
-    state
-        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-            acme_proxy_jobs::auditor::admin::eab_created(
-                actor,
-                client,
-                &eab.kid.to_string(),
-                eab.profile.as_deref(),
-                eab.label.as_deref(),
-            )
-        })
-        .await;
-    tracing::info!(event = "admin_eab_created",
-                   outcome = "success",
-                   surface = "api",
-                   kid = %eab.kid,
-                   profile = ?eab.profile,
-                   username = %auth.user.username);
+    let eab = apply_create_eab(
+        &state,
+        &Caller::api(&auth, &request_context),
+        body.label,
+        body.profile,
+        "omit `profile`",
+    )
+    .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -140,20 +128,7 @@ pub async fn revoke_eab(
     AuthenticatedWrite(auth): AuthenticatedWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<StatusCode, AdminError> {
-    let subject = Eab::find_any_by_kid(&kid, &state.database).await?;
-    if !Eab::revoke(&kid, &state.database).await? {
-        return Err(not_found(&kid));
-    }
-    // A repeat revoke changes nothing, so it records nothing.
-    if subject.as_ref().is_some_and(|eab| eab.status == "active") {
-        let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
-        state
-            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-                acme_proxy_jobs::auditor::admin::eab_revoked(actor, client, &kid, profile)
-            })
-            .await;
-    }
-    tracing::info!(event = "admin_eab_revoked", outcome = "success", surface = "api", kid = %kid, username = %auth.user.username);
+    apply_revoke_eab(&state, &Caller::api(&auth, &request_context), &kid).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -174,22 +149,13 @@ pub async fn delete_eab(
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Json<Value>, AdminError> {
     let accounts = params.resolve()?;
-    let deleted = deleted_or_refused(
+    let deleted = apply_delete_eab(
+        &state,
+        &Caller::api(&auth, &request_context),
         &kid,
-        admin::delete_eab(&kid, accounts, state.database.clone()).await?,
-    )?;
-
-    state
-        .record_admin_actions(&request_context, &auth.user.username, |actor, client| {
-            acme_proxy_jobs::auditor::admin::eab_deleted_records(actor, client, &deleted)
-        })
-        .await;
-    tracing::info!(event = "admin_eab_deleted",
-                   outcome = "success",
-                   surface = "api",
-                   kid = %kid,
-                   accounts = accounts.as_str(),
-                   username = %auth.user.username);
+        accounts,
+    )
+    .await?;
 
     let orders: u64 = deleted.deleted.iter().map(|(_, orders)| orders).sum();
     Ok(Json(serde_json::json!({
@@ -197,6 +163,99 @@ pub async fn delete_eab(
         "deactivatedAccounts": deleted.deactivated.len(),
         "keptAccounts": deleted.remaining,
     })))
+}
+
+/// Mints a credential: the mounted-profile check, the row, its audit row and
+/// the log line. `hint` is the front end's wording of "leave the profile out"
+/// (see [`require_mounted_profile`]).
+pub(crate) async fn apply_create_eab(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    label: Option<String>,
+    profile: Option<String>,
+    hint: &str,
+) -> Result<Eab, AdminError> {
+    require_mounted_profile(state, profile.as_deref(), hint)?;
+
+    let eab = Eab::create(label, profile, &state.database).await?;
+    state
+        .record_admin_action(caller.request, caller.username(), |actor, client| {
+            acme_proxy_jobs::auditor::admin::eab_created(
+                actor,
+                client,
+                &eab.kid.to_string(),
+                eab.profile.as_deref(),
+                eab.label.as_deref(),
+            )
+        })
+        .await;
+    tracing::info!(event = "admin_eab_created",
+                   outcome = "success",
+                   surface = caller.surface,
+                   kid = %eab.kid,
+                   profile = ?eab.profile,
+                   username = %caller.username());
+    Ok(eab)
+}
+
+/// Revokes a credential, keeping its row. Idempotent, but the row has to
+/// exist, or the operator is being told something happened to nothing. Only
+/// the revoke that changed something records a row.
+pub(crate) async fn apply_revoke_eab(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    kid: &str,
+) -> Result<(), AdminError> {
+    let subject = Eab::find_any_by_kid(kid, &state.database).await?;
+    if !Eab::revoke(kid, &state.database).await? {
+        return Err(not_found(kid));
+    }
+    if let Some(eab) = subject.as_ref().filter(|eab| eab.status == "active") {
+        state
+            .record_admin_action(caller.request, caller.username(), |actor, client| {
+                acme_proxy_jobs::auditor::admin::eab_revoked(
+                    actor,
+                    client,
+                    kid,
+                    eab.profile.as_deref(),
+                )
+            })
+            .await;
+    }
+    tracing::info!(event = "admin_eab_revoked",
+                   outcome = "success",
+                   surface = caller.surface,
+                   kid = %kid,
+                   username = %caller.username());
+    Ok(())
+}
+
+/// Deletes a credential, doing `accounts` to the accounts it bound. `404` for
+/// no such credential, `409 live_certificates` when `accounts=delete` would
+/// take a live certificate's order with it; nothing changes then.
+pub(crate) async fn apply_delete_eab(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    kid: &str,
+    accounts: BoundAccounts,
+) -> Result<DeletedEab, AdminError> {
+    let deleted = deleted_or_refused(
+        kid,
+        admin::delete_eab(kid, accounts, state.database.clone()).await?,
+    )?;
+
+    state
+        .record_admin_actions(caller.request, caller.username(), |actor, client| {
+            acme_proxy_jobs::auditor::admin::eab_deleted_records(actor, client, &deleted)
+        })
+        .await;
+    tracing::info!(event = "admin_eab_deleted",
+                   outcome = "success",
+                   surface = caller.surface,
+                   kid = %kid,
+                   accounts = accounts.as_str(),
+                   username = %caller.username());
+    Ok(deleted)
 }
 
 /// An [`EabDeletion`] as either what was deleted or the refusal both front ends

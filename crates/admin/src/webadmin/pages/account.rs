@@ -21,6 +21,8 @@ use crate::admin::password::PasswordContext;
 use crate::admin::users::{self, UserError};
 use crate::admin::{mfa, totp};
 use crate::webadmin::AdminState;
+use crate::webadmin::handlers::Caller;
+use crate::webadmin::handlers::account::apply_revoke_own_session;
 use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSelfServiceWrite, PageSession};
@@ -617,32 +619,8 @@ pub async fn revoke_own_session(
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, PageError> {
-    let target =
-        AdminSession::find_by_user_and_fingerprint(session.auth.user.id, &id, &state.database)
-            .await?
-            .ok_or_else(|| session_not_found(&id))?;
-    let was_current = target.token_hash == session.auth.session.token_hash;
-    AdminSession::delete(&target.token_hash, &state.database).await?;
-
-    let scope = if was_current {
-        acme_proxy_jobs::auditor::admin::SessionScope::OwnCurrent
-    } else {
-        acme_proxy_jobs::auditor::admin::SessionScope::OwnOther
-    };
-    state
-        .record_admin_action(
-            &request_context,
-            &session.auth.user.username,
-            |actor, ctx| acme_proxy_jobs::auditor::admin::session_revoked(actor, ctx, scope, 1),
-        )
-        .await;
-
-    tracing::info!(event = "admin_session_revoked",
-                   outcome = "success",
-                   surface = "ui",
-                   scope = "self",
-                   username = %session.auth.user.username,
-                   session_fp = %id);
+    let was_current =
+        apply_revoke_own_session(&state, &Caller::ui(&session.auth, &request_context), &id).await?;
 
     if was_current {
         let mut response = crate::webadmin::pages::error::redirect(
@@ -665,10 +643,6 @@ pub async fn revoke_own_session(
     insert_own_sessions(&mut context, &state, &session.auth).await?;
     context.insert("flash".to_string(), super::flash("ok", "Session revoked."));
     Ok(respond_fragment(&state, "account/_sessions.html", context)?.into_response())
-}
-
-fn session_not_found(id: &str) -> PageError {
-    PageError::not_found(format!("no such session: {id}"))
 }
 
 /// Everything `partials/_sessions_table.html` reads for this operator's own

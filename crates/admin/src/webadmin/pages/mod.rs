@@ -9,6 +9,13 @@
 //! two representations — htmx swaps markup, and a `text/html` branch inside a
 //! JSON handler is where the two would start disagreeing.
 //!
+//! A write goes one step further: a page calls the **same** `apply_*` function
+//! its `/api` twin does (see `handlers/mod.rs`), which owns the validation, the
+//! audit rows and the log line. A page decides only which refusals are a banner
+//! beside the card and which replace the page.
+//! `every_shared_write_leaves_the_same_audit_rows_on_both_surfaces`
+//! (`tests/admin_pages.rs`) compares the two.
+//!
 //! ## Pages and fragments
 //!
 //! Every list and detail route serves both. A normal navigation gets the full

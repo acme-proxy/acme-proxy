@@ -16,6 +16,7 @@ use serde_json::Value;
 use crate::admin::{self, CancelJobOutcome, RunJobNowOutcome};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
@@ -94,44 +95,8 @@ pub async fn cancel_job(
     request_context: acme_proxy_core::audit::RequestContext,
     AuthenticatedWrite(auth): AuthenticatedWrite,
 ) -> Result<Json<Value>, AdminError> {
-    let outcome = admin::cancel_job(
-        &id,
-        acme_proxy_core::audit::Actor::admin(&auth.user.username),
-        state.audit.client(&request_context).await,
-        &state.audit,
-        state.database.clone(),
-    )
-    .await
-    .map_err(|admin::CancelJobError::Database(error)| AdminError::from(error))?;
-
-    match outcome {
-        CancelJobOutcome::NotFound => Err(not_found(&id)),
-        CancelJobOutcome::NotCancellable(status) => Err(AdminError::conflict(
-            "job_not_cancellable",
-            format!("job {id} is {status}; only ready or failed jobs can be cancelled"),
-        )),
-        CancelJobOutcome::Cancelled(job) => {
-            tracing::info!(event = "admin_job_cancelled",
-                           outcome = "success",
-                           surface = "api",
-                           job_id = %id,
-                           job_kind = %job.kind,
-                           order_abandoned = false,
-                           username = %auth.user.username);
-            Ok(Json(admin::render_job_json(&job)))
-        }
-        CancelJobOutcome::CancelledAndOrderAbandoned { job, order_id } => {
-            tracing::info!(event = "admin_job_cancelled",
-                           outcome = "success",
-                           surface = "api",
-                           job_id = %id,
-                           job_kind = %job.kind,
-                           order_id = %order_id,
-                           order_abandoned = true,
-                           username = %auth.user.username);
-            Ok(Json(admin::render_job_json(&job)))
-        }
-    }
+    let cancelled = apply_cancel_job(&state, &Caller::api(&auth, &request_context), &id).await?;
+    Ok(Json(admin::render_job_json(&cancelled.job)))
 }
 
 /// `POST /api/jobs/{id}/run` — nudge a `ready` job forward, or revive a
@@ -142,16 +107,100 @@ pub async fn run_job(
     request_context: acme_proxy_core::audit::RequestContext,
     AuthenticatedWrite(auth): AuthenticatedWrite,
 ) -> Result<Json<Value>, AdminError> {
+    let (Ran::Nudged(job) | Ran::Revived(job)) =
+        apply_run_job(&state, &Caller::api(&auth, &request_context), &id).await?;
+    Ok(Json(admin::render_job_json(&job)))
+}
+
+/// A cancelled job, and the order its cancellation abandoned, if it did.
+pub(crate) struct Cancelled {
+    pub(crate) job: Box<Job>,
+    /// A relay job still in flight: its order was marked `invalid`.
+    pub(crate) abandoned_order: Option<String>,
+}
+
+/// Cancels a `ready` or `failed` job. The audit row is written by
+/// [`admin::cancel_job`]; this adds the refusal's wording and the log line.
+/// `409 job_not_cancellable` for any other status.
+pub(crate) async fn apply_cancel_job(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<Cancelled, AdminError> {
+    let outcome = admin::cancel_job(
+        id,
+        acme_proxy_core::audit::Actor::admin(caller.username()),
+        state.audit.client(caller.request).await,
+        &state.audit,
+        state.database.clone(),
+    )
+    .await
+    .map_err(|admin::CancelJobError::Database(error)| AdminError::from(error))?;
+
+    let cancelled = match outcome {
+        CancelJobOutcome::NotFound => return Err(not_found(id)),
+        CancelJobOutcome::NotCancellable(status) => {
+            return Err(AdminError::conflict(
+                "job_not_cancellable",
+                format!("job {id} is {status}; only ready or failed jobs can be cancelled"),
+            ));
+        }
+        CancelJobOutcome::Cancelled(job) => Cancelled {
+            job,
+            abandoned_order: None,
+        },
+        CancelJobOutcome::CancelledAndOrderAbandoned { job, order_id } => Cancelled {
+            job,
+            abandoned_order: Some(order_id),
+        },
+    };
+    match &cancelled.abandoned_order {
+        None => tracing::info!(event = "admin_job_cancelled",
+                               outcome = "success",
+                               surface = caller.surface,
+                               job_id = %id,
+                               job_kind = %cancelled.job.kind,
+                               order_abandoned = false,
+                               username = %caller.username()),
+        Some(order_id) => tracing::info!(event = "admin_job_cancelled",
+                                         outcome = "success",
+                                         surface = caller.surface,
+                                         job_id = %id,
+                                         job_kind = %cancelled.job.kind,
+                                         order_id = %order_id,
+                                         order_abandoned = true,
+                                         username = %caller.username()),
+    }
+    Ok(cancelled)
+}
+
+/// What run-now did to a job.
+pub(crate) enum Ran {
+    /// A `ready` job whose `run_at` was pulled forward.
+    Nudged(Box<Job>),
+    /// A `failed` job revived for exactly one more attempt.
+    Revived(Box<Job>),
+}
+
+/// Nudges a `ready` job forward, or revives a `failed` one for one more
+/// attempt. The audit row is written by [`admin::run_job_now`]; this adds the
+/// refusal's wording and the log line. `409 job_not_runnable` for any other
+/// status.
+pub(crate) async fn apply_run_job(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<Ran, AdminError> {
     match admin::run_job_now(
-        &id,
-        acme_proxy_core::audit::Actor::admin(&auth.user.username),
-        state.audit.client(&request_context).await,
+        id,
+        acme_proxy_core::audit::Actor::admin(caller.username()),
+        state.audit.client(caller.request).await,
         &state.audit,
         state.database.clone(),
     )
     .await?
     {
-        RunJobNowOutcome::NotFound => Err(not_found(&id)),
+        RunJobNowOutcome::NotFound => Err(not_found(id)),
         RunJobNowOutcome::Refused(status) => Err(AdminError::conflict(
             "job_not_runnable",
             format!("job {id} is {status}; run-now applies to ready or failed jobs"),
@@ -159,19 +208,19 @@ pub async fn run_job(
         RunJobNowOutcome::Nudged(job) => {
             tracing::info!(event = "admin_job_advanced",
                            outcome = "success",
-                           surface = "api",
+                           surface = caller.surface,
                            job_id = %id,
-                           username = %auth.user.username);
-            Ok(Json(admin::render_job_json(&job)))
+                           username = %caller.username());
+            Ok(Ran::Nudged(job))
         }
         RunJobNowOutcome::Revived(job) => {
             tracing::info!(event = "admin_job_revived",
                            outcome = "success",
-                           surface = "api",
+                           surface = caller.surface,
                            job_id = %id,
                            attempts = job.attempts,
-                           username = %auth.user.username);
-            Ok(Json(admin::render_job_json(&job)))
+                           username = %caller.username());
+            Ok(Ran::Revived(job))
         }
     }
 }

@@ -352,6 +352,17 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **Every web-admin write now logs and audits identically through `/api` and
+  `/ui`.** Each action (EAB create, revoke and delete; account contact,
+  deactivate and delete; order revoke and delete; job cancel and run-now; nonce
+  cleanup; sign-out; revoking one's own session) is one function both front
+  ends call. The two copies had drifted: `PATCH /api/accounts/{id}` and
+  `POST /api/accounts/{id}/deactivate` logged nothing, their `/ui` twins logged
+  `admin_account_contact_updated` and `admin_account_deactivated` without
+  `surface`, and `admin_eab_created` carried `profile` on one surface only. A
+  `/ui` refusal banner now uses the API's wording of the same refusal, and a
+  contact the validator refuses on `/ui` is a banner beside the form wherever
+  it is refused.
 - **A list-valued key no longer depends on a registry to be read from the
   environment.** `ACME_PROXY_*` list variables were split only for keys listed
   by their full path, found for profiles and named tables by scanning the

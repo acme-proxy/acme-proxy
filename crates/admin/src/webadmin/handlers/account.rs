@@ -21,6 +21,7 @@ use crate::admin::password::PasswordContext;
 use crate::admin::users::{self, UserError};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::mfa::verify_current_password;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, Authenticated, SelfServiceWrite, clearing_cookie};
@@ -171,29 +172,8 @@ pub async fn revoke_own_session(
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
-    let session = AdminSession::find_by_user_and_fingerprint(auth.user.id, &id, &state.database)
-        .await?
-        .ok_or_else(|| session_not_found(&id))?;
-    let was_current = session.token_hash == auth.session.token_hash;
-    AdminSession::delete(&session.token_hash, &state.database).await?;
-
-    let scope = if was_current {
-        acme_proxy_jobs::auditor::admin::SessionScope::OwnCurrent
-    } else {
-        acme_proxy_jobs::auditor::admin::SessionScope::OwnOther
-    };
-    state
-        .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-            acme_proxy_jobs::auditor::admin::session_revoked(actor, ctx, scope, 1)
-        })
-        .await;
-
-    tracing::info!(event = "admin_session_revoked",
-                   outcome = "success",
-                   surface = "api",
-                   scope = "self",
-                   username = %auth.user.username,
-                   session_fp = %id);
+    let was_current =
+        apply_revoke_own_session(&state, &Caller::api(&auth, &request_context), &id).await?;
 
     if was_current {
         return Ok((
@@ -203,6 +183,41 @@ pub async fn revoke_own_session(
             .into_response());
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Ends one of the caller's own sessions, found by fingerprint **within the
+/// caller's own `user_id`**, so a foreign id is `404` exactly like one that
+/// never existed. Answers whether it was the session making this request,
+/// which the front end then signs out of.
+pub(crate) async fn apply_revoke_own_session(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<bool, AdminError> {
+    let session =
+        AdminSession::find_by_user_and_fingerprint(caller.auth.user.id, id, &state.database)
+            .await?
+            .ok_or_else(|| session_not_found(id))?;
+    let was_current = session.token_hash == caller.auth.session.token_hash;
+    AdminSession::delete(&session.token_hash, &state.database).await?;
+
+    let scope = if was_current {
+        acme_proxy_jobs::auditor::admin::SessionScope::OwnCurrent
+    } else {
+        acme_proxy_jobs::auditor::admin::SessionScope::OwnOther
+    };
+    state
+        .record_admin_action(caller.request, caller.username(), |actor, ctx| {
+            acme_proxy_jobs::auditor::admin::session_revoked(actor, ctx, scope, 1)
+        })
+        .await;
+    tracing::info!(event = "admin_session_revoked",
+                   outcome = "success",
+                   surface = caller.surface,
+                   scope = "self",
+                   username = %caller.username(),
+                   session_fp = %id);
+    Ok(was_current)
 }
 
 fn session_not_found(id: &str) -> AdminError {

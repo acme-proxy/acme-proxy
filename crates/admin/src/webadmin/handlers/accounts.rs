@@ -10,6 +10,7 @@ use serde_json::json;
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
@@ -122,19 +123,13 @@ pub async fn patch_account(
     request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    if let Some(rejection) = acme_proxy_protocol::acme::rules::contact_shape_error(&body.contact) {
-        return Err(AdminError::bad_request(rejection.detail));
-    }
-
-    let account = admin::update_account_contact(&id, body.contact, state.database.clone())
-        .await
-        .map_err(contact_error)?
-        .ok_or_else(|| not_found(&id))?;
-    state
-        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-            audit_admin::account_contact_updated(actor, client, &account, &account.contact)
-        })
-        .await;
+    let account = apply_update_account_contact(
+        &state,
+        &Caller::api(&auth, &request_context),
+        &id,
+        body.contact,
+    )
+    .await?;
     Ok(Json(admin::render_account_json(
         &account,
         &state.config.server.base_url,
@@ -156,21 +151,8 @@ pub async fn deactivate_account(
     AuthenticatedWrite(auth): AuthenticatedWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let account = admin::deactivate_account(
-        &id,
-        state.database.clone(),
-        |profile| state.notifiers.get(profile),
-        request_context
-            .ip
-            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
-    )
-    .await?
-    .ok_or_else(|| not_found(&id))?;
-    state
-        .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-            audit_admin::account_deactivated(actor, client, &account)
-        })
-        .await;
+    let account =
+        apply_deactivate_account(&state, &Caller::api(&auth, &request_context), &id).await?;
     Ok(Json(admin::render_account_json(
         &account,
         &state.config.server.base_url,
@@ -188,11 +170,87 @@ pub async fn delete_account(
     AuthenticatedWrite(auth): AuthenticatedWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
+    let cascaded = apply_delete_account(&state, &Caller::api(&auth, &request_context), &id).await?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "deleted": { "orders": cascaded } })),
+    )
+        .into_response())
+}
+
+/// Replaces an account's contact list, refused (`400`) where `newAccount`
+/// would refuse it: the **same** check, so no admin surface can write a
+/// contact the ACME side would not have taken.
+pub(crate) async fn apply_update_account_contact(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+    contact: Vec<String>,
+) -> Result<Account, AdminError> {
+    if let Some(rejection) = acme_proxy_protocol::acme::rules::contact_shape_error(&contact) {
+        return Err(AdminError::bad_request(rejection.detail));
+    }
+
+    let account = admin::update_account_contact(id, contact, state.database.clone())
+        .await
+        .map_err(contact_error)?
+        .ok_or_else(|| not_found(id))?;
+    state
+        .record_admin_action(caller.request, caller.username(), |actor, client| {
+            audit_admin::account_contact_updated(actor, client, &account, &account.contact)
+        })
+        .await;
+    tracing::info!(event = "admin_account_contact_updated",
+                   outcome = "success",
+                   surface = caller.surface,
+                   account_id = %id,
+                   username = %caller.username());
+    Ok(account)
+}
+
+/// Deactivates an account, which queues its `account_deactivated`
+/// notification naming the operator's address.
+pub(crate) async fn apply_deactivate_account(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<Account, AdminError> {
+    let account = admin::deactivate_account(
+        id,
+        state.database.clone(),
+        |profile| state.notifiers.get(profile),
+        caller
+            .request
+            .ip
+            .map(|ip| acme_proxy_core::client::canonical(ip).to_string()),
+    )
+    .await?
+    .ok_or_else(|| not_found(id))?;
+    state
+        .record_admin_action(caller.request, caller.username(), |actor, client| {
+            audit_admin::account_deactivated(actor, client, &account)
+        })
+        .await;
+    tracing::info!(event = "admin_account_deactivated",
+                   outcome = "success",
+                   surface = caller.surface,
+                   account_id = %id,
+                   username = %caller.username());
+    Ok(account)
+}
+
+/// Hard-deletes an account and its orders, answering how many orders went
+/// with it. `409 live_certificates` while any of them holds one.
+pub(crate) async fn apply_delete_account(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<u64, AdminError> {
     // Captured before the delete so the audit row can name the account's own
     // profile and id; `delete_account` returns only the cascade count.
-    let subject = Account::find_any_by_id(&id, &state.database).await?;
-    let deleted = match admin::delete_account(&id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(&id)),
+    let subject = Account::find_any_by_id(id, &state.database).await?;
+    let deleted = match admin::delete_account(id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(id)),
         admin::Deletion::LiveCertificates(live) => {
             return Err(AdminError::conflict(
                 "live_certificates",
@@ -204,23 +262,18 @@ pub async fn delete_account(
 
     if let Some(account) = subject {
         state
-            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            .record_admin_action(caller.request, caller.username(), |actor, client| {
                 audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
             })
             .await;
     }
-
     tracing::info!(event = "admin_account_deleted",
                    outcome = "success",
-                   surface = "api",
+                   surface = caller.surface,
                    account_id = %id,
-                   username = %auth.user.username,
+                   username = %caller.username(),
                    cascaded_orders = deleted.cascaded);
-    Ok((
-        StatusCode::OK,
-        Json(json!({ "deleted": { "orders": deleted.cascaded } })),
-    )
-        .into_response())
+    Ok(deleted.cascaded)
 }
 
 fn not_found(id: &str) -> AdminError {

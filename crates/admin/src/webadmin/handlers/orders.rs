@@ -12,6 +12,7 @@ use crate::admin;
 use crate::admin::ops::{RevokeError, RevokeOutcome};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
@@ -157,31 +158,72 @@ pub async fn revoke_order(
     body: Option<Json<RevokeRequest>>,
 ) -> Result<Response, AdminError> {
     let reason = body.and_then(|Json(body)| body.reason);
+    match apply_revoke_order(&state, &Caller::api(&auth, &request_context), &id, reason).await? {
+        Revoked::Now(order) => {
+            let authz_ids = authz_ids(order.id, &state).await?;
+            Ok(Json(admin::render_order_json(
+                &order,
+                &state.config.server.base_url,
+                &authz_ids,
+            ))
+            .into_response())
+        }
+        // Accepted, not refused: the worker revokes, and the job is where to
+        // follow it.
+        Revoked::Queued(job) => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "queued", "job": job.to_string() })),
+        )
+            .into_response()),
+    }
+}
 
+/// What an accepted revocation came to.
+pub(crate) enum Revoked {
+    /// Revoked now; the order as it reads afterwards.
+    Now(Box<Order>),
+    /// Queued for the worker as this job, which had not answered by the end of
+    /// the wait. Not a failure: the revocation carries on.
+    Queued(Uuid),
+}
+
+/// Revokes an order's certificate against **its own profile's** revocation
+/// route, attributed to the operator rather than the certificate's owner. The
+/// audit row is written by [`admin::revoke_order`]; this adds the refusals'
+/// wording and the log line.
+///
+/// `404` for no such order or an unmounted profile, `409 order_not_issued` and
+/// `409 already_revoked` for an order whose state does not allow it.
+pub(crate) async fn apply_revoke_order(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+    reason: Option<u32>,
+) -> Result<Revoked, AdminError> {
     // Resolve the profile before doing anything: an order belonging to a
     // profile this process no longer mounts cannot be revoked here, and saying
     // so plainly beats revoking against whatever backend happened to be first.
-    let profile = resolve_order_profile(&state, &id).await?;
+    let profile = resolve_order_profile(state, id).await?;
 
     // The operator's username, not the order's account: this revocation was an
     // administrative act, and a row attributing it to the certificate's owner
     // would say the opposite of what happened.
     let route = profile.signer_info.revocation_route();
     let outcome = admin::revoke_order(
-        &id,
+        id,
         reason,
-        acme_proxy_core::audit::Actor::admin(&auth.user.username),
-        state.audit.client(&request_context).await,
+        acme_proxy_core::audit::Actor::admin(caller.username()),
+        state.audit.client(caller.request).await,
         &state.audit,
         state.database.clone(),
-        revoker(&state, &route),
+        revoker(state, &route),
         Some(&profile.notify),
     )
     .await
     .map_err(revoke_error)?;
 
     match outcome {
-        RevokeOutcome::NotFound => Err(not_found(&id)),
+        RevokeOutcome::NotFound => Err(not_found(id)),
         RevokeOutcome::NotIssued => Err(AdminError::conflict(
             "order_not_issued",
             format!("order {id} has no certificate to revoke"),
@@ -193,33 +235,21 @@ pub async fn revoke_order(
         RevokeOutcome::Revoked(order) => {
             tracing::info!(event = "admin_order_revoked",
                            outcome = "success",
-                           surface = "api",
+                           surface = caller.surface,
                            order_id = %id,
                            profile = %order.profile,
                            reason = ?reason,
-                           username = %auth.user.username);
-            let authz_ids = authz_ids(order.id, &state).await?;
-            Ok(Json(admin::render_order_json(
-                &order,
-                &state.config.server.base_url,
-                &authz_ids,
-            ))
-            .into_response())
+                           username = %caller.username());
+            Ok(Revoked::Now(order))
         }
-        // Accepted, not refused: the worker revokes, and the job is where to
-        // follow it.
         RevokeOutcome::Queued(job) => {
             tracing::info!(event = "admin_order_revoke_queued",
                            outcome = "progress",
-                           surface = "api",
+                           surface = caller.surface,
                            order_id = %id,
                            job_id = %job,
-                           username = %auth.user.username);
-            Ok((
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({ "status": "queued", "job": job.to_string() })),
-            )
-                .into_response())
+                           username = %caller.username());
+            Ok(Revoked::Queued(job))
         }
     }
 }
@@ -245,9 +275,24 @@ pub async fn delete_order(
     AuthenticatedWrite(auth): AuthenticatedWrite,
     request_context: acme_proxy_core::audit::RequestContext,
 ) -> Result<Response, AdminError> {
-    let subject = Order::find_by_id(&id, &state.database).await?;
-    let deleted = match admin::delete_order(&id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(&id)),
+    let cascaded = apply_delete_order(&state, &Caller::api(&auth, &request_context), &id).await?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({ "deleted": { "authorizations": cascaded } })),
+    )
+        .into_response())
+}
+
+/// Hard-deletes an order and its authorizations, answering how many
+/// authorizations went with it. `409 live_certificates` while it holds one.
+pub(crate) async fn apply_delete_order(
+    state: &AdminState,
+    caller: &Caller<'_>,
+    id: &str,
+) -> Result<u64, AdminError> {
+    let subject = Order::find_by_id(id, &state.database).await?;
+    let deleted = match admin::delete_order(id, state.database.clone()).await? {
+        admin::Deletion::NotFound => return Err(not_found(id)),
         admin::Deletion::LiveCertificates(live) => {
             return Err(AdminError::conflict(
                 "live_certificates",
@@ -259,7 +304,7 @@ pub async fn delete_order(
 
     if let Some(order) = subject {
         state
-            .record_admin_action(&request_context, &auth.user.username, |actor, client| {
+            .record_admin_action(caller.request, caller.username(), |actor, client| {
                 acme_proxy_jobs::auditor::admin::order_deleted(
                     actor,
                     client,
@@ -269,18 +314,13 @@ pub async fn delete_order(
             })
             .await;
     }
-
     tracing::info!(event = "admin_order_deleted",
                    outcome = "success",
-                   surface = "api",
+                   surface = caller.surface,
                    order_id = %id,
-                   username = %auth.user.username,
+                   username = %caller.username(),
                    cascaded_authorizations = deleted.cascaded);
-    Ok((
-        StatusCode::OK,
-        Json(json!({ "deleted": { "authorizations": deleted.cascaded } })),
-    )
-        .into_response())
+    Ok(deleted.cascaded)
 }
 
 /// Renders a page of orders, each with its authorization ids.

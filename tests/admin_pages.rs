@@ -4426,3 +4426,244 @@ async fn an_eab_with_no_accounts_offers_one_delete_and_refuses_an_unknown_mode()
     .await;
     assert_eq!(deleted.status(), StatusCode::SEE_OTHER);
 }
+
+// ---------------------------------------------------------------------------
+// One write, two front ends
+// ---------------------------------------------------------------------------
+
+/// The audit rows written since `after`, oldest first, reduced to what must
+/// not depend on the front end: the event, its outcome, and who acted. The
+/// subject's id and the request id differ by construction, so they are left
+/// out.
+async fn rows_since(
+    database: &std::sync::Arc<acme_proxy_store::db::Database>,
+    after: i64,
+) -> Vec<(String, String, String, Option<String>)> {
+    use acme_proxy_store::audit::AuditQuery;
+    let (rows, _) = AuditEntry::search(
+        &AuditQuery {
+            limit: 100,
+            ..AuditQuery::default()
+        },
+        database,
+    )
+    .await
+    .unwrap();
+    let mut rows: Vec<_> = rows
+        .into_iter()
+        .filter(|row| row.id > after)
+        .map(|row| (row.event, row.outcome, row.actor_kind, row.actor_id))
+        .collect();
+    rows.reverse();
+    rows
+}
+
+async fn last_audit_id(database: &std::sync::Arc<acme_proxy_store::db::Database>) -> i64 {
+    use acme_proxy_store::audit::AuditQuery;
+    let (rows, _) = AuditEntry::search(
+        &AuditQuery {
+            limit: 1,
+            ..AuditQuery::default()
+        },
+        database,
+    )
+    .await
+    .unwrap();
+    rows.first().map_or(0, |row| row.id)
+}
+
+/// Every audited write the two front ends share, done once through `/api` and
+/// once through `/ui` against a fresh subject each: the rows must match.
+///
+/// Each action lives once, as an `apply_*` function both front ends call (see
+/// `crates/admin/src/webadmin/handlers/mod.rs`). While the two spelled the
+/// tail out separately they drifted, and this is what would notice a front end
+/// that stopped calling the shared function.
+#[tokio::test]
+async fn every_shared_write_leaves_the_same_audit_rows_on_both_surfaces() {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::account::Account;
+    use acme_proxy_store::eab::Eab;
+    use acme_proxy_store::order::Order;
+
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    // A fresh subject per surface, so neither write sees the other's.
+    let mut next_key = 0u8;
+    let mut account = || {
+        next_key += 1;
+        let database = database.clone();
+        let key = next_key;
+        async move {
+            Account::find_or_create(
+                PROFILE,
+                &[9u8, key],
+                vec![],
+                &ClientContext::default(),
+                &database,
+            )
+            .await
+            .unwrap()
+            .0
+        }
+    };
+    let eab = || async { Eab::create(None, None, &database).await.unwrap() };
+
+    type Write = (
+        Method,
+        String,
+        Option<serde_json::Value>,
+        Vec<(String, String)>,
+    );
+    let mut cases: Vec<(&str, Write, Write)> = Vec::new();
+
+    cases.push((
+        "eab create",
+        (
+            Method::POST,
+            "/api/eab".into(),
+            Some(json!({ "label": "x" })),
+            vec![],
+        ),
+        (
+            Method::POST,
+            "/ui/eab".into(),
+            None,
+            vec![("label".into(), "x".into())],
+        ),
+    ));
+    let (api_kid, ui_kid) = (eab().await.kid, eab().await.kid);
+    cases.push((
+        "eab revoke",
+        (
+            Method::POST,
+            format!("/api/eab/{api_kid}/revoke"),
+            None,
+            vec![],
+        ),
+        (
+            Method::POST,
+            format!("/ui/eab/{ui_kid}/revoke"),
+            None,
+            vec![],
+        ),
+    ));
+    let (api_kid, ui_kid) = (eab().await.kid, eab().await.kid);
+    cases.push((
+        "eab delete",
+        (Method::DELETE, format!("/api/eab/{api_kid}"), None, vec![]),
+        (Method::DELETE, format!("/ui/eab/{ui_kid}"), None, vec![]),
+    ));
+    let (api_account, ui_account) = (account().await.id, account().await.id);
+    cases.push((
+        "account contact",
+        (
+            Method::PATCH,
+            format!("/api/accounts/{api_account}"),
+            Some(json!({ "contact": ["mailto:ops@example.com"] })),
+            vec![],
+        ),
+        (
+            Method::POST,
+            format!("/ui/accounts/{ui_account}/contact"),
+            None,
+            vec![("contact".into(), "mailto:ops@example.com".into())],
+        ),
+    ));
+    cases.push((
+        "account deactivate",
+        (
+            Method::POST,
+            format!("/api/accounts/{api_account}/deactivate"),
+            None,
+            vec![],
+        ),
+        (
+            Method::POST,
+            format!("/ui/accounts/{ui_account}/deactivate"),
+            None,
+            vec![],
+        ),
+    ));
+    let (api_account, ui_account) = (account().await.id, account().await.id);
+    cases.push((
+        "account delete",
+        (
+            Method::DELETE,
+            format!("/api/accounts/{api_account}"),
+            None,
+            vec![],
+        ),
+        (
+            Method::DELETE,
+            format!("/ui/accounts/{ui_account}"),
+            None,
+            vec![],
+        ),
+    ));
+    let order = |account_id| {
+        let database = database.clone();
+        async move {
+            Order::create(
+                PROFILE,
+                account_id,
+                vec![Identifier::dns("parity.example.com".to_string())],
+                2_000_000_000,
+                None,
+                None,
+                &database,
+            )
+            .await
+            .unwrap()
+            .id
+        }
+    };
+    let owner = account().await.id;
+    let (api_order, ui_order) = (order(owner).await, order(owner).await);
+    cases.push((
+        "order delete",
+        (
+            Method::DELETE,
+            format!("/api/orders/{api_order}"),
+            None,
+            vec![],
+        ),
+        (
+            Method::DELETE,
+            format!("/ui/orders/{ui_order}"),
+            None,
+            vec![],
+        ),
+    ));
+
+    for (name, (api_method, api_path, api_body, _), (ui_method, ui_path, _, ui_form)) in cases {
+        let before = last_audit_id(&database).await;
+        let response = admin_request(&app, api_method, &api_path, Some(&session), api_body).await;
+        assert!(
+            response.status().is_success(),
+            "{name} via /api: {}",
+            response.status()
+        );
+        let api_rows = rows_since(&database, before).await;
+
+        let before = last_audit_id(&database).await;
+        let form: Vec<(&str, &str)> = ui_form
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let response =
+            admin_form_request(&app, ui_method, &ui_path, Some(&session), Some(&form)).await;
+        assert!(
+            response.status().is_success() || response.status().is_redirection(),
+            "{name} via /ui: {}",
+            response.status()
+        );
+        let ui_rows = rows_since(&database, before).await;
+
+        assert!(!api_rows.is_empty(), "{name} wrote no audit row");
+        assert_eq!(
+            api_rows, ui_rows,
+            "{name}: the two surfaces wrote different rows"
+        );
+    }
+}
