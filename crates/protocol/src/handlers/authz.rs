@@ -161,7 +161,10 @@ pub async fn post_challenge(
     // §7.1.6 defines for exactly this ("transitions to the `processing` state
     // when the client responds to the challenge") and §8.2 pairs with the
     // `Retry-After` below.
-    if orders.claim_challenge(&mut challenge, &authz).await? {
+    if orders
+        .claim_challenge(&mut challenge, &authz, &order)
+        .await?
+    {
         let queued = jobs
             .enqueue(crate::acme::validate::challenge_validate_spec(
                 &id,

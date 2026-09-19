@@ -99,9 +99,13 @@ stateDiagram-v2
     invalid --> [*]
 ```
 
-`acme-proxy` enforces these transitions in the database itself, with a `CHECK`
-constraint on the status column — see
-[Database Schema](../dev/database.md#check-constraints-hold-the-state-machines).
+`acme-proxy` enforces these states and transitions in the database itself. A
+`CHECK` constraint on the status column holds the set of states (see
+[Database Schema](../dev/database.md#check-constraints-hold-the-state-machines)),
+and every transition is an `UPDATE` guarded on the state it leaves. A
+validation or signing that finishes after the order moved on, because the
+client deactivated an authorization or a sibling challenge already decided
+it, therefore changes nothing above its own challenge.
 
 `ready → pending` is the one backwards edge, and it exists only so §7.5.2 can
 hold: deactivating an authorization on an order that already reached `ready` has

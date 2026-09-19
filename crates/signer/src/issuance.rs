@@ -150,5 +150,8 @@ pub async fn record_issue_failure(
             .with_detail(detail),
         )
         .await;
-    order.mark_invalid(problem.to_value(), database).await
+    // A `false` here is an order already decided by someone else — a
+    // redelivered job whose first attempt got there — and leaves it be.
+    order.mark_invalid(problem.to_value(), database).await?;
+    Ok(())
 }

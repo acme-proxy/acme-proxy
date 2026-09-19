@@ -561,13 +561,13 @@ mod tests {
         assert!(audit_rows(&database).await.is_empty());
     }
 
-    /// A redelivered row whose order already settled, or was demoted by a
-    /// deactivation since, signs nothing.
+    /// A redelivered row whose order already settled signs nothing.
     #[tokio::test]
     async fn an_order_no_longer_processing_is_not_issued_again() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (mut order, job) = claimed(&database).await;
-        order.mark_pending(&database).await.unwrap();
+        let settled = serde_json::json!({"type": "urn:ietf:params:acme:error:serverInternal"});
+        assert!(order.mark_invalid(settled.clone(), &database).await.unwrap());
 
         assert!(matches!(
             handler(&database, Arc::new(Scripted(Answer::Internal)))
@@ -575,7 +575,9 @@ mod tests {
                 .await,
             JobOutcome::Done
         ));
-        assert_eq!(reload(&database, &order).await.status, OrderStatus::Pending);
+        let stored = reload(&database, &order).await;
+        assert_eq!(stored.status, OrderStatus::Invalid);
+        assert_eq!(stored.error, Some(settled));
     }
 
     /// A profile this process does not mount is a question for another

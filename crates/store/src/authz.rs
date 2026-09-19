@@ -259,34 +259,48 @@ impl Authorization {
         rows.into_iter().map(Authorization::from_row).collect()
     }
 
-    /// The `valid` transition as a bare statement, over any executor.
+    /// The `valid` transition as a bare statement, over any executor, returning
+    /// whether it happened.
     ///
-    /// Split from [`Authorization::mark_valid`] so `post_challenge` can compose
-    /// the challenge, authorization and order transitions into one transaction.
-    /// The in-memory sync stays in `mark_valid`: it must not happen until the
-    /// transaction has committed, or a rollback leaves the object claiming a
-    /// status the database never took.
-    pub async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    /// Split from [`Authorization::mark_valid`] so a validation verdict can
+    /// compose the challenge, authorization and order transitions into one
+    /// transaction. The in-memory sync stays in `mark_valid`: it must not happen
+    /// until the transaction has committed, or a rollback leaves the object
+    /// claiming a status the database never took.
+    ///
+    /// **Guarded on `pending`.** The verdict is computed by a queued job, long
+    /// after the request that claimed the challenge read this row: by then the
+    /// client may have deactivated the authorization (RFC 8555 §7.5.2), or a
+    /// sibling challenge may have decided it. An unguarded write would walk a
+    /// `deactivated` or `invalid` authorization back to `valid`.
+    pub async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE authorizations SET status = 'valid' WHERE id = ?;")
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE authorizations SET status = 'valid' WHERE id = ? AND status = 'pending';",
+        )
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
-    /// The `invalid` transition as a bare statement; see [`Authorization::set_valid`].
-    pub async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    /// The `invalid` transition as a bare statement, guarded on `pending` for
+    /// the same reason; see [`Authorization::set_valid`].
+    pub async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE authorizations SET status = 'invalid' WHERE id = ?;")
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE authorizations SET status = 'invalid' WHERE id = ? AND status = 'pending';",
+        )
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
     /// The `deactivated` transition as a bare statement; see [`Authorization::set_valid`].
@@ -299,26 +313,36 @@ impl Authorization {
     /// Bare-statement only: §7.5.2's deactivate-and-demote pair is committed in
     /// one transaction (`handlers::authz`), so there is no persist-and-sync twin
     /// to go with it.
-    pub async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    ///
+    /// Guarded on the two states §7.5.2 lets a client leave, so a verdict
+    /// that landed since the caller read the row is never overwritten.
+    pub async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE authorizations SET status = 'deactivated' WHERE id = ?;")
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE authorizations SET status = 'deactivated' \
+             WHERE id = ? AND status IN ('pending', 'valid');",
+        )
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
-    /// Moves the authorization to the `valid` state and keeps `self` in sync (the
-    /// same persist-and-sync pattern as [`crate::order::Order::finalize`]).
-    pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    /// Moves a `pending` authorization to the `valid` state and keeps `self` in
+    /// sync (the same persist-and-sync pattern as
+    /// [`crate::order::Order::finalize`]); `false` when it was not `pending`.
+    pub async fn mark_valid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
-        Self::set_valid(self.id, &database.pool).await?;
+        if !Self::set_valid(self.id, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = AuthzStatus::Valid;
         info!(event = "db_authz_marked_valid", outcome = "success", authz_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Moves the authorization to the terminal `invalid` state, after one of its
@@ -327,13 +351,15 @@ impl Authorization {
     /// No `error` is stored: the RFC puts the problem document on the
     /// *challenge*, and the authorization object has no `error` member — a client
     /// reads the reason from the challenge it triggered.
-    pub async fn mark_invalid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    pub async fn mark_invalid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_authz_mark_invalid_started", outcome = "progress", authz_id = ?self.id);
-        Self::set_invalid(self.id, &database.pool).await?;
+        if !Self::set_invalid(self.id, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = AuthzStatus::Invalid;
         info!(event = "db_authz_marked_invalid", outcome = "failure", authz_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Whether this authorization covers the wildcard of its identifier.
@@ -538,10 +564,20 @@ impl Challenge {
     /// makes: the authorization's own `expires` retires it, and
     /// `post_challenge` refuses an expired authorization before looking at the
     /// challenge at all.
+    ///
+    /// The claim also requires the authorization and its order to still be
+    /// `pending`, read in the same statement. A challenge under an authorization
+    /// a sibling already decided, or under an order another authorization has
+    /// already failed, has nothing left to prove, and validating it would be an
+    /// outbound probe of a client-chosen host for no purpose.
     pub async fn claim_for_validation(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_challenge_claim_started", outcome = "progress", challenge_id = ?self.id);
         let claimed = sqlx::query(
-            "UPDATE challenges SET status = 'processing' WHERE id = ? AND status = 'pending';",
+            "UPDATE challenges SET status = 'processing' \
+             WHERE id = ? AND status = 'pending' AND EXISTS ( \
+                 SELECT 1 FROM authorizations a JOIN orders o ON o.id = a.order_id \
+                 WHERE a.id = challenges.authz_id \
+                   AND a.status = 'pending' AND o.status = 'pending');",
         )
         .bind(self.id)
         .execute(&database.pool)
@@ -620,50 +656,73 @@ impl Challenge {
             .collect()
     }
 
-    /// Records a successful validation: moves the challenge to `valid`, stamps
-    /// `validated`, and keeps `self` in sync.
     /// The `valid` transition as a bare statement, over any executor.
     ///
     /// `validated` is taken as an argument rather than read from the clock here,
     /// so a caller composing this into a transaction stamps the challenge and
     /// its in-memory copy with the same instant. See
     /// [`Authorization::set_valid`] for why the sync is separate.
-    pub async fn set_valid<'e, E>(id: Uuid, validated: i64, executor: E) -> Result<(), sqlx::Error>
+    ///
+    /// Guarded on the challenge being undecided (`pending` or `processing`), and
+    /// returns whether it wrote: a verdict is terminal (§7.1.6), so a second
+    /// one — a redelivered job racing the first — leaves the first standing.
+    pub async fn set_valid<'e, E>(
+        id: Uuid,
+        validated: i64,
+        executor: E,
+    ) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE challenges SET status = 'valid', validated = ? WHERE id = ?;")
-            .bind(validated)
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE challenges SET status = 'valid', validated = ? \
+             WHERE id = ? AND status IN ('pending', 'processing');",
+        )
+        .bind(validated)
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
-    /// The `invalid` transition as a bare statement; see [`Challenge::set_valid`].
-    pub async fn set_invalid<'e, E>(id: Uuid, error: &Value, executor: E) -> Result<(), sqlx::Error>
+    /// The `invalid` transition as a bare statement, guarded the same way; see
+    /// [`Challenge::set_valid`].
+    pub async fn set_invalid<'e, E>(
+        id: Uuid,
+        error: &Value,
+        executor: E,
+    ) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
         let error_json =
             serde_json::to_string(error).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
-        sqlx::query("UPDATE challenges SET status = 'invalid', error = ? WHERE id = ?;")
-            .bind(error_json)
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE challenges SET status = 'invalid', error = ? \
+             WHERE id = ? AND status IN ('pending', 'processing');",
+        )
+        .bind(error_json)
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
-    pub async fn mark_valid(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    /// Records a successful validation: moves the challenge to `valid`, stamps
+    /// `validated`, and keeps `self` in sync; `false` when it was already decided.
+    pub async fn mark_valid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         let validated = now_secs();
         debug!(event = "db_challenge_mark_valid_started", outcome = "progress", challenge_id = ?self.id);
-        Self::set_valid(self.id, validated, &database.pool).await?;
+        if !Self::set_valid(self.id, validated, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = ChallengeStatus::Valid;
         self.validated = Some(validated);
         info!(event = "db_challenge_marked_valid", outcome = "success", challenge_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Records a failed validation: moves the challenge to the terminal
@@ -676,14 +735,16 @@ impl Challenge {
         &mut self,
         error: Value,
         database: &Database,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_challenge_mark_invalid_started", outcome = "progress", challenge_id = ?self.id);
-        Self::set_invalid(self.id, &error, &database.pool).await?;
+        if !Self::set_invalid(self.id, &error, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = ChallengeStatus::Invalid;
         self.error = Some(error);
         info!(event = "db_challenge_marked_invalid", outcome = "failure", challenge_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// The RFC 8555 challenge object: `type`, the derived challenge `url`,

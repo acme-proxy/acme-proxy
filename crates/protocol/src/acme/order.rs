@@ -456,6 +456,18 @@ impl OrderService<'_> {
             .into());
         }
 
+        // The same, one step earlier: the issuance is queued and may already be
+        // signing. Refusing here keeps the answer honest; the `signer_issue` job
+        // re-checks every authorization before it signs, which is what covers a
+        // finalize that lands between this read and the write below.
+        if order.status == OrderStatus::Processing {
+            warn!(event = "authz_deactivate_refused_order_processing", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
+            return Err(Problem::malformed(
+                "Cannot deactivate an authorization whose order is being issued",
+            )
+            .into());
+        }
+
         if authz.status != AuthzStatus::Pending && authz.status != AuthzStatus::Valid {
             warn!(event = "authz_deactivate_refused_terminal", outcome = "failure", authz_id = %authz.id, status = %authz.status);
             return Err(Problem::malformed(
@@ -472,26 +484,35 @@ impl OrderService<'_> {
         // Both in one transaction. Between them, an order sits `ready` with a
         // deactivated authorization under it: finalizable for a name the client has
         // just given up, which is exactly what §7.5.2 forbids.
-        let demote = order.status == OrderStatus::Ready;
+        //
+        // Both writes are guarded, so the in-memory statuses read above only
+        // choose which error to give: a verdict that landed since leaves the
+        // authorization alone, and the order is demoted only if it is `ready`.
         let outcome = async {
             let mut tx = database.transaction().await?;
-            Authorization::set_deactivated(authz.id, &mut *tx).await?;
-            if demote {
-                Order::set_pending(order.id, &mut *tx).await?;
-            }
-            tx.commit().await
+            let deactivated = Authorization::set_deactivated(authz.id, &mut *tx).await?;
+            let demoted = deactivated && Order::set_pending(order.id, &mut *tx).await?;
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>((deactivated, demoted))
         }
         .await;
 
-        outcome.map_err(|error| {
+        let (deactivated, demoted) = outcome.map_err(|error| {
             error!(event = "authz_deactivate_failed", outcome = "failure", authz_id = %authz.id, error = %error);
             Problem::server_internal("Authorization deactivation failed")
         })?;
+        if !deactivated {
+            warn!(event = "authz_deactivate_refused_terminal", outcome = "failure", authz_id = %authz.id, status = %authz.status);
+            return Err(Problem::malformed(
+                "Authorization is in a terminal state and cannot be deactivated",
+            )
+            .into());
+        }
 
         // Only once the transaction has committed: a rollback must not leave these
         // objects claiming a status the database never took.
         authz.status = AuthzStatus::Deactivated;
-        if demote {
+        if demoted {
             order.status = OrderStatus::Pending;
         }
 
@@ -510,6 +531,7 @@ impl OrderService<'_> {
         &self,
         challenge: &mut Challenge,
         authz: &Authorization,
+        order: &Order,
     ) -> Result<bool, Error> {
         if authz.status != AuthzStatus::Valid && authz.expires <= now_secs() {
             warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
@@ -529,6 +551,22 @@ impl OrderService<'_> {
         let decided = challenge.status == ChallengeStatus::Valid
             || challenge.status == ChallengeStatus::Invalid
             || authz.status == AuthzStatus::Valid;
+        if decided {
+            return Ok(false);
+        }
+
+        // Undecided, but a sibling challenge failed (§7.1.6: one failure makes
+        // the authorization `invalid`), or another authorization of the order
+        // did. Nothing this challenge could prove would change that, and
+        // answering with the challenge as it stands would leave the client
+        // polling a `pending` object that can never move.
+        if authz.status == AuthzStatus::Invalid || order.status == OrderStatus::Invalid {
+            warn!(event = "challenge_trigger_refused_invalid", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
+            return Err(Problem::malformed(
+                "The authorization or its order is already invalid; create a new order",
+            )
+            .into());
+        }
 
         // The claim, and the reason it is a claim rather than the status check
         // above: `challenges.validate` reaches out to an address the *client*
@@ -541,14 +579,13 @@ impl OrderService<'_> {
         // The loser answers with the challenge as it now stands, which reports
         // `processing` — §8.2's answer for a challenge the server is still
         // working on.
-        let claimed = !decided
-            && challenge
-                .claim_for_validation(self.database)
-                .await
-                .map_err(|error| {
-                    error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
-                    Problem::server_internal("Challenge could not be claimed for validation")
-                })?;
+        let claimed = challenge
+            .claim_for_validation(self.database)
+            .await
+            .map_err(|error| {
+                error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
+                Problem::server_internal("Challenge could not be claimed for validation")
+            })?;
         Ok(claimed)
     }
 
@@ -600,7 +637,11 @@ impl OrderService<'_> {
                     kind = error.kind()
                 );
 
-                commit_validation_failure(challenge, authz, order, &problem, database).await?;
+                let recorded =
+                    commit_validation_failure(challenge, authz, order, &problem, database).await?;
+                if !recorded {
+                    return Ok(());
+                }
 
                 // After the commit, not before. Dispatched first, a persistence
                 // failure would have notified an operator about a failure that
@@ -830,34 +871,47 @@ async fn commit_validation(
     let validated = now_secs();
     let outcome = async {
         let mut tx = database.transaction().await?;
-        Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
-        Authorization::set_valid(authz.id, &mut *tx).await?;
+        // Every write below is guarded on the row still being undecided, and
+        // each reports whether it happened: this runs in a queued job, and the
+        // rows it read may have moved since. A sibling challenge may have
+        // decided the authorization, or the client may have deactivated it; the
+        // verdict is then recorded on the challenge alone and nothing above it
+        // changes.
+        let challenge_written = Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
+        let authz_written =
+            challenge_written && Authorization::set_valid(authz.id, &mut *tx).await?;
 
-        // `transaction()` issues a deferred BEGIN, but the two writes above
-        // have already taken the RESERVED lock by the time this reads — so this
+        // The guarded writes above have already taken the RESERVED lock by the
+        // time this reads — `transaction()` issues a deferred BEGIN — so this
         // sees its own write and no other writer can interleave. Putting a read
-        // first here would break that.
-        let promote = order.status == OrderStatus::Pending && {
+        // first here would break that. `set_ready` is guarded on `pending`, so
+        // the order's status as the job read it does not matter.
+        let promoted = authz_written && {
             let authzs = Authorization::find_by_order_with(order.id, &mut *tx).await?;
             authzs.len() == order.identifiers.len()
                 && authzs
                     .iter()
                     .all(|authz| authz.status == AuthzStatus::Valid)
+                && Order::set_ready(order.id, &mut *tx).await?
         };
-        if promote {
-            Order::set_ready(order.id, &mut *tx).await?;
-        }
         tx.commit().await?;
-        Ok::<bool, sqlx::Error>(promote)
+        Ok::<_, sqlx::Error>((challenge_written, authz_written, promoted))
     }
     .await;
 
     match outcome {
-        Ok(promoted) => {
-            // In-memory sync only after the commit; see `Authorization::set_valid`.
-            challenge.status = ChallengeStatus::Valid;
-            challenge.validated = Some(validated);
-            authz.status = AuthzStatus::Valid;
+        Ok((challenge_written, authz_written, promoted)) => {
+            // In-memory sync only after the commit, and only for what was
+            // written; see `Authorization::set_valid`.
+            if challenge_written {
+                challenge.status = ChallengeStatus::Valid;
+                challenge.validated = Some(validated);
+            }
+            if authz_written {
+                authz.status = AuthzStatus::Valid;
+            } else if challenge_written {
+                info!(event = "challenge_verdict_superseded", outcome = "advisory", challenge_id = %challenge.id, authz_id = %authz.id);
+            }
             if promoted {
                 order.status = OrderStatus::Ready;
             }
@@ -880,30 +934,49 @@ async fn commit_validation(
 /// The failure arm of [`commit_validation`], same shape: the challenge takes the
 /// problem document explaining why, and its authorization and order both become
 /// `invalid`, in one transaction.
+///
+/// Guarded the same way. A failure that lands after a sibling challenge made the
+/// authorization `valid` is recorded on the challenge only: the authorization
+/// was proven, and its order — perhaps already `valid`, holding a live
+/// certificate — must not follow the failed sibling to `invalid`.
+///
+/// Returns whether the challenge itself took the verdict, which is what decides
+/// whether an operator hears about it.
 async fn commit_validation_failure(
     challenge: &mut Challenge,
     authz: &mut Authorization,
     order: &mut Order,
     problem: &Value,
     database: &Arc<Database>,
-) -> Result<(), Problem> {
+) -> Result<bool, Problem> {
     let outcome = async {
         let mut tx = database.transaction().await?;
-        Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
-        Authorization::set_invalid(authz.id, &mut *tx).await?;
-        Order::set_invalid(order.id, problem, &mut *tx).await?;
-        tx.commit().await
+        let challenge_written = Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
+        let authz_written =
+            challenge_written && Authorization::set_invalid(authz.id, &mut *tx).await?;
+        let order_written =
+            authz_written && Order::set_invalid(order.id, problem, &mut *tx).await?;
+        tx.commit().await?;
+        Ok::<_, sqlx::Error>((challenge_written, authz_written, order_written))
     }
     .await;
 
     match outcome {
-        Ok(()) => {
-            challenge.status = ChallengeStatus::Invalid;
-            challenge.error = Some(problem.clone());
-            authz.status = AuthzStatus::Invalid;
-            order.status = OrderStatus::Invalid;
-            order.error = Some(problem.clone());
-            Ok(())
+        Ok((challenge_written, authz_written, order_written)) => {
+            if challenge_written {
+                challenge.status = ChallengeStatus::Invalid;
+                challenge.error = Some(problem.clone());
+            }
+            if authz_written {
+                authz.status = AuthzStatus::Invalid;
+            } else if challenge_written {
+                info!(event = "challenge_verdict_superseded", outcome = "advisory", challenge_id = %challenge.id, authz_id = %authz.id);
+            }
+            if order_written {
+                order.status = OrderStatus::Invalid;
+                order.error = Some(problem.clone());
+            }
+            Ok(challenge_written)
         }
         Err(error) => {
             error!(
@@ -1025,6 +1098,13 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    async fn reload_authz(database: &Database, authz: &Authorization) -> Authorization {
+        Authorization::find_by_id(&authz.id.to_string(), database)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     /// A validator refusing every attempt.
     struct Refusing;
 
@@ -1052,7 +1132,12 @@ pub(crate) mod tests {
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
 
-        assert!(orders.claim_challenge(challenge, authz).await.unwrap());
+        assert!(
+            orders
+                .claim_challenge(challenge, authz, &order)
+                .await
+                .unwrap()
+        );
         orders
             .run_validation(&account, challenge, authz, &mut order, None)
             .await
@@ -1067,7 +1152,10 @@ pub(crate) mod tests {
         orders.deactivate_authz(authz, &mut order).await.unwrap();
 
         // And the challenge under it can no longer be triggered.
-        let refused = orders.claim_challenge(challenge, authz).await.unwrap_err();
+        let refused = orders
+            .claim_challenge(challenge, authz, &order)
+            .await
+            .unwrap_err();
         assert_eq!(
             Problem::from(refused).to_value()["detail"],
             "Authorization has been deactivated"
@@ -1109,15 +1197,25 @@ pub(crate) mod tests {
             profile: &profile,
         };
         let account = account(&database).await;
-        let (_, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
+        let (order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
         let mut twin = Challenge::find_by_id(&challenge.id.to_string(), &database)
             .await
             .unwrap()
             .unwrap();
 
-        assert!(orders.claim_challenge(challenge, authz).await.unwrap());
-        assert!(!orders.claim_challenge(&mut twin, authz).await.unwrap());
+        assert!(
+            orders
+                .claim_challenge(challenge, authz, &order)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !orders
+                .claim_challenge(&mut twin, authz, &order)
+                .await
+                .unwrap()
+        );
     }
 
     /// Two authorizations of one order validated at once: whichever commits
@@ -1146,7 +1244,7 @@ pub(crate) mod tests {
         let a = async {
             assert!(
                 orders
-                    .claim_challenge(&mut challenge_a, &authz_a)
+                    .claim_challenge(&mut challenge_a, &authz_a, &order_a)
                     .await
                     .unwrap()
             );
@@ -1158,7 +1256,7 @@ pub(crate) mod tests {
         let b = async {
             assert!(
                 orders
-                    .claim_challenge(&mut challenge_b, &authz_b)
+                    .claim_challenge(&mut challenge_b, &authz_b, &order_b)
                     .await
                     .unwrap()
             );
@@ -1194,7 +1292,12 @@ pub(crate) mod tests {
         let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
         let (authz, challenge) = &mut authzs[0];
 
-        assert!(orders.claim_challenge(challenge, authz).await.unwrap());
+        assert!(
+            orders
+                .claim_challenge(challenge, authz, &order)
+                .await
+                .unwrap()
+        );
         orders
             .run_validation(&account, challenge, authz, &mut order, None)
             .await
@@ -1212,6 +1315,181 @@ pub(crate) mod tests {
         let reloaded = reload(&database, &order).await;
         assert_eq!(reloaded.status, OrderStatus::Invalid);
         assert_eq!(authz.status, AuthzStatus::Invalid);
+    }
+
+    /// A registry that marks every challenge `valid` without a probe.
+    fn bypassing() -> ChallengeRegistry {
+        ChallengeRegistry::new(
+            vec![],
+            vec!["http-01".to_string(), "dns-01".to_string()],
+            true,
+            Duration::from_secs(5),
+        )
+    }
+
+    /// A registry whose only validator refuses.
+    fn refusing() -> ChallengeRegistry {
+        ChallengeRegistry::new(
+            vec![Arc::new(Refusing)],
+            vec!["http-01".to_string()],
+            false,
+            Duration::from_secs(5),
+        )
+    }
+
+    /// Two challenges of one authorization, both claimed before either is
+    /// decided. The first passes and the order goes on to be issued; the second
+    /// then fails. Its verdict lands on the challenge alone: the order holds a
+    /// live certificate and must stay `valid`, or `Order::cleanup` would delete
+    /// the only row that can revoke it.
+    #[tokio::test]
+    async fn a_late_sibling_failure_leaves_an_issued_order_valid() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let passing = profile(&database, bypassing());
+        let failing = profile(&database, refusing());
+        let audit = Auditor::offline(database.clone());
+        let account = account(&database).await;
+        let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
+        let (authz, http) = &mut authzs[0];
+        let mut dns = Challenge::create(authz.id, "dns-01", &database)
+            .await
+            .unwrap();
+
+        let on = |profile| OrderService {
+            database: &database,
+            audit: &audit,
+            profile,
+        };
+        assert!(
+            on(&passing)
+                .claim_challenge(&mut dns, authz, &order)
+                .await
+                .unwrap()
+        );
+        assert!(
+            on(&passing)
+                .claim_challenge(http, authz, &order)
+                .await
+                .unwrap()
+        );
+
+        let mut authz_seen_by_second = reload_authz(&database, authz).await;
+        let mut order_seen_by_second = reload(&database, &order).await;
+        on(&passing)
+            .run_validation(&account, &mut dns, authz, &mut order, None)
+            .await
+            .unwrap();
+        assert_eq!(reload(&database, &order).await.status, OrderStatus::Ready);
+        sqlx::query("UPDATE orders SET status = 'valid' WHERE id = ?;")
+            .bind(order.id)
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+
+        on(&failing)
+            .run_validation(
+                &account,
+                http,
+                &mut authz_seen_by_second,
+                &mut order_seen_by_second,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(http.status, ChallengeStatus::Invalid);
+        assert_eq!(reload(&database, &order).await.status, OrderStatus::Valid);
+        assert_eq!(
+            reload_authz(&database, authz).await.status,
+            AuthzStatus::Valid
+        );
+    }
+
+    /// A client deactivates an authorization while its challenge is being
+    /// validated (§7.5.2). The verdict that arrives afterwards must not walk the
+    /// authorization back to `valid`, nor promote the order.
+    #[tokio::test]
+    async fn a_verdict_after_deactivation_leaves_the_authorization_deactivated() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, bypassing());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
+        let (authz, challenge) = &mut authzs[0];
+
+        assert!(
+            orders
+                .claim_challenge(challenge, authz, &order)
+                .await
+                .unwrap()
+        );
+        let mut authz_seen_by_job = reload_authz(&database, authz).await;
+        orders.deactivate_authz(authz, &mut order).await.unwrap();
+
+        orders
+            .run_validation(
+                &account,
+                challenge,
+                &mut authz_seen_by_job,
+                &mut order,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reload_authz(&database, authz).await.status,
+            AuthzStatus::Deactivated
+        );
+        assert_eq!(reload(&database, &order).await.status, OrderStatus::Pending);
+    }
+
+    /// Once one authorization has failed, its order is `invalid`, and a trigger
+    /// of a challenge under a sibling authorization is refused rather than
+    /// probing the client's host for nothing.
+    #[tokio::test]
+    async fn a_trigger_under_an_invalid_order_is_refused() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, refusing());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let (mut order, mut authzs) =
+            pending_order(&database, &account, &["a.example.com", "b.example.com"]).await;
+        let (first, rest) = authzs.split_at_mut(1);
+        let (authz_a, challenge_a) = &mut first[0];
+        let (authz_b, challenge_b) = &mut rest[0];
+
+        assert!(
+            orders
+                .claim_challenge(challenge_a, authz_a, &order)
+                .await
+                .unwrap()
+        );
+        orders
+            .run_validation(&account, challenge_a, authz_a, &mut order, None)
+            .await
+            .unwrap();
+        assert_eq!(order.status, OrderStatus::Invalid);
+
+        let refused = orders
+            .claim_challenge(challenge_b, authz_b, &order)
+            .await
+            .unwrap_err();
+        assert_eq!(Problem::from(refused).status(), 400);
+
+        // And the row-level guard holds on its own, for a caller that read the
+        // order before it failed.
+        assert!(!challenge_b.claim_for_validation(&database).await.unwrap());
     }
 
     /// The unique-violation arm in `post_new_order` only fires when two

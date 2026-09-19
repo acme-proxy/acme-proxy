@@ -1007,77 +1007,104 @@ impl Order {
         Ok(())
     }
 
-    /// Records a failed issuance: stores the `error` problem document, moves the
-    /// order to the terminal `invalid` state, and keeps `self` in sync (like
-    /// [`Order::finalize`]). Used when the signer fails internally; a `badCSR`
-    /// leaves the order `ready` and retryable instead.
-    /// The `invalid` transition as a bare statement, over any executor.
+    /// The `invalid` transition as a bare statement, over any executor,
+    /// returning whether it happened.
     ///
-    /// Split from [`Order::mark_invalid`] so `post_challenge` can compose the
-    /// challenge, authorization and order transitions into one transaction. The
-    /// in-memory sync stays in `mark_invalid`, since it must not happen until
-    /// the transaction has committed.
-    pub async fn set_invalid<'e, E>(id: Uuid, error: &Value, executor: E) -> Result<(), sqlx::Error>
+    /// Split from [`Order::mark_invalid`] so a validation verdict can compose
+    /// the challenge, authorization and order transitions into one transaction.
+    /// The in-memory sync stays in `mark_invalid`, since it must not happen
+    /// until the transaction has committed.
+    ///
+    /// **Guarded on the order not being decided.** Every caller is a queued job
+    /// that read the order earlier, and a `valid` order holds a live
+    /// certificate: writing `invalid` over it would let `Order::cleanup` delete
+    /// the only row that can revoke that certificate. An `invalid` order keeps
+    /// the first error it was given.
+    pub async fn set_invalid<'e, E>(
+        id: Uuid,
+        error: &Value,
+        executor: E,
+    ) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
         // `error` is a `serde_json::Value`, so serialization is infallible.
-        sqlx::query("UPDATE orders SET error = ?, status = 'invalid' WHERE id = ?;")
-            .bind(error.to_string())
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written = sqlx::query(
+            "UPDATE orders SET error = ?, status = 'invalid' \
+             WHERE id = ? AND status IN ('pending', 'ready', 'processing');",
+        )
+        .bind(error.to_string())
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
+        Ok(written == 1)
     }
 
-    /// The `ready` transition as a bare statement; see [`Order::set_invalid`].
-    pub async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    /// The `ready` transition as a bare statement, guarded on `pending`; see
+    /// [`Order::set_invalid`].
+    pub async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE orders SET status = 'ready' WHERE id = ?;")
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written =
+            sqlx::query("UPDATE orders SET status = 'ready' WHERE id = ? AND status = 'pending';")
+                .bind(id)
+                .execute(executor)
+                .await?
+                .rows_affected();
+        Ok(written == 1)
     }
 
-    /// The `pending` transition as a bare statement; see [`Order::set_invalid`].
-    pub async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<(), sqlx::Error>
+    /// The `pending` transition as a bare statement, guarded on `ready` (the
+    /// one backwards transition, [`Order::mark_pending`]); see
+    /// [`Order::set_invalid`].
+    pub async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
     where
         E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
     {
-        sqlx::query("UPDATE orders SET status = 'pending' WHERE id = ?;")
-            .bind(id)
-            .execute(executor)
-            .await?;
-        Ok(())
+        let written =
+            sqlx::query("UPDATE orders SET status = 'pending' WHERE id = ? AND status = 'ready';")
+                .bind(id)
+                .execute(executor)
+                .await?
+                .rows_affected();
+        Ok(written == 1)
     }
 
+    /// Records a failed issuance: stores the `error` problem document, moves the
+    /// order to the terminal `invalid` state, and keeps `self` in sync (like
+    /// [`Order::finalize`]). Used when the signer fails internally; a `badCSR`
+    /// leaves the order `ready` and retryable instead. `false` when the order
+    /// was already decided; see [`Order::set_invalid`].
     pub async fn mark_invalid(
         &mut self,
         error: Value,
         database: &Database,
-    ) -> Result<(), sqlx::Error> {
+    ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_invalid_started", outcome = "progress", order_id = ?self.id);
-        Self::set_invalid(self.id, &error, &database.pool).await?;
+        if !Self::set_invalid(self.id, &error, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.error = Some(error);
         self.status = OrderStatus::Invalid;
         info!(event = "db_order_marked_invalid", outcome = "failure", order_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Moves the order from `pending` to `ready` once all its authorizations are
     /// `valid`, so it can be finalized. Keeps `self` in sync (like
-    /// [`Order::finalize`]).
-    pub async fn mark_ready(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    /// [`Order::finalize`]); `false` when it was not `pending`.
+    pub async fn mark_ready(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_ready_started", outcome = "progress", order_id = ?self.id);
-        Self::set_ready(self.id, &database.pool).await?;
+        if !Self::set_ready(self.id, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = OrderStatus::Ready;
         info!(event = "db_order_marked_ready", outcome = "success", order_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Moves the order back from `ready` to `pending`, after one of its
@@ -1091,13 +1118,15 @@ impl Order {
     /// it. RFC 8555 §7.1.6's diagram draws `pending → ready` as the state
     /// becoming true rather than a one-way latch, so re-deriving it is in
     /// keeping with the model.
-    pub async fn mark_pending(&mut self, database: &Database) -> Result<(), sqlx::Error> {
+    pub async fn mark_pending(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
-        Self::set_pending(self.id, &database.pool).await?;
+        if !Self::set_pending(self.id, &database.pool).await? {
+            return Ok(false);
+        }
 
         self.status = OrderStatus::Pending;
         info!(event = "db_order_marked_pending", outcome = "success", order_id = ?self.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Claims the order for issuance, moving it from `ready` to `processing` in
@@ -1525,10 +1554,12 @@ mod tests {
                     .finalize("chain".to_string(), "aa".to_string(), vec![1], None, &db)
                     .await
                     .unwrap(),
-                Some(_) => order
-                    .mark_invalid(serde_json::json!({}), &db)
-                    .await
-                    .unwrap(),
+                Some(_) => assert!(
+                    order
+                        .mark_invalid(serde_json::json!({}), &db)
+                        .await
+                        .unwrap()
+                ),
             }
             let before = order.status;
 

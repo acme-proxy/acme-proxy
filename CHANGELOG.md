@@ -410,6 +410,15 @@ migrated configuration before restarting.
 
 ### Security
 
+- **A validation verdict no longer overwrites what happened since it started.**
+  Every challenge, authorization and order transition is now an `UPDATE`
+  guarded on the state it leaves. Before, a verdict landing after the client
+  deactivated the authorization walked it back to `valid`, and a sibling
+  challenge that failed after the order was issued turned the order `invalid`,
+  which `order cleanup` then deleted along with the only record able to revoke
+  its live certificate. A challenge under an authorization or order that is
+  already `invalid` is now refused (`400 malformed`) rather than probed, and an
+  authorization whose order is `processing` can no longer be deactivated.
 - **The RFC 2136 updater verifies the TSIG signature on a successful answer**
   (RFC 8945 §5.3): an unsigned NOERROR, or one signed with another key, for
   another request or outside the time window, is a failed update rather than a
