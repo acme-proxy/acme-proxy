@@ -418,6 +418,24 @@ migrated configuration before restarting.
   answers to signed updates — none of BIND, Knot or PowerDNS — now fails every
   update with a message saying so.
 
+### Packaging
+
+- **A container image is published on every release**, as
+  `ghcr.io/acme-proxy/acme-proxy:<version>` and `:latest`, for `linux/amd64`
+  and `linux/arm64`. It holds the release build with the default features, and
+  carries a build provenance attestation that `gh attestation verify` checks.
+  `.github/workflows/release.yml` builds it on a release tag, and refuses a tag
+  that differs from the workspace version or whose commit has no green CI run
+  on `main`. Installation and Deployment lead with it, and Deployment's
+  Upgrading section now covers a container. The workflow supersedes
+  [#3](https://github.com/acme-proxy/acme-proxy/pull/3), whose commit it keeps.
+- **The `Containerfile` builds the `release` profile by default**, not `e2e`.
+  The profile is now the `CARGO_PROFILE` build argument, and the e2e lab passes
+  `CARGO_PROFILE=e2e` itself. So a bare `podman build .` reproduces the
+  published image, and takes a fat-LTO build of tens of minutes where it used
+  to take a few; a contributor building the lab image by hand passes the
+  argument.
+
 ## [0.5.0] — 2026-09-08
 
 ### Breaking

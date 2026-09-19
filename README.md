@@ -148,7 +148,8 @@ cargo install acme-proxy
 
 That builds and installs the `acme-proxy` binary — server and admin CLI in one
 — into `~/.cargo/bin`. It needs the same Rust 1.97 toolchain as a source build,
-since it compiles the crate locally; there are no prebuilt binaries yet.
+since it compiles the crate locally; the container image below is the only
+prebuilt form.
 
 Or from a clone, which is what you want if you intend to change anything:
 
@@ -156,12 +157,16 @@ Or from a clone, which is what you want if you intend to change anything:
 cargo build --release      # target/release/acme-proxy
 ```
 
-Or build the container image — the repository ships a `Containerfile`:
+Or pull the container image, published for `linux/amd64` and `linux/arm64` on
+every release:
 
 ```bash
-podman build -t acme-proxy .      # or: docker build -t acme-proxy .
-podman run --rm -p 3000:3000 -v ./data:/data:U acme-proxy   # runs as non-root
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0   # or: docker pull
+podman run --rm -p 3000:3000 -v ./data:/data:U ghcr.io/acme-proxy/acme-proxy:0.6.0   # runs as non-root
 ```
+
+The repository's `Containerfile` builds the same image yourself (a release build,
+so tens of minutes): `podman build -t acme-proxy .`.
 
 The image runs as a non-root user, so the mounted directory has to be writable
 by it — `:U` above is the rootless-Podman shortcut; the deployment guide covers

@@ -201,11 +201,14 @@ $ printf '%s' "$PASSWORD" | acme-proxy admin user create alice
 For containerized environments, you can run `acme-proxy` using Docker Compose or
 Podman.
 
-No image is published to a public registry yet, so build it first from the
-`Containerfile` in the repository (see [Installation](installation.md)):
+Each release is published as `ghcr.io/acme-proxy/acme-proxy:<version>`, for
+`linux/amd64` and `linux/arm64`, and the examples below pin one.
+[Installation](installation.md#container-docker--podman) covers why to pin,
+building the image yourself from the `Containerfile`, and verifying its
+provenance:
 
 ```bash
-podman build -t acme-proxy:latest .
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
 
 The image's working directory is `/data` and its entrypoint is the binary
@@ -234,7 +237,7 @@ Create a `docker-compose.yml` file:
 ```yaml
 services:
   acme-proxy:
-    image: acme-proxy:latest
+    image: ghcr.io/acme-proxy/acme-proxy:0.6.0
     container_name: acme-proxy
     restart: unless-stopped
     ports:
@@ -274,7 +277,7 @@ podman run -d --name acme-proxy \
   -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_DATABASE__URL=sqlite:///data/acme.db \
-  acme-proxy:latest
+  ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
 
 ## Running the roles as separate processes
@@ -374,6 +377,25 @@ acme-proxy migrate          # explicit; the default `serve` would also do it
 systemctl start acme-proxy
 journalctl -u acme-proxy -n 50
 ```
+
+A container is upgraded the same way, with the image tag in place of the binary:
+pull the new tag, migrate with it against the same `/data`, then recreate the
+container on it. With Docker Compose, after changing the `image:` line:
+
+```bash
+docker compose pull
+docker compose stop acme-proxy
+docker compose run --rm acme-proxy migrate
+docker compose up -d
+docker compose logs -n 50 acme-proxy
+```
+
+`migrate` after the service name replaces the image's default `serve` command
+for that one container. A single-container deployment would also migrate as it
+starts; running it as a step of its own stops the upgrade on the error, instead
+of leaving a server in a restart loop. A split deployment must migrate before
+any of its `acme` or `admin` containers start on the new tag. The advice below
+applies unchanged, the database backup first of all.
 
 Worth knowing before you do it:
 

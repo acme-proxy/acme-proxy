@@ -1,9 +1,10 @@
 # Installation
 
 `acme-proxy` is a Rust application, published on
-[crates.io](https://crates.io/crates/acme-proxy). There are three ways to get
-it — `cargo install`, a source build, or a container image you build yourself —
-and all three compile it locally. No prebuilt binaries are published.
+[crates.io](https://crates.io/crates/acme-proxy). There are four ways to get
+it: `cargo install`, a source build, the published container image, or a
+container image you build yourself. Only the published image comes prebuilt; no
+standalone prebuilt binaries are published.
 
 The result is a single binary carrying both the server and the
 [admin CLI](../operations/cli.md), so a deployment never needs a second tool.
@@ -98,13 +99,35 @@ requirement. Configuring `signer.local_ca.key_source = "pkcs11"` on a binary
 built without it is a startup error naming the feature, never a silent fallback
 to the file key.
 
+The published [container image](#container-docker--podman) is the default
+build, without `hsm`. A deployment that needs it builds its own binary.
+
 ## Container (Docker / Podman)
 
-A `Containerfile` is provided in the repository to build an image.
+Every release is published to the GitHub Container Registry as a
+multi-architecture image, for `linux/amd64` and `linux/arm64`, tagged with its
+version and with `latest`:
 
 ```bash
-podman build -t acme-proxy:latest .
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
+
+Pin the version rather than following `latest`. Before 1.0.0 a minor release may
+rename a configuration key, so an unattended pull of `latest` can stop a server
+from starting; the `### Breaking` sections of the
+[changelog](https://github.com/acme-proxy/acme-proxy/blob/main/CHANGELOG.md#compatibility)
+list every such change. The image holds the release build with the default
+features: the binary `cargo install acme-proxy` produces.
+
+To build the image yourself instead, use the `Containerfile` in a clone of the
+repository:
+
+```bash
+podman build -t acme-proxy .
+```
+
+That is the same release build as the published image, fat LTO included, so it
+takes tens of minutes.
 
 The image's working directory is `/data` and its entrypoint is the `acme-proxy`
 binary, so mount a volume there for the SQLite database, the configuration and
@@ -117,7 +140,7 @@ writable by it — the `:U` flag below is the rootless-Podman way; see
 podman run -d \
   -p 3000:3000 \
   -v ./data:/data:U \
-  acme-proxy:latest
+  ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
 
 Drop a `config.toml` into `./data` (it must define at least one profile — see
@@ -130,7 +153,20 @@ podman run -d \
   -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
-  acme-proxy:latest
+  ghcr.io/acme-proxy/acme-proxy:0.6.0
 ```
 
-> No image is published to a public registry yet; build it yourself as above.
+### Verifying the image
+
+Each published image carries a signed build provenance attestation. It records
+the repository, the commit and the workflow run that built the image. Check it
+with the [GitHub CLI](https://cli.github.com/) before you run the image:
+
+```bash
+gh attestation verify oci://ghcr.io/acme-proxy/acme-proxy:0.6.0 \
+  --repo acme-proxy/acme-proxy
+```
+
+The attestation is on the multi-architecture index, the object a tag resolves
+to. The digest of one architecture's image, on its own, has no attestation to
+find.
