@@ -1424,7 +1424,8 @@ async fn a_requested_not_after_reaches_the_issued_certificate() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+    // Issuance is queued work: read the order once the worker has settled it.
+    let order = common::acme::await_order(&app, &signer, &account_url, &order_url).await;
     let certificate_url = order["certificate"].as_str().unwrap().to_string();
     let nonce = fetch_nonce(&app).await;
     let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
@@ -1484,7 +1485,8 @@ async fn a_not_after_beyond_the_ca_window_is_clamped_rather_than_honoured() {
     .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let order = common::acme::post_as_get(&app, &signer, &account_url, &order_url).await;
+    // Issuance is queued work: read the order once the worker has settled it.
+    let order = common::acme::await_order(&app, &signer, &account_url, &order_url).await;
     let certificate_url = order["certificate"].as_str().unwrap().to_string();
     let nonce = fetch_nonce(&app).await;
     let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
