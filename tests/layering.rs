@@ -1,10 +1,15 @@
-//! Module boundaries the compiler cannot draw inside one crate, enforced
-//! against the source itself.
+//! Boundaries the compiler does not draw on its own, enforced against the
+//! source and the manifests.
+//!
+//! The workspace's crate edges are the layering (PLAN.md #6), and Cargo
+//! refuses a cycle; [`crate_dependencies_follow_the_layers`] pins the edges it
+//! would still accept — a crate reaching *across* a layer — to the intended
+//! table.
 //!
 //! `Database`'s pool is private to `crates/store/`, so SQL — and the dialect it
-//! is written in — lives in one module tree. The integration tests still need
-//! raw SQL for fixtures no table module writes (a back-dated row, a forced
-//! constraint violation), and they are another crate, so the escape hatch,
+//! is written in — lives in one crate. The integration tests and the other
+//! crates' fixtures still need raw SQL for rows no table module writes (a
+//! back-dated row, a forced constraint violation), so the escape hatch,
 //! `Database::raw_pool`, has to be `pub`. Nothing but this test stops
 //! production code calling it, which would make the private field `pub pool`
 //! under a longer name.
@@ -296,215 +301,126 @@ fn only_the_schema_owners_apply_migrations() {
     );
 }
 
-/// The crate each top-level module of `src/` is headed for (PLAN.md #6), in
-/// dependency order: a crate may name only the crates listed before it in
-/// [`CRATE_DEPS`].
-const MODULE_CRATE: &[(&str, &str)] = &[
-    ("cert", "core"),
-    ("client", "core"),
-    ("config", "core"),
-    ("eab", "core"),
-    ("error", "core"),
-    ("identifier", "core"),
-    ("jws", "core"),
-    ("key_change", "core"),
-    ("logfields", "core"),
-    ("palette", "core"),
-    ("pemfile", "core"),
-    ("random", "core"),
-    ("routes", "core"),
-    ("script_hook", "core"),
-    ("templating", "core"),
-    ("sqlite", "store"),
-    ("challenge", "net"),
-    ("dns", "net"),
-    ("egress", "net"),
-    ("http_client", "net"),
-    ("listener", "net"),
-    ("proxy", "net"),
-    ("tls", "net"),
-    ("filter", "policy"),
-    ("ipam", "policy"),
-    ("audit", "core"),
-    ("auditor", "jobs"),
-    ("jobs", "jobs"),
-    ("metrics", "jobs"),
-    ("notify", "jobs"),
-    ("signer", "signer"),
-    ("acme", "protocol"),
-    ("extractors", "protocol"),
-    ("handlers", "protocol"),
-    ("middlewares", "protocol"),
-    ("profile", "protocol"),
-    ("router", "protocol"),
-    ("admin", "admin"),
-    ("webadmin", "admin"),
-    ("reload", "server"),
-    ("server", "server"),
-    ("cli", "bin"),
-];
-
-/// Each crate and the crates it may depend on.
+/// The internal crates each member may depend on, in dependency order
+/// (PLAN.md #6).
+///
+/// Cargo already refuses a cycle, so a crate naming one *above* it cannot
+/// compile. What it would accept is an edge **across** a layer — the job queue
+/// starting to depend on the filters, say — which breaks no build and every
+/// intention behind the split. This is the list such an edge has to be added
+/// to on purpose.
 const CRATE_DEPS: &[(&str, &[&str])] = &[
-    ("core", &[]),
-    ("store", &["core"]),
-    ("net", &["core"]),
-    ("policy", &["core", "store", "net"]),
-    ("jobs", &["core", "store", "net"]),
-    ("signer", &["core", "store", "net", "jobs"]),
+    ("acme-proxy-core", &[]),
+    ("acme-proxy-store", &["acme-proxy-core"]),
+    ("acme-proxy-net", &["acme-proxy-core"]),
+    ("acme-proxy-policy", &["acme-proxy-core", "acme-proxy-net"]),
     (
-        "protocol",
-        &["core", "store", "net", "policy", "jobs", "signer"],
+        "acme-proxy-jobs",
+        &["acme-proxy-core", "acme-proxy-net", "acme-proxy-store"],
     ),
     (
-        "admin",
+        "acme-proxy-signer",
         &[
-            "core", "store", "net", "policy", "jobs", "signer", "protocol",
+            "acme-proxy-core",
+            "acme-proxy-jobs",
+            "acme-proxy-net",
+            "acme-proxy-store",
         ],
     ),
     (
-        "server",
+        "acme-proxy-protocol",
         &[
-            "core", "store", "net", "policy", "jobs", "signer", "protocol", "admin",
+            "acme-proxy-core",
+            "acme-proxy-jobs",
+            "acme-proxy-net",
+            "acme-proxy-policy",
+            "acme-proxy-signer",
+            "acme-proxy-store",
         ],
     ),
     (
-        "bin",
+        "acme-proxy-admin",
         &[
-            "core", "store", "net", "policy", "jobs", "signer", "protocol", "admin", "server",
+            "acme-proxy-core",
+            "acme-proxy-jobs",
+            "acme-proxy-policy",
+            "acme-proxy-protocol",
+            "acme-proxy-signer",
+            "acme-proxy-store",
+        ],
+    ),
+    (
+        "acme-proxy-server",
+        &[
+            "acme-proxy-admin",
+            "acme-proxy-core",
+            "acme-proxy-jobs",
+            "acme-proxy-net",
+            "acme-proxy-policy",
+            "acme-proxy-protocol",
+            "acme-proxy-signer",
+            "acme-proxy-store",
         ],
     ),
 ];
 
-/// Module references that still cross a future crate boundary the wrong way.
-/// Each untangling commit deletes its entries; an entry that no longer occurs
-/// fails the test too, so this list only ever shrinks.
-const KNOWN_BACK_EDGES: &[(&str, &str)] = &[];
-
-/// The top-level modules one line of source names through `crate::`, either
-/// directly (`crate::audit::Actor`) or in a group (`use crate::{dns, proxy};`).
-fn crate_paths(line: &str) -> Vec<&str> {
-    fn ident(text: &str) -> &str {
-        let end = text
-            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
-            .unwrap_or(text.len());
-        &text[..end]
-    }
-    let mut found = Vec::new();
-    for (index, _) in line.match_indices("crate::") {
-        let rest = &line[index + "crate::".len()..];
-        if let Some(group) = rest.strip_prefix('{') {
-            let group = &group[..group.find('}').unwrap_or(group.len())];
-            found.extend(group.split(',').map(|item| ident(item.trim())));
-        } else {
-            found.push(ident(rest));
-        }
-    }
-    found.retain(|name| !name.is_empty());
-    found
-}
-
-/// Every module reference in `src/` — production **and** test code, since a
-/// test cannot name a crate its own crate is a dependency of either — must
-/// point at the module's own crate or one it depends on.
-#[test]
-fn module_layers_form_a_dag() {
-    let crate_of = |module: &str| {
-        MODULE_CRATE
-            .iter()
-            .find(|(name, _)| *name == module)
-            .map(|(_, krate)| *krate)
+/// The `acme-proxy-*` crates one table of a manifest names.
+fn internal_deps(manifest: &str, table: &str) -> Vec<String> {
+    let header = format!("[{table}]");
+    let Some(start) = manifest.lines().position(|line| line.trim() == header) else {
+        return Vec::new();
     };
-    let may_use = |from: &str, to: &str| {
-        from == to
-            || CRATE_DEPS
-                .iter()
-                .find(|(krate, _)| *krate == from)
-                .is_some_and(|(_, deps)| deps.contains(&to))
-    };
-
-    let root = repo_root();
-    let mut files = Vec::new();
-    rust_sources(&root.join("src"), &mut files);
-
-    let mut unmapped = Vec::new();
-    let mut offenders = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for path in files {
-        let relative = path
-            .strip_prefix(&root)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let module = relative
-            .trim_start_matches("src/")
-            .split('/')
-            .next()
-            .unwrap()
-            .trim_end_matches(".rs")
-            .to_string();
-        // The crate root and the shared test helpers are split up by the
-        // extraction itself rather than untangled ahead of it.
-        if ["lib", "main", "testutil"].contains(&module.as_str()) {
-            continue;
-        }
-        let Some(from) = crate_of(&module) else {
-            unmapped.push(module);
-            continue;
-        };
-        let text = fs::read_to_string(&path).unwrap();
-        for (index, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
-            }
-            for target in crate_paths(line) {
-                let Some(to) = crate_of(target) else { continue };
-                if target == module || may_use(from, to) {
-                    continue;
-                }
-                let edge = (module.clone(), target.to_string());
-                if KNOWN_BACK_EDGES.contains(&(edge.0.as_str(), edge.1.as_str())) {
-                    seen.insert(edge);
-                } else {
-                    offenders.push(format!("{relative}:{}: {}", index + 1, line.trim()));
-                }
-            }
-        }
-    }
-
-    unmapped.sort();
-    unmapped.dedup();
-    assert!(
-        unmapped.is_empty(),
-        "every top-level module needs a crate in MODULE_CRATE: {unmapped:?}"
-    );
-    assert!(
-        offenders.is_empty(),
-        "a module names one in a crate its own crate may not depend on:\n{}",
-        offenders.join("\n")
-    );
-    let stale: Vec<_> = KNOWN_BACK_EDGES
-        .iter()
-        .filter(|(from, to)| !seen.contains(&(from.to_string(), to.to_string())))
+    let mut deps: Vec<String> = manifest
+        .lines()
+        .skip(start + 1)
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .filter_map(|line| {
+            let name = line.split(['=', '.']).next()?.trim();
+            name.starts_with("acme-proxy-").then(|| name.to_string())
+        })
         .collect();
-    assert!(
-        stale.is_empty(),
-        "these back-edges are gone; delete them from KNOWN_BACK_EDGES: {stale:?}"
-    );
+    deps.sort();
+    deps
 }
 
+/// Every member's normal dependencies are exactly the ones [`CRATE_DEPS`]
+/// allows it, and every member is listed there.
+///
+/// Exactly rather than at most: a crate that stopped needing one of its
+/// dependencies should drop the edge, and the table should say so. The
+/// `[dev-dependencies]` are not checked — a test may reach any crate beneath
+/// its own for fixtures, and Cargo still refuses the cycle a test reaching
+/// *above* would need.
 #[test]
-fn crate_paths_finds_direct_and_grouped_references() {
-    assert_eq!(crate_paths("use crate::audit::Actor;"), ["audit"]);
+fn crate_dependencies_follow_the_layers() {
+    let root = repo_root();
+    let mut seen = Vec::new();
+    for entry in fs::read_dir(root.join("crates")).unwrap().flatten() {
+        let manifest = fs::read_to_string(entry.path().join("Cargo.toml")).unwrap();
+        let name = manifest
+            .lines()
+            .find_map(|line| line.strip_prefix("name = "))
+            .map(|name| name.trim_matches('"').to_string())
+            .unwrap();
+        let allowed = CRATE_DEPS
+            .iter()
+            .find(|(krate, _)| *krate == name)
+            .unwrap_or_else(|| panic!("{name} is not in CRATE_DEPS"))
+            .1;
+        let mut expected: Vec<String> = allowed.iter().map(|dep| (*dep).to_string()).collect();
+        expected.sort();
+        assert_eq!(
+            internal_deps(&manifest, "dependencies"),
+            expected,
+            "{name}'s [dependencies] must name exactly the crates CRATE_DEPS allows it"
+        );
+        seen.push(name);
+    }
     assert_eq!(
-        crate_paths("use crate::{challenge, dns::Resolver, proxy};"),
-        ["challenge", "dns", "proxy"]
+        seen.len(),
+        CRATE_DEPS.len(),
+        "a CRATE_DEPS entry names no crate"
     );
-    assert_eq!(
-        crate_paths("let a = crate::cert::x(crate::sqlite::y);"),
-        ["cert", "sqlite"]
-    );
-    assert!(crate_paths("use super::Profile;").is_empty());
 }
 
 /// The scanner itself: a stray call above the test module is found, one inside
@@ -541,7 +457,8 @@ fn the_production_part_ends_at_the_first_test_module() {
     }
 
     assert_eq!(production_part("fn only() {}\n"), "fn only() {}\n");
-    assert!(is_test_file("src/signer/relay/tests/lifecycle.rs"));
-    assert!(is_test_file("src/audit/tests.rs"));
-    assert!(!is_test_file("src/admin/ops.rs"));
+    assert!(is_test_file("crates/signer/src/relay/tests/lifecycle.rs"));
+    assert!(is_test_file("crates/core/src/audit/tests.rs"));
+    assert!(is_test_file("crates/store/src/testutil.rs"));
+    assert!(!is_test_file("crates/admin/src/admin/ops.rs"));
 }
