@@ -11,7 +11,9 @@ here is a rule a reviewer would otherwise have to apply by eye, on a book with
 - no trailing whitespace, which the `### Reference` entries used to depend on;
 - every fenced block declares a language;
 - every relative link resolves, including its `#anchor`;
-- no configuration key is documented in two files at once.
+- no configuration key is documented in two files at once;
+- every ADR under `dev/adr/` is named `NNNN-title.md`, carries the five
+  sections in order, and is listed in both `SUMMARY.md` and the ADR index.
 
 Run from the repository root: `python3 doc/lint.py`.
 """
@@ -117,6 +119,32 @@ for path in files:
                 report(path, number, f"link target does not exist: {target}")
             elif fragment and fragment not in anchors.get(resolved, set()):
                 report(path, number, f"link anchor does not exist: {target}")
+
+# An ADR nobody lists is an ADR nobody finds: mdBook refuses a SUMMARY entry
+# with no file, but not a file with no SUMMARY entry, and nothing at all keeps
+# the index table in step.
+ADR_DIR = os.path.join(ROOT, "dev", "adr")
+ADR_SECTIONS = ["Status", "Context", "Decision", "Consequences", "Enforced by"]
+summary = open(os.path.join(ROOT, "SUMMARY.md"), encoding="utf-8").read()
+adr_index = open(os.path.join(ADR_DIR, "index.md"), encoding="utf-8").read()
+for name in sorted(os.listdir(ADR_DIR)):
+    if name == "index.md":
+        continue
+    match = re.match(r"^(\d{4})-[a-z0-9-]+\.md$", name)
+    path = os.path.join(ADR_DIR, name)
+    if not match:
+        report(path, 1, "ADR file name is not NNNN-kebab-title.md")
+        continue
+    lines = open(path, encoding="utf-8").read().split("\n")
+    if not lines[0].startswith(f"# ADR {match.group(1)}: "):
+        report(path, 1, f"title must start with '# ADR {match.group(1)}: '")
+    sections = [line[3:].strip() for line in lines if line.startswith("## ")]
+    if sections != ADR_SECTIONS:
+        report(path, 1, f"sections must be exactly {ADR_SECTIONS}, found {sections}")
+    if f"(dev/adr/{name})" not in summary:
+        report(path, 1, "ADR is not listed in SUMMARY.md")
+    if f"({name})" not in adr_index:
+        report(path, 1, "ADR is not listed in dev/adr/index.md")
 
 for key, where in sorted(key_locations.items()):
     if len(where) > 1:

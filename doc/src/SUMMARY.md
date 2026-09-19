@@ -70,6 +70,7 @@
 
 # Developer Documentation
 - [Architecture & Design](dev/architecture.md)
+- [Architecture Decisions](dev/adr/index.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)
