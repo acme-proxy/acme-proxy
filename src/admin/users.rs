@@ -178,7 +178,7 @@ pub async fn set_role(
 
 /// Sets (`Some`) or clears (`None` / empty / whitespace) the address an
 /// operator receives security notifications at. `Some` is validated as a
-/// mailbox — the same parse [`crate::notify::email`] does before it sends —
+/// mailbox — the same parse [`acme_proxy_jobs::notify::email`] does before it sends —
 /// so a malformed address is refused here rather than becoming a permanent
 /// delivery failure later. Not a credential: sessions are left alone.
 ///

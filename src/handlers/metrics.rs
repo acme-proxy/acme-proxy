@@ -2,14 +2,14 @@
 //!
 //! Not an ACME resource, and mounted on the root router beside `/health`: it
 //! carries no nonce, no `Link: rel="index"` and no filter chain, and it is
-//! deliberately absent from the directory. See [`crate::metrics`] for what it
+//! deliberately absent from the directory. See [`acme_proxy_jobs::metrics`] for what it
 //! exposes and [`acme_proxy_core::config::MetricsConfig`] for why it is off by default.
 
 use std::sync::Arc;
 
 use axum::{extract::State, http::header, response::IntoResponse};
 
-use crate::metrics::Metrics;
+use acme_proxy_jobs::metrics::Metrics;
 
 /// The handler's own state.
 ///

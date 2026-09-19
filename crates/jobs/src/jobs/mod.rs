@@ -191,7 +191,7 @@ pub struct JobQueue {
     database: Arc<Database>,
     notify: Arc<Notify>,
     /// Shared rather than copied, because a reload has to reach the clones.
-    /// This queue is cloned into [`crate::server::Assembly`], every
+    /// This queue is cloned into `server::Assembly`, every
     /// `RelaySigner` and every `NotifyDispatcher` at startup and none of them
     /// is ever rebuilt, so a plain `u32` field would leave `jobs.max_attempts`
     /// readable only where the reload happened to be holding a handle. See

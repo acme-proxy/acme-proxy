@@ -28,18 +28,18 @@ use acme_proxy_store::job::JobQuery;
 /// twice.
 const KNOWN_KINDS: &[&str] = &[
     crate::signer::relay::RELAY_JOB_KIND,
-    crate::notify::job::NOTIFY_JOB_KIND,
-    crate::notify::expiry::EXPIRY_JOB_KIND,
+    acme_proxy_jobs::notify::job::NOTIFY_JOB_KIND,
+    acme_proxy_jobs::notify::expiry::EXPIRY_JOB_KIND,
     crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
     crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
     crate::acme::issue::SIGNER_ISSUE_KIND,
     crate::acme::revoke::SIGNER_REVOKE_KIND,
     crate::acme::validate::CHALLENGE_VALIDATE_KIND,
-    crate::jobs::sweep::NONCE_SWEEP_KIND,
-    crate::jobs::sweep::AUDIT_SWEEP_KIND,
-    crate::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
-    crate::jobs::sweep::ORDER_SWEEP_KIND,
-    crate::jobs::sweep::RETENTION_JOB_KIND,
+    acme_proxy_jobs::jobs::sweep::NONCE_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::AUDIT_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::ORDER_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::RETENTION_JOB_KIND,
 ];
 
 /// `GET /ui/jobs?kind=&status=&limit=&offset=`

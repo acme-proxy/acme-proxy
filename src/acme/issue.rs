@@ -41,8 +41,6 @@ use std::sync::Arc;
 use base64::prelude::*;
 use tracing::{error, info, warn};
 
-use crate::auditor::Auditor;
-use crate::jobs::{JobHandler, JobOutcome, JobSpec};
 use crate::signer::issuance::IssuanceError;
 use crate::signer::issuance::announce_issuance;
 use crate::signer::issuance::record_issuance;
@@ -53,6 +51,10 @@ use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::error::Problem;
+use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
@@ -99,7 +101,7 @@ pub struct SignerIssueJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
     signers: Vec<(String, Arc<dyn SignerBackend>)>,
-    notifiers: crate::notify::Notifiers,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
 }
 
 impl SignerIssueJob {
@@ -110,7 +112,7 @@ impl SignerIssueJob {
         database: Arc<Database>,
         audit: Arc<Auditor>,
         signers: Vec<(String, Arc<dyn SignerBackend>)>,
-        notifiers: crate::notify::Notifiers,
+        notifiers: acme_proxy_jobs::notify::Notifiers,
     ) -> Self {
         Self {
             database,
@@ -395,8 +397,9 @@ mod tests {
     }
 
     fn handler(database: &Arc<Database>, signer: Arc<dyn SignerBackend>) -> SignerIssueJob {
-        let (_tx, notifiers) =
-            crate::notify::notifiers_channel(crate::notify::DispatcherMap::new());
+        let (_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(
+            acme_proxy_jobs::notify::DispatcherMap::new(),
+        );
         SignerIssueJob::new(
             database.clone(),
             Arc::new(Auditor::offline(database.clone())),
@@ -578,8 +581,9 @@ mod tests {
     async fn an_unmounted_profile_retries_and_a_broken_row_fails() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (_, job) = claimed(&database).await;
-        let (_tx, notifiers) =
-            crate::notify::notifiers_channel(crate::notify::DispatcherMap::new());
+        let (_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(
+            acme_proxy_jobs::notify::DispatcherMap::new(),
+        );
         let elsewhere = SignerIssueJob::new(
             database.clone(),
             Arc::new(Auditor::offline(database.clone())),

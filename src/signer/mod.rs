@@ -212,7 +212,7 @@ pub trait SignerBackend: Send + Sync {
     /// anything to hand over; a synchronous backend like [`local_ca::LocalCa`]
     /// never has a half-finished issuance, so the default is `None`.
     ///
-    /// **State, not a [`JobHandler`](crate::jobs::JobHandler)** — the same
+    /// **State, not a [`JobHandler`](acme_proxy_jobs::jobs::JobHandler)** — the same
     /// distinction, and for the same reason, as
     /// [`crl_refresher`](SignerBackend::crl_refresher) below. This method replaced a
     /// `jobs()` returning one handler per backend, which made two profiles
@@ -227,7 +227,7 @@ pub trait SignerBackend: Send + Sync {
     /// this trait: every one it could return has this problem, and a subsystem
     /// that wants a queue registers one handler covering every backend of its
     /// kind. Recovery is a case of that queue rather than a mechanism of its own
-    /// — see [`crate::jobs::JobHandler::recover`].
+    /// — see [`acme_proxy_jobs::jobs::JobHandler::recover`].
     fn relay_state(&self) -> Option<relay::RelayState> {
         None
     }
@@ -236,8 +236,8 @@ pub trait SignerBackend: Send + Sync {
     /// and re-signed before it lapses.
     ///
     /// A getter handing over *state* rather than a
-    /// [`JobHandler`](crate::jobs::JobHandler), and the distinction is not
-    /// cosmetic: [`crate::jobs::JobRegistry::register`] refuses two handlers
+    /// [`JobHandler`](acme_proxy_jobs::jobs::JobHandler), and the distinction is not
+    /// cosmetic: [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses two handlers
     /// for one `kind`, and two profiles with *different* `[signer.local_ca]`
     /// sections are two distinct backends — so a handler returned from here
     /// would make a supported configuration a startup error. Handing over the
@@ -260,7 +260,7 @@ pub trait SignerBackend: Send + Sync {
 /// Deliberately narrow: the sweep has no business knowing what a `LocalCa` is,
 /// and this is the whole of what it needs — something to name in a log line and
 /// something to call. See [`SignerBackend::crl_refresher`] for why the state
-/// travels rather than a [`JobHandler`](crate::jobs::JobHandler).
+/// travels rather than a [`JobHandler`](acme_proxy_jobs::jobs::JobHandler).
 #[async_trait]
 pub trait CrlRefresher: Send + Sync {
     /// Which CA this is, for logging: its issuer id
@@ -313,22 +313,22 @@ pub enum SignerError {
 /// background task has no `Profile`/`AppState` to reach a notifier through, so it
 /// is handed the whole `profile name -> dispatcher` map and looks up the right
 /// one by `Order.profile` once it has something to report. It arrives as
-/// [`crate::notify::Notifiers`] rather than a bare `Arc` because a backend
+/// [`acme_proxy_jobs::notify::Notifiers`] rather than a bare `Arc` because a backend
 /// outlives the generation that built it while the map does not: a captured
 /// `Arc` would pin the backend to the dispatchers that existed when it was
 /// constructed.
 #[derive(Clone)]
 pub struct SignerParts {
     pub database: Arc<Database>,
-    pub notifiers: crate::notify::Notifiers,
-    pub metrics: Arc<crate::metrics::Metrics>,
+    pub notifiers: acme_proxy_jobs::notify::Notifiers,
+    pub metrics: Arc<acme_proxy_jobs::metrics::Metrics>,
     /// This generation's outbound plumbing **and** the configuration identity of
     /// it, held whole rather than as a bare
     /// [`Outbound`](acme_proxy_net::http_client::Outbound). The two cannot then disagree,
     /// and a value that disagreed would make a `dns.resolver` edit a silent
     /// no-op for every signer — see [`build_backends`].
     pub egress: Arc<acme_proxy_net::egress::Egress>,
-    pub jobs: crate::jobs::JobQueue,
+    pub jobs: acme_proxy_jobs::jobs::JobQueue,
 }
 
 /// How a revocation reaches a configured backend **without building it**.

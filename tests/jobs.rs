@@ -16,14 +16,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use acme_proxy::jobs::{
-    JobHandler, JobOutcome, JobQueue, JobRegistry, JobSpec, SweepJob, spawn_runner,
-};
-use acme_proxy::notify::{
-    BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
-    ProfileMountedData,
-};
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobRegistry;
+use acme_proxy_jobs::jobs::JobSpec;
+use acme_proxy_jobs::jobs::SweepJob;
+use acme_proxy_jobs::jobs::spawn_runner;
+use acme_proxy_jobs::notify::BackendSlot;
+use acme_proxy_jobs::notify::NotifyBackend;
+use acme_proxy_jobs::notify::NotifyDispatcher;
+use acme_proxy_jobs::notify::NotifyError;
+use acme_proxy_jobs::notify::NotifyEvent;
+use acme_proxy_jobs::notify::NotifyJob;
+use acme_proxy_jobs::notify::ProfileMountedData;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use async_trait::async_trait;

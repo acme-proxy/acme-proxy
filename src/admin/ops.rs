@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::admin::prompt::confirm;
-use crate::auditor::Auditor;
 use crate::signer::SignerError;
 use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ClientContext;
+use acme_proxy_jobs::auditor::Auditor;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::audit::AuditEntry;
 use acme_proxy_store::audit::AuditQuery;
@@ -426,7 +426,7 @@ pub async fn update_account_contact(
 pub async fn deactivate_account(
     id: &str,
     database: Arc<Database>,
-    notifier: impl Fn(&str) -> Option<Arc<crate::notify::NotifyDispatcher>>,
+    notifier: impl Fn(&str) -> Option<Arc<acme_proxy_jobs::notify::NotifyDispatcher>>,
     client_ip: Option<String>,
 ) -> Result<Option<Account>, sqlx::Error> {
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
@@ -467,7 +467,7 @@ pub async fn revoke_order(
     audit: &Auditor,
     database: Arc<Database>,
     revoker: crate::acme::revoke::Revoker<'_>,
-    notify: Option<&crate::notify::NotifyDispatcher>,
+    notify: Option<&acme_proxy_jobs::notify::NotifyDispatcher>,
 ) -> Result<RevokeOutcome, RevokeError> {
     use crate::acme::revoke::{Revocations, RevokeError as Refusal};
 
@@ -586,13 +586,13 @@ pub struct UpstreamOrderDetail {
 /// (`Reschedule`). Cancelling one stops that sweep until the server restarts,
 /// which the CLI/UI warns about — a retired periodic job does not come back.
 const PERIODIC_JOB_KINDS: &[&str] = &[
-    crate::jobs::sweep::RETENTION_JOB_KIND,
-    crate::jobs::sweep::NONCE_SWEEP_KIND,
-    crate::jobs::sweep::AUDIT_SWEEP_KIND,
-    crate::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
-    crate::jobs::sweep::ORDER_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::RETENTION_JOB_KIND,
+    acme_proxy_jobs::jobs::sweep::NONCE_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::AUDIT_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
+    acme_proxy_jobs::jobs::sweep::ORDER_SWEEP_KIND,
     crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
-    crate::notify::expiry::EXPIRY_JOB_KIND,
+    acme_proxy_jobs::notify::expiry::EXPIRY_JOB_KIND,
 ];
 
 /// Whether cancelling a job of this kind silently stops a periodic sweep.
@@ -801,7 +801,7 @@ pub async fn cancel_job(
     // `certificate_issue_failed` row on the branch above; this one is the only
     // record the rest of them leave, so it must not be skipped.
     audit
-        .record(crate::auditor::admin::job_cancelled(
+        .record(acme_proxy_jobs::auditor::admin::job_cancelled(
             actor,
             client,
             &job.kind,
@@ -885,7 +885,7 @@ pub async fn run_job_now(
     };
     if let Some(job) = Job::advance_row(job_id, &database).await? {
         audit
-            .record(crate::auditor::admin::job_advanced(
+            .record(acme_proxy_jobs::auditor::admin::job_advanced(
                 actor,
                 client,
                 &job.id.to_string(),
@@ -896,7 +896,7 @@ pub async fn run_job_now(
     }
     if let Some(job) = Job::revive_row(job_id, &database).await? {
         audit
-            .record(crate::auditor::admin::job_advanced(
+            .record(acme_proxy_jobs::auditor::admin::job_advanced(
                 actor,
                 client,
                 &job.id.to_string(),
@@ -1040,7 +1040,7 @@ mod tests {
                 ptr: Some("desk.example.com".to_string()),
                 ..ClientContext::default()
             },
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1070,7 +1070,7 @@ mod tests {
             None,
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1086,14 +1086,14 @@ mod tests {
     struct Wanting;
 
     #[async_trait::async_trait]
-    impl crate::notify::NotifyBackend for Wanting {
+    impl acme_proxy_jobs::notify::NotifyBackend for Wanting {
         fn name(&self) -> &'static str {
             "custom"
         }
         async fn send(
             &self,
-            _event: &crate::notify::NotifyEvent,
-        ) -> Result<(), crate::notify::NotifyError> {
+            _event: &acme_proxy_jobs::notify::NotifyEvent,
+        ) -> Result<(), acme_proxy_jobs::notify::NotifyError> {
             Ok(())
         }
     }
@@ -1105,14 +1105,14 @@ mod tests {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let signer = in_memory_ca(&db);
         let order = finalized_order(db.clone(), &signer).await;
-        let dispatcher = crate::notify::NotifyDispatcher::new(
+        let dispatcher = acme_proxy_jobs::notify::NotifyDispatcher::new(
             "default",
-            vec![crate::notify::BackendSlot::new(
+            vec![acme_proxy_jobs::notify::BackendSlot::new(
                 "custom:test",
                 Arc::new(Wanting),
                 &["certificate_revoked".to_string()],
             )],
-            crate::testutil::idle_job_queue(db.clone()),
+            acme_proxy_jobs::testutil::idle_job_queue(db.clone()),
         );
 
         let outcome = revoke_order(
@@ -1129,7 +1129,7 @@ mod tests {
         .unwrap();
         assert!(matches!(outcome, RevokeOutcome::Revoked(_)));
 
-        let queued = Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+        let queued = Job::count_live(acme_proxy_jobs::notify::NOTIFY_JOB_KIND, &db)
             .await
             .unwrap();
         assert_eq!(queued, 1);
@@ -1148,7 +1148,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1613,7 +1613,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
@@ -1644,7 +1644,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
@@ -1665,7 +1665,7 @@ mod tests {
             Some(1),
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1702,7 +1702,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1714,7 +1714,7 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db,
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1735,7 +1735,7 @@ mod tests {
             Some(999),
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db,
             crate::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
@@ -1842,14 +1842,14 @@ mod tests {
     async fn deactivate_account_persists() {
         let db = Arc::new(Database::connect_in_memory().await.unwrap());
         let acct = account_id(&db).await;
-        let dispatcher = Arc::new(crate::notify::NotifyDispatcher::new(
+        let dispatcher = Arc::new(acme_proxy_jobs::notify::NotifyDispatcher::new(
             "default",
-            vec![crate::notify::BackendSlot::new(
+            vec![acme_proxy_jobs::notify::BackendSlot::new(
                 "custom:test",
                 Arc::new(Wanting),
                 &["account_deactivated".to_string()],
             )],
-            crate::testutil::idle_job_queue(db.clone()),
+            acme_proxy_jobs::testutil::idle_job_queue(db.clone()),
         ));
 
         let updated = deactivate_account(
@@ -1863,7 +1863,7 @@ mod tests {
         .unwrap();
         assert_eq!(updated.status, "deactivated");
         assert_eq!(
-            Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+            Job::count_live(acme_proxy_jobs::notify::NOTIFY_JOB_KIND, &db)
                 .await
                 .unwrap(),
             1
@@ -2067,7 +2067,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2105,7 +2105,7 @@ mod tests {
                 ip: Some("203.0.113.7".to_string()),
                 ..ClientContext::default()
             },
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2164,7 +2164,7 @@ mod tests {
             "urn:ietf:params:acme:error:rejectedIdentifier from the upstream",
             Actor::cli(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             &db,
         )
         .await
@@ -2192,7 +2192,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2236,7 +2236,7 @@ mod tests {
             job.id.to_string().as_str(),
             Actor::admin("root"),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2265,7 +2265,7 @@ mod tests {
             job.id.to_string().as_str(),
             cli_actor(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2294,7 +2294,7 @@ mod tests {
                 "nope",
                 cli_actor(),
                 ClientContext::default(),
-                &crate::auditor::Auditor::offline(db.clone()),
+                &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2306,7 +2306,7 @@ mod tests {
                 acme_proxy_store::id::mint().to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                &crate::auditor::Auditor::offline(db.clone()),
+                &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
                 db.clone()
             )
             .await
@@ -2325,7 +2325,7 @@ mod tests {
                 sweep.id.to_string().as_str(),
                 cli_actor(),
                 ClientContext::default(),
-                &crate::auditor::Auditor::offline(db.clone()),
+                &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
                 db,
             )
                 .await
@@ -2346,7 +2346,7 @@ mod tests {
                 &mut reader,
                 cli_actor(),
                 ClientContext::default(),
-                &crate::auditor::Auditor::offline(db.clone()),
+                &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
                 db.clone(),
             )
             .await
@@ -2373,7 +2373,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2396,7 +2396,7 @@ mod tests {
             relay.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         )
         .await
@@ -2418,7 +2418,7 @@ mod tests {
             sweep.id.to_string().as_str(),
             Actor::cli(),
             ClientContext::default(),
-            &crate::auditor::Auditor::offline(db.clone()),
+            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
         ).await.unwrap(),
             RunJobNowOutcome::Refused(s) if s == "done"

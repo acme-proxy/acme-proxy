@@ -1,0 +1,44 @@
+[package]
+name = "acme-proxy-jobs"
+description = "The durable job queue, notifications, audit writer and metrics of acme-proxy (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+exclude = ["**/CLAUDE.md"]
+
+[features]
+# `test_metrics` and `idle_job_queue` in `testutil`, for the other crates' unit
+# tests. Turned on from `[dev-dependencies]` only, so it never reaches a normal
+# build.
+test-util = []
+
+[dependencies]
+acme-proxy-core.workspace = true
+acme-proxy-net.workspace = true
+acme-proxy-store.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+lettre.workspace = true
+minijinja.workspace = true
+ring.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
+hyper-util.workspace = true

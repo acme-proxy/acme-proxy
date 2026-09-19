@@ -11,10 +11,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use acme_proxy::jobs::JobRegistry;
-use acme_proxy::notify::{BackendSlot, NotifyDispatcher, NotifyEvent, NotifyJob};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
+use acme_proxy_jobs::jobs::JobRegistry;
+use acme_proxy_jobs::notify::BackendSlot;
+use acme_proxy_jobs::notify::NotifyDispatcher;
+use acme_proxy_jobs::notify::NotifyEvent;
+use acme_proxy_jobs::notify::NotifyJob;
 use acme_proxy_policy::filter::FilterPolicy;
 use acme_proxy_store::job::Job;
 use axum::Router;
@@ -382,12 +385,12 @@ struct SlowBackend {
 }
 
 #[async_trait::async_trait]
-impl acme_proxy::notify::NotifyBackend for SlowBackend {
+impl acme_proxy_jobs::notify::NotifyBackend for SlowBackend {
     fn name(&self) -> &'static str {
         "slow"
     }
 
-    async fn send(&self, _event: &NotifyEvent) -> Result<(), acme_proxy::notify::NotifyError> {
+    async fn send(&self, _event: &NotifyEvent) -> Result<(), acme_proxy_jobs::notify::NotifyError> {
         tokio::time::sleep(self.delay).await;
         self.delivered
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -427,7 +430,7 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 
     dispatcher
         .dispatch(NotifyEvent::ProfileMounted(
-            acme_proxy::notify::ProfileMountedData {
+            acme_proxy_jobs::notify::ProfileMountedData {
                 profile: "default".to_string(),
             },
         ))
@@ -451,7 +454,7 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
         .register(Arc::new(NotifyJob::new(Arc::new(dispatchers))))
         .unwrap();
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    acme_proxy::jobs::spawn_runner(
+    acme_proxy_jobs::jobs::spawn_runner(
         queue.clone(),
         Arc::new(registry),
         &JobsConfig {
@@ -483,12 +486,12 @@ async fn a_dispatch_that_never_ran_is_still_owed_afterwards() {
 /// registered but never wired to a dispatcher.
 #[tokio::test]
 async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
-    use acme_proxy::notify::expiry::ExpiryDigestJob;
     use acme_proxy_core::config::ExpiryNotifyConfig;
     use acme_proxy_core::config::NotifyConfig;
     use acme_proxy_core::config::ProfileConfig;
     use acme_proxy_core::config::ProfileSections;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_jobs::notify::expiry::ExpiryDigestJob;
     use acme_proxy_store::db::Database;
     use acme_proxy_store::order::Order;
 
@@ -499,7 +502,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
         ..JobsConfig::default()
     };
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
-    let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config);
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config);
 
     // An account with a certificate lapsing inside the window.
     let (account, _created) = acme_proxy_store::account::Account::find_or_create(
@@ -549,7 +552,8 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     ));
     let dispatchers: std::collections::HashMap<String, Arc<NotifyDispatcher>> =
         std::collections::HashMap::from([("default".to_string(), dispatcher)]);
-    let (_notifiers_tx, notifiers) = acme_proxy::notify::notifiers_channel(dispatchers.clone());
+    let (_notifiers_tx, notifiers) =
+        acme_proxy_jobs::notify::notifiers_channel(dispatchers.clone());
 
     let profile = ProfileConfig {
         name: "default".to_string(),
@@ -585,7 +589,7 @@ async fn the_expiry_digest_reaches_a_backend_through_the_runner() {
     // `run_at = now`, so the first pass produces the digest with nothing else
     // to trigger it.
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    acme_proxy::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+    acme_proxy_jobs::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
 
     let mut recorded = Vec::new();
     for _ in 0..400 {

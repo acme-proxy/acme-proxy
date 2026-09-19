@@ -23,13 +23,13 @@ use crate::admin::ops::DeleteOutcome;
 use crate::admin::password::PasswordContext;
 use crate::admin::prompt::confirm;
 use crate::admin::users::{self, UserError};
-use crate::auditor::admin as audit_admin;
-use crate::auditor::admin::SessionScope;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_jobs::auditor::admin as audit_admin;
+use acme_proxy_jobs::auditor::admin::SessionScope;
 use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::AdminRole;
 use acme_proxy_store::admin_user::AdminStatus;
@@ -266,7 +266,7 @@ async fn run_user_command(
                             config,
                             &database,
                             &user,
-                            crate::notify::AdminCredentialChange::ContactAddress,
+                            acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress,
                             previous,
                         )
                         .await;
@@ -365,7 +365,7 @@ async fn run_user_command(
                         config,
                         &database,
                         &user,
-                        crate::notify::AdminCredentialChange::Password,
+                        acme_proxy_jobs::notify::AdminCredentialChange::Password,
                         None,
                     )
                     .await;
@@ -474,7 +474,7 @@ async fn run_totp_command(
                 config,
                 &database,
                 &user,
-                crate::notify::AdminCredentialChange::SecondFactorDisabled,
+                acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
                 None,
             )
             .await;
@@ -503,7 +503,7 @@ async fn run_totp_command(
                 config,
                 &database,
                 &user,
-                crate::notify::AdminCredentialChange::RecoveryCodesRegenerated,
+                acme_proxy_jobs::notify::AdminCredentialChange::RecoveryCodesRegenerated,
                 None,
             )
             .await;
@@ -539,7 +539,7 @@ async fn notify_credential_change(
     config: &Config,
     database: &Arc<Database>,
     user: &AdminUser,
-    change: crate::notify::AdminCredentialChange,
+    change: acme_proxy_jobs::notify::AdminCredentialChange,
     previous_recipient: Option<String>,
 ) {
     if !config.admin.enabled {
@@ -548,9 +548,9 @@ async fn notify_credential_change(
     let Ok(egress) = acme_proxy_net::egress::Egress::from_config(config) else {
         return;
     };
-    let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let Ok(dispatcher) = crate::notify::from_config(
-        crate::notify::ADMIN_DISPATCHER_KEY,
+    let jobs = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let Ok(dispatcher) = acme_proxy_jobs::notify::from_config(
+        acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
         &config.admin.notify,
         egress.outbound(),
         &jobs,
@@ -558,16 +558,18 @@ async fn notify_credential_change(
         return;
     };
     dispatcher
-        .dispatch(crate::notify::NotifyEvent::AdminCredentialChanged(
-            crate::notify::AdminCredentialChangeData::new(
-                user,
-                change,
-                false,
-                None,
-                None,
-                previous_recipient,
+        .dispatch(
+            acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(
+                acme_proxy_jobs::notify::AdminCredentialChangeData::new(
+                    user,
+                    change,
+                    false,
+                    None,
+                    None,
+                    previous_recipient,
+                ),
             ),
-        ))
+        )
         .await;
 }
 
@@ -1144,7 +1146,7 @@ mod tests {
             },
         };
         let queued = || async {
-            Job::count_live(crate::notify::NOTIFY_JOB_KIND, &db)
+            Job::count_live(acme_proxy_jobs::notify::NOTIFY_JOB_KIND, &db)
                 .await
                 .unwrap()
         };

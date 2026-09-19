@@ -207,20 +207,21 @@ pub enum Command {
 pub(crate) fn offline_notifiers(
     config: &Config,
     database: Arc<Database>,
-) -> Result<crate::notify::DispatcherMap, CliError> {
+) -> Result<acme_proxy_jobs::notify::DispatcherMap, CliError> {
     let failed = |error: anyhow::Error| CliError::failed(format!("configuration error: {error}"));
     let profiles = config
         .resolve_profiles()
         .map_err(|error| failed(anyhow::anyhow!(error)))?;
     let egress = acme_proxy_net::egress::Egress::from_config(config).map_err(failed)?;
-    let jobs = crate::jobs::JobQueue::new(database, &config.jobs);
+    let jobs = acme_proxy_jobs::jobs::JobQueue::new(database, &config.jobs);
     let mut dispatchers =
-        crate::notify::build_registry(&profiles, egress.outbound(), &jobs).map_err(failed)?;
+        acme_proxy_jobs::notify::build_registry(&profiles, egress.outbound(), &jobs)
+            .map_err(failed)?;
     if config.admin.enabled {
         dispatchers.insert(
-            crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
-            crate::notify::from_config(
-                crate::notify::ADMIN_DISPATCHER_KEY,
+            acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            acme_proxy_jobs::notify::from_config(
+                acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
                 &config.admin.notify,
                 egress.outbound(),
                 &jobs,
@@ -467,7 +468,7 @@ pub async fn init(
 ) -> Result<(), CliError> {
     migrate(palette, database.clone()).await?;
 
-    let queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
     let profiles = crate::server::profile::build_all(config, database, &queue)
         .map_err(|error| CliError::failed(error.to_string()))?;
 

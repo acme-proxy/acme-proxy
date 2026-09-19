@@ -149,9 +149,14 @@ pub async fn run_audit_command(
                     // actually removed something — a no-op prune changed
                     // nothing, the `RevokeOutcome::AlreadyRevoked` rule.
                     if removed > 0 {
-                        crate::auditor::admin::record_cli_action(&database, |actor, client| {
-                            crate::auditor::admin::audit_pruned(actor, client, removed, older_than)
-                        })
+                        acme_proxy_jobs::auditor::admin::record_cli_action(
+                            &database,
+                            |actor, client| {
+                                acme_proxy_jobs::auditor::admin::audit_pruned(
+                                    actor, client, removed, older_than,
+                                )
+                            },
+                        )
                         .await;
                     }
                     println!("Removed {removed} audit row(s).");

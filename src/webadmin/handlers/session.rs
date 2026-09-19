@@ -255,7 +255,7 @@ pub(crate) async fn finish_mfa(
         notify_sign_in(
             state,
             &user,
-            crate::notify::AdminSignInOutcome::SecondFactorRefused,
+            acme_proxy_jobs::notify::AdminSignInOutcome::SecondFactorRefused,
             client,
             user_agent.clone(),
         )
@@ -264,7 +264,7 @@ pub(crate) async fn finish_mfa(
             notify_sign_in(
                 state,
                 &user,
-                crate::notify::AdminSignInOutcome::LockedOut,
+                acme_proxy_jobs::notify::AdminSignInOutcome::LockedOut,
                 client,
                 user_agent,
             )
@@ -383,14 +383,14 @@ fn client_ip_str(client: Option<std::net::IpAddr>) -> Option<String> {
 async fn notify_sign_in(
     state: &AdminState,
     user: &AdminUser,
-    outcome: crate::notify::AdminSignInOutcome,
+    outcome: acme_proxy_jobs::notify::AdminSignInOutcome,
     client: Option<std::net::IpAddr>,
     user_agent: Option<String>,
 ) {
     state
-        .notify_security(crate::notify::NotifyEvent::AdminSignIn(
-            crate::notify::AdminSignInData {
-                profile: crate::notify::ADMIN_DISPATCHER_KEY.to_string(),
+        .notify_security(acme_proxy_jobs::notify::NotifyEvent::AdminSignIn(
+            acme_proxy_jobs::notify::AdminSignInData {
+                profile: acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
                 username: user.username.clone(),
                 recipient: user.contact_email.clone(),
                 outcome,
@@ -423,7 +423,7 @@ async fn notify_sign_in_from_new_address(
     notify_sign_in(
         state,
         user,
-        crate::notify::AdminSignInOutcome::SucceededFromNewAddress,
+        acme_proxy_jobs::notify::AdminSignInOutcome::SucceededFromNewAddress,
         client,
         user_agent,
     )
@@ -521,10 +521,12 @@ pub async fn delete_session(
         // it is a revoke worth recording; a plain single logout is not.
         state
             .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-                crate::auditor::admin::session_revoked(
+                acme_proxy_jobs::auditor::admin::session_revoked(
                     actor,
                     ctx,
-                    crate::auditor::admin::SessionScope::AllOf(auth.user.username.clone()),
+                    acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
+                        auth.user.username.clone(),
+                    ),
                     revoked,
                 )
             })

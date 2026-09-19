@@ -260,7 +260,12 @@ pub async fn delete_order(
     if let Some(order) = subject {
         state
             .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-                crate::auditor::admin::order_deleted(actor, client, &order, deleted.cascaded)
+                acme_proxy_jobs::auditor::admin::order_deleted(
+                    actor,
+                    client,
+                    &order,
+                    deleted.cascaded,
+                )
             })
             .await;
     }

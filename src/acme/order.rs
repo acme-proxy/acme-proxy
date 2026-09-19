@@ -18,14 +18,15 @@ use super::rules::{
     check_csr_matches_order, csr_identifiers, is_wildcard, normalize_dns_name, parse_csr,
     parse_rfc3339, well_formed_name,
 };
-use crate::auditor::Auditor;
-use crate::jobs::JobQueue;
-use crate::notify::{ChallengeFailedData, NotifyEvent};
 use crate::profile::Profile;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::jws::signature::jwk_thumbprint;
+use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::notify::ChallengeFailedData;
+use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_net::challenge::ValidationContext;
 use acme_proxy_policy::filter::IdentifierStage;
 use acme_proxy_policy::filter::Stage as FilterStage;
@@ -925,9 +926,9 @@ async fn commit_validation_failure(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::notify::NotifyDispatcher;
     use crate::profile::ProfileParts;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_jobs::notify::NotifyDispatcher;
     use acme_proxy_net::challenge::ChallengeError;
     use acme_proxy_net::challenge::ChallengeRegistry;
     use acme_proxy_net::challenge::ChallengeValidator;
@@ -961,9 +962,9 @@ pub(crate) mod tests {
                 order: acme_proxy_core::config::OrderConfig::default(),
                 eab: acme_proxy_core::config::EabConfig::default(),
                 meta: acme_proxy_core::config::MetaConfig::default(),
-                notify: Arc::new(NotifyDispatcher::disabled(crate::testutil::idle_job_queue(
-                    database.clone(),
-                ))),
+                notify: Arc::new(NotifyDispatcher::disabled(
+                    acme_proxy_jobs::testutil::idle_job_queue(database.clone()),
+                )),
             },
         )
     }
@@ -1314,7 +1315,7 @@ pub(crate) mod tests {
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
         let before = reload(&database, &order).await;
-        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let jobs = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         let outcome = orders
             .finalize(
                 &account,
@@ -1372,7 +1373,7 @@ pub(crate) mod tests {
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
-        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let jobs = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
 
         // Both requests read the order `ready`.
         let rival = reload(&database, &order).await;
@@ -1418,7 +1419,7 @@ pub(crate) mod tests {
         };
         let account = account(&database).await;
         let (order, csr) = ready_order(&database, &account).await;
-        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let jobs = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         sqlx::query("DROP TABLE jobs;")
             .execute(database.raw_pool())
             .await

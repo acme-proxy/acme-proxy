@@ -215,7 +215,9 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
     )
     .await
     {
-        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("no longer exists")),
+        acme_proxy_jobs::jobs::JobOutcome::Failed(reason) => {
+            assert!(reason.contains("no longer exists"))
+        }
         other => panic!("a vanished order must be permanent, got {other:?}"),
     }
 }
@@ -249,7 +251,9 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
     )
     .await
     {
-        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("chain unparsable")),
+        acme_proxy_jobs::jobs::JobOutcome::Failed(reason) => {
+            assert!(reason.contains("chain unparsable"))
+        }
         other => panic!("an unparsable chain must be permanent, got {other:?}"),
     }
 
@@ -261,7 +265,9 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
         BASE64_STANDARD.encode(b"not a certificate")
     );
     match settle(&signer.0, order.id.to_string().as_str(), chain).await {
-        crate::jobs::JobOutcome::Failed(reason) => assert!(reason.contains("leaf unparsable")),
+        acme_proxy_jobs::jobs::JobOutcome::Failed(reason) => {
+            assert!(reason.contains("leaf unparsable"))
+        }
         other => panic!("an unparsable leaf must be permanent, got {other:?}"),
     }
 }
@@ -296,7 +302,7 @@ async fn settle_notifies_only_the_owning_profile() {
             )),
         );
     }
-    let notifiers: crate::notify::Notifiers = notifiers.into();
+    let notifiers: acme_proxy_jobs::notify::Notifiers = notifiers.into();
 
     let signer = RelaySigner::from_config(
         &config(&upstream, &dir),
@@ -870,8 +876,9 @@ async fn recovery_with_no_pending_rows_does_nothing() {
 /// gives up on work that would.
 mod handler {
     use super::*;
-    use crate::jobs::{JobHandler, JobOutcome};
     use crate::signer::relay::flow::{OrderContext, RELAY_JOB_KIND, RelayJob};
+    use acme_proxy_jobs::jobs::JobHandler;
+    use acme_proxy_jobs::jobs::JobOutcome;
     use acme_proxy_store::job::Job;
 
     /// Builds a backend with no runner: these tests call the handler by hand.

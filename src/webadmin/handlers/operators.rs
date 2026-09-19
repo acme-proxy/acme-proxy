@@ -372,7 +372,7 @@ pub(crate) async fn apply_operator_action(
             *target = updated;
             state
                 .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    crate::auditor::admin::operator_status_changed(
+                    acme_proxy_jobs::auditor::admin::operator_status_changed(
                         actor,
                         ctx,
                         &target.username,
@@ -386,10 +386,12 @@ pub(crate) async fn apply_operator_action(
             if revoked > 0 {
                 state
                     .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                        crate::auditor::admin::session_revoked(
+                        acme_proxy_jobs::auditor::admin::session_revoked(
                             actor,
                             ctx,
-                            crate::auditor::admin::SessionScope::AllOf(target.username.clone()),
+                            acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
+                                target.username.clone(),
+                            ),
                             revoked,
                         )
                     })
@@ -423,7 +425,7 @@ pub(crate) async fn apply_operator_action(
                     request_context,
                     &caller.username,
                     target,
-                    crate::notify::AdminCredentialChange::SecondFactorDisabled,
+                    acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
                     false,
                     client,
                     crate::webadmin::user_agent_of(headers),
@@ -443,10 +445,12 @@ pub(crate) async fn apply_operator_action(
             AdminSession::delete(&session.token_hash, &state.database).await?;
             state
                 .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    crate::auditor::admin::session_revoked(
+                    acme_proxy_jobs::auditor::admin::session_revoked(
                         actor,
                         ctx,
-                        crate::auditor::admin::SessionScope::OneOf(target.username.clone()),
+                        acme_proxy_jobs::auditor::admin::SessionScope::OneOf(
+                            target.username.clone(),
+                        ),
                         1,
                     )
                 })
@@ -480,7 +484,7 @@ pub(crate) async fn apply_operator_action(
             *target = updated;
             state
                 .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    crate::auditor::admin::operator_role_changed(
+                    acme_proxy_jobs::auditor::admin::operator_role_changed(
                         actor,
                         ctx,
                         &target.username,
@@ -494,10 +498,12 @@ pub(crate) async fn apply_operator_action(
             if revoked > 0 {
                 state
                     .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                        crate::auditor::admin::session_revoked(
+                        acme_proxy_jobs::auditor::admin::session_revoked(
                             actor,
                             ctx,
-                            crate::auditor::admin::SessionScope::AllOf(target.username.clone()),
+                            acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
+                                target.username.clone(),
+                            ),
                             revoked,
                         )
                     })

@@ -397,12 +397,12 @@ async fn finishing_an_enrolment_from_the_page_records_the_row_and_the_message() 
 
     let events = notify.recorded(1).await;
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(data) => {
             assert_eq!(data.username, "alice");
             assert!(data.by_self);
             assert!(matches!(
                 data.change,
-                acme_proxy::notify::AdminCredentialChange::SecondFactorEnabled
+                acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled
             ));
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),

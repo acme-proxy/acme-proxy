@@ -24,9 +24,12 @@ use std::time::Duration;
 use tracing::{error, warn};
 
 use super::order::OrderService;
-use crate::auditor::Auditor;
-use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::profile::Profile;
+use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::authz::Challenge;
@@ -635,7 +638,7 @@ mod tests {
         let (_, _, mut challenge) = subject(&database, &account).await;
         assert!(challenge.claim_for_validation(&database).await.unwrap());
 
-        let queue = crate::testutil::idle_job_queue(database.clone());
+        let queue = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         let job = handler(&database, ChallengeRegistry::default());
 
         job.recover(&queue).await;
@@ -663,7 +666,7 @@ mod tests {
         let account = account(&database).await;
         let (_, _, _challenge) = subject(&database, &account).await;
 
-        let queue = crate::testutil::idle_job_queue(database.clone());
+        let queue = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         handler(&database, ChallengeRegistry::default())
             .recover(&queue)
             .await;

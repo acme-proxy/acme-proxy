@@ -285,13 +285,15 @@ async fn an_acme_process_queues_work_a_worker_performs() {
             .await
             .expect("the database must open"),
     );
-    let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let sweep =
-        acme_proxy::jobs::SweepJob::nonces(database.clone(), std::time::Duration::from_secs(1));
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let sweep = acme_proxy_jobs::jobs::SweepJob::nonces(
+        database.clone(),
+        std::time::Duration::from_secs(1),
+    );
     assert!(
         queue
-            .enqueue(acme_proxy::jobs::JobSpec::now(
-                acme_proxy::jobs::JobHandler::kind(&sweep),
+            .enqueue(acme_proxy_jobs::jobs::JobSpec::now(
+                acme_proxy_jobs::jobs::JobHandler::kind(&sweep),
                 "nonces",
             ))
             .await
@@ -480,7 +482,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     // Work queued with no worker running stays queued: an order claimed for
     // issuance, exactly as `finalize` in the acme process leaves one.
     let database = Arc::new(Database::open(&config.database.url).await.unwrap());
-    let queue = acme_proxy::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
     let order_id = claimed_order(&database, &queue).await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let order = acme_proxy_store::order::Order::find_by_id(&order_id, &database)
@@ -501,7 +503,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
         &keyless.resolve_profiles().unwrap()[0].sections.signer,
     )
     .unwrap();
-    let audit = acme_proxy::auditor::Auditor::offline(database.clone());
+    let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone());
     acme_proxy::acme::revoke::Revocations {
         database: &database,
         audit: &audit,
@@ -592,7 +594,10 @@ async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
 
 /// A `ready` order for `a.example.com`, claimed with its `signer_issue` row
 /// queued — what `finalize` leaves behind — returning its id.
-async fn claimed_order(database: &Arc<Database>, queue: &acme_proxy::jobs::JobQueue) -> String {
+async fn claimed_order(
+    database: &Arc<Database>,
+    queue: &acme_proxy_jobs::jobs::JobQueue,
+) -> String {
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;

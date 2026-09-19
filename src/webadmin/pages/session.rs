@@ -197,7 +197,7 @@ async fn confirm_enrolment(
             request_context,
             &user.username,
             &user,
-            crate::notify::AdminCredentialChange::SecondFactorEnabled,
+            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled,
             true,
             client,
             pending.session.user_agent.clone(),
@@ -248,10 +248,10 @@ pub async fn post_logout(
                 &request_context,
                 &session.auth.user.username,
                 |actor, ctx| {
-                    crate::auditor::admin::session_revoked(
+                    acme_proxy_jobs::auditor::admin::session_revoked(
                         actor,
                         ctx,
-                        crate::auditor::admin::SessionScope::AllOf(
+                        acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
                             session.auth.user.username.clone(),
                         ),
                         revoked,

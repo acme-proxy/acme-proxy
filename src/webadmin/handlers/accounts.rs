@@ -8,12 +8,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::admin;
-use crate::auditor::admin as audit_admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::handlers::params::empty_is_absent;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
+use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;

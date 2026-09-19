@@ -265,7 +265,7 @@ pub async fn serve_on_with_reloads(
     // process-wide for the reason `[audit]` is: one table, one runner, and a
     // per-endpoint retry budget would make a job's pacing depend on which
     // profile happened to queue it.
-    let job_queue = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let job_queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
 
     let resolved = config.resolve_profiles().inspect_err(|error| {
         error!(event = "profile_init_failed", outcome = "failure", error = %error);
@@ -332,7 +332,7 @@ pub async fn serve_on_with_reloads(
     let (registry_tx, registry_rx) = tokio::sync::watch::channel(Arc::new(job_registry));
     let (jobs_tx, jobs_rx) = tokio::sync::watch::channel(Arc::new(config.jobs.clone()));
     let _job_runner = roles.has(ProcessRole::Worker).then(|| {
-        AbortOnDrop(crate::jobs::spawn_runner_watching(
+        AbortOnDrop(acme_proxy_jobs::jobs::spawn_runner_watching(
             job_queue,
             registry_rx,
             jobs_rx,

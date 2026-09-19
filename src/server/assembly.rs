@@ -4,9 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::{metrics, notify, signer};
+use crate::signer;
 use acme_proxy_core::config;
 use acme_proxy_core::config::Config;
+use acme_proxy_jobs::metrics;
+use acme_proxy_jobs::notify;
 use acme_proxy_net::egress::Egress;
 use acme_proxy_store::db::Database;
 
@@ -59,7 +61,7 @@ pub struct GenerationParts {
 /// reason to freeze `[dns]`/`[proxy]` and became a reason to rebuild a signer.
 pub struct Assembly {
     pub database: Arc<Database>,
-    pub jobs: crate::jobs::JobQueue,
+    pub jobs: acme_proxy_jobs::jobs::JobQueue,
     pub metrics: Arc<metrics::Metrics>,
     pub notifiers: notify::Notifiers,
     notifiers_tx: notify::NotifiersSender,
@@ -82,7 +84,7 @@ impl Assembly {
         roles: super::RoleSet,
         resolved: &[config::ProfileConfig],
         database: Arc<Database>,
-        jobs: crate::jobs::JobQueue,
+        jobs: acme_proxy_jobs::jobs::JobQueue,
         config: &Config,
     ) -> anyhow::Result<(Self, GenerationParts)> {
         // Built before the signers, because the `relay` backend settles an

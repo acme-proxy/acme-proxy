@@ -1,6 +1,6 @@
 //! The page templates: embedded defaults, the on-disk override, and rendering.
 //!
-//! Deliberately the same mechanism as [`crate::notify`]'s, down to the loader
+//! Deliberately the same mechanism as [`acme_proxy_jobs::notify`]'s, down to the loader
 //! closure — an operator who has already overridden a notification template
 //! should not have to learn a second scheme to override a page.
 //!
@@ -256,7 +256,7 @@ mod tests {
             );
         }
 
-        for name in crate::notify::template_names() {
+        for name in acme_proxy_jobs::notify::template_names() {
             assert!(
                 name.ends_with(".j2"),
                 "`{name}` is a notify template, so it must be named `.j2` — an `.html` \

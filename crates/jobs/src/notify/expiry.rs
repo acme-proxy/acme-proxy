@@ -206,7 +206,7 @@ impl ExpiryDigestJob {
     ) -> Result<Option<CertificatesExpiringData>, sqlx::Error> {
         let now = now_secs();
         // The window, the annotation and the ordering all come from
-        // `crate::admin` — the digest is one of three consumers of that listing
+        // `admin` — the digest is one of three consumers of that listing
         // (the panel and `order list --expiring-in` are the others), and it
         // asks for the same thing they do so the three cannot come to disagree
         // about what "expiring" or "already replaced" means. `include_superseded`

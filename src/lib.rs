@@ -59,7 +59,7 @@
 //!
 //! Supporting subsystems:
 //! - [`audit`](acme_proxy_core::audit) - The durable record of who asked this CA to sign or revoke
-//! - [`notify`] - Pluggable operator notifications on lifecycle events (email,
+//! - [`notify`](acme_proxy_jobs::notify) - Pluggable operator notifications on lifecycle events (email,
 //!   webhook, custom)
 //! - [`ipam`](acme_proxy_policy::ipam) - The inventory [`filter`](acme_proxy_policy::filter) asks which names an address owns
 //!   (NetBox, phpIPAM, a custom script), behind one trait
@@ -85,9 +85,9 @@
 //!   builds and a reload rebuilds and publishes
 //! - [`listener`](acme_proxy_net::listener) - The sockets, and replacing one while it serves
 //! - [`reload`] - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
-//! - [`jobs`] - The durable queue and its runner, so work outlives the process
+//! - [`jobs`](acme_proxy_jobs::jobs) - The durable queue and its runner, so work outlives the process
 //!   that queued it
-//! - [`metrics`] - The Prometheus registry and its text exposition
+//! - [`metrics`](acme_proxy_jobs::metrics) - The Prometheus registry and its text exposition
 //!
 //! Administration, which serves no ACME and is a second listener plus a CLI:
 //! - [`admin`] - The operation layer both front ends dispatch to
@@ -106,7 +106,8 @@
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
 //! use acme_proxy_store::db::Database;
-//! use acme_proxy::{jobs, notify, signer};
+//! use acme_proxy::signer;
+//! use acme_proxy_jobs::{jobs, notify};
 //! use acme_proxy_policy::{filter, ipam};
 //! use acme_proxy_net::challenge;
 //! use acme_proxy_core::config::Config;
@@ -151,7 +152,7 @@
 //!     let notifiers = Arc::new(notifiers);
 //!     // The Prometheus counters. Built here rather than per generation, so a
 //!     // `SIGHUP` does not reset every counter to zero — see `Assembly`.
-//!     let metrics = Arc::new(acme_proxy::metrics::Metrics::new(database.clone()));
+//!     let metrics = Arc::new(acme_proxy_jobs::metrics::Metrics::new(database.clone()));
 //!
 //!     let mut profiles = Vec::new();
 //!     // Each profile's signer in two halves: the backend, which holds the key
@@ -200,7 +201,7 @@
 //!     // process cannot build an auditor that counts into nothing. The counters
 //!     // come off the same `AuditRecord` the trail is written from, so the two
 //!     // can never disagree.
-//!     let audit = Arc::new(acme_proxy::auditor::Auditor::from_config(
+//!     let audit = Arc::new(acme_proxy_jobs::auditor::Auditor::from_config(
 //!         &config.audit,
 //!         &config.dns,
 //!         database.clone(),
@@ -251,14 +252,10 @@
 
 pub mod acme;
 pub mod admin;
-pub mod auditor;
 pub mod cli;
 pub mod extractors;
 pub mod handlers;
-pub mod jobs;
-pub mod metrics;
 pub mod middlewares;
-pub mod notify;
 pub mod profile;
 pub mod reload;
 pub mod router;

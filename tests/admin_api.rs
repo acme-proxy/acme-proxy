@@ -5212,13 +5212,13 @@ async fn a_sign_in_from_a_new_address_notifies_the_operator() {
     let events = notify.recorded(1).await;
     assert_eq!(events.len(), 1, "exactly the new-address login fired");
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminSignIn(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminSignIn(data) => {
             assert_eq!(data.username, "alice");
             assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
             assert_eq!(data.client_ip.as_deref(), Some("203.0.113.77"));
             assert!(matches!(
                 data.outcome,
-                acme_proxy::notify::AdminSignInOutcome::SucceededFromNewAddress
+                acme_proxy_jobs::notify::AdminSignInOutcome::SucceededFromNewAddress
             ));
         }
         other => panic!("expected AdminSignIn, got {other:?}"),
@@ -5247,13 +5247,13 @@ async fn a_password_change_notifies_the_operator() {
 
     let events = notify.recorded(1).await;
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(data) => {
             assert_eq!(data.username, "alice");
             assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
             assert!(data.by_self);
             assert!(matches!(
                 data.change,
-                acme_proxy::notify::AdminCredentialChange::Password
+                acme_proxy_jobs::notify::AdminCredentialChange::Password
             ));
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),
@@ -5305,7 +5305,7 @@ async fn a_contact_change_notifies_the_address_it_replaced() {
 
     let events = notify.recorded(1).await;
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(data) => {
             assert_eq!(data.username, "alice");
             assert_eq!(
                 data.previous_recipient.as_deref(),
@@ -5315,7 +5315,7 @@ async fn a_contact_change_notifies_the_address_it_replaced() {
             assert!(data.by_self);
             assert!(matches!(
                 data.change,
-                acme_proxy::notify::AdminCredentialChange::ContactAddress
+                acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress
             ));
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),
@@ -5475,12 +5475,12 @@ async fn a_refused_second_factor_notifies_the_operator() {
 
     let events = notify.recorded(1).await;
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminSignIn(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminSignIn(data) => {
             assert_eq!(data.username, "alice");
             assert_eq!(data.recipient.as_deref(), Some("alice@example.com"));
             assert!(matches!(
                 data.outcome,
-                acme_proxy::notify::AdminSignInOutcome::SecondFactorRefused
+                acme_proxy_jobs::notify::AdminSignInOutcome::SecondFactorRefused
             ));
         }
         other => panic!("expected AdminSignIn, got {other:?}"),
@@ -5521,13 +5521,13 @@ async fn resetting_a_colleagues_factor_notifies_them_as_not_self() {
 
     let events = notify.recorded(1).await;
     match &events[0] {
-        acme_proxy::notify::NotifyEvent::AdminCredentialChanged(data) => {
+        acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(data) => {
             assert_eq!(data.username, "bob", "the message goes to the subject");
             assert_eq!(data.recipient.as_deref(), Some("bob@example.com"));
             assert!(!data.by_self, "somebody else made this change");
             assert!(matches!(
                 data.change,
-                acme_proxy::notify::AdminCredentialChange::SecondFactorDisabled
+                acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled
             ));
         }
         other => panic!("expected AdminCredentialChanged, got {other:?}"),

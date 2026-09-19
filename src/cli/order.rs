@@ -239,14 +239,17 @@ pub async fn run_order_command(
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
                     if let Some(order) = doomed {
-                        crate::auditor::admin::record_cli_action(&database, |actor, client| {
-                            crate::auditor::admin::order_deleted(
-                                actor,
-                                client,
-                                &order,
-                                deleted.cascaded,
-                            )
-                        })
+                        acme_proxy_jobs::auditor::admin::record_cli_action(
+                            &database,
+                            |actor, client| {
+                                acme_proxy_jobs::auditor::admin::order_deleted(
+                                    actor,
+                                    client,
+                                    &order,
+                                    deleted.cascaded,
+                                )
+                            },
+                        )
                         .await;
                     }
                     println!(
@@ -287,10 +290,10 @@ pub async fn run_order_command(
             let notify = notifiers
                 .get(&order.profile)
                 .map(|dispatcher| dispatcher.as_ref());
-            let audit = crate::auditor::Auditor::offline(database.clone());
+            let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone());
             // A queue this process never drains: what it enqueues, a running
             // server's job runner works off.
-            let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
+            let jobs = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
             let route = signer::revocation_route(&profile.sections.signer)
                 .map_err(|error| CliError::failed(format!("signer error: {error}")))?;
             // `Actor::cli` and an empty client context: there is no request
@@ -838,8 +841,8 @@ mod tests {
     /// the first one stuck.
     #[tokio::test]
     async fn an_issued_order_revokes_once() {
-        use crate::jobs::JobHandler;
         use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
+        use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_store::job::Job;
 
         let dir = temp_dir();
@@ -890,7 +893,7 @@ mod tests {
         let handler = CrlRegenerateJob::new(vec![refresher]);
         assert!(matches!(
             handler.run(&job).await,
-            crate::jobs::JobOutcome::Done
+            acme_proxy_jobs::jobs::JobOutcome::Done
         ));
         assert!(lists(&ca.info().crl_der().await.unwrap().unwrap()));
 
@@ -963,7 +966,8 @@ mod tests {
     #[tokio::test]
     async fn a_delegated_revocation_is_queued_for_the_server() {
         use crate::acme::revoke::{SIGNER_REVOKE_KIND, SignerRevokeJob};
-        use crate::jobs::{JobHandler, JobOutcome};
+        use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_jobs::jobs::JobOutcome;
         use acme_proxy_store::job::Job;
 
         let dir = temp_dir();
@@ -1055,7 +1059,7 @@ mod tests {
         .unwrap();
         let handler = SignerRevokeJob::new(
             database.clone(),
-            Arc::new(crate::auditor::Auditor::offline(database.clone())),
+            Arc::new(acme_proxy_jobs::auditor::Auditor::offline(database.clone())),
             vec![("default".to_string(), signer)],
             std::collections::HashMap::new().into(),
         );

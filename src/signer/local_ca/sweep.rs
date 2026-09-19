@@ -8,7 +8,7 @@
 //! expired and re-signs when that took anything or its CRL is due — see
 //! [`crate::signer::CrlRefresher::refresh`].
 //!
-//! Deliberately **not** in [`crate::jobs::sweep`], whose `SweepTarget` is a
+//! Deliberately **not** in [`acme_proxy_jobs::jobs::sweep`], whose `SweepTarget` is a
 //! `DELETE` per table and needs nothing but a
 //! [`Database`](acme_proxy_store::db::Database). This one signs with the CA key.
 //!
@@ -20,7 +20,7 @@
 //!   would stop the refresh for the life of the process rather than for one day.
 //! - But there is **one handler over every CA**, not one per CA. See
 //!   [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher):
-//!   [`JobRegistry::register`](crate::jobs::JobRegistry::register) refuses two
+//!   [`JobRegistry::register`](acme_proxy_jobs::jobs::JobRegistry::register) refuses two
 //!   handlers for one `kind`, and two profiles with different
 //!   `[signer.local_ca]` sections are two backends, so the alternative would
 //!   make a supported configuration a startup error.
@@ -31,8 +31,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::{error, info};
 
-use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::signer::CrlRefresher;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_store::job::Job;
 
 /// The `jobs.kind` the CRL prune runs under.

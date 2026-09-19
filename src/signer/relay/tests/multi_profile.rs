@@ -1,6 +1,6 @@
 //! Several relay profiles in one process, and the one handler over them all.
 //!
-//! The trap this exists for: [`crate::jobs::JobRegistry::register`] refuses two
+//! The trap this exists for: [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses two
 //! handlers for one `kind`, so returning a handler from each backend — which
 //! `SignerBackend::jobs()` used to do — made two profiles relaying to
 //! *different* upstreams a startup error, `build_backends` deliberately not
@@ -18,8 +18,10 @@
 //! travel on the `upstream_orders` row and would be right either way.
 
 use super::*;
-use crate::jobs::{JobHandler, JobOutcome, JobRegistry};
 use crate::signer::relay::flow::{RELAY_JOB_KIND, RelayJob};
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobRegistry;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::status::OrderStatus;
 
@@ -42,7 +44,10 @@ struct TwoUpstreams {
 /// The two differ in `directory_url` and `account_key_path`, which is exactly
 /// what makes `build_backends` keep them apart in production — and what used to
 /// make this configuration refuse to start.
-async fn two_upstreams(db: &Arc<Database>, queue: &crate::jobs::JobQueue) -> TwoUpstreams {
+async fn two_upstreams(
+    db: &Arc<Database>,
+    queue: &acme_proxy_jobs::jobs::JobQueue,
+) -> TwoUpstreams {
     let chain_a = real_chain().await;
     let chain_b = real_chain().await;
     assert_ne!(
@@ -139,7 +144,7 @@ async fn each_profile_is_relayed_by_its_own_backend() {
     let mut registry = JobRegistry::new();
     registry.register(Arc::new(handler(&db, &pair))).unwrap();
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
-    crate::jobs::spawn_runner(
+    acme_proxy_jobs::jobs::spawn_runner(
         queue,
         Arc::new(registry),
         &test_jobs_config(),

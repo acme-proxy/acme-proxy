@@ -19,7 +19,7 @@
 //!   really is present here. A middleware that ran *before* routing — the
 //!   access layer, for instance — would see `None` on every request.
 //! - It is absent for a request that matched no route, which is the fallback's
-//!   own case. [`split_matched_path`] answers [`ROUTE_UNMATCHED`](crate::metrics::ROUTE_UNMATCHED) there, so a
+//!   own case. [`split_matched_path`] answers [`ROUTE_UNMATCHED`](acme_proxy_jobs::metrics::ROUTE_UNMATCHED) there, so a
 //!   scanner probing ten thousand paths adds one series rather than ten
 //!   thousand.
 
@@ -33,7 +33,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::metrics::{Metrics, split_matched_path};
+use acme_proxy_jobs::metrics::Metrics;
+use acme_proxy_jobs::metrics::split_matched_path;
 
 pub async fn record_request(
     State(metrics): State<Arc<Metrics>>,
@@ -56,7 +57,7 @@ pub async fn record_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::ROUTE_UNMATCHED;
+    use acme_proxy_jobs::metrics::ROUTE_UNMATCHED;
     use axum::{Router, http::StatusCode, middleware, routing::get};
     use tower::ServiceExt;
 

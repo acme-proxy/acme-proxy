@@ -11,7 +11,7 @@
 //! ## The source of truth is `render()`, not the source code
 //!
 //! The set of real metric names comes from calling
-//! [`acme_proxy::metrics::Metrics::render`] on an **empty** registry and
+//! [`acme_proxy_jobs::metrics::Metrics::render`] on an **empty** registry and
 //! parsing its `# TYPE` lines. That works because `render_family` emits the
 //! `# HELP`/`# TYPE` pair for every family even when it holds no series — a
 //! deliberate property (a dashboard built on a name that has not happened yet
@@ -25,7 +25,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use acme_proxy::metrics::Metrics;
+use acme_proxy_jobs::metrics::Metrics;
 use acme_proxy_store::db::Database;
 use serde_json::Value;
 

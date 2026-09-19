@@ -18,10 +18,11 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{Span, info};
 
-use crate::{handlers, metrics, middlewares, signer};
+use crate::{handlers, middlewares, signer};
 use acme_proxy_core::config::Config;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::routes;
+use acme_proxy_jobs::metrics;
 use acme_proxy_net::challenge;
 use acme_proxy_store::db::Database;
 
@@ -38,7 +39,7 @@ pub struct AppState {
     /// The CA's audit trail. Beside `config` rather than on the profile,
     /// because `[audit]` is process-wide: the trail describes the CA, and the
     /// web admin writes to the same one across every endpoint it can revoke on.
-    pub audit: Arc<crate::auditor::Auditor>,
+    pub audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     /// The durable queue, for the work a request starts and does not finish.
     ///
     /// Here for `audit`'s reason — one queue, one table, one runner for the
@@ -46,7 +47,7 @@ pub struct AppState {
     /// caller on this listener: it claims a challenge and queues the outbound
     /// check rather than awaiting it, so a probe of a client-chosen host no
     /// longer holds an admission permit.
-    pub jobs: crate::jobs::JobQueue,
+    pub jobs: acme_proxy_jobs::jobs::JobQueue,
 }
 
 /// Every distinct `http-01` token store across the mounted profiles.
@@ -152,9 +153,9 @@ pub fn build_app(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: Vec<Arc<Profile>>,
-    audit: Arc<crate::auditor::Auditor>,
+    audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     metrics: Arc<metrics::Metrics>,
-    jobs: crate::jobs::JobQueue,
+    jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
     // Server-level routes. Deliberately *outside* the admission limit below: a
     // health probe is asked for precisely when the server is saturated, and
@@ -309,8 +310,8 @@ pub fn build_router(
     database: Arc<Database>,
     config: Arc<Config>,
     profile: Arc<Profile>,
-    audit: Arc<crate::auditor::Auditor>,
-    jobs: crate::jobs::JobQueue,
+    audit: Arc<acme_proxy_jobs::auditor::Auditor>,
+    jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
     let filter = profile.filter.clone();
     let state = AppState {

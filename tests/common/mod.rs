@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use acme_proxy::auditor::Auditor;
+use acme_proxy_jobs::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
 use acme_proxy::profile::Profile;
 use acme_proxy::profile::ProfileParts;
@@ -23,11 +23,6 @@ use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::jobs::{JobQueue, JobRegistry};
-pub use acme_proxy::metrics::Metrics;
-use acme_proxy::notify::{
-    BackendSlot, NotifyBackend, NotifyDispatcher, NotifyError, NotifyEvent, NotifyJob,
-};
 use acme_proxy::signer::local_ca::LocalCa;
 use acme_proxy::signer::local_ca::sweep::CrlRegenerateJob;
 use acme_proxy::signer::relay::http01::DbTokenStore;
@@ -39,6 +34,15 @@ use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobRegistry;
+pub use acme_proxy_jobs::metrics::Metrics;
+use acme_proxy_jobs::notify::BackendSlot;
+use acme_proxy_jobs::notify::NotifyBackend;
+use acme_proxy_jobs::notify::NotifyDispatcher;
+use acme_proxy_jobs::notify::NotifyError;
+use acme_proxy_jobs::notify::NotifyEvent;
+use acme_proxy_jobs::notify::NotifyJob;
 use acme_proxy_net::challenge::ChallengeError;
 use acme_proxy_net::challenge::ChallengeRegistry;
 use acme_proxy_net::challenge::ChallengeValidator;
@@ -329,21 +333,21 @@ impl NotifyHarness {
         Self::over(Arc::new(RecordingNotifyBackend::failing())).await
     }
 
-    /// A harness keyed under [`acme_proxy::notify::ADMIN_DISPATCHER_KEY`], for
+    /// A harness keyed under [`acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY`], for
     /// the web-admin security events, plus the `Notifiers` handle to hand to
     /// `build_admin_app`.
-    pub async fn admin() -> (Self, acme_proxy::notify::Notifiers) {
+    pub async fn admin() -> (Self, acme_proxy_jobs::notify::Notifiers) {
         let harness = Self::over_key(
-            acme_proxy::notify::ADMIN_DISPATCHER_KEY,
+            acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
             Arc::new(RecordingNotifyBackend::default()),
         )
         .await;
         let mut map = std::collections::HashMap::new();
         map.insert(
-            acme_proxy::notify::ADMIN_DISPATCHER_KEY.to_string(),
+            acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
             harness.dispatcher.clone(),
         );
-        let notifiers: acme_proxy::notify::Notifiers = Arc::new(map).into();
+        let notifiers: acme_proxy_jobs::notify::Notifiers = Arc::new(map).into();
         (harness, notifiers)
     }
 
@@ -382,7 +386,7 @@ impl NotifyHarness {
             .unwrap();
 
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
-        acme_proxy::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+        acme_proxy_jobs::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
 
         Self {
             dispatcher,
@@ -615,7 +619,7 @@ fn spawn_worker_runner(
     // worker reads them from. The sender is leaked for the shutdown sender's
     // reason: the map never changes here, and a dropped sender is harmless to
     // a `watch` receiver but pointless to keep.
-    let (notifiers_tx, notifiers) = acme_proxy::notify::notifiers_channel(
+    let (notifiers_tx, notifiers) = acme_proxy_jobs::notify::notifiers_channel(
         profiles
             .iter()
             .map(|profile| (profile.name.clone(), profile.notify.clone()))
@@ -662,7 +666,7 @@ fn spawn_worker_runner(
     let (shutdown, rx) = tokio::sync::watch::channel(false);
     std::mem::forget(shutdown);
 
-    acme_proxy::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, rx);
+    acme_proxy_jobs::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, rx);
     queue
 }
 
@@ -1031,7 +1035,7 @@ async fn admin_app_with(
     admin_app_with_notifiers(
         config,
         filter,
-        acme_proxy::notify::DispatcherMap::new().into(),
+        acme_proxy_jobs::notify::DispatcherMap::new().into(),
     )
     .await
 }
@@ -1039,7 +1043,7 @@ async fn admin_app_with(
 async fn admin_app_with_notifiers(
     config: Config,
     filter: Arc<FilterPolicy>,
-    notifiers: acme_proxy::notify::Notifiers,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
 ) -> (Router, Arc<Database>, Arc<dyn SignerBackend>) {
     init_tracing();
     let database = Arc::new(Database::connect_in_memory().await.unwrap());

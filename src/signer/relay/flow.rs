@@ -10,7 +10,7 @@
 //!
 //! ## Why this is safe to run again
 //!
-//! [`RelayJob`] is a [`crate::jobs::JobHandler`], so the runner may call it
+//! [`RelayJob`] is a [`acme_proxy_jobs::jobs::JobHandler`], so the runner may call it
 //! repeatedly for one order: after a transient failure, and after a process
 //! died mid-flight. Nothing here checkpoints its own progress, and it does not
 //! need to — every step re-reads the upstream's own view and skips what is
@@ -36,9 +36,12 @@ use base64::prelude::*;
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 
-use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
 use crate::signer::issuance::IssuanceError;
 use acme_proxy_core::error::Problem;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
@@ -110,7 +113,7 @@ pub(super) fn classify(error: &UpstreamError) -> RelayFailure {
 ///
 /// **One handler over every relay profile, not one per backend**, and the
 /// distinction is the whole reason this type has a map in it.
-/// [`crate::jobs::JobRegistry::register`] refuses a second handler for one
+/// [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses a second handler for one
 /// `kind`, while [`crate::signer::build_backends`] deliberately does *not*
 /// collapse two profiles whose `[signer.relay]` sections differ — a Let's
 /// Encrypt endpoint beside a commercial CA is two backends. Returning a handler
@@ -1008,7 +1011,7 @@ pub(crate) async fn abandon_relayed_order(
     reason: &str,
     actor: acme_proxy_core::audit::Actor,
     client: acme_proxy_core::audit::ClientContext,
-    audit: &crate::auditor::Auditor,
+    audit: &acme_proxy_jobs::auditor::Auditor,
     database: &Database,
 ) -> Result<(), sqlx::Error> {
     // The client sees a generic problem document; the real reason is
@@ -1044,9 +1047,9 @@ mod tests {
         use acme_proxy_store::db::Database;
 
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let metrics = crate::testutil::test_metrics(database.clone());
-        let audit =
-            crate::auditor::Auditor::offline(database.clone()).with_metrics(metrics.clone());
+        let metrics = acme_proxy_jobs::testutil::test_metrics(database.clone());
+        let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone())
+            .with_metrics(metrics.clone());
         let (account, _) = Account::find_or_create(
             "default",
             &acme_proxy_core::random::random_bytes::<16>(),

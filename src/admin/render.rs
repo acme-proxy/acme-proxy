@@ -331,7 +331,7 @@ pub fn render_upstream_order_detail_json(detail: &UpstreamOrderDetail) -> Value 
 /// A shape of its own rather than [`render_order_json`] plus two members, for
 /// two reasons. That renderer takes `authz_ids`, which no expiry view shows and
 /// which would be a query per row to supply; and this shape is deliberately the
-/// digest's own (`crate::notify::ExpiringCertificate`), so the mail, the page,
+/// digest's own (`acme_proxy_jobs::notify::ExpiringCertificate`), so the mail, the page,
 /// the API and the terminal all describe an expiring certificate the same way.
 ///
 /// `supersededBy` is **omitted** when nothing has replaced this certificate,

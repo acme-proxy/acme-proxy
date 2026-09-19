@@ -557,7 +557,7 @@ async fn a_process_without_the_worker_role_builds_no_backend() {
             .await
             .unwrap(),
     );
-    let jobs = crate::testutil::idle_job_queue(database.clone());
+    let jobs = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
 
     // No CA yet: refused by name, and nothing generated.
     let roles = RoleSet::parse(Some("acme,admin")).unwrap();

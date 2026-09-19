@@ -16,7 +16,7 @@
 //! - [`multi_profile`] — several relay profiles, and the one handler over them
 //! - [`renewal`] — RFC 9773 windows, and the `UpstreamError` mapping
 //!
-//! Since the relay became a [`crate::jobs`] handler, `issue` **enqueues** rather
+//! Since the relay became a [`acme_proxy_jobs::jobs`] handler, `issue` **enqueues** rather
 //! than spawning, so a test that expects an order to settle must have a runner
 //! in the process. [`TestRunner`] is that, and every test driving `issue` to a
 //! conclusion starts one — which is also the only structural change the
@@ -52,8 +52,8 @@ fn test_jobs_config() -> acme_proxy_core::config::JobsConfig {
 /// Handed to `from_config` and then, for the tests that need the work actually
 /// done, to [`TestRunner::start`] — the *same* instance both times, so an
 /// enqueue wakes the runner directly rather than waiting for its next tick.
-fn test_queue(database: Arc<Database>) -> crate::jobs::JobQueue {
-    crate::jobs::JobQueue::new(database, &test_jobs_config())
+fn test_queue(database: Arc<Database>) -> acme_proxy_jobs::jobs::JobQueue {
+    acme_proxy_jobs::jobs::JobQueue::new(database, &test_jobs_config())
 }
 
 /// A queue with a configuration of its own.
@@ -64,8 +64,8 @@ fn test_queue(database: Arc<Database>) -> crate::jobs::JobQueue {
 fn test_queue_with(
     database: Arc<Database>,
     config: &acme_proxy_core::config::JobsConfig,
-) -> crate::jobs::JobQueue {
-    crate::jobs::JobQueue::new(database, config)
+) -> acme_proxy_jobs::jobs::JobQueue {
+    acme_proxy_jobs::jobs::JobQueue::new(database, config)
 }
 
 /// The runner draining a queue, stopped when the guard drops.
@@ -79,7 +79,7 @@ struct TestRunner {
 }
 
 impl TestRunner {
-    fn start(queue: crate::jobs::JobQueue, signer: &RelaySigner) -> Self {
+    fn start(queue: acme_proxy_jobs::jobs::JobQueue, signer: &RelaySigner) -> Self {
         Self::start_with(queue, signer, test_jobs_config())
     }
 
@@ -91,16 +91,16 @@ impl TestRunner {
     /// queues. Only the notification test needs it: everywhere else the relay's
     /// dispatcher has no backends, so the rows are never written.
     fn start_notifying(
-        queue: crate::jobs::JobQueue,
+        queue: acme_proxy_jobs::jobs::JobQueue,
         signer: &RelaySigner,
         profiles: &[&str],
-        notifiers: crate::notify::Notifiers,
+        notifiers: acme_proxy_jobs::notify::Notifiers,
     ) -> Self {
         Self::start_inner(queue, signer, profiles, test_jobs_config(), Some(notifiers))
     }
 
     fn start_with(
-        queue: crate::jobs::JobQueue,
+        queue: acme_proxy_jobs::jobs::JobQueue,
         signer: &RelaySigner,
         config: acme_proxy_core::config::JobsConfig,
     ) -> Self {
@@ -108,23 +108,23 @@ impl TestRunner {
     }
 
     fn start_inner(
-        queue: crate::jobs::JobQueue,
+        queue: acme_proxy_jobs::jobs::JobQueue,
         signer: &RelaySigner,
         profiles: &[&str],
         config: acme_proxy_core::config::JobsConfig,
-        notifiers: Option<crate::notify::Notifiers>,
+        notifiers: Option<acme_proxy_jobs::notify::Notifiers>,
     ) -> Self {
-        let mut registry = crate::jobs::JobRegistry::new();
+        let mut registry = acme_proxy_jobs::jobs::JobRegistry::new();
         registry
             .register(Arc::new(relay_handler(signer, profiles)))
             .unwrap();
         if let Some(notifiers) = notifiers {
             registry
-                .register(Arc::new(crate::notify::NotifyJob::new(notifiers)))
+                .register(Arc::new(acme_proxy_jobs::notify::NotifyJob::new(notifiers)))
                 .unwrap();
         }
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
-        crate::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
+        acme_proxy_jobs::jobs::spawn_runner(queue, Arc::new(registry), &config, receiver);
         Self { shutdown }
     }
 }
@@ -162,10 +162,11 @@ use super::client::UpstreamError;
 use super::flow::settle;
 use super::http01::TokenStore;
 use super::*;
-use crate::notify::{NotifyDispatcher, NotifyEvent};
 use crate::signer::local_ca::LocalCa;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::testutil::TempDir;
+use acme_proxy_jobs::notify::NotifyDispatcher;
+use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::nonce::now_secs;
 use acme_proxy_store::order::Order;
@@ -197,7 +198,7 @@ async fn database() -> Arc<Database> {
     Arc::new(Database::connect_in_memory().await.unwrap())
 }
 
-fn no_notifiers() -> crate::notify::Notifiers {
+fn no_notifiers() -> acme_proxy_jobs::notify::Notifiers {
     HashMap::new().into()
 }
 
@@ -210,13 +211,13 @@ fn no_notifiers() -> crate::notify::Notifiers {
 /// forty-eight of them.
 fn relay_parts(
     database: Arc<Database>,
-    notifiers: crate::notify::Notifiers,
-    jobs: crate::jobs::JobQueue,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
+    jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> crate::signer::SignerParts {
     crate::signer::SignerParts {
         database: database.clone(),
         notifiers,
-        metrics: crate::testutil::test_metrics(database),
+        metrics: acme_proxy_jobs::testutil::test_metrics(database),
         egress: acme_proxy_net::testutil::egress_with(test_resolver()),
         jobs,
     }
@@ -319,12 +320,12 @@ impl RecordingNotifyBackend {
 }
 
 #[async_trait]
-impl crate::notify::NotifyBackend for RecordingNotifyBackend {
+impl acme_proxy_jobs::notify::NotifyBackend for RecordingNotifyBackend {
     fn name(&self) -> &'static str {
         "recording"
     }
 
-    async fn send(&self, event: &NotifyEvent) -> Result<(), crate::notify::NotifyError> {
+    async fn send(&self, event: &NotifyEvent) -> Result<(), acme_proxy_jobs::notify::NotifyError> {
         self.events.lock().unwrap().push(event.clone());
         Ok(())
     }
@@ -346,12 +347,12 @@ async fn await_recorded(recorder: &Arc<RecordingNotifyBackend>) {
 }
 
 /// A recorder as a dispatcher slot, wanting every event kind.
-fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> crate::notify::BackendSlot {
+fn recording_slot(recorder: Arc<RecordingNotifyBackend>) -> acme_proxy_jobs::notify::BackendSlot {
     let every: Vec<String> = acme_proxy_core::config::ALL_NOTIFY_EVENTS
         .iter()
         .map(|kind| (*kind).to_string())
         .collect();
-    crate::notify::BackendSlot::new("recording", recorder, &every)
+    acme_proxy_jobs::notify::BackendSlot::new("recording", recorder, &every)
 }
 
 /// Persists a `ready` order under `profile`, for the profile-scoped

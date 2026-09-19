@@ -25,7 +25,7 @@
 //! failure, which is why this backend needs an `Arc<Database>` where `local_ca`
 //! needs none.
 //!
-//! That "later" is a row in the [`crate::jobs`] queue, not a `tokio::spawn`.
+//! That "later" is a row in the [`acme_proxy_jobs::jobs`] queue, not a `tokio::spawn`.
 //! `issue` enqueues a [`flow::RelayJob`] and the process-wide runner claims it —
 //! which is what gives a relay an attempt count, a backoff and a lease it did
 //! not have when this backend ran its own task and its own startup sweep. The
@@ -41,13 +41,13 @@ use base64::prelude::*;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::jobs::JobQueue;
 use crate::signer::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
 use acme_proxy_core::config::RelayConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_jobs::jobs::JobQueue;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::upstream_order::UpstreamOrder;
 
@@ -126,7 +126,7 @@ struct Inner {
     /// outlives a configuration generation: it is carried across a reload while
     /// the dispatchers are rebuilt, so a captured map would keep notifying
     /// through backends the operator has since removed.
-    notifiers: crate::notify::Notifiers,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
     /// Where this backend's settle-time audit rows go, counted into the
     /// process's Prometheus registry. Needed for the same reason `notifiers`
     /// is: an issuance is recorded from a background task long after the
@@ -135,7 +135,7 @@ struct Inner {
     /// was resolved during the finalize request and parked on
     /// `upstream_orders` — over the registry, which is *not* rebuilt per
     /// generation and so can be held directly.
-    audit: Arc<crate::auditor::Auditor>,
+    audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     /// The read side over the same directory and token store — what
     /// [`SignerBackend::info`] hands out.
     info: Arc<RelayInfo>,
@@ -299,7 +299,7 @@ impl RelaySigner {
             poll,
             notifiers: parts.notifiers.clone(),
             audit: Arc::new(
-                crate::auditor::Auditor::offline(parts.database.clone())
+                acme_proxy_jobs::auditor::Auditor::offline(parts.database.clone())
                     .with_metrics(parts.metrics.clone()),
             ),
             jobs: parts.jobs.clone(),

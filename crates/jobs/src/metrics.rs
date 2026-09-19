@@ -41,7 +41,7 @@
 //!
 //! ## Counters survive a reload
 //!
-//! The registry lives in [`crate::server::Assembly`], which is built once and
+//! The registry lives in `server::Assembly`, which is built once and
 //! carried across every generation, rather than in a `Generation`, which is
 //! rebuilt on each `SIGHUP`. A rebuilt registry would reset every counter to
 //! zero, and a counter that goes backwards is exactly how Prometheus detects a

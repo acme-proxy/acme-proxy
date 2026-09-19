@@ -66,15 +66,15 @@ pub struct AdminState {
     /// The same process-wide auditor the ACME listener holds. Shared rather
     /// than a second instance: an operator revoking through the panel writes
     /// into the one trail, and the reverse-lookup cache is worth sharing.
-    pub audit: Arc<crate::auditor::Auditor>,
+    pub audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     /// The `profile name -> dispatcher` map, as a reload-stable handle — the
     /// same type `NotifyJob` and the signer backends hold. Used only to reach
     /// the process-wide security dispatcher under
-    /// [`crate::notify::ADMIN_DISPATCHER_KEY`] via [`AdminState::notify_security`].
-    pub notifiers: crate::notify::Notifiers,
+    /// [`acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY`] via [`AdminState::notify_security`].
+    pub notifiers: acme_proxy_jobs::notify::Notifiers,
     /// The durable queue: a revocation for a backend only the `worker` role
     /// holds is queued here, and a local CA's CRL regeneration after one.
-    pub jobs: crate::jobs::JobQueue,
+    pub jobs: acme_proxy_jobs::jobs::JobQueue,
 }
 
 impl AdminState {
@@ -88,9 +88,9 @@ impl AdminState {
         database: Arc<Database>,
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
-        audit: Arc<crate::auditor::Auditor>,
-        notifiers: crate::notify::Notifiers,
-        jobs: crate::jobs::JobQueue,
+        audit: Arc<acme_proxy_jobs::auditor::Auditor>,
+        notifiers: acme_proxy_jobs::notify::Notifiers,
+        jobs: acme_proxy_jobs::jobs::JobQueue,
     ) -> Self {
         Self::with_logins(database, config, profiles, audit, notifiers, jobs, None)
     }
@@ -105,9 +105,9 @@ impl AdminState {
         database: Arc<Database>,
         config: Arc<Config>,
         profiles: &[Arc<Profile>],
-        audit: Arc<crate::auditor::Auditor>,
-        notifiers: crate::notify::Notifiers,
-        jobs: crate::jobs::JobQueue,
+        audit: Arc<acme_proxy_jobs::auditor::Auditor>,
+        notifiers: acme_proxy_jobs::notify::Notifiers,
+        jobs: acme_proxy_jobs::jobs::JobQueue,
         previous_logins: Option<&LoginLimiter>,
     ) -> Self {
         let by_name = profiles
@@ -135,7 +135,7 @@ impl AdminState {
 
     /// Writes one administrative audit row (`src/auditor/admin.rs`), attributed to
     /// the signed-in operator and the address the shared
-    /// [`Auditor`](crate::auditor::Auditor) resolves
+    /// [`Auditor`](acme_proxy_jobs::auditor::Auditor) resolves
     /// from `request_context`. Call it **after** the operation has landed; a
     /// failed write is swallowed, exactly as on the certificate paths, so it
     /// cannot fail the request.
@@ -173,10 +173,13 @@ impl AdminState {
 
     /// Queues one web-admin security notification through the process-wide
     /// dispatcher, if one is configured. A no-op otherwise, and — like every
-    /// [`NotifyDispatcher::dispatch`](crate::notify::NotifyDispatcher::dispatch)
+    /// [`NotifyDispatcher::dispatch`](acme_proxy_jobs::notify::NotifyDispatcher::dispatch)
     /// — it cannot fail the request that triggered it.
-    pub(crate) async fn notify_security(&self, event: crate::notify::NotifyEvent) {
-        if let Some(dispatcher) = self.notifiers.get(crate::notify::ADMIN_DISPATCHER_KEY) {
+    pub(crate) async fn notify_security(&self, event: acme_proxy_jobs::notify::NotifyEvent) {
+        if let Some(dispatcher) = self
+            .notifiers
+            .get(acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY)
+        {
             dispatcher.dispatch(event).await;
         }
     }
@@ -192,22 +195,24 @@ impl AdminState {
     pub(crate) async fn notify_credential_change(
         &self,
         user: &acme_proxy_store::admin_user::AdminUser,
-        change: crate::notify::AdminCredentialChange,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
         user_agent: Option<String>,
         previous_recipient: Option<String>,
     ) {
-        self.notify_security(crate::notify::NotifyEvent::AdminCredentialChanged(
-            crate::notify::AdminCredentialChangeData::new(
-                user,
-                change,
-                by_self,
-                client.map(|ip| ip.to_string()),
-                user_agent,
-                previous_recipient,
+        self.notify_security(
+            acme_proxy_jobs::notify::NotifyEvent::AdminCredentialChanged(
+                acme_proxy_jobs::notify::AdminCredentialChangeData::new(
+                    user,
+                    change,
+                    by_self,
+                    client.map(|ip| ip.to_string()),
+                    user_agent,
+                    previous_recipient,
+                ),
             ),
-        ))
+        )
         .await;
     }
 
@@ -230,7 +235,7 @@ impl AdminState {
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &acme_proxy_store::admin_user::AdminUser,
-        change: crate::notify::AdminCredentialChange,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
         user_agent: Option<String>,
@@ -266,7 +271,7 @@ impl AdminState {
             request_context,
             actor,
             user,
-            crate::notify::AdminCredentialChange::ContactAddress,
+            acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress,
             by_self,
             client,
             user_agent,
@@ -281,38 +286,42 @@ impl AdminState {
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &acme_proxy_store::admin_user::AdminUser,
-        change: crate::notify::AdminCredentialChange,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
         user_agent: Option<String>,
         previous_recipient: Option<String>,
     ) {
-        use crate::notify::AdminCredentialChange as Change;
+        use acme_proxy_jobs::notify::AdminCredentialChange as Change;
 
         self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
-            Change::Password => crate::auditor::admin::operator_password_changed(
+            Change::Password => acme_proxy_jobs::auditor::admin::operator_password_changed(
                 audit_actor,
                 ctx,
                 &user.username,
                 by_self,
             ),
-            Change::SecondFactorEnabled => {
-                crate::auditor::admin::operator_totp_enrolled(audit_actor, ctx, &user.username)
-            }
-            Change::SecondFactorDisabled => crate::auditor::admin::operator_totp_disabled(
+            Change::SecondFactorEnabled => acme_proxy_jobs::auditor::admin::operator_totp_enrolled(
                 audit_actor,
                 ctx,
                 &user.username,
-                !by_self,
             ),
+            Change::SecondFactorDisabled => {
+                acme_proxy_jobs::auditor::admin::operator_totp_disabled(
+                    audit_actor,
+                    ctx,
+                    &user.username,
+                    !by_self,
+                )
+            }
             Change::RecoveryCodesRegenerated => {
-                crate::auditor::admin::operator_recovery_codes_regenerated(
+                acme_proxy_jobs::auditor::admin::operator_recovery_codes_regenerated(
                     audit_actor,
                     ctx,
                     &user.username,
                 )
             }
-            Change::ContactAddress => crate::auditor::admin::operator_contact_updated(
+            Change::ContactAddress => acme_proxy_jobs::auditor::admin::operator_contact_updated(
                 audit_actor,
                 ctx,
                 &user.username,
@@ -375,9 +384,9 @@ pub fn build_admin_app(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
-    audit: Arc<crate::auditor::Auditor>,
-    notifiers: crate::notify::Notifiers,
-    jobs: crate::jobs::JobQueue,
+    audit: Arc<acme_proxy_jobs::auditor::Auditor>,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
+    jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
     build_admin_app_with_logins(database, config, profiles, audit, notifiers, jobs, None).0
 }
@@ -391,9 +400,9 @@ pub fn build_admin_app_with_logins(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
-    audit: Arc<crate::auditor::Auditor>,
-    notifiers: crate::notify::Notifiers,
-    jobs: crate::jobs::JobQueue,
+    audit: Arc<acme_proxy_jobs::auditor::Auditor>,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
+    jobs: acme_proxy_jobs::jobs::JobQueue,
     previous_logins: Option<&LoginLimiter>,
 ) -> (Router, Arc<LoginLimiter>) {
     let state = AdminState::with_logins(

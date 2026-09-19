@@ -105,7 +105,7 @@ pub async fn create_eab(
     let eab = Eab::create(body.label, body.profile, &state.database).await?;
     state
         .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-            crate::auditor::admin::eab_created(
+            acme_proxy_jobs::auditor::admin::eab_created(
                 actor,
                 client,
                 &eab.kid.to_string(),
@@ -149,7 +149,7 @@ pub async fn revoke_eab(
         let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
         state
             .record_admin_action(&request_context, &auth.user.username, |actor, client| {
-                crate::auditor::admin::eab_revoked(actor, client, &kid, profile)
+                acme_proxy_jobs::auditor::admin::eab_revoked(actor, client, &kid, profile)
             })
             .await;
     }
@@ -181,7 +181,7 @@ pub async fn delete_eab(
 
     state
         .record_admin_actions(&request_context, &auth.user.username, |actor, client| {
-            crate::auditor::admin::eab_deleted_records(actor, client, &deleted)
+            acme_proxy_jobs::auditor::admin::eab_deleted_records(actor, client, &deleted)
         })
         .await;
     tracing::info!(event = "admin_eab_deleted",

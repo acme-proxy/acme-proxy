@@ -30,8 +30,8 @@ pub mod admin;
 
 /// Writes audit rows, and resolves the reverse names that go in them.
 ///
-/// One per process, shared by the ACME listener ([`crate::router::AppState`]),
-/// the web admin ([`crate::webadmin::AdminState`]) and the CLI. Process-wide
+/// One per process, shared by the ACME listener (`router::AppState`),
+/// the web admin (`webadmin::AdminState`) and the CLI. Process-wide
 /// because `[audit]` is: the trail describes the CA, not one of its endpoints.
 pub struct Auditor {
     database: Arc<Database>,

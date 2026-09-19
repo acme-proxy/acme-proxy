@@ -1,6 +1,6 @@
 //! The `custom` notify backend: shells out to an external script or webhook
-//! wrapper, on the same contract as [`acme_proxy_policy::filter::custom`] and
-//! [`crate::signer::custom`] — env vars plus JSON on stdin, exit code decides
+//! wrapper, on the same contract as `filter::custom` and
+//! `signer::custom` — env vars plus JSON on stdin, exit code decides
 //! outcome. This is what lets an operator wire up a channel this server has
 //! no built-in support for (Slack, PagerDuty, …) without a code change.
 

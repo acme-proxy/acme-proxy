@@ -42,7 +42,7 @@
 //!   *physically* frozen the way the pool is. These are the knobs an operator
 //!   reaches for mid-incident (slow a retry storm, widen a lease, raise
 //!   concurrency), which made them the worst possible thing to charge a restart
-//!   for. See [`crate::jobs::runner`].
+//!   for. See [`acme_proxy_jobs::jobs::runner`].
 //! - **The profile set, each profile's `[signer]`, and `[dns]`/`[proxy]`** — the
 //!   last four and the hardest, because a signer backend used to own state with
 //!   no durable home: a `LocalCa`'s revocation ledger and a relay's `http-01`
@@ -111,7 +111,7 @@ pub struct Applied<'a> {
 /// - **`[logging]`**, once the whole layer stack went behind a `reload::Layer`
 ///   handle (`server::logging`).
 /// - **All seven `[jobs]` keys**, once the runner stopped snapshotting its
-///   pacing at spawn ([`crate::jobs::runner`]).
+///   pacing at spawn ([`acme_proxy_jobs::jobs::runner`]).
 /// - **`profiles`, `profiles.*.signer`, `dns.resolver` and `proxy`** — the last
 ///   four, and the ones this table existed for. They were frozen *by ownership*:
 ///   a signer backend held in-memory state with no durable home, so two

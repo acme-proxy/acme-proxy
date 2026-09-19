@@ -7,9 +7,9 @@
 //! than in the ACME services above them, since the relay is one of the two
 //! callers and sits below those services.
 
-use crate::auditor::Auditor;
-use crate::notify::NotifyEvent;
 use acme_proxy_core::error::Problem;
+use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::order::Order;
 
@@ -80,7 +80,7 @@ pub async fn announce_issuance(
     client: acme_proxy_core::audit::ClientContext,
     client_ip: Option<String>,
     audit: &Auditor,
-    notify: Option<&crate::notify::NotifyDispatcher>,
+    notify: Option<&acme_proxy_jobs::notify::NotifyDispatcher>,
 ) {
     audit
         .record(
@@ -97,7 +97,7 @@ pub async fn announce_issuance(
     if let Some(dispatcher) = notify {
         dispatcher
             .dispatch(NotifyEvent::CertificateIssued(
-                crate::notify::CertificateIssuedData {
+                acme_proxy_jobs::notify::CertificateIssuedData {
                     profile: order.profile.clone(),
                     order_id: order.id.to_string(),
                     account_id: order.account_id.to_string(),

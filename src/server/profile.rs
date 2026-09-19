@@ -33,7 +33,7 @@ use super::{Assembly, GenerationParts};
 pub fn build_all(
     config: &Config,
     database: Arc<Database>,
-    jobs: &crate::jobs::JobQueue,
+    jobs: &acme_proxy_jobs::jobs::JobQueue,
 ) -> anyhow::Result<Vec<Arc<Profile>>> {
     let resolved = config.resolve_profiles()?;
     // All roles: this builder is the CLI's and the tests' path, where the
@@ -224,7 +224,7 @@ mod tests {
         let profiles = crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         )
         .unwrap();
         assert_eq!(profiles.len(), 2);
@@ -245,7 +245,7 @@ mod tests {
         let error = match crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a server with no endpoint must not start"),
@@ -266,7 +266,7 @@ mod tests {
         let error = match crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("an unknown challenge type is a startup error"),
@@ -296,7 +296,7 @@ mod tests {
         let error = match crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("a deadline below signer.custom.timeout_ms is a startup error"),
@@ -325,7 +325,7 @@ mod tests {
         crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         )
         .expect("issuance no longer runs inside the request");
     }
@@ -348,7 +348,7 @@ mod tests {
         crate::server::profile::build_all(
             &config,
             database().await,
-            &crate::testutil::idle_job_queue(database().await),
+            &acme_proxy_jobs::testutil::idle_job_queue(database().await),
         )
         .expect("challenge validation no longer runs inside the request");
     }
@@ -375,7 +375,7 @@ mod tests {
             crate::server::profile::build_all(
                 &config,
                 database().await,
-                &crate::testutil::idle_job_queue(database().await)
+                &acme_proxy_jobs::testutil::idle_job_queue(database().await)
             )
             .is_ok()
         );

@@ -21,7 +21,7 @@ pub(super) struct Cells {
         tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
     pub(super) admin_router:
         tokio::sync::watch::Sender<axum::routing::RouterIntoService<axum::body::Body>>,
-    pub(super) job_registry: tokio::sync::watch::Sender<Arc<crate::jobs::JobRegistry>>,
+    pub(super) job_registry: tokio::sync::watch::Sender<Arc<acme_proxy_jobs::jobs::JobRegistry>>,
     /// The runner's own pacing. Separate from the registry above because the two
     /// reach it by different routes: the registry carries what a *handler*
     /// captured, this carries what the *loop* re-reads each pass.

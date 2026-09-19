@@ -50,7 +50,7 @@ pub struct ChangeContactRequest {
 /// alarms go, so a stolen cookie that could change it silently would switch off
 /// the one signal that the cookie was stolen. For the same reason the address
 /// it replaces is told
-/// ([`crate::notify::AdminCredentialChange::ContactAddress`]).
+/// ([`acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress`]).
 pub async fn change_contact(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
@@ -118,7 +118,7 @@ pub async fn change_password(
             &request_context,
             &user.username,
             &user,
-            crate::notify::AdminCredentialChange::Password,
+            acme_proxy_jobs::notify::AdminCredentialChange::Password,
             true,
             client,
             crate::webadmin::user_agent_of(&headers),
@@ -178,13 +178,13 @@ pub async fn revoke_own_session(
     AdminSession::delete(&session.token_hash, &state.database).await?;
 
     let scope = if was_current {
-        crate::auditor::admin::SessionScope::OwnCurrent
+        acme_proxy_jobs::auditor::admin::SessionScope::OwnCurrent
     } else {
-        crate::auditor::admin::SessionScope::OwnOther
+        acme_proxy_jobs::auditor::admin::SessionScope::OwnOther
     };
     state
         .record_admin_action(&request_context, &auth.user.username, |actor, ctx| {
-            crate::auditor::admin::session_revoked(actor, ctx, scope, 1)
+            acme_proxy_jobs::auditor::admin::session_revoked(actor, ctx, scope, 1)
         })
         .await;
 

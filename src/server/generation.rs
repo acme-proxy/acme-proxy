@@ -29,7 +29,7 @@ pub(crate) struct Generation {
     pub(super) profiles: Vec<Arc<Profile>>,
     pub(super) acme_app: axum::Router,
     pub(super) admin_app: Option<axum::Router>,
-    pub(super) job_registry: crate::jobs::JobRegistry,
+    pub(super) job_registry: acme_proxy_jobs::jobs::JobRegistry,
     pub(super) tls: Option<tls::TlsSettings>,
     pub(super) admin_tls: Option<tls::TlsSettings>,
     /// The limiter this generation ended up with, for the next one to carry.
@@ -45,7 +45,7 @@ pub(crate) struct Generation {
 /// first, and only a complete success publishes anything.
 ///
 /// `dispatchers` is passed in rather than built here because a reload needs to
-/// hold it back: it is published to the long-lived [`crate::notify::Notifiers`]
+/// hold it back: it is published to the long-lived [`acme_proxy_jobs::notify::Notifiers`]
 /// handle at swap time, *before* the routers, so a request served by the new
 /// generation cannot queue a delivery the job runner's map does not know.
 ///
@@ -97,7 +97,7 @@ pub(crate) fn build_generation(
     // two profiles over different `[signer]` sections are two backends that
     // `build_backends` deliberately does not collapse. So each backend hands
     // over *state* and one handler is built over all of it.
-    let mut job_registry = crate::jobs::JobRegistry::new();
+    let mut job_registry = acme_proxy_jobs::jobs::JobRegistry::new();
     // The CRLs are collected once per distinct backend, since two profiles
     // sharing one CA share one CRL and refreshing it twice a day would be
     // pointless work. The identity is kept as a `usize` rather than the
@@ -169,7 +169,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::revoke::SignerRevokeJob::new(
             database.clone(),
             Arc::new(
-                crate::auditor::Auditor::offline(database.clone())
+                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             backends.clone(),
@@ -186,7 +186,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::issue::SignerIssueJob::new(
             database.clone(),
             Arc::new(
-                crate::auditor::Auditor::offline(database.clone())
+                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             backends.clone(),
@@ -206,7 +206,7 @@ pub(crate) fn build_generation(
         .register(Arc::new(crate::acme::validate::ChallengeValidateJob::new(
             database.clone(),
             Arc::new(
-                crate::auditor::Auditor::offline(database.clone())
+                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
                     .with_metrics(assembly.metrics.clone()),
             ),
             profiles
@@ -230,7 +230,7 @@ pub(crate) fn build_generation(
     // registered per generation but must read whichever map is current, and a
     // row queued by a reloaded router names a slot id only the new one has.
     job_registry
-        .register(Arc::new(crate::notify::NotifyJob::new(
+        .register(Arc::new(acme_proxy_jobs::notify::NotifyJob::new(
             assembly.notifiers.clone(),
         )))
         .inspect_err(|error| {
@@ -243,7 +243,7 @@ pub(crate) fn build_generation(
     // than the profiles' own dispatchers for `NotifyJob`'s reason above, and
     // the queue because its per-profile rows are something it maintains on
     // every pass rather than only at `recover`.
-    if let Some(digest) = crate::notify::expiry::ExpiryDigestJob::from_profiles(
+    if let Some(digest) = acme_proxy_jobs::notify::expiry::ExpiryDigestJob::from_profiles(
         resolved,
         assembly.notifiers.clone(),
         database.clone(),
@@ -262,17 +262,20 @@ pub(crate) fn build_generation(
     // sweep — it queues at `run_at = now`, so the runner performs the first pass
     // on its way into the loop and there is nothing to run separately here.
     let ttl = Duration::from_secs(config.nonce.ttl_seconds);
-    let mut sweeps = vec![crate::jobs::SweepJob::nonces(database.clone(), ttl)];
+    let mut sweeps = vec![acme_proxy_jobs::jobs::SweepJob::nonces(
+        database.clone(),
+        ttl,
+    )];
     // `0` keeps everything for ever on both of these, and is a handler not
     // registered rather than a sweep with a cutoff at the epoch.
     if config.audit.retention_days > 0 {
-        sweeps.push(crate::jobs::SweepJob::audit(
+        sweeps.push(acme_proxy_jobs::jobs::SweepJob::audit(
             database.clone(),
             config.audit.retention_days,
         ));
     }
     if config.jobs.retention_days > 0 {
-        sweeps.push(crate::jobs::SweepJob::jobs(
+        sweeps.push(acme_proxy_jobs::jobs::SweepJob::jobs(
             database.clone(),
             config.jobs.retention_days,
         ));
@@ -286,7 +289,7 @@ pub(crate) fn build_generation(
         .map(|profile| (profile.name.clone(), profile.sections.order.retention_days))
         .collect();
     if !order_retention.is_empty() {
-        sweeps.push(crate::jobs::SweepJob::orders(
+        sweeps.push(acme_proxy_jobs::jobs::SweepJob::orders(
             database.clone(),
             order_retention,
         ));
@@ -297,10 +300,12 @@ pub(crate) fn build_generation(
         .iter()
         .any(|profile| profile.signer_info.http01_tokens().is_some())
     {
-        sweeps.push(crate::jobs::SweepJob::http01_tokens(database.clone()));
+        sweeps.push(acme_proxy_jobs::jobs::SweepJob::http01_tokens(
+            database.clone(),
+        ));
     }
     if admin_enabled {
-        sweeps.push(crate::jobs::SweepJob::admin_sessions(
+        sweeps.push(acme_proxy_jobs::jobs::SweepJob::admin_sessions(
             database.clone(),
             Duration::from_secs(config.admin.session_idle_timeout_seconds),
             config.admin.session_ttl_seconds,
@@ -319,7 +324,7 @@ pub(crate) fn build_generation(
     // here rather than in `server::profile::build_all` for exactly that reason — it is
     // not a per-endpoint subsystem.
     let auditor = Arc::new(
-        crate::auditor::Auditor::from_config(
+        acme_proxy_jobs::auditor::Auditor::from_config(
             &config.audit,
             &config.dns,
             database.clone(),
@@ -693,8 +698,8 @@ pub(super) async fn announce_profile(profile: &Arc<Profile>) {
     );
     profile
         .notify
-        .dispatch(crate::notify::NotifyEvent::ProfileMounted(
-            crate::notify::ProfileMountedData {
+        .dispatch(acme_proxy_jobs::notify::NotifyEvent::ProfileMounted(
+            acme_proxy_jobs::notify::ProfileMountedData {
                 profile: profile.name.clone(),
             },
         ))

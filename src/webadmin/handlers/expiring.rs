@@ -38,7 +38,7 @@ pub struct ExpiringListParams {
     pub days: Option<u64>,
     /// `"hide"` drops the rows something has already replaced. Anything else,
     /// this member absent included, keeps them: supersession is an annotation,
-    /// and the digest's argument for that is in [`crate::notify::expiry`]'s
+    /// and the digest's argument for that is in [`acme_proxy_jobs::notify::expiry`]'s
     /// module docs. The page has room for a control the digest does not, which
     /// is the whole of why this exists here and not there.
     #[serde(default, deserialize_with = "empty_is_absent")]

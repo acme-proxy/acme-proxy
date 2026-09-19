@@ -2091,8 +2091,9 @@ mod tests {
     /// (`signer::relay::tests::multi_profile`).
     #[tokio::test]
     async fn one_sweep_handler_serves_every_ca_in_the_process() {
-        use crate::jobs::{JobHandler, JobRegistry};
         use crate::signer::local_ca::sweep::CrlSweepJob;
+        use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_jobs::jobs::JobRegistry;
 
         let database = memory_db().await;
         let dirs = [
@@ -2127,8 +2128,9 @@ mod tests {
     /// for the life of the process rather than for one day.
     #[tokio::test]
     async fn the_sweep_reschedules_even_when_a_refresh_fails() {
-        use crate::jobs::{JobHandler, JobOutcome};
         use crate::signer::local_ca::sweep::CrlSweepJob;
+        use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_jobs::jobs::JobOutcome;
 
         let database = memory_db().await;
         let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
@@ -2152,8 +2154,9 @@ mod tests {
     /// The job really prunes, and reschedules itself at its own interval.
     #[tokio::test]
     async fn the_sweep_prunes_and_reschedules() {
-        use crate::jobs::{JobHandler, JobOutcome};
         use crate::signer::local_ca::sweep::CrlSweepJob;
+        use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_jobs::jobs::JobOutcome;
 
         let database = memory_db().await;
         let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
@@ -2172,12 +2175,12 @@ mod tests {
     /// existing schedule rather than resetting it.
     #[tokio::test]
     async fn recover_queues_one_row_however_often_it_runs() {
-        use crate::jobs::JobHandler;
         use crate::signer::local_ca::sweep::{CRL_SWEEP_KIND, CrlSweepJob};
+        use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_store::job::Job;
 
         let database = memory_db().await;
-        let queue = crate::testutil::idle_job_queue(database.clone());
+        let queue = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
         let job = CrlSweepJob::new(vec![ca.crl_refresher().unwrap()]);
 
@@ -2227,8 +2230,9 @@ mod tests {
     /// another process, or the next generation of this one, may serve it.
     #[tokio::test]
     async fn the_regenerate_job_retries_an_issuer_it_does_not_serve() {
-        use crate::jobs::{JobHandler, JobOutcome};
         use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
+        use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_jobs::jobs::JobOutcome;
 
         let database = memory_db().await;
         let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database).unwrap();

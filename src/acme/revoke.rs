@@ -27,9 +27,6 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::auditor::Auditor;
-use crate::jobs::{JobHandler, JobOutcome, JobQueue, JobSpec};
-use crate::notify::{CertificateRevokedData, NotifyDispatcher, NotifyEvent};
 use crate::signer::{RevocationRoute, SignerBackend, SignerError};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
@@ -37,6 +34,14 @@ use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
+use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_jobs::jobs::JobHandler;
+use acme_proxy_jobs::jobs::JobOutcome;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_jobs::jobs::JobSpec;
+use acme_proxy_jobs::notify::CertificateRevokedData;
+use acme_proxy_jobs::notify::NotifyDispatcher;
+use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
@@ -753,7 +758,7 @@ pub struct SignerRevokeJob {
     database: Arc<Database>,
     audit: Arc<Auditor>,
     signers: Vec<(String, Arc<dyn SignerBackend>)>,
-    notifiers: crate::notify::Notifiers,
+    notifiers: acme_proxy_jobs::notify::Notifiers,
 }
 
 impl SignerRevokeJob {
@@ -763,7 +768,7 @@ impl SignerRevokeJob {
         database: Arc<Database>,
         audit: Arc<Auditor>,
         signers: Vec<(String, Arc<dyn SignerBackend>)>,
-        notifiers: crate::notify::Notifiers,
+        notifiers: acme_proxy_jobs::notify::Notifiers,
     ) -> Self {
         Self {
             database,
@@ -859,9 +864,9 @@ impl JobHandler for SignerRevokeJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobs::JobHandler;
     use crate::signer::{IssueOutcome, RequestedValidity};
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_jobs::jobs::JobHandler;
 
     /// A backend whose `revoke` always fails.
     struct Failing;
@@ -892,7 +897,7 @@ mod tests {
     }
 
     async fn queued(database: &Arc<Database>, order_id: &str) -> Job {
-        let queue = crate::testutil::idle_job_queue(database.clone());
+        let queue = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         queue
             .enqueue(signer_revoke_spec(
                 order_id,
@@ -969,7 +974,7 @@ mod tests {
             ..acme_proxy_core::config::JobsConfig::default()
         };
         let queue = JobQueue::new(database.clone(), &config);
-        let mut registry = crate::jobs::JobRegistry::new();
+        let mut registry = acme_proxy_jobs::jobs::JobRegistry::new();
         registry
             .register(Arc::new(SignerRevokeJob::new(
                 database.clone(),
@@ -979,7 +984,7 @@ mod tests {
             )))
             .unwrap();
         let (shutdown, receiver) = tokio::sync::watch::channel(false);
-        crate::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, receiver);
+        acme_proxy_jobs::jobs::spawn_runner(queue.clone(), Arc::new(registry), &config, receiver);
         (queue, shutdown)
     }
 
@@ -1048,7 +1053,7 @@ mod tests {
     async fn an_unanswered_revocation_is_pending_and_asking_again_follows_it() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let order = issued(&database).await;
-        let jobs = crate::testutil::idle_job_queue(database.clone());
+        let jobs = acme_proxy_jobs::testutil::idle_job_queue(database.clone());
         let audit = Auditor::offline(database.clone());
         let revocations = Revocations {
             database: &database,
@@ -1167,7 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn the_route_picks_the_revoker_and_the_wait_fits_the_deadline() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
-        let jobs = crate::testutil::idle_job_queue(database);
+        let jobs = acme_proxy_jobs::testutil::idle_job_queue(database);
         let ledger = RevocationRoute::Ledger {
             issuer: "ab".to_string(),
         };
