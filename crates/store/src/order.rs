@@ -1,3 +1,37 @@
+//! Orders (RFC 8555 §7.1.3), and every query over them.
+//!
+//! Four rules the rest of the workspace leans on:
+//!
+//! - **[`Order::search`] is the only listing filter.** Profile, account,
+//!   status, identifier and certificate serial are all SQL predicates here;
+//!   the CLI, the admin API and the panel page with the same query, so a
+//!   filter cannot mean one thing in one front end and another in the next.
+//!   The identifier predicates scan `json_each(orders.identifiers)` — exact and
+//!   case-folded for `identifier`, `instr` for `identifier_contains` — since
+//!   SQLite has no expression index over `json_each`.
+//! - **`ready → processing` is a guarded write.** [`Order::claim_for_finalize`]
+//!   (and `claim_for_finalize_on`, on a caller's transaction) lets
+//!   `rows_affected` decide between two concurrent finalizes, so the loser is
+//!   refused instead of being signed into a certificate no row records — which
+//!   nothing could then revoke. [`Order::set_pending`] is the state machine's
+//!   one backwards transition, for §7.5.2's deactivation of an order already
+//!   `ready`, and runs only inside that deactivation's transaction.
+//! - **Revocation never touches `status`.** [`Order::revoke`] stamps
+//!   `revoked_at`/`revocation_reason`; RFC 8555 has no "revoked" order status,
+//!   and [`Order::to_json`] never renders those columns.
+//! - **An order holding a live certificate is never deleted** (the
+//!   `live_certificate!` predicate, checked again inside each `DELETE`), since
+//!   the row is the certificate's only record.
+//!
+//! **Wildcards are stored in wildcard form.** An authorization for
+//! `*.example.com` keeps that string in its row and renders the base name plus
+//! `"wildcard": true`. Storing the base name instead would make the canonical
+//! order `["example.com", "*.example.com"]` two identical rows under
+//! `UNIQUE(order_id, identifier)` — which compares serialized JSON — so the
+//! order would fail to persist, and fixing that would take a table rebuild.
+//! An exact `identifier` search for a covered name therefore does not match a
+//! wildcard order; a search for the wildcard string does.
+
 use serde_json::Value;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
@@ -120,7 +154,7 @@ impl OrderQuery {
         // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
         // each contributes its own `&str` and the pair stays one type. The bind
         // is still a parameter, never interpolated SQL. The returned separator
-        // is what the predicates below open with — see `sqlite::query`.
+        // is what the predicates below open with — see `crate::query`.
         let mut separator = crate::query::push_equalities(
             builder,
             crate::query::WHERE,
@@ -2089,7 +2123,7 @@ mod tests {
     }
 
     /// A **wildcard** order stores the wildcard form (`*.example.com`, the
-    /// storage convention in `crates/CLAUDE.md`), so an exact hunt for a name it
+    /// storage convention in this module's doc), so an exact hunt for a name it
     /// covers does not return it, and one for the wildcard string does.
     ///
     /// Asserted rather than fixed. Widening `identifier` to also match

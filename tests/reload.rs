@@ -11,8 +11,8 @@
 //! points `ACME_PROXY_CONFIG` at it, and that variable is process state.
 //! `cargo nextest` runs each test as its own process, which is what makes that
 //! safe — under plain `cargo test` these would be threads racing one another's
-//! environment. That is the same reason CLAUDE.md gives for nextest being
-//! required rather than preferred.
+//! environment. That is the same reason nextest is required rather than
+//! preferred (see the book's Testing & Coverage page).
 
 mod common;
 

@@ -65,7 +65,7 @@ pub const COOKIE_NAME: &str = "__Host-acme_admin_session";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// Session token length in bytes. 256 bits — the same size
-/// `sqlite::eab::generate_secret` chooses, and for the same reason.
+/// `acme_proxy_store::eab::generate_secret` chooses, and for the same reason.
 const TOKEN_LEN: usize = 32;
 
 /// How stale `last_seen_at` may get before a request bothers to advance it.

@@ -8,9 +8,8 @@
 //! What it buys is privilege separation, which is the point for a CA. The
 //! `acme` role parses untrusted JWS and CSRs from the internet; the `admin`
 //! role holds operator sessions; the `worker` role reaches out to
-//! client-chosen hosts, talks to an upstream CA, sends mail, and — once phase
-//! 9.3 lands — is the only one holding the CA key. Each can run under its own
-//! uid and sandbox.
+//! client-chosen hosts, talks to an upstream CA, sends mail, and is the only
+//! one holding the CA key. Each can run under its own uid and sandbox.
 //!
 //! **This is not [`sockets::Role`](super::sockets::Role)**, and the two must
 //! not be conflated. That enum names the three *listeners* a process may hold

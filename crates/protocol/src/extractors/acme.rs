@@ -1,3 +1,34 @@
+//! `verify_jws`, the checks every signed ACME request passes before a handler
+//! runs, and the three extractors built on it.
+//!
+//! The order is load-bearing:
+//!
+//! 1. **`Content-Type: application/jose+json`** (RFC 8555 §6.2), checked before
+//!    the body is read — a `415` never burns a nonce.
+//! 2. The flattened JWS and its protected header are decoded, and **any `crit`
+//!    is refused** (RFC 7515 §4.1.11): this server implements no critical
+//!    extension, so every value is unrecognised.
+//! 3. The JWS **`url`** against the route actually reached (§6.4).
+//! 4. Exactly one of **`jwk`** or **`kid`** (§6.2; both or neither is
+//!    `malformed`). A `kid` is verified against the account's **stored** SPKI,
+//!    after that SPKI's own algorithm OID is checked against the claimed `alg`,
+//!    so verification never rests on `alg` alone. An unknown `kid` is
+//!    `accountDoesNotExist`.
+//! 5. The **signature**, with `ring` (ES256 or RS256). EC coordinates must be
+//!    exactly 32 octets (RFC 7518 §6.2.1.2); a short or long one parses as a
+//!    different point, which would register one key as two accounts.
+//! 6. The **nonce** is consumed (§6.5).
+//!
+//! The account's `last_seen_*` stamp is written here too, as the one place every
+//! `kid` request funnels through, and only **after** the nonce, so a replayed
+//! request never moves it. `SignatureError` maps to `malformed`,
+//! `badSignatureAlgorithm` (carrying the `algorithms` list §6.2 requires),
+//! `unauthorized` or a `500`.
+//!
+//! This file carries `#[instrument]` and so reports little coverage of its own;
+//! its branches are driven by `tests/jws_rejections.rs` and
+//! `tests/db_failures.rs`.
+
 use std::time::Duration;
 
 use axum::extract::{FromRef, FromRequest, Request};

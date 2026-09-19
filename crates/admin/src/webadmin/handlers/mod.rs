@@ -5,7 +5,8 @@
 //! [`crate::admin::render`]: this layer decides status codes and shapes,
 //! nothing more. **No `#[instrument]`** anywhere in it — the access middleware
 //! already opens the request span, and the attribute moves a handler body into
-//! a generated async block that reports almost no coverage (see CLAUDE.md).
+//! a generated async block that reports almost no coverage (see the book's
+//! Testing & Coverage page).
 
 pub mod account;
 pub mod accounts;

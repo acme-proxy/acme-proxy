@@ -1587,7 +1587,7 @@ mod tests {
     }
 
     /// `[admin.notify]` is a whole `NotifyConfig` hung off `[admin]`, and the
-    /// book, `config.toml.example` and `CLAUDE.md` all document its keys under
+    /// book and `config.toml.example` both document its keys under
     /// `ACME_PROXY_ADMIN__NOTIFY__…`. Every one of its list fields therefore
     /// needs its own `LIST_KEYS` entry and its own `NAMED_TABLES` row — without
     /// them the values arrive as bare strings and `Config::load` refuses them,

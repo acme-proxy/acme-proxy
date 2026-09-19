@@ -784,7 +784,7 @@ fn footer_line(shown: usize, total: i64) -> String {
 
 /// The same line where supersession has dropped rows from the page.
 ///
-/// `total` counts the **window**, not the rows below it: `sqlite::expiring::list_expiring`
+/// `total` counts the **window**, not the rows below it: `acme_proxy_store::expiring::list_expiring`
 /// filters superseded certificates in Rust, because the annotation cannot
 /// become a SQL predicate. A bare "1 of 4" over a page that quietly dropped two
 /// is arithmetic an operator cannot reproduce, so the third number is said out

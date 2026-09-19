@@ -802,7 +802,7 @@ mod tests {
         let all = AdminUser::list_all(&db).await.unwrap();
         assert_eq!(all.len(), 2);
         // Two users created in the same second tie on `created_at`, so the
-        // `id ASC` tiebreak decides -- and since `sqlite::id::mint` is a UUID
+        // `id ASC` tiebreak decides -- and since `crate::id::mint` is a UUID
         // v7, whose leading 48 bits are a millisecond timestamp, that tiebreak
         // is insertion order. It used to be a random UUID, so this assertion
         // failed one run in two and the test sorted the names before making it.

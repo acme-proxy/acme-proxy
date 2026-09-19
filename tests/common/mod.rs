@@ -5,6 +5,50 @@
 //! Each `tests/*.rs` file is its own crate that includes this module, so not
 //! every crate uses every helper — hence the crate-wide `dead_code` allow, and
 //! the `unused_imports` one for the re-exports only some of them need.
+//!
+//! ## Building an app
+//!
+//! [`test_app_full`] is the single place the ACME app is built: one profile,
+//! `default`, through the real `build_app`, so paths carry the endpoint prefix
+//! ([`p`] builds one). Every other `test_app_*` and `test_admin_app*` is a
+//! variant of it, and `one_profile` is shared with the admin builders so the
+//! two cannot drift into mounting different endpoints.
+//!
+//! - **A profile is served from its signer's read side**, never the backend.
+//!   [`read_side`] is `signer.info()`, except for a local CA whose revocation
+//!   state lives outside the app's database: its route becomes `Delegated`,
+//!   since a ledger row in the app's database would be one its CRL never sees.
+//!   `test_app_with_db` and the admin apps build their CA over the app's own
+//!   database, so they exercise the route production takes.
+//! - **Every builder calls [`met_by_a_worker`] first** — a local CA's first
+//!   CRL stored, which the read side never signs.
+//! - **Every app runs a real worker** (`spawn_worker_runner`): the real
+//!   validation, issuance, revocation and CRL jobs over the real runner, at a
+//!   10 ms poll with no backoff. Its shutdown sender is leaked on purpose, since
+//!   the runner treats a closed channel as a signal to stop.
+//! - A fixture wrapping a signer overrides `info()` (and, around a CA,
+//!   `crl_refresher()`); the read methods are not on `SignerBackend`.
+//!
+//! ## Driving it
+//!
+//! [`acme`] is the ACME ladder — `post`, `register`, `new_order`,
+//! `drive_to_ready`, `finalize`, `issue_certificate`, `trigger` and the rest.
+//! Use it rather than writing another copy.
+//!
+//! - **`trigger` and `finalize` decide nothing.** Both answer `processing`;
+//!   poll with `await_challenge`/`await_order` (or the `*_and_settle` pairs),
+//!   and a CRL with `await_crl_listing`.
+//! - **Assert with `assert_problem`, not a bare status.** `unauthorized` and
+//!   `rejectedIdentifier` are both `403`; a refusal that keeps its status and
+//!   changes its `type` is a different answer to the client.
+//! - **Import `TestSigner`** wherever a test calls `signer.sign(…)`; the
+//!   methods are its defaults.
+//! - `oneshot` has no socket, so `send_from`/`post_from`/`fetch_nonce_from`
+//!   insert the `ConnectInfo<SocketAddr>` by hand. That is how a test gives the
+//!   filters a client address.
+//! - The admin builders mount an *inactive* filter policy, except
+//!   `test_admin_app_logged_in_with_filter`, for the surfaces whose subject is
+//!   the policy itself.
 #![allow(dead_code, unused_imports)]
 
 use std::net::SocketAddr;
@@ -1369,7 +1413,7 @@ pub fn totp_code(secret: &[u8], steps: i64) -> String {
     totp::totp_at(secret, totp::step_at(now_unix()) + steps, totp::DIGITS)
 }
 
-/// Wall-clock seconds, the same value `sqlite::nonce::now_secs` returns — that
+/// Wall-clock seconds, the same value `acme_proxy_store::nonce::now_secs` returns — that
 /// one is `pub(crate)`, and an integration test links this crate from outside.
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()

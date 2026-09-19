@@ -1,6 +1,6 @@
 //! The structured-logging convention, enforced against the source itself.
 //!
-//! `CLAUDE.md` and `doc/src/operations/monitoring.md` both describe how a
+//! `doc/src/operations/monitoring.md` describes how a
 //! `tracing` call in this crate is shaped, and operators are told to alert on
 //! `event` and `outcome`. Prose alone did not hold: an audit found two call
 //! sites computing `event` instead of writing a literal, ~24 names with no
@@ -12,9 +12,38 @@
 //! So the rules are checked rather than described. This walks `src/` and every
 //! `crates/*/src/` of the workspace, extracts
 //! every `info!`/`warn!`/`error!`/`debug!`/`trace!` invocation by balanced-paren
-//! scan, and asserts the nine rules stated in `CLAUDE.md`. It is the sibling of
+//! scan, and asserts the nine rules below. It is the sibling of
 //! `admin_api.rs`'s `mutating_endpoints()`: a new call site that strays fails
 //! here, by name, rather than at review time or not at all.
+//!
+//! 1. `event` is the **first** field and always a **bare string literal** —
+//!    never a variable, an `if`, or a `format!` — so a name in a log greps
+//!    straight back to the line that wrote it. The one exemption is
+//!    `pemfile::warn_if_key_is_readable` (see [`NON_LITERAL_EVENT_EXEMPT`]).
+//! 2. The shape is `<subsystem>_<object>_<outcome>`, snake_case, with the
+//!    outcome in the **past tense**: no gerunds, no adjective first, no verb
+//!    first.
+//! 3. The subsystem comes from a **closed list**, [`SUBSYSTEMS`], so a prefix
+//!    grep finds the whole family.
+//! 4. Challenge types are always spelled `http_01`, `dns_01`, `tls_alpn_01`.
+//! 5. **One name means one thing.** Where two front ends or operations share a
+//!    name they keep it and add a discriminating field (`surface = "api"|"ui"`).
+//! 6. Every event emitted from `crates/store/src/` carries the **`db_`** prefix.
+//!    The prefix is the layer; the level stays the importance.
+//! 7. Every site carries **`outcome`** directly after `event`, from
+//!    [`OUTCOMES`]: `success`, `failure`, `progress` or `advisory`. Every
+//!    `error!` is a `failure`.
+//! 8. **One name emits at one level.** `request_completed` alone varies, by
+//!    response status.
+//! 9. A numeric field carries its **unit** (`_ms`, `_bytes`, `_b64_chars`,
+//!    `_seconds`, `_days`); a delete count is `rows_removed`; a fingerprint is
+//!    `<thing>_fp`. A duration goes through `acme_proxy_core::logfields::millis`,
+//!    never `Duration::as_millis()`, which is a `u128` that lands in JSON as
+//!    `"42"` rather than `42`.
+//!
+//! Event names asserted by `tests/e2e/` are grep-before-renaming, and
+//! `server_startup` on stdout is the e2e lab's container readiness gate, so
+//! renaming it fails the lab as a start timeout rather than an assertion.
 //!
 //! One check reaches outside the crate — `every_documented_event_is_still_emitted`
 //! reads `doc/src/operations/monitoring.md`, so a rename that misses the
@@ -23,7 +52,7 @@
 //!
 //! An integration test rather than a `#[cfg(test)]` module because this is a
 //! repo-wide invariant: a source-walking helper belongs neither in the shipped
-//! library nor in the `--fail-under-lines 96` denominator.
+//! library nor in the `--fail-under-lines 97` denominator.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

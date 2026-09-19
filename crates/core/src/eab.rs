@@ -2,7 +2,7 @@
 //! JWS a `newAccount` payload may carry, proving the client holds a
 //! pre-shared credential an operator issued out-of-band.
 //!
-//! Pure verification logic only -- no database access. `sqlite::eab`
+//! Pure verification logic only -- no database access. `acme_proxy_store::eab`
 //! is the persistence layer for the credentials themselves (create/find/list/
 //! revoke); this module only checks an already-looked-up secret against an
 //! already-parsed request. The same split `dns` and

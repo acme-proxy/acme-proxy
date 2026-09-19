@@ -1,8 +1,9 @@
 //! The `--limit`/`--offset` window every paged listing takes.
 //!
-//! Four commands page — `account list`, `order list` (both queries) and
-//! `audit list` — and every one of them wants the same default, the same two
-//! clamps and the same envelope under `--json`. That envelope is
+//! Every listing in the binary pages — `account`, `order` (both queries),
+//! `audit`, `jobs`, `eab`, `upstream order`, `admin user` and `admin session` —
+//! and every one of them wants the same default, the same two clamps and the
+//! same envelope under `--json`. That envelope is
 //! [`crate::cli::render::json_page`]; this is the window that produced it.
 
 /// Default rows per page.

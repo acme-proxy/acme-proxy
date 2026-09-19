@@ -32,7 +32,7 @@ pub fn dns_identifiers(values: &[&str]) -> Vec<acme_proxy_core::identifier::Iden
 /// An account in the `default` profile, returning its id.
 ///
 /// Three modules had grown a verbatim copy of this (`admin::ops`,
-/// `admin::render`, `sqlite::order`) — the same accumulation as `TempDir` and
+/// `admin::render`, `crate::order`) — the same accumulation as `TempDir` and
 /// the `Identifier` builders, and the reason both now live somewhere shared.
 pub async fn account_id(database: &std::sync::Arc<crate::db::Database>) -> uuid::Uuid {
     let (account, _) = crate::account::Account::find_or_create(

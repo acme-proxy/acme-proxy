@@ -12,8 +12,10 @@
 //! Finalizing an ACME order turns the client's CSR into an issued certificate.
 //! *How* that happens is pluggable: the [`SignerBackend`] trait hides the backend
 //! behind a single [`issue`](SignerBackend::issue) call, and [`from_config`]
-//! builds the configured one at startup. The only backend implemented today is
-//! [`local_ca::LocalCa`] — a persistent local CA.
+//! builds the configured one. Three backends exist: [`local_ca::LocalCa`], a
+//! persistent local CA (its key in a file or behind PKCS#11); [`relay`], which
+//! obtains the certificate from an upstream ACME server; and [`custom`], which
+//! delegates to an operator script.
 //!
 //! Revocation (RFC 8555 §7.6) is part of the same abstraction:
 //! [`revoke`](SignerBackend::revoke) must actually revoke the certificate at
@@ -45,9 +47,9 @@
 //!
 //! ## Certificate validity is a backend policy
 //!
-//! Leaf validity is decided by the backend, not by the caller or the order — see
-//! [`local_ca::LocalCa`], which uses its own `leaf_validity_days`. A delegating
-//! backend would have no validity knob at all (the upstream CA decides).
+//! The order's requested window reaches the backend as a [`RequestedValidity`],
+//! and the backend has the last word: [`local_ca::LocalCa`] clamps it to its own
+//! `leaf_validity_days`, and a delegating backend leaves it to whoever signs.
 //!
 //! ## A backend outlives the configuration it was built from
 //!

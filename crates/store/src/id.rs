@@ -25,6 +25,25 @@
 //! of it. What there is instead is [`parse`], for the one direction that can
 //! fail.
 //!
+//! ## The type of an id parameter says where it came from
+//!
+//! In this crate, an id parameter typed `&str` means "this may be junk from
+//! outside the process": the function parses it with [`parse`] and answers
+//! "absent" when it does not parse. One typed [`Uuid`] means "the caller read
+//! this out of a row". There is no third case, and no parallel `_uuid` variant
+//! of any function.
+//!
+//! The rule is not stylistic. A `String` bound against a BLOB never compares
+//! equal in SQLite, so an internal lookup left taking `&str` would match
+//! nothing, silently, for ever — and a test that inserts a row with a
+//! hand-written id and asserts it is gone afterwards would pass whether or not
+//! the code under test ran. Typed as `Uuid`, a stale fixture is a compile
+//! error. The functions that keep `&str` are the ones fed from a URL, a
+//! credential or a job payload: `Account::find_by_id`/`find_any_by_id`/`delete`,
+//! `Order::find_by_id`/`delete`, `Authorization::find_by_id`,
+//! `Challenge::find_by_id`, `Eab::find_by_kid`/`find_any_by_kid`/`revoke`, and
+//! the `UpstreamOrder` family.
+//!
 //! Three mints in this crate are deliberately **not** row ids and do not come
 //! through [`mint`]: the `x-request-id` fallback
 //! (`middlewares::access`), the job runner's lease-owner id

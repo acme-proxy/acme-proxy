@@ -51,7 +51,9 @@ graph TD
     DEC -->|unparsable| EMAL["malformed (400)"]
     DEC --> CRIT{"crit header present?"}
     CRIT -->|"yes — this server<br/>implements none"| EMAL
-    CRIT -->|no| AUTH{"jwk or kid?"}
+    CRIT -->|no| URL{"JWS url equals<br/>the route reached?"}
+    URL -->|"no — §6.4"| EMAL
+    URL -->|yes| AUTH{"jwk or kid?"}
     AUTH -->|"both, or neither"| EMAL
     AUTH -->|jwk| JWK["Re-encode the key as DER SPKI"]
     AUTH -->|kid| KID["Load the account, then check the<br/>stored SPKI's own OID against alg"]
@@ -60,9 +62,7 @@ graph TD
     JWK --> SIG{"Signature verifies?<br/>ES256 or RS256, via ring"}
     KID --> SIG
     SIG -->|no| E401["unauthorized (401)"]
-    SIG -->|yes| URL{"JWS url equals<br/>the route reached?"}
-    URL -->|"no — §6.4"| EMAL
-    URL -->|yes| NONCE{"Nonce fresh and unused?"}
+    SIG -->|yes| NONCE{"Nonce fresh and unused?"}
     NONCE -->|"no — §6.5"| EBAD["badNonce (400)"]
     NONCE -->|yes| H["Handler"]
 ```

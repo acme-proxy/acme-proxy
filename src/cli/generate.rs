@@ -4,7 +4,7 @@
 //! Both render from [`Cli::command()`] — the same builder `clap` parses argv
 //! with — rather than from a script or a roff file checked in beside it. That
 //! is the whole reason they exist as generators: the CLI is deliberately not
-//! frozen before 1.0.0 (see `CLAUDE.md`), so a hand-maintained completion
+//! frozen before 1.0.0 (ADR 0001, in the book), so a hand-maintained completion
 //! script or man page goes stale at the first rename with nothing in CI to say
 //! so, while a generated one cannot.
 //!

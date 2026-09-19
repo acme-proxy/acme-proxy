@@ -4,7 +4,7 @@
 //! `TEXT` columns with a `CHECK` naming the values each may hold, and the code
 //! around them used to compare against string literals — `order.status ==
 //! "valid"`, `authz.status != "pending"` — at thirty-odd sites spread over
-//! `handlers/`, `sqlite/` and the relay flow. A typo in one of those compiles
+//! the handlers, the storage layer and the relay flow. A typo in one of those compiles
 //! and silently changes policy: `!= "readyy"` is always true, and the order it
 //! guards becomes finalizable for names nobody proved control of.
 //!

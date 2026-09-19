@@ -38,7 +38,7 @@ use tokio::sync::watch;
 
 /// Epoch seconds, the representation every schedule column uses.
 ///
-/// Spelled out rather than reaching for `sqlite::nonce::now_secs`, which is
+/// Spelled out rather than reaching for `acme_proxy_store::nonce::now_secs`, which is
 /// `pub(crate)` — an integration test links against the crate from outside and
 /// sees only its public surface, which is the point of testing from here.
 fn now_secs() -> i64 {
@@ -429,7 +429,7 @@ impl JobHandler for Stealable {
 
 /// A runner that overran its lease settles nothing and tells nobody.
 ///
-/// `sqlite::job`'s own suite proves the `AND lease_owner = ?` guard refuses the
+/// `acme_proxy_store::job`'s own suite proves the `AND lease_owner = ?` guard refuses the
 /// write. This is the half above it: what the *runner* does when that refusal
 /// comes back. `retire` must swallow it — no `abandon` hook, because the job is
 /// now somebody else's to finish and a handler that announced failure here

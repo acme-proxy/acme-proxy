@@ -29,10 +29,10 @@ keeps its corpses stops being read.
       both dialects. `every_id_column_is_declared_a_blob` (`crates/store/src/db.rs`)
       is the list of columns that move, and the two it names as deliberate
       exceptions are the two to leave as text there too. What *is*
-      dialect-specific is `sqlite::id::parse`, which exists because a `&str`
+      dialect-specific is `acme_proxy_store::id::parse`, which exists because a `&str`
       bound against a BLOB matches nothing where Postgres would refuse the
       parameter outright; the seam is already one function, and the eleven
-      callers named in `crates/CLAUDE.md` are the whole of what depends on it.
+      callers named in `crates/store/src/id.rs` are the whole of what depends on it.
 
 ## Observability
 

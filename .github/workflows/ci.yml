@@ -378,7 +378,7 @@ jobs:
   # A subset, but no longer only the three challenge types. **A scenario CI does
   # not run rots**, and that is not hypothetical here: `tests/e2e/reload.rs`
   # asserted the *opposite* of the intended behaviour after the signer freeze
-  # was lifted and stayed green, because nothing ran it (see `tests/CLAUDE.md`).
+  # was lifted and stayed green, because nothing ran it.
   # So the filter now also carries the scenarios that assert behaviour the unit
   # suite structurally cannot reach — SIGHUP against a live process
   # (`reload`), a real upstream ACME CA (`relay_signer`), and the filter chain

@@ -428,9 +428,9 @@ mod tests {
     /// `created_at` is a whole second, so two keys minted in one test share it
     /// and the `kid` tie-break decides. That used to be a random uuid, and this
     /// test could say nothing about which came first; a `kid` is now a UUID v7
-    /// (`sqlite::id::mint`), so the tie-break is insertion order -- the same
+    /// (`crate::id::mint`), so the tie-break is insertion order -- the same
     /// observable `list_all_returns_every_user_and_empty_is_empty`
-    /// (`sqlite::admin_user`) asserts, and for the same reason. It holds only
+    /// (`crate::admin_user`) asserts, and for the same reason. It holds only
     /// for rows minted since that change, nothing having been backfilled.
     ///
     /// The direction is what `pages::eab::create_eab` rests on: it re-renders

@@ -1,3 +1,29 @@
+//! The connection, and the only holder of the pool.
+//!
+//! **Opening a database never migrates it.** [`Database::open`] connects;
+//! [`Database::migrate`] applies the embedded set and
+//! [`Database::pending_migrations`] reports what is unapplied. Applying the
+//! schema is a named act with two callers — `acme-proxy migrate`/`init`, and a
+//! `serve` running the `worker` role — rather than a side effect of opening a
+//! file, since two processes starting together would otherwise race
+//! `MIGRATOR.run` with no lock between them. `tests/layering.rs`
+//! (`only_the_schema_owners_apply_migrations`) keeps it at two callers.
+//!
+//! **The pool is private to this crate.** A caller elsewhere opens a [`Tx`]
+//! through [`Database::transaction`] or reads [`Database::pool_stats`];
+//! [`Database::raw_pool`] exists for test fixtures only, and `tests/layering.rs`
+//! fails when production code calls it. [`Database::close`] is how the failure
+//! suites simulate an outage.
+//!
+//! Two pragmas are pinned on every connection: `foreign_keys` (the schema's
+//! `ON DELETE CASCADE` depends on it) and `journal_mode = WAL` (every ACME
+//! response writes a nonce row, and the rollback journal takes a database-wide
+//! lock per write).
+//!
+//! The tests at the bottom of this file are the migration guards: every
+//! rebuild's row preservation, and every declared width pinned to the constant
+//! it follows.
+
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -10,9 +36,9 @@ static MIGRATOR: Migrator = sqlx::migrate!(); // defaults to "./migrations"
 
 /// The connection pool, and the only way to reach it.
 ///
-/// The pool is private to `sqlite/`: everything else goes through a table
+/// The pool is private to this crate: everything else goes through a table
 /// module, [`Database::transaction`] or [`Database::pool_stats`]. That is what
-/// keeps SQL — and the dialect it is written in — in one module tree.
+/// keeps SQL — and the dialect it is written in — in one crate.
 pub struct Database {
     pub(crate) pool: Pool<Sqlite>,
 }
@@ -20,7 +46,7 @@ pub struct Database {
 /// One database transaction, handed out by [`Database::transaction`].
 ///
 /// A wrapper rather than `sqlx::Transaction` itself, so the pool it is drawn
-/// from stays this module's business: a caller outside `sqlite/` can open a
+/// from stays this crate's business: a caller outside it can open a
 /// transaction without being able to reach the pool. It derefs to the
 /// connection, so `&mut *tx` is what every table method taking an executor or a
 /// `&mut SqliteConnection` is handed. Dropped without [`Tx::commit`], it rolls
@@ -93,7 +119,7 @@ impl Database {
     ///
     /// Public because the integration tests under `tests/` are another crate.
     /// Production code must not call it — `tests/layering.rs` fails the build
-    /// when it appears in `src/` outside `sqlite/` and outside a `#[cfg(test)]`
+    /// when it appears outside `crates/store/` and outside a `#[cfg(test)]`
     /// module.
     #[doc(hidden)]
     #[must_use]
@@ -741,7 +767,7 @@ mod tests {
     }
 
     /// One row per table, each carrying a UUID v4 in every id column — the
-    /// shape a database written before `sqlite::id` existed holds.
+    /// shape a database written before `crate::id` existed holds.
     const SEED_V4_ROWS: &str = "\
 INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, eab_kid) VALUES
   ('11111111-1111-4111-8111-111111111111', 'default', X'AA', '[]', 'valid', 100,

@@ -9,7 +9,7 @@
 //! What only this suite can show is that the three really are one system: the
 //! inline tests prove `RoleSet` parses and `plan_schema` decides, but nothing
 //! there starts three processes against one **file-backed** `SQLite` and watches
-//! work cross between them. The four claims here are the ones a split
+//! work cross between them. The five claims here are the ones a split
 //! deployment rests on:
 //!
 //! 1. An `acme` process serves ACME and an `admin` process serves the panel,
@@ -447,8 +447,9 @@ async fn fetch(addr: std::net::SocketAddr, path: &str) -> (u16, Vec<u8>) {
     (status, response[split + 4..].to_vec())
 }
 
-/// **Phase E's claim.** The `acme` and `admin` processes run with no CA key to
-/// read — their configuration points `key_path` at a file that does not exist,
+/// **The CA key stays with the worker.** The `acme` and `admin` processes run
+/// with no CA key to read — their configuration points `key_path` at a file
+/// that does not exist,
 /// as a uid that cannot read the worker's would see it — and still serve the
 /// CA's certificate and CRL, while the worker signs what is queued and the CRL
 /// the acme process serves follows a revocation recorded without the key.

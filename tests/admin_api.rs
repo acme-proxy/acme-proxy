@@ -4259,7 +4259,7 @@ async fn the_expiring_api_lists_annotates_filters_and_refuses_every_way_of_writi
 
     // Hiding the replaced rows drops them from the page and says how many —
     // and deliberately leaves `total` counting the window, because the
-    // annotation is not a SQL predicate. See `sqlite::expiring::list_expiring`.
+    // annotation is not a SQL predicate. See `acme_proxy_store::expiring::list_expiring`.
     let hidden = json_body(
         admin_request(
             &app,

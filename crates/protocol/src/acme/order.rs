@@ -196,7 +196,7 @@ async fn check_replaces(
 /// The column and not the index name — SQLite reports a partial unique index
 /// violation as `UNIQUE constraint failed: orders.profile, orders.replaces`,
 /// naming the columns and never `idx_orders_replaces_claim`. Pinned by
-/// `sqlite::db::tests::one_predecessor_can_only_be_claimed_by_one_live_order`,
+/// `acme_proxy_store::db::tests::one_predecessor_can_only_be_claimed_by_one_live_order`,
 /// which asserts on the message this reads.
 fn is_replaces_conflict(error: &sqlx::Error) -> bool {
     matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()
