@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use clap::Subcommand;
 
-use crate::admin;
 use crate::cli::CliError;
+use acme_proxy_admin::admin;
 use acme_proxy_core::config::Config;
 use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::db::Database;

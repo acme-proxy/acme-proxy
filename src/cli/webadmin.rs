@@ -17,15 +17,16 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use crate::admin;
-use crate::admin::mfa;
-use crate::admin::ops::DeleteOutcome;
-use crate::admin::password::PasswordContext;
-use crate::admin::prompt::confirm;
-use crate::admin::users::{self, UserError};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use acme_proxy_admin::admin;
+use acme_proxy_admin::admin::mfa;
+use acme_proxy_admin::admin::ops::DeleteOutcome;
+use acme_proxy_admin::admin::password::PasswordContext;
+use acme_proxy_admin::admin::prompt::confirm;
+use acme_proxy_admin::admin::users;
+use acme_proxy_admin::admin::users::UserError;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_jobs::auditor::admin as audit_admin;

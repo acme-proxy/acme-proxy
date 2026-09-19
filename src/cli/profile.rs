@@ -1,7 +1,7 @@
 //! `profile list` — the ACME endpoints this configuration mounts.
 //!
 //! The terminal's half of `GET /api/profiles`. Both render
-//! [`crate::admin::render_profile_json`], and they reach it from opposite
+//! [`acme_proxy_admin::admin::render_profile_json`], and they reach it from opposite
 //! directions: the API describes a **mounted** [`acme_proxy_protocol::profile::Profile`],
 //! where this describes what the configuration on disk *would* mount.
 //!
@@ -17,9 +17,10 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use crate::admin::{self, ProfileSummary};
 use crate::cli::CliError;
 use crate::cli::render;
+use acme_proxy_admin::admin;
+use acme_proxy_admin::admin::ProfileSummary;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 

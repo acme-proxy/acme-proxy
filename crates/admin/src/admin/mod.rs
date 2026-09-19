@@ -1,6 +1,6 @@
 //! Administrative operations, shared by both front ends and owned by neither.
 //!
-//! [`crate::cli`] and [`crate::webadmin`] are the two front ends; everything
+//! `cli` and [`crate::webadmin`] are the two front ends; everything
 //! they can do lives here, so the password policy, the duplicate check and the
 //! rehash-on-login cannot drift between a terminal and a browser.
 //!
@@ -9,7 +9,7 @@
 //!   (an order's revocation, an account's traceability columns) the ACME wire
 //!   format deliberately does not carry. **JSON only**: both front ends parse
 //!   these, so they are a wire format. The human-readable renderings have
-//!   exactly one consumer and live in [`crate::cli::render`], which is where
+//!   exactly one consumer and live in `cli::render`, which is where
 //!   colour is woven in — and therefore cannot reach a `--json` shape.
 //! - [`password`], [`users`] — the credential store and the KDF.
 //! - [`totp`], [`recovery`], [`mfa`] — the second factor: RFC 6238 over RFC 4226,

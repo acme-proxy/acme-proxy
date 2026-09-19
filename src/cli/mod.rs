@@ -10,12 +10,12 @@
 //! `serve` is one arm like the others: the server runtime itself lives in
 //! [`crate::server`], and [`serve`] only turns its failure into a [`CliError`].
 //!
-//! The logic behind each admin subcommand lives in [`crate::admin`], not here;
+//! The logic behind each admin subcommand lives in [`acme_proxy_admin::admin`], not here;
 //! this module is the `clap` surface over it. [`logging`] turns `[logging]` into
 //! an installed subscriber, validating every value before installing anything.
 //!
 //! What a command *prints* is [`render`]'s, and how it is coloured is
-//! [`style`]'s. Those renderings sit here rather than in [`crate::admin`]
+//! [`style`]'s. Those renderings sit here rather than in [`acme_proxy_admin::admin`]
 //! because they have exactly one consumer — the terminal — where the JSON ones
 //! beside them are a wire format the web admin parses too. [`dispatch`]
 //! resolves one [`Palette`] and threads it down; `nonce` and `upstream` take

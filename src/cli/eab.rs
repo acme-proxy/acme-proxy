@@ -3,10 +3,11 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use crate::admin::{self, EabDeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use acme_proxy_admin::admin;
+use acme_proxy_admin::admin::EabDeleteOutcome;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::db::Database;

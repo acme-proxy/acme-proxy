@@ -19,7 +19,7 @@ use super::supervisor::Cells;
 /// anything binds**, so a misconfigured panel cannot take the ACME listener
 /// down with it halfway through startup.
 pub(super) async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<TcpListener>> {
-    crate::webadmin::check_config(config).inspect_err(|error| {
+    acme_proxy_admin::webadmin::check_config(config).inspect_err(|error| {
         error!(event = "admin_config_invalid", outcome = "failure", error = %error);
     })?;
 
@@ -41,7 +41,7 @@ pub(super) async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<Tc
 /// Refuses a `[metrics]` bind address that collides with another listener's.
 ///
 /// Pure, so a reload runs the same check before rebinding anything — the twin of
-/// [`crate::webadmin::check_config`], and beside it in `apply_reload` for the
+/// [`acme_proxy_admin::webadmin::check_config`], and beside it in `apply_reload` for the
 /// same reason: a listener configuration that would not start must not be one a
 /// running server can be reloaded into.
 ///
@@ -336,7 +336,8 @@ pub(super) async fn announce_admin_listener(
     // enrol before their session becomes usable, and that stays worth seeing
     // for exactly as long as it is true.
     if config.admin.require_mfa
-        && let Ok(count) = crate::admin::mfa::operators_without_a_factor(database.clone()).await
+        && let Ok(count) =
+            acme_proxy_admin::admin::mfa::operators_without_a_factor(database.clone()).await
         && count > 0
     {
         warn!(
@@ -358,7 +359,7 @@ pub(super) async fn announce_admin_listener(
         // Nothing configured: no notifications were promised, so an operator
         // without an address is not a gap.
     } else if let Ok(count) =
-        crate::admin::users::operators_without_a_contact(database.clone()).await
+        acme_proxy_admin::admin::users::operators_without_a_contact(database.clone()).await
         && count > 0
     {
         warn!(

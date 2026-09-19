@@ -185,8 +185,8 @@ fn the_request_path_never_holds_a_signer() {
         "crates/protocol/src/handlers",
         "crates/protocol/src/extractors",
         "crates/protocol/src/middlewares",
-        "src/webadmin",
-        "src/admin",
+        "crates/admin/src/webadmin",
+        "crates/admin/src/admin",
         "crates/protocol/src/router.rs",
         "crates/protocol/src/profile.rs",
     ];

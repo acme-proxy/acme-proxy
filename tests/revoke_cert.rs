@@ -456,7 +456,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
             .await
             .unwrap()
             .expect("the issued order is found by its serial");
-    let outcome = acme_proxy::admin::revoke_order(
+    let outcome = acme_proxy_admin::admin::revoke_order(
         &order.id.to_string(),
         Some(1),
         acme_proxy_core::audit::Actor::cli(),
@@ -470,7 +470,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
     .unwrap();
     assert!(matches!(
         outcome,
-        acme_proxy::admin::RevokeOutcome::Revoked(_)
+        acme_proxy_admin::admin::RevokeOutcome::Revoked(_)
     ));
 
     let res = get(&app, &p("/crl")).await;

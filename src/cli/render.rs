@@ -1,6 +1,6 @@
 //! The human-readable renderings, and the only place colour is woven in.
 //!
-//! These lived in [`crate::admin::render`] beside the JSON ones until colour
+//! These lived in [`acme_proxy_admin::admin::render`] beside the JSON ones until colour
 //! arrived. The split is where the sharing actually is: every `render_*_json`
 //! is read by both front ends (`src/webadmin/pages/`, `src/webadmin/handlers/`)
 //! and must stay byte-identical for a script parsing `--json`, while **every
@@ -22,8 +22,10 @@
 use base64::prelude::*;
 
 use super::window::Window;
-use crate::admin::ProfileSummary;
-use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
+use acme_proxy_admin::admin::ProfileSummary;
+use acme_proxy_admin::admin::ops::JobDetail;
+use acme_proxy_admin::admin::ops::OrderDetail;
+use acme_proxy_admin::admin::ops::UpstreamOrderDetail;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::account::pubkey_fingerprint;
@@ -296,7 +298,7 @@ pub fn render_job_line(job: &Job, palette: Palette) -> String {
 }
 
 /// `jobs show`, one field per line, then — for a relay job — the upstream
-/// order block. Tracks [`crate::admin::render::render_job_detail_json`] member
+/// order block. Tracks [`acme_proxy_admin::admin::render::render_job_detail_json`] member
 /// for member, omitting every field that was not recorded.
 #[must_use]
 pub fn render_job_detail_text(detail: &JobDetail, palette: Palette) -> String {
@@ -469,7 +471,7 @@ fn problem_summary(error: &serde_json::Value) -> String {
 
 /// `order show`, one field per line, then the authorization tree.
 ///
-/// Tracks [`crate::admin::render::render_order_detail_json`] member for member,
+/// Tracks [`acme_proxy_admin::admin::render::render_order_detail_json`] member for member,
 /// omitting every field that was not recorded rather than rendering it empty —
 /// the shape [`render_account_detail_text`] and [`render_audit_detail_text`]
 /// already have. It printed six fields until now, while its own `--json`
@@ -749,7 +751,7 @@ pub fn render_admin_session_line(session: &AdminSession, palette: Palette) -> St
 /// The envelope a paged `--json` listing answers with.
 ///
 /// Deliberately the same four members, spelled the same way, as
-/// [`crate::webadmin::handlers::paging::page_envelope`]: `total` is what the
+/// [`acme_proxy_admin::webadmin::handlers::paging::page_envelope`]: `total` is what the
 /// same filters match **unpaged**, which is the whole difference between having
 /// read the table and having read a page of it, and a script should not have to
 /// learn one shape for the API and another for the shell.
@@ -838,7 +840,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::admin::ops::load_order_detail;
+    use acme_proxy_admin::admin::ops::load_order_detail;
     use acme_proxy_core::audit::ClientContext;
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_store::authz::Authorization;
@@ -983,13 +985,13 @@ mod tests {
         assert_eq!(envelope["offset"], 4);
         assert_eq!(envelope["items"].as_array().unwrap().len(), 1);
 
-        let page = crate::webadmin::handlers::paging::Page {
+        let page = acme_proxy_admin::webadmin::handlers::paging::Page {
             limit: 2,
             offset: 4,
         };
         assert_eq!(
             envelope,
-            crate::webadmin::handlers::paging::page_envelope(
+            acme_proxy_admin::webadmin::handlers::paging::page_envelope(
                 vec![serde_json::json!({"id": "a"})],
                 17,
                 page
@@ -1440,7 +1442,10 @@ mod tests {
             authorizations: vec![],
         };
 
-        let json = crate::admin::render::render_order_detail_json(&detail, "http://localhost:3000");
+        let json = acme_proxy_admin::admin::render::render_order_detail_json(
+            &detail,
+            "http://localhost:3000",
+        );
         let members: std::collections::BTreeSet<&str> = json["order"]
             .as_object()
             .unwrap()

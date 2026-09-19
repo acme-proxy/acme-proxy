@@ -21,10 +21,10 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use crate::admin;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use crate::cli::{CliError, resolve_profile};
+use acme_proxy_admin::admin;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_signer::relay;

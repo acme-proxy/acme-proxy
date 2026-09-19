@@ -19,7 +19,7 @@ use acme_proxy_protocol::profile::Profile;
 use acme_proxy_protocol::profile::ProfileParts;
 use acme_proxy_protocol::router::build_app;
 
-use acme_proxy::admin::password::PasswordContext;
+use acme_proxy_admin::admin::password::PasswordContext;
 use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
@@ -1071,7 +1071,7 @@ async fn admin_app_with_notifiers(
         &backends,
         test_auditor(database.clone()),
     );
-    let router = acme_proxy::webadmin::build_admin_app(
+    let router = acme_proxy_admin::webadmin::build_admin_app(
         database.clone(),
         Arc::new(config),
         &[profile],
@@ -1091,7 +1091,7 @@ pub async fn test_admin_app_logged_in_with_security_notify(
     let (harness, notifiers) = NotifyHarness::admin().await;
     let (app, database, _signer) =
         admin_app_with_notifiers(config, Arc::new(FilterPolicy::default()), notifiers).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1100,7 +1100,7 @@ pub async fn test_admin_app_logged_in_with_security_notify(
     )
     .await
     .expect("the bootstrap operator must be creatable");
-    acme_proxy::admin::users::set_contact_email(
+    acme_proxy_admin::admin::users::set_contact_email(
         "alice",
         Some("alice@example.com"),
         database.clone(),
@@ -1215,7 +1215,7 @@ pub async fn test_admin_app_logged_in_with_filter(
     filter: Arc<FilterPolicy>,
 ) -> (Router, Arc<Database>, AdminSessionHandle) {
     let (app, database, _signer) = admin_app_with(config, filter).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1296,7 +1296,7 @@ pub async fn enrol_totp(database: Arc<Database>, username: &str) -> Vec<u8> {
         .unwrap()
         .expect("the operator must exist before enrolling them");
 
-    let enrolment = acme_proxy::admin::mfa::begin_totp_enrolment(
+    let enrolment = acme_proxy_admin::admin::mfa::begin_totp_enrolment(
         &mut user,
         "http://localhost:3001",
         database.clone(),
@@ -1305,7 +1305,7 @@ pub async fn enrol_totp(database: Arc<Database>, username: &str) -> Vec<u8> {
     .unwrap();
 
     let code = totp_code(&enrolment.secret, 0);
-    acme_proxy::admin::mfa::confirm_totp_enrolment(&mut user, &code, None, database)
+    acme_proxy_admin::admin::mfa::confirm_totp_enrolment(&mut user, &code, None, database)
         .await
         .unwrap()
         .expect("a freshly generated code must confirm its own enrolment");
@@ -1365,7 +1365,7 @@ pub fn base32_decode(encoded: &str) -> Vec<u8> {
 /// code computed as "now + 2" lands outside the ±1 window by the time it is
 /// submitted. Reach for this only where the *code itself* is the subject.
 pub fn totp_code(secret: &[u8], steps: i64) -> String {
-    use acme_proxy::admin::totp;
+    use acme_proxy_admin::admin::totp;
     totp::totp_at(secret, totp::step_at(now_unix()) + steps, totp::DIGITS)
 }
 

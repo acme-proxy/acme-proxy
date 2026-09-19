@@ -6,7 +6,7 @@
 
 mod common;
 
-use acme_proxy::admin::password::PasswordContext;
+use acme_proxy_admin::admin::password::PasswordContext;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
@@ -25,7 +25,7 @@ use serde_json::json;
 #[tokio::test]
 async fn login_sets_a_hardened_cookie_and_returns_a_csrf_token() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -72,7 +72,7 @@ async fn login_sets_a_hardened_cookie_and_returns_a_csrf_token() {
 #[tokio::test]
 async fn every_login_failure_is_indistinguishable_to_the_client() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -81,7 +81,7 @@ async fn every_login_failure_is_indistinguishable_to_the_client() {
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -90,7 +90,7 @@ async fn every_login_failure_is_indistinguishable_to_the_client() {
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_status(
+    acme_proxy_admin::admin::users::set_status(
         "bob",
         acme_proxy_store::admin_user::AdminStatus::Disabled,
         database,
@@ -135,7 +135,7 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -287,7 +287,7 @@ async fn a_session_deleted_out_from_under_the_request_stops_authenticating() {
 #[tokio::test]
 async fn an_expired_session_is_refused_and_swept() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    let hash = acme_proxy::webadmin::session::hash_token(&session.cookie);
+    let hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
     sqlx::query("UPDATE admin_sessions SET expires_at = 1 WHERE token_hash = ?;")
         .bind(&hash)
         .execute(database.raw_pool())
@@ -313,7 +313,7 @@ async fn an_idle_session_is_refused_with_its_own_code() {
     config.admin.session_idle_timeout_seconds = 60;
     let (app, database, session) = test_admin_app_logged_in(config).await;
 
-    let hash = acme_proxy::webadmin::session::hash_token(&session.cookie);
+    let hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
     sqlx::query(
         "UPDATE admin_sessions SET last_seen_at = last_seen_at - 600 WHERE token_hash = ?;",
     )
@@ -337,7 +337,7 @@ async fn disabling_an_operator_stops_their_live_session() {
         StatusCode::OK
     );
 
-    acme_proxy::admin::users::set_status(
+    acme_proxy_admin::admin::users::set_status(
         "alice",
         acme_proxy_store::admin_user::AdminStatus::Disabled,
         database,
@@ -364,7 +364,7 @@ async fn disabling_an_operator_stops_their_live_session() {
 #[tokio::test]
 async fn a_factorless_login_is_completely_unchanged() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -409,7 +409,7 @@ async fn a_factorless_login_is_completely_unchanged() {
 #[tokio::test]
 async fn a_factor_bearing_login_stops_half_way_and_says_so() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -461,7 +461,7 @@ async fn a_factor_bearing_login_stops_half_way_and_says_so() {
 #[tokio::test]
 async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -533,7 +533,7 @@ async fn a_valid_code_promotes_the_session_onto_a_brand_new_token() {
 #[tokio::test]
 async fn a_code_cannot_be_spent_twice() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -586,7 +586,7 @@ async fn a_code_cannot_be_spent_twice() {
 #[tokio::test]
 async fn a_wrong_code_is_indistinguishable_from_a_wrong_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -639,7 +639,7 @@ async fn the_code_step_shares_the_login_limiter() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -712,7 +712,7 @@ async fn the_code_step_is_bounded_per_session_and_not_only_per_address() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -725,7 +725,7 @@ async fn the_code_step_is_bounded_per_session_and_not_only_per_address() {
 
     let (cookie, csrf) = admin_login_pending(&app, "alice", ADMIN_PASSWORD).await;
     let pending = AdminSessionHandle { cookie, csrf };
-    let token_hash = acme_proxy::webadmin::session::hash_token(&pending.cookie);
+    let token_hash = acme_proxy_admin::webadmin::session::hash_token(&pending.cookie);
 
     // Each guess arrives from a *different* address, so the address-keyed
     // limiter never accumulates anything. Only the session counter does.
@@ -776,7 +776,7 @@ async fn the_password_step_does_not_clear_the_limiter_while_a_factor_is_outstand
     let mut config = admin_config();
     config.admin.login_max_attempts = 3;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -830,7 +830,7 @@ async fn the_password_step_does_not_clear_the_limiter_while_a_factor_is_outstand
 #[tokio::test]
 async fn last_login_is_stamped_at_promotion_not_at_the_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -877,7 +877,7 @@ async fn last_login_is_stamped_at_promotion_not_at_the_password() {
 #[tokio::test]
 async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -892,7 +892,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
         .await
         .unwrap()
         .unwrap();
-    let codes = acme_proxy::admin::mfa::regenerate_recovery_codes(&user, database.clone())
+    let codes = acme_proxy_admin::admin::mfa::regenerate_recovery_codes(&user, database.clone())
         .await
         .unwrap();
 
@@ -908,7 +908,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        acme_proxy::admin::mfa::recovery_codes_remaining(user.id, database.clone())
+        acme_proxy_admin::admin::mfa::recovery_codes_remaining(user.id, database.clone())
             .await
             .unwrap(),
         9
@@ -930,7 +930,7 @@ async fn a_recovery_code_finishes_a_login_and_is_then_spent() {
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        acme_proxy::admin::mfa::recovery_codes_remaining(user.id, database)
+        acme_proxy_admin::admin::mfa::recovery_codes_remaining(user.id, database)
             .await
             .unwrap(),
         9
@@ -1034,7 +1034,7 @@ async fn enrolment_shows_the_secret_once_and_the_codes_once() {
 #[tokio::test]
 async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1098,7 +1098,7 @@ async fn a_step_up_password_is_rate_limited_and_shares_the_sign_in_budget() {
 #[tokio::test]
 async fn recovery_codes_can_be_reissued_and_supersede_the_previous_set() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1173,7 +1173,7 @@ async fn require_mfa_makes_a_factorless_operator_enrol_before_the_session_works(
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1247,7 +1247,7 @@ async fn require_mfa_makes_a_factorless_operator_enrol_before_the_session_works(
 #[tokio::test]
 async fn a_session_that_owes_a_code_cannot_enrol_its_way_past_it() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1289,7 +1289,7 @@ async fn disabling_the_factor_is_refused_while_require_mfa_is_on() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1316,7 +1316,7 @@ async fn disabling_the_factor_is_refused_while_require_mfa_is_on() {
 #[tokio::test]
 async fn disabling_the_factor_clears_the_codes_and_the_other_sessions() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1407,7 +1407,7 @@ const NEW_PASSWORD: &str = "a-different-long-password";
 #[tokio::test]
 async fn password_change_updates_the_hash_keeps_the_session_and_revokes_every_other() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1579,7 +1579,7 @@ fn mfa_step_endpoints() -> Vec<(Method, &'static str)> {
 #[tokio::test]
 async fn the_mfa_step_endpoints_need_a_pending_session_and_the_origin_gate() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1909,7 +1909,7 @@ async fn role_gates_every_mutating_endpoint() {
         ("olga", Some(AdminRole::Operator)),
         ("vera", Some(AdminRole::Viewer)),
     ] {
-        acme_proxy::admin::users::create_user(
+        acme_proxy_admin::admin::users::create_user(
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
@@ -1919,7 +1919,7 @@ async fn role_gates_every_mutating_endpoint() {
         .await
         .unwrap();
         if let Some(role) = role {
-            acme_proxy::admin::users::set_role(name, role, database.clone())
+            acme_proxy_admin::admin::users::set_role(name, role, database.clone())
                 .await
                 .unwrap()
                 .unwrap();
@@ -1980,7 +1980,7 @@ async fn the_operators_reads_are_admin_only() {
         ("olga", AdminRole::Operator),
         ("vera", AdminRole::Viewer),
     ] {
-        acme_proxy::admin::users::create_user(
+        acme_proxy_admin::admin::users::create_user(
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
@@ -2046,7 +2046,7 @@ async fn logout_is_reachable_by_every_role() {
         ("olga", AdminRole::Operator),
         ("vera", AdminRole::Viewer),
     ] {
-        acme_proxy::admin::users::create_user(
+        acme_proxy_admin::admin::users::create_user(
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
@@ -3109,7 +3109,7 @@ async fn profiles_reports_the_endpoints_actually_mounted() {
     // the terminal describing one endpoint differently.
     assert_eq!(
         profiles[0],
-        acme_proxy::admin::render_profile_json(&acme_proxy::admin::ProfileSummary {
+        acme_proxy_admin::admin::render_profile_json(&acme_proxy_admin::admin::ProfileSummary {
             name: PROFILE.to_string(),
             base_url: BASE.to_string(),
             // The harness's `ChallengeRegistry::default()`, which bypasses:
@@ -3309,7 +3309,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
     let mut config = admin_config();
     config.admin.enabled = true;
     let (app, database, signer) = test_admin_app_with_signer(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3427,7 +3427,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
 #[tokio::test]
 async fn changing_a_live_factor_requires_the_password_again() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3508,7 +3508,7 @@ async fn changing_a_live_factor_requires_the_password_again() {
 #[tokio::test]
 async fn a_first_enrolment_asks_for_no_password() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3630,7 +3630,7 @@ async fn an_oversized_admin_request_body_is_refused() {
     let mut config = admin_config();
     config.admin.max_body_bytes = 1024;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -4616,7 +4616,7 @@ async fn revoking_the_current_own_session_signs_it_out() {
 #[tokio::test]
 async fn own_sessions_route_cannot_reach_another_operators_session() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -4665,7 +4665,7 @@ async fn app_with_bob() -> (
     common::AdminSessionHandle,
 ) {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -4721,7 +4721,7 @@ async fn every_mutation_writes_one_audit_row_naming_the_operator_and_the_address
     let (relay_job, _) = seed_relay_job(&database).await;
     // A third operator, so the session revoked below is not one the
     // disable/enable cases have already dropped.
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "carol",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -5406,7 +5406,7 @@ async fn a_first_sign_in_and_a_contactless_operator_are_silent() {
 
     // A brand-new operator with no contact address, signing in for the first
     // time from an address nobody has used.
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "quiet",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -5494,7 +5494,7 @@ async fn a_refused_second_factor_notifies_the_operator() {
 async fn resetting_a_colleagues_factor_notifies_them_as_not_self() {
     let (app, database, alice, notify) =
         test_admin_app_logged_in_with_security_notify(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -5503,10 +5503,14 @@ async fn resetting_a_colleagues_factor_notifies_them_as_not_self() {
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_contact_email("bob", Some("bob@example.com"), database.clone())
-        .await
-        .unwrap()
-        .unwrap();
+    acme_proxy_admin::admin::users::set_contact_email(
+        "bob",
+        Some("bob@example.com"),
+        database.clone(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     enrol_totp(database.clone(), "bob").await;
 
     let response = admin_request(

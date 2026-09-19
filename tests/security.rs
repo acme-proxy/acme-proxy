@@ -783,7 +783,7 @@ async fn a_panicking_admin_handler_answers_in_the_right_shape_per_surface() {
 
     let api = Router::new()
         .route("/boom", get(boom))
-        .layer(acme_proxy::webadmin::catch_panic_admin_api());
+        .layer(acme_proxy_admin::webadmin::catch_panic_admin_api());
     let res = api
         .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
         .await
@@ -800,7 +800,7 @@ async fn a_panicking_admin_handler_answers_in_the_right_shape_per_surface() {
 
     let pages = Router::new()
         .route("/boom", get(boom))
-        .layer(acme_proxy::webadmin::catch_panic_admin_pages());
+        .layer(acme_proxy_admin::webadmin::catch_panic_admin_pages());
     let res = pages
         .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
         .await

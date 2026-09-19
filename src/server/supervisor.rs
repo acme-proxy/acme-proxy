@@ -47,7 +47,7 @@ pub(super) async fn supervise_reloads(
     mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     assembly: Arc<Assembly>,
     cells: Cells,
-    mut logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+    mut logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
 ) {
     let mut generation: u64 = 1;
 

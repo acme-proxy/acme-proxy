@@ -4,7 +4,7 @@
 //! hold**: everything here is read by the CLI's `--json` branches *and* by
 //! `src/webadmin/`, so a change is a change to a wire format two callers parse.
 //! The human-readable renderings are the CLI's alone and live in
-//! [`crate::cli::render`], which is where colour is woven in — none of it can
+//! `cli::render`, which is where colour is woven in — none of it can
 //! reach this file, so `--json` output stays byte-identical whatever the
 //! terminal is.
 //!

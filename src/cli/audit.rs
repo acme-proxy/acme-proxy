@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use clap::Subcommand;
 
-use crate::admin;
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use acme_proxy_admin::admin;
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_store::audit::AuditQuery;

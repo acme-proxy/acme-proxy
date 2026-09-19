@@ -33,7 +33,7 @@ pub(crate) struct Generation {
     pub(super) tls: Option<tls::TlsSettings>,
     pub(super) admin_tls: Option<tls::TlsSettings>,
     /// The limiter this generation ended up with, for the next one to carry.
-    pub(super) logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+    pub(super) logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
 }
 
 /// Builds one generation: profiles, both routers, the job registry, the audit
@@ -60,7 +60,7 @@ pub(crate) fn build_generation(
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
-    previous_logins: Option<&crate::webadmin::LoginLimiter>,
+    previous_logins: Option<&acme_proxy_admin::webadmin::LoginLimiter>,
 ) -> anyhow::Result<Generation> {
     let admin_enabled = config.admin.enabled;
     let database = assembly.database.clone();
@@ -351,7 +351,7 @@ pub(crate) fn build_generation(
     let (admin_app, logins) = match admin_enabled {
         false => (None, None),
         true => {
-            let (router, logins) = crate::webadmin::build_admin_app_with_logins(
+            let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
                 database.clone(),
                 config.clone(),
                 &profiles,
@@ -394,7 +394,7 @@ pub(super) struct Reloaded {
     pub(super) report: crate::reload::ReloadReport,
     pub(super) config: Arc<Config>,
     pub(super) resolved: Vec<acme_proxy_core::config::ProfileConfig>,
-    pub(super) logins: Option<Arc<crate::webadmin::LoginLimiter>>,
+    pub(super) logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
     /// Each socket this reload bound, with the address it landed on. Announced
     /// by the supervisor rather than here, because saying a listener is up
     /// reaches the database (the panel's "nobody can sign in yet" warning) and
@@ -458,7 +458,7 @@ pub(super) fn prepare_reload(
     config: &Arc<Config>,
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
-    logins: Option<&crate::webadmin::LoginLimiter>,
+    logins: Option<&acme_proxy_admin::webadmin::LoginLimiter>,
 ) -> Result<Prepared, crate::reload::ReloadError> {
     use crate::reload::{Applied, ReloadError, check_frozen};
 
@@ -496,7 +496,8 @@ pub(super) fn prepare_reload(
     // that would refuse to start refuses to be reloaded into. It also compiles
     // every `admin.template_dir` override, which is what keeps a broken one a
     // failed reload rather than a 500 in a browser.
-    crate::webadmin::check_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;
+    acme_proxy_admin::webadmin::check_config(&next)
+        .map_err(|error| ReloadError::Build(error.to_string()))?;
     // Its twin for the third listener: `webadmin::check_config` sees the
     // admin-versus-server pair, this one sees the two it cannot.
     check_metrics_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;

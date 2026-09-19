@@ -81,8 +81,8 @@
 //! - [`metrics`](acme_proxy_jobs::metrics) - The Prometheus registry and its text exposition
 //!
 //! Administration, which serves no ACME and is a second listener plus a CLI:
-//! - [`admin`] - The operation layer both front ends dispatch to
-//! - [`webadmin`] - The optional HTML + JSON admin listener
+//! - [`admin`](acme_proxy_admin::admin) - The operation layer both front ends dispatch to
+//! - [`webadmin`](acme_proxy_admin::webadmin) - The optional HTML + JSON admin listener
 //! - [`cli`] - The `clap` command tree
 //!
 //! ## Usage
@@ -241,10 +241,8 @@
 //! }
 //! ```
 
-pub mod admin;
 pub mod cli;
 pub mod reload;
 pub mod server;
-pub mod webadmin;
 
 // Re-export name shape helpers for backwards compatibility

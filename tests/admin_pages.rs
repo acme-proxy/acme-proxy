@@ -10,7 +10,7 @@
 
 mod common;
 
-use acme_proxy::admin::password::PasswordContext;
+use acme_proxy_admin::admin::password::PasswordContext;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
@@ -50,7 +50,7 @@ async fn the_sign_in_page_renders_without_a_session_and_carries_no_htmx() {
 #[tokio::test]
 async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -86,7 +86,7 @@ async fn a_form_login_sets_the_same_hardened_cookie_and_redirects_to_the_panel()
 #[tokio::test]
 async fn a_failed_form_login_re_renders_the_page_with_its_real_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -122,7 +122,7 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
     let mut config = admin_config();
     config.admin.login_max_attempts = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -163,7 +163,7 @@ async fn the_sign_in_page_is_rate_limited_like_the_api() {
 #[tokio::test]
 async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -212,7 +212,7 @@ async fn the_challenge_page_renders_for_a_pending_session_and_carries_no_htmx() 
 #[tokio::test]
 async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -294,7 +294,7 @@ async fn a_form_second_step_completes_the_sign_in_and_rotates_the_cookie() {
 #[tokio::test]
 async fn a_half_authenticated_cookie_reaches_no_page() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -417,7 +417,7 @@ async fn require_mfa_turns_the_challenge_page_into_an_enrolment_page() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -653,7 +653,7 @@ async fn the_account_page_reports_its_refusals_as_banners() {
     let mut config = admin_config();
     config.admin.require_mfa = true;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -696,7 +696,7 @@ async fn the_account_page_reports_its_refusals_as_banners() {
 #[tokio::test]
 async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -759,7 +759,7 @@ async fn a_rate_limited_step_up_is_a_banner_at_its_own_status() {
 #[tokio::test]
 async fn the_password_card_changes_the_password_keeps_the_session_and_revokes_every_other() {
     let (app, database) = test_admin_app(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -985,7 +985,7 @@ async fn an_expired_session_redirects_rather_than_answering_json() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
 
     // Age the session past its absolute deadline.
-    let hash = acme_proxy::webadmin::session::hash_token(&session.cookie);
+    let hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
     sqlx::query("UPDATE admin_sessions SET expires_at = 1 WHERE token_hash = ?")
         .bind(&hash)
         .execute(database.raw_pool())
@@ -1100,7 +1100,7 @@ async fn every_mutating_page_endpoint_refuses_a_missing_csrf_token() {
 #[tokio::test]
 async fn every_mutating_page_endpoint_refuses_another_sessions_csrf_token() {
     let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1155,7 +1155,7 @@ async fn role_gates_every_mutating_page_endpoint() {
         ("olga", Some(AdminRole::Operator)),
         ("vera", Some(AdminRole::Viewer)),
     ] {
-        acme_proxy::admin::users::create_user(
+        acme_proxy_admin::admin::users::create_user(
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
@@ -1165,7 +1165,7 @@ async fn role_gates_every_mutating_page_endpoint() {
         .await
         .unwrap();
         if let Some(role) = role {
-            acme_proxy::admin::users::set_role(name, role, database.clone())
+            acme_proxy_admin::admin::users::set_role(name, role, database.clone())
                 .await
                 .unwrap()
                 .unwrap();
@@ -1217,7 +1217,7 @@ async fn a_viewer_reads_every_page_and_is_offered_no_control_it_cannot_use() {
     use acme_proxy_store::admin_user::AdminRole;
 
     let (app, database, admin) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "vera",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -1302,7 +1302,7 @@ async fn the_operators_pages_are_admin_only_and_the_nav_entry_follows() {
         ("olga", AdminRole::Operator),
         ("vera", AdminRole::Viewer),
     ] {
-        acme_proxy::admin::users::create_user(
+        acme_proxy_admin::admin::users::create_user(
             name,
             ADMIN_PASSWORD,
             &PasswordContext::empty(),
@@ -2058,7 +2058,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
     use acme_proxy_store::order::Order;
 
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -2236,7 +2236,7 @@ async fn issue_into_an_order(
 #[tokio::test]
 async fn an_issued_order_card_shows_the_chain_and_offers_it_for_download() {
     let (app, database, signer) = test_admin_app_with_signer(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -2557,7 +2557,7 @@ async fn a_page_limit_over_the_ceiling_is_clamped_rather_than_refused() {
     let mut config = admin_config();
     config.admin.page_size_max = 2;
     let (app, database) = test_admin_app(config).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "alice",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3223,16 +3223,16 @@ async fn the_jobs_page_lists_shows_and_offers_cancel_and_run() {
     assert!(html_body(abandoned).await.contains("marked invalid"));
 
     // A `viewer` is refused the mutation.
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "vic",
         ADMIN_PASSWORD,
-        &acme_proxy::admin::password::PasswordContext::empty(),
+        &acme_proxy_admin::admin::password::PasswordContext::empty(),
         None,
         database.clone(),
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_role(
+    acme_proxy_admin::admin::users::set_role(
         "vic",
         acme_proxy_store::admin_user::AdminRole::Viewer,
         database.clone(),
@@ -3826,7 +3826,7 @@ async fn revoking_the_current_session_from_the_account_page_signs_out() {
 
 async fn app_with_bob() -> (axum::Router, AdminSessionHandle, AdminSessionHandle) {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3858,7 +3858,7 @@ async fn the_operators_page_lists_every_operator_and_badges_the_callers_own_row(
 #[tokio::test]
 async fn the_operators_pages_show_role_contact_and_recent_addresses() {
     let (app, database, alice) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),
@@ -3867,14 +3867,14 @@ async fn the_operators_pages_show_role_contact_and_recent_addresses() {
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_role(
+    acme_proxy_admin::admin::users::set_role(
         "bob",
         acme_proxy_store::admin_user::AdminRole::Viewer,
         database.clone(),
     )
     .await
     .unwrap();
-    acme_proxy::admin::users::set_contact_email(
+    acme_proxy_admin::admin::users::set_contact_email(
         "bob",
         Some("\"<b>Bob</b>\" <bob@example.com>"),
         database.clone(),
@@ -3899,7 +3899,7 @@ async fn the_operators_pages_show_role_contact_and_recent_addresses() {
     assert!(card.contains("127.0.0.1"), "{card}");
 
     // An operator with no address is told so rather than shown a blank.
-    acme_proxy::admin::users::set_contact_email("bob", None, database.clone())
+    acme_proxy_admin::admin::users::set_contact_email("bob", None, database.clone())
         .await
         .unwrap();
     let card = html_body(admin_page(&app, "/ui/operators/bob", Some(&alice), false).await).await;
@@ -4092,7 +4092,7 @@ async fn the_operator_detail_page_redirects_the_caller_to_their_own_account_page
 #[tokio::test]
 async fn the_operator_detail_page_manages_another_operator_end_to_end() {
     let (app, database, alice_seed) = test_admin_app_logged_in(admin_config()).await;
-    acme_proxy::admin::users::create_user(
+    acme_proxy_admin::admin::users::create_user(
         "bob",
         ADMIN_PASSWORD,
         &PasswordContext::empty(),

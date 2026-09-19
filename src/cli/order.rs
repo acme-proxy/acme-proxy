@@ -4,10 +4,11 @@ use uuid::Uuid;
 
 use clap::Subcommand;
 
-use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
+use acme_proxy_admin::admin;
+use acme_proxy_admin::admin::DeleteOutcome;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_signer as signer;
