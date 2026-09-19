@@ -20,6 +20,8 @@ status. Do not rewrite its argument after the fact.
 | [0006](0006-no-slow-or-privileged-work-in-a-request.md) | A request does no slow or privileged work; it queues it | Accepted |
 | [0007](0007-role-processes.md) | One binary runs as role processes, and only the worker holds the CA key | Accepted |
 | [0008](0008-shared-state-in-the-database.md) | State that more than one process can see lives in the database | Accepted. One exception stands, the web admin's login limiter, for as long as |
+| [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted. `TODO.md` asks for latency histograms, which is the case where a |
+| [0010](0010-error-types.md) | Errors derive `thiserror`, carry their whole message, and panic only at startup | Accepted. This was re-argued more than once before it was written down, which |
 
 ### Decisions argued elsewhere
 
@@ -41,6 +43,25 @@ In the book:
 - [Evidence has no foreign
   keys](../database.md#the-audit-trail-has-no-foreign-keys-deliberately): the
   audit trail and the revocation ledger outlive what they describe.
+- [Profiles](../../core/profiles.md): an endpoint is a profile, its path is
+  derived from its name, and it is a database boundary.
+- [Bypass is not a
+  shortcut](../../challenges/index.md#bypass-is-not-a-shortcut): why validation
+  is on by default.
+- [When a check cannot
+  decide](../../filters/policy.md#when-a-check-cannot-decide): the filter's
+  three-valued answers.
+- [Reloading the configuration](../../operations/reload.md): a reload is a
+  rebuild and a swap, all or nothing.
+- [Why a second listener](../../operations/webadmin.md#why-a-second-listener),
+  and the web admin's [CSRF](../../operations/webadmin.md#csrf),
+  [roles](../../operations/webadmin.md#roles) and [read-only audit
+  view](../../operations/webadmin.md#the-audit-trail-is-read-only-here).
+- [Why the audit trail survives
+  deletion](../../operations/audit.md#why-it-survives-deletion).
+- [Delivery semantics](../../notifications/index.md#delivery-semantics) of
+  notifications.
+- [Paging](../../operations/cli.md#paging): every listing is paged and says so.
 
 In a module's own documentation (`//!`), where the decision concerns that
 module alone:
@@ -49,6 +70,18 @@ module alone:
   a `tokio::spawn`, and the `Retry`/`Failed` split every handler must honour.
 - `crates/signer/src/local_ca/crl.rs`: how the CRL number stays monotonic across
   processes.
+- `crates/policy/src/filter/policy.rs`: Kleene logic, and why a rule's stages
+  are an intersection.
+- `crates/policy/src/ipam/mod.rs`: why an inventory never denies, so an outage
+  cannot fail open.
+- `crates/core/src/script_hook.rs`: the one contract every `custom` script runs
+  under.
+- `crates/core/src/templating.rs`: `.html` escapes and `.j2` does not, decided
+  by the name.
+- `crates/jobs/src/metrics.rs`: hand-rolled exposition, bounded cardinality, and
+  counters that survive a reload.
+- `crates/jobs/src/notify/expiry.rs`: why the expiry notice is a digest.
+- `crates/server/src/reload.rs`: the swap's mechanics and what stays frozen.
 
 ## Writing an ADR
 

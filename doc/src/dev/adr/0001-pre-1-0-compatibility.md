@@ -14,10 +14,10 @@ about for as long as the promise lasts, and each makes the next redesign harder.
 
 acme-proxy is still finding its design. Several subsystems were replaced
 wholesale rather than extended: the filter chain became a policy engine
-(ADR@filter-kleene-policy), the Mattermost notifier became a generic webhook
-(ADR@notifications-per-backend-jobs), the `acme_proxy` signer became `relay`,
-and `filter.netbox` became `[ipam]`. None of these would have been worth doing
-if each had to keep reading the old shape.
+([Policy](../../filters/policy.md)), the Mattermost notifier became a generic
+webhook ([Webhook](../../notifications/webhook.md)), the `acme_proxy` signer
+became `relay`, and `filter.netbox` became `[ipam]`. None of these would have
+been worth doing if each had to keep reading the old shape.
 
 One surface cannot be treated this way. The database holds accounts, orders and
 issued certificates that clients and relying parties depend on, and `sqlx`

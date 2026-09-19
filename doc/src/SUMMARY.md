@@ -79,6 +79,8 @@
   - [ADR 0006: A request does no slow or privileged work; it queues it](dev/adr/0006-no-slow-or-privileged-work-in-a-request.md)
   - [ADR 0007: One binary runs as role processes, and only the worker holds the CA key](dev/adr/0007-role-processes.md)
   - [ADR 0008: State that more than one process can see lives in the database](dev/adr/0008-shared-state-in-the-database.md)
+  - [ADR 0009: Dependencies are pure Rust on `ring`, add no global state, and earn their place](dev/adr/0009-dependency-policy.md)
+  - [ADR 0010: Errors derive `thiserror`, carry their whole message, and panic only at startup](dev/adr/0010-error-types.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)

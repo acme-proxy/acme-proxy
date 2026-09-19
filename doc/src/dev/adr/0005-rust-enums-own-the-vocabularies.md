@@ -40,10 +40,10 @@ silently changed policy.
     the column existed keeps full authority. Any other unknown value folds to
     `viewer`, the least privilege.
   - `jobs.kind`, which is an open set by design.
-- **Operator surfaces refuse an unknown value by name**
-  (ADR@cli-output-contracts) wherever the vocabulary is closed, since "no rows"
-  reads exactly like "nothing is in that state". `--kind` is the exception,
-  because kinds are an open set.
+- **Operator surfaces refuse an unknown value by name** ([Admin
+  CLI](../../operations/cli.md)) wherever the vocabulary is closed, since "no
+  rows" reads exactly like "nothing is in that state". `--kind` is the
+  exception, because kinds are an open set.
 - `Job::status` and `UpstreamOrder::status` stay `String` in their models. An
   older binary must still render a row a newer one wrote. Their enums exist for
   the operator surface.
