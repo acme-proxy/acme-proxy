@@ -1,4 +1,5 @@
-//! The Prometheus counters, moved by real traffic through the real router.
+//! The Prometheus counters and histograms, moved by real traffic through the
+//! real router.
 //!
 //! The unit suites in `crates/jobs/src/metrics.rs` and `crates/protocol/src/middlewares/metrics.rs` pin the
 //! exposition format and the label cardinality against a synthetic router. What
@@ -45,6 +46,13 @@ async fn an_acme_request_is_counted_under_its_profile_and_route() {
         ),
         "{rendered}"
     );
+    // Timed under the same route, without the status.
+    assert!(
+        rendered.contains(
+            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",profile=\"default\",route=\"/directory\"} 3\n"
+        ),
+        "{rendered}"
+    );
 }
 
 /// A real issuance, driven through the whole ACME ladder.
@@ -66,10 +74,18 @@ async fn issuing_a_certificate_moves_the_issued_counter() {
         rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",profile=\"default\"} 1\n"),
         "{rendered}"
     );
+    // And timed: the `signer_issue` job that signed it observed the issuance
+    // histogram once, from the finalize that enqueued it.
+    assert!(
+        rendered.contains(
+            "acme_proxy_certificate_issue_duration_seconds_count{role=\"acme,admin,worker\",profile=\"default\"} 1\n"
+        ),
+        "{rendered}"
+    );
     // Nothing was refused, so the failure family is declared and empty — which
     // is the state a dashboard has to be able to tell from a misspelled name.
     assert!(
-        rendered.contains("# TYPE acme_proxy_certificate_issue_failures_total counter\n"),
+        rendered.contains("# TYPE acme_proxy_certificate_issue_failures counter\n"),
         "{rendered}"
     );
     assert!(

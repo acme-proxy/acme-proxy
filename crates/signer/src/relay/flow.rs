@@ -304,7 +304,7 @@ impl JobHandler for RelayJob {
         )
         .await
         {
-            Ok(chain) => settle(inner, order_id, chain).await,
+            Ok(chain) => settle(inner, order_id, chain, job.created_at).await,
             Err(RelayFailure::Retryable(reason)) => JobOutcome::Retry(reason),
             Err(RelayFailure::Permanent(reason)) => JobOutcome::Failed(reason),
         }
@@ -894,13 +894,22 @@ async fn poll_until(
 /// Writes a successful relay back onto the local order — the whole reason this
 /// backend holds an `Arc<Database>`.
 ///
+/// `requested_at` is the relay job's `created_at`: it was enqueued when
+/// `signer_issue` answered `Processing`, moments after the finalize, and it
+/// times the issuance histogram.
+///
 /// Returns the job's own outcome, so the two ways this can still fail after the
 /// upstream has issued are distinguished rather than merged: a chain that will
 /// never parse is permanent, while a database that would not take the write is a
 /// retry. The second one matters — before the queue it was a log line and a
 /// dropped certificate, leaving the client polling an order that would never
 /// move.
-pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobOutcome {
+pub(super) async fn settle(
+    inner: &Inner,
+    order_id: &str,
+    chain: String,
+    requested_at: i64,
+) -> JobOutcome {
     let mut order = match Order::find_by_id(order_id, &inner.database).await {
         Ok(Some(order)) => order,
         Ok(None) => {
@@ -947,6 +956,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     crate::issuance::announce_issuance(
         &order,
         &serial,
+        requested_at,
         actor,
         client,
         None,

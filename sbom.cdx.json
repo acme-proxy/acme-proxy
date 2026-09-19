@@ -2164,6 +2164,37 @@
     },
     {
       "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#dtoa@1.0.11",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "name": "dtoa",
+      "version": "1.0.11",
+      "description": "Fast floating point primitive to string conversion",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/dtoa@1.0.11",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/dtoa"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/dtolnay/dtoa"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#either@1.18.0",
       "name": "either",
       "version": "1.18.0",
@@ -5357,6 +5388,76 @@
         {
           "type": "vcs",
           "url": "https://github.com/dtolnay/proc-macro2"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#prometheus-client-derive-encode@0.5.1",
+      "author": "Max Inden <mail@max-inden.de>",
+      "name": "prometheus-client-derive-encode",
+      "version": "0.5.1",
+      "description": "Auxiliary crate to derive Encode trait from prometheus-client.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "01e34894696ff94f64a20c2c373a6440903e9c2789a303d68ec6e6f953f890e4"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/prometheus-client-derive-encode@0.5.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/prometheus-client-derive-text-encode"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/prometheus/client_rust"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/prometheus/client_rust"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#prometheus-client@0.25.1",
+      "author": "Max Inden <mail@max-inden.de>",
+      "name": "prometheus-client",
+      "version": "0.25.1",
+      "description": "Open Metrics client library allowing users to natively instrument applications.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1784dc11a05f5a8f57c4a62915686be140f24f70301290b997e317241fa9ffc2"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/prometheus-client@0.25.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/prometheus-client"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/prometheus/client_rust"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/prometheus/client_rust"
         }
       ]
     },
@@ -9782,6 +9883,7 @@
         "registry+https://github.com/rust-lang/crates.io-index#hyper@1.11.1",
         "registry+https://github.com/rust-lang/crates.io-index#lettre@0.11.23",
         "registry+https://github.com/rust-lang/crates.io-index#minijinja@2.24.0",
+        "registry+https://github.com/rust-lang/crates.io-index#prometheus-client@0.25.1",
         "registry+https://github.com/rust-lang/crates.io-index#ring@0.17.14",
         "registry+https://github.com/rust-lang/crates.io-index#rustls@0.23.45",
         "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229",
@@ -10337,6 +10439,9 @@
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#dotenvy@0.15.7"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#dtoa@1.0.11"
     },
     {
       "ref": "registry+https://github.com/rust-lang/crates.io-index#either@1.18.0",
@@ -11063,6 +11168,23 @@
       "ref": "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
       "dependsOn": [
         "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.24"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#prometheus-client-derive-encode@0.5.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107",
+        "registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47",
+        "registry+https://github.com/rust-lang/crates.io-index#syn@3.0.5"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#prometheus-client@0.25.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#dtoa@1.0.11",
+        "registry+https://github.com/rust-lang/crates.io-index#itoa@1.0.18",
+        "registry+https://github.com/rust-lang/crates.io-index#parking_lot@0.12.5",
+        "registry+https://github.com/rust-lang/crates.io-index#prometheus-client-derive-encode@0.5.1"
       ]
     },
     {

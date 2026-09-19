@@ -1,30 +1,37 @@
 //! The Prometheus exposition endpoint (`GET /metrics`, `[metrics]`).
 //!
-//! ## Why this is hand-rolled
+//! ## Why `prometheus-client`
 //!
-//! The text exposition format is a metric name, an optional label set, and a
-//! number — three `# HELP`/`# TYPE` lines and a `write!` per series. A façade
-//! crate (`metrics` + `metrics-exporter-prometheus`) or a client library
-//! (`prometheus`, `prometheus-client`) each bring six or more crates into a
-//! graph `cargo deny` audits at `all-features = true`, and every one of them
-//! also brings a *global recorder*, which this crate has refused elsewhere for
-//! a concrete reason: `rustls`'s `CryptoProvider::install_default` was passed
-//! explicitly rather than installed globally precisely so test ordering could
-//! not matter. The same objection applies here, and more sharply, because a
-//! global would make two tests' counters each other's.
+//! The counters were hand-written text until the latency histograms: buckets,
+//! a running sum and a count per series, each rendered cumulatively, are where
+//! the format stops being a `write!` per series. ADR 0011 records the choice.
+//! `prometheus-client` was picked because it has **no global registry**: a
+//! global would make two tests' counters each other's, the objection
+//! ADR 0009 raises against every process-wide install. Here every
+//! [`Metrics`] owns its families, and [`Metrics::render`] builds a
+//! [`Registry`] over them for the one scrape.
 //!
-//! This is the same trade `crates/admin/src/admin/totp.rs` (RFC 6238 by hand on `ring`),
-//! `crates/signer/src/relay/client.rs` (an ACME client by hand on `hyper`) and
-//! `crates/admin/src/admin/password.rs` (PBKDF2 rather than four crates for Argon2) already
-//! made. Histograms are the thing a library would genuinely earn, and nothing
-//! here exposes one.
+//! The output is the **OpenMetrics** text format ([`CONTENT_TYPE`]), which
+//! Prometheus reads natively. Two differences from the older text format show
+//! in a scrape: a counter's `# TYPE` line names it without `_total` (the
+//! series keep it), and the body ends with `# EOF`.
+//!
+//! ## Every family declares itself, even empty
+//!
+//! `prometheus-client` leaves an empty family out of the exposition entirely.
+//! [`Declared`] overrides that, so a family nobody has exercised still emits
+//! its `# HELP`/`# TYPE` lines: a dashboard built against a name that has not
+//! happened yet should find the name, not an absence it cannot tell from a
+//! typo. `tests/grafana_dashboard.rs` reads the names off an empty registry
+//! and depends on it.
 //!
 //! ## Cardinality is bounded by construction
 //!
 //! Every label value comes from a closed set, and that is a requirement rather
 //! than an observation — a Prometheus series is memory in this process *and* in
 //! the scraper for as long as it is retained, so one unbounded label is a leak
-//! that outlives the request that caused it.
+//! that outlives the request that caused it. A histogram multiplies that by its
+//! bucket count, which is why neither histogram carries `status` or `reason`.
 //!
 //! - `profile` is a configured profile name, or `none` for the root routes.
 //! - `route` is the **matched route pattern** (`/order/{id}`), never the request
@@ -34,10 +41,10 @@
 //! - `status` is an HTTP status code, and `reason` an ACME problem type this
 //!   crate itself chose.
 //!
-//! [`Metrics::render`] is therefore the only place that needs to escape a label
-//! value, and it does — but nothing that reaches it can currently contain a
-//! quote or a newline. That is belt and braces for a format where getting it
-//! wrong produces a scrape the collector rejects wholesale.
+//! `prometheus-client` writes a label value verbatim, so [`escape_label`] is
+//! applied here to every value on its way in. Nothing that reaches it can
+//! currently contain a quote or a newline; it is there for a format where
+//! getting it wrong produces a scrape the collector rejects wholesale.
 //!
 //! ## Counters survive a reload
 //!
@@ -49,9 +56,18 @@
 //! total on every configuration change. It does *not* survive a real restart,
 //! which is correct — that genuinely is a new process.
 
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
+use std::borrow::Cow;
+use std::sync::Arc;
+use std::time::Duration;
+
+use prometheus_client::collector::Collector;
+use prometheus_client::encoding::{DescriptorEncoder, EncodeLabelSet, EncodeMetric, MetricEncoder};
+use prometheus_client::metrics::MetricType;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::gauge::ConstGauge;
+use prometheus_client::metrics::histogram::Histogram;
+use prometheus_client::registry::{Registry, Unit};
 
 use acme_proxy_store::db::Database;
 
@@ -68,31 +84,82 @@ pub const ROUTE_UNMATCHED: &str = "<unmatched>";
 /// can say `profile="none"` and mean it.
 pub const PROFILE_NONE: &str = "none";
 
-/// One series' label set, in the order it is rendered.
-type Labels = Vec<(&'static str, String)>;
+/// The media type of [`Metrics::render`]'s output, version parameter included:
+/// a collector reading `text/plain` with no `version` falls back to guessing.
+pub const CONTENT_TYPE: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
 
-/// The process's counters, and the handle `GET /metrics` renders from.
+/// Upper bounds, in seconds, of `acme_proxy_request_duration_seconds`.
 ///
-/// Cloneable through an `Arc` by every recorder; the `Mutex` is held only for
-/// the increment itself. A lock per request is not a cost worth avoiding here —
-/// every ACME request already commits at least one database write, and the
-/// admission limiter caps concurrency at `server.max_concurrent_requests`.
+/// From a nonce (a few milliseconds) to a request held by the admission
+/// limiter or a slow database (seconds). Nothing in a request waits on the
+/// network any more (ADR 0006), so ten seconds is already pathological.
+const REQUEST_SECONDS: [f64; 11] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
+/// Upper bounds, in seconds, of `acme_proxy_certificate_issue_duration_seconds`.
+///
+/// Measured from job timestamps, which are whole seconds, so nothing finer
+/// than a second is meaningful. A local CA signs within the first bucket or
+/// two; a relayed order waits on an upstream CA and its own challenges, which
+/// can take many minutes.
+const ISSUE_SECONDS: [f64; 11] = [
+    1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0, 3600.0,
+];
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RequestLabels {
+    profile: String,
+    route: String,
+    status: u16,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct RouteLabels {
+    profile: String,
+    route: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ProfileLabels {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct FailureLabels {
+    profile: String,
+    reason: String,
+}
+
+type HistogramFamily<L> = Family<L, Histogram, fn() -> Histogram>;
+
+fn request_histogram() -> Histogram {
+    Histogram::new(REQUEST_SECONDS)
+}
+
+fn issue_histogram() -> Histogram {
+    Histogram::new(ISSUE_SECONDS)
+}
+
+/// The process's metric families, and the handle `GET /metrics` renders from.
+///
+/// Cloneable through an `Arc` by every recorder. A family is a lock over a
+/// map of series, held only for the increment itself.
 pub struct Metrics {
-    requests: Mutex<BTreeMap<Labels, u64>>,
-    certificates_issued: Mutex<BTreeMap<Labels, u64>>,
-    certificate_issue_failures: Mutex<BTreeMap<Labels, u64>>,
+    requests: Family<RequestLabels, Counter>,
+    request_duration: HistogramFamily<RouteLabels>,
+    certificates_issued: Family<ProfileLabels, Counter>,
+    certificate_issue_failures: Family<FailureLabels, Counter>,
+    certificate_issue_duration: HistogramFamily<ProfileLabels>,
     /// Read at scrape time rather than tracked: `sqlx` already knows, and a
     /// gauge this crate maintained itself could only ever be a worse copy.
     database: Arc<Database>,
     /// The roles this process runs, on every series it reports.
     ///
-    /// Counters are per-process memory by design — the whole reason this is a
-    /// `write!` per series and not a façade crate with a global recorder — so a
-    /// split deployment has one scrape target per process and needs a way to
-    /// tell them apart. Constant for the life of the process, which is why it
-    /// is added at render time rather than carried through every increment: a
-    /// label whose value never varies would otherwise be threaded through
-    /// `record_request` and `record_audit` for nothing.
+    /// Families are per-process memory, so a split deployment has one scrape
+    /// target per process and needs a way to tell them apart. Constant for the
+    /// life of the process, which is why it is a label of the registry built
+    /// at render time rather than a field of every label set.
     roles: String,
 }
 
@@ -112,28 +179,37 @@ impl Metrics {
     #[must_use]
     pub fn new(database: Arc<Database>) -> Self {
         Self {
-            requests: Mutex::new(BTreeMap::new()),
-            certificates_issued: Mutex::new(BTreeMap::new()),
-            certificate_issue_failures: Mutex::new(BTreeMap::new()),
+            requests: Family::default(),
+            request_duration: Family::new_with_constructor(request_histogram),
+            certificates_issued: Family::default(),
+            certificate_issue_failures: Family::default(),
+            certificate_issue_duration: Family::new_with_constructor(issue_histogram),
             database,
             // Every role, matching `serve` with no `--role`.
             roles: "acme,admin,worker".to_string(),
         }
     }
 
-    /// Counts one served request.
+    /// Counts one served request, and how long it took.
     ///
     /// `route` must already be a matched pattern or [`ROUTE_UNMATCHED`]; see the
     /// cardinality note on this module.
-    pub fn record_request(&self, profile: &str, route: &str, status: u16) {
-        self.bump(
-            &self.requests,
-            vec![
-                ("profile", profile.to_string()),
-                ("route", route.to_string()),
-                ("status", status.to_string()),
-            ],
-        );
+    pub fn record_request(&self, profile: &str, route: &str, status: u16, elapsed: Duration) {
+        let profile = escape_label(profile);
+        let route = escape_label(route);
+        self.request_duration
+            .get_or_create(&RouteLabels {
+                profile: profile.clone(),
+                route: route.clone(),
+            })
+            .observe(elapsed.as_secs_f64());
+        self.requests
+            .get_or_create(&RequestLabels {
+                profile,
+                route,
+                status,
+            })
+            .inc();
     }
 
     /// Counts one CA action from the audit record that describes it.
@@ -147,36 +223,38 @@ impl Metrics {
     pub fn record_audit(&self, record: &acme_proxy_core::audit::AuditRecord) {
         use acme_proxy_core::audit::AuditEvent;
         match record.event {
-            AuditEvent::CertificateIssued => self.bump(
-                &self.certificates_issued,
-                vec![("profile", record.profile.clone())],
-            ),
-            AuditEvent::CertificateIssueFailed => self.bump(
-                &self.certificate_issue_failures,
-                vec![
-                    ("profile", record.profile.clone()),
-                    // An ACME problem type this crate chose (`badCSR`,
-                    // `serverInternal`), not text from the request.
-                    (
-                        "reason",
-                        record.reason.clone().unwrap_or_else(|| "unknown".into()),
-                    ),
-                ],
-            ),
+            AuditEvent::CertificateIssued => {
+                self.certificates_issued
+                    .get_or_create(&ProfileLabels {
+                        profile: escape_label(&record.profile),
+                    })
+                    .inc();
+            }
+            AuditEvent::CertificateIssueFailed => {
+                self.certificate_issue_failures
+                    .get_or_create(&FailureLabels {
+                        profile: escape_label(&record.profile),
+                        // An ACME problem type this crate chose (`badCSR`,
+                        // `serverInternal`), not text from the request.
+                        reason: escape_label(record.reason.as_deref().unwrap_or("unknown")),
+                    })
+                    .inc();
+            }
             _ => {}
         }
     }
 
-    fn bump(&self, family: &Mutex<BTreeMap<Labels, u64>>, labels: Labels) {
-        // A poisoned lock would mean a panic inside one of the three-line
-        // critical sections below, which cannot happen — but a metric must
-        // never be the thing that takes the server down, so this recovers
-        // rather than propagating.
-        let mut guard = match family.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        *guard.entry(labels).or_insert(0) += 1;
+    /// Observes one issuance: from the moment the finalize was accepted to the
+    /// moment the certificate was stored.
+    ///
+    /// Not driven off the audit record like the counters, because the record
+    /// carries no duration and should not grow one for this.
+    pub fn observe_issuance(&self, profile: &str, elapsed: Duration) {
+        self.certificate_issue_duration
+            .get_or_create(&ProfileLabels {
+                profile: escape_label(profile),
+            })
+            .observe(elapsed.as_secs_f64());
     }
 
     /// Names the roles this process runs, for the `role` label.
@@ -191,93 +269,101 @@ impl Metrics {
         self
     }
 
-    /// Renders the whole registry in the Prometheus text exposition format.
+    /// Renders every family in the OpenMetrics text format ([`CONTENT_TYPE`]).
     ///
-    /// Series come out in `BTreeMap` order, which makes the output stable
-    /// across scrapes and lets a test assert on it as text.
+    /// The registry is built here, per scrape, over clones of the families
+    /// (a clone shares its series). That keeps the `role` label a registry
+    /// label, set once, and keeps [`Metrics::with_roles`] a builder step.
     #[must_use]
     pub fn render(&self) -> String {
+        let mut registry = Registry::with_prefix_and_labels(
+            "acme_proxy",
+            std::iter::once((Cow::Borrowed("role"), Cow::Owned(escape_label(&self.roles)))),
+        );
+        registry.register(
+            "requests",
+            "Requests served, by endpoint, matched route and response status",
+            Declared(self.requests.clone()),
+        );
+        registry.register_with_unit(
+            "request_duration",
+            "Time to answer a request, by endpoint and matched route",
+            Unit::Seconds,
+            Declared(self.request_duration.clone()),
+        );
+        registry.register(
+            "certificates_issued",
+            "Certificates signed, by endpoint",
+            Declared(self.certificates_issued.clone()),
+        );
+        registry.register(
+            "certificate_issue_failures",
+            "Issuance attempts the CA refused, by endpoint and ACME problem type",
+            Declared(self.certificate_issue_failures.clone()),
+        );
+        registry.register_with_unit(
+            "certificate_issue_duration",
+            "Time from an accepted finalize to a stored certificate, by endpoint",
+            Unit::Seconds,
+            Declared(self.certificate_issue_duration.clone()),
+        );
+        registry.register_collector(Box::new(PoolConnections(self.database.clone())));
+
         let mut out = String::new();
-
-        self.render_family(
-            &mut out,
-            "acme_proxy_requests_total",
-            "counter",
-            "Requests served, by endpoint, matched route and response status.",
-            &self.requests,
-        );
-        self.render_family(
-            &mut out,
-            "acme_proxy_certificates_issued_total",
-            "counter",
-            "Certificates signed, by endpoint.",
-            &self.certificates_issued,
-        );
-        self.render_family(
-            &mut out,
-            "acme_proxy_certificate_issue_failures_total",
-            "counter",
-            "Issuance attempts the CA refused, by endpoint and ACME problem type.",
-            &self.certificate_issue_failures,
-        );
-
-        // A gauge, and the one number here that is read rather than
-        // accumulated: `size` is every connection the pool holds and `idle`
-        // those not currently checked out, so `size - idle` is in-flight
-        // database work. Reported as two series of one gauge rather than a
-        // derived third, so a scrape cannot see them disagree.
-        let stats = self.database.pool_stats();
-        let size = u64::from(stats.size);
-        let idle = stats.idle as u64;
-        out.push_str(
-            "# HELP acme_proxy_database_pool_connections Connections in the SQLite pool.\n",
-        );
-        out.push_str("# TYPE acme_proxy_database_pool_connections gauge\n");
-        let role = escape_label(&self.roles);
-        let _ = writeln!(
-            out,
-            "acme_proxy_database_pool_connections{{role=\"{role}\",state=\"idle\"}} {idle}"
-        );
-        let _ = writeln!(
-            out,
-            "acme_proxy_database_pool_connections{{role=\"{role}\",state=\"busy\"}} {}",
-            size.saturating_sub(idle)
-        );
-
+        // Writing into a `String` cannot fail.
+        let _ = prometheus_client::encoding::text::encode(&mut out, &registry);
         out
     }
+}
 
-    /// One metric family: its two metadata lines, then a line per series.
-    ///
-    /// A family with no series still emits `# HELP`/`# TYPE` and nothing else,
-    /// which is deliberate: a dashboard built against a name that has simply
-    /// not happened yet should find the name, not an absence it cannot tell
-    /// from a typo.
-    fn render_family(
-        &self,
-        out: &mut String,
-        name: &str,
-        kind: &str,
-        help: &str,
-        family: &Mutex<BTreeMap<Labels, u64>>,
-    ) {
-        let _ = writeln!(out, "# HELP {name} {help}");
-        let _ = writeln!(out, "# TYPE {name} {kind}");
-        let guard = match family.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        for (labels, value) in guard.iter() {
-            // `role` first, so every series of every family carries it in the
-            // same position — the labels themselves are already sorted.
-            let mut rendered = vec![format!("role=\"{}\"", escape_label(&self.roles))];
-            rendered.extend(
-                labels
-                    .iter()
-                    .map(|(key, value)| format!("{key}=\"{}\"", escape_label(value))),
-            );
-            let _ = writeln!(out, "{name}{{{}}} {value}", rendered.join(","));
+/// A family that is encoded even with no series.
+///
+/// `prometheus-client` skips a metric whose `is_empty` is true, and a
+/// [`Family`] is empty until its first series. This wrapper keeps the trait's
+/// default, `false`; see "Every family declares itself" on this module.
+#[derive(Debug)]
+struct Declared<M>(M);
+
+impl<M: EncodeMetric> EncodeMetric for Declared<M> {
+    fn encode(&self, encoder: MetricEncoder) -> Result<(), std::fmt::Error> {
+        self.0.encode(encoder)
+    }
+
+    fn metric_type(&self) -> MetricType {
+        self.0.metric_type()
+    }
+}
+
+/// `acme_proxy_database_pool_connections`, read from `sqlx` at scrape time.
+///
+/// A gauge, and the one number here that is read rather than accumulated:
+/// `size` is every connection the pool holds and `idle` those not currently
+/// checked out, so `size - idle` is in-flight database work. Reported as two
+/// series of one gauge rather than a derived third, so a scrape cannot see
+/// them disagree.
+struct PoolConnections(Arc<Database>);
+
+impl std::fmt::Debug for PoolConnections {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PoolConnections")
+    }
+}
+
+impl Collector for PoolConnections {
+    fn encode(&self, mut encoder: DescriptorEncoder) -> Result<(), std::fmt::Error> {
+        let stats = self.0.pool_stats();
+        let size = i64::from(stats.size);
+        let idle = i64::try_from(stats.idle).unwrap_or(i64::MAX);
+        let mut metric = encoder.encode_descriptor(
+            "database_pool_connections",
+            "Connections in the SQLite pool.",
+            None,
+            MetricType::Gauge,
+        )?;
+        for (state, value) in [("idle", idle), ("busy", size.saturating_sub(idle))] {
+            ConstGauge::new(value).encode(metric.encode_family(&[("state", state)])?)?;
         }
+        Ok(())
     }
 }
 
@@ -286,8 +372,8 @@ impl Metrics {
 /// The format defines exactly three escapes — backslash, double quote and
 /// newline — and a collector rejects the *whole* scrape when one is missing, so
 /// a single stray character would take out every metric rather than one series.
-/// Nothing that currently reaches here can contain any of them; this exists so
-/// that stays true of whatever is added next.
+/// `prometheus-client` writes values as given, so this is applied to each one
+/// before it becomes a label.
 fn escape_label(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -343,16 +429,18 @@ mod tests {
     #[tokio::test]
     async fn requests_render_as_one_series_per_label_set() {
         let metrics = metrics().await;
-        metrics.record_request("le", "/newOrder", 201);
-        metrics.record_request("le", "/newOrder", 201);
-        metrics.record_request("le", "/newOrder", 400);
+        metrics.record_request("le", "/newOrder", 201, Duration::from_millis(20));
+        metrics.record_request("le", "/newOrder", 201, Duration::from_millis(20));
+        metrics.record_request("le", "/newOrder", 400, Duration::from_millis(20));
 
         let rendered = metrics.render();
 
         assert!(rendered.contains(
-            "# HELP acme_proxy_requests_total Requests served, by endpoint, matched route and response status.\n"
+            "# HELP acme_proxy_requests Requests served, by endpoint, matched route and response status.\n"
         ));
-        assert!(rendered.contains("# TYPE acme_proxy_requests_total counter\n"));
+        // OpenMetrics names a counter's family without `_total`; its series
+        // keep it, so a query is written exactly as before.
+        assert!(rendered.contains("# TYPE acme_proxy_requests counter\n"));
         assert!(rendered.contains(
             "acme_proxy_requests_total{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\",status=\"201\"} 2\n"
         ));
@@ -368,7 +456,7 @@ mod tests {
     async fn an_empty_family_still_declares_itself() {
         let rendered = metrics().await.render();
 
-        assert!(rendered.contains("# TYPE acme_proxy_certificates_issued_total counter\n"));
+        assert!(rendered.contains("# TYPE acme_proxy_certificates_issued counter\n"));
         assert!(
             !rendered.contains("acme_proxy_certificates_issued_total{role=\"acme,admin,worker\",")
         );
@@ -387,7 +475,7 @@ mod tests {
     async fn every_series_carries_the_roles_this_process_runs() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let metrics = Metrics::new(database).with_roles(&["acme", "worker"]);
-        metrics.record_request("le", "/newOrder", 201);
+        metrics.record_request("le", "/newOrder", 201, Duration::from_millis(20));
         metrics.record_audit(&AuditRecord::new(
             AuditEvent::CertificateIssued,
             "le",
@@ -478,6 +566,86 @@ mod tests {
         assert!(metrics.render().contains(
             "acme_proxy_certificate_issue_failures_total{role=\"acme,admin,worker\",profile=\"le\",reason=\"unknown\"} 1\n"
         ));
+    }
+
+    /// Both histograms, with their unit, their buckets and the `+Inf` bucket
+    /// every histogram must end with.
+    #[tokio::test]
+    async fn both_histograms_observe_into_their_buckets() {
+        let metrics = metrics().await;
+        metrics.record_request("le", "/newOrder", 201, Duration::from_millis(20));
+        metrics.observe_issuance("le", Duration::from_secs(3));
+
+        let rendered = metrics.render();
+
+        assert!(rendered.contains("# TYPE acme_proxy_request_duration_seconds histogram\n"));
+        assert!(rendered.contains("# UNIT acme_proxy_request_duration_seconds seconds\n"));
+        assert!(rendered.contains(
+            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",profile=\"le\",route=\"/newOrder\"} 0\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.025\",profile=\"le\",route=\"/newOrder\"} 1\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_request_duration_seconds_count{role=\"acme,admin,worker\",profile=\"le\",route=\"/newOrder\"} 1\n"
+        ));
+        // No `status` on the histogram: it would multiply every bucket.
+        assert!(!rendered.contains("acme_proxy_request_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"0.01\",profile=\"le\",route=\"/newOrder\",status="));
+
+        assert!(rendered.contains(
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"2.0\",profile=\"le\"} 0\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"5.0\",profile=\"le\"} 1\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_certificate_issue_duration_seconds_bucket{role=\"acme,admin,worker\",le=\"+Inf\",profile=\"le\"} 1\n"
+        ));
+        assert!(rendered.contains(
+            "acme_proxy_certificate_issue_duration_seconds_sum{role=\"acme,admin,worker\",profile=\"le\"} 3.0\n"
+        ));
+    }
+
+    /// Every family an empty registry has, in order, and the `# EOF` an
+    /// OpenMetrics body must end with. `tests/grafana_dashboard.rs` reads the
+    /// names this way, so a family that disappeared while empty would blank a
+    /// panel with nothing failing.
+    #[tokio::test]
+    async fn an_empty_registry_declares_every_family_and_ends_with_eof() {
+        let rendered = metrics().await.render();
+
+        let declared: Vec<&str> = rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix("# TYPE "))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                "acme_proxy_requests counter",
+                "acme_proxy_request_duration_seconds histogram",
+                "acme_proxy_certificates_issued counter",
+                "acme_proxy_certificate_issue_failures counter",
+                "acme_proxy_certificate_issue_duration_seconds histogram",
+                "acme_proxy_database_pool_connections gauge",
+            ]
+        );
+        assert!(rendered.ends_with("# EOF\n"), "{rendered}");
+        // One full stop, not the library's appended to ours.
+        assert!(!rendered.contains(".."), "{rendered}");
+    }
+
+    /// `Debug` must not change as the counters move; see `Metrics`' own impl.
+    #[tokio::test]
+    async fn debug_says_nothing_about_the_counters() {
+        let metrics = metrics().await;
+        let before = format!("{metrics:?}");
+        metrics.record_request("le", "/newOrder", 201, Duration::from_millis(20));
+
+        assert_eq!(format!("{metrics:?}"), before);
+        assert_eq!(
+            format!("{:?}", PoolConnections(metrics.database.clone())),
+            "PoolConnections"
+        );
     }
 
     /// The nested-router split, which is what keeps `route` comparable across

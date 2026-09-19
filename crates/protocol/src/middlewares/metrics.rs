@@ -1,4 +1,4 @@
-//! Counts one request into the Prometheus registry.
+//! Counts and times one request into the Prometheus registry.
 //!
 //! Mounted only when `metrics.enabled` is on (see
 //! [`crate::router::build_app`]), so the lock and the two allocations below
@@ -24,6 +24,7 @@
 //!   thousand.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     body::Body,
@@ -46,10 +47,15 @@ pub async fn record_request(
         .get::<MatchedPath>()
         .map(|matched| matched.as_str().to_string());
 
+    let started = Instant::now();
     let response = next.run(request).await;
+    // Until the response head is ready, not until its body is sent: every
+    // body here is small and already built, and a streamed one would measure
+    // the client's reading speed rather than this server.
+    let elapsed = started.elapsed();
 
     let (profile, route) = split_matched_path(matched.as_deref());
-    metrics.record_request(&profile, &route, response.status().as_u16());
+    metrics.record_request(&profile, &route, response.status().as_u16(), elapsed);
 
     response.into_response()
 }

@@ -66,6 +66,9 @@ thiserror = "2"
 async-trait = "0.1"
 ipnet = "2.12"  # CIDR parsing + containment for the IP allowlist / trusted proxies
 regex = "1.13"  # identifier and reverse-DNS hostname allow/deny lists
+# `/metrics`: histograms and the OpenMetrics text format, with no global
+# registry (doc/src/dev/adr/0011-metrics-on-prometheus-client.md).
+prometheus-client = { version = "0.25", default-features = false }
 # PTR + forward-confirmation lookups for the reverse-DNS filter, and the TXT
 # lookups of the `dns-01` challenge. Default features off: no DNSSEC/TLS
 # transports needed, just the system resolver.

@@ -205,6 +205,16 @@ impl Auditor {
         }
         write(record, &self.database).await;
     }
+
+    /// Times one issuance into the metrics registry, if this auditor has one.
+    ///
+    /// Beside [`Auditor::record`] because every issuance already reaches the
+    /// auditor, and the auditor is what carries the registry into the worker.
+    pub fn observe_issuance(&self, profile: &str, elapsed: std::time::Duration) {
+        if let Some(metrics) = &self.metrics {
+            metrics.observe_issuance(profile, elapsed);
+        }
+    }
 }
 
 /// Writes one row against a bare database handle, counting nothing.

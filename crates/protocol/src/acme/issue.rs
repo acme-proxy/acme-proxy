@@ -194,6 +194,7 @@ impl JobHandler for SignerIssueJob {
                         announce_issuance(
                             &order,
                             &serial,
+                            job.created_at,
                             Actor::acme(order.account_id.to_string()),
                             client,
                             payload["client_ip"].as_str().map(str::to_string),

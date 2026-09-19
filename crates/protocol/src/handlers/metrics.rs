@@ -21,13 +21,7 @@ pub struct MetricsState(pub Arc<Metrics>);
 
 pub async fn get_metrics(State(MetricsState(metrics)): State<MetricsState>) -> impl IntoResponse {
     (
-        // The text exposition format's own media type, version parameter
-        // included: a collector reading `text/plain` with no `version` falls
-        // back to guessing, and the guess is right today only by luck.
-        [(
-            header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
+        [(header::CONTENT_TYPE, acme_proxy_jobs::metrics::CONTENT_TYPE)],
         metrics.render(),
     )
 }

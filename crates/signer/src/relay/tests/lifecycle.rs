@@ -212,6 +212,7 @@ async fn a_settle_for_an_order_that_vanished_is_permanent() {
         &signer.0,
         &super::order_id("ord-deleted"),
         real_chain().await,
+        0,
     )
     .await
     {
@@ -248,6 +249,7 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
         &signer.0,
         order.id.to_string().as_str(),
         "not a PEM chain".to_string(),
+        0,
     )
     .await
     {
@@ -264,7 +266,7 @@ async fn an_unusable_upstream_chain_fails_the_order_permanently() {
         "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
         BASE64_STANDARD.encode(b"not a certificate")
     );
-    match settle(&signer.0, order.id.to_string().as_str(), chain).await {
+    match settle(&signer.0, order.id.to_string().as_str(), chain, 0).await {
         acme_proxy_jobs::jobs::JobOutcome::Failed(reason) => {
             assert!(reason.contains("leaf unparsable"))
         }
@@ -981,6 +983,7 @@ mod handler {
             &signer.0,
             &super::order_id("ord-1"),
             "irrelevant".to_string(),
+            0,
         )
         .await
         {

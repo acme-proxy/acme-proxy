@@ -34,15 +34,6 @@ keeps its corpses stops being read.
       parameter outright; the seam is already one function, and the eleven
       callers named in `crates/store/src/id.rs` are the whole of what depends on it.
 
-## Observability
-
-- [ ] **Histograms — request latency, and issuance latency.** The one thing a
-      metrics *library* would genuinely earn over the hand-rolled registry in
-      `crates/jobs/src/metrics.rs`, since buckets are where the format stops being a
-      `write!` per series. Worth reconsidering the dependency at that point
-      rather than hand-rolling bucket boundaries; until then `latency_ms` on
-      the access line is what there is.
-
 ## Web admin
 
 - [ ] **WebAuthn as a second factor kind** — *investigated and deferred; both

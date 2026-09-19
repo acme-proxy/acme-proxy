@@ -26,6 +26,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 lettre.workspace = true
 minijinja.workspace = true
+prometheus-client.workspace = true
 ring.workspace = true
 rustls.workspace = true
 serde.workspace = true

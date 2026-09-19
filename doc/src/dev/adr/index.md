@@ -20,8 +20,9 @@ status. Do not rewrite its argument after the fact.
 | [0006](0006-no-slow-or-privileged-work-in-a-request.md) | A request does no slow or privileged work; it queues it | Accepted |
 | [0007](0007-role-processes.md) | One binary runs as role processes, and only the worker holds the CA key | Accepted |
 | [0008](0008-shared-state-in-the-database.md) | State that more than one process can see lives in the database | Accepted. One exception stands, the web admin's login limiter, for as long as |
-| [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted. `TODO.md` asks for latency histograms, which is the case where a |
+| [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted; metrics clause superseded by [0011](0011-metrics-on-prometheus-client.md) |
 | [0010](0010-error-types.md) | Errors derive `thiserror`, carry their whole message, and panic only at startup | Accepted. This was re-argued more than once before it was written down, which |
+| [0011](0011-metrics-on-prometheus-client.md) | Metrics are built on `prometheus-client`, one registry per scrape | Accepted |
 
 ### Decisions argued elsewhere
 
@@ -78,8 +79,8 @@ module alone:
   under.
 - `crates/core/src/templating.rs`: `.html` escapes and `.j2` does not, decided
   by the name.
-- `crates/jobs/src/metrics.rs`: hand-rolled exposition, bounded cardinality, and
-  counters that survive a reload.
+- `crates/jobs/src/metrics.rs`: bounded cardinality, families declared even
+  when empty, and counters that survive a reload.
 - `crates/jobs/src/notify/expiry.rs`: why the expiry notice is a digest.
 - `crates/server/src/reload.rs`: the swap's mechanics and what stays frozen.
 

@@ -342,6 +342,74 @@
       ]
     },
     {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Issuance latency",
+      "description": "From the finalize request being accepted to the certificate being stored, by endpoint. A local CA answers within the first bucket or two; a relayed order waits on the upstream CA. Whole seconds, since it is measured from job timestamps.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(acme_proxy_certificate_issue_duration_seconds_bucket{profile=~\"$profile\"}[$__rate_interval])) by (le, profile))",
+          "range": true,
+          "refId": "A",
+          "legendFormat": "p50 {{profile}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(acme_proxy_certificate_issue_duration_seconds_bucket{profile=~\"$profile\"}[$__rate_interval])) by (le, profile))",
+          "range": true,
+          "refId": "B",
+          "legendFormat": "p95 {{profile}}"
+        }
+      ]
+    },
+    {
       "id": 7,
       "type": "row",
       "title": "Requests",
@@ -350,7 +418,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 20
       },
       "panels": []
     },
@@ -367,7 +435,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 14
+        "y": 21
       },
       "fieldConfig": {
         "defaults": {
@@ -424,7 +492,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 14
+        "y": 21
       },
       "fieldConfig": {
         "defaults": {
@@ -481,7 +549,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 21
+        "y": 28
       },
       "fieldConfig": {
         "defaults": {
@@ -549,7 +617,7 @@
         "h": 5,
         "w": 6,
         "x": 6,
-        "y": 21
+        "y": 28
       },
       "fieldConfig": {
         "defaults": {
@@ -613,7 +681,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 28
       },
       "fieldConfig": {
         "defaults": {
@@ -658,6 +726,74 @@
       ]
     },
     {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Request latency by route",
+      "description": "Time to answer a request, by matched route (no status: a histogram multiplies every label by its buckets). Measured to the response head, so a slow client reading the body does not count against the server.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(acme_proxy_request_duration_seconds_bucket{profile=~\"$profile\"}[$__rate_interval])) by (le, route))",
+          "range": true,
+          "refId": "A",
+          "legendFormat": "p50 {{route}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(acme_proxy_request_duration_seconds_bucket{profile=~\"$profile\"}[$__rate_interval])) by (le, route))",
+          "range": true,
+          "refId": "B",
+          "legendFormat": "p95 {{route}}"
+        }
+      ]
+    },
+    {
       "id": 13,
       "type": "row",
       "title": "Database",
@@ -666,7 +802,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 40
       },
       "panels": []
     },
@@ -683,7 +819,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 27
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {
@@ -740,7 +876,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 27
+        "y": 41
       },
       "fieldConfig": {
         "defaults": {

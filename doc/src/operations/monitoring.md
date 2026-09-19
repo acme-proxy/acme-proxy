@@ -31,7 +31,9 @@ root router, not inside a profile, which means it is deliberately outside:
 
 ## Metrics
 
-`GET /metrics` serves the Prometheus text exposition format. It is **off by
+`GET /metrics` serves the OpenMetrics text format
+(`application/openmetrics-text; version=1.0.0`), which Prometheus reads
+natively. It is **off by
 default** and lives on a **listener of its own** — a third socket beside the
 ACME and admin ones, configured by
 [`[metrics]`](../configuration/reference.md#metrics):
@@ -51,30 +53,50 @@ to the internet does not expose this.
 
 ```console
 $ curl -s localhost:3002/metrics
-# HELP acme_proxy_requests_total Requests served, by endpoint, matched route and response status.
-# TYPE acme_proxy_requests_total counter
+# HELP acme_proxy_requests Requests served, by endpoint, matched route and response status.
+# TYPE acme_proxy_requests counter
 acme_proxy_requests_total{role="acme,admin,worker",profile="default",route="/newOrder",status="201"} 42
 acme_proxy_requests_total{role="acme,admin,worker",profile="none",route="/health",status="200"} 8613
-# HELP acme_proxy_certificates_issued_total Certificates signed, by endpoint.
-# TYPE acme_proxy_certificates_issued_total counter
+# HELP acme_proxy_request_duration_seconds Time to answer a request, by endpoint and matched route.
+# TYPE acme_proxy_request_duration_seconds histogram
+# UNIT acme_proxy_request_duration_seconds seconds
+acme_proxy_request_duration_seconds_sum{role="acme,admin,worker",profile="default",route="/newOrder"} 0.84
+acme_proxy_request_duration_seconds_count{role="acme,admin,worker",profile="default",route="/newOrder"} 42
+acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="0.005",profile="default",route="/newOrder"} 3
+…
+acme_proxy_request_duration_seconds_bucket{role="acme,admin,worker",le="+Inf",profile="default",route="/newOrder"} 42
+# HELP acme_proxy_certificates_issued Certificates signed, by endpoint.
+# TYPE acme_proxy_certificates_issued counter
 acme_proxy_certificates_issued_total{role="acme,admin,worker",profile="default"} 41
-# HELP acme_proxy_certificate_issue_failures_total Issuance attempts the CA refused, by endpoint and ACME problem type.
-# TYPE acme_proxy_certificate_issue_failures_total counter
+# HELP acme_proxy_certificate_issue_failures Issuance attempts the CA refused, by endpoint and ACME problem type.
+# TYPE acme_proxy_certificate_issue_failures counter
 acme_proxy_certificate_issue_failures_total{role="acme,admin,worker",profile="default",reason="badCSR"} 1
+# HELP acme_proxy_certificate_issue_duration_seconds Time from an accepted finalize to a stored certificate, by endpoint.
+# TYPE acme_proxy_certificate_issue_duration_seconds histogram
+# UNIT acme_proxy_certificate_issue_duration_seconds seconds
+acme_proxy_certificate_issue_duration_seconds_sum{role="acme,admin,worker",profile="default"} 45.0
+acme_proxy_certificate_issue_duration_seconds_count{role="acme,admin,worker",profile="default"} 41
+…
 # HELP acme_proxy_database_pool_connections Connections in the SQLite pool.
 # TYPE acme_proxy_database_pool_connections gauge
 acme_proxy_database_pool_connections{role="acme,admin,worker",state="idle"} 4
 acme_proxy_database_pool_connections{role="acme,admin,worker",state="busy"} 1
+# EOF
 ```
+
+A counter's `# TYPE` line names its family without `_total`, as OpenMetrics
+requires; its series, which is what a query names, keep the suffix.
 
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `acme_proxy_requests_total` | counter | `role`, `profile`, `route`, `status` |
+| `acme_proxy_request_duration_seconds` | histogram | `role`, `profile`, `route` |
 | `acme_proxy_certificates_issued_total` | counter | `role`, `profile` |
 | `acme_proxy_certificate_issue_failures_total` | counter | `role`, `profile`, `reason` |
+| `acme_proxy_certificate_issue_duration_seconds` | histogram | `role`, `profile` |
 | `acme_proxy_database_pool_connections` | gauge | `role`, `state` |
 
-Five things are worth knowing about the numbers.
+Six things are worth knowing about the numbers.
 
 **`role` names the roles that process runs**, comma-separated —
 `acme,admin,worker` for an all-in-one deployment, which is the default. The
@@ -96,6 +118,17 @@ series rather than one series per path tried. Root-router requests such as
 Both are rendered from one record, so the metric and the trail cannot disagree
 about what happened.
 
+**The two histograms time different things.**
+`acme_proxy_request_duration_seconds` runs from the request reaching the router
+to its response head, with buckets from 5 ms to 10 s; it has no `status` label,
+because a histogram multiplies every label by its bucket count.
+`acme_proxy_certificate_issue_duration_seconds` runs from the finalize request
+being accepted to the certificate being stored, whichever process signs it, with
+buckets from 1 s to 1 h. It is measured from job timestamps, which are whole
+seconds, and for a [relayed](../signers/relay.md) order it includes the
+upstream CA's own validation. It is observed by the process that signs, so in a
+split deployment it is on the `worker`'s scrape target.
+
 **The counters survive a reload but not a restart.** `SIGHUP` rebuilds the
 routers and keeps the registry, so a configuration change does not read as a
 counter reset; a restart genuinely is a new process and starts from zero, which
@@ -115,7 +148,7 @@ scrape_configs:
       - targets: ['ca.internal:3002']
 ```
 
-A dashboard over all four families ships in the repository — see
+A dashboard over all six families ships in the repository — see
 [Grafana Dashboard](grafana.md).
 
 ## Logging
@@ -329,7 +362,7 @@ storage layer.
 
 Two sources, and they are complementary rather than alternatives. The metrics
 are cheap to alert on and answer "how much"; the log stream answers "which one,
-and why", and covers everything the four metrics do not.
+and why", and covers everything the metrics do not.
 
 With [`[metrics]`](#metrics) enabled:
 
@@ -350,6 +383,10 @@ sum(rate(acme_proxy_requests_total{status=~"5.."}[5m]))
 
 # The pool is saturated, so requests are queueing on a connection.
 acme_proxy_database_pool_connections{state="idle"} == 0
+
+# Requests are slow: the 95th percentile over a second, on any route.
+histogram_quantile(0.95,
+  sum(rate(acme_proxy_request_duration_seconds_bucket[5m])) by (le, route)) > 1
 ```
 
 The `up` metric Prometheus synthesises per target also gives a liveness alert

@@ -29,7 +29,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 | Background jobs | `crates/jobs/src/jobs/` | `configuration/reference.md` `[jobs]` | `jobs/mod.rs` `//!` |
 | Notifications, expiry digest | `crates/jobs/src/notify/` | `notifications/` | `notify/expiry.rs` `//!` |
 | Audit trail | `crates/core/src/audit/`, `crates/jobs/src/auditor/` | `operations/audit.md` | [ADR 0005](doc/src/dev/adr/0005-rust-enums-own-the-vocabularies.md) |
-| Metrics | `crates/jobs/src/metrics.rs` | `operations/monitoring.md`, `operations/grafana.md` | `metrics.rs` `//!` |
+| Metrics | `crates/jobs/src/metrics.rs` | `operations/monitoring.md`, `operations/grafana.md` | [ADR 0011](doc/src/dev/adr/0011-metrics-on-prometheus-client.md) |
 | Reload on `SIGHUP` | `crates/server/src/reload.rs` | `operations/reload.md` | [ADR 0008](doc/src/dev/adr/0008-shared-state-in-the-database.md) |
 | Role processes | `crates/server/src/roles.rs` | `getting_started/deployment.md` | [ADR 0007](doc/src/dev/adr/0007-role-processes.md) |
 | Web admin (`/ui`, `/api`) | `crates/admin/src/webadmin/` | `operations/webadmin.md`, `operations/webadmin_users.md` | `webadmin/session.rs` `//!` |

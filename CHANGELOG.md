@@ -170,6 +170,13 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Latency histograms on `/metrics`.**
+  `acme_proxy_request_duration_seconds{role,profile,route}` times each request
+  to its response head (buckets from 5 ms to 10 s).
+  `acme_proxy_certificate_issue_duration_seconds{role,profile}` times each
+  issuance from the accepted finalize to the stored certificate (1 s to 1 h),
+  and is observed by the process that signs. The shipped Grafana dashboard
+  draws p50 and p95 for both. See `doc/src/operations/monitoring.md`.
 - **`acme-proxy serve --role acme,admin,worker`** — one binary and one
   configuration, run as several processes each doing a subset of the work:
   `acme` serves ACME, `admin` serves the panel, `worker` drains the job queue
@@ -239,6 +246,14 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **`/metrics` serves the OpenMetrics text format**
+  (`application/openmetrics-text; version=1.0.0`) instead of the Prometheus
+  0.0.4 text format, built on `prometheus-client`
+  ([ADR 0011](doc/src/dev/adr/0011-metrics-on-prometheus-client.md)). Every
+  series keeps its name, so queries, alerts and dashboards are unaffected.
+  What changes in a raw scrape: a counter's `# TYPE` and `# HELP` lines name
+  its family without `_total`, and the body ends with `# EOF`. Prometheus reads
+  both formats.
 - **The crate is now a Cargo workspace: the `acme-proxy` binary over nine
   library crates.** `acme-proxy-core`, `-store`, `-net`, `-policy`, `-jobs`,
   `-signer`, `-protocol`, `-admin` and `-server`, under `crates/`, each naming

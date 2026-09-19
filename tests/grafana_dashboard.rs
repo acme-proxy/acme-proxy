@@ -12,8 +12,8 @@
 //!
 //! The set of real metric names comes from calling
 //! [`acme_proxy_jobs::metrics::Metrics::render`] on an **empty** registry and
-//! parsing its `# TYPE` lines. That works because `render_family` emits the
-//! `# HELP`/`# TYPE` pair for every family even when it holds no series — a
+//! parsing its `# TYPE` lines. That works because every family is wrapped so
+//! that it emits its `# HELP`/`# TYPE` pair even when it holds no series — a
 //! deliberate property (a dashboard built on a name that has not happened yet
 //! should find the name, not an absence it cannot tell from a typo), and one
 //! this file turns into a guarantee.
@@ -22,30 +22,49 @@
 //! the obvious alternative and is strictly worse: it would pass for a name that
 //! is written in the source but never reaches the wire.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use acme_proxy_jobs::metrics::Metrics;
 use acme_proxy_store::db::Database;
 use serde_json::Value;
 
-/// Every metric name this build emits, read out of a real exposition.
-async fn emitted_metrics() -> BTreeSet<String> {
+/// Every series name this build emits, each mapped to the family it belongs
+/// to, read out of a real exposition.
+///
+/// The `# TYPE` line names the **family**, and the series a query names are
+/// derived from it by type (OpenMetrics): a counter's single series carries
+/// `_total`, a histogram's are `_bucket`, `_sum` and `_count`, and a gauge's
+/// is the family name itself.
+async fn emitted_series() -> BTreeMap<String, String> {
     let database = Arc::new(Database::connect_in_memory().await.unwrap());
     let rendered = Metrics::new(database).render();
 
-    let names: BTreeSet<String> = rendered
+    let mut series = BTreeMap::new();
+    for declaration in rendered
         .lines()
         .filter_map(|line| line.strip_prefix("# TYPE "))
-        .filter_map(|rest| rest.split_whitespace().next())
-        .map(str::to_string)
-        .collect();
+    {
+        let (family, kind) = declaration
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("a `# TYPE` line names a type: {declaration}"));
+        let suffixes: &[&str] = match kind {
+            "counter" => &["_total"],
+            "histogram" => &["_bucket", "_sum", "_count"],
+            "gauge" => &[""],
+            other => panic!("{family} has type {other}, which this test does not map"),
+        };
+        for suffix in suffixes {
+            series.insert(format!("{family}{suffix}"), family.to_string());
+        }
+    }
 
+    let families: BTreeSet<&String> = series.values().collect();
     assert!(
-        names.len() >= 4,
-        "an empty registry must still declare every family; parsed {names:?} from:\n{rendered}"
+        families.len() >= 6,
+        "an empty registry must still declare every family; parsed {families:?} from:\n{rendered}"
     );
-    names
+    series
 }
 
 fn dashboard() -> (String, Value) {
@@ -84,7 +103,7 @@ fn referenced_metrics(raw: &str) -> BTreeSet<String> {
 /// The rename guard, and the reason this file exists.
 #[tokio::test]
 async fn every_metric_the_dashboard_queries_is_one_this_build_emits() {
-    let emitted = emitted_metrics().await;
+    let emitted = emitted_series().await;
     let (raw, _) = dashboard();
 
     let referenced = referenced_metrics(&raw);
@@ -94,30 +113,42 @@ async fn every_metric_the_dashboard_queries_is_one_this_build_emits() {
          assertion here vacuously true"
     );
 
-    let unknown: Vec<&String> = referenced.difference(&emitted).collect();
+    let unknown: Vec<&String> = referenced
+        .iter()
+        .filter(|name| !emitted.contains_key(*name))
+        .collect();
     assert!(
         unknown.is_empty(),
         "dashboards/acme-proxy.json references metrics this build does not \
          emit: {unknown:?}. A renamed metric leaves a silently empty panel, so \
          the dashboard moves with the rename or the rename does not land. \
-         Emitted: {emitted:?}"
+         Emitted: {:?}",
+        emitted.keys().collect::<Vec<_>>()
     );
 }
 
-/// The converse. Four families is few enough to insist the dashboard covers
-/// them all — where `logging_convention.rs` checks only one direction, because
-/// its page is a curated subset of ~490 event names and never claimed to be
-/// exhaustive.
+/// The converse, by family: each one appears on the dashboard through at least
+/// one of its series. Six families is few enough to insist the dashboard
+/// covers them all — where `logging_convention.rs` checks only one direction,
+/// because its page is a curated subset of ~490 event names and never claimed
+/// to be exhaustive.
 #[tokio::test]
 async fn every_metric_this_build_emits_appears_on_the_dashboard() {
-    let emitted = emitted_metrics().await;
+    let emitted = emitted_series().await;
     let (raw, _) = dashboard();
 
     let referenced = referenced_metrics(&raw);
-    let missing: Vec<&String> = emitted.difference(&referenced).collect();
+    let shown: BTreeSet<&String> = referenced
+        .iter()
+        .filter_map(|name| emitted.get(name))
+        .collect();
+    let missing: BTreeSet<&String> = emitted
+        .values()
+        .filter(|family| !shown.contains(family))
+        .collect();
     assert!(
         missing.is_empty(),
-        "these metrics are emitted but appear nowhere on the dashboard: \
+        "these metric families are emitted but appear nowhere on the dashboard: \
          {missing:?}. A new family that nothing visualises is one an operator \
          will never know they have."
     );

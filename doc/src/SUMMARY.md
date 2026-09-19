@@ -81,6 +81,7 @@
   - [ADR 0008: State that more than one process can see lives in the database](dev/adr/0008-shared-state-in-the-database.md)
   - [ADR 0009: Dependencies are pure Rust on `ring`, add no global state, and earn their place](dev/adr/0009-dependency-policy.md)
   - [ADR 0010: Errors derive `thiserror`, carry their whole message, and panic only at startup](dev/adr/0010-error-types.md)
+  - [ADR 0011: Metrics are built on `prometheus-client`, one registry per scrape](dev/adr/0011-metrics-on-prometheus-client.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)

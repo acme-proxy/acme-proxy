@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. `TODO.md` asks for latency histograms, which is the case where a
-metrics library would earn its place.
+Accepted. The metrics clause is superseded by
+[ADR 0011](0011-metrics-on-prometheus-client.md): latency histograms were the
+case where a metrics library would earn its place, and they arrived.
 
 ## Context
 

@@ -73,9 +73,15 @@ pub async fn record_issuance(
 /// deferred one. `client_ip` is the notification's own rendering of that
 /// address, `None` where no request is in scope. `notify` is `None` when the
 /// order's profile has no dispatcher in this process.
+///
+/// `requested_at` is when the finalize was accepted, in Unix seconds: the
+/// `created_at` of the job the caller is running, which the finalize request
+/// enqueued. It times `acme_proxy_certificate_issue_duration_seconds`.
+#[allow(clippy::too_many_arguments)]
 pub async fn announce_issuance(
     order: &Order,
     serial: &str,
+    requested_at: i64,
     actor: acme_proxy_core::audit::Actor,
     client: acme_proxy_core::audit::ClientContext,
     client_ip: Option<String>,
@@ -94,6 +100,11 @@ pub async fn announce_issuance(
             .with_serial(serial),
         )
         .await;
+    let elapsed = acme_proxy_store::nonce::now_secs().saturating_sub(requested_at);
+    audit.observe_issuance(
+        &order.profile,
+        std::time::Duration::from_secs(u64::try_from(elapsed).unwrap_or(0)),
+    );
     if let Some(dispatcher) = notify {
         dispatcher
             .dispatch(NotifyEvent::CertificateIssued(
