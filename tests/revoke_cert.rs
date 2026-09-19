@@ -463,7 +463,7 @@ async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() 
         common::ClientContext::default(),
         &acme_proxy_jobs::auditor::Auditor::offline(database.clone()),
         database.clone(),
-        acme_proxy::acme::revoke::Revoker::Backend(cli_ca.as_ref()),
+        acme_proxy_protocol::acme::revoke::Revoker::Backend(cli_ca.as_ref()),
         None,
     )
     .await

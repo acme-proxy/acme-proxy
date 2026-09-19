@@ -148,7 +148,7 @@ pub enum RevokeError {
 /// `BadCsr` is not a thing `revoke` can legitimately answer — the hook takes a
 /// certificate, not a CSR — so it is reported as the contract violation it is
 /// rather than passed through as if it meant something here.
-pub(crate) fn signer_detail(error: &SignerError) -> String {
+pub fn signer_detail(error: &SignerError) -> String {
     match error {
         SignerError::Internal(detail) => detail.clone(),
         SignerError::BadCsr => "unexpected badCsr from revoke".to_string(),

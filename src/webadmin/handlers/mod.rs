@@ -1,5 +1,5 @@
 //! One module per admin resource, re-exported flat — mirroring
-//! [`crate::handlers`], which does the same for the ACME resources.
+//! [`acme_proxy_protocol::handlers`], which does the same for the ACME resources.
 //!
 //! Every handler here is a few lines over [`crate::admin::ops`] and
 //! [`crate::admin::render`]: this layer decides status codes and shapes,

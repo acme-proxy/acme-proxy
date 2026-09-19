@@ -122,7 +122,7 @@ pub async fn patch_account(
     request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<UpdateAccount>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    if let Some(rejection) = crate::acme::rules::contact_shape_error(&body.contact) {
+    if let Some(rejection) = acme_proxy_protocol::acme::rules::contact_shape_error(&body.contact) {
         return Err(AdminError::bad_request(rejection.detail));
     }
 

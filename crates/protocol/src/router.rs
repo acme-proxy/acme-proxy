@@ -85,7 +85,7 @@ fn http01_stores(profiles: &[Arc<Profile>]) -> Vec<Arc<dyn signer::Http01TokenSt
 /// three still apply as three separate layers rather than being collapsed into
 /// a wrapper type. They set distinct headers, so their order among themselves
 /// carries no meaning.
-pub(crate) fn security_headers() -> (
+pub fn security_headers() -> (
     SetResponseHeaderLayer<HeaderValue>,
     SetResponseHeaderLayer<HeaderValue>,
     SetResponseHeaderLayer<HeaderValue>,
@@ -112,7 +112,7 @@ pub(crate) fn security_headers() -> (
 /// actually occur are `panic!("literal")` (`&'static str`) and `panic!("{x}")`
 /// (`String`). Anything else is reported as the fallback — the message only
 /// reaches the log, never a response body (ASVS V16.5.1).
-pub(crate) fn panic_message(err: &(dyn Any + Send)) -> &str {
+pub fn panic_message(err: &(dyn Any + Send)) -> &str {
     err.downcast_ref::<&'static str>()
         .copied()
         .or_else(|| err.downcast_ref::<String>().map(String::as_str))
@@ -284,7 +284,7 @@ pub fn build_app(
 /// middleware, so a scrape is a `request_completed` line like everything else
 /// and its `x-request-id` correlates with whatever it was measuring.
 ///
-/// This router is **not** behind a [`reload`](crate::reload) swap cell, unlike
+/// This router is **not** behind a `reload` swap cell, unlike
 /// the other two. It has one route, and its only state is the registry — which
 /// by design is carried across generations rather than rebuilt (see
 /// `Assembly`), so there is nothing a reload could put in a

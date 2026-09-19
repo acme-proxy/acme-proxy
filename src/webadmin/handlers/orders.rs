@@ -230,11 +230,11 @@ pub async fn revoke_order(
 pub(crate) fn revoker<'a>(
     state: &'a AdminState,
     route: &'a acme_proxy_signer::RevocationRoute,
-) -> crate::acme::revoke::Revoker<'a> {
-    crate::acme::revoke::Revoker::for_route(
+) -> acme_proxy_protocol::acme::revoke::Revoker<'a> {
+    acme_proxy_protocol::acme::revoke::Revoker::for_route(
         route,
         &state.jobs,
-        crate::acme::revoke::request_wait(state.config.server.request_timeout_ms),
+        acme_proxy_protocol::acme::revoke::request_wait(state.config.server.request_timeout_ms),
     )
 }
 
@@ -357,7 +357,7 @@ pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
 pub(crate) async fn resolve_order_profile(
     state: &AdminState,
     id: &str,
-) -> Result<std::sync::Arc<crate::profile::Profile>, AdminError> {
+) -> Result<std::sync::Arc<acme_proxy_protocol::profile::Profile>, AdminError> {
     let order = Order::find_by_id(id, &state.database)
         .await?
         .ok_or_else(|| not_found(id))?;

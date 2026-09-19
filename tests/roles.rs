@@ -504,11 +504,11 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     )
     .unwrap();
     let audit = acme_proxy_jobs::auditor::Auditor::offline(database.clone());
-    acme_proxy::acme::revoke::Revocations {
+    acme_proxy_protocol::acme::revoke::Revocations {
         database: &database,
         audit: &audit,
         notify: None,
-        revoker: acme_proxy::acme::revoke::Revoker::for_route(
+        revoker: acme_proxy_protocol::acme::revoke::Revoker::for_route(
             &route,
             &queue,
             std::time::Duration::ZERO,
@@ -630,7 +630,7 @@ async fn claimed_order(
         .unwrap();
     assert!(
         queue
-            .enqueue(acme_proxy::acme::issue::signer_issue_spec(
+            .enqueue(acme_proxy_protocol::acme::issue::signer_issue_spec(
                 &order,
                 &csr,
                 &acme_proxy_core::audit::ClientContext::default(),

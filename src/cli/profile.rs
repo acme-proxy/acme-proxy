@@ -2,7 +2,7 @@
 //!
 //! The terminal's half of `GET /api/profiles`. Both render
 //! [`crate::admin::render_profile_json`], and they reach it from opposite
-//! directions: the API describes a **mounted** [`crate::profile::Profile`],
+//! directions: the API describes a **mounted** [`acme_proxy_protocol::profile::Profile`],
 //! where this describes what the configuration on disk *would* mount.
 //!
 //! That difference is deliberate rather than a shortcut. Building the real

@@ -14,14 +14,11 @@ use std::time::Duration;
 
 use acme_proxy_jobs::auditor::Auditor;
 // Re-exported for the suites that build an `Account` directly.
-use acme_proxy::profile::Profile;
-use acme_proxy::profile::ProfileParts;
-use acme_proxy::router::build_app;
 pub use acme_proxy_core::audit::ClientContext;
+use acme_proxy_protocol::profile::Profile;
+use acme_proxy_protocol::profile::ProfileParts;
+use acme_proxy_protocol::router::build_app;
 
-use acme_proxy::acme::issue::SignerIssueJob;
-use acme_proxy::acme::revoke::SignerRevokeJob;
-use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
 use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
@@ -51,6 +48,9 @@ use acme_proxy_policy::filter::policy::Mode;
 use acme_proxy_policy::filter::policy::Rule;
 use acme_proxy_policy::filter::policy::StageSet;
 use acme_proxy_policy::filter::policy::Verdict;
+use acme_proxy_protocol::acme::issue::SignerIssueJob;
+use acme_proxy_protocol::acme::revoke::SignerRevokeJob;
+use acme_proxy_protocol::acme::validate::ChallengeValidateJob;
 use acme_proxy_signer::CrlRefresher;
 use acme_proxy_signer::Http01TokenStore;
 use acme_proxy_signer::IssueOutcome;

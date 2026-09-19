@@ -27,8 +27,8 @@
 //! - [`sockets`] — the three listeners' binds, plans and announcements.
 //!
 //! What it serves sits below it: the endpoint itself is
-//! [`crate::profile::Profile`], and the routers each listener serves, with
-//! their shared layers, are [`crate::router`].
+//! [`acme_proxy_protocol::profile::Profile`], and the routers each listener serves, with
+//! their shared layers, are [`acme_proxy_protocol::router`].
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -415,7 +415,7 @@ pub async fn serve_on_with_reloads(
         announce_metrics_listener(&metrics_bound);
     }
     let metrics = serve_role(
-        crate::router::metrics_app(assembly.metrics.clone()),
+        acme_proxy_protocol::router::metrics_app(assembly.metrics.clone()),
         metrics_socket,
         shutdown_rx,
     );

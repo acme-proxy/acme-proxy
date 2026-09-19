@@ -14,8 +14,8 @@ use acme_proxy_net::tls;
 use super::sockets::{Role, SocketPlans, check_metrics_config, plan_sockets};
 use super::supervisor::Cells;
 use super::{Assembly, GenerationParts};
-use crate::profile::Profile;
-use crate::router::build_app;
+use acme_proxy_protocol::profile::Profile;
+use acme_proxy_protocol::router::build_app;
 
 /// Everything one configuration generation contributes, built and validated
 /// before any of it is published.
@@ -166,15 +166,17 @@ pub(crate) fn build_generation(
     // naming a profile this generation does not mount is retried rather than
     // lost.
     job_registry
-        .register(Arc::new(crate::acme::revoke::SignerRevokeJob::new(
-            database.clone(),
-            Arc::new(
-                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                    .with_metrics(assembly.metrics.clone()),
+        .register(Arc::new(
+            acme_proxy_protocol::acme::revoke::SignerRevokeJob::new(
+                database.clone(),
+                Arc::new(
+                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
+                        .with_metrics(assembly.metrics.clone()),
+                ),
+                backends.clone(),
+                assembly.notifiers.clone(),
             ),
-            backends.clone(),
-            assembly.notifiers.clone(),
-        )))
+        ))
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
@@ -183,15 +185,17 @@ pub(crate) fn build_generation(
     // `SignerRevokeJob`'s reason above, over this generation's backends — none
     // at all in a process without the worker role, which never claims a row.
     job_registry
-        .register(Arc::new(crate::acme::issue::SignerIssueJob::new(
-            database.clone(),
-            Arc::new(
-                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                    .with_metrics(assembly.metrics.clone()),
+        .register(Arc::new(
+            acme_proxy_protocol::acme::issue::SignerIssueJob::new(
+                database.clone(),
+                Arc::new(
+                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
+                        .with_metrics(assembly.metrics.clone()),
+                ),
+                backends.clone(),
+                assembly.notifiers.clone(),
             ),
-            backends.clone(),
-            assembly.notifiers.clone(),
-        )))
+        ))
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;
@@ -203,17 +207,19 @@ pub(crate) fn build_generation(
     // profiles rather than one profile, since the registry refuses a second
     // handler for one kind.
     job_registry
-        .register(Arc::new(crate::acme::validate::ChallengeValidateJob::new(
-            database.clone(),
-            Arc::new(
-                acme_proxy_jobs::auditor::Auditor::offline(database.clone())
-                    .with_metrics(assembly.metrics.clone()),
+        .register(Arc::new(
+            acme_proxy_protocol::acme::validate::ChallengeValidateJob::new(
+                database.clone(),
+                Arc::new(
+                    acme_proxy_jobs::auditor::Auditor::offline(database.clone())
+                        .with_metrics(assembly.metrics.clone()),
+                ),
+                profiles
+                    .iter()
+                    .map(|profile| (profile.name.clone(), profile.clone()))
+                    .collect(),
             ),
-            profiles
-                .iter()
-                .map(|profile| (profile.name.clone(), profile.clone()))
-                .collect(),
-        )))
+        ))
         .inspect_err(|error| {
             error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
         })?;

@@ -5,7 +5,7 @@
 //! axum name it touches is `StatusCode`, which comes with `Problem`. The resource
 //! handlers in
 //! [`crate::handlers`] are the HTTP edge — an extractor, a call into this module,
-//! a rendered response — and the operator front ends ([`crate::admin`], the
+//! a rendered response — and the operator front ends (`admin`, the
 //! relay's background settlement) reach the same rules through the same
 //! functions, so a state transition has one implementation however it is
 //! triggered.

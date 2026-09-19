@@ -10,6 +10,7 @@ dependencies = [
  "acme-proxy-jobs",
  "acme-proxy-net",
  "acme-proxy-policy",
+ "acme-proxy-protocol",
  "acme-proxy-signer",
  "acme-proxy-store",
  "anyhow",
@@ -164,6 +165,33 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "acme-proxy-protocol"
+version = "0.5.0"
+dependencies = [
+ "acme-proxy-core",
+ "acme-proxy-jobs",
+ "acme-proxy-net",
+ "acme-proxy-policy",
+ "acme-proxy-signer",
+ "acme-proxy-store",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "rcgen",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

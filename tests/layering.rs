@@ -69,7 +69,7 @@ fn is_test_file(relative: &str) -> bool {
 /// `proxy.rs` has several ahead of more production items — so only the
 /// attribute followed by a `mod` line counts.
 ///
-/// The declaration may carry a visibility: `src/acme/order.rs` exports its
+/// The declaration may carry a visibility: `crates/protocol/src/acme/order.rs` exports its
 /// fixtures to the sibling job suite as `pub(crate) mod tests`. Missing that
 /// spelling is the dangerous direction — the boundary is simply not found, the
 /// whole file reads as production, and the scan reports every fixture in it.
@@ -174,20 +174,21 @@ fn the_cli_never_builds_a_signer() {
 /// backend some other way: taking a `SignerBackend` from state, building one,
 /// or revoking through `Revoker::Backend`. Any of those would put the CA key
 /// back in the `acme` or `admin` process, the one thing the split exists to
-/// prevent. The backend is the job handlers' alone (`src/acme/issue.rs`,
-/// `src/acme/revoke.rs`'s `SignerRevokeJob`), in the `worker` role.
+/// prevent. The backend is the job handlers' alone
+/// (`crates/protocol/src/acme/issue.rs`, `crates/protocol/src/acme/revoke.rs`'s
+/// `SignerRevokeJob`), in the `worker` role.
 ///
-/// [`Profile`]: acme_proxy::profile::Profile
+/// [`Profile`]: acme_proxy_protocol::profile::Profile
 #[test]
 fn the_request_path_never_holds_a_signer() {
     const REQUEST_PATH: &[&str] = &[
-        "src/handlers",
-        "src/extractors",
-        "src/middlewares",
+        "crates/protocol/src/handlers",
+        "crates/protocol/src/extractors",
+        "crates/protocol/src/middlewares",
         "src/webadmin",
         "src/admin",
-        "src/router.rs",
-        "src/profile.rs",
+        "crates/protocol/src/router.rs",
+        "crates/protocol/src/profile.rs",
     ];
     const FORBIDDEN: &[&str] = &[
         "SignerBackend",

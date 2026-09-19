@@ -67,7 +67,7 @@ pub async fn cleanup_nonces(
 
 /// `GET /api/profiles` — the endpoints this process is serving.
 ///
-/// Read straight from the mounted [`crate::profile::Profile`]s rather than from
+/// Read straight from the mounted [`acme_proxy_protocol::profile::Profile`]s rather than from
 /// configuration, so it describes what is actually running: a profile parked
 /// with `enabled = false` is absent here, which is the honest answer.
 pub async fn list_profiles(State(state): State<AdminState>, _auth: Authenticated) -> Json<Value> {
@@ -101,6 +101,6 @@ pub(crate) fn profile_rows(state: &AdminState) -> Vec<Value> {
 /// `acme-proxy profile list` renders too. The two reach it from opposite
 /// directions -- a mounted profile here, a resolved configuration there -- and
 /// [`admin::ProfileSummary`] is where that difference is written down.
-pub(crate) fn profile_row(profile: &crate::profile::Profile) -> Value {
+pub(crate) fn profile_row(profile: &acme_proxy_protocol::profile::Profile) -> Value {
     admin::render_profile_json(&admin::ProfileSummary::mounted(profile))
 }

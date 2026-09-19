@@ -306,7 +306,7 @@ pub async fn run_order_command(
             // A local CA's revocation is recorded here, without its key, and a
             // running server's worker signs the CRL; a backend only the worker
             // holds gets the revocation queued, and this waits `--wait` for it.
-            let revoker = crate::acme::revoke::Revoker::for_route(
+            let revoker = acme_proxy_protocol::acme::revoke::Revoker::for_route(
                 &route,
                 &jobs,
                 std::time::Duration::from_secs(wait),
@@ -968,9 +968,10 @@ mod tests {
     /// the server's handler runs the script once and records the revocation.
     #[tokio::test]
     async fn a_delegated_revocation_is_queued_for_the_server() {
-        use crate::acme::revoke::{SIGNER_REVOKE_KIND, SignerRevokeJob};
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_jobs::jobs::JobOutcome;
+        use acme_proxy_protocol::acme::revoke::SIGNER_REVOKE_KIND;
+        use acme_proxy_protocol::acme::revoke::SignerRevokeJob;
         use acme_proxy_store::job::Job;
 
         let dir = temp_dir();

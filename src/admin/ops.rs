@@ -150,7 +150,7 @@ pub enum RevokeOutcome {
 pub enum RevokeError {
     #[error("database error: {0}")]
     Database(sqlx::Error),
-    #[error("signer error: {}", crate::acme::revoke::signer_detail(.0))]
+    #[error("signer error: {}", acme_proxy_protocol::acme::revoke::signer_detail(.0))]
     Signer(SignerError),
     #[error("internal error: {0}")]
     Internal(String),
@@ -392,14 +392,15 @@ pub enum ContactError {
 }
 
 /// Updates an account's contact list, refusing what `newAccount` would refuse
-/// ([`crate::acme::account::update_contact`], the one check every surface
+/// ([`acme_proxy_protocol::acme::account::update_contact`], the one check every surface
 /// shares).
 pub async fn update_account_contact(
     id: &str,
     contact: Vec<String>,
     database: Arc<Database>,
 ) -> Result<Option<Account>, ContactError> {
-    use crate::acme::account::{ContactUpdateError, update_contact};
+    use acme_proxy_protocol::acme::account::ContactUpdateError;
+    use acme_proxy_protocol::acme::account::update_contact;
 
     let Some(mut account) = Account::find_any_by_id(id, &database).await? else {
         return Ok(None);
@@ -422,7 +423,7 @@ pub async fn update_account_contact(
 /// profile's dispatcher — `notifier` looks one up by profile name, `None` where
 /// this process has none — naming `client_ip` as whoever asked.
 ///
-/// The same [`crate::acme::account::deactivate`] the account's own request runs,
+/// The same [`acme_proxy_protocol::acme::account::deactivate`] the account's own request runs,
 /// so the notification goes out however the account was shut.
 pub async fn deactivate_account(
     id: &str,
@@ -434,8 +435,13 @@ pub async fn deactivate_account(
         return Ok(None);
     };
     let dispatcher = notifier(&account.profile);
-    crate::acme::account::deactivate(&mut account, &database, dispatcher.as_deref(), client_ip)
-        .await?;
+    acme_proxy_protocol::acme::account::deactivate(
+        &mut account,
+        &database,
+        dispatcher.as_deref(),
+        client_ip,
+    )
+    .await?;
     Ok(Some(account))
 }
 
@@ -449,11 +455,11 @@ pub async fn deactivate_account(
 /// and a `confirm_*` form.
 ///
 /// `revoker` is what withdraws the trust — for every front end,
-/// [`Revoker::for_route`](crate::acme::revoke::Revoker::for_route): a local
+/// [`Revoker::for_route`](acme_proxy_protocol::acme::revoke::Revoker::for_route): a local
 /// CA's ledger, or the queue a worker drains. Neither front end holds a
 /// backend.
 ///
-/// The operation itself is [`crate::acme::revoke::Revocations::revoke_order`],
+/// The operation itself is [`acme_proxy_protocol::acme::revoke::Revocations::revoke_order`],
 /// the same tail `POST /revokeCert` runs; this wrapper only sorts its answers
 /// into the outcomes an operator front end reports. `notify` is the order's
 /// profile's dispatcher, where there is one: the `certificate_revoked`
@@ -467,10 +473,11 @@ pub async fn revoke_order(
     client: ClientContext,
     audit: &Auditor,
     database: Arc<Database>,
-    revoker: crate::acme::revoke::Revoker<'_>,
+    revoker: acme_proxy_protocol::acme::revoke::Revoker<'_>,
     notify: Option<&acme_proxy_jobs::notify::NotifyDispatcher>,
 ) -> Result<RevokeOutcome, RevokeError> {
-    use crate::acme::revoke::{Revocations, RevokeError as Refusal};
+    use acme_proxy_protocol::acme::revoke::Revocations;
+    use acme_proxy_protocol::acme::revoke::RevokeError as Refusal;
 
     let revocations = Revocations {
         database: &database,
@@ -770,7 +777,7 @@ pub async fn cancel_job(
         }
     }
 
-    if job.kind == crate::acme::issue::SIGNER_ISSUE_KIND && was_in_flight {
+    if job.kind == acme_proxy_protocol::acme::issue::SIGNER_ISSUE_KIND && was_in_flight {
         // An issuance that never reached a backend: the order was claimed with
         // this row and nothing else will settle it, so it goes `invalid` now
         // rather than sitting `processing` until it expires. Only while still
@@ -1043,7 +1050,7 @@ mod tests {
             },
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1073,7 +1080,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1123,7 +1130,7 @@ mod tests {
             ClientContext::default(),
             &Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             Some(&dispatcher),
         )
         .await
@@ -1151,7 +1158,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1616,7 +1623,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
         )
         .await
@@ -1647,7 +1654,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
             None,
         )
         .await
@@ -1668,7 +1675,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1705,7 +1712,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db.clone(),
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1717,7 +1724,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db,
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await
@@ -1738,7 +1745,7 @@ mod tests {
             ClientContext::default(),
             &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
             db,
-            crate::acme::revoke::Revoker::Backend(signer.as_ref()),
+            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
             None,
         )
         .await

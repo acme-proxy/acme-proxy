@@ -1,0 +1,43 @@
+[package]
+name = "acme-proxy-protocol"
+description = "The ACME (RFC 8555) services, extractors, handlers and routers of acme-proxy (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+exclude = ["**/CLAUDE.md"]
+
+[dependencies]
+acme-proxy-core.workspace = true
+acme-proxy-jobs.workspace = true
+acme-proxy-net.workspace = true
+acme-proxy-policy.workspace = true
+acme-proxy-signer.workspace = true
+acme-proxy-store.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+rcgen.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+acme-proxy-jobs = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
+acme-proxy-signer = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
+# `util` enables `tower::ServiceExt::oneshot`, used to drive a router in tests.
+tower = { workspace = true, features = ["util"] }

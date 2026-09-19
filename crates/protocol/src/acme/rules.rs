@@ -267,7 +267,7 @@ pub(crate) fn validate_contacts(contacts: &[String]) -> Result<(), Problem> {
 }
 
 /// A contact RFC 8555 §7.3 refuses, and which of its two refusals applies.
-pub(crate) struct ContactRejection {
+pub struct ContactRejection {
     /// `true` maps to `unsupportedContact`, `false` to `invalidContact`. The
     /// distinction is deliberate: only one of the two tells the client to try
     /// a different scheme.
@@ -283,7 +283,7 @@ pub(crate) struct ContactRejection {
 /// could not read the detail back out of one. Sharing the check rather than
 /// writing a second one is what keeps `PATCH /api/accounts/{id}` from
 /// accepting a contact `newAccount` would have refused.
-pub(crate) fn contact_shape_error(contacts: &[String]) -> Option<ContactRejection> {
+pub fn contact_shape_error(contacts: &[String]) -> Option<ContactRejection> {
     /// Most `contact` entries an account may carry.
     ///
     /// `order.max_identifiers`' reasoning on the account side: the list is

@@ -1,6 +1,6 @@
 //! [`Profile`]: one ACME endpoint — its identity, its URLs and the subsystems
 //! that answer for it. How a generation builds every one it mounts is
-//! `crate::server::profile`'s.
+//! `server::profile`'s.
 
 use std::sync::Arc;
 

@@ -36,14 +36,14 @@
 //! ## Architecture
 //!
 //! The ACME request path, in the order a request meets it:
-//! - [`middlewares`] - Server-wide layers: request correlation and the access
+//! - [`middlewares`](acme_proxy_protocol::middlewares) - Server-wide layers: request correlation and the access
 //!   line, admission control, the `Replay-Nonce` and `Link: rel="index"` headers
 //! - [`filter`](acme_proxy_policy::filter) - Pluggable request filtering (who may ask at all)
-//! - [`extractors`] - Parse and validate ACME JWS requests, verifying the media
+//! - [`extractors`](acme_proxy_protocol::extractors) - Parse and validate ACME JWS requests, verifying the media
 //!   type, the `crit` header, the signature, the JWS `url` and the nonce before
 //!   any handler runs
-//! - [`handlers`] - One module per ACME resource: the HTTP edge
-//! - [`acme`] - The ACME domain rules every front end shares
+//! - [`handlers`](acme_proxy_protocol::handlers) - One module per ACME resource: the HTTP edge
+//! - [`acme`](acme_proxy_protocol::acme) - The ACME domain rules every front end shares
 //! - [`challenge`](acme_proxy_net::challenge) - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
 //! - [`signer`](acme_proxy_signer) - Pluggable certificate-issuance backends (local CA, ACME relay,
 //!   custom script)
@@ -94,8 +94,8 @@
 //! ```rust,no_run
 //! use std::net::SocketAddr;
 //! use std::sync::Arc;
-//! use acme_proxy::profile::{Profile, ProfileParts};
-//! use acme_proxy::router::build_app;
+//! use acme_proxy_protocol::profile::{Profile, ProfileParts};
+//! use acme_proxy_protocol::router::build_app;
 //! use acme_proxy_store::db::Database;
 //! use acme_proxy_signer as signer;
 //! use acme_proxy_jobs::{jobs, notify};
@@ -220,7 +220,7 @@
 //!     let mut registry = jobs::JobRegistry::new();
 //!     // `finalize` queues the signing: this is the one handler that asks a
 //!     // backend to issue, and the one place a backend is handed out.
-//!     registry.register(Arc::new(acme_proxy::acme::issue::SignerIssueJob::new(
+//!     registry.register(Arc::new(acme_proxy_protocol::acme::issue::SignerIssueJob::new(
 //!         database.clone(),
 //!         audit,
 //!         backends,
@@ -241,17 +241,10 @@
 //! }
 //! ```
 
-pub mod acme;
 pub mod admin;
 pub mod cli;
-pub mod extractors;
-pub mod handlers;
-pub mod middlewares;
-pub mod profile;
 pub mod reload;
-pub mod router;
 pub mod server;
 pub mod webadmin;
 
 // Re-export name shape helpers for backwards compatibility
-pub use acme::rules::{is_wildcard, normalize_dns_name, well_formed_name};

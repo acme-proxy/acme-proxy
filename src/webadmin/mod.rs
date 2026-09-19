@@ -39,14 +39,14 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{info, warn};
 
-use crate::middlewares;
-use crate::profile::Profile;
 use acme_proxy_core::config::Config;
+use acme_proxy_protocol::middlewares;
+use acme_proxy_protocol::profile::Profile;
 use acme_proxy_store::db::Database;
 
 /// Shared state for every admin route.
 ///
-/// Not [`crate::router::AppState`]: that one holds exactly one `Profile`, and
+/// Not [`acme_proxy_protocol::router::AppState`]: that one holds exactly one `Profile`, and
 /// this listener is cross-profile by nature — an operator lists accounts from
 /// every endpoint at once, and revoking an order needs *that order's own*
 /// profile's revocation route, which may name a different CA from the one the
@@ -545,7 +545,10 @@ pub fn build_admin_app_with_logins(
     let router = Router::new()
         // Unauthenticated and touching no database: an orchestrator probing
         // this port should not need a session to learn the process is alive.
-        .route("/health", get(crate::handlers::get_health_check))
+        .route(
+            "/health",
+            get(acme_proxy_protocol::handlers::get_health_check),
+        )
         // The panel is what somebody opening this port in a browser wants.
         .route("/", get(|| async { Redirect::to("/ui/") }))
         .merge(api_with_fallbacks(api))
@@ -577,7 +580,7 @@ pub fn build_admin_app_with_logins(
         // inside `build_app` and inherits none of its layers, so they have to
         // be applied again here — but from the one constructor, since two
         // hand-written copies of a security control are a control that drifts.
-        .layer(crate::router::security_headers())
+        .layer(acme_proxy_protocol::router::security_headers())
         // Strict, and affordable only because of how the pages are built:
         // htmx is served from this origin (`script-src 'self'`) and drives
         // everything through `hx-*` attributes rather than inline handlers, so
@@ -639,7 +642,7 @@ fn admin_api_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "api",
-        error = %crate::router::panic_message(err.as_ref()),
+        error = %acme_proxy_protocol::router::panic_message(err.as_ref()),
     );
     AdminError::internal().into_response()
 }
@@ -653,7 +656,7 @@ fn admin_page_panic_response(err: Box<dyn Any + Send + 'static>) -> Response {
         outcome = "failure",
         listener = "admin",
         surface = "ui",
-        error = %crate::router::panic_message(err.as_ref()),
+        error = %acme_proxy_protocol::router::panic_message(err.as_ref()),
     );
     PageError::internal().into_response()
 }

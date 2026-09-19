@@ -22,7 +22,7 @@ use acme_proxy_signer::Http01TokenStore;
 ///
 /// A `Vec` rather than one store because two profiles may relay to two
 /// different upstreams and so carry two backends; see
-/// `crate::http01_stores`, which builds it.
+/// `http01_stores`, which builds it.
 #[derive(Clone)]
 pub struct Http01Stores(pub Arc<Vec<Arc<dyn Http01TokenStore>>>);
 

@@ -751,7 +751,7 @@ async fn a_panicking_acme_handler_answers_a_problem_document() {
 
     let app = Router::new()
         .route("/boom", get(boom))
-        .layer(acme_proxy::router::catch_panic_acme());
+        .layer(acme_proxy_protocol::router::catch_panic_acme());
 
     let res = app
         .oneshot(Request::get("/boom").body(Body::empty()).unwrap())
