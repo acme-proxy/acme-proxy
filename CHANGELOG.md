@@ -246,6 +246,9 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **A `newAccount` that found an existing key logs `account_found`**, not
+  `account_created` with `created = false`. Counting registrations no longer
+  means filtering a field out of the count.
 - **`/metrics` serves the OpenMetrics text format**
   (`application/openmetrics-text; version=1.0.0`) instead of the Prometheus
   0.0.4 text format, built on `prometheus-client`
@@ -419,6 +422,14 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **A newOrder naming one identifier twice is one identifier**, not a `500`
+  from the order's uniqueness constraint. `A.example.com` and
+  `a.example.com.` normalize to the same name, and the second copy tripped the
+  write.
+- **An account is bound to its external-account credential by the insert that
+  creates it.** The binding and the terms agreement were written afterwards,
+  and a failure there left an account bound to nothing: invisible to
+  `eab delete --deactivate-accounts`, and refused by every `eab` filter rule.
 - **The CSR common-name check reads the certificate request's own DER.** It
   read rcgen's parsed distinguished name, which keeps only the last of several
   `CommonName` attributes and exposes a BMPString or UniversalString value as

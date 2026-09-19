@@ -130,13 +130,30 @@ impl AccountService<'_> {
         // request that turns out to find an existing account is wasted, but a
         // lookup after the INSERT would need a second UPDATE to record it.
         let client = audit.client(request).await;
-        let (mut account, created) =
-            Account::find_or_create(&profile.name, pubkey, payload.contact, &client, database)
-                .await
-                .map_err(|error| {
-                    error!(event = "account_creation_failed", outcome = "failure", error = %error);
-                    Problem::server_internal("Account persistence failed")
-                })?;
+        // The credential that authorized this registration and the agreement to
+        // the terms are columns of the insert, not writes that follow it: an
+        // account bound to no credential escapes `eab delete
+        // --deactivate-accounts` and fails every `eab` filter rule closed.
+        // Recorded only where the endpoint has terms to agree to — the check
+        // above already refused a request that did not agree, so reaching here
+        // with a ToS configured means the client set the flag.
+        let registration = acme_proxy_store::account::Registration {
+            eab_kid,
+            terms_agreed: !profile.meta.terms_of_service.is_empty(),
+        };
+        let (account, created) = Account::find_or_register(
+            &profile.name,
+            pubkey,
+            payload.contact,
+            &registration,
+            &client,
+            database,
+        )
+        .await
+        .map_err(|error| {
+            error!(event = "account_creation_failed", outcome = "failure", error = %error);
+            Problem::server_internal("Account persistence failed")
+        })?;
 
         // Only on the found branch: an account this request just created is never
         // deactivated, and asking would be reading a column we wrote a line ago.
@@ -145,19 +162,6 @@ impl AccountService<'_> {
         }
 
         if created {
-            if let Some(kid) = &eab_kid
-                && let Err(error) = account.set_eab_kid(*kid, database).await
-            {
-                error!(event = "account_eab_kid_persist_failed", outcome = "failure", account_id = %account.id, error = %error);
-            }
-            // Recorded only where the endpoint actually has terms to agree to — the
-            // check above already refused a request that did not agree, so reaching
-            // here with a ToS configured means the client set the flag.
-            if !profile.meta.terms_of_service.is_empty()
-                && let Err(error) = account.set_terms_agreed(database).await
-            {
-                error!(event = "account_terms_agreed_persist_failed", outcome = "failure", account_id = %account.id, error = %error);
-            }
             profile
                 .notify
                 .dispatch(NotifyEvent::AccountCreated(AccountCreatedData {
@@ -175,13 +179,15 @@ impl AccountService<'_> {
         } else {
             StatusCode::OK
         };
-        info!(
-            event = "account_created",
-            outcome = "success",
-            account_id = %account.id,
-            created = created,
-            status = %status
-        );
+        // Two names, because §7.3's find-or-create makes them two different
+        // events: one registered a key, the other recognised one. An operator
+        // counting registrations must not have to filter a field out of the
+        // count.
+        if created {
+            info!(event = "account_created", outcome = "success", account_id = %account.id, status = %status);
+        } else {
+            info!(event = "account_found", outcome = "success", account_id = %account.id, status = %status);
+        }
         Ok((account, created))
     }
 

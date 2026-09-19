@@ -83,6 +83,18 @@ pub struct Account {
 /// the one case a minute of staleness would hide the interesting thing.
 pub const ACCOUNT_TOUCH_INTERVAL: i64 = 60;
 
+/// What `newAccount` learned about a registration before the row exists:
+/// [`Account::find_or_register`]'s two extra columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Registration {
+    /// The external-account credential that authorized it (RFC 8555 §7.3.4),
+    /// when the endpoint requires one.
+    pub eab_kid: Option<Uuid>,
+    /// Whether the client agreed to the endpoint's terms (§7.3.3). Only ever
+    /// set where there are terms to agree to.
+    pub terms_agreed: bool,
+}
+
 /// The accounts an EAB credential bound, as [`Account::eab_summary`] counts
 /// them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -226,6 +238,38 @@ impl Account {
         client: &ClientContext,
         database: &Database,
     ) -> Result<(Account, bool), sqlx::Error> {
+        Self::find_or_register(
+            profile,
+            pubkey,
+            contact,
+            &Registration::default(),
+            client,
+            database,
+        )
+        .await
+    }
+
+    /// [`Account::find_or_create`] with what `newAccount` learned about the
+    /// registration: the external-account credential that authorized it (RFC
+    /// 8555 §7.3.4) and whether its client agreed to the terms (§7.3.3).
+    ///
+    /// Both are columns of the **insert**, not writes that follow it. Written
+    /// afterwards, a failure left an account that exists but is bound to no
+    /// credential: `eab delete --deactivate-accounts` would not find it, and a
+    /// filter rule on its `kid` would refuse everything it asked for, with
+    /// nothing but a log line to say why.
+    #[tracing::instrument(
+        name = "Account::find_or_register",
+        skip(pubkey, registration, client, database)
+    )]
+    pub async fn find_or_register(
+        profile: &str,
+        pubkey: &[u8],
+        contact: Vec<String>,
+        registration: &Registration,
+        client: &ClientContext,
+        database: &Database,
+    ) -> Result<(Account, bool), sqlx::Error> {
         debug!(event = "db_account_find_or_create_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
         if let Some(account) = Account::find_by_pubkey(profile, pubkey, database).await? {
             debug!(event = "db_account_found_existing", outcome = "success", account_id = %account.id, pubkey_fp = %pubkey_fingerprint(pubkey));
@@ -239,8 +283,8 @@ impl Account {
             contact,
             status: "valid".to_string(),
             created_at: now_secs(),
-            eab_kid: None,
-            terms_of_service_agreed: None,
+            eab_kid: registration.eab_kid,
+            terms_of_service_agreed: registration.terms_agreed.then_some(true),
             created_ip: client.ip.clone(),
             created_ptr: client.ptr.clone(),
             // A brand-new account has been seen exactly once, right now, from
@@ -258,9 +302,10 @@ impl Account {
 
         debug!(event = "db_account_create_started", outcome = "progress", account_id = %account.id);
         let inserted = sqlx::query(
-            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, created_ip, \
-             created_ptr, last_seen_at, last_seen_ip, last_seen_ptr) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, eab_kid, \
+             terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, \
+             last_seen_ptr) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(account.id)
         .bind(&account.profile)
@@ -268,6 +313,8 @@ impl Account {
         .bind(contact_json)
         .bind(&account.status)
         .bind(account.created_at)
+        .bind(account.eab_kid)
+        .bind(account.terms_of_service_agreed)
         .bind(&account.created_ip)
         .bind(&account.created_ptr)
         .bind(account.last_seen_at)
@@ -894,6 +941,53 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reloaded.last_seen_ptr, None);
+    }
+
+    /// The registration columns are written by the insert: an account that
+    /// exists but is bound to no credential would escape
+    /// `eab delete --deactivate-accounts` and fail every `eab` filter rule
+    /// closed, with nothing but a log line to say why.
+    #[tokio::test]
+    async fn a_registration_is_bound_to_its_credential_by_the_insert() {
+        let db = Database::connect_in_memory().await.unwrap();
+        let kid = crate::id::mint();
+        let registration = Registration {
+            eab_kid: Some(kid),
+            terms_agreed: true,
+        };
+
+        let (account, is_new) = Account::find_or_register(
+            "default",
+            &[42u8],
+            vec![],
+            &registration,
+            &ClientContext::default(),
+            &db,
+        )
+        .await
+        .unwrap();
+        assert!(is_new);
+
+        let stored = Account::find_by_id("default", account.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.eab_kid, Some(kid));
+        assert_eq!(stored.terms_of_service_agreed, Some(true));
+
+        // The same key again finds the account and binds nothing further.
+        let (found, is_new) = Account::find_or_register(
+            "default",
+            &[42u8],
+            vec![],
+            &Registration::default(),
+            &ClientContext::default(),
+            &db,
+        )
+        .await
+        .unwrap();
+        assert!(!is_new);
+        assert_eq!(found.eab_kid, Some(kid));
     }
 
     /// The traceability columns are admin-visible only: the ACME account object

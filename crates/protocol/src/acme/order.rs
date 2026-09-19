@@ -291,6 +291,14 @@ impl OrderService<'_> {
             identifier.value = normalize_dns_name(&identifier.value);
         }
 
+        // Two spellings of one name are one identifier. `A.example.com` and
+        // `a.example.com.` normalize to the same value, and the order's
+        // `UNIQUE (order_id, identifier)` would answer the second one with a
+        // 500 on the write. Keeping first-seen order leaves the object the
+        // client reads back in the order it asked.
+        let mut seen = std::collections::HashSet::new();
+        identifiers.retain(|identifier| seen.insert(identifier.value.clone()));
+
         // Every offending name at once, each attributed to itself (RFC 8555 §6.7.1).
         // Reporting only the first would make a ten-name order a ten-round-trip
         // guessing game — §6.7.1's own rationale: a client "may choose to submit
@@ -1315,6 +1323,46 @@ pub(crate) mod tests {
         let reloaded = reload(&database, &order).await;
         assert_eq!(reloaded.status, OrderStatus::Invalid);
         assert_eq!(authz.status, AuthzStatus::Invalid);
+    }
+
+    /// Two spellings of one name are one identifier, not a unique-violation
+    /// 500 on the write.
+    #[tokio::test]
+    async fn duplicate_identifiers_become_one() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, ChallengeRegistry::default());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let pubkey = account.pubkey.clone();
+        let payload = NewOrderPayload {
+            identifiers: vec![
+                Identifier::dns("A.example.com"),
+                Identifier::dns("a.example.com."),
+            ],
+            ..Default::default()
+        };
+
+        let (order, authz_ids) = orders
+            .new_order(
+                payload,
+                Some(account),
+                &pubkey,
+                None,
+                &RequestContext::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            order.identifiers,
+            acme_proxy_store::testutil::dns_identifiers(&["a.example.com"])
+        );
+        assert_eq!(authz_ids.len(), 1);
     }
 
     /// A registry that marks every challenge `valid` without a probe.
