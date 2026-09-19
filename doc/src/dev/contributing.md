@@ -57,7 +57,31 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo llvm-cov nextest --workspace --fail-under-lines 97
 cargo test --workspace --doc   # llvm-cov skips doc-tests
 cargo deny check               # supply-chain audit, against deny.toml
+RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
+  cargo doc --workspace --no-deps --all-features   # every intra-doc link
+mdbook build doc/ && python3 doc/lint.py           # this book
 ```
+
+`cargo test --doc` compiles the doc examples but not the intra-doc links, of
+which the workspace has a great many; `cargo doc -D warnings` is what catches a
+link a rename broke. Private intra-doc links are allowed on purpose: the library
+exists for the binary and the tests, and a public item explaining itself by
+naming the private thing it delegates to is the good outcome.
+
+`doc/lint.py` holds the book to its own conventions: 80-column prose, no
+numbered headings, every fence tagged, every relative link and anchor
+resolving, every ADR listed, and **no configuration key documented in two
+files** — two copies of a default drift silently.
+
+Two more jobs check what the ones above cannot:
+
+- **`msrv`** reads `rust-version` out of `Cargo.toml` and runs `cargo check
+  --locked --workspace --all-targets --all-features` on exactly that toolchain,
+  so the minimum stated there is one CI has verified.
+- **`hsm`** runs clippy and the suite with `--features acme-proxy-signer/hsm`
+  against SoftHSM2. `--all-targets` enables no features, so without this job the
+  PKCS#11 code would be neither linted nor tested; it is not folded into the
+  coverage job, whose floor a feature-gated file sits outside of.
 
 The `sbom` job additionally regenerates `sbom.cdx.json` and fails if it differs
 from the commit — see [Changing dependencies](#changing-dependencies).
@@ -103,9 +127,9 @@ run turns every existing deployment into a startup failure. One build-system
 trap while you work: `sqlx::migrate!()` embeds the set at **compile** time and
 adding or removing a file under `crates/store/migrations/` does not on its own
 invalidate the build, so a test can be run against the previous set — `touch
-src/lib.rs` after changing the directory. This reverses the rule that held
-before the first release, when the server had never been deployed and a schema
-change meant editing the migration and running `rm -f sqlite.db*`.
+crates/store/src/db.rs` after changing the directory. This reverses the rule
+that held before the first release, when the server had never been deployed and
+a schema change meant editing the migration and running `rm -f sqlite.db*`.
 
 Three consequences:
 
@@ -126,6 +150,45 @@ Three consequences:
   example. Where the width follows a constant in `src/`, pin the two together
   with a test; that file's `VARCHAR(43)` is `TOKEN_BYTES` and nothing else, so
   a change to the constant has to reach the schema.
+
+## Adding a configuration key
+
+A key is a field on one of the section structs under
+`crates/core/src/config/types/`, with a `#[serde(default)]` that makes the whole
+section optional. Beyond the field itself, a new key owes:
+
+- **Documentation in exactly one book page**, as a `### Reference` entry naming
+  its environment variable, plus an entry in `config.toml.example` (which a test
+  deserializes, so it cannot rot into invalid TOML). `doc/lint.py` refuses a key
+  documented in two pages.
+- **A decision about scope.** A section listed in `PROFILE_SECTIONS` is
+  per-profile and inherited key by key (see [Profiles](../core/profiles.md));
+  one describing the process — `[jobs]`, `[audit]`, `[metrics]`, `[proxy]`,
+  `[admin]` — is not.
+- **A decision about reload.** A reload rebuilds everything from the new
+  configuration, so a key reloads unless something snapshots it at startup.
+  Only `database.url` is refused on `SIGHUP` (`FROZEN` in
+  `crates/server/src/reload.rs`); a new key joins it only with a reason.
+
+**A list-valued key has three more obligations**, because the `config` crate
+silently drops an environment variable it was not told to split:
+
+- An entry in `LIST_KEYS` (`crates/core/src/config/mod.rs`), a reader in
+  `list_key`, and the count in
+  `every_registered_list_key_round_trips_through_the_environment` bumped. A list
+  inside a named table (`[filter.check.<name>]`, `[notify.webhook.<name>]`, …)
+  goes in `CHECK_LIST_KEYS` or `NAMED_TABLES` instead, since the entry name is
+  only known at runtime.
+- `#[serde(deserialize_with = "empty_string_is_no_values")]` on the field. A
+  variable set to the empty string (a `${VAR:-}` shell default) is present, not
+  absent, and splits into one empty element; the attribute folds it back to
+  `[]`, where without it the key becomes a startup error.
+- Nothing, but know it: a value containing a literal comma — a regex with
+  `{2,3}` — can only be set from the file, since the comma is the separator.
+
+The environment source pins `prefix_separator("_")`. Without it, `config`
+reuses the nested separator `__` after the prefix and silently ignores every
+`ACME_PROXY_*` variable.
 
 ## Changing a configuration key
 

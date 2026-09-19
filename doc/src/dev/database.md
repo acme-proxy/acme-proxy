@@ -26,47 +26,48 @@ erDiagram
     admin_users ||--o{ admin_recovery_codes : "user_id"
 
     accounts {
-        text id PK
+        blob id PK
         text profile "UNIQUE(profile, pubkey)"
         blob pubkey
         text status "CHECK valid|deactivated|revoked"
-        text eab_kid "no FK - see below"
+        blob eab_kid "no FK - see below"
         text created_ip
         text last_seen_ip
     }
     orders {
-        text id PK
+        blob id PK
         text profile
-        text account_id FK
+        blob account_id FK
         text status "CHECK pending|ready|processing|valid|invalid"
         text identifiers "JSON array"
         text replaces "RFC 9773 certID"
         text certificate "PEM chain"
         text cert_serial
+        integer cert_not_after "what the leaf says - see below"
         integer revoked_at
     }
     authorizations {
-        text id PK
-        text order_id FK
+        blob id PK
+        blob order_id FK
         text identifier "JSON, UNIQUE(order_id, identifier)"
         text status "CHECK pending|valid|invalid|deactivated|expired|revoked"
     }
     challenges {
-        text id PK
-        text authz_id FK
+        blob id PK
+        blob authz_id FK
         text type "CHECK http-01|dns-01|tls-alpn-01, UNIQUE(authz_id, type)"
         text token
         text status "CHECK pending|processing|valid|invalid"
     }
     upstream_orders {
-        text order_id PK "also the concurrency guard"
+        blob order_id PK "also the concurrency guard"
         text upstream_order_url
         blob csr_der
         text client_ip "parked request context"
     }
 
     eab_keys {
-        text kid PK
+        blob kid PK
         blob secret "retrievable on purpose"
         text profile "NULL = every endpoint"
         text status "CHECK active|revoked"
@@ -77,7 +78,7 @@ erDiagram
     }
     audit_log {
         integer id PK "AUTOINCREMENT"
-        text event "CHECK - four values"
+        text event "no CHECK - the Rust enum"
         text outcome "CHECK success|failure"
         text account_id "no FK, deliberately"
         text order_id "no FK, deliberately"
@@ -85,7 +86,7 @@ erDiagram
     }
 
     jobs {
-        text id PK
+        blob id PK
         text kind "no CHECK - see below"
         text dedup_key "partial UNIQUE(kind, dedup_key)"
         text payload "JSON, the subject's identity"
@@ -98,23 +99,42 @@ erDiagram
     }
 
     admin_users {
-        text id PK
+        blob id PK
         text username UK
         text password_hash "one-way"
         blob totp_secret
         text status "CHECK active|disabled"
+        text role "no CHECK - NULL reads as admin"
     }
     admin_sessions {
         text token_hash PK "SHA-256 of the token"
-        text user_id FK
+        blob user_id FK
         text state "CHECK pending_mfa|active"
         integer mfa_attempts
     }
     admin_recovery_codes {
-        text id PK
-        text user_id FK
+        blob id PK
+        blob user_id FK
         text code_hash
         integer used_at "stamped, not deleted"
+    }
+
+    revocations {
+        text issuer PK "SHA-256 of the CA's SPKI"
+        text serial PK
+        integer revoked_at "the first one stands"
+        integer not_after "NULL is never pruned"
+    }
+    crls {
+        text issuer PK
+        integer crl_number "moves only by compare-and-swap"
+        blob der "what GET /crl serves"
+        integer next_update
+    }
+    http01_tokens {
+        text token PK "the upstream's own token"
+        text key_authorization
+        integer expires_at "a backstop, swept hourly"
     }
 ```
 
@@ -124,8 +144,12 @@ edges that are not drawn**:
 - The ACME graph — `accounts → orders → authorizations → challenges`, with
   `upstream_orders` hanging off an order and `eab_keys` and `nonces` standing
   alone.
-- `audit_log` and `jobs`, both connected to nothing. That is policy in each
-  case, not an omission — and for two different reasons, given below.
+- `audit_log`, `jobs` and a local CA's `revocations`, `crls`, plus the relay's
+  `http01_tokens`, all connected to nothing. That is policy in each case, not an
+  omission. The audit trail and the revocation ledger must outlive what they
+  describe, the job queue is generic (both below), and the last three are state
+  every role process shares ([ADR
+  0008](adr/0008-shared-state-in-the-database.md)).
 - The admin island — `admin_users` and its two children — which never joins to
   `accounts`. An `admin_users` row is an operator of this server; an `accounts`
   row is a client key that asks it for certificates. They are different
@@ -255,6 +279,43 @@ Three more shapes worth knowing before touching it:
 `status = 'cancelled'` is declared and written by nothing — the
 `admin_sessions.state = 'pending_mfa'` treatment, where a `CHECK` was written
 before anything filled it precisely so no rebuild would be needed later.
+
+## Two expiry columns on `orders`, and neither is the order's
+
+`orders.not_after` is the validity the *client asked for* in `newOrder` (RFC
+8555 §7.4) — usually `NULL`, and clamped by the signer when set.
+`orders.cert_not_after` is what the issued leaf actually says, stamped by
+`Order::finalize` from the same DER that `cert_serial` and `cert_pubkey` come
+from. The order object's own `expires` is a third thing again, and is not a
+column here.
+
+`cert_not_after` has three meaningful states:
+
+- an epoch second;
+- `NULL` — issued before the column existed; the expiry sweep backfills it;
+- a **negative sentinel** — the sweep looked and the chain would not parse.
+  Writing `NULL` back would have it re-parsed on every pass for ever.
+
+It is optional where `cert_serial` is not: a chain whose serial cannot be read
+cannot be revoked, so it is a failed issuance, while an unreadable validity is
+only housekeeping. Its index is partial on `certificate IS NOT NULL AND
+revoked_at IS NULL`, which is the expiry digest's own predicate.
+
+## An order holding a live certificate is never deleted
+
+The order row is a certificate's only record: `revokeCert` and `order revoke`
+find it by serial, the expiry digest lists it, and renewal information (RFC
+9773) is derived from it. Deleting it would make a certificate that is still
+trusted impossible to revoke.
+
+So `account delete`, `order delete` and `eab delete --delete-accounts` are
+refused, on every surface, while any order they would remove holds a live
+certificate — issued, not revoked, and not yet expired (`cert_not_after`
+`NULL`, negative or in the future). The check runs before the confirmation
+prompt and again inside the `DELETE` itself (`live_certificate!` in
+`crates/store/src/order.rs`), so a certificate issued in between is not lost.
+There is no override flag. The daily `order_sweep` follows the same rule: a
+`valid` order is never swept, whatever its age.
 
 ## Secrets are stored three different ways, on purpose
 

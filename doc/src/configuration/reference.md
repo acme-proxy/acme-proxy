@@ -412,13 +412,23 @@ work it has already promised a client: an order answered `processing` is owed a
 certificate. Switching it off would not disable a feature, it would strand the
 orders. What is tunable is how hard and how long the server tries.
 
-Four kinds of work run here, so this section's reach is wider than the name
-suggests: relayed issuance under the `relay` signer backend, every
-[notification](../notifications/index.md) delivery, and the four periodic table
-sweeps (expired nonces, `audit.retention_days`, expired admin sessions, and this
-queue's own `retention_days`). A runner that is not running is a server that is
-not sweeping or notifying either — `job_runner_started` is the line that says it
-is.
+Most of what the server does after answering a request runs here, so this
+section's reach is wider than the name suggests:
+
+- **Client-visible work** — challenge validation (`challenge_validate`),
+  issuance (`signer_issue`, and `signer_relay_issue` under the `relay`
+  backend), revocation through a relay or script (`signer_revoke`), and a local
+  CA's CRL signing (`local_ca_crl_regenerate`).
+- **Deliveries** — every [notification](../notifications/index.md)
+  (`notify_deliver`) and the expiry digest (`notify_expiry_digest`).
+- **Periodic sweeps** — expired nonces, orders past `order.retention_days`,
+  `audit.retention_days`, expired admin sessions, stale `http-01` tokens, the
+  daily CRL refresh (`local_ca_crl_sweep`), and this queue's own
+  `retention_days`.
+
+A runner that is not running is a server that validates, issues, sweeps and
+notifies nothing — `job_runner_started` is the line that says it is. With role
+processes, only a `worker` process runs one.
 
 **`poll_interval_ms`** (`Integer`) — *Default: `1000` | Env: `ACME_PROXY_JOBS__POLL_INTERVAL_MS`*
 

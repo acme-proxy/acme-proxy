@@ -28,6 +28,18 @@ cargo nextest run --workspace
 These tests utilize an in-memory SQLite database and an in-memory Local CA. No
 disk writes or network calls are made.
 
+**A test that calls `Config::load()` holds `ENV_LOCK`**
+(`acme_proxy_core::config::ENV_LOCK`, or `testutil::EnvGuard`, which holds it
+for you). `ACME_PROXY_*` and `ACME_PROXY_CONFIG` are process state: a test
+setting one while another loads makes the second read the first's variables.
+There is one lock for every crate on purpose, since a per-module lock would
+serialise a module against itself and nothing else.
+
+**A test that triggers a challenge or finalizes an order must poll for the
+result.** Validation and issuance run in the job queue, and every test app runs
+a real worker, so the response only says `processing`. `await_order` and
+`await_challenge` in `tests/common/` are the helpers.
+
 ## The `hsm` feature (PKCS#11)
 
 `crates/signer/src/local_ca/pkcs11.rs` is behind the `hsm` feature, so the
