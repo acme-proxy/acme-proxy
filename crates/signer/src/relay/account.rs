@@ -184,7 +184,7 @@ pub(super) async fn register(
 /// persists the resulting `kid`.
 ///
 /// This is the only path that ever sees an EAB secret, and it borrows it —
-/// nothing here writes it anywhere. See [`crate::cli::upstream`] for why that
+/// nothing here writes it anywhere. See `cli::upstream` for why that
 /// matters.
 /// `resolver` is the process-wide one when called from `serve`; the CLI builds
 /// a throwaway from the same configuration, since it is a one-shot command with

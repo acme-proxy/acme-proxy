@@ -425,8 +425,8 @@ async fn revoked_certificate_appears_in_the_served_crl() {
 /// restart — while `order show` said revoked.
 #[tokio::test]
 async fn a_revocation_by_another_process_is_in_the_crl_the_server_serves_next() {
-    use acme_proxy::signer::SignerBackend;
-    use acme_proxy::signer::local_ca::LocalCa;
+    use acme_proxy_signer::SignerBackend;
+    use acme_proxy_signer::local_ca::LocalCa;
     use acme_proxy_store::db::Database;
 
     let dir = common::TempDir::new("shared-crl");
@@ -643,7 +643,7 @@ async fn a_revocation_the_ca_took_but_the_database_did_not_is_a_retryable_500() 
     // And the CA-side action stands: the serial is in the CRL even though the
     // order row never learned about it. That asymmetry is the whole reason the
     // branch is audited as a failure rather than swallowed.
-    use acme_proxy::signer::SignerBackend;
+    use acme_proxy_signer::SignerBackend;
     let crl = backend
         .info()
         .crl_der()

@@ -9,7 +9,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::signer::SignerError;
+use crate::SignerError;
 
 use super::client::UpstreamError;
 

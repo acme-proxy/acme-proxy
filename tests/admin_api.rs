@@ -3301,8 +3301,8 @@ async fn the_admin_listener_serves_no_acme() {
 /// other revoke test cannot reach, and the one that actually touches the CA.
 #[tokio::test]
 async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
-    use acme_proxy::signer::RequestedValidity;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_signer::RequestedValidity;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -3359,7 +3359,7 @@ async fn revoking_an_issued_order_succeeds_once_and_then_conflicts() {
         .await
         .expect("the in-memory CA must issue");
     let chain = match issued {
-        acme_proxy::signer::IssueOutcome::Issued(chain) => chain,
+        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
         other => panic!("expected an inline issuance, got {other:?}"),
     };
     // The leaf's DER out of the PEM chain: `cert_serial_and_spki` parses one

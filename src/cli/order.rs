@@ -8,9 +8,9 @@ use crate::admin::{self, DeleteOutcome};
 use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
-use crate::signer;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
+use acme_proxy_signer as signer;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::order::Order;
@@ -352,7 +352,7 @@ pub async fn run_order_command(
                     println!("{}", render::render_order_line(&order, palette));
                     if let signer::RevocationRoute::Ledger { issuer } = &route {
                         let job = acme_proxy_store::job::Job::find_live(
-                            crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+                            acme_proxy_signer::local_ca::sweep::CRL_REGENERATE_KIND,
                             issuer,
                             &database,
                         )
@@ -467,8 +467,10 @@ fn not_found(id: &str) -> CliError {
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
-    use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend};
     use acme_proxy_core::audit::ClientContext;
+    use acme_proxy_signer::IssueOutcome;
+    use acme_proxy_signer::RequestedValidity;
+    use acme_proxy_signer::SignerBackend;
     use acme_proxy_store::account::Account;
 
     /// A configuration whose single `default` profile signs with a local CA
@@ -617,7 +619,7 @@ mod tests {
             .expect("the default dns configuration must build a resolver");
         let signer: Arc<dyn SignerBackend> = signer::from_config(
             &profile.sections.signer,
-            &crate::testutil::signer_parts(database.clone(), resolver),
+            &acme_proxy_signer::testutil::signer_parts(database.clone(), resolver),
         )
         .unwrap();
 
@@ -841,8 +843,9 @@ mod tests {
     /// the first one stuck.
     #[tokio::test]
     async fn an_issued_order_revokes_once() {
-        use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
         use acme_proxy_jobs::jobs::JobHandler;
+        use acme_proxy_signer::local_ca::sweep::CRL_REGENERATE_KIND;
+        use acme_proxy_signer::local_ca::sweep::CrlRegenerateJob;
         use acme_proxy_store::job::Job;
 
         let dir = temp_dir();
@@ -1054,7 +1057,7 @@ mod tests {
             .unwrap();
         let signer = signer::from_config(
             &profile.sections.signer,
-            &crate::testutil::signer_parts(database.clone(), resolver),
+            &acme_proxy_signer::testutil::signer_parts(database.clone(), resolver),
         )
         .unwrap();
         let handler = SignerRevokeJob::new(

@@ -79,7 +79,7 @@ pub trait TokenStore: Send + Sync {
     /// reaches the store through `Arc<dyn TokenStore>` — via
     /// [`SignerInfo::http01_tokens`] — and cannot downcast past it.
     ///
-    /// [`SignerInfo::http01_tokens`]: crate::signer::SignerInfo::http01_tokens
+    /// [`SignerInfo::http01_tokens`]: crate::SignerInfo::http01_tokens
     async fn lookup(&self, token: &str) -> Result<Option<String>, String>;
 }
 

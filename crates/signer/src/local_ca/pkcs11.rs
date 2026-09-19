@@ -847,12 +847,12 @@ mod tests {
 #[cfg(test)]
 mod softhsm {
     use super::*;
-    use crate::signer::local_ca::LocalCa;
+    use crate::local_ca::LocalCa;
     use acme_proxy_core::config::LocalCaConfig;
     use acme_proxy_core::config::Pkcs11Config;
     // `issue`/`revoke`/`crl_der` are trait methods, so the trait has to be in
     // scope even though the concrete type is what the tests hold.
-    use crate::signer::SignerBackend;
+    use crate::SignerBackend;
     use acme_proxy_core::testutil::TempDir;
     use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
     use std::path::Path;
@@ -1105,13 +1105,13 @@ mod softhsm {
                 "ord-hsm",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::signer::RequestedValidity::default(),
+                crate::RequestedValidity::default(),
             )
             .await
             .expect("issuance through the token must succeed");
         let chain = match outcome {
-            crate::signer::IssueOutcome::Issued(chain) => chain,
-            crate::signer::IssueOutcome::Processing => panic!("local_ca issues synchronously"),
+            crate::IssueOutcome::Issued(chain) => chain,
+            crate::IssueOutcome::Processing => panic!("local_ca issues synchronously"),
         };
         assert_eq!(chain.matches("-----BEGIN CERTIFICATE-----").count(), 2);
 
@@ -1140,11 +1140,11 @@ mod softhsm {
                 &[acme_proxy_core::identifier::Identifier::dns(
                     "revoke.example",
                 )],
-                crate::signer::RequestedValidity::default(),
+                crate::RequestedValidity::default(),
             )
             .await
             .unwrap();
-        let crate::signer::IssueOutcome::Issued(chain) = outcome else {
+        let crate::IssueOutcome::Issued(chain) = outcome else {
             panic!("local_ca issues synchronously");
         };
         let leaf_der = acme_proxy_core::cert::leaf_der_from_chain(&chain).unwrap();
@@ -1245,13 +1245,13 @@ mod softhsm {
                 "ord-file",
                 &make_csr_der("example.com"),
                 &[acme_proxy_core::identifier::Identifier::dns("example.com")],
-                crate::signer::RequestedValidity::default(),
+                crate::RequestedValidity::default(),
             )
             .await
             .unwrap();
         assert!(matches!(
             outcome,
-            crate::signer::IssueOutcome::Issued(chain) if chain.matches("BEGIN CERTIFICATE").count() == 2
+            crate::IssueOutcome::Issued(chain) if chain.matches("BEGIN CERTIFICATE").count() == 2
         ));
     }
 

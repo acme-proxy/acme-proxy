@@ -23,13 +23,6 @@ use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::signer::local_ca::LocalCa;
-use acme_proxy::signer::local_ca::sweep::CrlRegenerateJob;
-use acme_proxy::signer::relay::http01::DbTokenStore;
-use acme_proxy::signer::{
-    CrlRefresher, Http01TokenStore, IssueOutcome, RenewalWindow, RequestedValidity,
-    RevocationRoute, SignerBackend, SignerError, SignerInfo,
-};
 use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
@@ -58,6 +51,18 @@ use acme_proxy_policy::filter::policy::Mode;
 use acme_proxy_policy::filter::policy::Rule;
 use acme_proxy_policy::filter::policy::StageSet;
 use acme_proxy_policy::filter::policy::Verdict;
+use acme_proxy_signer::CrlRefresher;
+use acme_proxy_signer::Http01TokenStore;
+use acme_proxy_signer::IssueOutcome;
+use acme_proxy_signer::RenewalWindow;
+use acme_proxy_signer::RequestedValidity;
+use acme_proxy_signer::RevocationRoute;
+use acme_proxy_signer::SignerBackend;
+use acme_proxy_signer::SignerError;
+use acme_proxy_signer::SignerInfo;
+use acme_proxy_signer::local_ca::LocalCa;
+use acme_proxy_signer::local_ca::sweep::CrlRegenerateJob;
+use acme_proxy_signer::relay::http01::DbTokenStore;
 use acme_proxy_store::db::Database;
 use async_trait::async_trait;
 use axum::Router;

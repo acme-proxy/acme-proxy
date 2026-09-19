@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tracing::error;
 
 use super::issuer_id_of;
-use crate::signer::{RevocationRoute, SignerError, SignerInfo};
+use crate::{RevocationRoute, SignerError, SignerInfo};
 use acme_proxy_core::config::LocalCaConfig;
 use acme_proxy_store::crl::StoredCrl;
 use acme_proxy_store::db::Database;

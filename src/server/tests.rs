@@ -56,8 +56,8 @@ fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
 /// arises. `signer_paths` would refuse a shared account key outright.
 fn two_relay_profiles(
     dir: impl AsRef<std::path::Path>,
-    first: &crate::signer::relay::testsrv::Upstream,
-    second: &crate::signer::relay::testsrv::Upstream,
+    first: &acme_proxy_signer::relay::testsrv::Upstream,
+    second: &acme_proxy_signer::relay::testsrv::Upstream,
 ) -> Config {
     let dir = dir.as_ref();
     let _lock = acme_proxy_core::config::ENV_LOCK
@@ -469,7 +469,7 @@ async fn get(addr: SocketAddr, path: &str) -> String {
 /// one relay.
 #[tokio::test(flavor = "multi_thread")]
 async fn two_profiles_relaying_to_different_upstreams_start() {
-    use crate::signer::relay::testsrv;
+    use acme_proxy_signer::relay::testsrv;
 
     let first = testsrv::start(testsrv::Script::default()).await;
     let second = testsrv::start(testsrv::Script::default()).await;

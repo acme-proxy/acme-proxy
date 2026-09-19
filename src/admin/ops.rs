@@ -3,11 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::admin::prompt::confirm;
-use crate::signer::SignerError;
-use crate::signer::relay::{RELAY_JOB_KIND, abandon_relayed_order};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_jobs::auditor::Auditor;
+use acme_proxy_signer::SignerError;
+use acme_proxy_signer::relay::RELAY_JOB_KIND;
+use acme_proxy_signer::relay::abandon_relayed_order;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::audit::AuditEntry;
 use acme_proxy_store::audit::AuditQuery;
@@ -591,7 +592,7 @@ const PERIODIC_JOB_KINDS: &[&str] = &[
     acme_proxy_jobs::jobs::sweep::AUDIT_SWEEP_KIND,
     acme_proxy_jobs::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
     acme_proxy_jobs::jobs::sweep::ORDER_SWEEP_KIND,
-    crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
+    acme_proxy_signer::local_ca::sweep::CRL_SWEEP_KIND,
     acme_proxy_jobs::notify::expiry::EXPIRY_JOB_KIND,
 ];
 
@@ -778,7 +779,7 @@ pub async fn cancel_job(
         if let Some(mut order) = Order::find_by_id(&order_id, &database).await?
             && order.status == acme_proxy_store::status::OrderStatus::Processing
         {
-            crate::signer::issuance::record_issue_failure(
+            acme_proxy_signer::issuance::record_issue_failure(
                 &mut order,
                 &acme_proxy_core::error::Problem::server_internal("Certificate issuance failed"),
                 "issuance cancelled by operator",
@@ -914,10 +915,10 @@ pub async fn run_job_now(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signer::SignerBackend;
     use acme_proxy_core::audit::AuditEvent;
     use acme_proxy_core::audit::AuditRecord;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_signer::SignerBackend;
     use acme_proxy_store::nonce::now_secs;
     use acme_proxy_store::testutil::account_id;
 
@@ -1552,7 +1553,7 @@ mod tests {
 
     fn in_memory_ca(database: &Arc<Database>) -> Arc<dyn SignerBackend> {
         Arc::new(
-            crate::signer::local_ca::LocalCa::generate_in_memory(
+            acme_proxy_signer::local_ca::LocalCa::generate_in_memory(
                 "ecdsa-p256",
                 90,
                 database.clone(),
@@ -1583,13 +1584,13 @@ mod tests {
                 order.id.to_string().as_str(),
                 csr.der(),
                 &order.identifiers,
-                crate::signer::RequestedValidity::default(),
+                acme_proxy_signer::RequestedValidity::default(),
             )
             .await
             .unwrap()
         {
-            crate::signer::IssueOutcome::Issued(chain) => chain,
-            crate::signer::IssueOutcome::Processing => {
+            acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
+            acme_proxy_signer::IssueOutcome::Processing => {
                 panic!("the in-memory local CA issues synchronously")
             }
         };
@@ -2156,7 +2157,7 @@ mod tests {
 
         // Retire it the way the runner does: the order and mapping already
         // invalid, with the upstream's own reason recorded.
-        crate::signer::relay::abandon_relayed_order(
+        acme_proxy_signer::relay::abandon_relayed_order(
             &mut Order::find_by_id(order.id.to_string().as_str(), &db)
                 .await
                 .unwrap()

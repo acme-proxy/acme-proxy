@@ -27,7 +27,6 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use crate::signer::{RevocationRoute, SignerBackend, SignerError};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
@@ -42,6 +41,9 @@ use acme_proxy_jobs::jobs::JobSpec;
 use acme_proxy_jobs::notify::CertificateRevokedData;
 use acme_proxy_jobs::notify::NotifyDispatcher;
 use acme_proxy_jobs::notify::NotifyEvent;
+use acme_proxy_signer::RevocationRoute;
+use acme_proxy_signer::SignerBackend;
+use acme_proxy_signer::SignerError;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
@@ -60,7 +62,7 @@ pub enum Revoker<'a> {
     /// recorded, and visible on the order, the moment the command returns,
     /// where the CRL follows once a server's job runner gets to it.
     Ledger {
-        /// The CA's issuer id ([`crate::signer::local_ca::issuer_id_of`]).
+        /// The CA's issuer id ([`acme_proxy_signer::local_ca::issuer_id_of`]).
         issuer: &'a str,
         jobs: &'a JobQueue,
     },
@@ -497,7 +499,7 @@ impl Revocations<'_> {
                 }
                 // The revocation stands whether or not this lands: the daily
                 // refresh signs any recorded revocation its CRL does not list.
-                jobs.enqueue_or_log(crate::signer::local_ca::sweep::regenerate_spec(issuer))
+                jobs.enqueue_or_log(acme_proxy_signer::local_ca::sweep::regenerate_spec(issuer))
                     .await;
             }
             Revoker::Queued { .. } => unreachable!("answered above"),
@@ -864,9 +866,10 @@ impl JobHandler for SignerRevokeJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signer::{IssueOutcome, RequestedValidity};
     use acme_proxy_core::identifier::Identifier;
     use acme_proxy_jobs::jobs::JobHandler;
+    use acme_proxy_signer::IssueOutcome;
+    use acme_proxy_signer::RequestedValidity;
 
     /// A backend whose `revoke` always fails.
     struct Failing;

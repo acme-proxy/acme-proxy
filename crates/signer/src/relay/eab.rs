@@ -12,7 +12,7 @@
 //!
 //! An EAB credential authorizes exactly one thing — a single `newAccount`
 //! call — and is useless afterwards. So it is not configuration: it is passed
-//! once to `acme-proxy upstream register` (see [`crate::cli::upstream`]),
+//! once to `acme-proxy upstream register` (see `cli::upstream`),
 //! used, and dropped. Only the resulting account `kid` is persisted, and a
 //! `kid` is not a secret. That is why [`build`] borrows the secret rather than
 //! storing it anywhere, and why nothing on the `serve` path calls this module.
@@ -70,7 +70,7 @@ pub(crate) fn build(
 /// visible reason. Shared between `cli::upstream`'s `--eab-hmac-key-file`/
 /// stdin path and `signer.relay.eab.hmac_key` in configuration, so both
 /// entry points accept exactly the same secrets.
-pub(crate) fn decode_secret(value: &str) -> Option<Vec<u8>> {
+pub fn decode_secret(value: &str) -> Option<Vec<u8>> {
     if value.is_empty() {
         return None;
     }

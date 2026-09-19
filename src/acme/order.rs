@@ -937,7 +937,7 @@ pub(crate) mod tests {
     /// A `default` profile over `database`: an in-memory CA, no filter, no
     /// notifier, and `challenges` as the validators.
     pub(crate) fn profile(database: &Arc<Database>, challenges: ChallengeRegistry) -> Profile {
-        let ca = crate::signer::local_ca::LocalCa::generate_in_memory(
+        let ca = acme_proxy_signer::local_ca::LocalCa::generate_in_memory(
             "ecdsa-p256",
             90,
             database.clone(),
@@ -950,7 +950,7 @@ pub(crate) mod tests {
     pub(crate) fn profile_with(
         database: &Arc<Database>,
         challenges: ChallengeRegistry,
-        signer: Arc<dyn crate::signer::SignerBackend>,
+        signer: Arc<dyn acme_proxy_signer::SignerBackend>,
     ) -> Profile {
         Profile::new(
             "default",

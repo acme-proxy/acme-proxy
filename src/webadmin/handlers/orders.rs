@@ -229,7 +229,7 @@ pub async fn revoke_order(
 /// only the `worker` role holds. Waits as long as an ACME request would.
 pub(crate) fn revoker<'a>(
     state: &'a AdminState,
-    route: &'a crate::signer::RevocationRoute,
+    route: &'a acme_proxy_signer::RevocationRoute,
 ) -> crate::acme::revoke::Revoker<'a> {
     crate::acme::revoke::Revoker::for_route(
         route,

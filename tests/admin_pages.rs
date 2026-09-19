@@ -2052,8 +2052,8 @@ async fn creating_an_eab_for_an_unmounted_profile_is_refused() {
 /// act on and the CA-side ledger belongs to the same object that serves the CRL.
 #[tokio::test]
 async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
-    use acme_proxy::signer::RequestedValidity;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_signer::RequestedValidity;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -2107,7 +2107,7 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
         .await
         .expect("the in-memory CA must issue");
     let chain = match issued {
-        acme_proxy::signer::IssueOutcome::Issued(chain) => chain,
+        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
         other => panic!("expected an inline issuance, got {other:?}"),
     };
     let (serial, spki) =
@@ -2165,11 +2165,11 @@ async fn revoking_an_issued_order_shows_a_banner_and_then_a_conflict() {
 /// column is only ever written by finalize.
 async fn issue_into_an_order(
     database: &std::sync::Arc<acme_proxy_store::db::Database>,
-    signer: &std::sync::Arc<dyn acme_proxy::signer::SignerBackend>,
+    signer: &std::sync::Arc<dyn acme_proxy_signer::SignerBackend>,
     name: &str,
 ) -> (String, String) {
-    use acme_proxy::signer::RequestedValidity;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_signer::RequestedValidity;
     use acme_proxy_store::account::Account;
     use acme_proxy_store::order::Order;
 
@@ -2209,7 +2209,7 @@ async fn issue_into_an_order(
         .await
         .expect("the in-memory CA must issue");
     let chain = match issued {
-        acme_proxy::signer::IssueOutcome::Issued(chain) => chain,
+        acme_proxy_signer::IssueOutcome::Issued(chain) => chain,
         other => panic!("expected an inline issuance, got {other:?}"),
     };
     let leaf_der = first_certificate(&chain);

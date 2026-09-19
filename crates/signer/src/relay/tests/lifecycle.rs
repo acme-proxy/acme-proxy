@@ -550,7 +550,7 @@ async fn an_upstream_that_refuses_the_order_is_not_retried() {
     )
     .await;
     let job = acme_proxy_store::job::Job::find_live(
-        crate::signer::relay::flow::RELAY_JOB_KIND,
+        crate::relay::flow::RELAY_JOB_KIND,
         order.id.to_string().as_str(),
         &db,
     )
@@ -876,7 +876,7 @@ async fn recovery_with_no_pending_rows_does_nothing() {
 /// gives up on work that would.
 mod handler {
     use super::*;
-    use crate::signer::relay::flow::{OrderContext, RELAY_JOB_KIND, RelayJob};
+    use crate::relay::flow::{OrderContext, RELAY_JOB_KIND, RelayJob};
     use acme_proxy_jobs::jobs::JobHandler;
     use acme_proxy_jobs::jobs::JobOutcome;
     use acme_proxy_store::job::Job;

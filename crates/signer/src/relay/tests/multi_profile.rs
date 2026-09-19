@@ -18,7 +18,7 @@
 //! travel on the `upstream_orders` row and would be right either way.
 
 use super::*;
-use crate::signer::relay::flow::{RELAY_JOB_KIND, RelayJob};
+use crate::relay::flow::{RELAY_JOB_KIND, RelayJob};
 use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
 use acme_proxy_jobs::jobs::JobRegistry;

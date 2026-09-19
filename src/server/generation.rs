@@ -103,7 +103,7 @@ pub(crate) fn build_generation(
     // pointless work. The identity is kept as a `usize` rather than the
     // pointer itself, so this function's caller stays `Send`; it is spawned.
     let mut registered: Vec<usize> = Vec::new();
-    let mut refreshers: Vec<Arc<dyn crate::signer::CrlRefresher>> = Vec::new();
+    let mut refreshers: Vec<Arc<dyn acme_proxy_signer::CrlRefresher>> = Vec::new();
     // The relay backends are collected per *profile*, because that is the key a
     // job row is dispatched on — and because taking the profile list from the
     // backend would take a stale one: a backend whose configuration did not
@@ -114,7 +114,7 @@ pub(crate) fn build_generation(
     // running the `worker` role builds: everywhere else the set is empty, so
     // none of these handlers has a backend to reach, and none of them runs
     // there anyway.
-    let mut relays: Vec<(String, crate::signer::relay::RelayState)> = Vec::new();
+    let mut relays: Vec<(String, acme_proxy_signer::relay::RelayState)> = Vec::new();
     let mut backends = parts.signers.by_profile();
     backends.sort_by(|a, b| a.0.cmp(&b.0));
     for (profile, backend) in &backends {
@@ -134,15 +134,15 @@ pub(crate) fn build_generation(
     if !refreshers.is_empty() {
         job_registry
             .register(Arc::new(
-                crate::signer::local_ca::sweep::CrlRegenerateJob::new(refreshers.clone()),
+                acme_proxy_signer::local_ca::sweep::CrlRegenerateJob::new(refreshers.clone()),
             ))
             .inspect_err(|error| {
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
         job_registry
-            .register(Arc::new(crate::signer::local_ca::sweep::CrlSweepJob::new(
-                refreshers,
-            )))
+            .register(Arc::new(
+                acme_proxy_signer::local_ca::sweep::CrlSweepJob::new(refreshers),
+            ))
             .inspect_err(|error| {
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
@@ -152,7 +152,7 @@ pub(crate) fn build_generation(
     // has no row of this kind to claim.
     if !relays.is_empty() {
         job_registry
-            .register(Arc::new(crate::signer::relay::flow::RelayJob::new(
+            .register(Arc::new(acme_proxy_signer::relay::flow::RelayJob::new(
                 database.clone(),
                 relays,
             )))
@@ -429,7 +429,7 @@ pub(super) struct Prepared {
 impl Prepared {
     /// The backends this reload built or carried, for the one step the
     /// supervisor takes between building and publishing.
-    pub(super) fn signers(&self) -> &crate::signer::SignerSet {
+    pub(super) fn signers(&self) -> &acme_proxy_signer::SignerSet {
         &self.parts.signers
     }
 }

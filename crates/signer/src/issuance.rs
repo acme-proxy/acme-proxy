@@ -1,8 +1,8 @@
 //! What happens once a chain exists: storing it on its order, announcing it,
 //! and recording a failure to get one.
 //!
-//! Shared by the `signer_issue` job ([`crate::acme::issue`]) and the relay
-//! ([`crate::signer::relay`]), which receives its chain from the upstream long
+//! Shared by the `signer_issue` job (`acme::issue`) and the relay
+//! ([`crate::relay`]), which receives its chain from the upstream long
 //! after the request that asked has returned. Here, beside the backends, rather
 //! than in the ACME services above them, since the relay is one of the two
 //! callers and sits below those services.

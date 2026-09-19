@@ -48,7 +48,7 @@ use tracing::{error, info, warn};
 
 use super::CLOCK_SKEW_ALLOWANCE;
 use super::key::CaSigningKey;
-use crate::signer::{CrlRefresher, SignerError};
+use crate::{CrlRefresher, SignerError};
 use acme_proxy_store::crl::StoredCrl;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::revocation::Revocation;
@@ -95,7 +95,7 @@ const MAX_REGENERATION_ATTEMPTS: usize = 5;
 /// A CA's revocation state: where it is stored, what signs over it, and where
 /// the result is exported.
 ///
-/// What [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher)
+/// What [`SignerBackend::crl_refresher`](crate::SignerBackend::crl_refresher)
 /// hands the daily sweep, and what `LocalCa` revokes and serves through. Holds
 /// nothing a second instance over the same database would disagree with: the
 /// only in-memory state is whether *this* instance has initialised, and a lock

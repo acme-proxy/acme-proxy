@@ -6,7 +6,7 @@
 //! health probe, and it is the inverse of everything else here: the rest of
 //! `handlers/` answers clients asking *this* server for certificates, while
 //! this one answers the CA *this* server is asking for one. See
-//! [`crate::signer::relay::http01`] for why the key authorization can only
+//! [`acme_proxy_signer::relay::http01`] for why the key authorization can only
 //! come from this server and not from the original client.
 
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tracing::debug;
 
-use crate::signer::Http01TokenStore;
+use acme_proxy_signer::Http01TokenStore;
 
 /// The stores `GET /.well-known/acme-challenge/{token}` answers from.
 ///

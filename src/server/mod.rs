@@ -463,7 +463,7 @@ pub async fn serve_on_with_reloads(
 /// worker. A failure is logged where it happened
 /// (`local_ca_crl_initialization_failed`) and the sweep's first pass tries
 /// again, so it never stops the process.
-pub(super) async fn store_first_crls(signers: &crate::signer::SignerSet) {
+pub(super) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
     for (_, backend) in signers.by_profile() {
         if let Some(refresher) = backend.crl_refresher() {
             let _ = refresher.refresh().await;

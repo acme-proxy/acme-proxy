@@ -1,0 +1,78 @@
+[package]
+name = "acme-proxy-signer"
+description = "The signing backends of acme-proxy: local CA, relay to an upstream ACME server, script (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+exclude = ["**/CLAUDE.md"]
+
+[features]
+default = []
+# PKCS#11 support for the `local_ca` signer's issuing key
+# (`signer.local_ca.key_source = "pkcs11"`), so the CA private key can live in
+# a YubiKey or an enterprise HSM instead of a file. Off by default: it pulls in
+# `cryptoki` and its `cryptoki-sys` bindings, which no deployment signing with
+# an on-disk key needs. The PKCS#11 module itself is `dlopen`ed at runtime, so
+# turning this on adds no build-time C toolchain requirement — `cryptoki` ships
+# pregenerated bindings and only its opt-in `generate-bindings` feature would
+# want `bindgen`/`clang`.
+hsm = ["dep:cryptoki"]
+# `signer_parts` and `served_crl` in `testutil`, and the scripted upstream ACME
+# server in `relay::testsrv`, for the other crates' unit tests. Turned on from `[dev-dependencies]` only, so it never reaches a normal
+# build.
+test-util = []
+
+# docs.rs builds with every feature on, so `signer::local_ca::pkcs11` — which is
+# `#[cfg(feature = "hsm")]` and therefore absent from a default build — is
+# documented rather than silently missing from the published API.
+#
+# `--cfg docsrs` turns on the `doc_cfg` attribute in `src/lib.rs`, which is
+# the other half of that: without it the gated items appear with nothing saying
+# they need a feature, which is worse than absent — a reader would take
+# `pkcs11` for part of the default build. `doc_cfg` is nightly-only and
+# docs.rs builds nightly; the `cfg_attr(docsrs, …)` gate means a stable
+# `cargo doc`, `cargo build` and clippy never see it.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+acme-proxy-core.workspace = true
+acme-proxy-jobs.workspace = true
+acme-proxy-net.workspace = true
+acme-proxy-store.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+cryptoki = { workspace = true, optional = true }
+hex.workspace = true
+hickory-proto.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+simple_asn1.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+acme-proxy-jobs = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
+acme-proxy-store = { workspace = true, features = ["test-util"] }
+axum.workspace = true
+bytes.workspace = true
+uuid.workspace = true

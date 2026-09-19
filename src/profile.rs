@@ -4,13 +4,13 @@
 
 use std::sync::Arc;
 
-use crate::signer::SignerInfo;
 use acme_proxy_core::config;
 use acme_proxy_core::routes;
 use acme_proxy_core::routes::PROFILE_PREFIX;
 use acme_proxy_jobs::notify::NotifyDispatcher;
 use acme_proxy_net::challenge::ChallengeRegistry;
 use acme_proxy_policy::filter::FilterPolicy;
+use acme_proxy_signer::SignerInfo;
 
 /// One ACME endpoint: its identity, its URLs, and the three subsystems that
 /// answer for it.

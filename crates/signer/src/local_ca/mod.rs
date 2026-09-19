@@ -48,7 +48,7 @@ use rustls_pki_types::CertificateSigningRequestDer;
 use time::{Duration, OffsetDateTime};
 use tracing::{error, info, warn};
 
-use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
+use crate::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use acme_proxy_core::cert::cert_serial_and_spki;
 use acme_proxy_core::config::LocalCaConfig;
 use acme_proxy_core::config::LocalCaSubjectConfig;
@@ -87,7 +87,7 @@ pub struct LocalCa {
     ///
     /// Behind an [`Arc`] so the same store can be handed to the daily sweep as
     /// an `Arc<dyn CrlRefresher>`; see
-    /// [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher).
+    /// [`SignerBackend::crl_refresher`](crate::SignerBackend::crl_refresher).
     crl: Arc<CrlStore>,
     /// The read side over the same certificate and database — what
     /// [`SignerBackend::info`] hands out.
@@ -616,11 +616,11 @@ impl SignerBackend for LocalCa {
     }
 
     /// This CA's CRL, for the daily sweep (RFC 5280 §3.3).
-    fn crl_refresher(&self) -> Option<Arc<dyn crate::signer::CrlRefresher>> {
+    fn crl_refresher(&self) -> Option<Arc<dyn crate::CrlRefresher>> {
         Some(self.crl.clone())
     }
 
-    fn info(&self) -> Arc<dyn crate::signer::SignerInfo> {
+    fn info(&self) -> Arc<dyn crate::SignerInfo> {
         self.info.clone()
     }
 }
@@ -2091,7 +2091,7 @@ mod tests {
     /// (`signer::relay::tests::multi_profile`).
     #[tokio::test]
     async fn one_sweep_handler_serves_every_ca_in_the_process() {
-        use crate::signer::local_ca::sweep::CrlSweepJob;
+        use crate::local_ca::sweep::CrlSweepJob;
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_jobs::jobs::JobRegistry;
 
@@ -2128,7 +2128,7 @@ mod tests {
     /// for the life of the process rather than for one day.
     #[tokio::test]
     async fn the_sweep_reschedules_even_when_a_refresh_fails() {
-        use crate::signer::local_ca::sweep::CrlSweepJob;
+        use crate::local_ca::sweep::CrlSweepJob;
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_jobs::jobs::JobOutcome;
 
@@ -2154,7 +2154,7 @@ mod tests {
     /// The job really prunes, and reschedules itself at its own interval.
     #[tokio::test]
     async fn the_sweep_prunes_and_reschedules() {
-        use crate::signer::local_ca::sweep::CrlSweepJob;
+        use crate::local_ca::sweep::CrlSweepJob;
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_jobs::jobs::JobOutcome;
 
@@ -2175,7 +2175,7 @@ mod tests {
     /// existing schedule rather than resetting it.
     #[tokio::test]
     async fn recover_queues_one_row_however_often_it_runs() {
-        use crate::signer::local_ca::sweep::{CRL_SWEEP_KIND, CrlSweepJob};
+        use crate::local_ca::sweep::{CRL_SWEEP_KIND, CrlSweepJob};
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_store::job::Job;
 
@@ -2230,7 +2230,7 @@ mod tests {
     /// another process, or the next generation of this one, may serve it.
     #[tokio::test]
     async fn the_regenerate_job_retries_an_issuer_it_does_not_serve() {
-        use crate::signer::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
+        use crate::local_ca::sweep::{CRL_REGENERATE_KIND, CrlRegenerateJob};
         use acme_proxy_jobs::jobs::JobHandler;
         use acme_proxy_jobs::jobs::JobOutcome;
 
@@ -2266,7 +2266,7 @@ mod tests {
         use acme_proxy_store::nonce::now_secs;
         acme_proxy_store::job::Job {
             id: acme_proxy_store::id::mint(),
-            kind: crate::signer::local_ca::sweep::CRL_SWEEP_KIND.to_string(),
+            kind: crate::local_ca::sweep::CRL_SWEEP_KIND.to_string(),
             dedup_key: "all".to_string(),
             payload: serde_json::json!({}),
             status: "running".to_string(),

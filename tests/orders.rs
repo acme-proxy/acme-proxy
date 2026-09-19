@@ -367,7 +367,7 @@ async fn setup_ready_order() -> (Router, EcSigner, String, String) {
 /// Challenge validation never touches the signer, so the drive to `ready` is
 /// identical whichever backend is installed.
 async fn setup_ready_order_with_signer(
-    backend: Arc<dyn acme_proxy::signer::SignerBackend>,
+    backend: Arc<dyn acme_proxy_signer::SignerBackend>,
 ) -> (Router, EcSigner, String, String) {
     let (app, _db) = test_app_with_signer(backend).await;
     let signer = EcSigner::new();
@@ -1132,7 +1132,8 @@ async fn the_issued_leaf_carries_no_common_name_from_the_csr() {
     let res = finalize(&app, &signer, &account_url, &order_url, &csr).await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let order = post_as_get(&app, &signer, &account_url, &order_url).await;
+    // Issuance is queued work: read the order once the worker has settled it.
+    let order = await_order_status(&app, &signer, &account_url, &order_url, "valid").await;
     let cert_url = order["certificate"].as_str().unwrap().to_string();
     let path = cert_url.strip_prefix(common::HOST).unwrap();
     let nonce = fetch_nonce(&app).await;

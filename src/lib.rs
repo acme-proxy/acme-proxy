@@ -1,12 +1,3 @@
-// Feature badges on docs.rs. Turned on by `--cfg docsrs` from
-// `[package.metadata.docs.rs]`, so a stable `cargo doc`, `cargo build` and
-// clippy never see this nightly-only attribute. `doc_cfg` annotates every
-// `#[cfg(…)]` item on its own, so the `hsm`-gated items need no per-item
-// attribute and a future one is covered for free — the behaviour that used to
-// be a separate `doc_auto_cfg` feature, removed in 1.92 and merged into this
-// one. Do not reintroduce that name; it no longer compiles.
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
 //! ACME (RFC 8555) Server Implementation
 //!
 //! This is a server-side implementation of the ACME protocol (RFC 8555) for
@@ -54,7 +45,7 @@
 //! - [`handlers`] - One module per ACME resource: the HTTP edge
 //! - [`acme`] - The ACME domain rules every front end shares
 //! - [`challenge`](acme_proxy_net::challenge) - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
-//! - [`signer`] - Pluggable certificate-issuance backends (local CA, ACME relay,
+//! - [`signer`](acme_proxy_signer) - Pluggable certificate-issuance backends (local CA, ACME relay,
 //!   custom script)
 //!
 //! Supporting subsystems:
@@ -106,7 +97,7 @@
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
 //! use acme_proxy_store::db::Database;
-//! use acme_proxy::signer;
+//! use acme_proxy_signer as signer;
 //! use acme_proxy_jobs::{jobs, notify};
 //! use acme_proxy_policy::{filter, ipam};
 //! use acme_proxy_net::challenge;
@@ -260,9 +251,6 @@ pub mod profile;
 pub mod reload;
 pub mod router;
 pub mod server;
-pub mod signer;
-#[cfg(test)]
-pub(crate) mod testutil;
 pub mod webadmin;
 
 // Re-export name shape helpers for backwards compatibility

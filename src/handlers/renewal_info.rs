@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::router::AppState;
-use crate::signer::RenewalWindow;
 use acme_proxy_core::error::Problem;
+use acme_proxy_signer::RenewalWindow;
 use acme_proxy_store::nonce::now_secs;
 use acme_proxy_store::order::Order;
 

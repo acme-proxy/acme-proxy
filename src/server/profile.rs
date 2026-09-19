@@ -17,7 +17,7 @@ use super::{Assembly, GenerationParts};
 /// Lives here rather than in `server::serve_on` because it is the assembly
 /// step, not dispatch: it resolves the profiles, builds the signer backends
 /// (deduplicated by configuration — see
-/// [`signer::build_backends`](crate::signer::build_backends)), and gives
+/// [`signer::build_backends`](acme_proxy_signer::build_backends)), and gives
 /// each profile its own filter chain and challenge registry. Every failure
 /// is fatal at startup, so they come back as one error for the caller to
 /// report and exit on.
@@ -56,7 +56,7 @@ pub fn build_all(
 /// why the *stateful* half lives in the `Assembly` instead. A profile takes
 /// its signer's read side from `generation.infos` — built, like the
 /// backends, only where the configuration moved (see
-/// [`signer::build_infos`](crate::signer::build_infos)) — and never the
+/// [`signer::build_infos`](acme_proxy_signer::build_infos)) — and never the
 /// backend itself, which stays with the job handlers.
 pub fn build_all_with(
     config: &Config,

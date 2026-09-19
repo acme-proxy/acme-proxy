@@ -1,3 +1,12 @@
+// Feature badges on docs.rs. Turned on by `--cfg docsrs` from
+// `[package.metadata.docs.rs]`, so a stable `cargo doc`, `cargo build` and
+// clippy never see this nightly-only attribute. `doc_cfg` annotates every
+// `#[cfg(…)]` item on its own, so the `hsm`-gated items need no per-item
+// attribute and a future one is covered for free — the behaviour that used to
+// be a separate `doc_auto_cfg` feature, removed in 1.92 and merged into this
+// one. Do not reintroduce that name; it no longer compiles.
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 //! Certificate-issuance abstraction.
 //!
 //! Finalizing an ACME order turns the client's CSR into an issued certificate.
@@ -28,7 +37,7 @@
 //! signing over the network (an upstream ACME CA, a remote signer) can await its
 //! IO instead of blocking a runtime thread. [`local_ca::LocalCa`] never awaits —
 //! its file IO happens once at startup and signing is CPU-bound — but the trait
-//! is shaped for the backends that do. Like [`acme_proxy_policy::filter::Check`], it needs
+//! is shaped for the backends that do. Like `filter::Check`, it needs
 //! `#[async_trait]`: `Arc<dyn SignerBackend>` with an `async fn` is not dyn-safe.
 //!
 //! Construction stays synchronous: [`from_config`] runs once at startup, where a
@@ -42,7 +51,7 @@
 //!
 //! ## A backend outlives the configuration it was built from
 //!
-//! A configuration reload rebuilds nearly everything (see [`crate::reload`]),
+//! A configuration reload rebuilds nearly everything (see `reload`),
 //! but a backend that is still configured exactly as it was is **reused
 //! verbatim** — see [`build_backends`], which keys on the configuration's own
 //! `Debug` rendering. Only a backend whose configuration actually moved is
@@ -54,6 +63,10 @@
 //! CRL, a relay's `http-01` tokens and upstream orders — lives in the database,
 //! which the outgoing and the incoming instance share. That is also what lets
 //! two processes over one database run the same backend.
+//!
+//! The one crate that can hold a CA key, which is why only the `worker` role
+//! builds a backend from it. An internal crate of the `acme-proxy` binary,
+//! published in lockstep with it and with no semver promise of its own.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,7 +87,7 @@ pub mod relay;
 pub use info::{Opaque, SignerInfo, info_from_config};
 
 /// Re-exported so [`SignerInfo::http01_tokens`]'s signature — and the route
-/// in [`crate::router::build_app`] it feeds — do not reach into one backend's
+/// in `router::build_app` it feeds — do not reach into one backend's
 /// module for a type the generic trait mentions.
 pub use relay::http01::TokenStore as Http01TokenStore;
 
@@ -301,7 +314,7 @@ pub enum SignerError {
 /// The dependencies every backend is built from, minus its own `[signer]`
 /// section.
 ///
-/// A struct for [`ProfileParts`](crate::profile::ProfileParts)' reason:
+/// A struct for `ProfileParts`' reason:
 /// [`from_config`] had reached seven positional parameters, which is where a
 /// reader starts counting commas and clippy starts complaining. Taken by reference and cloned field by field, since
 /// [`build_backends`] calls [`from_config`] in a loop.
@@ -417,7 +430,7 @@ fn unknown_backend(name: &str) -> anyhow::Error {
 /// The backends one configuration generation runs — or their read sides —
 /// in the two views that are needed of them.
 ///
-/// `by_profile` is what a [`Profile`](crate::profile::Profile) or a job handler
+/// `by_profile` is what a `Profile` or a job handler
 /// is handed and the only thing that serves. `by_identity` exists purely so the
 /// **next** reload can ask "is this one already built?" — see
 /// [`build_backends`], where answering yes is what keeps a `SIGHUP` from
@@ -1252,3 +1265,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod testutil;

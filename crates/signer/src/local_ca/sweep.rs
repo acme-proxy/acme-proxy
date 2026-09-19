@@ -6,7 +6,7 @@
 //! that revokes a batch and then goes quiet never sheds anything, and its CRL
 //! lapses while nobody is looking. So once a day, every CA prunes what has
 //! expired and re-signs when that took anything or its CRL is due — see
-//! [`crate::signer::CrlRefresher::refresh`].
+//! [`crate::CrlRefresher::refresh`].
 //!
 //! Deliberately **not** in [`acme_proxy_jobs::jobs::sweep`], whose `SweepTarget` is a
 //! `DELETE` per table and needs nothing but a
@@ -19,7 +19,7 @@
 //!   does not re-enqueue itself, so one unreachable database or unsignable CRL
 //!   would stop the refresh for the life of the process rather than for one day.
 //! - But there is **one handler over every CA**, not one per CA. See
-//!   [`SignerBackend::crl_refresher`](crate::signer::SignerBackend::crl_refresher):
+//!   [`SignerBackend::crl_refresher`](crate::SignerBackend::crl_refresher):
 //!   [`JobRegistry::register`](acme_proxy_jobs::jobs::JobRegistry::register) refuses two
 //!   handlers for one `kind`, and two profiles with different
 //!   `[signer.local_ca]` sections are two backends, so the alternative would
@@ -31,7 +31,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tracing::{error, info};
 
-use crate::signer::CrlRefresher;
+use crate::CrlRefresher;
 use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
 use acme_proxy_jobs::jobs::JobQueue;

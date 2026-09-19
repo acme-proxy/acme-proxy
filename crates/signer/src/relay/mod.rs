@@ -1,6 +1,6 @@
 //! A signer backend that relays issuance to a real upstream ACME server.
 //!
-//! Where [`local_ca`](crate::signer::local_ca) *is* the CA, this backend makes
+//! Where [`local_ca`](crate::local_ca) *is* the CA, this backend makes
 //! the server a **proxy**: clients keep speaking ordinary ACME to it and keep
 //! proving domain control to it, but the certificate itself is obtained from an
 //! upstream ACME server — another `acme-proxy`, a private enterprise CA, or a
@@ -41,7 +41,7 @@ use base64::prelude::*;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::signer::{
+use crate::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
     SignerInfo,
 };
@@ -58,7 +58,7 @@ pub mod eab;
 pub mod flow;
 pub mod http01;
 mod propagation;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod testsrv;
 pub mod wire;
 
@@ -66,9 +66,9 @@ use client::{AccountKey, AcmeClient, Signer};
 
 use account::provision;
 pub use account::{register_upstream_account, stored_kid};
-pub(crate) use eab::decode_secret;
+pub use eab::decode_secret;
 use flow::{OrderContext, relay_spec};
-pub(crate) use flow::{RELAY_JOB_KIND, abandon_relayed_order};
+pub use flow::{RELAY_JOB_KIND, abandon_relayed_order};
 use wire::{RenewalInfoView, UpstreamOrderView, parse_rfc3339, upstream_to_signer_error};
 
 /// How this proxy satisfies the *upstream's* domain-control requirement.
@@ -158,7 +158,7 @@ pub struct RelaySigner(Arc<Inner>);
 ///
 /// Opaque on purpose: the handler lives in [`flow`] and reaches `Inner`
 /// directly, so nothing outside this module needs a single accessor. It exists
-/// only so [`crate::signer::SignerBackend::relay_state`] has a type to name —
+/// only so [`crate::SignerBackend::relay_state`] has a type to name —
 /// the `crl_pruner` shape, with a concrete type instead of a trait object
 /// because the one consumer is this backend's own handler rather than a third
 /// party that must be kept ignorant of what a [`RelaySigner`] is.
@@ -176,10 +176,7 @@ impl RelaySigner {
     /// network call — but only the *first* time, when no `kid` sidecar exists
     /// yet. Every later startup just reads the two local files, so a temporarily
     /// unreachable upstream does not stop the server from booting.
-    pub fn from_config(
-        cfg: &RelayConfig,
-        parts: &crate::signer::SignerParts,
-    ) -> anyhow::Result<Self> {
+    pub fn from_config(cfg: &RelayConfig, parts: &crate::SignerParts) -> anyhow::Result<Self> {
         let outbound = parts.egress.outbound();
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
@@ -468,10 +465,7 @@ impl RelayInfo {
     /// The `http-01` store is built over the same table the relay job
     /// publishes into, which is what lets the route in one process answer a
     /// fetch for a token a worker in another published.
-    pub fn from_config(
-        cfg: &RelayConfig,
-        parts: &crate::signer::SignerParts,
-    ) -> anyhow::Result<Self> {
+    pub fn from_config(cfg: &RelayConfig, parts: &crate::SignerParts) -> anyhow::Result<Self> {
         if cfg.directory_url.is_empty() {
             anyhow::bail!(
                 "signer.relay.directory_url is empty: the relay backend has no upstream \
@@ -564,7 +558,7 @@ impl SignerInfo for RelayInfo {
     /// Hands the responder route the store the `http01` strategy publishes
     /// into. `None` under every other strategy, so an upstream validated by
     /// DNS or not at all never exposes the well-known path.
-    fn http01_tokens(&self) -> Option<Arc<dyn crate::signer::Http01TokenStore>> {
+    fn http01_tokens(&self) -> Option<Arc<dyn crate::Http01TokenStore>> {
         self.http01.clone()
     }
 

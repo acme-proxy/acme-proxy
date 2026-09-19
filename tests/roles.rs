@@ -499,7 +499,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
     // A revocation recorded without the key — the ledger row the acme and
     // admin roles write — reaches the CRL the acme process serves, once the
     // worker has signed it in.
-    let route = acme_proxy::signer::revocation_route(
+    let route = acme_proxy_signer::revocation_route(
         &keyless.resolve_profiles().unwrap()[0].sections.signer,
     )
     .unwrap();

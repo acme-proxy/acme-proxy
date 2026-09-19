@@ -162,7 +162,7 @@ use super::client::UpstreamError;
 use super::flow::settle;
 use super::http01::TokenStore;
 use super::*;
-use crate::signer::local_ca::LocalCa;
+use crate::local_ca::LocalCa;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::testutil::TempDir;
 use acme_proxy_jobs::notify::NotifyDispatcher;
@@ -213,8 +213,8 @@ fn relay_parts(
     database: Arc<Database>,
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
-) -> crate::signer::SignerParts {
-    crate::signer::SignerParts {
+) -> crate::SignerParts {
+    crate::SignerParts {
         database: database.clone(),
         notifiers,
         metrics: acme_proxy_jobs::testutil::test_metrics(database),

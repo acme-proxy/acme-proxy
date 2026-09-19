@@ -10,6 +10,7 @@ dependencies = [
  "acme-proxy-jobs",
  "acme-proxy-net",
  "acme-proxy-policy",
+ "acme-proxy-signer",
  "acme-proxy-store",
  "anyhow",
  "async-trait",
@@ -20,7 +21,6 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "config",
- "cryptoki",
  "hex",
  "hickory-proto",
  "hickory-resolver",
@@ -164,6 +164,41 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "acme-proxy-signer"
+version = "0.5.0"
+dependencies = [
+ "acme-proxy-core",
+ "acme-proxy-jobs",
+ "acme-proxy-net",
+ "acme-proxy-store",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "cryptoki",
+ "hex",
+ "hickory-proto",
+ "http-body-util",
+ "hyper",
+ "rcgen",
+ "ring",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "simple_asn1",
+ "sqlx",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "x509-parser",
 ]
 
 [[package]]

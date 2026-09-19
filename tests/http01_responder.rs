@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use acme_proxy::signer::relay::http01::TokenStore;
+use acme_proxy_signer::relay::http01::TokenStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;

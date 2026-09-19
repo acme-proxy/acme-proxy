@@ -27,11 +27,11 @@ use acme_proxy_store::job::JobQuery;
 /// while every test still passed. Nothing else in the crate spells a job kind
 /// twice.
 const KNOWN_KINDS: &[&str] = &[
-    crate::signer::relay::RELAY_JOB_KIND,
+    acme_proxy_signer::relay::RELAY_JOB_KIND,
     acme_proxy_jobs::notify::job::NOTIFY_JOB_KIND,
     acme_proxy_jobs::notify::expiry::EXPIRY_JOB_KIND,
-    crate::signer::local_ca::sweep::CRL_SWEEP_KIND,
-    crate::signer::local_ca::sweep::CRL_REGENERATE_KIND,
+    acme_proxy_signer::local_ca::sweep::CRL_SWEEP_KIND,
+    acme_proxy_signer::local_ca::sweep::CRL_REGENERATE_KIND,
     crate::acme::issue::SIGNER_ISSUE_KIND,
     crate::acme::revoke::SIGNER_REVOKE_KIND,
     crate::acme::validate::CHALLENGE_VALIDATE_KIND,

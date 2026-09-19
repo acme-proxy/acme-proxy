@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
-use crate::signer;
 use acme_proxy_core::config;
 use acme_proxy_core::config::Config;
 use acme_proxy_jobs::metrics;
 use acme_proxy_jobs::notify;
 use acme_proxy_net::egress::Egress;
+use acme_proxy_signer as signer;
 use acme_proxy_store::db::Database;
 
 /// The three things one configuration generation contributes to its profiles,

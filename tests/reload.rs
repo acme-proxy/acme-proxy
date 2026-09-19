@@ -1085,7 +1085,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
 
     // The files were not clobbered: a fresh CA over them still loads, which is
     // what a restart after this reload would do.
-    acme_proxy::signer::local_ca::LocalCa::load_or_generate(
+    acme_proxy_signer::local_ca::LocalCa::load_or_generate(
         &cfg,
         Arc::new(Database::connect_in_memory().await.unwrap()),
     )

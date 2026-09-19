@@ -45,7 +45,7 @@ use acme_proxy_net::http_client::MAX_RESPONSE_BYTES;
 use acme_proxy_net::http_client::error_excerpt;
 
 /// Everything that can go wrong talking to the upstream. Mapped to
-/// [`SignerError`](crate::signer::SignerError) at the trait boundary in
+/// [`SignerError`](crate::SignerError) at the trait boundary in
 /// [`super`]; kept separate here so this module never mentions `error.rs`,
 /// the same split `challenge` and `filter` draw.
 #[derive(Debug, thiserror::Error)]
@@ -81,7 +81,7 @@ impl UpstreamError {
     }
 
     /// Whether the upstream is telling us the certificate is already revoked.
-    /// [`SignerBackend::revoke`](crate::signer::SignerBackend::revoke) is
+    /// [`SignerBackend::revoke`](crate::SignerBackend::revoke) is
     /// contractually idempotent, so this reads as success.
     pub fn is_already_revoked(&self) -> bool {
         matches!(self, UpstreamError::Problem { typ, .. } if typ.ends_with(":alreadyRevoked"))
@@ -539,7 +539,7 @@ mod tests {
     fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
         std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
-    use crate::signer::relay::testsrv::{self, Script};
+    use crate::relay::testsrv::{self, Script};
 
     /// A P-256 PKCS#8 document, via rcgen (already a normal dependency).
     fn pkcs8() -> Vec<u8> {

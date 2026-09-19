@@ -36,7 +36,7 @@ use base64::prelude::*;
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 
-use crate::signer::issuance::IssuanceError;
+use crate::issuance::IssuanceError;
 use acme_proxy_core::error::Problem;
 use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
@@ -114,7 +114,7 @@ pub(super) fn classify(error: &UpstreamError) -> RelayFailure {
 /// **One handler over every relay profile, not one per backend**, and the
 /// distinction is the whole reason this type has a map in it.
 /// [`acme_proxy_jobs::jobs::JobRegistry::register`] refuses a second handler for one
-/// `kind`, while [`crate::signer::build_backends`] deliberately does *not*
+/// `kind`, while [`crate::build_backends`] deliberately does *not*
 /// collapse two profiles whose `[signer.relay]` sections differ — a Let's
 /// Encrypt endpoint beside a commercial CA is two backends. Returning a handler
 /// from each would therefore make that supported configuration a startup error,
@@ -913,9 +913,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
         }
     };
 
-    let serial = match crate::signer::issuance::record_issuance(&mut order, chain, &inner.database)
-        .await
-    {
+    let serial = match crate::issuance::record_issuance(&mut order, chain, &inner.database).await {
         Ok(serial) => serial,
         Err(IssuanceError::Chain(error)) => {
             return JobOutcome::Failed(format!("upstream chain unparsable: {error}"));
@@ -946,7 +944,7 @@ pub(super) async fn settle(inner: &Inner, order_id: &str, chain: String) -> JobO
     // `None`: no request is in scope on this path at all.
     let (actor, client) = relay_actor_and_client(&order, &inner.database).await;
     let dispatcher = inner.notifiers.get(&order.profile);
-    crate::signer::issuance::announce_issuance(
+    crate::issuance::announce_issuance(
         &order,
         &serial,
         actor,
@@ -994,7 +992,7 @@ async fn relay_actor_and_client(
 /// (operator-visible `reason`), and writes one audit row.
 ///
 /// Shared by [`RelayJob::abandon`] — the runner retiring a job for good — and
-/// the operator-cancel path in `crate::admin::ops::cancel_job`. The two differ
+/// the operator-cancel path in `admin::ops::cancel_job`. The two differ
 /// only in *who* the audit row names: the runner attributes it to the account
 /// that asked (with the finalize request's own address, via
 /// [`relay_actor_and_client`]); an operator cancel attributes it to the
@@ -1006,7 +1004,7 @@ async fn relay_actor_and_client(
 /// `(kind, dedup_key)` identity, so `recover` re-enqueues a fresh one and
 /// issuance completes normally, where the runner's own `abandon` has no such
 /// safety net.
-pub(crate) async fn abandon_relayed_order(
+pub async fn abandon_relayed_order(
     order: &mut Order,
     reason: &str,
     actor: acme_proxy_core::audit::Actor,
@@ -1016,7 +1014,7 @@ pub(crate) async fn abandon_relayed_order(
 ) -> Result<(), sqlx::Error> {
     // The client sees a generic problem document; the real reason is
     // operator-only, on the mapping row and in the audit detail.
-    crate::signer::issuance::record_issue_failure(
+    crate::issuance::record_issue_failure(
         order,
         &Problem::server_internal("Upstream certificate issuance failed"),
         reason,

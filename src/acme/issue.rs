@@ -41,11 +41,6 @@ use std::sync::Arc;
 use base64::prelude::*;
 use tracing::{error, info, warn};
 
-use crate::signer::issuance::IssuanceError;
-use crate::signer::issuance::announce_issuance;
-use crate::signer::issuance::record_issuance;
-use crate::signer::issuance::record_issue_failure;
-use crate::signer::{IssueOutcome, RequestedValidity, SignerBackend, SignerError};
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
@@ -55,6 +50,14 @@ use acme_proxy_jobs::auditor::Auditor;
 use acme_proxy_jobs::jobs::JobHandler;
 use acme_proxy_jobs::jobs::JobOutcome;
 use acme_proxy_jobs::jobs::JobSpec;
+use acme_proxy_signer::IssueOutcome;
+use acme_proxy_signer::RequestedValidity;
+use acme_proxy_signer::SignerBackend;
+use acme_proxy_signer::SignerError;
+use acme_proxy_signer::issuance::IssuanceError;
+use acme_proxy_signer::issuance::announce_issuance;
+use acme_proxy_signer::issuance::record_issuance;
+use acme_proxy_signer::issuance::record_issue_failure;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
@@ -433,7 +436,7 @@ mod tests {
     async fn a_signed_certificate_settles_the_order_and_names_the_client() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
         let (order, job) = claimed(&database).await;
-        let ca = crate::signer::local_ca::LocalCa::generate_in_memory(
+        let ca = acme_proxy_signer::local_ca::LocalCa::generate_in_memory(
             "ecdsa-p256",
             90,
             database.clone(),
