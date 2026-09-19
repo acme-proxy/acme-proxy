@@ -133,14 +133,14 @@ fn build(
     let profile = resolve_profile(config, wanted)?;
     let sections = &profile.sections;
 
-    let resolver = crate::dns::HickoryResolver::from_system_uncached()
+    let resolver = acme_proxy_net::dns::HickoryResolver::from_system_uncached()
         .map_err(|error| CliError::failed(format!("cannot build a resolver: {error}")))?;
-    let proxies = crate::proxy::OutboundProxies::from_config(&config.proxy)
+    let proxies = acme_proxy_net::proxy::OutboundProxies::from_config(&config.proxy)
         .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
 
     let inventory = crate::ipam::from_config(
         &sections.ipam,
-        crate::http_client::Outbound::new(
+        acme_proxy_net::http_client::Outbound::new(
             std::sync::Arc::new(resolver),
             std::sync::Arc::new(proxies),
         ),

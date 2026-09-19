@@ -1,7 +1,7 @@
 //! DNS lookups, behind a trait.
 //!
 //! Two subsystems need the resolver for entirely different reasons — the
-//! [`reverse_dns`](crate::filter::reverse_dns) filter wants a PTR record for the
+//! `reverse_dns` filter wants a PTR record for the
 //! client's address, the [`dns_01`](crate::challenge::dns_01) challenge wants a
 //! TXT record under the name being validated — and both need to drive every
 //! branch (no record, a mismatch, a timeout) from canned data rather than the
@@ -116,7 +116,7 @@ impl Resolver for HickoryResolver {
     /// doesn't have this record" (the ordinary shape of "no PTR record for
     /// this address", or a `dns-01` TXT record not published yet) is
     /// indistinguishable from the resolver genuinely failing (SERVFAIL,
-    /// timeout). [`filter::reverse_dns`](crate::filter::reverse_dns) depends
+    /// timeout). `filter::reverse_dns` depends
     /// on telling those apart: the former denies the request, the latter is
     /// a 500 the client can retry. (`dns_01` happens not to care — both
     /// cases map to the same `ChallengeError::Dns` there — which is why this

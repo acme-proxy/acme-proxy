@@ -639,16 +639,16 @@ mod tests {
         };
         crate::ipam::from_config(
             &cfg,
-            crate::http_client::Outbound::new(
+            acme_proxy_net::http_client::Outbound::new(
                 test_resolver(),
-                std::sync::Arc::new(crate::proxy::OutboundProxies::direct()),
+                std::sync::Arc::new(acme_proxy_net::proxy::OutboundProxies::direct()),
             ),
         )
         .unwrap()
     }
 
-    fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
-        Arc::new(crate::dns::HickoryResolver::from_system().unwrap())
+    fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+        Arc::new(acme_proxy_net::dns::HickoryResolver::from_system().unwrap())
     }
 
     fn check_of(kind: &str) -> CheckConfig {

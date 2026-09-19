@@ -1,0 +1,46 @@
+[package]
+name = "acme-proxy-net"
+description = "DNS, outbound HTTP, proxies, TLS, listeners and the ACME challenge validators of acme-proxy (internal crate, no semver promise)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation.workspace = true
+homepage.workspace = true
+exclude = ["**/CLAUDE.md"]
+
+[features]
+# The outbound test plumbing in `testutil`, for the other crates' unit tests.
+# Turned on from `[dev-dependencies]` only, so it never reaches a normal build.
+test-util = ["acme-proxy-core/test-util"]
+
+[dependencies]
+acme-proxy-core.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+hickory-resolver.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+ipnet.workspace = true
+percent-encoding.workspace = true
+rcgen.workspace = true
+ring.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+subtle.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
+x509-parser.workspace = true
+
+[dev-dependencies]
+acme-proxy-core = { workspace = true, features = ["test-util"] }
+hickory-proto.workspace = true

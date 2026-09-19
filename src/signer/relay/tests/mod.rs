@@ -136,8 +136,8 @@ impl Drop for TestRunner {
 }
 
 /// The shared resolver `server::profile::build_all` supplies at startup.
-fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
-    Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+    Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
 }
 
 /// A readable fixture name as a real order id.
@@ -217,7 +217,7 @@ fn relay_parts(
         database: database.clone(),
         notifiers,
         metrics: crate::testutil::test_metrics(database),
-        egress: crate::testutil::egress_with(test_resolver()),
+        egress: acme_proxy_net::testutil::egress_with(test_resolver()),
         jobs,
     }
 }

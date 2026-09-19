@@ -53,7 +53,7 @@
 //!   any handler runs
 //! - [`handlers`] - One module per ACME resource: the HTTP edge
 //! - [`acme`] - The ACME domain rules every front end shares
-//! - [`challenge`] - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
+//! - [`challenge`](acme_proxy_net::challenge) - Pluggable challenge validators (http-01, dns-01, tls-alpn-01)
 //! - [`signer`] - Pluggable certificate-issuance backends (local CA, ACME relay,
 //!   custom script)
 //!
@@ -65,12 +65,12 @@
 //!   (NetBox, phpIPAM, a custom script), behind one trait
 //! - [`eab`](acme_proxy_core::eab) - Verification of the External Account Binding inner JWS (§7.3.4)
 //! - [`key_change`](acme_proxy_core::key_change) - Verification of account key rollover JWS (§7.3.5)
-//! - [`dns`] - The resolver shared by every subsystem that looks anything up
-//! - [`http_client`] - The transport every outbound HTTP client is built on,
+//! - [`dns`](acme_proxy_net::dns) - The resolver shared by every subsystem that looks anything up
+//! - [`http_client`](acme_proxy_net::http_client) - The transport every outbound HTTP client is built on,
 //!   including the `CONNECT` tunnel
-//! - [`proxy`] - Which forward proxy, if any, that transport dials through
+//! - [`proxy`](acme_proxy_net::proxy) - Which forward proxy, if any, that transport dials through
 //! - [`script_hook`](acme_proxy_core::script_hook) - The hardened contract every `custom` hook runs under
-//! - [`tls`] - Optional HTTPS termination for either listener
+//! - [`tls`](acme_proxy_net::tls) - Optional HTTPS termination for either listener
 //! - [`cert`](acme_proxy_core::cert) - X.509 parsing helpers (serial, SPKI, leaf-from-chain)
 //! - [`pemfile`](acme_proxy_core::pemfile) - PEM reading, atomic writing and key-permission warnings
 //! - [`acme_proxy_store`] - Database access, one module per table
@@ -83,7 +83,7 @@
 //! without a restart:
 //! - [`server`] - The runtime: profiles, routers, and the generation a startup
 //!   builds and a reload rebuilds and publishes
-//! - [`listener`] - The sockets, and replacing one while it serves
+//! - [`listener`](acme_proxy_net::listener) - The sockets, and replacing one while it serves
 //! - [`reload`] - Rebuild-and-swap on `SIGHUP`; nothing is mutated in place
 //! - [`jobs`] - The durable queue and its runner, so work outlives the process
 //!   that queued it
@@ -106,7 +106,8 @@
 //! use acme_proxy::profile::{Profile, ProfileParts};
 //! use acme_proxy::router::build_app;
 //! use acme_proxy_store::db::Database;
-//! use acme_proxy::{challenge, filter, ipam, jobs, notify, signer};
+//! use acme_proxy::{filter, ipam, jobs, notify, signer};
+//! use acme_proxy_net::challenge;
 //! use acme_proxy_core::config::Config;
 //!
 //! #[tokio::main]
@@ -122,7 +123,7 @@
 //!     // because every outbound client takes them together — and because the
 //!     // rendering beside them is what tells a reload whether a signer backend
 //!     // has to be rebuilt.
-//!     let egress = Arc::new(acme_proxy::egress::Egress::from_config(&config)?);
+//!     let egress = Arc::new(acme_proxy_net::egress::Egress::from_config(&config)?);
 //!     let outbound = egress.outbound();
 //!     // The enqueue side of the durable queue, built first because everything
 //!     // below queues into it. A backend that defers issuance (`relay`) is
@@ -250,29 +251,22 @@
 pub mod acme;
 pub mod admin;
 pub mod auditor;
-pub mod challenge;
 pub mod cli;
-pub mod dns;
-pub mod egress;
 pub mod extractors;
 pub mod filter;
 pub mod handlers;
-pub mod http_client;
 pub mod ipam;
 pub mod jobs;
-pub mod listener;
 pub mod metrics;
 pub mod middlewares;
 pub mod notify;
 pub mod profile;
-pub mod proxy;
 pub mod reload;
 pub mod router;
 pub mod server;
 pub mod signer;
 #[cfg(test)]
 pub(crate) mod testutil;
-pub mod tls;
 pub mod webadmin;
 
 // Re-export name shape helpers for backwards compatibility

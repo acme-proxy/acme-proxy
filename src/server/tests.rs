@@ -157,7 +157,8 @@ async fn a_tls_server_answers_over_a_real_handshake() {
     // The generated certificate is self-signed, so the client must not
     // try to verify it — the point here is the listener, not the trust
     // chain.
-    let client = crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
+    let client =
+        acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
     let stream = TcpStream::connect(addr).await.unwrap();
     let mut tls = TlsConnector::from(client)
         .connect(ServerName::try_from("localhost").unwrap(), stream)
@@ -372,7 +373,8 @@ async fn the_admin_listener_answers_over_its_own_tls() {
 
     // The admin socket needs a handshake. Self-signed, so the client
     // verifies nothing: the listener is the subject, not the chain.
-    let client = crate::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
+    let client =
+        acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"]).unwrap();
     let stream = TcpStream::connect(admin_addr).await.unwrap();
     let mut tls = TlsConnector::from(client)
         .connect(ServerName::try_from("localhost").unwrap(), stream)

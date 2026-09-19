@@ -1,13 +1,13 @@
 //! What one configuration generation hands its profiles ([`GenerationParts`]),
 //! and what outlives it ([`Assembly`]). What it dials through is
-//! [`crate::egress::Egress`].
+//! [`acme_proxy_net::egress::Egress`].
 
 use std::sync::Arc;
 
-use crate::egress::Egress;
 use crate::{metrics, notify, signer};
 use acme_proxy_core::config;
 use acme_proxy_core::config::Config;
+use acme_proxy_net::egress::Egress;
 use acme_proxy_store::db::Database;
 
 /// The three things one configuration generation contributes to its profiles,

@@ -15,12 +15,14 @@ use std::time::Duration;
 
 use tracing::{debug, error, info};
 
-use crate::dns::{HickoryResolver, Resolver, resolver_addr};
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::config::AuditConfig;
 use acme_proxy_core::config::DnsConfig;
+use acme_proxy_net::dns::HickoryResolver;
+use acme_proxy_net::dns::Resolver;
+use acme_proxy_net::dns::resolver_addr;
 use acme_proxy_store::audit::AuditEntry;
 use acme_proxy_store::db::Database;
 

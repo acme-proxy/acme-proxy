@@ -767,7 +767,7 @@ fn validate_events(field: &str, events: &[String]) -> anyhow::Result<()> {
 pub fn from_config(
     profile: &str,
     cfg: &NotifyConfig,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     jobs: &JobQueue,
 ) -> anyhow::Result<Arc<NotifyDispatcher>> {
     // Built once and shared: both templating backends render from the same
@@ -875,7 +875,7 @@ fn build_custom_slots(cfg: &NotifyConfig) -> anyhow::Result<Vec<BackendSlot>> {
 fn build_webhook_slots(
     cfg: &NotifyConfig,
     env: &minijinja::Environment<'static>,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
 ) -> anyhow::Result<Vec<BackendSlot>> {
     acme_proxy_core::config::resolve_named_entries(
         "notify.webhook",
@@ -971,7 +971,7 @@ pub fn notifiers_channel(initial: DispatcherMap) -> (NotifiersSender, Notifiers)
 /// `AppState`/`Profile` to reach through.
 pub fn build_registry(
     profiles: &[ProfileConfig],
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     jobs: &JobQueue,
 ) -> anyhow::Result<HashMap<String, Arc<NotifyDispatcher>>> {
     let mut registry = HashMap::with_capacity(profiles.len());
@@ -1086,8 +1086,8 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     /// The shared resolver `server::profile::build_all` supplies at startup.
-    fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
-        Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+    fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+        Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
 
     /// A queue over an in-memory database, for the assertions that read back
@@ -1655,7 +1655,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both backends must build");
@@ -1691,7 +1691,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both entries must build");
@@ -1713,7 +1713,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1731,7 +1731,7 @@ pub(crate) mod tests {
             from_config(
                 "le",
                 &cfg,
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
                 &test_queue().await,
             )
             .unwrap_or_else(|error| panic!("`{mode}` must build: {error}"));
@@ -1740,7 +1740,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &email_config("carrier-pigeon"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1772,7 +1772,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &email,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1794,7 +1794,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &webhook,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1814,7 +1814,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1840,7 +1840,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1857,7 +1857,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1874,7 +1874,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1896,7 +1896,7 @@ pub(crate) mod tests {
         let error = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap_err()
@@ -1984,7 +1984,7 @@ pub(crate) mod tests {
         ];
         let registry = build_registry(
             &profiles,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .unwrap();
@@ -2019,7 +2019,7 @@ pub(crate) mod tests {
         let dispatcher = from_config(
             "le",
             &cfg,
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             &test_queue().await,
         )
         .expect("both custom entries must build");

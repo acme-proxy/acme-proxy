@@ -17,7 +17,7 @@
 //!
 //! ## The record's content is not defined here
 //!
-//! [`crate::challenge::dns_01`] owns both the record name and the digest
+//! [`acme_proxy_net::challenge::dns_01`] owns both the record name and the digest
 //! computation, and this module calls into it. Restating either would risk the
 //! publisher and the validator drifting into a record this server accepts but
 //! a real CA rejects.

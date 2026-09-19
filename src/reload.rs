@@ -29,7 +29,7 @@
 //!   else. The publishing run does it **first**, since an operator who raised
 //!   the level did it to see what happens next — starting with the reload's own
 //!   line.
-//! - **The sockets.** `crate::listener` owns the accept loop, so a role's
+//! - **The sockets.** `acme_proxy_net::listener` owns the accept loop, so a role's
 //!   `TcpListener` is replaceable and its TLS mode is read per connection: all
 //!   five of `server.bind_address`, `admin.enabled`, `admin.bind_address` and
 //!   both `tls.enabled` flips reload, as do the two `[metrics]` keys. Binding
@@ -106,7 +106,7 @@ pub struct Applied<'a> {
 /// the pattern never varied: the thing said to be unmovable was made movable
 /// rather than argued with, and the entry then had no reason left.
 ///
-/// - **Every bind address**, once [`crate::listener`] owned the accept loop and
+/// - **Every bind address**, once [`acme_proxy_net::listener`] owned the accept loop and
 ///   a socket stopped being something `axum::serve` consumes.
 /// - **`[logging]`**, once the whole layer stack went behind a `reload::Layer`
 ///   handle (`server::logging`).

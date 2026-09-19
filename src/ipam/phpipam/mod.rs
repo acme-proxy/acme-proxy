@@ -105,7 +105,7 @@ impl PhpIpamBackend {
     /// Builds the real phpIPAM client, then delegates. Contacts nothing.
     pub fn from_config(
         cfg: &PhpIpamConfig,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let api = Arc::new(client::PhpIpamClient::new(cfg, outbound)?);
         let backend = Self::with_api(cfg, api)?;

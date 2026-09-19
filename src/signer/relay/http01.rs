@@ -33,10 +33,10 @@
 //!
 //! ## The file's content is not defined here
 //!
-//! [`crate::challenge::http_01`] owns the well-known path, and
+//! [`acme_proxy_net::challenge::http_01`] owns the well-known path, and
 //! [`super::flow`] builds the key authorization from the account thumbprint.
 //! This module only stores bytes under a token — the same separation
-//! [`super::dns01`] keeps by calling into [`crate::challenge::dns_01`] rather
+//! [`super::dns01`] keeps by calling into [`acme_proxy_net::challenge::dns_01`] rather
 //! than restating the record convention.
 
 use std::sync::Arc;

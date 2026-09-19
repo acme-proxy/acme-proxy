@@ -8,8 +8,8 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 use super::logging;
-use crate::tls;
 use acme_proxy_core::config::Config;
+use acme_proxy_net::tls;
 
 use super::sockets::{Role, SocketPlans, check_metrics_config, plan_sockets};
 use super::supervisor::Cells;

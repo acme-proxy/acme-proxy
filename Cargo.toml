@@ -33,6 +33,7 @@ homepage = "https://acme-proxy.github.io/acme-proxy/"
 # The workspace's own crates, pinned exactly: they are released together.
 acme-proxy-core = { path = "crates/core", version = "=0.5.0" }
 acme-proxy-store = { path = "crates/store", version = "=0.5.0" }
+acme-proxy-net = { path = "crates/net", version = "=0.5.0" }
 
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
@@ -230,6 +231,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 acme-proxy-core.workspace = true
 acme-proxy-store.workspace = true
+acme-proxy-net.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -276,6 +278,7 @@ cryptoki = { workspace = true, optional = true }
 [dev-dependencies]
 acme-proxy-core = { workspace = true, features = ["test-util"] }
 acme-proxy-store = { workspace = true, features = ["test-util"] }
+acme-proxy-net = { workspace = true, features = ["test-util"] }
 # `util` enables `tower::ServiceExt::oneshot`, used to drive the router in tests.
 tower = { workspace = true, features = ["util"] }
 testcontainers.workspace = true

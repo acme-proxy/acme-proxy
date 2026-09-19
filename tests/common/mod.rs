@@ -23,9 +23,6 @@ use acme_proxy::acme::issue::SignerIssueJob;
 use acme_proxy::acme::revoke::SignerRevokeJob;
 use acme_proxy::acme::validate::ChallengeValidateJob;
 use acme_proxy::admin::password::PasswordContext;
-use acme_proxy::challenge::{
-    ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
-};
 use acme_proxy::filter::expr::Condition;
 use acme_proxy::filter::policy::{Check, Effect, Mode, Rule, StageSet, Verdict};
 use acme_proxy::filter::{ConnectionContext, FilterPolicy, IdentifierContext, Stage};
@@ -45,6 +42,10 @@ use acme_proxy_core::client::ProxyPolicy;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::config::JobsConfig;
 use acme_proxy_core::identifier::Identifier;
+use acme_proxy_net::challenge::ChallengeError;
+use acme_proxy_net::challenge::ChallengeRegistry;
+use acme_proxy_net::challenge::ChallengeValidator;
+use acme_proxy_net::challenge::ValidationContext;
 use acme_proxy_store::db::Database;
 use async_trait::async_trait;
 use axum::Router;

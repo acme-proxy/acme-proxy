@@ -136,12 +136,12 @@ pub async fn run_upstream_command(
             // A throwaway resolver, for the same reason `order revoke` builds
             // one: a one-shot command has no server around it to share the
             // process-wide one.
-            let resolver = crate::dns::resolver_addr(&config.dns)
-                .and_then(crate::challenge::build_resolver)
+            let resolver = acme_proxy_net::dns::resolver_addr(&config.dns)
+                .and_then(acme_proxy_net::challenge::build_resolver)
                 .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
-            let proxies = crate::proxy::from_config(&config.proxy)
+            let proxies = acme_proxy_net::proxy::from_config(&config.proxy)
                 .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
-            let outbound = crate::http_client::Outbound::new(resolver, proxies);
+            let outbound = acme_proxy_net::http_client::Outbound::new(resolver, proxies);
             match relay::register_upstream_account(cfg, outbound, eab).await {
                 Ok(kid) => println!("Registered. kid = {kid}"),
                 Err(error) => {

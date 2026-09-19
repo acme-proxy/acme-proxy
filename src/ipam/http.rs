@@ -2,11 +2,11 @@
 //!
 //! ## Why this exists where the four other clients did not get one
 //!
-//! [`http_client`](crate::http_client) already owns the plumbing every outbound
+//! [`http_client`](acme_proxy_net::http_client) already owns the plumbing every outbound
 //! client in this tree shares — picking a URL apart, connecting through the
 //! shared resolver, the TLS handshake, the hyper handshake — and its module doc
 //! is explicit that *policy* stays per-module, because
-//! [`challenge::http_01`](crate::challenge::http_01) must validate no
+//! [`challenge::http_01`](acme_proxy_net::challenge::http_01) must validate no
 //! certificate at all while the others must, and each caps its body, sets its
 //! headers and shapes its errors differently.
 //!
@@ -43,7 +43,8 @@ use url::Url;
 
 /// Cap on an inventory response body. An address query returns a handful of
 /// small objects; anything approaching this is not an answer a filter can use.
-use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
+use acme_proxy_net::http_client::MAX_RESPONSE_BYTES;
+use acme_proxy_net::http_client::error_excerpt;
 
 /// Why a request to an inventory did not produce a usable document.
 ///
@@ -74,7 +75,7 @@ pub(crate) struct JsonApi {
     tls: Arc<rustls::ClientConfig>,
     /// Where every outbound hop resolves and whether it goes through a
     /// proxy — `dns.resolver` and `[proxy]`, bundled.
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
 }
 
 impl std::fmt::Debug for JsonApi {
@@ -97,7 +98,7 @@ impl JsonApi {
         setting: &str,
         headers: Vec<(HeaderName, String)>,
         tls: Arc<rustls::ClientConfig>,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let parsed = Url::parse(url.trim())
             .map_err(|error| anyhow::anyhow!("{setting}: {url} is not a URL: {error}"))?;
@@ -128,7 +129,7 @@ impl JsonApi {
         let url = Url::parse(&target)
             .map_err(|error| JsonApiError::transport(format!("{target} is not a URL: {error}")))?;
 
-        let endpoint = crate::http_client::Endpoint::from_url(&url).map_err(|error| {
+        let endpoint = acme_proxy_net::http_client::Endpoint::from_url(&url).map_err(|error| {
             JsonApiError::transport(format!("{target} is not a usable endpoint: {error}"))
         })?;
 
@@ -163,7 +164,7 @@ impl JsonApi {
 
 /// Sends the request over an established stream and parses the answer.
 async fn exchange(
-    mut connection: crate::http_client::Connection<Empty<Bytes>>,
+    mut connection: acme_proxy_net::http_client::Connection<Empty<Bytes>>,
     request: Request<Empty<Bytes>>,
     url: &Url,
 ) -> Result<Value, JsonApiError> {
@@ -217,7 +218,7 @@ pub(crate) fn tls_config(
         // use, reused rather than re-derived — it already passes the crypto
         // provider explicitly, which `install_default` must never be used for.
         // No ALPN: this is an ordinary https request.
-        return crate::challenge::tls_alpn_01::accept_any_client_config(&[]);
+        return acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[]);
     }
 
     let mut roots = rustls::RootCertStore {
@@ -264,8 +265,8 @@ pub(crate) mod testing {
 
     /// These reach a loopback listener by IP literal, which `dns::connect`
     /// short-circuits without a lookup, so the system resolver is fine.
-    pub(crate) fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
-        Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+    pub(crate) fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+        Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
 
     /// Serves one canned response and returns the request it received.
@@ -402,7 +403,7 @@ mod tests {
             "ipam.test.url",
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "ipam.test.ca_cert_path").unwrap(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap()
     }
@@ -416,7 +417,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -430,7 +431,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -446,7 +447,7 @@ mod tests {
             "ipam.netbox.url",
             Vec::new(),
             tls_config("", false, "x").unwrap(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         assert_eq!(api.base(), "https://example.com/netbox");
@@ -459,7 +460,7 @@ mod tests {
             "ipam.netbox.url",
             vec![(hyper::header::AUTHORIZATION, "Token t0ken".to_string())],
             tls_config("", false, "x").unwrap(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         let rendered = format!("{api:?}");

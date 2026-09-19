@@ -229,11 +229,14 @@ async fn registering_without_a_location_header_is_refused() {
     let dir = TempDir::new("upstream");
     let cfg = config(&upstream, &dir);
 
-    let error =
-        register_upstream_account(&cfg, crate::testutil::outbound_with(test_resolver()), None)
-            .await
-            .expect_err("an account with no URL is not an account")
-            .to_string();
+    let error = register_upstream_account(
+        &cfg,
+        acme_proxy_net::testutil::outbound_with(test_resolver()),
+        None,
+    )
+    .await
+    .expect_err("an account with no URL is not an account")
+    .to_string();
     assert!(error.contains("no Location header"), "{error}");
     assert!(
         stored_kid(&cfg).is_none(),
@@ -255,7 +258,7 @@ async fn register_upstream_account_supplies_the_eab() {
 
     let kid = register_upstream_account(
         &cfg,
-        crate::testutil::outbound_with(test_resolver()),
+        acme_proxy_net::testutil::outbound_with(test_resolver()),
         Some(("eab-kid-1", b"secret-bytes-secret-bytes!!")),
     )
     .await
@@ -287,7 +290,7 @@ async fn after_registering_startup_needs_no_credential() {
 
     register_upstream_account(
         &cfg,
-        crate::testutil::outbound_with(test_resolver()),
+        acme_proxy_net::testutil::outbound_with(test_resolver()),
         Some(("eab-kid-1", b"secret-bytes-secret-bytes!!")),
     )
     .await

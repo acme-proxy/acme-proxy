@@ -2,7 +2,7 @@
 //! otherwise implement, since everywhere else it is the *server*.
 //!
 //! Written by hand on `hyper` rather than pulling in `instant-acme` or
-//! `acme-lib`, for the same reason [`crate::challenge::http_01`] uses `hyper`
+//! `acme-lib`, for the same reason [`acme_proxy_net::challenge::http_01`] uses `hyper`
 //! rather than `reqwest`: the whole stack (`hyper`, `hyper-util`, `rustls`,
 //! `ring`, `base64`) is already in the tree, and what is needed here is a few
 //! hundred lines of JWS assembly, not a framework.
@@ -16,7 +16,7 @@
 //!
 //! ## TLS
 //!
-//! Unlike [`crate::challenge::tls_alpn_01`], which deliberately accepts any
+//! Unlike [`acme_proxy_net::challenge::tls_alpn_01`], which deliberately accepts any
 //! server certificate because the certificate is the *proof* rather than an
 //! identity, this client validates the upstream normally against the webpki
 //! root store. Here the certificate is the only thing establishing that the CA
@@ -41,7 +41,8 @@ use url::Url;
 /// resource actually is — the largest is a certificate chain, a few kilobytes —
 /// and there purely so a remote CA cannot decide how much memory this process
 /// spends on one reply.
-use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
+use acme_proxy_net::http_client::MAX_RESPONSE_BYTES;
+use acme_proxy_net::http_client::error_excerpt;
 
 /// Everything that can go wrong talking to the upstream. Mapped to
 /// [`SignerError`](crate::signer::SignerError) at the trait boundary in
@@ -248,7 +249,7 @@ pub struct AcmeClient {
     tls: Arc<rustls::ClientConfig>,
     /// Where every outbound hop resolves and whether it goes through a
     /// proxy — `dns.resolver` and `[proxy]`, bundled.
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     timeout: Duration,
 }
 
@@ -258,10 +259,10 @@ impl AcmeClient {
     /// makes a misconfigured `directory_url` a startup failure.
     pub async fn discover(
         directory_url: &str,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
         timeout: Duration,
     ) -> Result<Self, UpstreamError> {
-        let tls = Arc::new(crate::http_client::webpki_tls_config());
+        let tls = Arc::new(acme_proxy_net::http_client::webpki_tls_config());
         let url = Url::parse(directory_url)
             .map_err(|error| UpstreamError::Url(format!("{directory_url}: {error}")))?;
         let response = request(&tls, &outbound, Method::GET, &url, None, timeout).await?;
@@ -441,7 +442,7 @@ fn problem_from(response: &AcmeResponse) -> UpstreamError {
 /// One HTTP request over TCP or TLS, under `timeout`.
 async fn request(
     tls: &Arc<rustls::ClientConfig>,
-    outbound: &crate::http_client::Outbound,
+    outbound: &acme_proxy_net::http_client::Outbound,
     method: Method,
     url: &Url,
     body: Option<Bytes>,
@@ -454,12 +455,13 @@ async fn request(
 
 async fn request_inner(
     tls: &Arc<rustls::ClientConfig>,
-    outbound: &crate::http_client::Outbound,
+    outbound: &acme_proxy_net::http_client::Outbound,
     method: Method,
     url: &Url,
     body: Option<Bytes>,
 ) -> Result<AcmeResponse, UpstreamError> {
-    let endpoint = crate::http_client::Endpoint::from_url(url).map_err(UpstreamError::Url)?;
+    let endpoint =
+        acme_proxy_net::http_client::Endpoint::from_url(url).map_err(UpstreamError::Url)?;
 
     let connection = outbound
         .connect(&endpoint, tls)
@@ -488,7 +490,7 @@ async fn request_inner(
 }
 
 async fn send(
-    mut connection: crate::http_client::Connection<Full<Bytes>>,
+    mut connection: acme_proxy_net::http_client::Connection<Full<Bytes>>,
     request: Request<Full<Bytes>>,
 ) -> Result<AcmeResponse, UpstreamError> {
     let response = connection
@@ -534,8 +536,8 @@ mod tests {
 
     /// The shared resolver `server::profile::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
-    fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
-        std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+    fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
+        std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
     use crate::signer::relay::testsrv::{self, Script};
 
@@ -659,7 +661,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -677,7 +679,7 @@ mod tests {
         assert!(matches!(
             AcmeClient::discover(
                 "not a url",
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
                 TIMEOUT
             )
             .await,
@@ -686,7 +688,7 @@ mod tests {
         assert!(matches!(
             AcmeClient::discover(
                 "ftp://example.invalid/dir",
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
                 TIMEOUT
             )
             .await,
@@ -703,7 +705,7 @@ mod tests {
         };
         let error = AcmeClient::discover(
             &format!("http://127.0.0.1:{port}/directory"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -718,7 +720,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -750,7 +752,7 @@ mod tests {
         .await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -775,7 +777,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -802,7 +804,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -822,7 +824,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await
@@ -911,7 +913,7 @@ mod tests {
 
         let error = AcmeClient::discover(
             &format!("http://127.0.0.1:{port}/directory"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             Duration::from_millis(150),
         )
         .await
@@ -927,7 +929,7 @@ mod tests {
         let upstream = testsrv::start(Script::default()).await;
         let client = AcmeClient::discover(
             &upstream.directory_url(),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
             TIMEOUT,
         )
         .await

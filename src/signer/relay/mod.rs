@@ -243,7 +243,7 @@ impl RelaySigner {
                             info!(
                                 event = "signer_relay_http_01_selected",
                                 outcome = "advisory",
-                                path = crate::challenge::http_01::WELL_KNOWN_PREFIX,
+                                path = acme_proxy_net::challenge::http_01::WELL_KNOWN_PREFIX,
                                 "the upstream will fetch \
                                  http://<identifier>:80/.well-known/acme-challenge/<token>; a \
                                  reverse proxy must forward or redirect that path to this server \
@@ -456,7 +456,7 @@ impl SignerBackend for RelaySigner {
 /// meanwhile.
 pub struct RelayInfo {
     directory_url: String,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     timeout: Duration,
     client: tokio::sync::OnceCell<Arc<AcmeClient>>,
     http01: Option<Arc<dyn http01::TokenStore>>,

@@ -55,7 +55,10 @@ pub struct NetboxClient {
 
 impl NetboxClient {
     /// Validates the URL and builds the TLS configuration. No network yet.
-    pub fn new(cfg: &NetboxConfig, outbound: crate::http_client::Outbound) -> anyhow::Result<Self> {
+    pub fn new(
+        cfg: &NetboxConfig,
+        outbound: acme_proxy_net::http_client::Outbound,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.url.trim().is_empty(),
             "ipam.backend is `netbox` but ipam.netbox.url is empty; give the base URL of the \
@@ -342,7 +345,7 @@ mod tests {
     fn an_empty_url_is_a_startup_error() {
         let error = NetboxClient::new(
             &config("  "),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -355,9 +358,12 @@ mod tests {
             token: String::new(),
             ..config("https://netbox.example.com")
         };
-        let error = NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-            .unwrap_err()
-            .to_string();
+        let error = NetboxClient::new(
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.netbox.token"), "{error}");
         assert!(error.contains("ACME_PROXY_IPAM__NETBOX__TOKEN"), "{error}");
     }
@@ -371,9 +377,12 @@ mod tests {
             token: "nbt_4F9DAouzURLb".to_string(),
             ..config("https://netbox.example.com")
         };
-        let error = NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-            .unwrap_err()
-            .to_string();
+        let error = NetboxClient::new(
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.netbox.token"), "{error}");
         assert!(error.contains("nbt_<key>.<secret>"), "{error}");
     }
@@ -382,7 +391,7 @@ mod tests {
     fn an_unparsable_url_is_a_startup_error() {
         let error = NetboxClient::new(
             &config("not a url"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -395,9 +404,12 @@ mod tests {
             ca_cert_path: "/nonexistent/netbox-ca.pem".to_string(),
             ..config("https://netbox.example.com")
         };
-        let error = NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-            .unwrap_err()
-            .to_string();
+        let error = NetboxClient::new(
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.netbox.ca_cert_path"), "{error}");
     }
 
@@ -405,7 +417,7 @@ mod tests {
     fn the_debug_impl_never_renders_the_token() {
         let client = NetboxClient::new(
             &config("https://netbox.example.com"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         let rendered = format!("{client:?}");
@@ -474,7 +486,7 @@ mod tests {
         fn client(port: u16) -> NetboxClient {
             NetboxClient::new(
                 &config(&format!("http://127.0.0.1:{port}")),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
         }
@@ -485,7 +497,11 @@ mod tests {
                 token: token.to_string(),
                 ..config(&format!("http://127.0.0.1:{port}"))
             };
-            NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver())).unwrap()
+            NetboxClient::new(
+                &cfg,
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
+            )
+            .unwrap()
         }
 
         fn on_device() -> AssignedRef {
@@ -803,11 +819,14 @@ mod tests {
             let (port, server) = serve_once(ok(json!({ "results": [] }))).await;
             let cfg = config(&format!("http://127.0.0.1:{port}/netbox"));
 
-            NetboxClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-                .unwrap()
-                .ip_addresses("10.0.0.5".parse().unwrap())
-                .await
-                .unwrap();
+            NetboxClient::new(
+                &cfg,
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
+            )
+            .unwrap()
+            .ip_addresses("10.0.0.5".parse().unwrap())
+            .await
+            .unwrap();
 
             let request = server.await.unwrap();
             assert!(
@@ -918,7 +937,7 @@ mod tests {
 
             let error = NetboxClient::new(
                 &https_config(port, false),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .ip_addresses("10.0.0.5".parse().unwrap())
@@ -936,7 +955,7 @@ mod tests {
 
             let objects = NetboxClient::new(
                 &https_config(port, true),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .ip_addresses("10.0.0.5".parse().unwrap())

@@ -212,7 +212,7 @@ pub(crate) fn offline_notifiers(
     let profiles = config
         .resolve_profiles()
         .map_err(|error| failed(anyhow::anyhow!(error)))?;
-    let egress = crate::egress::Egress::from_config(config).map_err(failed)?;
+    let egress = acme_proxy_net::egress::Egress::from_config(config).map_err(failed)?;
     let jobs = crate::jobs::JobQueue::new(database, &config.jobs);
     let mut dispatchers =
         crate::notify::build_registry(&profiles, egress.outbound(), &jobs).map_err(failed)?;

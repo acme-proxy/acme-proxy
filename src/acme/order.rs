@@ -19,7 +19,6 @@ use super::rules::{
     parse_rfc3339, well_formed_name,
 };
 use crate::auditor::Auditor;
-use crate::challenge::ValidationContext;
 use crate::filter::{IdentifierStage, Stage as FilterStage};
 use crate::jobs::JobQueue;
 use crate::notify::{ChallengeFailedData, NotifyEvent};
@@ -28,6 +27,7 @@ use acme_proxy_core::audit::RequestContext;
 use acme_proxy_core::error::Problem;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::jws::signature::jwk_thumbprint;
+use acme_proxy_net::challenge::ValidationContext;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::authz::Challenge;
@@ -924,10 +924,12 @@ async fn commit_validation_failure(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::challenge::{ChallengeError, ChallengeRegistry, ChallengeValidator};
     use crate::notify::NotifyDispatcher;
     use crate::profile::ProfileParts;
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_net::challenge::ChallengeError;
+    use acme_proxy_net::challenge::ChallengeRegistry;
+    use acme_proxy_net::challenge::ChallengeValidator;
     use std::time::Duration;
 
     /// A `default` profile over `database`: an in-memory CA, no filter, no

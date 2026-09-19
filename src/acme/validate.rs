@@ -370,10 +370,11 @@ const LEASE_HEADROOM: Duration = Duration::from_secs(30);
 mod tests {
     use super::*;
     use crate::acme::order::tests::{account, profile};
-    use crate::challenge::{
-        ChallengeError, ChallengeRegistry, ChallengeValidator, ValidationContext,
-    };
     use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_net::challenge::ChallengeError;
+    use acme_proxy_net::challenge::ChallengeRegistry;
+    use acme_proxy_net::challenge::ChallengeValidator;
+    use acme_proxy_net::challenge::ValidationContext;
     use acme_proxy_store::status::AuthzStatus;
     use acme_proxy_store::status::OrderStatus;
 

@@ -230,7 +230,7 @@ impl SocketPlans {
 /// serving and the refusal names the key.
 ///
 /// A `tls.enabled` flip does not appear here at all. The mode is read per
-/// connection (see [`crate::listener`]), so turning TLS on or off keeps the
+/// connection (see [`acme_proxy_net::listener`]), so turning TLS on or off keeps the
 /// socket exactly where it is — which is what makes the one case a bind-first
 /// scheme could not serve, an unchanged address, not a case.
 pub(super) fn plan_sockets(
@@ -248,7 +248,7 @@ pub(super) fn plan_sockets(
             (Some(_), None) => Ok(SocketPlan::Close),
             (Some(was), Some(now)) if was == now => Ok(SocketPlan::Keep),
             (_, Some(now)) => {
-                let listener = crate::listener::bind_blocking(now).map_err(|error| {
+                let listener = acme_proxy_net::listener::bind_blocking(now).map_err(|error| {
                     error!(event = "server_socket_bind_failed",
                            outcome = "failure",
                            listener = role.label(),

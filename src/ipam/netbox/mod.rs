@@ -121,7 +121,7 @@ pub struct NetboxIp {
 /// The NetBox queries this backend makes.
 ///
 /// A trait so the policy above can be tested without a NetBox — the same seam
-/// [`Resolver`](crate::dns::Resolver) gives `reverse_dns`, and errors are plain
+/// [`Resolver`](acme_proxy_net::dns::Resolver) gives `reverse_dns`, and errors are plain
 /// `String`s for the same reason: what a caller does with a failed query does
 /// not concern the transport.
 #[async_trait]
@@ -186,7 +186,7 @@ impl NetboxBackend {
     /// turn a retryable 500 into a refusal to boot.
     pub fn from_config(
         cfg: &NetboxConfig,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let api = Arc::new(client::NetboxClient::new(cfg, outbound)?);
         let backend = Self::with_api(cfg, api)?;

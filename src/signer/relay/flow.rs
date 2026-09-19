@@ -596,7 +596,7 @@ async fn answer_dns01(
         let challenge = authz
             .challenges
             .iter()
-            .find(|challenge| challenge.typ == crate::challenge::DNS_01)
+            .find(|challenge| challenge.typ == acme_proxy_net::challenge::DNS_01)
             .ok_or_else(|| {
                 // Deliberately not falling back to http-01/tls-alpn-01: this
                 // server has no way to answer those on the client's behalf, and
@@ -612,9 +612,9 @@ async fn answer_dns01(
 
         // Name and digest come from the inbound validator's own helpers, so the
         // two directions cannot disagree about the convention.
-        let name = crate::challenge::dns_01::record_name(&authz.identifier.value);
+        let name = acme_proxy_net::challenge::dns_01::record_name(&authz.identifier.value);
         let key_authorization = format!("{token}.{thumbprint}");
-        let value = crate::challenge::dns_01::expected_value(&key_authorization);
+        let value = acme_proxy_net::challenge::dns_01::expected_value(&key_authorization);
 
         // RFC 2136 wants an absolute name.
         let fqdn = if name.ends_with('.') {
@@ -695,7 +695,7 @@ async fn answer_http01(
         let challenge = authz
             .challenges
             .iter()
-            .find(|challenge| challenge.typ == crate::challenge::HTTP_01)
+            .find(|challenge| challenge.typ == acme_proxy_net::challenge::HTTP_01)
             .ok_or_else(|| {
                 // Deliberately not falling back to another type, for the same
                 // reason `answer_dns01` does not: silently trying one this

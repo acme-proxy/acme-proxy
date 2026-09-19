@@ -55,7 +55,7 @@ impl PhpIpamClient {
     /// Validates the URL and builds the TLS configuration. No network yet.
     pub fn new(
         cfg: &PhpIpamConfig,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !cfg.url.trim().is_empty(),
@@ -214,7 +214,7 @@ mod tests {
     fn an_empty_url_is_a_startup_error() {
         let error = PhpIpamClient::new(
             &config("  "),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap_err()
         .to_string();
@@ -227,9 +227,12 @@ mod tests {
             token: String::new(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-            .unwrap_err()
-            .to_string();
+        let error = PhpIpamClient::new(
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.phpipam.token"), "{error}");
         assert!(error.contains("ACME_PROXY_IPAM__PHPIPAM__TOKEN"), "{error}");
     }
@@ -243,9 +246,12 @@ mod tests {
                 app_id: bad.to_string(),
                 ..config("https://ipam.example.com")
             };
-            let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-                .unwrap_err()
-                .to_string();
+            let error = PhpIpamClient::new(
+                &cfg,
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
+            )
+            .unwrap_err()
+            .to_string();
             assert!(error.contains("ipam.phpipam.app_id"), "{bad}: {error}");
         }
     }
@@ -256,9 +262,12 @@ mod tests {
             ca_cert_path: "/nonexistent/ipam-ca.pem".to_string(),
             ..config("https://ipam.example.com")
         };
-        let error = PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-            .unwrap_err()
-            .to_string();
+        let error = PhpIpamClient::new(
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("ipam.phpipam.ca_cert_path"), "{error}");
     }
 
@@ -266,7 +275,7 @@ mod tests {
     fn the_debug_impl_never_renders_the_token() {
         let client = PhpIpamClient::new(
             &config("https://ipam.example.com"),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
         .unwrap();
         let rendered = format!("{client:?}");
@@ -297,7 +306,7 @@ mod tests {
         fn client(port: u16) -> PhpIpamClient {
             PhpIpamClient::new(
                 &config(&format!("http://127.0.0.1:{port}")),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
         }
@@ -353,11 +362,14 @@ mod tests {
                 ..config(&format!("http://127.0.0.1:{port}"))
             };
 
-            PhpIpamClient::new(&cfg, crate::testutil::outbound_with(test_resolver()))
-                .unwrap()
-                .search("10.0.0.5".parse().unwrap())
-                .await
-                .unwrap();
+            PhpIpamClient::new(
+                &cfg,
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
+            )
+            .unwrap()
+            .search("10.0.0.5".parse().unwrap())
+            .await
+            .unwrap();
 
             let request = server.await.unwrap();
             assert!(
@@ -524,7 +536,7 @@ mod tests {
 
             let error = PhpIpamClient::new(
                 &https_config(port, false),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .search("10.0.0.5".parse().unwrap())
@@ -542,7 +554,7 @@ mod tests {
 
             let objects = PhpIpamClient::new(
                 &https_config(port, true),
-                crate::testutil::outbound_with(test_resolver()),
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
             )
             .unwrap()
             .search("10.0.0.5".parse().unwrap())

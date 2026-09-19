@@ -23,7 +23,7 @@ pub(super) fn kid_path(account_key_path: &str) -> PathBuf {
 
 pub(super) async fn provision(
     cfg: &RelayConfig,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     timeout: Duration,
 ) -> anyhow::Result<(AcmeClient, AccountKey, String)> {
     let account = load_or_generate_key(&cfg.account_key_path)?;
@@ -191,7 +191,7 @@ pub(super) async fn register(
 /// no server around it to share.
 pub async fn register_upstream_account(
     cfg: &RelayConfig,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     eab: Option<(&str, &[u8])>,
 ) -> anyhow::Result<String> {
     let account = load_or_generate_key(&cfg.account_key_path)?;

@@ -549,8 +549,9 @@ async fn a_reloaded_certificate_reaches_the_next_connection() {
     use tokio_rustls::rustls::pki_types::ServerName;
 
     async fn presented_certificate(addr: std::net::SocketAddr) -> Vec<u8> {
-        let client = acme_proxy::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"])
-            .expect("a client config");
+        let client =
+            acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"])
+                .expect("a client config");
         let stream = TcpStream::connect(addr).await.unwrap();
         let tls = TlsConnector::from(client)
             .connect(ServerName::try_from("localhost").unwrap(), stream)
@@ -937,7 +938,7 @@ async fn tls_can_be_switched_on_without_the_socket_moving() {
         "a protocol flip on an unchanged address rebinds nothing",
     );
 
-    let client = acme_proxy::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"])
+    let client = acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[b"http/1.1"])
         .expect("a client config");
     let stream = TcpStream::connect(server.acme).await.unwrap();
     let mut tls = TlsConnector::from(client)

@@ -2,9 +2,9 @@
 //!
 //! Deliberately **not** a shared client type. What
 //! [`challenge::http_01`](crate::challenge::http_01),
-//! [`signer::relay::client`](crate::signer::relay::client),
-//! [`ipam::http`](crate::ipam::http) and
-//! [`notify::webhook`](crate::notify::webhook) have in common is
+//! `signer::relay::client`,
+//! `ipam::http` and
+//! `notify::webhook` have in common is
 //! *plumbing*: pick a URL apart into host, scheme and port; connect through the
 //! shared resolver; wrap in TLS with the right SNI; hand the stream to hyper and
 //! spawn the connection task. That part was written out four times, and
@@ -37,12 +37,12 @@ const MAX_PROXY_ERROR_BYTES: usize = 512;
 
 /// The ceiling on a JSON API response this server will read.
 ///
-/// Shared by [`ipam::http`](crate::ipam::http) and
-/// [`signer::relay::client`](crate::signer::relay::client), which had the same
+/// Shared by `ipam::http` and
+/// `signer::relay::client`, which had the same
 /// `1024 * 1024` written out separately. `challenge::http_01` keeps its own,
 /// because there it is an operator-facing configuration key
 /// (`challenge.http_01.max_response_bytes`) rather than a constant.
-pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// How much of a rejecting response's body is quoted back into an error.
 ///
@@ -57,7 +57,7 @@ pub(crate) const MAX_ERROR_BODY_CHARS: usize = 200;
 /// entire diagnosis, and it is never a value to be parsed, only quoted. Lossy
 /// rather than `from_utf8`, since a body that is not UTF-8 is exactly the case
 /// where an operator most needs to see what did arrive.
-pub(crate) fn error_excerpt(body: &[u8]) -> String {
+pub fn error_excerpt(body: &[u8]) -> String {
     String::from_utf8_lossy(body)
         .chars()
         .take(MAX_ERROR_BODY_CHARS)
@@ -66,7 +66,7 @@ pub(crate) fn error_excerpt(body: &[u8]) -> String {
 
 /// Where an outbound request is going, once its URL has been picked apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Endpoint {
+pub struct Endpoint {
     pub host: String,
     pub port: u16,
     pub https: bool,
@@ -79,7 +79,7 @@ impl Endpoint {
     /// Only `http` and `https`: an outbound client here talks to a CA, a NetBox
     /// instance or a webhook, and a `file:` or `gopher:` URL in a configuration
     /// field is a mistake worth naming rather than a scheme to support.
-    pub(crate) fn from_url(url: &Url) -> Result<Self, String> {
+    pub fn from_url(url: &Url) -> Result<Self, String> {
         let host = url
             .host_str()
             .ok_or_else(|| format!("{url} has no host"))?
@@ -122,7 +122,7 @@ impl Endpoint {
     }
 
     /// `host` or `host:port` — what a `Host` header should carry.
-    pub(crate) fn authority(&self) -> String {
+    pub fn authority(&self) -> String {
         let default = if self.https { 443 } else { 80 };
         if self.port == default {
             self.host.clone()
@@ -152,7 +152,7 @@ impl Endpoint {
 /// The provider is passed explicitly rather than installed as a process
 /// default: `CryptoProvider::install_default` panics on a second call, which
 /// would make test ordering matter.
-pub(crate) fn webpki_tls_config() -> rustls::ClientConfig {
+pub fn webpki_tls_config() -> rustls::ClientConfig {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
@@ -231,7 +231,7 @@ pub(crate) enum RequestForm {
 /// Returned instead of a bare `SendRequest` because those two facts are
 /// properties of *this connection*, not of the caller: a request built for a
 /// direct connection is malformed on a forwarding one, and the other way round.
-pub(crate) struct Connection<B> {
+pub struct Connection<B> {
     sender: hyper::client::conn::http1::SendRequest<B>,
     form: RequestForm,
     /// Carried only on a forwarding connection — see
@@ -244,7 +244,7 @@ where
     B: Body + 'static,
 {
     /// The request-line target for `url` on this connection.
-    pub(crate) fn request_target(&self, url: &Url) -> String {
+    pub fn request_target(&self, url: &Url) -> String {
         match self.form {
             RequestForm::Absolute => url.as_str().to_string(),
             RequestForm::Origin => {
@@ -265,7 +265,7 @@ where
     /// forget it — and never on a tunnelled connection: the credential was
     /// already spent on the `CONNECT`, and repeating it inside the tunnel would
     /// hand it to the origin server.
-    pub(crate) async fn send_request(
+    pub async fn send_request(
         &mut self,
         mut request: hyper::Request<B>,
     ) -> hyper::Result<hyper::Response<hyper::body::Incoming>> {
@@ -307,7 +307,7 @@ impl Outbound {
 
     /// Connects to `endpoint` and completes the HTTP/1 handshake under the
     /// caller's own `tls` — see [`connect`] for what a proxy changes.
-    pub(crate) async fn connect<B>(
+    pub async fn connect<B>(
         &self,
         endpoint: &Endpoint,
         tls: &Arc<rustls::ClientConfig>,

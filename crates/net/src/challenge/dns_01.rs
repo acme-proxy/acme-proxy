@@ -13,7 +13,7 @@
 //! "The lookup failed, or the name has no TXT record" is a
 //! [`ChallengeError::Dns`]; "there are records and none of them match" is a
 //! [`ChallengeError::IncorrectResponse`]. The same split
-//! [`reverse_dns`](crate::filter::reverse_dns) draws between not reaching a
+//! `reverse_dns` draws between not reaching a
 //! verdict and reaching an unfavourable one — a client debugging a failure needs
 //! to know which of the two happened.
 
@@ -63,7 +63,7 @@ impl Dns01Validator {
 /// backend *publishes* this record when satisfying an upstream's own dns-01
 /// challenge, while this module *reads* it. Two copies of the convention could
 /// drift into a record this server accepts but no real CA does.
-pub(crate) fn record_name(identifier: &str) -> String {
+pub fn record_name(identifier: &str) -> String {
     format!("_acme-challenge.{identifier}")
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn record_name(identifier: &str) -> String {
 /// which is what `http-01` serves.
 ///
 /// Shared with the publishing side for the same reason as [`record_name`].
-pub(crate) fn expected_value(key_authorization: &str) -> String {
+pub fn expected_value(key_authorization: &str) -> String {
     BASE64_URL_SAFE_NO_PAD
         .encode(digest::digest(&digest::SHA256, key_authorization.as_bytes()).as_ref())
 }

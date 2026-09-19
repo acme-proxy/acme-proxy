@@ -609,8 +609,8 @@ mod tests {
         database: Arc<Database>,
     ) -> Arc<dyn SignerBackend> {
         let profile = &config.resolve_profiles().unwrap()[0];
-        let resolver = crate::dns::resolver_addr(&config.dns)
-            .and_then(crate::challenge::build_resolver)
+        let resolver = acme_proxy_net::dns::resolver_addr(&config.dns)
+            .and_then(acme_proxy_net::challenge::build_resolver)
             .expect("the default dns configuration must build a resolver");
         let signer: Arc<dyn SignerBackend> = signer::from_config(
             &profile.sections.signer,
@@ -1045,8 +1045,8 @@ mod tests {
         assert!(!marker.exists(), "the CLI must not run the script itself");
 
         let profile = &config.resolve_profiles().unwrap()[0];
-        let resolver = crate::dns::resolver_addr(&config.dns)
-            .and_then(crate::challenge::build_resolver)
+        let resolver = acme_proxy_net::dns::resolver_addr(&config.dns)
+            .and_then(acme_proxy_net::challenge::build_resolver)
             .unwrap();
         let signer = signer::from_config(
             &profile.sections.signer,

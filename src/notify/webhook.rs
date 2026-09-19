@@ -27,7 +27,7 @@
 //! permanently, for exactly the events an operator most wanted to hear about.
 //!
 //! Written on `hyper` + `tokio-rustls` like every other outbound hop here (see
-//! [`crate::http_client`]), rather than pulling in `reqwest` for one POST.
+//! [`acme_proxy_net::http_client`]), rather than pulling in `reqwest` for one POST.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,7 +44,8 @@ use url::Url;
 use super::{NotifyBackend, NotifyError, NotifyEvent, render};
 use acme_proxy_core::config::WebhookNotifyConfig;
 
-use crate::http_client::{MAX_RESPONSE_BYTES, error_excerpt};
+use acme_proxy_net::http_client::MAX_RESPONSE_BYTES;
+use acme_proxy_net::http_client::error_excerpt;
 
 /// The methods a webhook may be called with.
 ///
@@ -67,7 +68,7 @@ pub struct WebhookNotifier {
     tls: Arc<rustls::ClientConfig>,
     /// Where every outbound hop resolves and whether it goes through a
     /// proxy — `dns.resolver` and `[proxy]`, bundled.
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
     /// The shared template environment plus this entry's own compiled `body`.
     env: Arc<minijinja::Environment<'static>>,
 }
@@ -107,7 +108,7 @@ impl WebhookNotifier {
         entry: &str,
         cfg: &WebhookNotifyConfig,
         env: &minijinja::Environment<'static>,
-        outbound: crate::http_client::Outbound,
+        outbound: acme_proxy_net::http_client::Outbound,
     ) -> anyhow::Result<Self> {
         let key = format!("notify.webhook.{entry}");
 
@@ -164,7 +165,7 @@ impl WebhookNotifier {
             headers,
             body_template,
             timeout: Duration::from_millis(cfg.timeout_ms),
-            tls: Arc::new(crate::http_client::webpki_tls_config()),
+            tls: Arc::new(acme_proxy_net::http_client::webpki_tls_config()),
             outbound,
             env: Arc::new(env),
         })
@@ -284,7 +285,7 @@ fn retryable_status(status: hyper::StatusCode) -> bool {
 /// body — which for a refusal is usually the entire diagnosis.
 async fn send_request(
     tls: &Arc<rustls::ClientConfig>,
-    outbound: &crate::http_client::Outbound,
+    outbound: &acme_proxy_net::http_client::Outbound,
     method: &Method,
     url: &Url,
     headers: &HeaderMap,
@@ -292,7 +293,8 @@ async fn send_request(
 ) -> Result<(hyper::StatusCode, String), NotifyError> {
     // Permanent: `url` is configuration, and a URL that does not parse now will
     // not parse in thirty seconds either.
-    let endpoint = crate::http_client::Endpoint::from_url(url).map_err(NotifyError::permanent)?;
+    let endpoint =
+        acme_proxy_net::http_client::Endpoint::from_url(url).map_err(NotifyError::permanent)?;
 
     // Retryable: DNS, the proxy, the handshake and the socket.
     let mut connection = outbound
@@ -348,8 +350,8 @@ mod tests {
     /// These all talk to a loopback listener by IP literal, which
     /// `dns::connect` short-circuits without a lookup — so the resolver is
     /// never actually consulted and the system one is fine.
-    fn test_resolver() -> Arc<dyn crate::dns::Resolver> {
-        Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+    fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+        Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
 
     fn cfg() -> WebhookNotifyConfig {
@@ -364,7 +366,7 @@ mod tests {
             "chat",
             cfg,
             &build_environment(""),
-            crate::testutil::outbound_with(test_resolver()),
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
         )
     }
 
@@ -683,12 +685,12 @@ mod tests {
     /// down may come back.
     #[tokio::test]
     async fn an_unusable_url_is_permanent_and_an_unreachable_host_is_not() {
-        let tls = Arc::new(crate::http_client::webpki_tls_config());
+        let tls = Arc::new(acme_proxy_net::http_client::webpki_tls_config());
 
         let url: Url = "ftp://chat.example.com/hooks/xyz".parse().unwrap();
         let error = send_request(
             &tls,
-            &crate::testutil::outbound_with(test_resolver()),
+            &acme_proxy_net::testutil::outbound_with(test_resolver()),
             &Method::POST,
             &url,
             &HeaderMap::new(),
@@ -702,7 +704,7 @@ mod tests {
         let url: Url = "http://127.0.0.1:1/hooks/xyz".parse().unwrap();
         let error = send_request(
             &tls,
-            &crate::testutil::outbound_with(test_resolver()),
+            &acme_proxy_net::testutil::outbound_with(test_resolver()),
             &Method::POST,
             &url,
             &HeaderMap::new(),

@@ -23,8 +23,8 @@
 //!   is logged at `debug`, server-side.
 //!
 //! Operators who want the request itself not to happen have
-//! [`filter.allowed_ip`](crate::filter::ip_allow) and
-//! [`filter.identifiers`](crate::filter::identifiers).
+//! `filter.allowed_ip` and
+//! `filter.identifiers`.
 
 use std::sync::Arc;
 
@@ -41,13 +41,13 @@ use acme_proxy_core::config::Http01Config;
 /// The well-known path RFC 8555 §8.3 reserves for this challenge.
 ///
 /// Shared with the *other* direction: the `relay` signer's
-/// [`http01`](crate::signer::relay::http01) strategy answers an upstream
+/// `http01` strategy answers an upstream
 /// CA's own challenge, and the route it is served from is built from this
 /// constant. Same rule the `dns-01` pair follows, where
 /// [`super::dns_01::record_name`] and [`super::dns_01::expected_value`] are
 /// called by the publisher rather than restated — a validator and a responder
 /// that disagree about the convention would fail in the least legible way.
-pub(crate) const WELL_KNOWN_PREFIX: &str = "/.well-known/acme-challenge/";
+pub const WELL_KNOWN_PREFIX: &str = "/.well-known/acme-challenge/";
 
 /// What one HTTP request returned.
 #[derive(Debug)]

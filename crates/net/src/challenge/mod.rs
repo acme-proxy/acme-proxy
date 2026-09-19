@@ -6,7 +6,7 @@
 //! [`validate`](ChallengeValidator::validate) call, and [`from_config`] builds
 //! the configured set at startup.
 //!
-//! The shape mirrors the [`signer`](crate::signer) and [`filter`](crate::filter)
+//! The shape mirrors the `signer` and `filter`
 //! subsystems — a trait, an error enum the *caller* maps to a
 //! [`Problem`](acme_proxy_core::error::Problem), and a `from_config` selector that fails
 //! fast. Like them, this module never mentions `error.rs`: what a failed
@@ -28,7 +28,7 @@
 //!
 //! With `bypass = true` a triggered challenge is accepted with no network check
 //! at all. That means an open CA: anyone who can reach the server can obtain a
-//! certificate for any name, and the [`filter`](crate::filter) subsystem is
+//! certificate for any name, and the `filter` subsystem is
 //! then the only access control. [`from_config`] says so, loudly, at startup.
 //!
 //! It used to be the default — the behaviour predating real validation, kept so
@@ -46,7 +46,7 @@
 //! an address the *client* named and a wedged one would otherwise hold a job
 //! slot — and a `SQLite` connection — indefinitely. What the budget no longer
 //! bounds is an HTTP request, which is why `server.request_timeout_ms` is no
-//! longer required to exceed it. See `crate::acme::validate`.
+//! longer required to exceed it. See `acme::validate`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,7 +117,7 @@ pub struct ValidationContext<'a> {
 
 /// Why a validation failed, mapped by the caller to the right ACME error.
 ///
-/// The split mirrors [`Verdict`](crate::filter::Verdict): a statement
+/// The split mirrors `Verdict`: a statement
 /// about the client's setup is not the same as the server being unable to reach
 /// a verdict at all.
 #[derive(Debug)]
@@ -366,7 +366,7 @@ pub fn build_resolver(addr: Option<std::net::SocketAddr>) -> anyhow::Result<Arc<
 /// fail fast (the caller exits on error).
 ///
 /// `dns` is [`acme_proxy_core::config::Config::dns`], not a field of `cfg`: the resolver
-/// it selects is shared with [`filter::from_config`](crate::filter::from_config)
+/// it selects is shared with `filter::from_config`
 /// (`reverse_dns`), since both answer the same question — which nameserver this
 /// process trusts — and a deployment overriding it wants that answered
 /// consistently everywhere, not per-subsystem.

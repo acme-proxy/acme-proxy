@@ -11,7 +11,7 @@
 //! between the two is the one this module already drew for itself: resolving
 //! configuration at startup on this side, the accept loop on the other.
 //!
-//! Shaped like the other subsystems ([`crate::signer`], [`crate::filter`],
+//! Shaped like the other subsystems (`signer`, `filter`,
 //! [`crate::challenge`]): [`from_config`] resolves everything at startup — files
 //! read or generated, certificate and key parsed, rustls configuration built — so
 //! a broken setup stops the server instead of failing every connection later.
@@ -21,7 +21,7 @@
 //!
 //! `cert_path`/`key_path` are loaded when **both** exist; otherwise a self-signed
 //! certificate for the host of `server.base_url` is generated and written, the
-//! way [`crate::signer::local_ca`] provisions the CA and `sqlite.db` provisions
+//! way `signer::local_ca` provisions the CA and `sqlite.db` provisions
 //! itself. The key is created `0600` (see [`acme_proxy_core::pemfile`]).
 //!
 //! ## Two rustls constraints
@@ -56,7 +56,7 @@ use acme_proxy_core::pemfile;
 const SELF_SIGNED_VALIDITY_DAYS: i64 = 3653;
 
 /// Backdating applied to `not_before`, to tolerate modest clock skew between
-/// this server and a client — as in [`crate::signer::local_ca`].
+/// this server and a client — as in `signer::local_ca`.
 const CLOCK_SKEW_ALLOWANCE: time::Duration = time::Duration::hours(1);
 
 /// Builds the TLS acceptor for the ACME listener, or `None` when HTTPS is
@@ -100,7 +100,7 @@ pub fn from_config(cfg: &ServerConfig) -> anyhow::Result<Option<TlsAcceptor>> {
 /// The counterpart to [`from_config`], with the ACME-specific warnings replaced
 /// by the one that matters here. Nothing warns about cleartext: for this
 /// listener that combination is already refused outright at startup unless the
-/// bind is loopback (see [`crate::webadmin::check_config`]), and on loopback it
+/// bind is loopback (see `webadmin::check_config`), and on loopback it
 /// is the documented default rather than something to complain about on every
 /// boot.
 pub fn admin_from_config(

@@ -48,8 +48,8 @@ const BLOCKED: &str = "203.0.113.9:40000";
 /// The shared resolver `server::profile::build_all` would hand the filter chain. These
 /// tests reach loopback by IP literal, which `dns::connect` short-circuits, so
 /// the system configuration is never actually consulted.
-fn test_resolver() -> Arc<dyn acme_proxy::dns::Resolver> {
-    Arc::new(acme_proxy::dns::HickoryResolver::from_system_uncached().unwrap())
+fn test_resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+    Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
 }
 
 // ---------------------------------------------------------------- helpers
@@ -65,9 +65,9 @@ async fn app_with_config(filter: FilterConfig) -> Router {
 async fn app_with_ipam(filter: FilterConfig, ipam: &IpamConfig) -> Router {
     let inventory = acme_proxy::ipam::from_config(
         ipam,
-        acme_proxy::http_client::Outbound::new(
+        acme_proxy_net::http_client::Outbound::new(
             test_resolver(),
-            std::sync::Arc::new(acme_proxy::proxy::OutboundProxies::direct()),
+            std::sync::Arc::new(acme_proxy_net::proxy::OutboundProxies::direct()),
         ),
     )
     .expect("ipam config should build");

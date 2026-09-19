@@ -1,7 +1,7 @@
 //! Request filtering: named checks, boolean rules over them, and the machinery
 //! that turns a request into one answer.
 //!
-//! Filters answer a different question from [`challenge`](crate::challenge):
+//! Filters answer a different question from [`challenge`](acme_proxy_net::challenge):
 //! *who* may ask, rather than whether they control the name. Both matter, and
 //! when `challenge.bypass` is on, filtering is the **only** thing deciding who
 //! may obtain a certificate, because a triggered challenge is then accepted

@@ -28,7 +28,7 @@
 //! ## The budget lives here
 //!
 //! [`IpamRegistry`] wraps every lookup in a `tokio::time::timeout`, the way
-//! [`ChallengeRegistry`](crate::challenge::ChallengeRegistry) wraps every
+//! [`ChallengeRegistry`](acme_proxy_net::challenge::ChallengeRegistry) wraps every
 //! validation attempt. A backend may make four requests to answer one question;
 //! one budget covers all of them, and a backend added later cannot forget to
 //! apply it. [`custom`] is the proof of that last clause: its lookup is a
@@ -252,7 +252,7 @@ pub trait Ipam: Send + Sync {
 /// The configured backend plus the budget every lookup runs under.
 ///
 /// The timeout is here rather than inside each backend for the reason
-/// [`ChallengeRegistry`](crate::challenge::ChallengeRegistry) keeps its there:
+/// [`ChallengeRegistry`](acme_proxy_net::challenge::ChallengeRegistry) keeps its there:
 /// a backend may make several requests to answer one question, one budget has
 /// to cover all of them, and a backend written later cannot forget to apply
 /// something it never touches.
@@ -306,7 +306,7 @@ impl IpamRegistry {
 /// boot.
 pub fn from_config(
     cfg: &IpamConfig,
-    outbound: crate::http_client::Outbound,
+    outbound: acme_proxy_net::http_client::Outbound,
 ) -> anyhow::Result<Option<Arc<IpamRegistry>>> {
     let backend: Arc<dyn Ipam> = match cfg.backend.trim() {
         "" => return Ok(None),
@@ -414,8 +414,8 @@ mod tests {
         values.iter().map(|v| (*v).to_string()).collect()
     }
 
-    fn resolver() -> Arc<dyn crate::dns::Resolver> {
-        crate::challenge::build_resolver(None).unwrap()
+    fn resolver() -> Arc<dyn acme_proxy_net::dns::Resolver> {
+        acme_proxy_net::challenge::build_resolver(None).unwrap()
     }
 
     // ------------------------------------------------------------- sources
@@ -589,7 +589,7 @@ mod tests {
     fn no_backend_builds_nothing() {
         let cfg = IpamConfig::default();
         assert!(
-            from_config(&cfg, crate::testutil::outbound_with(resolver()))
+            from_config(&cfg, acme_proxy_net::testutil::outbound_with(resolver()))
                 .unwrap()
                 .is_none()
         );
@@ -607,7 +607,7 @@ mod tests {
                 },
                 ..IpamConfig::default()
             },
-            crate::testutil::outbound_with(resolver()),
+            acme_proxy_net::testutil::outbound_with(resolver()),
         )
         .unwrap()
         .unwrap();
@@ -623,7 +623,7 @@ mod tests {
                 },
                 ..IpamConfig::default()
             },
-            crate::testutil::outbound_with(resolver()),
+            acme_proxy_net::testutil::outbound_with(resolver()),
         )
         .unwrap()
         .unwrap();
@@ -641,7 +641,7 @@ mod tests {
                 },
                 ..IpamConfig::default()
             },
-            crate::testutil::outbound_with(resolver()),
+            acme_proxy_net::testutil::outbound_with(resolver()),
         )
         .unwrap()
         .unwrap();
@@ -657,7 +657,7 @@ mod tests {
             backend: "custom".to_string(),
             ..IpamConfig::default()
         };
-        let error = from_config(&cfg, crate::testutil::outbound_with(resolver()))
+        let error = from_config(&cfg, acme_proxy_net::testutil::outbound_with(resolver()))
             .unwrap_err()
             .to_string();
         assert!(error.contains("ipam.custom.script_path"), "{error}");
@@ -669,7 +669,7 @@ mod tests {
             backend: "racktables".to_string(),
             ..IpamConfig::default()
         };
-        let error = from_config(&cfg, crate::testutil::outbound_with(resolver()))
+        let error = from_config(&cfg, acme_proxy_net::testutil::outbound_with(resolver()))
             .unwrap_err()
             .to_string();
         assert!(error.contains("racktables"), "{error}");

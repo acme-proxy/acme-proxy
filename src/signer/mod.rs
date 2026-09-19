@@ -324,10 +324,10 @@ pub struct SignerParts {
     pub metrics: Arc<crate::metrics::Metrics>,
     /// This generation's outbound plumbing **and** the configuration identity of
     /// it, held whole rather than as a bare
-    /// [`Outbound`](crate::http_client::Outbound). The two cannot then disagree,
+    /// [`Outbound`](acme_proxy_net::http_client::Outbound). The two cannot then disagree,
     /// and a value that disagreed would make a `dns.resolver` edit a silent
     /// no-op for every signer — see [`build_backends`].
-    pub egress: Arc<crate::egress::Egress>,
+    pub egress: Arc<acme_proxy_net::egress::Egress>,
     pub jobs: crate::jobs::JobQueue,
 }
 
@@ -636,8 +636,8 @@ mod tests {
 
     /// The shared resolver `server::profile::build_all` supplies at startup. These
     /// tests reach loopback by IP literal, which `dns::connect` short-circuits.
-    fn test_resolver() -> std::sync::Arc<dyn crate::dns::Resolver> {
-        std::sync::Arc::new(crate::dns::HickoryResolver::from_system_uncached().unwrap())
+    fn test_resolver() -> std::sync::Arc<dyn acme_proxy_net::dns::Resolver> {
+        std::sync::Arc::new(acme_proxy_net::dns::HickoryResolver::from_system_uncached().unwrap())
     }
     use acme_proxy_core::config::LocalCaConfig;
 
@@ -673,9 +673,9 @@ mod tests {
     /// `dns.resolver` or `[proxy]` hands `build_backends`.
     async fn parts_with_egress(identity: &str) -> SignerParts {
         let mut parts = parts().await;
-        parts.egress = Arc::new(crate::egress::Egress {
+        parts.egress = Arc::new(acme_proxy_net::egress::Egress {
             resolver: test_resolver(),
-            proxies: crate::testutil::no_proxies(),
+            proxies: acme_proxy_net::testutil::no_proxies(),
             identity: identity.to_string(),
         });
         parts

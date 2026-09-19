@@ -368,16 +368,17 @@ pub async fn serve_on_with_reloads(
     }
 
     // One accept loop per role, each owning a socket a reload can replace and a
-    // TLS mode it can switch — see `crate::listener`. `axum::serve` below is
+    // TLS mode it can switch — see `acme_proxy_net::listener`. `axum::serve` below is
     // handed one of these instead of a `TcpListener` and therefore outlives
     // every rebind, which is what removes the listener from the list of things
     // only a restart can change.
     let admin_bound = bound_address(admin_listener.as_ref(), &config.admin.bind_address);
     let metrics_bound = bound_address(metrics_listener.as_ref(), &config.metrics.bind_address);
-    let (acme_socket, acme_handle) = crate::listener::spawn("acme", listener, tls);
-    let (admin_socket, admin_handle) = crate::listener::spawn("admin", admin_listener, admin_tls);
+    let (acme_socket, acme_handle) = acme_proxy_net::listener::spawn("acme", listener, tls);
+    let (admin_socket, admin_handle) =
+        acme_proxy_net::listener::spawn("admin", admin_listener, admin_tls);
     let (metrics_socket, metrics_handle) =
-        crate::listener::spawn("metrics", metrics_listener, None);
+        acme_proxy_net::listener::spawn("metrics", metrics_listener, None);
 
     // Behind a swap cell rather than served directly, so a configuration reload
     // can replace the whole router without the socket moving. The cell is what
@@ -511,14 +512,14 @@ async fn apply_or_require_schema(roles: RoleSet, database: &Arc<Database>) -> an
 /// Serves `app` on one role's socket until the process shuts down.
 ///
 /// One shape for all three roles, where there used to be a boxed future per
-/// listener per TLS arm: [`crate::listener::RoleSocket`] is the same type
+/// listener per TLS arm: [`acme_proxy_net::listener::RoleSocket`] is the same type
 /// whether the role is speaking TLS, speaking cleartext or — a socket having
 /// been closed by a reload — not serving at all, so the four cases collapse into
 /// this one call. Its future lives for the process: a rebind replaces what is
 /// underneath it, never the `axum::serve` above.
 fn serve_role(
     app: axum::Router,
-    socket: crate::listener::RoleSocket,
+    socket: acme_proxy_net::listener::RoleSocket,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> impl Future<Output = std::io::Result<()>> + Send {
     axum::serve(

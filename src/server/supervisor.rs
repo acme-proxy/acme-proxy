@@ -28,10 +28,10 @@ pub(super) struct Cells {
     pub(super) jobs: tokio::sync::watch::Sender<Arc<acme_proxy_core::config::JobsConfig>>,
     /// The three sockets. Each carries its role's TLS mode as well, since both
     /// are read by the same accept loop and both are published the same
-    /// synchronous way — see [`crate::listener::ListenerHandle`].
-    pub(super) acme: crate::listener::ListenerHandle,
-    pub(super) admin: crate::listener::ListenerHandle,
-    pub(super) metrics: crate::listener::ListenerHandle,
+    /// synchronous way — see [`acme_proxy_net::listener::ListenerHandle`].
+    pub(super) acme: acme_proxy_net::listener::ListenerHandle,
+    pub(super) admin: acme_proxy_net::listener::ListenerHandle,
+    pub(super) metrics: acme_proxy_net::listener::ListenerHandle,
 }
 
 /// Serves reload requests for the life of the process.

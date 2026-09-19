@@ -213,8 +213,9 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     // the whole reason the client cannot answer this itself.
     let thumbprint =
         acme_proxy_core::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
-    let expected =
-        crate::challenge::dns_01::expected_value(&format!("upstream-token-value.{thumbprint}"));
+    let expected = acme_proxy_net::challenge::dns_01::expected_value(&format!(
+        "upstream-token-value.{thumbprint}"
+    ));
     assert_eq!(value, &expected);
 
     // And the record must not be left behind.
@@ -510,7 +511,7 @@ async fn dns01_answers_past_a_challenge_type_carrying_no_token() {
     // token of the challenge the relay actually answered.
     let thumbprint =
         acme_proxy_core::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
-    let expected = crate::challenge::dns_01::expected_value(&format!(
+    let expected = acme_proxy_net::challenge::dns_01::expected_value(&format!(
         "{}.{thumbprint}",
         testsrv::CHALLENGE_TOKEN
     ));

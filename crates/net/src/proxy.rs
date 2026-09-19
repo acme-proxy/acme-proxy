@@ -65,7 +65,7 @@ impl ProxyTarget {
 
 /// Hand-written, never derived: `authorization` is a credential, and a derived
 /// `Debug` on a struct holding one is how it ends up in a log. The same reason
-/// [`crate::ipam::http::JsonApi`]'s is hand-written.
+/// `ipam::http::JsonApi`'s is hand-written.
 impl std::fmt::Debug for ProxyTarget {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

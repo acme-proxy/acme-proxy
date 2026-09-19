@@ -545,7 +545,7 @@ async fn notify_credential_change(
     if !config.admin.enabled {
         return;
     }
-    let Ok(egress) = crate::egress::Egress::from_config(config) else {
+    let Ok(egress) = acme_proxy_net::egress::Egress::from_config(config) else {
         return;
     };
     let jobs = crate::jobs::JobQueue::new(database.clone(), &config.jobs);
