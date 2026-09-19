@@ -984,7 +984,10 @@ mod tests {
         );
         assert_eq!(audit_rows(&db).await.len(), 1);
 
-        assert_eq!(cleanup_audit(0, db.clone()).await.unwrap(), 0);
+        // A day's retention keeps a row written moments ago. Not zero days:
+        // that cutoff is "now", and a row stamped in the previous second is
+        // older than it whenever the test straddles a second boundary.
+        assert_eq!(cleanup_audit(1, db.clone()).await.unwrap(), 0);
 
         // A cutoff in the future takes it.
         assert_eq!(
