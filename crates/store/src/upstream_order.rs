@@ -502,7 +502,7 @@ mod tests {
     }
 
     async fn database() -> Arc<Database> {
-        Arc::new(Database::connect_in_memory().await.unwrap())
+        Arc::new(Database::connect_for_test().await.unwrap())
     }
 
     /// The relay settles minutes after the finalize request returned, from a

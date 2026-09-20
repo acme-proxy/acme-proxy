@@ -897,7 +897,7 @@ mod tests {
     /// are what move.
     #[tokio::test]
     async fn creation_stamps_the_address_once_and_touch_moves_only_the_last_seen_columns() {
-        let db = Database::connect_in_memory().await.unwrap();
+        let db = Database::connect_for_test().await.unwrap();
         let first = ClientContext {
             ip: Some("203.0.113.7".to_string()),
             ptr: Some("first.example.com".to_string()),
@@ -966,7 +966,7 @@ mod tests {
     /// closed, with nothing but a log line to say why.
     #[tokio::test]
     async fn a_registration_is_bound_to_its_credential_by_the_insert() {
-        let db = Database::connect_in_memory().await.unwrap();
+        let db = Database::connect_for_test().await.unwrap();
         let kid = crate::id::mint();
         let registration = Registration {
             eab_kid: Some(kid),
@@ -1012,7 +1012,7 @@ mod tests {
     /// client connects from.
     #[tokio::test]
     async fn to_json_exposes_none_of_the_traceability_columns() {
-        let db = Database::connect_in_memory().await.unwrap();
+        let db = Database::connect_for_test().await.unwrap();
         let client = ClientContext {
             ip: Some("203.0.113.7".to_string()),
             ptr: Some("host.example.com".to_string()),
@@ -1041,7 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_or_create_creates_then_returns_existing() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let pubkey = vec![1u8, 2, 3, 4];
         let contact = vec!["mailto:a@example.com".to_string()];
 
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_id_and_pubkey_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let pubkey = vec![9u8; 16];
 
         let (account, _) =
@@ -1094,7 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn absent_lookups_return_none() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
 
         assert!(
             Account::find_by_id("default", "nope", &db)
@@ -1112,7 +1112,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_contact_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let pubkey = vec![7u8; 8];
 
         let (mut account, _) = Account::find_or_create(
@@ -1143,7 +1143,7 @@ mod tests {
 
     #[tokio::test]
     async fn deactivate_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let pubkey = vec![8u8; 8];
 
         let (mut account, _) =
@@ -1164,7 +1164,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_pubkey_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (mut account, _) =
             Account::find_or_create("default", &[9u8; 8], vec![], &ClientContext::default(), &db)
                 .await
@@ -1195,7 +1195,7 @@ mod tests {
     /// `post_key_change`'s own `find_by_pubkey` pre-check.
     #[tokio::test]
     async fn update_pubkey_to_a_key_owned_by_another_account_is_rejected() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (_first, _) = Account::find_or_create(
             "default",
             &[11u8; 8],
@@ -1232,7 +1232,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_eab_kid_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let kid = crate::id::mint();
         let (mut account, _) =
             Account::find_or_create("default", &[5u8], vec![], &ClientContext::default(), &db)
@@ -1252,7 +1252,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_removes_the_row_and_reports_deleted() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (account, _) =
             Account::find_or_create("default", &[3u8], vec![], &ClientContext::default(), &db)
                 .await
@@ -1274,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_of_unknown_id_reports_not_found() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert_eq!(
             Account::delete("nope", &db).await.unwrap(),
             GuardedDelete::NotFound
@@ -1283,7 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cascades_to_the_accounts_orders() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (account, _) =
             Account::find_or_create("default", &[4u8], vec![], &ClientContext::default(), &db)
                 .await
@@ -1319,7 +1319,7 @@ mod tests {
         use crate::order::Order;
         use crate::testutil::certified_order;
 
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (account, _) =
             Account::find_or_create("default", &[5u8], vec![], &ClientContext::default(), &db)
                 .await
@@ -1359,7 +1359,7 @@ mod tests {
     /// failing.
     #[tokio::test]
     async fn search_filters_by_eab_kid() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let ids = seed_accounts(&db, "default", 3).await;
         seed_accounts(&db, "other", 1).await;
         let kid = crate::id::mint();
@@ -1398,7 +1398,7 @@ mod tests {
     async fn eab_summary_counts_only_that_credentials_accounts() {
         use crate::testutil::certified_order;
 
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let kid = crate::id::mint();
         let mut bound = Vec::new();
         for key in [10u8, 11, 12] {
@@ -1465,7 +1465,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_pages_newest_first_and_reports_the_unpaged_total() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let ids = seed_accounts(&db, "default", 5).await;
 
         let (page, total) = Account::search(None, None, 2, 0, &db).await.unwrap();
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_scopes_by_profile_and_counts_only_that_profile() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         seed_accounts(&db, "default", 2).await;
         seed_accounts(&db, "other", 3).await;
 
@@ -1512,7 +1512,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_on_an_empty_table_is_empty_rather_than_an_error() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (rows, total) = Account::search(None, None, 50, 0, &db).await.unwrap();
         assert!(rows.is_empty());
         assert_eq!(total, 0);

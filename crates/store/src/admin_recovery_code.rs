@@ -181,7 +181,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn db_with_user() -> (Arc<Database>, AdminUser) {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let user = AdminUser::create("alice", "hash", None, &db).await.unwrap();
         (db, user)
     }

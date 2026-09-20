@@ -34,6 +34,10 @@ before adding a case, and put a new case in the suite whose header claims it.
   and several processes), `reload.rs` (a real `config.toml` and real ports),
   `filters.rs` (the IPAM mocks on loopback, and scripts) and `custom_signer.rs`
   (scripts).
+- **A `crates/store/` test calls `Database::connect_for_test()`**, which is
+  PostgreSQL when `TEST_POSTGRES_URL` is set. `connect_in_memory()` means
+  SQLite and is what the seven schema-introspection and migration-replay tests
+  in `db.rs` call.
 - **`postgres.rs` runs against both backends** and skips when
   `TEST_POSTGRES_URL` is unset, so a plain `cargo nextest run` is unaffected.
   It covers where `crates/store/src/sql.rs` forks and the idioms whose

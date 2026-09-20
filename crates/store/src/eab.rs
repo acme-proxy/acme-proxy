@@ -408,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_persists_an_active_key_with_a_32_byte_secret() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let eab = Eab::create(Some("team-a".to_string()), None, &db)
             .await
             .unwrap();
@@ -419,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_kid_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let created = Eab::create(None, None, &db).await.unwrap();
         let found = Eab::find_by_kid(created.kid.to_string().as_str(), "default", &db)
             .await
@@ -431,7 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_kid_of_unknown_returns_none() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert!(
             Eab::find_by_kid("nope", "default", &db)
                 .await
@@ -456,7 +456,7 @@ mod tests {
     /// be its first row.
     #[tokio::test]
     async fn search_returns_every_key_newest_first_and_empty_is_empty() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert!(Eab::search(50, 0, &db).await.unwrap().0.is_empty());
 
         let first = Eab::create(None, None, &db).await.unwrap();
@@ -473,7 +473,7 @@ mod tests {
     /// seen.
     #[tokio::test]
     async fn search_pages_without_overlap_and_reports_the_unpaged_total() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert_eq!(Eab::search(50, 0, &db).await.unwrap().1, 0);
 
         let created: Vec<String> = {
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_marks_revoked_reports_true_and_is_idempotent() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let eab = Eab::create(None, None, &db).await.unwrap();
         assert!(
             Eab::revoke(eab.kid.to_string().as_str(), &db)
@@ -536,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_of_unknown_kid_reports_false() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert!(!Eab::revoke("nope", &db).await.unwrap());
     }
 
@@ -579,7 +579,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_of_an_unknown_kid_is_not_found() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         for kid in ["nope".to_string(), crate::id::mint().to_string()] {
             assert!(matches!(
                 Eab::delete(&kid, BoundAccounts::Delete, &db).await.unwrap(),
@@ -592,7 +592,7 @@ mod tests {
     /// still naming a kid that now resolves to nothing.
     #[tokio::test]
     async fn delete_keeping_accounts_removes_only_the_credential() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (eab, accounts) = bound(&db, 2, Some(now_secs() + 86_400)).await;
         let kid = eab.kid.to_string();
 
@@ -623,7 +623,7 @@ mod tests {
     /// deactivated changed nothing and is not reported.
     #[tokio::test]
     async fn delete_deactivating_accounts_keeps_their_orders() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (eab, mut accounts) = bound(&db, 3, Some(now_secs() + 86_400)).await;
         accounts[2].deactivate(&db).await.unwrap();
 
@@ -658,7 +658,7 @@ mod tests {
     /// and the refusal rolls back everything — the credential included.
     #[tokio::test]
     async fn delete_with_accounts_is_refused_by_a_live_certificate_and_changes_nothing() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (eab, accounts) = bound(&db, 2, Some(now_secs() - 86_400)).await;
         crate::testutil::certified_order(&db, accounts[1].id, None).await;
         let kid = eab.kid.to_string();
@@ -681,7 +681,7 @@ mod tests {
     /// another credential's accounts alone.
     #[tokio::test]
     async fn delete_with_accounts_removes_them_and_their_orders() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let (eab, accounts) = bound(&db, 2, Some(now_secs() - 86_400)).await;
         crate::testutil::certified_order(&db, accounts[0].id, Some(now_secs() - 1)).await;
         let (_, others) = bound(&db, 1, Some(now_secs() + 86_400)).await;
@@ -727,7 +727,7 @@ mod tests {
 
     #[tokio::test]
     async fn to_json_never_includes_the_secret() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let eab = Eab::create(Some("x".to_string()), None, &db).await.unwrap();
         let json = eab.to_json();
         assert!(json.get("secret").is_none());

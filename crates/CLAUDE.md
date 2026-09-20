@@ -110,6 +110,9 @@ call too; a handler keeps only what is HTTP.
   genuinely differs asks `Dialect` and owes `tests/postgres.rs` a case.
 - A bound `None` carries its column's type — `Option<Uuid>` is
   `Null(NullKind::Uuid)`, never a bare null.
+- **No SQLite scalar built-in without a PostgreSQL twin.** `MAX(x, 0)` is the
+  worked example: SQLite's scalar two-argument max, an aggregate there. Spell it
+  `CASE WHEN … END` rather than adding a fourth `Dialect` fork.
 - `Tx` does **not** deref to a connection: `tx.conn()` is what `&mut *tx` was.
 - An id parameter typed `&str` parses (it came from outside); `Uuid` came from
   a row. No `_uuid` twins (`crates/store/src/id.rs`).

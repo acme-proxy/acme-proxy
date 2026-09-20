@@ -834,7 +834,7 @@ mod tests {
     /// The listing paths' N+1 fix: one query for a whole page.
     #[tokio::test]
     async fn ids_for_several_orders_come_back_grouped_in_one_query() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let account = account_id(&db).await;
 
         let mut expected = Vec::new();
@@ -916,7 +916,7 @@ mod tests {
     /// the challenge trigger and the client has no challenge left to answer.
     #[tokio::test]
     async fn the_validation_transitions_roll_back_together() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -959,7 +959,7 @@ mod tests {
     /// the rollback and not about the statements being no-ops.
     #[tokio::test]
     async fn the_validation_transitions_commit_together() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -1005,7 +1005,7 @@ mod tests {
 
     #[tokio::test]
     async fn authz_create_find_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let authz = Authorization::create(
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[tokio::test]
     async fn authz_mark_valid_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let mut authz = Authorization::create(
@@ -1056,7 +1056,7 @@ mod tests {
 
     #[tokio::test]
     async fn authz_to_json_shape() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let authz = Authorization::create(
@@ -1082,7 +1082,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_create_find_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -1111,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_mark_valid_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[tokio::test]
     async fn challenge_mark_invalid_persists_the_problem_document() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[tokio::test]
     async fn authz_mark_invalid_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let mut authz = Authorization::create(
@@ -1206,7 +1206,7 @@ mod tests {
     /// challenges — one per type, and no more.
     #[tokio::test]
     async fn an_authorization_holds_one_challenge_per_type() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
         let authz = Authorization::create(
             oid.parse().unwrap(),
@@ -1238,7 +1238,7 @@ mod tests {
     /// base name.
     #[tokio::test]
     async fn a_wildcard_authorization_stores_the_prefix_and_renders_the_base_name() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let authz = Authorization::create(
@@ -1274,7 +1274,7 @@ mod tests {
     /// it optional and clients treat its absence as false.
     #[tokio::test]
     async fn a_plain_authorization_has_no_wildcard_member() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let oid = order_id(&db).await;
 
         let authz = Authorization::create(
@@ -1297,7 +1297,7 @@ mod tests {
 
     #[tokio::test]
     async fn absent_lookups_return_none() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert!(
             Authorization::find_by_id("nope", &db)
                 .await

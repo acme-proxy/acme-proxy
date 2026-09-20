@@ -194,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_accepts_fresh_nonce_exactly_once() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         let nonce = Nonce::new();
         let value = nonce.value.clone();
@@ -208,14 +208,14 @@ mod tests {
 
     #[tokio::test]
     async fn verify_rejects_unknown_nonce() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         assert!(!Nonce::verify("never-issued", &database, TTL).await.unwrap());
     }
 
     #[tokio::test]
     async fn verify_rejects_expired_nonce() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         // 10 minutes old — outside the 5-minute freshness window.
         Nonce {
@@ -231,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_accepts_nonce_near_edge_of_window() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         // Just inside the freshness window — pins the `created_at > cutoff`
         // acceptance boundary (2s margin avoids the exact-second tick flaking).
@@ -250,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_rejects_nonce_at_exact_cutoff_boundary() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         // Pinned at exactly the cutoff — age == TTL, so the nonce is expired
         // under the strict `> cutoff` check.
@@ -269,7 +269,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_removes_only_stale_nonces() {
-        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
 
         Nonce {
             value: "stale".to_string(),
@@ -326,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_reports_the_table_size_and_follows_cleanup() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert_eq!(Nonce::count(&db).await.unwrap(), 0);
 
         for _ in 0..3 {

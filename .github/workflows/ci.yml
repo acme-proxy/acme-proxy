@@ -545,13 +545,22 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
 
-      # The dialect-sensitive suite, plus the two that run several processes
-      # over one database -- which is the multi-node deployment this backend
-      # exists for, and the thing a single-process SQLite run cannot cover.
+      # The store's whole suite, plus the dialect-sensitive cases and the two
+      # suites that run several processes over one database -- which is the
+      # multi-node deployment this backend exists for, and the thing a
+      # single-process SQLite run cannot cover.
+      #
+      # `package(acme-proxy-store)` is the one that matters: every test in that
+      # crate calls `Database::connect_for_test()`, so the variable below
+      # re-runs all 239 against the server rather than in memory. It is what
+      # found `MAX(x, 0)` -- SQLite's scalar two-argument max, which PostgreSQL
+      # has only as an aggregate, in a code path no dialect-specific test
+      # would have thought to cover.
       - name: Test
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'binary(postgres) or binary(roles) or binary(reload)'
+            -E 'package(acme-proxy-store) or binary(postgres)
+                or binary(roles) or binary(reload)'
         env:
           ACME_PROXY_REQUIRE_POSTGRES: "1"
           TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/acme

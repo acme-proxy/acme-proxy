@@ -607,14 +607,20 @@ impl Job {
     /// asking for one retry, not a fresh budget — if that attempt also fails
     /// the job is `failed` again and stays there without another nudge.
     /// `last_error` is left in place as the record of why it stopped, until the
-    /// next claim overwrites it. `MAX(…, 0)` guards a `max_attempts = 0` row
-    /// (the column carries no `CHECK`).
+    /// next claim overwrites it. The `CASE` guards a `max_attempts = 0` row
+    /// (the column carries no `CHECK`) — spelled out rather than `MAX(x, 0)`,
+    /// which is SQLite's *scalar* two-argument max and has no PostgreSQL
+    /// counterpart: there `max()` is an aggregate and the scalar is `GREATEST`,
+    /// so the one spelling both accept is this one. Keeping it portable is
+    /// worth more than the brevity, since the alternative is a fourth
+    /// `Dialect` fork for one expression.
     pub async fn revive_row(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
         let now = now_secs();
         let sql = format!(
             "UPDATE jobs \
              SET status = 'ready', run_at = ?, updated_at = ?, \
-                 attempts = MAX(max_attempts - 1, 0), \
+                 attempts = CASE WHEN max_attempts - 1 > 0 \
+                                 THEN max_attempts - 1 ELSE 0 END, \
                  lease_owner = NULL, lease_until = NULL \
              WHERE id = ? AND status = 'failed' RETURNING {COLUMNS};"
         );
@@ -666,7 +672,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn db() -> Arc<Database> {
-        Arc::new(Database::connect_in_memory().await.unwrap())
+        Arc::new(Database::connect_for_test().await.unwrap())
     }
 
     /// A stable id for a fixture, derived from a readable name.
@@ -1071,12 +1077,13 @@ mod tests {
         let error = crate::sql::query(
             "INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, attempts, \
              max_attempts, created_at, updated_at) \
-             VALUES ('x', 'test', 'k', '{}', 'halfway', 0, 0, 1, 0, 0);",
+             VALUES (?, 'test', 'k', '{}', 'halfway', 0, 0, 1, 0, 0);",
         )
+        .bind(crate::id::mint())
         .execute(&database)
         .await
         .unwrap_err();
-        assert!(error.to_string().contains("CHECK constraint failed"));
+        assert!(crate::sql::is_check_violation(&error), "{error}");
     }
 
     // --- the operator surface: `JobQuery`/`search` and the guarded mutations --

@@ -166,7 +166,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_first_initial_crl_wins() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         assert!(StoredCrl::find("ca", &database).await.unwrap().is_none());
 
         assert!(crl(1, b"first").insert_initial(&database).await.unwrap());
@@ -182,7 +182,7 @@ mod tests {
     /// over a snapshot that is no longer current is refused, not stored.
     #[tokio::test]
     async fn a_replacement_signed_over_a_stale_number_is_refused() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         crl(1, b"one").insert_initial(&database).await.unwrap();
 
         // Two writers both read number 1; the first to store wins.
@@ -214,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_is_replaced_for_an_issuer_never_initialised() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         assert!(
             !crl(2, b"two")
                 .replace_if_number(1, &database)

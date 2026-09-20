@@ -1248,7 +1248,7 @@ mod tests {
     /// without it keeps two `NULL`s rather than empty strings.
     #[tokio::test]
     async fn with_client_persists_and_an_order_without_one_stays_null() {
-        let db = std::sync::Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = std::sync::Arc::new(Database::connect_for_test().await.unwrap());
         let account = account_id(&db).await;
 
         let stamped = Order::new(
@@ -1309,7 +1309,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_then_find_by_id_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let created = Order::create(
@@ -1336,7 +1336,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_account_lists_all() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         Order::create(
@@ -1368,13 +1368,13 @@ mod tests {
 
     #[tokio::test]
     async fn absent_lookup_returns_none() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert!(Order::find_by_id("nope", &db).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn to_json_shape_when_pending() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let order = Order::create(
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[tokio::test]
     async fn to_json_includes_optional_fields() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let order = Order::create(
@@ -1436,7 +1436,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let mut order = Order::create(
@@ -1487,7 +1487,7 @@ mod tests {
     /// exactly one of them may go on to ask a signer for a certificate.
     #[tokio::test]
     async fn only_one_caller_can_claim_an_order_for_finalize() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let mut order = Order::create(
@@ -1529,7 +1529,7 @@ mod tests {
     /// certificate already exists, `invalid` because the order is terminal.
     #[tokio::test]
     async fn an_order_that_is_not_ready_cannot_be_claimed() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         for prepare in [
@@ -1600,7 +1600,7 @@ mod tests {
 
     #[tokio::test]
     async fn find_by_cert_serial_round_trip() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let order = finalized_order(db.clone(), "deadbeef").await;
 
         let found = Order::find_by_cert_serial("default", "deadbeef", &db)
@@ -1619,7 +1619,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let mut order = finalized_order(db.clone(), "aa11bb22").await;
 
         order.revoke(Some(1), &db).await.unwrap();
@@ -1640,7 +1640,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_with_no_reason_persists_null() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let mut order = finalized_order(db.clone(), "cc33dd44").await;
 
         order.revoke(None, &db).await.unwrap();
@@ -1656,7 +1656,7 @@ mod tests {
 
     #[tokio::test]
     async fn to_json_never_exposes_revocation_state() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let mut order = finalized_order(db.clone(), "ee55ff66").await;
         order.revoke(Some(1), &db).await.unwrap();
 
@@ -1668,7 +1668,7 @@ mod tests {
 
     #[tokio::test]
     async fn mark_invalid_persists_and_syncs() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let mut order = Order::create(
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_removes_the_row_and_reports_deleted() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
@@ -1735,7 +1735,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_of_unknown_id_reports_not_found() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         assert_eq!(
             Order::delete("nope", &db).await.unwrap(),
             GuardedDelete::NotFound
@@ -1744,7 +1744,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_cascades_to_authorizations_and_challenges() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let order = Order::create(
             "default",
@@ -1796,7 +1796,7 @@ mod tests {
     async fn delete_refuses_an_order_holding_a_live_certificate() {
         use crate::testutil::certified_order;
 
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
 
@@ -1886,7 +1886,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_pages_newest_first_and_reports_the_unpaged_total() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let ids = seed_orders(&db, "default", acct, 5).await;
 
@@ -1916,7 +1916,7 @@ mod tests {
     /// the `created_at, id` tiebreak exists for.
     #[tokio::test]
     async fn paging_one_row_at_a_time_sees_every_order_exactly_once() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         // Deliberately NOT backdated: all four share one `created_at`, which is
         // exactly the case where a missing tiebreak lets rows swap pages.
@@ -1953,7 +1953,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_filters_by_profile_account_and_status_together() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let (other_account, _) = crate::account::Account::find_or_create(
             "default",
@@ -2022,7 +2022,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_scopes_by_profile() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         seed_orders(&db, "default", acct, 2).await;
         seed_orders(&db, "other", acct, 3).await;
@@ -2046,7 +2046,7 @@ mod tests {
     /// through `push_bind`, so the property is asserted on those.
     #[tokio::test]
     async fn a_filter_value_is_bound_not_interpolated() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         seed_orders(&db, "default", acct, 2).await;
 
@@ -2123,7 +2123,7 @@ mod tests {
     /// `evil-example.com` or `sub.example.com`.
     #[tokio::test]
     async fn search_filters_by_identifier_exactly() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let ids = seed_named(
             &db,
@@ -2165,7 +2165,7 @@ mod tests {
     /// spelling that spans both, and `doc/src/operations/cli.md` says so.
     #[tokio::test]
     async fn an_exact_identifier_hunt_does_not_reach_through_a_wildcard() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         seed_named(&db, "default", acct, &["*.example.com"]).await;
 
@@ -2192,7 +2192,7 @@ mod tests {
     /// `LIKE`, so a `%` the operator typed is a literal that matches nothing.
     #[tokio::test]
     async fn search_filters_by_identifier_substring() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         seed_named(
             &db,
@@ -2227,7 +2227,7 @@ mod tests {
     /// the abuse-report lookup, with no admin caller until now.
     #[tokio::test]
     async fn search_filters_by_cert_serial() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let order = finalized_order(db.clone(), "0a1b2c3d").await;
 
         let query = OrderQuery {
@@ -2317,7 +2317,7 @@ mod tests {
     /// horizon.
     #[tokio::test]
     async fn find_expiring_returns_the_window_soonest_first() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
 
@@ -2341,7 +2341,7 @@ mod tests {
     /// The three rows the digest must never report, each for its own reason.
     #[tokio::test]
     async fn find_expiring_skips_revoked_unstamped_and_unparsable_rows() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
 
@@ -2374,7 +2374,7 @@ mod tests {
     /// it did not name.
     #[tokio::test]
     async fn find_expiring_reports_the_unpaged_total() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
         for index in 0..5 {
@@ -2393,7 +2393,7 @@ mod tests {
     /// rule, and for the same reason.
     #[tokio::test]
     async fn find_expiring_scopes_by_profile() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
         expiring_order(&db, acct, &["a.example.com"], Some(now + DAY)).await;
@@ -2410,7 +2410,7 @@ mod tests {
     /// admin surfaces open on it.
     #[tokio::test]
     async fn find_expiring_unscoped_spans_every_profile() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
 
@@ -2443,7 +2443,7 @@ mod tests {
     /// something honest to work from.
     #[tokio::test]
     async fn find_expiring_pages_without_overlap_and_keeps_the_unpaged_total() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
         let now = now_secs();
         for index in 0..5 {
@@ -2482,7 +2482,7 @@ mod tests {
     /// The backfill's input: rows with a chain and no stamp, and nothing else.
     #[tokio::test]
     async fn find_unstamped_finds_only_issued_rows_with_no_stamp() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let acct = account_id(&db).await;
 
         let unstamped = expiring_order(&db, acct, &["old.example.com"], None).await;

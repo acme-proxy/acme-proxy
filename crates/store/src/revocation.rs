@@ -173,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_first_revocation_of_a_serial_is_the_one_kept() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
 
         assert!(
             revocation("01", 100, None)
@@ -192,7 +192,7 @@ mod tests {
     /// One serial under two issuers is two certificates.
     #[tokio::test]
     async fn issuers_do_not_see_each_others_rows() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         revocation("01", 100, None)
             .insert_if_absent(&database)
             .await
@@ -221,7 +221,7 @@ mod tests {
     /// the entry it lists is kept even though the certificate is gone.
     #[tokio::test]
     async fn an_entry_no_crl_has_outlived_is_kept() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         // Revoked at 10, expired at 50; the stored CRL was signed at 40.
         revocation("expired", 10, Some(50))
             .insert_if_absent(&database)
@@ -252,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_prune_takes_only_known_expiries_before_the_cutoff() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         for row in [
             revocation("expired", 1, Some(50)),
             revocation("boundary", 2, Some(100)),
@@ -299,7 +299,7 @@ mod tests {
     /// than hiding the revocation.
     #[tokio::test]
     async fn an_out_of_range_reason_reads_as_none() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         crate::sql::query(
             "INSERT INTO revocations (issuer, serial, revoked_at, reason) VALUES ('ca', '01', 1, -3);",
         )

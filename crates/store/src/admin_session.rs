@@ -623,7 +623,7 @@ mod tests {
     const IDLE: Duration = Duration::from_secs(3_600);
 
     async fn db_with_user() -> (Arc<Database>, AdminUser) {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let user = AdminUser::create("alice", "hash", None, &db).await.unwrap();
         (db, user)
     }
@@ -678,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_for_an_unknown_user_is_refused_by_the_foreign_key() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
         let error = AdminSession::create(
             NewSession {
                 user_id: crate::id::mint(),
@@ -693,7 +693,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            error.to_string().to_lowercase().contains("foreign key"),
+            crate::sql::is_foreign_key_violation(&error),
             "expected a FOREIGN KEY violation, got: {error}"
         );
     }
@@ -708,7 +708,7 @@ mod tests {
                 .execute(&db)
                 .await
                 .unwrap_err();
-        assert!(error.to_string().to_lowercase().contains("check"));
+        assert!(crate::sql::is_check_violation(&error), "{error}");
     }
 
     #[tokio::test]

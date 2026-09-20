@@ -278,7 +278,7 @@ mod tests {
     const DAY: i64 = 24 * 60 * 60;
 
     async fn db() -> Arc<Database> {
-        Arc::new(Database::connect_in_memory().await.unwrap())
+        Arc::new(Database::connect_for_test().await.unwrap())
     }
 
     /// An order with a chain a certID can be derived from, on `default`.
@@ -310,7 +310,7 @@ mod tests {
         crate::sql::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(successor.id)
-            .execute(db.raw_pool())
+            .execute(&*db)
             .await
             .unwrap();
 
@@ -349,7 +349,7 @@ mod tests {
         crate::sql::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(pending.id)
-            .execute(db.raw_pool())
+            .execute(&*db)
             .await
             .unwrap();
 

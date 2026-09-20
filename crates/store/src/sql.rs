@@ -589,6 +589,34 @@ pub fn is_unique_violation_on(
     }
 }
 
+/// Was this error a `CHECK` constraint refusing the write?
+///
+/// Both drivers answer it typed, which is why this reads the predicate rather
+/// than the message: SQLite says `CHECK constraint failed: …` and PostgreSQL
+/// says `new row … violates check constraint "…"`, so a test matching either
+/// spelling passes on one backend and is meaningless on the other.
+#[must_use]
+pub fn is_check_violation(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.is_check_violation())
+}
+
+/// Was this error a foreign key refusing the write? See
+/// [`is_check_violation`].
+#[must_use]
+pub fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.is_foreign_key_violation())
+}
+
+/// Was this error *any* unique constraint refusing the write?
+///
+/// [`is_unique_violation_on`] is the one to reach for when the caller must tell
+/// one constraint from another — a `replaces` claim from an authorization's own
+/// `UNIQUE`, say. This is for a test that has provoked exactly one.
+#[must_use]
+pub fn is_unique_violation(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.is_unique_violation())
+}
+
 /// `sqlx::QueryBuilder`'s job, over [`Value`] rather than one driver.
 ///
 /// The paged listings build two of these per query — the page and its

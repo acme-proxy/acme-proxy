@@ -336,6 +336,33 @@ impl Database {
 
         Ok(Database::Sqlite(pool))
     }
+
+    /// The database a test should run against: **PostgreSQL when
+    /// `TEST_POSTGRES_URL` names one**, and an in-memory SQLite otherwise.
+    ///
+    /// This is what nearly every test in this crate calls, so one CI job runs
+    /// the whole suite on each backend. [`connect_in_memory`](Self::connect_in_memory)
+    /// stays, and calling it *means* SQLite — which makes the constructor a
+    /// test picks its own declaration of what it is testing. The seven tests
+    /// that read `pragma_table_info`, `sqlite_master` or replay the embedded
+    /// SQLite migration set say so by calling the other one, and need no
+    /// separate opt-out.
+    ///
+    /// Each call gets a schema of its own; see
+    /// [`crate::testutil::postgres_database`].
+    ///
+    /// # Panics
+    ///
+    /// When `ACME_PROXY_REQUIRE_POSTGRES` is set and no server can be reached
+    /// — a skip is the failure there, or a service that never started takes a
+    /// whole job green.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn connect_for_test() -> Result<Database, Error> {
+        match crate::testutil::postgres_database().await {
+            Some(database) => Ok(database),
+            None => Self::connect_in_memory().await,
+        }
+    }
 }
 
 /// Is there a `_sqlx_migrations` table to read?

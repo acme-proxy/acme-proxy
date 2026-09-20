@@ -367,7 +367,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn db() -> Arc<Database> {
-        Arc::new(Database::connect_in_memory().await.unwrap())
+        Arc::new(Database::connect_for_test().await.unwrap())
     }
 
     fn client() -> ClientContext {
@@ -768,7 +768,7 @@ mod tests {
             .await
             .unwrap_err();
             assert!(
-                error.to_string().contains("CHECK constraint failed"),
+                crate::sql::is_check_violation(&error),
                 "{outcome}/{actor} was accepted: {error}"
             );
         }

@@ -727,7 +727,7 @@ mod tests {
     use std::sync::Arc;
 
     async fn db() -> Arc<Database> {
-        Arc::new(Database::connect_in_memory().await.unwrap())
+        Arc::new(Database::connect_for_test().await.unwrap())
     }
 
     #[tokio::test]
@@ -788,7 +788,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            error.to_string().to_lowercase().contains("unique"),
+            crate::sql::is_unique_violation(&error),
             "expected a UNIQUE violation, got: {error}"
         );
     }

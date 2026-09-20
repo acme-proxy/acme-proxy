@@ -97,7 +97,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_published_token_is_looked_up_until_retracted() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         assert_eq!(
             Http01Token::lookup("tok", 10, &database).await.unwrap(),
             None
@@ -122,7 +122,7 @@ mod tests {
     /// A re-publish replaces the key authorization and moves the deadline on.
     #[tokio::test]
     async fn publishing_again_replaces_the_row() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         Http01Token::publish("tok", "tok.one", 10, 20, &database)
             .await
             .unwrap();
@@ -139,7 +139,7 @@ mod tests {
     /// An expired row is never served, and the sweep takes exactly those.
     #[tokio::test]
     async fn an_expired_token_is_not_served_and_is_swept() {
-        let database = Database::connect_in_memory().await.unwrap();
+        let database = Database::connect_for_test().await.unwrap();
         Http01Token::publish("old", "old.ka", 0, 50, &database)
             .await
             .unwrap();

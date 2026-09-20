@@ -362,6 +362,105 @@ async fn a_job_identity_is_held_by_one_live_row_on_both_backends() {
     });
 }
 
+/// One client key registering twice is one account, on both backends.
+///
+/// `Account::is_pubkey_conflict` is the second matcher that reads a
+/// constraint by name, and until now nothing exercised its PostgreSQL half:
+/// the race that reaches it (`account::tests::concurrent_find_or_create…`) is
+/// file-backed SQLite by construction, because it needs more than the one
+/// connection `connect_in_memory` allows. If the name in
+/// `migrations-postgres/` and the name in the matcher ever part company, the
+/// recovery silently stops working and `newAccount` answers 500 to a client
+/// that merely registered twice.
+#[tokio::test]
+async fn one_key_registering_twice_is_one_account_on_both_backends() {
+    use acme_proxy_store::account::Account;
+
+    each_backend!(|db| {
+        let key = [9u8, 9, 9];
+        let (first, created) =
+            Account::find_or_create("default", &key, vec![], &ClientContext::default(), &db)
+                .await
+                .expect("the first registration works");
+        assert!(created, "the first call creates the account");
+
+        let (second, created) =
+            Account::find_or_create("default", &key, vec![], &ClientContext::default(), &db)
+                .await
+                .expect("the second registration finds it");
+        assert!(!created, "the second call finds the first account");
+        assert_eq!(first.id, second.id);
+
+        // And the raw violation is recognisable as *this* constraint, which is
+        // what the recovery inside `find_or_create` rests on. Provoked with a
+        // direct insert, since `find_or_create` is the thing that hides it.
+        let error = acme_proxy_store::sql::query(
+            "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
+             VALUES (?, 'default', ?, '[]', 'valid', 0);",
+        )
+        .bind(acme_proxy_store::id::mint())
+        .bind(&key[..])
+        .execute(&db)
+        .await
+        .expect_err("a second row for one key is refused");
+        assert!(
+            acme_proxy_store::account::is_pubkey_conflict(&error),
+            "the refusal has to be recognisable as the pubkey constraint, or a \
+             repeat registration answers 500: {error}"
+        );
+    });
+}
+
+/// The declared widths, which PostgreSQL actually enforces.
+///
+/// `declared_token_widths_match_random_token` and its issuer twin read
+/// `pragma_table_info` and so can only ever check SQLite — where the width is
+/// decoration, since TEXT affinity enforces nothing. This is the same pin on
+/// the backend where a wrong width is a rejected write: `nonces.value` was
+/// `VARCHAR(36)` long after the nonce became a 43-character token, and on
+/// PostgreSQL that would have refused every nonce the server mints.
+#[tokio::test]
+async fn the_declared_widths_are_enforced_on_postgres() {
+    use acme_proxy_core::random::random_token;
+
+    let Some(db) = testutil::postgres_database().await else {
+        return;
+    };
+
+    let width = |table: &'static str, column: &'static str| {
+        let db = db.exec();
+        async move {
+            acme_proxy_store::sql::query(
+                // `::bigint` because `information_schema` answers `int4`, and
+                // the seam decodes the one integer width the schema uses.
+                "SELECT character_maximum_length::bigint FROM information_schema.columns \
+                 WHERE table_name = ? AND column_name = ?;",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(db)
+            .await
+            .expect("the column should exist")
+            .try_get::<i64>(0usize)
+            .expect("a varchar declares a length")
+        }
+    };
+
+    let token = i64::try_from(random_token().len()).expect("a token length fits");
+    assert_eq!(width("nonces", "value").await, token);
+    assert_eq!(width("challenges", "token").await, token);
+
+    let issuer = i64::try_from(acme_proxy_core::cert::issuer_id(&[1, 2, 3]).len())
+        .expect("an issuer id fits");
+    assert_eq!(width("revocations", "issuer").await, issuer);
+    assert_eq!(width("crls", "issuer").await, issuer);
+
+    // The two deliberate non-uuid id columns, which `every_id_column_is_declared_a_blob`
+    // names as exceptions on the SQLite side.
+    assert_eq!(width("audit_log", "account_id").await, 36);
+    assert_eq!(width("audit_log", "order_id").await, 36);
+}
+
 /// The guard on the guard.
 ///
 /// Every test above skips on its own when there is no server, which means a CI

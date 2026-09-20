@@ -78,7 +78,7 @@ The same binary carries every admin subcommand (`account`, `order`, `jobs`, `aud
 - **test** — `fmt --check`, `clippy -D warnings`, `llvm-cov nextest --fail-under-lines 97` (`main.rs` excluded), `cargo test --doc`, and `cargo doc` with `-D warnings -A rustdoc::private_intra_doc_links`.
 - **msrv** — `cargo check --locked` on the `rust-version` from `Cargo.toml`.
 - **hsm** — clippy and the suite with `--features acme-proxy-signer/hsm` against SoftHSM2.
-- **postgres** — `tests/postgres.rs`, `roles` and `reload` against a real server, with `ACME_PROXY_REQUIRE_POSTGRES=1` so a skip is a failure. Separate from **test** for `hsm`'s reason: the coverage floor is a ratchet over one configuration.
+- **postgres** — the whole `acme-proxy-store` suite plus `tests/postgres.rs`, `roles` and `reload` against a real server, with `ACME_PROXY_REQUIRE_POSTGRES=1` so a skip is a failure. Separate from **test** for `hsm`'s reason: the coverage floor is a ratchet over one configuration.
 - **supply-chain** — `cargo deny check`, with `all-features = true`.
 - **sbom** — regenerates `sbom.cdx.json` and fails on drift; regenerate it when `Cargo.lock` changes and when cutting a release.
 - **docs** — `mdbook build doc/` and `python3 doc/lint.py`.
@@ -116,7 +116,9 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 - **`cargo nextest run --workspace` is required, not preferred.** Tests that exec a script they just wrote fail `ETXTBSY` intermittently under the threads of `cargo test`.
 - **A test calling `Config::load()` holds `acme_proxy_core::config::ENV_LOCK`** (or `testutil::EnvGuard`).
 - Tests use an in-memory SQLite and an in-memory CA; nothing reaches a real network. The harness and its rules are in `tests/CLAUDE.md`.
+- **A store test calls `Database::connect_for_test()`**, which is PostgreSQL when `TEST_POSTGRES_URL` is set and in-memory SQLite otherwise — so CI runs all 239 on each backend. `connect_in_memory()` stays and *means* SQLite: the seven tests that read `pragma_table_info`/`sqlite_master` or replay the migration set call it, and that is their whole opt-out.
 - **`tests/postgres.rs` runs the dialect-sensitive paths against both backends** and skips when `TEST_POSTGRES_URL` is unset. A new fork in `sql.rs` owes it a case.
+- **Assert a constraint violation with `sql::is_check_violation`/`is_foreign_key_violation`/`is_unique_violation`**, never on the driver's message text — the two dialects word every one of them differently.
 
 ## Conventions
 
