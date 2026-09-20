@@ -46,6 +46,11 @@ arguments the script receives; the hook is *not* passed as an argument.
 Whether the script implements the `crl` hook. While `false`, the hook is **never
 invoked** — no process is spawned at all — and `GET /crl` has nothing to serve.
 
+With it on, the answer is cached for a minute and re-served, so a burst of
+requests to the unauthenticated `GET /crl` is one run of the script rather than
+one per request. At most four read hooks (`crl` and `renewal_info` together)
+run at a time, whatever the request rate.
+
 **`supports_renewal_info`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEWAL_INFO`*
 
 Whether the script implements the `renewal_info` hook. While `false`, the hook

@@ -6,7 +6,7 @@
 //! published it. `signer::relay::http01` is the only user.
 
 use sqlx::Row;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::db::Database;
 
@@ -80,7 +80,9 @@ impl Http01Token {
             .bind(now)
             .execute(&database.pool)
             .await?;
-        info!(
+        // Debug: `jobs::sweep` already reports the pass that called this, and
+        // an hourly line saying nothing expired is noise in an operator's log.
+        debug!(
             event = "db_http_01_token_cleanup_completed",
             outcome = "success",
             rows_removed = result.rows_affected(),

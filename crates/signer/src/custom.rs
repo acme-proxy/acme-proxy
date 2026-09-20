@@ -13,6 +13,8 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use super::{
     IssueOutcome, RenewalWindow, RequestedValidity, RevocationRoute, SignerBackend, SignerError,
@@ -38,13 +40,38 @@ pub struct CustomScriptSigner {
     info: Arc<CustomScriptInfo>,
 }
 
+/// How long a `crl` hook's answer is served again without re-running the
+/// script. `GET /crl` is unauthenticated, and running an operator's script once
+/// per request makes it a lever for anyone who can reach the endpoint; a minute
+/// of staleness on a list that is signed daily costs nothing.
+const CRL_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// How many read hooks may run at once, over every request in the process.
+/// `crl` and `renewal_info` both spawn the operator's script, so without a
+/// bound the process spawns one per concurrent request.
+const CONCURRENT_READ_HOOKS: usize = 4;
+
 /// The read-only hooks of the same script: `crl` and `renewal_info`, each run
 /// only when its `supports_*` flag is set.
+///
+/// Both are reachable from an unauthenticated request — `GET /crl` and RFC
+/// 9773's `renewalInfo` — and each one spawns a process, so the answers are
+/// rationed here: the CRL is cached for [`CRL_CACHE_TTL`], and no more than
+/// [`CONCURRENT_READ_HOOKS`] run at a time.
 #[derive(Debug)]
 pub struct CustomScriptInfo {
     hook: ScriptHook,
     supports_crl: bool,
     supports_renewal_info: bool,
+    crl_cache: tokio::sync::Mutex<Option<CachedCrl>>,
+    running: tokio::sync::Semaphore,
+}
+
+/// The last `crl` hook answer and when it was taken.
+#[derive(Debug)]
+struct CachedCrl {
+    taken: Instant,
+    der: Option<Vec<u8>>,
 }
 
 /// The hook `cfg` describes, or the refusal of an empty `script_path`.
@@ -69,7 +96,9 @@ impl CustomScriptSigner {
             timeout_ms = cfg.timeout_ms,
             supports_crl = cfg.supports_crl,
             supports_renewal_info = cfg.supports_renewal_info,
-            args = ?cfg.args,
+            // The count, not the values: an argument may carry a credential
+            // the operator passes to their own script.
+            args = cfg.args.len(),
         );
 
         Ok(Self {
@@ -80,6 +109,24 @@ impl CustomScriptSigner {
 }
 
 impl CustomScriptInfo {
+    /// Runs one read hook, under the process-wide bound on how many may run at
+    /// once.
+    ///
+    /// Both read hooks are reachable from an unauthenticated request, so
+    /// without this a burst of them is a burst of processes. Waiting for a
+    /// permit is bounded by the hook's own timeout, which every caller already
+    /// budgets for.
+    async fn run_read_hook(
+        &self,
+        envs: &[(&str, &str)],
+        payload: &serde_json::Value,
+    ) -> Result<ScriptOutcome, SignerError> {
+        let _permit = self.running.acquire().await.map_err(|_| {
+            SignerError::Internal("the custom signer's hook gate is closed".to_string())
+        })?;
+        run_script(&self.hook, envs, payload).await
+    }
+
     /// The read side of the script `cfg` names. Validates exactly what
     /// [`CustomScriptSigner::from_config`] does, so a process building only
     /// this still refuses an empty `script_path`.
@@ -88,6 +135,8 @@ impl CustomScriptInfo {
             hook: hook_from(cfg)?,
             supports_crl: cfg.supports_crl,
             supports_renewal_info: cfg.supports_renewal_info,
+            crl_cache: tokio::sync::Mutex::new(None),
+            running: tokio::sync::Semaphore::new(CONCURRENT_READ_HOOKS),
         })
     }
 }
@@ -200,15 +249,24 @@ impl SignerInfo for CustomScriptInfo {
         if !self.supports_crl {
             return Ok(None);
         }
+        // The lock is held across the run, so a burst of requests is one spawn
+        // and the rest read what it produced.
+        let mut cached = self.crl_cache.lock().await;
+        if let Some(entry) = cached.as_ref()
+            && entry.taken.elapsed() < CRL_CACHE_TTL
+        {
+            return Ok(entry.der.clone());
+        }
+
         let envs = [("ACME_SIGNER_HOOK", "crl")];
         let payload = json!({ "hook": "crl" });
 
-        match run_script(&self.hook, &envs, &payload).await {
+        let answer = match self.run_read_hook(&envs, &payload).await {
             Ok(outcome) if outcome.output.status.success() => {
                 if outcome.output.stdout.is_empty() {
-                    Ok(None)
+                    None
                 } else {
-                    Ok(Some(outcome.output.stdout))
+                    Some(outcome.output.stdout)
                 }
             }
             // Two different failures: the script ran and refused (a non-zero
@@ -221,13 +279,20 @@ impl SignerInfo for CustomScriptInfo {
                     outcome = "failure",
                     detail = %detail_from(&outcome),
                 );
-                Ok(None)
+                None
             }
             Err(err) => {
                 warn!(event = "signer_custom_crl_failed", outcome = "failure", detail = %err);
-                Ok(None)
+                None
             }
-        }
+        };
+        // A refusal is cached too: a script that is failing would otherwise be
+        // re-run once per request for as long as it keeps failing.
+        *cached = Some(CachedCrl {
+            taken: Instant::now(),
+            der: answer.clone(),
+        });
+        Ok(answer)
     }
 
     /// Stdout contract: empty for "no opinion", `<start> <end>` as epoch
@@ -244,7 +309,7 @@ impl SignerInfo for CustomScriptInfo {
             "cert_der_base64": BASE64_STANDARD.encode(cert_der),
         });
 
-        let outcome = run_script(&self.hook, &envs, &payload).await?;
+        let outcome = self.run_read_hook(&envs, &payload).await?;
         let output = &outcome.output;
         if !output.status.success() {
             return Err(SignerError::Internal(detail_from(&outcome)));
@@ -569,6 +634,36 @@ exit 0
             signer.info().crl_der().await.unwrap(),
             Some(b"fake-der-bytes".to_vec())
         );
+    }
+
+    /// `GET /crl` is unauthenticated, so one request per spawn of an
+    /// operator's script is a lever anyone who can reach the endpoint may
+    /// pull. The answer is served again for a minute instead.
+    #[tokio::test]
+    async fn crl_der_is_cached_between_requests() {
+        let dir = TempDir::new("signer-custom");
+        let counter = dir.path().join("runs");
+        let mut cfg = write_script(
+            &dir,
+            "crl.sh",
+            &format!(
+                "#!/bin/sh\ncat > /dev/null\necho x >> {}\nprintf 'fake-der-bytes'\nexit 0\n",
+                counter.to_str().unwrap()
+            ),
+        );
+        cfg.supports_crl = true;
+        let signer = CustomScriptSigner::from_config(&cfg).unwrap();
+        let info = signer.info();
+
+        for _ in 0..5 {
+            assert_eq!(
+                info.crl_der().await.unwrap(),
+                Some(b"fake-der-bytes".to_vec())
+            );
+        }
+
+        let runs = std::fs::read_to_string(&counter).unwrap_or_default();
+        assert_eq!(runs.lines().count(), 1, "five requests, one spawn");
     }
 
     #[tokio::test]

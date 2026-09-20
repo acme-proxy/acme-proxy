@@ -427,6 +427,12 @@ migrated configuration before restarting.
 
 ### Security
 
+- **No secret in a `Debug` rendering or a routine log line.** An `Eab` row
+  carries the HMAC secret the credential is, and `eab delete` hands the row up
+  to the operation layer, where one `{:?}` would have printed it; its `Debug`
+  now redacts the secret. The `custom` signer's startup line logged
+  `signer.custom.args`, which may carry a credential the operator passes to
+  their own script, and now logs how many arguments there are.
 - **A validation verdict no longer overwrites what happened since it started.**
   Every challenge, authorization and order transition is now an `UPDATE`
   guarded on the state it leaves. Before, a verdict landing after the client
@@ -436,6 +442,10 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **The `custom` signer's read hooks no longer spawn a process per request.**
+  `GET /crl` and `GET /renewalInfo/{certID}` are unauthenticated, and each one
+  ran the operator's script: the CRL answer is now cached for a minute, and at
+  most four read hooks run at a time.
 - **A revocation recorded while its CA's CRL was being signed no longer waits
   for the daily refresh.** The queue's identity index covers `running` as well
   as `ready`, so the request to sign it in was deduplicated against the pass

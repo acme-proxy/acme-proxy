@@ -29,7 +29,6 @@ use acme_proxy_core::random::random_bytes;
 /// - `delete`: remove the row, and with it deactivate, delete or leave the
 ///   accounts it bound (see [`BoundAccounts`])
 /// - `to_json`: admin-facing rendering (never includes the secret)
-#[derive(Debug)]
 pub struct Eab {
     pub kid: Uuid,
     pub secret: Vec<u8>,
@@ -39,6 +38,26 @@ pub struct Eab {
     pub profile: Option<String>,
     pub status: String,
     pub created_at: i64,
+}
+
+impl std::fmt::Debug for Eab {
+    /// Everything but the secret, which is the HMAC key the credential *is*.
+    ///
+    /// Hand-written rather than derived because this row travels: `eab delete`
+    /// carries it up into the operation layer so the trail can name what was
+    /// removed, and one `{:?}` on the way — in a log line, an error, a test
+    /// failure — would print the key an operator handed a client.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Eab")
+            .field("kid", &self.kid)
+            .field("secret", &"<redacted>")
+            .field("label", &self.label)
+            .field("profile", &self.profile)
+            .field("status", &self.status)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 /// What `eab delete` does to the accounts a credential bound.
