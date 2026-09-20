@@ -34,6 +34,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The deployment authenticates through the Pages OIDC token, not
+          # through git, so the checkout needs no credentials left behind.
+          persist-credentials: false
 
       # Pinned, not 'latest': an upstream mdBook release should not be able to
       # break a deployment with no change on this side. Installed as prebuilt

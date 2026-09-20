@@ -49,6 +49,10 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       # Pinned by SHA, so the action can no longer read the toolchain out of its
       # own ref name (`@stable`) and `toolchain:` has to say it explicitly.
@@ -63,7 +67,9 @@ jobs:
       - name: Install cargo-llvm-cov and cargo-nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
-          tool: cargo-llvm-cov,cargo-nextest
+          # Pinned for the reason every action here is: these are prebuilt
+          # binaries this workflow downloads and runs. Update deliberately.
+          tool: cargo-llvm-cov@0.8.7,cargo-nextest@0.9.145
 
       - name: Format
         run: cargo fmt --all --check
@@ -185,6 +191,10 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       # Read out of the manifest rather than written here as well: a floor
       # stated in two places is a floor that drifts, and the failure mode is
@@ -225,6 +235,10 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -237,7 +251,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.145
 
       # Only the module `.so` is needed: the tests create the token and
       # generate the CA key through `cryptoki` itself rather than shelling out
@@ -276,10 +290,15 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       # Pinned, and installed as prebuilt binaries rather than `cargo install`
-      # from source: `mdbook-version: latest` in the deploy workflow means an
-      # upstream release can break the build with no change on this side.
+      # from source: an upstream release should not be able to break the build
+      # with no change on this side. Keep these versions in step with
+      # `mdbook.yml`, which deploys what this job checks.
       - name: Install mdBook
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
@@ -303,6 +322,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       # `deny.toml` is a hand-tuned policy — curated licence allowlist, ban and
       # source rules — that nothing was enforcing. For a CA, an unnoticed
@@ -328,6 +351,10 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
         if: steps.release.outputs.branch != ''
         with:
           ref: ${{ steps.release.outputs.branch }}
@@ -363,6 +390,10 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -434,6 +465,10 @@ jobs:
     if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -445,7 +480,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.145
 
       # A filter expression, not a positional argument: nextest's positional
       # filter matches test *names*, and none of these contain "e2e", so

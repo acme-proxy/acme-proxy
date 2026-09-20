@@ -523,6 +523,15 @@ migrated configuration before restarting.
 
 ### Packaging
 
+- **The container's base image is pinned by digest** — the multi-arch index, so
+  it resolves on both architectures — and the Rust toolchain is installed from
+  `rustup-init` verified against its published checksum rather than piped from
+  the network into a shell. Two builds of one release tag are now the same
+  bytes.
+- **CI pins the versions of the tools it downloads and runs**
+  (`cargo-llvm-cov`, `cargo-nextest`), as it already pinned every action by
+  SHA, and no checkout leaves a token behind in `.git/config`.
+
 - **A container image is published on every release**, as
   `ghcr.io/acme-proxy/acme-proxy:<version>`, the floating `:X.Y` of its line,
   and `:latest` when it is the highest release, for `linux/amd64` and

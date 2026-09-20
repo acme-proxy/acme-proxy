@@ -42,7 +42,15 @@
 # builder (`DOCKER_BUILDKIT=0` fails here); modern docker defaults to BuildKit and
 # podman/buildah support them natively.
 
-FROM debian:trixie-slim AS builder
+# Pinned by digest, for the reason the toolchain below is: a tag is mutable,
+# so `debian:trixie-slim` is a different image every week and two builds of one
+# release tag would not be the same bytes. The digest is the multi-arch index,
+# so it resolves on amd64 and arm64 alike. Refresh it deliberately, with:
+#
+#     docker buildx imagetools inspect debian:trixie-slim
+#
+# (or `podman manifest inspect`), and change both `FROM` lines together.
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates curl build-essential pkg-config libsqlite3-dev \
@@ -53,8 +61,26 @@ RUN apt-get update \
 # here is pinned. Raise it deliberately, never below `rust-version` in
 # Cargo.toml.
 ARG RUST_TOOLCHAIN=1.98.1
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"
+# rustup's own installer, verified against the checksum it publishes beside it,
+# rather than piped from the network into a shell. What that buys is not much
+# against a compromised server — it serves both files — but it is what catches
+# a truncated or corrupted download, and it makes the bytes this image was
+# built from nameable.
+ARG RUSTUP_VERSION=1.28.2
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "${arch}" in \
+      amd64) target="x86_64-unknown-linux-gnu" ;; \
+      arm64) target="aarch64-unknown-linux-gnu" ;; \
+      *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    base="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${target}"; \
+    curl --proto '=https' --tlsv1.2 -sSfO "${base}/rustup-init"; \
+    curl --proto '=https' --tlsv1.2 -sSf "${base}/rustup-init.sha256" \
+      | awk '{print $1 "  rustup-init"}' | sha256sum -c -; \
+    chmod +x rustup-init; \
+    ./rustup-init -y --profile minimal --default-toolchain "${RUST_TOOLCHAIN}"; \
+    rm rustup-init
 ENV PATH="/root/.cargo/bin:${PATH}"
 WORKDIR /app
 COPY . .
@@ -71,6 +97,9 @@ COPY . .
 # build below. Both expansions are quoted because `RUN` is shell form: an empty
 # value would otherwise turn the copy into `cp target//acme-proxy`. Each profile
 # builds into its own `target/<profile>/`, so the two share one cache mount.
+# Any profile whose output directory is its own name, which is every profile
+# but `dev` — cargo writes that one to `target/debug`. The lab asks for `e2e`
+# and a release build asks for nothing.
 ARG CARGO_PROFILE=release
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
@@ -78,7 +107,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     cargo build --profile "${CARGO_PROFILE}" --locked --package acme-proxy \
     && cp "target/${CARGO_PROFILE}/acme-proxy" /app/acme-proxy
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 # openssl is here only for tests/e2e/custom_signer/signer_script.sh, a lab
 # scenario for signer.backend = "custom" that runs a real toy CA *inside* this
 # container (the script is a subprocess of acme-proxy itself, so it needs
