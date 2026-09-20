@@ -299,6 +299,12 @@ another order's for that name, or ones this server did not write — are left
 alone. The challenge name must lie inside `zone`; one outside it is refused
 before anything is sent.
 
+Publication and cleanup continue after cancellation while the process runs.
+An uncertain publication result also starts exact-value cleanup. Cleanup makes
+at most two attempts, each with `timeout_secs` as its limit. Cleanup failure
+produces a warning and preserves the certificate result. Process exit stops
+this worker. A retry with the same owner and value waits for earlier cleanup.
+
 Updates are sent over UDP and retried over TCP when the response is truncated —
 a TSIG-signed update readily exceeds 512 bytes, so the TCP path is a normal
 occurrence rather than an edge case.

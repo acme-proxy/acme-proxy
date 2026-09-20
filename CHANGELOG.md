@@ -355,6 +355,9 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- DNS-01 cleanup continues after cancellation and uncertain publication.
+  Bounded retries remove only the current attempt's TXT value.
+
 - **Every web-admin write now logs and audits identically through `/api` and
   `/ui`.** Each action (EAB create, revoke and delete; account contact,
   deactivate and delete; order revoke and delete; job cancel and run-now; nonce

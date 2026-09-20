@@ -54,6 +54,7 @@ use acme_proxy_store::upstream_order::UpstreamOrder;
 pub mod account;
 pub mod client;
 pub mod dns01;
+mod dns01_cleanup;
 pub mod eab;
 pub mod flow;
 pub mod http01;
@@ -115,6 +116,7 @@ struct Inner {
     /// A field beside the strategy rather than inside `ChallengeStrategy::Dns01`,
     /// so a test swapping the updater keeps whatever wait was configured.
     dns01_propagation: propagation::Propagation,
+    dns01_update_timeout: Duration,
     poll: PollConfig,
     /// The whole `profile name -> dispatcher` map, not merely the profiles this
     /// backend relays for: a cheap clone either way, and it sidesteps keeping a
@@ -293,6 +295,7 @@ impl RelaySigner {
             database: parts.database.clone(),
             strategy,
             dns01_propagation,
+            dns01_update_timeout: Duration::from_secs(cfg.dns01.rfc2136.timeout_secs),
             poll,
             notifiers: parts.notifiers.clone(),
             audit: Arc::new(
