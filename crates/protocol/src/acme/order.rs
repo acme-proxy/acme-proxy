@@ -198,14 +198,23 @@ async fn check_replaces(
 /// own `UNIQUE` constraint, and reporting one of those as `alreadyReplaced`
 /// would send a client chasing something entirely unrelated.
 ///
-/// The column and not the index name — SQLite reports a partial unique index
-/// violation as `UNIQUE constraint failed: orders.profile, orders.replaces`,
-/// naming the columns and never `idx_orders_replaces_claim`. Pinned by
+/// Each dialect names a different half of the same index, so both spellings go
+/// in and `sql::is_unique_violation_on` asks whichever the driver can answer.
+/// SQLite reports a partial unique index violation as `UNIQUE constraint
+/// failed: orders.profile, orders.replaces`, naming the columns and never the
+/// index; PostgreSQL reports `duplicate key value violates unique constraint
+/// "idx_orders_replaces_claim"`, naming the index and never the columns.
+/// Matching on the SQLite text alone made this silently stop recognising the
+/// collision under PostgreSQL, turning a `409 alreadyReplaced` into a `500`.
+/// Pinned by
 /// `acme_proxy_store::db::tests::one_predecessor_can_only_be_claimed_by_one_live_order`,
 /// which asserts on the message this reads.
 fn is_replaces_conflict(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()
-        && db.message().contains("orders.replaces"))
+    acme_proxy_store::sql::is_unique_violation_on(
+        error,
+        "orders.replaces",
+        "idx_orders_replaces_claim",
+    )
 }
 
 /// Builds the `certificate_issue_failed` row shared by `finalize`'s four

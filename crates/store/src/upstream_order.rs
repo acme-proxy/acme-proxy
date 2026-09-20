@@ -155,10 +155,11 @@ impl UpstreamOrder {
 
         debug!(event = "db_upstream_order_create_started", outcome = "progress", order_id = ?order_id);
         let result = crate::sql::query(
-            "INSERT OR IGNORE INTO upstream_orders \
+            "INSERT INTO upstream_orders \
              (order_id, upstream_order_url, upstream_finalize_url, csr_der, status, \
               created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?);",
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT DO NOTHING;",
         )
         .bind(record.order_id)
         .bind(&record.upstream_order_url)
@@ -413,10 +414,13 @@ impl UpstreamOrder {
             offset = query.offset,
         );
 
-        let mut page = crate::sql::Builder::new(format!(
-            "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
-            UpstreamOrderRow::COLUMNS
-        ));
+        let mut page = crate::sql::Builder::new(
+            database.dialect(),
+            format!(
+                "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
+                UpstreamOrderRow::COLUMNS
+            ),
+        );
         query.push_predicates(&mut page);
         page.push(" ORDER BY u.created_at DESC, u.order_id DESC LIMIT ");
         page.push_bind(query.limit);
@@ -430,6 +434,7 @@ impl UpstreamOrder {
             .collect::<Result<_, _>>()?;
 
         let mut count = crate::sql::Builder::new(
+            database.dialect(),
             "SELECT COUNT(*) FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
         );
         query.push_predicates(&mut count);
@@ -448,11 +453,14 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
-        let mut query = crate::sql::Builder::new(format!(
-            "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id \
+        let mut query = crate::sql::Builder::new(
+            database.dialect(),
+            format!(
+                "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id \
              WHERE u.order_id = ",
-            UpstreamOrderRow::COLUMNS
-        ));
+                UpstreamOrderRow::COLUMNS
+            ),
+        );
         query.push_bind(order_id);
         let row = query.build().fetch_optional(database).await?;
         row.map(UpstreamOrderRow::from_joined_row).transpose()

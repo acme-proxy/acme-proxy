@@ -223,8 +223,10 @@ impl Authorization {
         // `QueryBuilder` rather than a formatted `IN` list: `push_bind` is what
         // keeps the ids parameters instead of interpolated SQL, the same rule
         // `OrderQuery::push_predicates` follows.
-        let mut builder =
-            crate::sql::Builder::new("SELECT id, order_id FROM authorizations WHERE order_id IN (");
+        let mut builder = crate::sql::Builder::new(
+            database.dialect(),
+            "SELECT id, order_id FROM authorizations WHERE order_id IN (",
+        );
         let mut separated = builder.separated(", ");
         for id in order_ids {
             separated.push_bind(*id);

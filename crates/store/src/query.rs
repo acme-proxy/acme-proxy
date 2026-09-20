@@ -47,7 +47,7 @@ mod tests {
     use super::*;
 
     fn sql_of(pairs: &[(&str, Option<&str>)]) -> (String, &'static str) {
-        let mut builder = crate::sql::Builder::new("SELECT 1 FROM t");
+        let mut builder = crate::sql::Builder::new(crate::sql::Dialect::Sqlite, "SELECT 1 FROM t");
         let next = push_equalities(&mut builder, WHERE, pairs);
         (builder.sql().to_string(), next)
     }

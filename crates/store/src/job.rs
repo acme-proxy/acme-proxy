@@ -3,8 +3,10 @@
 //! Every statement here is written so the *database* decides a race, never a
 //! read-then-write in Rust. Two shapes carry all of it:
 //!
-//! - **`INSERT OR IGNORE` + `rows_affected() == 0`** for enqueue, against the
-//!   partial unique index on `(kind, dedup_key)`. A `0` means a live job already
+//! - **`INSERT … ON CONFLICT DO NOTHING` + `rows_affected() == 0`** for enqueue,
+//!   against the partial unique index on `(kind, dedup_key)`. No conflict
+//!   target is named, so the partial index catches it on either dialect, and
+//!   both report `0` rows. A `0` means a live job already
 //!   holds that identity — the same guard [`crate::upstream_order::UpstreamOrder::create`]
 //!   takes on its primary key.
 //! - **A guarded `UPDATE … RETURNING`** for the claim, and a guarded `UPDATE`
@@ -156,10 +158,11 @@ impl Job {
     ) -> Result<bool, sqlx::Error> {
         let now = now_secs();
         let queued = crate::sql::query(
-            "INSERT OR IGNORE INTO jobs \
+            "INSERT INTO jobs \
              (id, kind, dedup_key, payload, status, run_at, attempts, max_attempts, \
               deadline, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, 'ready', ?, 0, ?, ?, ?, ?);",
+             VALUES (?, ?, ?, ?, 'ready', ?, 0, ?, ?, ?, ?) \
+             ON CONFLICT DO NOTHING;",
         )
         .bind(row.id)
         .bind(row.kind)
@@ -406,7 +409,10 @@ impl Job {
         // A `QueryBuilder` rather than `sqlx::query`, which takes only
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
-        let mut query = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs WHERE id = "));
+        let mut query = crate::sql::Builder::new(
+            database.dialect(),
+            format!("SELECT {COLUMNS} FROM jobs WHERE id = "),
+        );
         query.push_bind(id);
         let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
@@ -418,10 +424,13 @@ impl Job {
         dedup_key: &str,
         database: &Database,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let mut query = crate::sql::Builder::new(format!(
-            "SELECT {COLUMNS} FROM jobs \
+        let mut query = crate::sql::Builder::new(
+            database.dialect(),
+            format!(
+                "SELECT {COLUMNS} FROM jobs \
              WHERE status IN ('ready', 'running') AND kind = "
-        ));
+            ),
+        );
         query.push_bind(kind);
         query.push(" AND dedup_key = ");
         query.push_bind(dedup_key);
@@ -474,7 +483,8 @@ impl Job {
             offset = query.offset,
         );
 
-        let mut page = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs"));
+        let mut page =
+            crate::sql::Builder::new(database.dialect(), format!("SELECT {COLUMNS} FROM jobs"));
         query.push_predicates(&mut page);
         // Newest first, `id` breaking the tie: `created_at` is whole seconds,
         // and a v7 id sorts chronologically within one, so two jobs written in
@@ -490,7 +500,7 @@ impl Job {
             .map(Self::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM jobs");
+        let mut count = crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*) FROM jobs");
         query.push_predicates(&mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
@@ -508,8 +518,10 @@ impl Job {
         dedup_key: &str,
         database: &Database,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let mut query =
-            crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs WHERE kind = "));
+        let mut query = crate::sql::Builder::new(
+            database.dialect(),
+            format!("SELECT {COLUMNS} FROM jobs WHERE kind = "),
+        );
         query.push_bind(kind);
         query.push(" AND dedup_key = ");
         query.push_bind(dedup_key);

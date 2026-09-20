@@ -179,32 +179,38 @@ impl OrderQuery {
         }
 
         // `identifiers` is a JSON array of `{type, value}` objects, so a name
-        // match walks it with `json_each`. There is no expression index over
-        // that (SQLite has none), so this is a scan — defensible on an
-        // operator-driven listing over a retention-swept table. Both the needle
-        // and the stored value are folded to lower case: DNS names are
+        // match walks it — the one query in this crate whose spelling differs
+        // per dialect, which is why the three words that differ come from
+        // `Dialect` rather than the query being written twice. There is no
+        // expression index over it either way, so this is a scan — defensible
+        // on an operator-driven listing over a retention-swept table. Both the
+        // needle and the stored value are folded to lower case: DNS names are
         // case-insensitive and are stored already normalised.
         //
         // Exact match is the misissuance-hunt answer: `example.com` must not
         // also return `evil-example.com`. The bind is a parameter like every
         // other value here.
         if let Some(identifier) = self.identifier.as_deref() {
-            builder.push(separator).push(
-                "EXISTS (SELECT 1 FROM json_each(orders.identifiers) \
-                 WHERE lower(json_extract(json_each.value, '$.value')) = ",
-            );
+            let source = builder.dialect().json_array_source("orders.identifiers");
+            let member = builder.dialect().json_member("value");
+            builder.push(separator).push(format!(
+                "EXISTS (SELECT 1 FROM {source} WHERE lower({member}) = "
+            ));
             builder.push_bind(identifier.to_lowercase());
             builder.push(")");
             separator = " AND ";
         }
 
-        // Substring match, for a half-remembered name. `instr`, not `LIKE`, so
-        // a `%` or `_` the operator typed is a literal rather than a wildcard.
+        // Substring match, for a half-remembered name. `instr`/`strpos`, not
+        // `LIKE`, so a `%` or `_` the operator typed is a literal rather than a
+        // wildcard.
         if let Some(fragment) = self.identifier_contains.as_deref() {
-            builder.push(separator).push(
-                "EXISTS (SELECT 1 FROM json_each(orders.identifiers) \
-                 WHERE instr(lower(json_extract(json_each.value, '$.value')), ",
-            );
+            let source = builder.dialect().json_array_source("orders.identifiers");
+            let member = builder.dialect().json_member("value");
+            let position = builder.dialect().substring_position();
+            builder.push(separator).push(format!(
+                "EXISTS (SELECT 1 FROM {source} WHERE {position}(lower({member}), "
+            ));
             builder.push_bind(fragment.to_lowercase());
             builder.push(") > 0)");
             separator = " AND ";
@@ -582,7 +588,10 @@ impl Order {
                limit = query.limit,
                offset = query.offset);
 
-        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!(), " FROM orders"));
+        let mut page = crate::sql::Builder::new(
+            database.dialect(),
+            concat!("SELECT ", columns!(), " FROM orders"),
+        );
         query.push_predicates(&mut page);
         // Newest first, and `id` breaks the tie: `created_at` is whole seconds,
         // so without it two orders placed in the same second could swap between
@@ -598,7 +607,7 @@ impl Order {
             .map(Order::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM orders");
+        let mut count = crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*) FROM orders");
         query.push_predicates(&mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
@@ -813,7 +822,7 @@ impl Order {
             limit,
             offset
         );
-        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!()));
+        let mut page = crate::sql::Builder::new(database.dialect(), concat!("SELECT ", columns!()));
         push_expiring_predicates(profile, before, &mut page);
         page.push(" ORDER BY cert_not_after ASC, id ASC LIMIT ");
         page.push_bind(limit);
@@ -826,7 +835,7 @@ impl Order {
             .map(Order::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = crate::sql::Builder::new("SELECT COUNT(*)");
+        let mut count = crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*)");
         push_expiring_predicates(profile, before, &mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 

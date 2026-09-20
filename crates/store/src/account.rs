@@ -599,7 +599,10 @@ impl Account {
         // `id` breaks the `created_at` tie for the same reason it does for
         // orders: whole-second timestamps would otherwise let two rows swap
         // between pages, and one of them would never be seen.
-        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!(), " FROM accounts"));
+        let mut page = crate::sql::Builder::new(
+            database.dialect(),
+            concat!("SELECT ", columns!(), " FROM accounts"),
+        );
         push_predicates(&mut page);
         page.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         page.push_bind(limit);
@@ -607,7 +610,8 @@ impl Account {
         page.push_bind(offset);
         let rows = page.build().fetch_all(database).await?;
 
-        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM accounts");
+        let mut count =
+            crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*) FROM accounts");
         push_predicates(&mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get(0)?;
 
@@ -829,14 +833,16 @@ impl Account {
 /// entirely — one that must not be quietly answered with somebody else's
 /// account.
 ///
-/// The columns and not an index name: SQLite reports this as `UNIQUE constraint
-/// failed: accounts.profile, accounts.pubkey`, naming the columns of the table
-/// constraint. Pinned by
+/// The two dialects name different things, so both spellings are passed and
+/// [`crate::sql::is_unique_violation_on`] asks whichever the driver can answer:
+/// SQLite reports `UNIQUE constraint failed: accounts.profile, accounts.pubkey`
+/// and offers no constraint name, while PostgreSQL reports only the constraint,
+/// which is why `migrations-postgres/` names it rather than letting the server
+/// pick a spelling. Pinned by
 /// `tests::concurrent_find_or_create_for_one_key_yields_one_account`, which
 /// reaches this branch by racing eight callers over one key.
 pub fn is_pubkey_conflict(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db) if db.is_unique_violation()
-        && db.message().contains("accounts.pubkey"))
+    crate::sql::is_unique_violation_on(error, "accounts.pubkey", "accounts_profile_pubkey_key")
 }
 
 #[cfg(test)]

@@ -54,18 +54,79 @@ pub enum Dialect {
     Postgres,
 }
 
+impl Dialect {
+    /// The `FROM` fragment that walks the JSON array in `column`, aliased
+    /// `ident`.
+    ///
+    /// `orders.identifiers` is a JSON array of `{type, value}` objects and the
+    /// operator listing matches a name inside it. Neither dialect indexes that,
+    /// so it is a scan either way — defensible on an operator-driven listing
+    /// over a retention-swept table, and the reason this is three words of
+    /// dialect rather than two whole queries.
+    #[must_use]
+    pub fn json_array_source(self, column: &str) -> String {
+        match self {
+            Dialect::Sqlite => format!("json_each({column}) AS ident"),
+            // The column is `text`, so it is cast rather than stored as jsonb:
+            // the schema is shared with SQLite, which has no such type.
+            Dialect::Postgres => format!("jsonb_array_elements({column}::jsonb) AS ident"),
+        }
+    }
+
+    /// The element's `value` member, as text, from the alias above.
+    #[must_use]
+    pub fn json_member(self, member: &str) -> String {
+        match self {
+            Dialect::Sqlite => format!("json_extract(ident.value, '$.{member}')"),
+            Dialect::Postgres => format!("ident.value ->> '{member}'"),
+        }
+    }
+
+    /// `haystack, needle` substring search returning a 1-based position.
+    ///
+    /// Deliberately not PostgreSQL's `position(needle in haystack)`: it takes
+    /// its arguments the other way round, so the two dialects would bind in
+    /// different orders from one `push_bind` sequence. `strpos` matches
+    /// `instr`'s order, which is what keeps the caller dialect-free.
+    #[must_use]
+    pub fn substring_position(self) -> &'static str {
+        match self {
+            Dialect::Sqlite => "instr",
+            Dialect::Postgres => "strpos",
+        }
+    }
+}
+
 /// One bound parameter, in the only six shapes this schema stores.
 ///
 /// Timestamps are [`Value::I64`] epoch seconds, not a date type — see the
 /// module doc. JSON columns are [`Value::Text`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    Null,
+    /// An absent value, **carrying the type of the column it is bound to**.
+    ///
+    /// SQLite has no typed null: a bound `None` is `NULL` whatever the caller
+    /// had in mind. PostgreSQL sends a type OID with every parameter and
+    /// refuses `column "eab_kid" is of type uuid but expression is of type
+    /// bigint`, so the type an absent value would have had has to survive the
+    /// trip. Every bind site knows it statically — `Option<Uuid>` is
+    /// `Null(NullKind::Uuid)` — so nothing has to be declared twice.
+    Null(NullKind),
     Bool(bool),
     I64(i64),
     Text(String),
     Blob(Vec<u8>),
     Uuid(Uuid),
+}
+
+/// The type an absent value would have had. See [`Value::Null`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullKind {
+    Bool,
+    I64,
+    Text,
+    Blob,
+    Uuid,
 }
 
 /// What [`Query::bind`] accepts.
@@ -78,7 +139,7 @@ pub trait Bind {
 }
 
 macro_rules! bind {
-    ($($ty:ty => |$v:ident| $body:expr),* $(,)?) => {$(
+    ($($ty:ty => $kind:ident, |$v:ident| $body:expr),* $(,)?) => {$(
         impl Bind for $ty {
             fn to_value(self) -> Value {
                 let $v = self;
@@ -89,7 +150,7 @@ macro_rules! bind {
             fn to_value(self) -> Value {
                 match self {
                     Some($v) => { $body }
-                    None => Value::Null,
+                    None => Value::Null(NullKind::$kind),
                 }
             }
         }
@@ -97,18 +158,18 @@ macro_rules! bind {
 }
 
 bind! {
-    bool => |v| Value::Bool(v),
-    i64 => |v| Value::I64(v),
-    i32 => |v| Value::I64(i64::from(v)),
-    u32 => |v| Value::I64(i64::from(v)),
-    String => |v| Value::Text(v),
-    &str => |v| Value::Text(v.to_string()),
-    &String => |v| Value::Text(v.clone()),
-    Vec<u8> => |v| Value::Blob(v),
-    &[u8] => |v| Value::Blob(v.to_vec()),
-    &Vec<u8> => |v| Value::Blob(v.clone()),
-    Uuid => |v| Value::Uuid(v),
-    &Uuid => |v| Value::Uuid(*v),
+    bool => Bool, |v| Value::Bool(v),
+    i64 => I64, |v| Value::I64(v),
+    i32 => I64, |v| Value::I64(i64::from(v)),
+    u32 => I64, |v| Value::I64(i64::from(v)),
+    String => Text, |v| Value::Text(v),
+    &str => Text, |v| Value::Text(v.to_string()),
+    &String => Text, |v| Value::Text(v.clone()),
+    Vec<u8> => Blob, |v| Value::Blob(v),
+    &[u8] => Blob, |v| Value::Blob(v.to_vec()),
+    &Vec<u8> => Blob, |v| Value::Blob(v.clone()),
+    Uuid => Uuid, |v| Value::Uuid(v),
+    &Uuid => Uuid, |v| Value::Uuid(*v),
 }
 
 /// A nullable column bound from a reference to the `Option` that holds it.
@@ -293,7 +354,11 @@ impl Query {
         let mut q = sqlx::query(sqlx::AssertSqlSafe(self.sql));
         for value in self.args {
             q = match value {
-                Value::Null => q.bind(None::<i64>),
+                Value::Null(NullKind::Bool) => q.bind(None::<bool>),
+                Value::Null(NullKind::I64) => q.bind(None::<i64>),
+                Value::Null(NullKind::Text) => q.bind(None::<String>),
+                Value::Null(NullKind::Blob) => q.bind(None::<Vec<u8>>),
+                Value::Null(NullKind::Uuid) => q.bind(None::<Uuid>),
                 Value::Bool(v) => q.bind(v),
                 Value::I64(v) => q.bind(v),
                 Value::Text(v) => q.bind(v),
@@ -309,7 +374,11 @@ impl Query {
         let mut q = sqlx::query(sqlx::AssertSqlSafe(to_dollar_placeholders(&self.sql)));
         for value in self.args {
             q = match value {
-                Value::Null => q.bind(None::<i64>),
+                Value::Null(NullKind::Bool) => q.bind(None::<bool>),
+                Value::Null(NullKind::I64) => q.bind(None::<i64>),
+                Value::Null(NullKind::Text) => q.bind(None::<String>),
+                Value::Null(NullKind::Blob) => q.bind(None::<Vec<u8>>),
+                Value::Null(NullKind::Uuid) => q.bind(None::<Uuid>),
                 Value::Bool(v) => q.bind(v),
                 Value::I64(v) => q.bind(v),
                 Value::Text(v) => q.bind(v),
@@ -517,18 +586,29 @@ pub fn is_unique_violation_on(
 /// `COUNT(*)` — sharing one `push_predicates`, so a filter applied to only one
 /// cannot report a total the rows disagree with. See [`crate::query`].
 pub struct Builder {
+    dialect: Dialect,
     sql: String,
     args: Vec<Value>,
 }
 
 impl Builder {
     /// Starts a builder from a leading fragment.
+    ///
+    /// The dialect comes in here rather than at `build`, because a predicate
+    /// may need it — see [`Dialect::json_array_source`].
     #[must_use]
-    pub fn new(sql: impl Into<String>) -> Self {
+    pub fn new(dialect: Dialect, sql: impl Into<String>) -> Self {
         Builder {
+            dialect,
             sql: sql.into(),
             args: Vec::new(),
         }
+    }
+
+    /// Which dialect the fragments pushed onto this must be written for.
+    #[must_use]
+    pub fn dialect(&self) -> Dialect {
+        self.dialect
     }
 
     /// Appends SQL verbatim. Never reached by a value from outside.
@@ -599,7 +679,7 @@ mod tests {
 
     #[test]
     fn a_separated_run_joins_only_between_values() {
-        let mut builder = Builder::new("SELECT 1 WHERE id IN (");
+        let mut builder = Builder::new(Dialect::Sqlite, "SELECT 1 WHERE id IN (");
         let mut list = builder.separated(", ");
         for id in [1i64, 2, 3] {
             list.push_bind(id);
@@ -660,7 +740,7 @@ mod tests {
 
     #[test]
     fn a_builder_pushes_markers_and_values_together() {
-        let mut builder = Builder::new("SELECT 1 FROM t");
+        let mut builder = Builder::new(Dialect::Sqlite, "SELECT 1 FROM t");
         builder.push(" WHERE a = ").push_bind("x");
         builder.push(" AND b = ").push_bind(7i64);
 
@@ -676,10 +756,25 @@ mod tests {
         );
     }
 
+    /// An absent value keeps the type it would have had.
+    ///
+    /// The property PostgreSQL needs: a `None::<Uuid>` bound as `bigint` is
+    /// `column "eab_kid" is of type uuid but expression is of type bigint`,
+    /// which is how a whole `newAccount` used to fail against it.
     #[test]
-    fn an_absent_optional_binds_null() {
-        let query = super::query("SELECT ?").bind(None::<String>);
-        assert_eq!(query.args, vec![Value::Null]);
+    fn an_absent_optional_binds_null_at_its_own_type() {
+        assert_eq!(
+            super::query("SELECT ?").bind(None::<String>).args,
+            vec![Value::Null(NullKind::Text)]
+        );
+        assert_eq!(
+            super::query("SELECT ?").bind(None::<Uuid>).args,
+            vec![Value::Null(NullKind::Uuid)]
+        );
+        assert_eq!(
+            super::query("SELECT ?").bind(None::<bool>).args,
+            vec![Value::Null(NullKind::Bool)]
+        );
     }
 
     #[test]

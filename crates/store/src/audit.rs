@@ -211,8 +211,10 @@ impl AuditEntry {
         // A `QueryBuilder` rather than `sqlx::query`, which takes only
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
-        let mut query =
-            crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM audit_log WHERE id = "));
+        let mut query = crate::sql::Builder::new(
+            database.dialect(),
+            format!("SELECT {COLUMNS} FROM audit_log WHERE id = "),
+        );
         query.push_bind(id);
         let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
@@ -235,7 +237,10 @@ impl AuditEntry {
             offset = query.offset,
         );
 
-        let mut page = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM audit_log"));
+        let mut page = crate::sql::Builder::new(
+            database.dialect(),
+            format!("SELECT {COLUMNS} FROM audit_log"),
+        );
         query.push_predicates(&mut page);
         // Newest first. `id` breaks the tie rather than merely decorating the
         // clause: `created_at` is whole seconds and this table takes several
@@ -252,7 +257,8 @@ impl AuditEntry {
             .map(Self::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM audit_log");
+        let mut count =
+            crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*) FROM audit_log");
         query.push_predicates(&mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
