@@ -375,6 +375,18 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A challenge trigger that raced its own verdict answered `400 malformed`**
+  instead of the decided challenge. A trigger reads the challenge, its
+  authorization and the order one statement at a time, while a verdict writes
+  all three in one transaction: a request whose challenge read landed before
+  that commit and whose authorization read landed after it saw an undecided
+  challenge under an `invalid` authorization, and was refused as though a
+  sibling challenge had failed. A client polling a `processing` challenge
+  against its `Retry-After` — what certbot does — could be handed a
+  transport-looking failure in place of its verdict. The refusal now takes a
+  second look at the challenge and answers with it where the verdict has landed,
+  as RFC 8555 §7.5.1 asks; a trigger under an authorization a *sibling* really
+  did fail is refused as before.
 - **The credential writes are shared by `/api` and `/ui` too**: the password
   change, the TOTP enrolment, its confirmation, disabling it and reissuing
   recovery codes. These were the writes commit 8f5c0e0 left as two copies, and

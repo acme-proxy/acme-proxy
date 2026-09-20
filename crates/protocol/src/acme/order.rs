@@ -538,7 +538,9 @@ impl OrderService<'_> {
     ///
     /// [`ValidationClaim::Decided`] is not a refusal: the challenge is already
     /// decided — here or by a sibling — or another trigger holds the claim, and
-    /// the caller answers with the challenge as it stands.
+    /// the caller answers with the challenge as it stands. `challenge` is
+    /// refreshed where the row moved under the read, so that answer is the
+    /// current object rather than the one the caller loaded.
     /// [`ValidationClaim::Claimed`] obliges the caller to follow with
     /// [`run_validation`](Self::run_validation), and
     /// [`ValidationClaim::Limited`] is `429 rateLimited`: the account has
@@ -577,6 +579,28 @@ impl OrderService<'_> {
         // answering with the challenge as it stands would leave the client
         // polling a `pending` object that can never move.
         if authz.status == AuthzStatus::Invalid || order.status == OrderStatus::Invalid {
+            // Not before a second look at the challenge. `load_owned_challenge`
+            // reads the three rows one statement at a time, while a verdict
+            // writes all three in one transaction: a request whose challenge
+            // read lands before that commit and whose authorization read lands
+            // after sees an undecided challenge under an `invalid`
+            // authorization — a pair the write never leaves behind. Refusing on
+            // it would answer a client polling its own verdict with a `400`,
+            // where §7.5.1's answer is the object.
+            let fresh = Challenge::find_by_id(challenge.id.to_string().as_str(), self.database)
+                .await
+                .map_err(|error| {
+                    error!(event = "challenge_lookup_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
+                    Problem::server_internal("Challenge lookup failed")
+                })?;
+            if let Some(fresh) = fresh
+                && (fresh.status == ChallengeStatus::Valid
+                    || fresh.status == ChallengeStatus::Invalid)
+            {
+                *challenge = fresh;
+                return Ok(ValidationClaim::Decided);
+            }
+
             warn!(event = "challenge_trigger_refused_invalid", outcome = "failure", authz_id = %authz.id, order_id = %order.id);
             return Err(Problem::malformed(
                 "The authorization or its order is already invalid; create a new order",
@@ -1615,6 +1639,69 @@ pub(crate) mod tests {
                 .await
                 .unwrap(),
             ValidationClaim::Decided
+        );
+    }
+
+    /// A trigger whose reads straddle its **own** verdict is not a sibling
+    /// failure, and is answered with the challenge (§7.5.1) rather than a `400`.
+    ///
+    /// `load_owned_challenge` reads the challenge, the authorization and the
+    /// order one statement at a time, while the verdict writes all three in one
+    /// transaction. A request that reads the challenge before that commit and
+    /// the authorization after it holds an undecided challenge under an
+    /// `invalid` authorization — the pair reproduced here without any timing, by
+    /// reading the challenge back while it is still `processing` and claiming
+    /// with it once the verdict has landed.
+    #[tokio::test]
+    async fn a_trigger_that_straddles_its_own_verdict_is_answered_with_the_challenge() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, refusing());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        let (mut order, mut authzs) = pending_order(&database, &account, &["a.example.com"]).await;
+        let (authz, challenge) = &mut authzs[0];
+
+        assert_eq!(
+            orders
+                .claim_challenge(challenge, authz, &order)
+                .await
+                .unwrap(),
+            ValidationClaim::Claimed
+        );
+
+        // The early read: the challenge as the claim left it, which is what a
+        // concurrent trigger carries into `claim_challenge`.
+        let mut stale = Challenge::find_by_id(challenge.id.to_string().as_str(), &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stale.status, ChallengeStatus::Processing);
+
+        orders
+            .run_validation(&account, challenge, authz, &mut order, None)
+            .await
+            .unwrap();
+        assert_eq!(authz.status, AuthzStatus::Invalid);
+        assert_eq!(order.status, OrderStatus::Invalid);
+
+        // The late read of the authorization now refuses nothing: the second
+        // look at the challenge finds the verdict and returns it.
+        assert_eq!(
+            orders
+                .claim_challenge(&mut stale, authz, &order)
+                .await
+                .unwrap(),
+            ValidationClaim::Decided
+        );
+        assert_eq!(stale.status, ChallengeStatus::Invalid);
+        assert!(
+            stale.error.is_some(),
+            "the refreshed challenge carries the verdict the client came for"
         );
     }
 

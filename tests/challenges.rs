@@ -491,10 +491,19 @@ async fn re_triggering_a_failed_challenge_does_not_revalidate() {
     .await;
     let challenge_url = challenge_url_of_type(&authz, "http-01");
 
-    let first = body_json(trigger(&app, &signer, &account_url, &challenge_url).await).await;
-    let second = body_json(trigger(&app, &signer, &account_url, &challenge_url).await).await;
+    // Settled first: what this test is about is a challenge that is *decided*,
+    // and the trigger only starts the work. Re-triggering before the verdict
+    // lands exercises the claim instead, and which of the two a bare pair of
+    // triggers reaches is a matter of how loaded the machine is.
+    let response = trigger(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["status"], "processing");
 
-    assert_eq!(first, second);
+    let settled = await_decided(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(settled["status"], "invalid");
+
+    let again = body_json(trigger(&app, &signer, &account_url, &challenge_url).await).await;
+    assert_eq!(again, settled, "the stored object, unchanged");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
