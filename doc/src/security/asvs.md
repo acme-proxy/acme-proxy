@@ -451,7 +451,7 @@ is a reference token and is assessed under V7.
 | 15.1.1 | Documented remediation time frames for vulnerable components | 1 | partial | [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) states that fixes land on `main` and in the next release, and `cargo deny` runs advisories on every CI run and on a schedule. No numeric time frame is committed to |
 | 15.1.2 | An SBOM or equivalent inventory is maintained | 2 | met | `sbom.cdx.json` is a committed CycloneDX 1.5 inventory of the shipped dependency closure (`--all-features --target all`, dev-dependencies excluded), regenerated and diffed by the `sbom` CI job and carried in the published crate; `cargo deny check` gates that same closure |
 | 15.1.3 | Documented resource-demanding functionality | 2 | met | The expensive paths are named and bounded: `http-01` and `dns-01` validation have timeouts, the PBKDF2 cost is documented as a denial-of-service lever with the limiter placed before it, and the admission limiter's shed-versus-queue reasoning is written out in `crates/protocol/src/middlewares/admission.rs` |
-| 15.1.4 | Risky third-party libraries highlighted | 3 | met | `deny.toml` is the allow list, run with `all-features = true`, and the rationale for *refusing* dependencies is recorded where the refusal was made — `crates/admin/src/admin/password.rs` on Argon2id, `TODO.md` on `webauthn-rs` |
+| 15.1.4 | Risky third-party libraries highlighted | 3 | met | `deny.toml` is the allow list, run with `all-features = true`, and the rationale for *refusing* dependencies is recorded where the refusal was made — `crates/admin/src/admin/password.rs` on Argon2id, [issue #5](https://github.com/acme-proxy/acme-proxy/issues/5) on `webauthn-rs` |
 | 15.1.5 | Dangerous functionality highlighted | 3 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names the three request-forgery surfaces, and [Security Policy](https://github.com/acme-proxy/acme-proxy/blob/main/SECURITY.md) lists the behaviour that looks alarming and is deliberate |
 | 15.2.1 | No components past the documented remediation window | 1 | met | The `Advisories, licenses & sources` CI job fails the build on a RUSTSEC advisory |
 | 15.2.2 | Implemented defenses against availability loss | 2 | met | Admission limiter with a queue budget and a request deadline, body limits on both listeners, a login limiter ahead of the KDF, per-call timeouts on every outbound subsystem, and `kill_on_drop` on script hooks |
@@ -538,8 +538,8 @@ investigated and deferred, and both blocking checks were actually run:
 `webauthn-rs` 0.5.5 is MPL-2.0, which `deny.toml`'s allow list does not carry,
 and `webauthn-rs-core` hard-depends on `openssl`, which this tree has avoided
 at every turn. Nothing in the design precludes it — another factor kind is
-another `MfaStep` variant, not a change to the state machine. It stays open in
-`TODO.md`.
+another `MfaStep` variant, not a change to the state machine. It stays open as
+[issue #5](https://github.com/acme-proxy/acme-proxy/issues/5).
 
 **The `relay` backend multiplexes one upstream account** — *V8.3.3.* One
 upstream ACME account, and one centrally held RFC 2136 TSIG key, standing in
@@ -566,7 +566,7 @@ non-feature. It is stated as such in the
 
 Open shortfalls, worst first. What remains is all L3, recorded only here.
 
-**Lower-priority L3 items**, recorded without a `TODO.md` entry: no CSP
+**Lower-priority L3 items**, recorded here only and with no issue open: no CSP
 violation-report endpoint (V3.4.7), no `Cross-Origin-Opener-Policy` (V3.4.8),
 no documented behaviour for browsers lacking security features (V3.1.1,
 V3.7.5), no OCSP stapling as a TLS server (V12.1.4), no Encrypted Client Hello

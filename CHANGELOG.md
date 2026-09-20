@@ -532,6 +532,14 @@ migrated configuration before restarting.
 
 ### Packaging
 
+- **`TODO.md` is gone; open work lives in the
+  [issue tracker](https://github.com/acme-proxy/acme-proxy/issues).** Its eight
+  items were filed one issue each, keeping their text, labelled by subsystem
+  (`server`, `store`, `webadmin`, `signer`, `ipam`, `notify`). The file was a
+  second place a decision could be recorded and a second place it could go
+  stale; the issues are where a deferral can be argued with someone who
+  proposes the thing again. `doc/src/dev/contributing.md` points at them, and
+  the feature-request template asks contributors to read them first.
 - **The container's base image is pinned by digest** — the multi-arch index, so
   it resolves on both architectures — and the Rust toolchain is installed from
   `rustup-init` verified against its published checksum rather than piped from

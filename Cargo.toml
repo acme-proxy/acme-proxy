@@ -141,7 +141,6 @@ exclude = [
     "/tests/e2e.rs",
     "/.github/",
     "**/CLAUDE.md",
-    "/TODO.md",
 ]
 
 [features]

@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check [TODO.md](https://github.com/acme-proxy/acme-proxy/blob/main/TODO.md)
-        first — several likely requests (PostgreSQL, Prometheus metrics, OCSP,
-        phpIPAM, a generic webhook) are already on the roadmap, and that file
-        sometimes records why something was deferred.
+        Check the [open issues](https://github.com/acme-proxy/acme-proxy/issues)
+        first — several likely requests (PostgreSQL, OCSP, WebAuthn, phpIPAM
+        session tokens) are already filed, and a few of those record why
+        something was deferred.
 
   - type: textarea
     id: problem

@@ -8,7 +8,7 @@
 //! them is written at its right-hand edge rather than at a fresh random leaf
 //! per insert. SQLite feels that only mildly — an id column is a secondary
 //! index over the rowid, and one writer at a time dominates — but the
-//! PostgreSQL backend `TODO.md` plans is where a random primary key costs a
+//! PostgreSQL backend issue #4 plans is where a random primary key costs a
 //! page split and a full-page WAL write per row.
 //!
 //! And they sort by creation. `ORDER BY created_at, id` is the tie-break seven

@@ -9,8 +9,9 @@ Accepted.
 Row ids started as UUID v4 strings. Two costs followed:
 
 - A random id is written into an index at a random leaf on every insert. SQLite
-  feels that mildly, and PostgreSQL (planned in `TODO.md`) would pay a page
-  split and a full-page WAL write per row.
+  feels that mildly, and PostgreSQL would pay a page split and a full-page WAL
+  write per row. That backend is
+  [issue #4](https://github.com/acme-proxy/acme-proxy/issues/4).
 - The paged listings break ties on a whole-second `created_at` with
   `ORDER BY created_at, id`. With v4 ids, rows created in the same second come
   back in a different random order for each pair.

@@ -78,7 +78,8 @@ The connection pins two pragmas:
 - `sqlx::migrate!()` embeds the migration set at compile time. Adding a file
   does not invalidate the build on its own; touch `crates/store/src/db.rs`.
 - SQL, and the dialect it is written in, lives in one crate. That is what keeps
-  a second backend (the PostgreSQL item in `TODO.md`) a contained change.
+  a second backend a contained change — the PostgreSQL one is
+  [issue #4](https://github.com/acme-proxy/acme-proxy/issues/4).
 
 ## Enforced by
 

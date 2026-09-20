@@ -411,7 +411,7 @@ mod tests {
     ///
     /// It matters for the reason the widths do: SQLite gives a declared type an
     /// affinity and enforces nothing, where the PostgreSQL set these
-    /// declarations will be transcribed into (`TODO.md`) has a native `uuid`
+    /// declarations will be transcribed into (issue #4) has a native `uuid`
     /// and does enforce it. `nonces.value` is what a stale declaration looks
     /// like once nothing can notice it.
     #[tokio::test]

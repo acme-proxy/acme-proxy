@@ -359,3 +359,11 @@ calls `release.yml` for that.
 If you are proposing a large feature (like a new Signer or Filter), please
 review the [Architecture & Design](architecture.md) documentation first. It's
 often best to open an Issue to discuss the design before writing extensive code.
+
+## Open work
+
+Planned and deferred work lives in the
+[issue tracker](https://github.com/acme-proxy/acme-proxy/issues), one issue per
+item, labelled by subsystem (`server`, `store`, `webadmin`, `signer`, `ipam`,
+`notify`). Several of them record why something was investigated and *not*
+built, which is worth reading before proposing it again.

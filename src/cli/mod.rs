@@ -737,7 +737,7 @@ mod tests {
             })
         ));
 
-        // The four commands added with `TODO.md`'s "last few asymmetries": a
+        // The four commands added for the last few asymmetries: a
         // detail for the one listable object that had none, and the three reads
         // the panel could already answer and the host could not.
         let cli = Cli::try_parse_from(["acme-proxy", "order", "chain", "ord-1"]).unwrap();
