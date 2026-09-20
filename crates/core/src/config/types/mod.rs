@@ -43,8 +43,12 @@ pub use signer::*;
 /// error; there is now nothing to register.
 ///
 /// The empty string is the empty list, so a variable can clear a list the
-/// file set. A number or a bool is one element, since `try_parsing` turns
-/// `ACME_PROXY_SIGNER__CUSTOM__ARGS=7` into an integer before it gets here.
+/// file set. Items are trimmed, and an empty item — `a,,b`, or a trailing
+/// comma — is a startup error rather than a silent entry that matches
+/// nothing. A number or a bool is one element, since `try_parsing` turns
+/// `ACME_PROXY_SIGNER__CUSTOM__ARGS=7` into an integer before it gets here
+/// (which also means `007` arrives as `7`: a value whose leading zeros matter
+/// belongs in the file's array form).
 pub(crate) fn string_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -59,10 +63,26 @@ where
         }
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-            if value.is_empty() {
+            if value.trim().is_empty() {
                 return Ok(Vec::new());
             }
-            Ok(value.split(',').map(str::to_string).collect())
+            // Trimmed, because `a, b` is how anyone writes a list and a value
+            // of `" b"` matches nothing — a filter rule that silently never
+            // fires, or a script argument with a leading space. An empty item
+            // (`a,,b`, or a trailing comma) is refused rather than dropped: it
+            // is a typo, and every reading of it is a guess.
+            let mut values = Vec::new();
+            for item in value.split(',') {
+                let item = item.trim();
+                if item.is_empty() {
+                    return Err(E::custom(format!(
+                        "`{value}` has an empty item; a comma-separated list needs a value \
+                         between commas, and the empty string is the empty list"
+                    )));
+                }
+                values.push(item.to_string());
+            }
+            Ok(values)
         }
 
         fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
@@ -89,12 +109,7 @@ where
             while let Some(value) = seq.next_element::<String>()? {
                 values.push(value);
             }
-            // `[""]` is what an empty environment variable used to split
-            // into, and it still means "no values" when written in a file.
-            Ok(match values.as_slice() {
-                [only] if only.is_empty() => Vec::new(),
-                _ => values,
-            })
+            Ok(values)
         }
     }
 
@@ -117,18 +132,46 @@ mod tests {
             .values
     }
 
-    #[test]
-    fn a_comma_separated_string_splits_without_trimming() {
-        assert_eq!(parse("a,b".into()), ["a", "b"]);
-        assert_eq!(parse("a, b".into()), ["a", " b"]);
-        assert_eq!(parse("only".into()), ["only"]);
+    fn refusal(value: serde_json::Value) -> String {
+        Holder::deserialize(serde_json::json!({ "values": value }))
+            .expect_err("this list must be refused")
+            .to_string()
     }
 
     #[test]
-    fn the_empty_string_is_no_values_in_either_shape() {
+    fn a_comma_separated_string_splits_and_trims() {
+        assert_eq!(parse("a,b".into()), ["a", "b"]);
+        assert_eq!(parse("a, b".into()), ["a", "b"]);
+        assert_eq!(parse(" a , b ".into()), ["a", "b"]);
+        assert_eq!(parse("only".into()), ["only"]);
+    }
+
+    /// An empty item is a typo — a doubled comma, or a trailing one — and
+    /// every reading of it is a guess. Dropping it silently leaves a list one
+    /// shorter than it looks; keeping it leaves an entry that matches nothing.
+    #[test]
+    fn an_empty_item_is_refused_by_name() {
+        for bad in ["a,,b", "a,", ",a", "a, ,b"] {
+            let message = refusal(bad.into());
+            assert!(message.contains("empty item"), "{bad}: {message}");
+            assert!(message.contains(bad), "{bad}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_empty_string_is_no_values() {
         assert!(parse("".into()).is_empty());
-        assert!(parse(serde_json::json!([""])).is_empty());
+        assert!(parse("   ".into()).is_empty());
         assert!(parse(serde_json::json!([])).is_empty());
+    }
+
+    /// An array is written by hand, in a file, and says what it says: a single
+    /// empty string is one empty entry, not the empty list. That lowering
+    /// existed only because an empty environment variable used to split into
+    /// `[""]`, which it no longer does.
+    #[test]
+    fn an_array_of_one_empty_string_is_not_the_empty_list() {
+        assert_eq!(parse(serde_json::json!([""])), [""]);
     }
 
     #[test]

@@ -396,7 +396,7 @@ pub async fn dispatch(
             profile::run_profile_command(command, palette, config).await
         }
         Command::Eab { command } => {
-            eab::run_eab_command(command, yes, palette, reader, database).await
+            eab::run_eab_command(command, yes, palette, reader, config, database).await
         }
         Command::Filter { command } => filter::run_filter_command(command, palette, config).await,
         Command::Upstream { command } => {

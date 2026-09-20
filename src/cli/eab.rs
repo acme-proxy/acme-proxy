@@ -8,6 +8,7 @@ use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use acme_proxy_admin::admin;
 use acme_proxy_admin::admin::EabDeleteOutcome;
+use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::db::Database;
@@ -67,6 +68,7 @@ pub async fn run_eab_command(
     yes: bool,
     palette: Palette,
     reader: &mut impl BufRead,
+    config: &Config,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
@@ -75,6 +77,25 @@ pub async fn run_eab_command(
             profile,
             json,
         } => {
+            // The same refusal the panel and the API make: a credential scoped
+            // to an endpoint this configuration does not mount is accepted and
+            // then never usable, and the operator is still looking at what they
+            // typed. Only where `--profile` was given — a credential valid
+            // everywhere needs no profile to exist, and resolving would refuse
+            // a configuration that mounts none.
+            if profile.is_some() {
+                let mounted = config
+                    .resolve_profiles()
+                    .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
+                if let Some(message) = admin::unmounted_profile_refusal(
+                    |name| mounted.iter().any(|profile| profile.name == name),
+                    profile.as_deref(),
+                    "omit --profile",
+                ) {
+                    return Err(CliError::failed(message));
+                }
+            }
+
             let eab = Eab::create(label, profile, &database).await?;
             audit_admin::record_cli_action(&database, |actor, client| {
                 audit_admin::eab_created(
@@ -193,6 +214,82 @@ fn not_found(kid: &str) -> CliError {
 mod tests {
     use super::*;
 
+    /// A configuration with no profiles, which is all a command that does not
+    /// name one ever reads.
+    fn config() -> Config {
+        Config::default()
+    }
+
+    /// Loads a `Config` the way the server does, so `resolve_profiles` has the
+    /// raw sources it needs — `cli::profile`'s helper, and for its reason.
+    fn config_from(body: &str) -> Config {
+        let _lock = acme_proxy_core::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = acme_proxy_core::testutil::TempDir::new("eab");
+        std::fs::write(dir.join("config.toml"), body).unwrap();
+        // SAFETY: single-threaded test holding ENV_LOCK; removed before return.
+        unsafe {
+            std::env::set_var("ACME_PROXY_CONFIG", dir.join("config").to_str().unwrap());
+        }
+        let config = Config::load().expect("the configuration must load");
+        unsafe {
+            std::env::remove_var("ACME_PROXY_CONFIG");
+        }
+        config
+    }
+
+    /// A credential scoped to an endpoint this configuration does not mount
+    /// would be accepted and then never usable, so it is refused where the
+    /// operator can still fix the spelling — the same rule `/api` and `/ui`
+    /// apply.
+    #[tokio::test]
+    async fn create_refuses_a_profile_that_is_not_mounted() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = config_from(
+            r#"
+            [profiles.default]
+            signer.backend = "local_ca"
+            "#,
+        );
+
+        let error = run_eab_command(
+            EabCommand::Create {
+                label: None,
+                profile: Some("typo".to_string()),
+                json: false,
+            },
+            true,
+            Palette::plain(),
+            &mut &b""[..],
+            &config,
+            database.clone(),
+        )
+        .await
+        .expect_err("a credential for an unmounted endpoint must be refused");
+        assert!(format!("{error:?}").contains("typo"), "{error:?}");
+
+        // And nothing was written.
+        let (rows, _) = Eab::search(50, 0, &database).await.unwrap();
+        assert!(rows.is_empty());
+
+        // The profile that is mounted is minted as usual.
+        run_eab_command(
+            EabCommand::Create {
+                label: None,
+                profile: Some("default".to_string()),
+                json: false,
+            },
+            true,
+            Palette::plain(),
+            &mut &b""[..],
+            &config,
+            database.clone(),
+        )
+        .await
+        .expect("a mounted endpoint is fine");
+    }
+
     #[tokio::test]
     async fn show_revoke_and_delete_refuse_an_unknown_kid() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());
@@ -217,6 +314,7 @@ mod tests {
                 true,
                 Palette::plain(),
                 &mut &b""[..],
+                &config(),
                 database.clone(),
             )
             .await
@@ -233,6 +331,14 @@ mod tests {
         let eab = Eab::create(Some("test".to_string()), None, &database)
             .await
             .unwrap();
+        // `--profile` is checked against the mounted set, so this one needs a
+        // configuration that mounts it.
+        let config = config_from(
+            r#"
+            [profiles.default]
+            signer.backend = "local_ca"
+            "#,
+        );
 
         for command in [
             EabCommand::Create {
@@ -262,6 +368,7 @@ mod tests {
                 true,
                 Palette::plain(),
                 &mut &b""[..],
+                &config,
                 database.clone(),
             )
             .await
@@ -275,6 +382,7 @@ mod tests {
             true,
             Palette::plain(),
             &mut &b""[..],
+            &config,
             database.clone(),
         )
         .await
@@ -328,6 +436,7 @@ mod tests {
             true,
             Palette::plain(),
             &mut &b""[..],
+            &config(),
             database.clone(),
         )
         .await

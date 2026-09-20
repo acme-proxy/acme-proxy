@@ -365,6 +365,16 @@ mod tests {
     /// configuration error was handled cleanly.
     #[test]
     fn a_malformed_logging_filter_is_reported_rather_than_panicking() {
+        // `RUST_LOG` outranks `logging.filter`, so a developer with one set in
+        // their shell would otherwise see this pass on an answer that never
+        // looked at the malformed value.
+        let _guard = acme_proxy_core::config::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: the lock above makes this the only thread touching the
+        // environment.
+        unsafe { std::env::remove_var("RUST_LOG") };
+
         let logging = acme_proxy_core::config::LoggingConfig {
             filter: "this is not=a=valid=filter".to_string(),
             ..Default::default()

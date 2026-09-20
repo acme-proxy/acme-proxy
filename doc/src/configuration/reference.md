@@ -823,21 +823,25 @@ you configure anything through the environment.
 **Array-valued keys are parsed from a comma-separated string.** That means a
 value containing a literal comma cannot be expressed. A regex such as
 `^host\d{2,3}\.example\.com$` is therefore **file-only** — through the
-environment, `{2,3}` splits into two list entries.
+environment, `{2,3}` splits into two list entries. In a file, write the array
+form (`deny = ["^host\d{2,3}\.example\.com$"]`), which is taken exactly as
+written; a bare string in a file is split on commas too, since by the time the
+value is read there is nothing left to say where it came from.
 
-**An array set to the empty string is *present*, not absent.** Shell defaults
-like `ACME_PROXY_FILTER__RULES="${RULES:-}"` set the variable to `""`, which
-the configuration layer cannot distinguish from a deliberate value — and
-`"".split(',')` yields one empty element, not zero. `acme-proxy` collapses this
-back to an empty list for every array key, so it is safe; just do not expect
-`""` to mean "fall back to the file".
+**Items are trimmed, and an empty item is a startup error.** `a, b` is
+`["a", "b"]`, and `a,,b` or a trailing comma is refused by name rather than
+silently dropped or kept as an entry that matches nothing.
 
-**A list-valued key *inside* a profile needs its runtime key registered.** The
-loader scans the environment for `ACME_PROXY_PROFILES__<NAME>__…` before
-building its sources, which is what makes e.g.
-`ACME_PROXY_PROFILES__LE__CHALLENGE__ENABLED` work. This is handled
-automatically; it is documented here because it is the mechanism a new key can
-accidentally miss.
+**An array set to the empty string is the empty list.** Shell defaults like
+`ACME_PROXY_FILTER__RULES="${RULES:-}"` set the variable to `""`, which the
+configuration layer cannot distinguish from a deliberate value — so it is read
+as "no values", which is what clears a list the file set. Do not expect `""`
+to mean "fall back to the file".
+
+**A numeric-looking value loses its leading zeros.** The environment source
+parses `007` as a number before the list is built, so it arrives as `7`. A
+value whose spelling matters — an argument to a `custom` signer, say — belongs
+in the file's array form.
 
 **Unknown keys are ignored, not rejected.** A misspelled key, or a key written
 under the wrong section, is silently dropped. The most common instance of this

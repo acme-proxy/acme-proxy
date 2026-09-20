@@ -277,27 +277,23 @@ pub(crate) fn deleted_or_refused(
     }
 }
 
-/// Refuses a credential scoped to an endpoint this process does not serve.
-///
-/// Shared by both front ends, because the *condition* is one rule and two
-/// copies of it drift: such a credential would be accepted and then never be
-/// usable, which is worth catching while the operator is still looking at what
-/// they typed. `hint` is the one part that is legitimately per-front-end — a
-/// JSON caller omits a field, someone at a form leaves an input blank.
+/// Refuses a credential scoped to an endpoint this process does not serve, in
+/// this state's terms; the rule itself is
+/// [`ops::unmounted_profile_refusal`](crate::admin::ops::unmounted_profile_refusal),
+/// which `eab create` on the host CLI asks too.
 pub(crate) fn require_mounted_profile(
     state: &AdminState,
     profile: Option<&str>,
     hint: &str,
 ) -> Result<(), AdminError> {
-    if let Some(name) = profile
-        && !state.profiles.contains_key(name)
-    {
-        return Err(AdminError::bad_request(format!(
-            "no profile named `{name}` is mounted; {hint} for a credential valid at \
-             every endpoint"
-        )));
+    match crate::admin::ops::unmounted_profile_refusal(
+        |name| state.profiles.contains_key(name),
+        profile,
+        hint,
+    ) {
+        Some(message) => Err(AdminError::bad_request(message)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn not_found(kid: &str) -> AdminError {

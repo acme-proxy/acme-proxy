@@ -336,6 +336,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -350,6 +351,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -364,6 +366,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -377,6 +380,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -395,6 +399,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -408,6 +413,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await
@@ -420,6 +426,7 @@ async fn eab_cli_create_list_show_revoke() {
         true,
         Palette::plain(),
         &mut &b""[..],
+        &Config::default(),
         db.clone(),
     )
     .await

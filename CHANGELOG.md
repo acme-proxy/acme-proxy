@@ -39,6 +39,12 @@ migrated configuration before restarting.
   which this server used to accept everywhere, finding the account by public
   key — is now `400 malformed`. certbot, acme.sh and lego all sign with `kid`
   there.
+- **A comma-separated list value is trimmed, and an empty item is refused.**
+  `a, b` was `["a", " b"]` — an entry that matches nothing — and `a,,b` or a
+  trailing comma was taken as an empty entry. Both are now `["a", "b"]` and a
+  startup error naming the value. An array written in a file is also taken
+  exactly as written: `[""]` is one empty entry, not the empty list, which was
+  a lowering left over from how an empty environment variable used to split.
 - **Migrations are applied explicitly, not as a side effect of opening the
   database.** `acme-proxy migrate` applies them, and so does `acme-proxy serve`
   when it runs the `worker` role — which the default, role-less `serve` does, so
@@ -442,6 +448,10 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **`acme-proxy eab create --profile` refuses a profile nothing mounts**, as
+  `/api` and `/ui` already did. Such a credential is accepted and then never
+  usable, and the refusal now comes while the operator is still looking at what
+  they typed.
 - **A shutdown waits for the job runner to release its leases.** The runner
   took the same signal as the listeners, but nothing waited for its stop, so it
   was aborted mid-drain — immediately, in a worker-only process — and every job

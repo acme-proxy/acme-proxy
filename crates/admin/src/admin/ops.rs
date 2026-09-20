@@ -113,6 +113,31 @@ pub fn eab_live_certificates_refusal(kid: &str, accounts: u64, certificates: u64
     )
 }
 
+/// The refusal for an EAB credential scoped to a profile nothing mounts, if it
+/// is one — `None` when the profile is mounted, or when the credential is for
+/// every endpoint.
+///
+/// Every surface that mints a credential makes this check, and they must not
+/// word it three ways: such a credential is accepted and then never usable,
+/// which is worth catching while the operator is still looking at what they
+/// typed. `hint` is the one part that is legitimately per-front-end — a JSON
+/// caller omits a field, someone at a form leaves an input blank, someone at a
+/// terminal drops a flag.
+#[must_use]
+pub fn unmounted_profile_refusal(
+    mounted: impl Fn(&str) -> bool,
+    profile: Option<&str>,
+    hint: &str,
+) -> Option<String> {
+    let name = profile?;
+    if mounted(name) {
+        return None;
+    }
+    Some(format!(
+        "no profile named `{name}` is mounted; {hint} for a credential valid at every endpoint"
+    ))
+}
+
 /// What a hard delete took with it.
 ///
 /// The count is already computed to word the confirmation prompt, so returning

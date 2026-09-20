@@ -95,8 +95,9 @@ impl Default for FilterConfig {
 
 /// One `[filter.rule.<name>]` entry.
 ///
-/// Deliberately carries **no** list-valued field, so this table needs no
-/// runtime environment-variable scan the way `[filter.check.<name>]` does.
+/// Deliberately carries **no** list-valued field: every list is one
+/// `string_list` field that splits its own comma-separated value, and this
+/// table has none to split.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct RuleConfig {
