@@ -436,6 +436,15 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **A revocation recorded while its CA's CRL was being signed no longer waits
+  for the daily refresh.** The queue's identity index covers `running` as well
+  as `ready`, so the request to sign it in was deduplicated against the pass
+  that had already taken its snapshot. That row now keeps signing until the CRL
+  lists everything recorded.
+- **A relay `issue` retried after a failed enqueue no longer opens a second
+  upstream order.** It answered `processing` with nothing queued, leaving the
+  order to the next startup's recovery pass and abandoning one upstream order
+  per retry. An order already relayed now only re-queues its relay job.
 - **A revocation is kept until a CRL issued past the certificate's expiry has
   carried it** (RFC 5280 §3.3). The prune dropped an entry as soon as the
   certificate expired, although the newest CRL naming it had usually been

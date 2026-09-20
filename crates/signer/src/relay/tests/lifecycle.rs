@@ -1145,4 +1145,26 @@ async fn a_second_issue_for_one_order_does_not_open_a_second_upstream_order() {
         mapping.status, "processing",
         "the row belongs to the relay already running, untouched by the second call"
     );
+
+    // And nothing was opened upstream for the second call either. This is what
+    // a `signer_issue` retry looks like — the first attempt opened the order
+    // and failed to queue the relay — and opening one per retry would leave a
+    // trail of abandoned orders at the upstream CA, some of them counting
+    // against its rate limits.
+    assert_eq!(
+        upstream.orders_opened(),
+        1,
+        "a repeated issue must not open a second upstream order"
+    );
+
+    // The relay is queued regardless of which call got there first, so the
+    // order is not left waiting for the next startup's `recover`.
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE kind = 'signer_relay_issue' AND dedup_key = ?;",
+    )
+    .bind(order.id.to_string())
+    .fetch_one(db.raw_pool())
+    .await
+    .unwrap();
+    assert_eq!(queued, 1);
 }

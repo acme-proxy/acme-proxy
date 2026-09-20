@@ -170,6 +170,23 @@ pub struct RelayState(Arc<Inner>);
 /// `kid` locally is what keeps startup from depending on the upstream after the
 /// first successful registration.
 impl RelaySigner {
+    /// Queues the job that carries `order_id` the rest of the way, and answers
+    /// `Processing`.
+    ///
+    /// Idempotent: [`relay_spec`] is keyed on the order, so asking twice while
+    /// the first row is live is one job. That is what makes a `signer_issue`
+    /// retry safe — the upstream order is opened once, and every attempt after
+    /// it only makes sure the relay is queued.
+    async fn requeue(&self, order_id: &str) -> Result<IssueOutcome, SignerError> {
+        let context = OrderContext::read(order_id, &self.0).await;
+        self.0
+            .jobs
+            .enqueue(relay_spec(order_id, &context))
+            .await
+            .map_err(|error| SignerError::Internal(format!("queueing the relay: {error}")))?;
+        Ok(IssueOutcome::Processing)
+    }
+
     /// Builds the backend, provisioning the upstream account if needed.
     ///
     /// Unlike `local_ca`, whose construction is pure disk I/O, this may make a
@@ -255,7 +272,7 @@ impl RelaySigner {
                             // being the longest any fetch can matter.
                             ChallengeStrategy::Http01(Arc::new(http01::DbTokenStore::new(
                                 parts.database.clone(),
-                                poll.timeout + Duration::from_secs(60),
+                                http01::token_ttl(poll.timeout),
                             )))
                         }
                         other => anyhow::bail!(
@@ -328,6 +345,21 @@ impl SignerBackend for RelaySigner {
         let _ = validity;
         let inner = self.0.clone();
 
+        // An order already relayed: the enqueue below is what may have failed
+        // last time, and `signer_issue` is retrying. Opening a second upstream
+        // order would leak one per retry and then answer `Processing` with
+        // nothing queued — which only `RelayJob::recover`, at the next startup,
+        // would ever pick up.
+        if let Some(existing) = UpstreamOrder::find_by_order_id(order_id, &inner.database)
+            .await
+            .map_err(|error| {
+                SignerError::Internal(format!("reading the upstream order: {error}"))
+            })?
+        {
+            warn!(event = "upstream_relay_already_in_flight", outcome = "advisory", order_id = %order_id, upstream_url = %existing.upstream_order_url);
+            return self.requeue(order_id).await;
+        }
+
         let payload = json!({
             "identifiers": identifiers.iter().map(|identifier| json!({
                 "type": identifier.typ,
@@ -364,8 +396,11 @@ impl SignerBackend for RelaySigner {
         .map_err(|error| SignerError::Internal(format!("recording upstream order: {error}")))?;
 
         if created.is_none() {
+            // Two finalize requests raced and the other wrote first; its job
+            // row is the one that matters, and `enqueue` is keyed on the order,
+            // so asking again is the same row.
             warn!(event = "upstream_relay_already_in_flight", outcome = "advisory", order_id = %order_id);
-            return Ok(IssueOutcome::Processing);
+            return self.requeue(order_id).await;
         }
 
         info!(event = "upstream_order_opened", outcome = "success", order_id = %order_id, upstream_url = %order_url);
@@ -378,14 +413,7 @@ impl SignerBackend for RelaySigner {
         // primary-key read on a path that has just made an HTTPS round trip, and
         // worth it because both then survive a restart rather than being
         // recomputed from nothing.
-        let context = OrderContext::read(order_id, &inner).await;
-        inner
-            .jobs
-            .enqueue(relay_spec(order_id, &context))
-            .await
-            .map_err(|error| SignerError::Internal(format!("queueing the relay: {error}")))?;
-
-        Ok(IssueOutcome::Processing)
+        self.requeue(order_id).await
     }
 
     /// This backend, as the shared [`flow::RelayJob`] sees it.
@@ -476,7 +504,7 @@ impl RelayInfo {
         let http01 = (cfg.challenge_strategy == "http01").then(|| {
             Arc::new(http01::DbTokenStore::new(
                 parts.database.clone(),
-                timeout + Duration::from_secs(60),
+                http01::token_ttl(timeout),
             )) as Arc<dyn http01::TokenStore>
         });
         Ok(Self {

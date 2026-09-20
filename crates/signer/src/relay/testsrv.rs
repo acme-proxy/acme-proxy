@@ -109,6 +109,8 @@ pub struct Upstream {
 
 #[derive(Default)]
 struct Counters {
+    /// `newOrder` requests: one per order actually opened upstream.
+    orders_opened: AtomicUsize,
     order_polls: AtomicUsize,
     /// The value of `order_polls` when `finalize` arrived, so polls before and
     /// after it can be scripted independently.
@@ -142,6 +144,11 @@ struct Counters {
 }
 
 impl Upstream {
+    /// How many orders were opened here — one `newOrder` each.
+    pub fn orders_opened(&self) -> usize {
+        self.counters.orders_opened.load(Ordering::SeqCst)
+    }
+
     /// How many times the order was polled (POST-as-GET).
     pub fn order_polls(&self) -> usize {
         self.counters.order_polls.load(Ordering::SeqCst)
@@ -432,6 +439,7 @@ async fn route(
             json_response(201, &json!({ "status": "valid" }), location, counters)
         }
         "/newOrder" => {
+            counters.orders_opened.fetch_add(1, Ordering::SeqCst);
             let location = (!script.omit_location).then(|| format!("{base}/order/1"));
             json_response(
                 201,

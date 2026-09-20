@@ -83,6 +83,18 @@ pub trait TokenStore: Send + Sync {
     async fn lookup(&self, token: &str) -> Result<Option<String>, String>;
 }
 
+/// How long a published `http-01` token stays servable: the attempt's own poll
+/// budget plus a minute.
+///
+/// One definition, because the store is built in two places — the backend at
+/// startup and the read-side `SignerInfo` — and a token that expires before the
+/// upstream fetches it is a validation that fails for no reason the operator
+/// can see.
+#[must_use]
+pub fn token_ttl(poll_timeout: std::time::Duration) -> std::time::Duration {
+    poll_timeout + std::time::Duration::from_secs(60)
+}
+
 /// The store the `http01` strategy publishes into: the `http01_tokens` table.
 ///
 /// Every entry carries a deadline `ttl` after it was published. The attempt

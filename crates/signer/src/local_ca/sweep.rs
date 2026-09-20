@@ -143,6 +143,11 @@ impl JobHandler for CrlSweepJob {
     }
 }
 
+/// How many times one [`CrlRegenerateJob`] row re-signs before handing the rest
+/// to another row. Each pass covers every revocation recorded before it began,
+/// so more than one is needed only while revocations keep arriving.
+const MAX_REPUBLISH_PASSES: u32 = 3;
+
 /// The `jobs.kind` a revocation recorded without the CA's key asks for.
 pub const CRL_REGENERATE_KIND: &str = "local_ca_crl_regenerate";
 
@@ -192,19 +197,34 @@ impl JobHandler for CrlRegenerateJob {
         else {
             return JobOutcome::Retry(format!("no local CA with issuer {issuer} is served here"));
         };
-        match refresher.republish().await {
-            Ok(true) => {
-                info!(
-                    event = "local_ca_crl_republished",
-                    outcome = "success",
-                    issuer = %issuer,
-                    "signed revocations recorded without the CA key into the CRL"
-                );
-                JobOutcome::Done
+        // Until the CRL lists everything recorded, bounded. The queue's identity
+        // index covers `ready` **and** `running`, so a revocation recorded while
+        // this row was running found its own request already queued and was
+        // dropped: the pass it joined had taken its snapshot before that
+        // revocation existed, and the entry would have waited for the daily
+        // refresh. Each pass here signs from a fresh snapshot, and `republish`
+        // answers `false` once there is nothing left to add.
+        for _ in 0..MAX_REPUBLISH_PASSES {
+            match refresher.republish().await {
+                Ok(true) => {
+                    info!(
+                        event = "local_ca_crl_republished",
+                        outcome = "success",
+                        issuer = %issuer,
+                        "signed revocations recorded without the CA key into the CRL"
+                    );
+                }
+                Ok(false) => return JobOutcome::Done,
+                Err(error) => return JobOutcome::Retry(error.to_string()),
             }
-            Ok(false) => JobOutcome::Done,
-            Err(error) => JobOutcome::Retry(error.to_string()),
         }
+        // Revocations are arriving faster than this can sign them. Another row
+        // rather than a longer loop: the next runner takes them from a fresh
+        // lease, and the daily refresh is the backstop either way.
+        JobOutcome::Retry(format!(
+            "{issuer} is still recording revocations faster than {MAX_REPUBLISH_PASSES} passes \
+             could sign them in"
+        ))
     }
 
     async fn abandon(&self, job: &Job, reason: &str) {
@@ -215,5 +235,101 @@ impl JobHandler for CrlRegenerateJob {
             reason = %reason,
             "the daily refresh will sign the missing revocations instead"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+    use crate::SignerError;
+
+    /// A CA that has `outstanding` revocations to sign in, one pass each.
+    struct Catching {
+        outstanding: AtomicU32,
+        passes: AtomicU32,
+        failing: Mutex<Option<String>>,
+    }
+
+    impl Catching {
+        fn with(outstanding: u32) -> Arc<Self> {
+            Arc::new(Self {
+                outstanding: AtomicU32::new(outstanding),
+                passes: AtomicU32::new(0),
+                failing: Mutex::new(None),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CrlRefresher for Catching {
+        fn issuer(&self) -> &str {
+            "ca"
+        }
+
+        async fn refresh(&self) -> Result<u64, SignerError> {
+            Ok(0)
+        }
+
+        async fn republish(&self) -> Result<bool, SignerError> {
+            self.passes.fetch_add(1, Ordering::SeqCst);
+            if let Some(error) = self.failing.lock().unwrap().clone() {
+                return Err(SignerError::Internal(error));
+            }
+            Ok(self
+                .outstanding
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok())
+        }
+    }
+
+    fn row() -> Job {
+        Job {
+            kind: CRL_REGENERATE_KIND.to_string(),
+            dedup_key: "ca".to_string(),
+            ..acme_proxy_store::testutil::job_fixture()
+        }
+    }
+
+    /// A revocation recorded while this row was running finds its own request
+    /// deduplicated against the running one — the identity index covers
+    /// `running` — so the row must keep signing until the CRL has caught up,
+    /// rather than leaving that entry to the daily refresh.
+    #[tokio::test]
+    async fn the_row_signs_until_the_crl_lists_everything() {
+        let ca = Catching::with(2);
+        let job = CrlRegenerateJob::new(vec![ca.clone()]);
+
+        assert!(matches!(job.run(&row()).await, JobOutcome::Done));
+        // Two passes that signed, and the one that found nothing left.
+        assert_eq!(ca.passes.load(Ordering::SeqCst), 3);
+    }
+
+    /// Revocations arriving faster than they can be signed hand the rest to
+    /// another row rather than holding this lease for ever.
+    #[tokio::test]
+    async fn a_ca_that_never_catches_up_is_retried() {
+        let ca = Catching::with(u32::MAX);
+        let job = CrlRegenerateJob::new(vec![ca.clone()]);
+
+        assert!(matches!(job.run(&row()).await, JobOutcome::Retry(_)));
+        assert_eq!(ca.passes.load(Ordering::SeqCst), MAX_REPUBLISH_PASSES);
+    }
+
+    /// A CA this process does not serve is another process's row, and a
+    /// signing that failed is asked again.
+    #[tokio::test]
+    async fn an_unserved_ca_and_a_failed_signing_are_retried() {
+        let job = CrlRegenerateJob::new(Vec::new());
+        assert!(matches!(job.run(&row()).await, JobOutcome::Retry(_)));
+
+        let ca = Catching::with(1);
+        *ca.failing.lock().unwrap() = Some("the key is gone".to_string());
+        let job = CrlRegenerateJob::new(vec![ca]);
+        assert!(matches!(job.run(&row()).await, JobOutcome::Retry(_)));
     }
 }
