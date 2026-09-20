@@ -31,7 +31,7 @@ pub(crate) async fn signer_account(
             .ok_or_else(|| Problem::account_does_not_exist("Unknown account"))?,
     };
 
-    if account.status == "deactivated" {
+    if account.is_deactivated() {
         warn!(event = "account_deactivated_request_refused", outcome = "failure", account_id = %account.id);
         return Err(Problem::unauthorized("Account is deactivated"));
     }

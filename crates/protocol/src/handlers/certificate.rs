@@ -29,9 +29,12 @@ pub async fn post_certificate(
         pubkey, account, ..
     }: AcmePostAsGet,
 ) -> Result<Response, Problem> {
+    // "Progress", because nothing has been decided yet: the ownership walk and
+    // the certificate lookup are still below, and either can refuse. The
+    // outcome of the request is `certificate_served` or one of the refusals.
     info!(
-        event = "certificate_request_processed",
-        outcome = "success",
+        event = "certificate_request_received",
+        outcome = "progress",
         order_id = %id
     );
     let AppState {
@@ -63,12 +66,13 @@ pub async fn post_certificate(
     }
 }
 
-/// Handles ACME certificate revocation (RFC 8555 §7.6).
 /// How long a client is asked to wait before asking again about a revocation
 /// still queued: a worker picks a row up within `jobs.poll_interval_ms`, so a
 /// second is usually enough.
 const REVOCATION_RETRY_AFTER: &str = "1";
 
+/// Revokes a certificate (RFC 8555 §7.6), by the account that holds its order
+/// or by the certificate's own key.
 #[instrument(name = "post_revoke_cert", skip_all)]
 pub async fn post_revoke_cert(
     State(state): State<AppState>,

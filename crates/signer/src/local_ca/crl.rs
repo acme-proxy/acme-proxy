@@ -343,23 +343,10 @@ impl CrlStore {
         };
 
         for _ in 0..MAX_REGENERATION_ATTEMPTS {
-            // One read transaction, so the number and the rows come from the
-            // same snapshot; closed before signing, so no lock is held across it.
-            let mut tx = self
-                .database
-                .transaction()
-                .await
-                .map_err(database_failure)?;
-            let current = StoredCrl::find(&self.issuer_id, &mut *tx)
-                .await
-                .map_err(database_failure)?
-                .ok_or_else(|| {
-                    SignerError::Internal("this CA has no stored CRL to replace".to_string())
-                })?;
-            let rows = Revocation::list_for_issuer(&self.issuer_id, &mut *tx)
-                .await
-                .map_err(database_failure)?;
-            drop(tx);
+            let (current, rows) = self.snapshot().await?;
+            let current = current.ok_or_else(|| {
+                SignerError::Internal("this CA has no stored CRL to replace".to_string())
+            })?;
 
             if covering.is_some_and(|serial| lists_serial(&current.der, serial)) {
                 return Ok(removed);
@@ -449,12 +436,7 @@ impl CrlStore {
 
     /// This CA's stored CRL, if it has one yet.
     async fn stored(&self) -> Result<Option<StoredCrl>, SignerError> {
-        let mut tx = self
-            .database
-            .transaction()
-            .await
-            .map_err(database_failure)?;
-        StoredCrl::find(&self.issuer_id, &mut *tx)
+        StoredCrl::find_current(&self.issuer_id, &self.database)
             .await
             .map_err(database_failure)
     }
@@ -527,6 +509,25 @@ impl CrlStore {
     /// `false` when a row landed that no signed CRL carries yet. With no stored
     /// CRL at all, only an empty table counts as listed.
     async fn lists_every_revocation(&self) -> Result<bool, SignerError> {
+        let (current, rows) = self.snapshot().await?;
+        let Some(current) = current else {
+            return Ok(rows.is_empty());
+        };
+        let listed = listed_serials(&current.der);
+        Ok(rows
+            .iter()
+            .all(|row| listed.contains(&row.serial.to_ascii_lowercase())))
+    }
+
+    /// The stored CRL and the revocations recorded for this CA, read in **one**
+    /// transaction.
+    ///
+    /// One snapshot, because every caller compares the two: a CRL read before
+    /// a revocation landed and a row list read after it would say the CRL is
+    /// behind when it is not, and the other order would say it is complete when
+    /// it is not. Closed before anything signs, so no lock is held across a
+    /// signature.
+    async fn snapshot(&self) -> Result<(Option<StoredCrl>, Vec<Revocation>), SignerError> {
         let mut tx = self
             .database
             .transaction()
@@ -538,14 +539,7 @@ impl CrlStore {
         let rows = Revocation::list_for_issuer(&self.issuer_id, &mut *tx)
             .await
             .map_err(database_failure)?;
-        drop(tx);
-        let Some(current) = current else {
-            return Ok(rows.is_empty());
-        };
-        let listed = listed_serials(&current.der);
-        Ok(rows
-            .iter()
-            .all(|row| listed.contains(&row.serial.to_ascii_lowercase())))
+        Ok((current, rows))
     }
 }
 

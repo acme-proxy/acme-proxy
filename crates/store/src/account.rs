@@ -83,6 +83,9 @@ pub struct Account {
 /// the one case a minute of staleness would hide the interesting thing.
 pub const ACCOUNT_TOUCH_INTERVAL: i64 = 60;
 
+/// RFC 8555 §7.3.6's terminal account status, as the column spells it.
+pub const DEACTIVATED: &str = "deactivated";
+
 /// What `newAccount` learned about a registration before the row exists:
 /// [`Account::find_or_register`]'s two extra columns.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -219,6 +222,18 @@ impl Account {
             debug!(event = "db_account_not_found_by_id", outcome = "failure", account_id = %id);
         }
         Ok(result)
+    }
+
+    /// Whether this account has been deactivated (RFC 8555 §7.3.6), the one
+    /// status anything branches on.
+    ///
+    /// A method rather than the string at every call site: `status` is a
+    /// column of free text carrying the RFC's vocabulary, and a caller that
+    /// spells the value itself is one typo away from treating a deactivated
+    /// account as live — a comparison that fails open.
+    #[must_use]
+    pub fn is_deactivated(&self) -> bool {
+        self.status == DEACTIVATED
     }
 
     /// Looks up the account for `pubkey`, creating it if absent. Returns the
@@ -442,7 +457,7 @@ impl Account {
             .execute(&database.pool)
             .await?;
 
-        self.status = "deactivated".to_string();
+        self.status = DEACTIVATED.to_string();
         debug!(event = "db_account_deactivated", outcome = "success", account_id = %self.id);
         Ok(())
     }

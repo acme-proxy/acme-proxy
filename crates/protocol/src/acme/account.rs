@@ -230,7 +230,7 @@ impl AccountService<'_> {
             return Err(Problem::unauthorized("Signed by a different account key").into());
         }
 
-        if account.status == "deactivated" {
+        if account.is_deactivated() {
             warn!(
                 event = "account_deactivated_modify_refused",
                 outcome = "failure",
@@ -240,7 +240,7 @@ impl AccountService<'_> {
         }
 
         if let Some(status) = payload.status {
-            if status != "deactivated" {
+            if status != acme_proxy_store::account::DEACTIVATED {
                 warn!(event = "account_update_bad_status", outcome = "failure", account_id = %id, status = %status);
                 return Err(Problem::malformed("Only 'deactivated' status is accepted").into());
             }
@@ -413,7 +413,7 @@ impl AccountService<'_> {
 /// The wording matches `signer_account`'s byte for byte, so a deactivated key
 /// gets one answer wherever it knocks.
 fn refuse_deactivated(account: &Account, only_return_existing: bool) -> Result<(), Problem> {
-    if account.status != "deactivated" {
+    if !account.is_deactivated() {
         return Ok(());
     }
     warn!(
@@ -489,11 +489,13 @@ pub async fn deactivate(
 }
 
 /// Why [`update_contact`] did not write.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ContactUpdateError {
     /// A contact RFC 8555 §7.3 refuses, as the problem `newAccount` would answer.
+    #[error("{0}")]
     Refused(Problem),
-    Database(sqlx::Error),
+    #[error("the contact list could not be stored")]
+    Database(#[from] sqlx::Error),
 }
 
 /// Replaces `account`'s contact list, refusing one `newAccount` would refuse.

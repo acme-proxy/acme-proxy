@@ -622,63 +622,6 @@ async fn a_stalled_upstream_times_out_and_invalidates_the_order() {
     );
 }
 
-/// Two finalize requests racing on one order must not open two upstream
-/// orders — the mapping row's primary key is the guard.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_second_issue_for_the_same_order_does_not_open_a_second_upstream_order() {
-    let upstream = testsrv::start(Script {
-        chain: real_chain().await,
-        ..Script::default()
-    })
-    .await;
-    let dir = TempDir::new("upstream");
-    let db = database().await;
-    let queue = test_queue(db.clone());
-    let signer = RelaySigner::from_config(
-        &config(&upstream, &dir),
-        &relay_parts(db.clone(), no_notifiers(), queue.clone()),
-    )
-    .unwrap();
-    let _runner = TestRunner::start(queue, &signer);
-    let order = ready_order(db.clone()).await;
-
-    let first = signer
-        .issue(
-            order.id.to_string().as_str(),
-            &csr_der(),
-            &identifiers(),
-            RequestedValidity::default(),
-        )
-        .await
-        .unwrap();
-    let second = signer
-        .issue(
-            order.id.to_string().as_str(),
-            &csr_der(),
-            &identifiers(),
-            RequestedValidity::default(),
-        )
-        .await
-        .unwrap();
-    assert!(matches!(first, IssueOutcome::Processing));
-    assert!(matches!(second, IssueOutcome::Processing));
-
-    await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Valid,
-    )
-    .await;
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        mapping.upstream_order_url,
-        format!("{}/order/1", upstream.base)
-    );
-}
-
 /// A CSR the upstream rejects is the client's mistake, so it must come
 /// back as `BadCsr` — which leaves the local order `ready` and retryable —
 /// rather than an internal error that invalidates it.
@@ -1076,8 +1019,12 @@ mod handler {
     }
 }
 
-/// Two `issue` calls for one order leave one upstream-order mapping, and the
-/// second is answered `Processing` rather than refused.
+/// Two `issue` calls for one order leave one upstream-order mapping, one
+/// upstream order and one queued relay, and the second is answered
+/// `Processing` rather than refused.
+///
+/// The happy path with a runner is `issue_relays_the_order_and_finalizes_it_locally`;
+/// what this one holds still is the window, so it runs without one.
 ///
 /// The window is two finalize requests for one order arriving together:
 /// `Order::claim_for_finalize` closes it on the ACME side, but a relay backend

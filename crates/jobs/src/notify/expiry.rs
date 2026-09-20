@@ -214,7 +214,7 @@ impl ExpiryDigestJob {
         // filter, for the reason in this module's docs.
         let query = acme_proxy_store::expiring::ExpiringQuery {
             profile: Some(profile.to_string()),
-            before: now.saturating_add(i64::try_from(settings.lead.as_secs()).unwrap_or(0)),
+            before: acme_proxy_store::expiring::horizon_from(now, settings.lead.as_secs()),
             include_superseded: true,
             limit: settings.max_entries,
             offset: 0,

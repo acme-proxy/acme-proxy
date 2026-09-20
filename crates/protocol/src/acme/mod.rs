@@ -59,3 +59,17 @@ pub mod validate;
 pub use account::AccountService;
 pub use error::Error;
 pub use order::OrderService;
+
+/// The entry a process mounts under `name`, if any.
+///
+/// Every job handler here holds the same shape — the profiles, signers or
+/// notifiers of *this* generation, as `(name, value)` pairs — and asks it the
+/// same question about a row it just read. A profile that is absent is not an
+/// error: another process, or the next generation of this one, may mount it,
+/// which is why each caller answers `Retry` rather than `Failed`.
+pub(crate) fn mounted<'a, T>(entries: &'a [(String, T)], name: &str) -> Option<&'a T> {
+    entries
+        .iter()
+        .find(|(mounted, _)| mounted == name)
+        .map(|(_, entry)| entry)
+}

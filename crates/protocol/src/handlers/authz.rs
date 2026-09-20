@@ -94,15 +94,6 @@ pub async fn post_authz(
     Ok(response)
 }
 
-/// How long a client is asked to wait before polling a still-`pending` or
-/// `processing` authorization or challenge again (RFC 8555 §7.5.1).
-///
-/// Deliberately small, and for the same reason as `PROCESSING_RETRY_AFTER` on
-/// orders: a queued validation is claimed and run within `challenge.timeout_ms`
-/// of being triggered, so the answer is usually there by the time a client asks
-/// — a long hint would stall a client that could have finished immediately.
-const PENDING_RETRY_AFTER: &str = "5";
-
 /// Adds `Retry-After` while a resource is still undecided.
 ///
 /// RFC 8555 §7.5.1: "The server SHOULD provide information about its retry
@@ -119,7 +110,7 @@ fn add_pending_retry_after(response: &mut Response, status: &str) {
     if status == "pending" || status == "processing" {
         response.headers_mut().insert(
             header::RETRY_AFTER,
-            HeaderValue::from_static(PENDING_RETRY_AFTER),
+            HeaderValue::from_static(super::POLL_RETRY_AFTER),
         );
     }
 }
@@ -175,7 +166,7 @@ pub async fn post_challenge(
         .into_response();
         response.headers_mut().insert(
             header::RETRY_AFTER,
-            HeaderValue::from_static(PENDING_RETRY_AFTER),
+            HeaderValue::from_static(super::POLL_RETRY_AFTER),
         );
         return Ok(response);
     }

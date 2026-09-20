@@ -92,7 +92,7 @@ pub async fn get_renewal_info(
         })?;
 
     let certificate_pem = order.certificate.as_ref().ok_or_else(|| {
-        debug!(event = "renewal_info_no_certificate", outcome = "success", order_id = %order.id);
+        debug!(event = "renewal_info_no_certificate", outcome = "failure", order_id = %order.id);
         Problem::malformed("Order does not have a certificate")
     })?;
 

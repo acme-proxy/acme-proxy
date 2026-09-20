@@ -74,6 +74,20 @@ pub struct Problem {
     ext: Option<Box<ProblemExtensions>>,
 }
 
+impl std::fmt::Display for Problem {
+    /// The type and the detail, which is what an operator needs when a problem
+    /// travels inside another error rather than out to a client.
+    ///
+    /// Not the JSON — that is [`Problem::to_value`], and a log line is not a
+    /// place to put a document. Having any `Display` at all is what lets the
+    /// error types that carry a `Problem` derive `thiserror` (ADR 0010).
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.typ, self.detail)
+    }
+}
+
+impl std::error::Error for Problem {}
+
 /// The parts of an RFC 8555 problem document beyond RFC 7807's three fields.
 #[derive(Debug, Default)]
 struct ProblemExtensions {

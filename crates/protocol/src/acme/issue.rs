@@ -129,11 +129,9 @@ impl SignerIssueJob {
         }
     }
 
+    /// The backend this process mounts for `profile`, if any.
     fn signer(&self, profile: &str) -> Option<&Arc<dyn SignerBackend>> {
-        self.signers
-            .iter()
-            .find(|(mounted, _)| mounted == profile)
-            .map(|(_, signer)| signer)
+        super::mounted(&self.signers, profile)
     }
 }
 
@@ -145,7 +143,7 @@ async fn authority_withdrawn(
 ) -> Result<Option<&'static str>, sqlx::Error> {
     let account =
         Account::find_by_id(&order.profile, &order.account_id.to_string(), database).await?;
-    if account.is_none_or(|account| account.status == "deactivated") {
+    if account.is_none_or(|account| account.is_deactivated()) {
         return Ok(Some(
             "the account was deactivated before the certificate was issued",
         ));

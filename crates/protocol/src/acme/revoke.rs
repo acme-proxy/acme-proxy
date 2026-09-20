@@ -853,11 +853,7 @@ impl JobHandler for SignerRevokeJob {
             Ok(None) => return JobOutcome::Failed("the order no longer exists".to_string()),
             Err(error) => return JobOutcome::Retry(format!("reading the order failed: {error}")),
         };
-        let Some((_, signer)) = self
-            .signers
-            .iter()
-            .find(|(profile, _)| *profile == order.profile)
-        else {
+        let Some(signer) = super::mounted(&self.signers, &order.profile) else {
             return JobOutcome::Retry(format!(
                 "profile `{}` is not mounted by this process",
                 order.profile

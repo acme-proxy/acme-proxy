@@ -87,12 +87,6 @@ pub async fn post_order(
     Ok(order_response(&order, base, &authz_ids))
 }
 
-/// How long a client is asked to wait before polling a `processing` order
-/// again (RFC 8555 §7.4). A fixed, deliberately small value: the upstream's
-/// own pacing is invisible from here, and an over-long hint would stall a
-/// relay that finished in a second.
-const PROCESSING_RETRY_AFTER: &str = "5";
-
 /// The order object, plus a `Retry-After` header while it is `processing`.
 ///
 /// RFC 8555 §7.4 has the client poll a `processing` order rather than holding
@@ -103,7 +97,7 @@ fn order_response(order: &Order, base: &str, authz_ids: &[Uuid]) -> Response {
     if order.status == OrderStatus::Processing {
         response.headers_mut().insert(
             header::RETRY_AFTER,
-            HeaderValue::from_static(PROCESSING_RETRY_AFTER),
+            HeaderValue::from_static(super::POLL_RETRY_AFTER),
         );
     }
     response

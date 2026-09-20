@@ -349,6 +349,33 @@ async fn touch_account(
     }
 }
 
+/// The JWS payload, decoded and parsed as `T`.
+///
+/// One definition for the two extractors that take a payload: they differ in
+/// whether an empty one is allowed, not in how a present one is read, and two
+/// copies would let the refusals drift apart — a client reading `malformed`
+/// would then be told different things by two endpoints about the same
+/// mistake.
+fn decode_payload<T: DeserializeOwned>(payload_b64: &str) -> Result<T, Problem> {
+    let payload_bytes = BASE64_URL_SAFE_NO_PAD.decode(payload_b64).map_err(|_| {
+        warn!(
+            event = "jws_payload_decode_failed",
+            outcome = "failure",
+            payload_b64_chars = payload_b64.len()
+        );
+        Problem::malformed("Base64 payload invalid")
+    })?;
+
+    serde_json::from_slice(&payload_bytes).map_err(|_| {
+        warn!(
+            event = "jws_payload_parse_failed",
+            outcome = "failure",
+            payload_bytes = payload_bytes.len()
+        );
+        Problem::malformed("Payload JSON invalid for this endpoint")
+    })
+}
+
 impl<S, T> FromRequest<S> for AcmeRequest<T>
 where
     S: Send + Sync,
@@ -360,23 +387,7 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let (header, pubkey, account, payload_b64) = verify_jws(req, state).await?;
 
-        let payload_bytes = BASE64_URL_SAFE_NO_PAD.decode(&payload_b64).map_err(|_| {
-            warn!(
-                event = "jws_payload_decode_failed",
-                outcome = "failure",
-                payload_b64_chars = payload_b64.len()
-            );
-            Problem::malformed("Base64 payload invalid")
-        })?;
-
-        let payload: T = serde_json::from_slice(&payload_bytes).map_err(|_| {
-            warn!(
-                event = "jws_payload_parse_failed",
-                outcome = "failure",
-                payload_bytes = payload_bytes.len()
-            );
-            Problem::malformed("Payload JSON invalid for this endpoint")
-        })?;
+        let payload: T = decode_payload(&payload_b64)?;
 
         Ok(AcmeRequest {
             header,
@@ -449,26 +460,9 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         let (header, pubkey, account, payload_b64) = verify_jws(req, state).await?;
 
-        let payload = if payload_b64.is_empty() {
-            None
-        } else {
-            let payload_bytes = BASE64_URL_SAFE_NO_PAD.decode(&payload_b64).map_err(|_| {
-                warn!(
-                    event = "jws_payload_decode_failed",
-                    outcome = "failure",
-                    payload_b64_chars = payload_b64.len()
-                );
-                Problem::malformed("Base64 payload invalid")
-            })?;
-
-            Some(serde_json::from_slice(&payload_bytes).map_err(|_| {
-                warn!(
-                    event = "jws_payload_parse_failed",
-                    outcome = "failure",
-                    payload_bytes = payload_bytes.len()
-                );
-                Problem::malformed("Payload JSON invalid for this endpoint")
-            })?)
+        let payload = match payload_b64.is_empty() {
+            true => None,
+            false => Some(decode_payload(&payload_b64)?),
         };
 
         Ok(AcmeOptionalPayload {

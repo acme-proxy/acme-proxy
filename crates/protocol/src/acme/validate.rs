@@ -104,10 +104,7 @@ impl ChallengeValidateJob {
 
     /// The profile this process mounts under `name`, if any.
     fn profile(&self, name: &str) -> Option<&Arc<Profile>> {
-        self.profiles
-            .iter()
-            .find(|(mounted, _)| mounted == name)
-            .map(|(_, profile)| profile)
+        super::mounted(&self.profiles, name)
     }
 
     /// Walks a row back to everything deciding it needs.

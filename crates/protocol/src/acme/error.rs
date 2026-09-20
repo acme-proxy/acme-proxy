@@ -18,16 +18,19 @@ use acme_proxy_core::error::Problem;
 /// not found or not issued, and the HTTP edge needs data a problem document
 /// cannot carry (the `Location` of a conflicting account). Each one still maps to
 /// the problem an ACME client would have seen, through `From<Error> for Problem`.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A refusal the client reads as it is.
+    #[error("{0}")]
     Problem(Problem),
     /// `newAccount` without agreeing to the configured terms (RFC 8555 §7.3.3).
     /// Its response carries a `Link` to the terms, which a problem document
     /// cannot.
+    #[error("the terms of service have not been agreed to")]
     TermsNotAgreed,
     /// `keyChange` onto a key another account holds (RFC 8555 §7.3.5). Its
     /// response carries that account's `Location`.
+    #[error("the new key already belongs to account {holder}")]
     KeyChangeConflict { holder: uuid::Uuid },
 }
 

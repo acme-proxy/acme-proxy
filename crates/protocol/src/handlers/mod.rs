@@ -33,3 +33,16 @@ pub use directory::*;
 pub use metrics::*;
 pub use order::*;
 pub use renewal_info::*;
+
+/// How long a client is asked to wait before polling a resource this server has
+/// not decided yet: a `pending` or `processing` challenge or authorization
+/// (RFC 8555 §7.5.1, §8.2) and a `processing` order (§7.4).
+///
+/// One value, because it answers one question — "how long does the work this
+/// server just queued usually take?" — and two copies of it would drift apart
+/// while still meaning the same thing. Deliberately small: a validation runs
+/// within `challenge.timeout_ms` of being triggered and a local signing is
+/// immediate, so the answer is usually there by the time a client asks. A
+/// relay's upstream may take longer, but its own pacing is invisible from
+/// here, and an over-long hint would stall the common case.
+pub(crate) const POLL_RETRY_AFTER: &str = "5";

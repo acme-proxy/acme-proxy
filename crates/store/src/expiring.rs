@@ -57,7 +57,8 @@ pub struct ExpiringQuery {
     /// `None` is every endpoint, the panel's default. The digest names one.
     pub profile: Option<String>,
     /// The `cert_not_after` at or below which a row is expiring — build it with
-    /// [`expiring_horizon`] rather than computing it a second time.
+    /// [`expiring_horizon`], or [`horizon_from`] where the caller has its own
+    /// `now`, rather than computing it a second time.
     pub before: i64,
     /// Whether rows something has already replaced stay in the answer. They do
     /// by default, and the digest never turns them off: see [`list_expiring`]
@@ -74,8 +75,15 @@ pub struct ExpiringQuery {
 /// `order list --expiring-in` cannot come to disagree by a rounding rule.
 #[must_use]
 pub fn expiring_horizon(days: u64) -> i64 {
-    let seconds = i64::try_from(days.saturating_mul(24 * 60 * 60)).unwrap_or(i64::MAX);
-    now_secs().saturating_add(seconds)
+    horizon_from(now_secs(), days.saturating_mul(24 * 60 * 60))
+}
+
+/// [`expiring_horizon`] for a caller that already has its own `now` and a lead
+/// time in seconds — the expiry digest, whose `notify.expiry.lead` is a
+/// duration and whose `now` is the instant the whole digest is built against.
+#[must_use]
+pub fn horizon_from(now: i64, lead_seconds: u64) -> i64 {
+    now.saturating_add(i64::try_from(lead_seconds).unwrap_or(i64::MAX))
 }
 
 /// Whole days from `now` to `not_after`, floored, and never negative — a
