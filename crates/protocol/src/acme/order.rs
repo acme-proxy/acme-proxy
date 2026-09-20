@@ -394,13 +394,13 @@ impl OrderService<'_> {
 
         let persisted = async {
             let mut tx = database.transaction().await?;
-            order.insert(&mut *tx).await?;
+            order.insert(tx.conn()).await?;
 
             for identifier in &order.identifiers {
                 let authz = Authorization::new(order.id, identifier.clone(), order.expires);
-                authz.insert(&mut *tx).await?;
+                authz.insert(tx.conn()).await?;
                 for typ in challenges.types_for(is_wildcard(&identifier.value)) {
-                    Challenge::new(authz.id, typ).insert(&mut *tx).await?;
+                    Challenge::new(authz.id, typ).insert(tx.conn()).await?;
                 }
                 authz_ids.push(authz.id);
             }
@@ -503,8 +503,8 @@ impl OrderService<'_> {
         // authorization alone, and the order is demoted only if it is `ready`.
         let outcome = async {
             let mut tx = database.transaction().await?;
-            let deactivated = Authorization::set_deactivated(authz.id, &mut *tx).await?;
-            let demoted = deactivated && Order::set_pending(order.id, &mut *tx).await?;
+            let deactivated = Authorization::set_deactivated(authz.id, tx.conn()).await?;
+            let demoted = deactivated && Order::set_pending(order.id, tx.conn()).await?;
             tx.commit().await?;
             Ok::<_, sqlx::Error>((deactivated, demoted))
         }
@@ -851,10 +851,10 @@ impl OrderService<'_> {
         let spec = super::issue::signer_issue_spec(&order, &csr_der, &client, client_ip);
         let claimed = async {
             let mut tx = database.transaction().await?;
-            if !order.claim_for_finalize_on(&mut *tx).await? {
+            if !order.claim_for_finalize_on(tx.conn()).await? {
                 return Ok(false);
             }
-            jobs.enqueue_in(&spec, &mut tx).await?;
+            jobs.enqueue_in(&spec, tx.conn()).await?;
             tx.commit().await?;
             Ok::<bool, sqlx::Error>(true)
         }
@@ -920,9 +920,9 @@ async fn commit_validation(
         // decided the authorization, or the client may have deactivated it; the
         // verdict is then recorded on the challenge alone and nothing above it
         // changes.
-        let challenge_written = Challenge::set_valid(challenge.id, validated, &mut *tx).await?;
+        let challenge_written = Challenge::set_valid(challenge.id, validated, tx.conn()).await?;
         let authz_written =
-            challenge_written && Authorization::set_valid(authz.id, &mut *tx).await?;
+            challenge_written && Authorization::set_valid(authz.id, tx.conn()).await?;
 
         // The guarded writes above have already taken the RESERVED lock by the
         // time this reads — `transaction()` issues a deferred BEGIN — so this
@@ -930,12 +930,12 @@ async fn commit_validation(
         // first here would break that. `set_ready` is guarded on `pending`, so
         // the order's status as the job read it does not matter.
         let promoted = authz_written && {
-            let authzs = Authorization::find_by_order_with(order.id, &mut *tx).await?;
+            let authzs = Authorization::find_by_order_with(order.id, tx.conn()).await?;
             authzs.len() == order.identifiers.len()
                 && authzs
                     .iter()
                     .all(|authz| authz.status == AuthzStatus::Valid)
-                && Order::set_ready(order.id, &mut *tx).await?
+                && Order::set_ready(order.id, tx.conn()).await?
         };
         tx.commit().await?;
         Ok::<_, sqlx::Error>((challenge_written, authz_written, promoted))
@@ -994,11 +994,11 @@ async fn commit_validation_failure(
 ) -> Result<bool, Problem> {
     let outcome = async {
         let mut tx = database.transaction().await?;
-        let challenge_written = Challenge::set_invalid(challenge.id, problem, &mut *tx).await?;
+        let challenge_written = Challenge::set_invalid(challenge.id, problem, tx.conn()).await?;
         let authz_written =
-            challenge_written && Authorization::set_invalid(authz.id, &mut *tx).await?;
+            challenge_written && Authorization::set_invalid(authz.id, tx.conn()).await?;
         let order_written =
-            authz_written && Order::set_invalid(order.id, problem, &mut *tx).await?;
+            authz_written && Order::set_invalid(order.id, problem, tx.conn()).await?;
         tx.commit().await?;
         Ok::<_, sqlx::Error>((challenge_written, authz_written, order_written))
     }

@@ -635,7 +635,7 @@ impl Revocations<'_> {
             // the upgrade would fail with `SQLITE_BUSY_SNAPSHOT` instead of
             // waiting its turn.
             let mut tx = self.database.write_transaction().await?;
-            if acme_proxy_store::crl::StoredCrl::find(issuer, &mut *tx)
+            if acme_proxy_store::crl::StoredCrl::find(issuer, tx.conn())
                 .await?
                 .is_none()
             {
@@ -646,10 +646,10 @@ impl Revocations<'_> {
             // writer — the CLI beside a running server, or a second request —
             // got there between the check and here, and the ledger row it wrote
             // is the one that stands, reason and all.
-            if !Order::set_revoked(order.id, reason.map(i64::from), revoked_at, &mut *tx).await? {
+            if !Order::set_revoked(order.id, reason.map(i64::from), revoked_at, tx.conn()).await? {
                 return Ok(Recorded::Already);
             }
-            row.insert_if_absent(&mut *tx).await?;
+            row.insert_if_absent(tx.conn()).await?;
             tx.commit().await?;
             Ok::<Recorded, sqlx::Error>(Recorded::Yes)
         }

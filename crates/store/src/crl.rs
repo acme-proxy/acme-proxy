@@ -8,8 +8,9 @@
 //! `signer::local_ca`'s job, done outside any transaction since a PKCS#11
 //! signature is a token round trip.
 
-use sqlx::Row;
 use tracing::{debug, info};
+
+use crate::sql::Row;
 
 use crate::db::Database;
 
@@ -27,7 +28,7 @@ pub struct StoredCrl {
 }
 
 impl StoredCrl {
-    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: &Row) -> Result<Self, sqlx::Error> {
         let number: i64 = row.try_get("crl_number")?;
         Ok(Self {
             issuer: row.try_get("issuer")?,
@@ -42,11 +43,11 @@ impl StoredCrl {
     }
 
     /// The current CRL for `issuer`, if one has been stored.
-    pub async fn find<'e, E>(issuer: &str, executor: E) -> Result<Option<Self>, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        sqlx::query(
+    pub async fn find<'e>(
+        issuer: &str,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        crate::sql::query(
             "SELECT issuer, crl_number, der, this_update, next_update FROM crls WHERE issuer = ?;",
         )
         .bind(issuer)
@@ -65,7 +66,7 @@ impl StoredCrl {
         issuer: &str,
         database: &Database,
     ) -> Result<Option<Self>, sqlx::Error> {
-        Self::find(issuer, &database.pool).await
+        Self::find(issuer, database).await
     }
 
     /// Stores the first CRL for its issuer, answering whether it was written.
@@ -74,11 +75,11 @@ impl StoredCrl {
     /// is what makes a CA's one-time initialisation — the sidecar import — safe
     /// to race: whoever inserts this row owns the import, in the same
     /// transaction.
-    pub async fn insert_initial<'e, E>(&self, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let result = sqlx::query(
+    pub async fn insert_initial<'e>(
+        &self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let result = crate::sql::query(
             "INSERT INTO crls (issuer, crl_number, der, this_update, next_update) \
              VALUES (?, ?, ?, ?, ?) ON CONFLICT (issuer) DO NOTHING;",
         )
@@ -111,7 +112,7 @@ impl StoredCrl {
         expected: u64,
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
+        let result = crate::sql::query(
             "UPDATE crls SET crl_number = ?, der = ?, this_update = ?, next_update = ? \
              WHERE issuer = ? AND crl_number = ?;",
         )
@@ -121,7 +122,7 @@ impl StoredCrl {
         .bind(self.next_update)
         .bind(&self.issuer)
         .bind(number(expected)?)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
         let replaced = result.rows_affected() == 1;
         if replaced {
@@ -166,28 +167,13 @@ mod tests {
     #[tokio::test]
     async fn the_first_initial_crl_wins() {
         let database = Database::connect_in_memory().await.unwrap();
-        assert!(
-            StoredCrl::find("ca", &database.pool)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(StoredCrl::find("ca", &database).await.unwrap().is_none());
 
-        assert!(
-            crl(1, b"first")
-                .insert_initial(&database.pool)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !crl(7, b"second")
-                .insert_initial(&database.pool)
-                .await
-                .unwrap()
-        );
+        assert!(crl(1, b"first").insert_initial(&database).await.unwrap());
+        assert!(!crl(7, b"second").insert_initial(&database).await.unwrap());
 
         assert_eq!(
-            StoredCrl::find("ca", &database.pool).await.unwrap(),
+            StoredCrl::find("ca", &database).await.unwrap(),
             Some(crl(1, b"first"))
         );
     }
@@ -197,7 +183,7 @@ mod tests {
     #[tokio::test]
     async fn a_replacement_signed_over_a_stale_number_is_refused() {
         let database = Database::connect_in_memory().await.unwrap();
-        crl(1, b"one").insert_initial(&database.pool).await.unwrap();
+        crl(1, b"one").insert_initial(&database).await.unwrap();
 
         // Two writers both read number 1; the first to store wins.
         assert!(
@@ -221,7 +207,7 @@ mod tests {
         );
 
         assert_eq!(
-            StoredCrl::find("ca", &database.pool).await.unwrap(),
+            StoredCrl::find("ca", &database).await.unwrap(),
             Some(crl(3, b"three"))
         );
     }
@@ -235,11 +221,6 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert!(
-            StoredCrl::find("ca", &database.pool)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(StoredCrl::find("ca", &database).await.unwrap().is_none());
     }
 }

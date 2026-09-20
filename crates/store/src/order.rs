@@ -32,9 +32,8 @@
 //! An exact `identifier` search for a covered name therefore does not match a
 //! wildcard order; a search for the wildcard string does.
 
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
@@ -150,7 +149,7 @@ impl OrderQuery {
     /// One function rather than two copies: a filter applied to only one of
     /// them would report a total that does not match the rows returned, which
     /// is the kind of bug a page control shows and nothing else does.
-    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+    fn push_predicates(&self, builder: &mut crate::sql::Builder) {
         // `status` arrives as an `OrderStatus` and `profile` as a `String`, so
         // each contributes its own `&str` and the pair stays one type. The bind
         // is still a parameter, never interpolated SQL. The returned separator
@@ -319,11 +318,7 @@ pub const UNPARSABLE_NOT_AFTER: i64 = -1;
 /// `concat!` literal cannot carry a conditional clause. The three predicates
 /// after it are unconditional and each carries its reason on
 /// [`Order::find_expiring`].
-fn push_expiring_predicates(
-    profile: Option<&str>,
-    before: i64,
-    builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
-) {
+fn push_expiring_predicates(profile: Option<&str>, before: i64, builder: &mut crate::sql::Builder) {
     builder.push(" FROM orders WHERE certificate IS NOT NULL AND revoked_at IS NULL");
     builder.push(" AND cert_not_after >= 0 AND cert_not_after <= ");
     builder.push_bind(before);
@@ -334,7 +329,7 @@ fn push_expiring_predicates(
 }
 
 impl Order {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let identifiers_json: String = row.try_get("identifiers")?;
         let identifiers: Vec<Identifier> = serde_json::from_str(&identifiers_json)
             .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
@@ -351,7 +346,7 @@ impl Order {
             id: row.try_get("id")?,
             profile: row.try_get("profile")?,
             account_id: row.try_get("account_id")?,
-            status: status::from_column(row.try_get::<&str, _>("status")?)?,
+            status: status::from_column(row.try_get::<String>("status")?.as_str())?,
             identifiers,
             expires: row.try_get("expires")?,
             not_before: row.try_get("not_before")?,
@@ -429,16 +424,16 @@ impl Order {
     /// authorizations inside one transaction: a half-built order (fewer
     /// authorizations than identifiers) would otherwise be finalizable for names
     /// that were never authorized.
-    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    pub async fn insert<'e>(
+        &self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<(), sqlx::Error> {
         // `Identifier` derives `Serialize`, so this never fails in practice.
         let identifiers_json = serde_json::to_string(&self.identifiers)
             .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
         debug!(event = "db_order_create_started", outcome = "progress", order_id = ?self.id, profile = %self.profile, account_id = ?self.account_id);
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, not_before, not_after, error, certificate, replaces, created_at, created_ip, created_ptr) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?);",
         )
@@ -480,7 +475,7 @@ impl Order {
             not_before,
             not_after,
         );
-        order.insert(&database.pool).await?;
+        order.insert(database).await?;
         Ok(order)
     }
 
@@ -489,9 +484,9 @@ impl Order {
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
-        let row = sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE id = ?;"))
+        let row = crate::sql::query(concat!("SELECT ", columns!(), " FROM orders WHERE id = ?;"))
             .bind(id)
-            .fetch_optional(&database.pool)
+            .fetch_optional(database)
             .await?;
 
         let result = row.map(Order::from_row).transpose()?;
@@ -514,13 +509,13 @@ impl Order {
         database: &Database,
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_account_started", outcome = "progress", account_id = ?account_id);
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM orders WHERE account_id = ? ORDER BY created_at DESC;"
         ))
         .bind(account_id)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter().map(Order::from_row).collect()
@@ -544,10 +539,10 @@ impl Order {
     ) -> Result<Vec<Order>, sqlx::Error> {
         debug!(event = "db_order_find_active_by_account_started", outcome = "progress", account_id = ?account_id);
         let rows =
-            sqlx::query(concat!("SELECT ", columns!(), " FROM orders WHERE account_id = ? AND status != 'invalid' AND (status = 'valid' OR expires > ?) ORDER BY created_at DESC;"))
+            crate::sql::query(concat!("SELECT ", columns!(), " FROM orders WHERE account_id = ? AND status != 'invalid' AND (status = 'valid' OR expires > ?) ORDER BY created_at DESC;"))
                 .bind(account_id)
                 .bind(now_secs())
-                .fetch_all(&database.pool)
+                .fetch_all(database)
                 .await?;
 
         rows.into_iter().map(Order::from_row).collect()
@@ -587,7 +582,7 @@ impl Order {
                limit = query.limit,
                offset = query.offset);
 
-        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!(), " FROM orders"));
+        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!(), " FROM orders"));
         query.push_predicates(&mut page);
         // Newest first, and `id` breaks the tie: `created_at` is whole seconds,
         // so without it two orders placed in the same second could swap between
@@ -597,19 +592,15 @@ impl Order {
         page.push(" OFFSET ");
         page.push_bind(query.offset);
 
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
         let orders: Vec<Order> = rows
             .into_iter()
             .map(Order::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM orders");
+        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM orders");
         query.push_predicates(&mut count);
-        let total: i64 = count
-            .build()
-            .fetch_one(&database.pool)
-            .await?
-            .try_get::<i64, _>(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((orders, total))
     }
@@ -636,12 +627,12 @@ impl Order {
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
         debug!(event = "db_order_cleanup_started", outcome = "progress", profile = %profile, cutoff = cutoff);
-        let removed = sqlx::query(
+        let removed = crate::sql::query(
             "DELETE FROM orders WHERE profile = ? AND status != 'valid' AND expires < ?;",
         )
         .bind(profile)
         .bind(cutoff)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected();
 
@@ -658,11 +649,11 @@ impl Order {
         account_id: Uuid,
         database: &Database,
     ) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query("SELECT COUNT(*) FROM orders WHERE account_id = ?;")
+        let row = crate::sql::query("SELECT COUNT(*) FROM orders WHERE account_id = ?;")
             .bind(account_id)
-            .fetch_one(&database.pool)
+            .fetch_one(database)
             .await?;
-        row.try_get::<i64, _>(0)
+        row.try_get::<i64>(0)
     }
 
     /// Hard-deletes the order row — cascading, via `ON DELETE CASCADE`, to its
@@ -678,14 +669,14 @@ impl Order {
             return Ok(GuardedDelete::NotFound);
         };
         let now = now_secs();
-        let result = sqlx::query(concat!(
+        let result = crate::sql::query(concat!(
             "DELETE FROM orders WHERE id = ? AND NOT ",
             live_certificate!(),
             ";"
         ))
         .bind(id)
         .bind(now)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         if result.rows_affected() > 0 {
@@ -709,14 +700,14 @@ impl Order {
         order_id: Uuid,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
-        let live: i64 = sqlx::query(concat!(
+        let live: i64 = crate::sql::query(concat!(
             "SELECT COUNT(*) FROM orders WHERE id = ? AND ",
             live_certificate!(),
             ";"
         ))
         .bind(order_id)
         .bind(now_secs())
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?
         .try_get(0)?;
         Ok(live as u64)
@@ -748,7 +739,7 @@ impl Order {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_order_finalize_started", outcome = "progress", order_id = ?self.id);
-        sqlx::query(
+        crate::sql::query(
             "UPDATE orders SET certificate = ?, cert_serial = ?, cert_pubkey = ?, \
              cert_not_after = ?, status = 'valid' WHERE id = ?;",
         )
@@ -757,7 +748,7 @@ impl Order {
         .bind(&cert_pubkey)
         .bind(cert_not_after)
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         self.certificate = Some(chain);
@@ -822,26 +813,22 @@ impl Order {
             limit,
             offset
         );
-        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!()));
+        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!()));
         push_expiring_predicates(profile, before, &mut page);
         page.push(" ORDER BY cert_not_after ASC, id ASC LIMIT ");
         page.push_bind(limit);
         page.push(" OFFSET ");
         page.push_bind(offset);
 
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
         let orders: Vec<Order> = rows
             .into_iter()
             .map(Order::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*)");
+        let mut count = crate::sql::Builder::new("SELECT COUNT(*)");
         push_expiring_predicates(profile, before, &mut count);
-        let total: i64 = count
-            .build()
-            .fetch_one(&database.pool)
-            .await?
-            .try_get::<i64, _>(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((orders, total))
     }
@@ -859,13 +846,13 @@ impl Order {
         limit: i64,
         database: &Database,
     ) -> Result<Vec<(Uuid, String)>, sqlx::Error> {
-        let rows = sqlx::query(
+        let rows = crate::sql::query(
             "SELECT id, certificate FROM orders WHERE profile = ? \
              AND certificate IS NOT NULL AND cert_not_after IS NULL LIMIT ?;",
         )
         .bind(profile)
         .bind(limit)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter()
@@ -885,10 +872,10 @@ impl Order {
         cert_not_after: i64,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE orders SET cert_not_after = ? WHERE id = ?;")
+        crate::sql::query("UPDATE orders SET cert_not_after = ? WHERE id = ?;")
             .bind(cert_not_after)
             .bind(id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
         Ok(())
     }
@@ -910,14 +897,14 @@ impl Order {
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_cert_serial_started", outcome = "progress", profile = %profile, cert_serial = ?serial);
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM orders WHERE profile = ? AND cert_serial = ?;"
         ))
         .bind(profile)
         .bind(serial)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         let result = row.map(Order::from_row).transpose()?;
@@ -943,14 +930,14 @@ impl Order {
         database: &Database,
     ) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_replaces_started", outcome = "progress", profile = %profile, replaces = %cert_id);
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM orders WHERE profile = ? AND replaces = ? AND status != 'invalid' LIMIT 1;"
         ))
         .bind(profile)
         .bind(cert_id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Order::from_row).transpose()
@@ -968,7 +955,7 @@ impl Order {
     ) -> Result<bool, sqlx::Error> {
         let now = now_secs();
         debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?self.id, reason = ?reason);
-        if !Self::set_revoked(self.id, reason, now, &database.pool).await? {
+        if !Self::set_revoked(self.id, reason, now, database).await? {
             return Ok(false);
         }
 
@@ -990,17 +977,14 @@ impl Order {
     /// would leave the order naming a reason and a time the CRL does not, and
     /// a second caller writing a second audit row and a second notification for
     /// one withdrawal of trust.
-    pub async fn set_revoked<'e, E>(
+    pub async fn set_revoked<'e>(
         id: Uuid,
         reason: Option<i64>,
         revoked_at: i64,
-        executor: E,
-    ) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_revoke_started", outcome = "progress", order_id = ?id, reason = ?reason);
-        let written = sqlx::query(
+        let written = crate::sql::query(
             "UPDATE orders SET revoked_at = ?, revocation_reason = ? \
              WHERE id = ? AND revoked_at IS NULL;",
         )
@@ -1029,16 +1013,13 @@ impl Order {
     /// certificate: writing `invalid` over it would let `Order::cleanup` delete
     /// the only row that can revoke that certificate. An `invalid` order keeps
     /// the first error it was given.
-    pub async fn set_invalid<'e, E>(
+    pub async fn set_invalid<'e>(
         id: Uuid,
         error: &Value,
-        executor: E,
-    ) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
         // `error` is a `serde_json::Value`, so serialization is infallible.
-        let written = sqlx::query(
+        let written = crate::sql::query(
             "UPDATE orders SET error = ?, status = 'invalid' \
              WHERE id = ? AND status IN ('pending', 'ready', 'processing');",
         )
@@ -1052,32 +1033,34 @@ impl Order {
 
     /// The `ready` transition as a bare statement, guarded on `pending`; see
     /// [`Order::set_invalid`].
-    pub async fn set_ready<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written =
-            sqlx::query("UPDATE orders SET status = 'ready' WHERE id = ? AND status = 'pending';")
-                .bind(id)
-                .execute(executor)
-                .await?
-                .rows_affected();
+    pub async fn set_ready<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
+            "UPDATE orders SET status = 'ready' WHERE id = ? AND status = 'pending';",
+        )
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
         Ok(written == 1)
     }
 
     /// The `pending` transition as a bare statement, guarded on `ready` (the
     /// one backwards transition, [`Order::mark_pending`]); see
     /// [`Order::set_invalid`].
-    pub async fn set_pending<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written =
-            sqlx::query("UPDATE orders SET status = 'pending' WHERE id = ? AND status = 'ready';")
-                .bind(id)
-                .execute(executor)
-                .await?
-                .rows_affected();
+    pub async fn set_pending<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
+            "UPDATE orders SET status = 'pending' WHERE id = ? AND status = 'ready';",
+        )
+        .bind(id)
+        .execute(executor)
+        .await?
+        .rows_affected();
         Ok(written == 1)
     }
 
@@ -1092,7 +1075,7 @@ impl Order {
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_invalid_started", outcome = "progress", order_id = ?self.id);
-        if !Self::set_invalid(self.id, &error, &database.pool).await? {
+        if !Self::set_invalid(self.id, &error, database).await? {
             return Ok(false);
         }
 
@@ -1107,7 +1090,7 @@ impl Order {
     /// [`Order::finalize`]); `false` when it was not `pending`.
     pub async fn mark_ready(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_ready_started", outcome = "progress", order_id = ?self.id);
-        if !Self::set_ready(self.id, &database.pool).await? {
+        if !Self::set_ready(self.id, database).await? {
             return Ok(false);
         }
 
@@ -1129,7 +1112,7 @@ impl Order {
     /// keeping with the model.
     pub async fn mark_pending(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
-        if !Self::set_pending(self.id, &database.pool).await? {
+        if !Self::set_pending(self.id, database).await? {
             return Ok(false);
         }
 
@@ -1164,7 +1147,7 @@ impl Order {
     /// `CHECK` has always allowed it; until the `relay` backend existed
     /// there was simply no asynchronous issuance to use it.
     pub async fn claim_for_finalize(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
-        self.claim_for_finalize_on(&database.pool).await
+        self.claim_for_finalize_on(database).await
     }
 
     /// [`claim_for_finalize`](Self::claim_for_finalize) on a connection of the
@@ -1172,12 +1155,12 @@ impl Order {
     /// settles it in **one** transaction, so an order is never `processing`
     /// with nothing coming for it. `self` is updated as soon as the statement
     /// succeeds; a caller whose transaction then fails discards it.
-    pub async fn claim_for_finalize_on<'e, E>(&mut self, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    pub async fn claim_for_finalize_on<'e>(
+        &mut self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_order_mark_processing_started", outcome = "progress", order_id = ?self.id);
-        let claimed = sqlx::query(
+        let claimed = crate::sql::query(
             "UPDATE orders SET status = 'processing' WHERE id = ? AND status = 'ready';",
         )
         .bind(self.id)
@@ -1273,7 +1256,7 @@ mod tests {
             user_agent: Some("lego".to_string()),
             request_id: Some("req-1".to_string()),
         });
-        stamped.insert(&db.pool).await.unwrap();
+        stamped.insert(&db).await.unwrap();
         let reloaded = Order::find_by_id(stamped.id.to_string().as_str(), &db)
             .await
             .unwrap()
@@ -1289,7 +1272,7 @@ mod tests {
             None,
             None,
         );
-        bare.insert(&db.pool).await.unwrap();
+        bare.insert(&db).await.unwrap();
         let reloaded = Order::find_by_id(bare.id.to_string().as_str(), &db)
             .await
             .unwrap()
@@ -1871,10 +1854,10 @@ mod tests {
             )
             .await
             .unwrap();
-            sqlx::query("UPDATE orders SET created_at = ? WHERE id = ?;")
+            crate::sql::query("UPDATE orders SET created_at = ? WHERE id = ?;")
                 .bind(base - index as i64)
                 .bind(order.id)
-                .execute(&db.pool)
+                .execute(db)
                 .await
                 .unwrap();
             ids.push(order.id);

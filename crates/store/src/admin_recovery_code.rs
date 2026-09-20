@@ -1,5 +1,4 @@
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use crate::sql::Row;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -34,7 +33,7 @@ pub struct AdminRecoveryCode {
 }
 
 impl AdminRecoveryCode {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         Ok(AdminRecoveryCode {
             id: row.try_get("id")?,
             user_id: row.try_get("user_id")?,
@@ -60,15 +59,15 @@ impl AdminRecoveryCode {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
 
-        sqlx::query("DELETE FROM admin_recovery_codes WHERE user_id = ?;")
+        crate::sql::query("DELETE FROM admin_recovery_codes WHERE user_id = ?;")
             .bind(user_id)
-            .execute(&mut *tx)
+            .execute(tx.conn())
             .await?;
 
         for hash in hashes {
-            sqlx::query(
+            crate::sql::query(
                 "INSERT INTO admin_recovery_codes (id, user_id, code_hash, created_at, used_at) \
                  VALUES (?, ?, ?, ?, NULL);",
             )
@@ -76,7 +75,7 @@ impl AdminRecoveryCode {
             .bind(user_id)
             .bind(hash)
             .bind(now)
-            .execute(&mut *tx)
+            .execute(tx.conn())
             .await?;
         }
 
@@ -97,13 +96,13 @@ impl AdminRecoveryCode {
         user_id: Uuid,
         database: &Database,
     ) -> Result<Vec<AdminRecoveryCode>, sqlx::Error> {
-        let rows = sqlx::query(
+        let rows = crate::sql::query(
             "SELECT id, user_id, code_hash, created_at, used_at \
              FROM admin_recovery_codes WHERE user_id = ? AND used_at IS NULL \
              ORDER BY created_at ASC, id ASC;",
         )
         .bind(user_id)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter().map(AdminRecoveryCode::from_row).collect()
@@ -112,12 +111,12 @@ impl AdminRecoveryCode {
     /// How many are left -- the "7 of 10 remaining" the panel and
     /// `admin user totp status` both show.
     pub async fn count_unused(user_id: Uuid, database: &Database) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "SELECT COUNT(*) AS total FROM admin_recovery_codes \
              WHERE user_id = ? AND used_at IS NULL;",
         )
         .bind(user_id)
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?;
 
         row.try_get("total")
@@ -133,12 +132,12 @@ impl AdminRecoveryCode {
     /// Stamps rather than deletes -- see the migration's comment: "this code was
     /// spent, at T" is the audit trail a recovery-code use exists to leave.
     pub async fn consume(id: Uuid, database: &Database) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query(
+        let result = crate::sql::query(
             "UPDATE admin_recovery_codes SET used_at = ? WHERE id = ? AND used_at IS NULL;",
         )
         .bind(now_secs())
         .bind(id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         let consumed = result.rows_affected() == 1;
@@ -155,9 +154,9 @@ impl AdminRecoveryCode {
     /// with it, since a recovery code recovers access to a factor that no
     /// longer exists.
     pub async fn delete_for_user(user_id: Uuid, database: &Database) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM admin_recovery_codes WHERE user_id = ?;")
+        let result = crate::sql::query("DELETE FROM admin_recovery_codes WHERE user_id = ?;")
             .bind(user_id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         Ok(result.rows_affected())

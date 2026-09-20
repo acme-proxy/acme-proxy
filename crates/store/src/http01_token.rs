@@ -5,7 +5,6 @@
 //! `/.well-known/acme-challenge/{token}` need not be the one whose relay job
 //! published it. `signer::relay::http01` is the only user.
 
-use sqlx::Row;
 use tracing::debug;
 
 use crate::db::Database;
@@ -26,7 +25,7 @@ impl Http01Token {
         expires_at: i64,
         database: &Database,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO http01_tokens (token, key_authorization, created_at, expires_at) \
              VALUES (?, ?, ?, ?) \
              ON CONFLICT (token) DO UPDATE SET \
@@ -36,7 +35,7 @@ impl Http01Token {
         .bind(key_authorization)
         .bind(now)
         .bind(expires_at)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
         debug!(event = "db_http_01_token_published", outcome = "success", token = %token, expires_at);
         Ok(())
@@ -44,9 +43,9 @@ impl Http01Token {
 
     /// Stops serving `token`. Idempotent.
     pub async fn retract(token: &str, database: &Database) -> Result<(), sqlx::Error> {
-        let result = sqlx::query("DELETE FROM http01_tokens WHERE token = ?;")
+        let result = crate::sql::query("DELETE FROM http01_tokens WHERE token = ?;")
             .bind(token)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
         debug!(
             event = "db_http_01_token_retracted",
@@ -63,12 +62,12 @@ impl Http01Token {
         now: i64,
         database: &Database,
     ) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query(
+        crate::sql::query(
             "SELECT key_authorization FROM http01_tokens WHERE token = ? AND expires_at > ?;",
         )
         .bind(token)
         .bind(now)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?
         .map(|row| row.try_get("key_authorization"))
         .transpose()
@@ -76,9 +75,9 @@ impl Http01Token {
 
     /// Deletes every token at or past its `expires_at`, returning how many.
     pub async fn cleanup(now: i64, database: &Database) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM http01_tokens WHERE expires_at <= ?;")
+        let result = crate::sql::query("DELETE FROM http01_tokens WHERE expires_at <= ?;")
             .bind(now)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
         // Debug: `jobs::sweep` already reports the pass that called this, and
         // an hourly line saying nothing expired is noise in an operator's log.

@@ -1,6 +1,5 @@
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -134,7 +133,7 @@ pub struct DeletedEab {
 const SECRET_LEN: usize = 32;
 
 impl Eab {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         Ok(Eab {
             kid: row.try_get("kid")?,
             secret: row.try_get("secret")?,
@@ -164,7 +163,7 @@ impl Eab {
         };
 
         debug!(event = "db_eab_create_started", outcome = "progress", kid = ?eab.kid, profile = ?eab.profile);
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO eab_keys (kid, secret, label, profile, status, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
@@ -174,7 +173,7 @@ impl Eab {
         .bind(&eab.profile)
         .bind(&eab.status)
         .bind(eab.created_at)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         info!(event = "db_eab_created", outcome = "success", kid = ?eab.kid);
@@ -193,13 +192,13 @@ impl Eab {
         let Some(kid) = crate::id::parse(kid) else {
             return Ok(None);
         };
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
              WHERE kid = ? AND (profile IS NULL OR profile = ?);",
         )
         .bind(kid)
         .bind(profile)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Eab::from_row).transpose()
@@ -217,11 +216,11 @@ impl Eab {
         let Some(kid) = crate::id::parse(kid) else {
             return Ok(None);
         };
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys WHERE kid = ?;",
         )
         .bind(kid)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Eab::from_row).transpose()
@@ -258,16 +257,16 @@ impl Eab {
             limit = limit,
             offset = offset
         );
-        let rows = sqlx::query(
+        let rows = crate::sql::query(
             "SELECT kid, secret, label, profile, status, created_at FROM eab_keys \
              ORDER BY created_at DESC, kid DESC LIMIT ? OFFSET ?;",
         )
         .bind(limit)
         .bind(offset)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
-        let total: i64 = sqlx::query("SELECT COUNT(*) FROM eab_keys;")
-            .fetch_one(&database.pool)
+        let total: i64 = crate::sql::query("SELECT COUNT(*) FROM eab_keys;")
+            .fetch_one(database)
             .await?
             .try_get(0)?;
 
@@ -289,9 +288,9 @@ impl Eab {
         let Some(kid) = crate::id::parse(kid) else {
             return Ok(false);
         };
-        let result = sqlx::query("UPDATE eab_keys SET status = 'revoked' WHERE kid = ?;")
+        let result = crate::sql::query("UPDATE eab_keys SET status = 'revoked' WHERE kid = ?;")
             .bind(kid)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         let updated = result.rows_affected() > 0;
@@ -321,13 +320,13 @@ impl Eab {
             return Ok(EabDeletion::NotFound);
         };
 
-        let mut tx = database.pool.begin().await?;
-        let Some(row) = sqlx::query(
+        let mut tx = database.transaction().await?;
+        let Some(row) = crate::sql::query(
             "DELETE FROM eab_keys WHERE kid = ? \
              RETURNING kid, secret, label, profile, status, created_at;",
         )
         .bind(kid)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(tx.conn())
         .await?
         else {
             debug!(event = "db_eab_delete_missing", outcome = "success", kid = ?kid);
@@ -340,26 +339,26 @@ impl Eab {
         match accounts {
             BoundAccounts::Keep => {}
             BoundAccounts::Deactivate => {
-                deactivated = Account::deactivate_by_eab_kid(kid, &mut tx).await?;
+                deactivated = Account::deactivate_by_eab_kid(kid, tx.conn()).await?;
             }
             BoundAccounts::Delete => {
                 let (holders, certificates) =
-                    Account::live_certificates_by_eab_kid(kid, &mut tx).await?;
+                    Account::live_certificates_by_eab_kid(kid, tx.conn()).await?;
                 if certificates > 0 {
-                    tx.rollback().await?;
+                    drop(tx);
                     info!(event = "db_eab_delete_blocked", outcome = "failure", kid = ?kid, accounts = holders, live_certificates = certificates);
                     return Ok(EabDeletion::LiveCertificates {
                         accounts: holders,
                         certificates,
                     });
                 }
-                deleted = Account::delete_by_eab_kid(kid, &mut tx).await?;
+                deleted = Account::delete_by_eab_kid(kid, tx.conn()).await?;
             }
         }
 
-        let remaining: i64 = sqlx::query("SELECT COUNT(*) FROM accounts WHERE eab_kid = ?;")
+        let remaining: i64 = crate::sql::query("SELECT COUNT(*) FROM accounts WHERE eab_kid = ?;")
             .bind(kid)
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.conn())
             .await?
             .try_get(0)?;
         tx.commit().await?;

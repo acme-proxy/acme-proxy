@@ -307,7 +307,7 @@ mod tests {
 
         let cert_id = ari_cert_id(old.certificate.as_deref().unwrap()).unwrap();
         let successor = issued(&db, acct, &["a.example.com"], 90).await;
-        sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
+        crate::sql::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(successor.id)
             .execute(db.raw_pool())
@@ -346,7 +346,7 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE orders SET replaces = ? WHERE id = ?;")
+        crate::sql::query("UPDATE orders SET replaces = ? WHERE id = ?;")
             .bind(&cert_id)
             .bind(pending.id)
             .execute(db.raw_pool())

@@ -254,7 +254,7 @@ impl JobQueue {
     pub async fn enqueue_in(
         &self,
         spec: &JobSpec,
-        connection: &mut sqlx::SqliteConnection,
+        connection: acme_proxy_store::sql::Exec<'_>,
     ) -> Result<bool, sqlx::Error> {
         Job::enqueue_on(self.new_job(spec), connection).await
     }

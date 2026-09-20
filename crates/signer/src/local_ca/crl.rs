@@ -240,14 +240,14 @@ impl CrlStore {
         // First, so it is what takes the write lock: a second process racing
         // this one waits here and then finds the row already stored.
         if !initial
-            .insert_initial(&mut *tx)
+            .insert_initial(tx.conn())
             .await
             .map_err(database_failure)?
         {
             return Ok(());
         }
         for row in imported.iter().flatten() {
-            row.insert_if_absent(&mut *tx)
+            row.insert_if_absent(tx.conn())
                 .await
                 .map_err(database_failure)?;
         }
@@ -283,7 +283,7 @@ impl CrlStore {
             .await
             .map_err(database_failure)?;
         let inserted = revocation
-            .insert_if_absent(&mut *tx)
+            .insert_if_absent(tx.conn())
             .await
             .map_err(database_failure)?;
         tx.commit().await.map_err(database_failure)?;
@@ -332,7 +332,7 @@ impl CrlStore {
                     &self.issuer_id,
                     expired_before,
                     listed_before,
-                    &mut *tx,
+                    tx.conn(),
                 )
                 .await
                 .map_err(database_failure)?;
@@ -533,10 +533,10 @@ impl CrlStore {
             .transaction()
             .await
             .map_err(database_failure)?;
-        let current = StoredCrl::find(&self.issuer_id, &mut *tx)
+        let current = StoredCrl::find(&self.issuer_id, tx.conn())
             .await
             .map_err(database_failure)?;
-        let rows = Revocation::list_for_issuer(&self.issuer_id, &mut *tx)
+        let rows = Revocation::list_for_issuer(&self.issuer_id, tx.conn())
             .await
             .map_err(database_failure)?;
         Ok((current, rows))

@@ -1,6 +1,5 @@
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -143,7 +142,7 @@ macro_rules! columns {
 }
 
 impl Account {
-    pub(crate) fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    pub(crate) fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let contact_json: String = row.try_get("contact")?;
         let contact: Vec<String> =
             serde_json::from_str(&contact_json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
@@ -172,14 +171,14 @@ impl Account {
         database: &Database,
     ) -> Result<Option<Account>, sqlx::Error> {
         debug!(event = "db_account_find_by_pubkey_started", outcome = "progress", profile = %profile, pubkey_fp = %pubkey_fingerprint(pubkey));
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM accounts WHERE profile = ? AND pubkey = ?;"
         ))
         .bind(profile)
         .bind(pubkey)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         let result = row.map(Account::from_row).transpose()?;
@@ -205,14 +204,14 @@ impl Account {
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM accounts WHERE profile = ? AND id = ?;"
         ))
         .bind(profile)
         .bind(id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         let result = row.map(Account::from_row).transpose()?;
@@ -316,7 +315,7 @@ impl Account {
         let contact_json = Value::from(account.contact.clone()).to_string();
 
         debug!(event = "db_account_create_started", outcome = "progress", account_id = %account.id);
-        let inserted = sqlx::query(
+        let inserted = crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at, eab_kid, \
              terms_of_service_agreed, created_ip, created_ptr, last_seen_at, last_seen_ip, \
              last_seen_ptr) \
@@ -335,7 +334,7 @@ impl Account {
         .bind(account.last_seen_at)
         .bind(&account.last_seen_ip)
         .bind(&account.last_seen_ptr)
-        .execute(&database.pool)
+        .execute(database)
         .await;
 
         // Another request registered this same key between the lookup above and
@@ -405,7 +404,7 @@ impl Account {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query(
+        crate::sql::query(
             "UPDATE accounts SET last_seen_at = ?, last_seen_ip = ?, last_seen_ptr = ? \
              WHERE id = ?;",
         )
@@ -413,7 +412,7 @@ impl Account {
         .bind(&client.ip)
         .bind(&client.ptr)
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         self.last_seen_at = Some(now);
@@ -436,10 +435,10 @@ impl Account {
         // `contact` is a `Vec<String>`, so serialization is infallible.
         let contact_json = Value::from(contact.clone()).to_string();
 
-        sqlx::query("UPDATE accounts SET contact = ? WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET contact = ? WHERE id = ?;")
             .bind(contact_json)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.contact = contact;
@@ -452,9 +451,9 @@ impl Account {
     #[tracing::instrument(name = "Account::deactivate", skip(self, database), fields(account_id = %self.id))]
     pub async fn deactivate(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_deactivation_started", outcome = "progress", account_id = %self.id);
-        sqlx::query("UPDATE accounts SET status = 'deactivated' WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET status = 'deactivated' WHERE id = ?;")
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.status = DEACTIVATED.to_string();
@@ -473,10 +472,10 @@ impl Account {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_pubkey_update_started", outcome = "progress", account_id = ?self.id);
-        sqlx::query("UPDATE accounts SET pubkey = ? WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET pubkey = ? WHERE id = ?;")
             .bind(pubkey)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.pubkey = pubkey.to_vec();
@@ -496,10 +495,10 @@ impl Account {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_eab_kid_set_started", outcome = "progress", account_id = ?self.id, eab_kid = ?eab_kid);
-        sqlx::query("UPDATE accounts SET eab_kid = ? WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET eab_kid = ? WHERE id = ?;")
             .bind(eab_kid)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.eab_kid = Some(eab_kid);
@@ -517,9 +516,9 @@ impl Account {
     /// old accounts look like they accepted it.
     pub async fn set_terms_agreed(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_terms_agreed_started", outcome = "progress", account_id = ?self.id);
-        sqlx::query("UPDATE accounts SET terms_of_service_agreed = 1 WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET terms_of_service_agreed = 1 WHERE id = ?;")
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.terms_of_service_agreed = Some(true);
@@ -541,13 +540,13 @@ impl Account {
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM accounts WHERE id = ?;"
         ))
         .bind(id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Account::from_row).transpose()
@@ -586,7 +585,7 @@ impl Account {
             Some(Some(kid)) => Some(kid),
             None => None,
         };
-        let push_predicates = |builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>| {
+        let push_predicates = |builder: &mut crate::sql::Builder| {
             let separator = crate::query::push_equalities(
                 builder,
                 crate::query::WHERE,
@@ -600,17 +599,17 @@ impl Account {
         // `id` breaks the `created_at` tie for the same reason it does for
         // orders: whole-second timestamps would otherwise let two rows swap
         // between pages, and one of them would never be seen.
-        let mut page = sqlx::QueryBuilder::new(concat!("SELECT ", columns!(), " FROM accounts"));
+        let mut page = crate::sql::Builder::new(concat!("SELECT ", columns!(), " FROM accounts"));
         push_predicates(&mut page);
         page.push(" ORDER BY created_at DESC, id DESC LIMIT ");
         page.push_bind(limit);
         page.push(" OFFSET ");
         page.push_bind(offset);
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
 
-        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM accounts");
+        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM accounts");
         push_predicates(&mut count);
-        let total: i64 = count.build().fetch_one(&database.pool).await?.try_get(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get(0)?;
 
         let accounts = rows
             .into_iter()
@@ -634,7 +633,7 @@ impl Account {
         let Some(id) = crate::id::parse(id) else {
             return Ok(GuardedDelete::NotFound);
         };
-        let result = sqlx::query(concat!(
+        let result = crate::sql::query(concat!(
             "DELETE FROM accounts WHERE id = ? AND NOT EXISTS \
              (SELECT 1 FROM orders WHERE orders.account_id = accounts.id AND ",
             live_certificate!(),
@@ -642,7 +641,7 @@ impl Account {
         ))
         .bind(id)
         .bind(now_secs())
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         if result.rows_affected() > 0 {
@@ -667,14 +666,14 @@ impl Account {
         account_id: Uuid,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
-        let live: i64 = sqlx::query(concat!(
+        let live: i64 = crate::sql::query(concat!(
             "SELECT COUNT(*) FROM orders WHERE account_id = ? AND ",
             live_certificate!(),
             ";"
         ))
         .bind(account_id)
         .bind(now_secs())
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?
         .try_get(0)?;
         Ok(live as u64)
@@ -684,7 +683,7 @@ impl Account {
     /// deactivating them would touch. One read for the `eab delete` prompt, the
     /// credential card and the refusal, so the three cannot disagree.
     pub async fn eab_summary(kid: Uuid, database: &Database) -> Result<EabAccounts, sqlx::Error> {
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT \
              (SELECT COUNT(*) FROM accounts WHERE eab_kid = ?), \
              (SELECT COUNT(*) FROM accounts WHERE eab_kid = ? AND status != 'deactivated'), \
@@ -705,11 +704,11 @@ impl Account {
         .bind(now_secs())
         .bind(kid)
         .bind(now_secs())
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?;
 
         let count =
-            |index: usize| -> Result<u64, sqlx::Error> { Ok(row.try_get::<i64, _>(index)? as u64) };
+            |index: usize| -> Result<u64, sqlx::Error> { Ok(row.try_get::<i64>(index)? as u64) };
         Ok(EabAccounts {
             accounts: count(0)?,
             active_accounts: count(1)?,
@@ -728,16 +727,16 @@ impl Account {
     /// nothing, and every certificate it holds stays revocable.
     pub(crate) async fn deactivate_by_eab_kid(
         kid: Uuid,
-        connection: &mut sqlx::SqliteConnection,
+        mut connection: crate::sql::Exec<'_>,
     ) -> Result<Vec<Account>, sqlx::Error> {
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "UPDATE accounts SET status = 'deactivated' \
              WHERE eab_kid = ? AND status != 'deactivated' RETURNING ",
             columns!(),
             ";"
         ))
         .bind(kid)
-        .fetch_all(&mut *connection)
+        .fetch_all(connection.reborrow())
         .await?;
         rows.into_iter().map(Account::from_row).collect()
     }
@@ -747,9 +746,9 @@ impl Account {
     /// caller's transaction, so the answer holds for the delete that follows.
     pub(crate) async fn live_certificates_by_eab_kid(
         kid: Uuid,
-        connection: &mut sqlx::SqliteConnection,
+        mut connection: crate::sql::Exec<'_>,
     ) -> Result<(u64, u64), sqlx::Error> {
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT COUNT(DISTINCT account_id), COUNT(*) FROM orders \
              WHERE account_id IN (SELECT id FROM accounts WHERE eab_kid = ?) AND ",
             live_certificate!(),
@@ -757,12 +756,9 @@ impl Account {
         ))
         .bind(kid)
         .bind(now_secs())
-        .fetch_one(&mut *connection)
+        .fetch_one(connection.reborrow())
         .await?;
-        Ok((
-            row.try_get::<i64, _>(0)? as u64,
-            row.try_get::<i64, _>(1)? as u64,
-        ))
+        Ok((row.try_get::<i64>(0)? as u64, row.try_get::<i64>(1)? as u64))
     }
 
     /// Hard-deletes every account `kid` bound, returning each with the number
@@ -775,28 +771,28 @@ impl Account {
     /// the cascade has run there is nothing left to count.
     pub(crate) async fn delete_by_eab_kid(
         kid: Uuid,
-        connection: &mut sqlx::SqliteConnection,
+        mut connection: crate::sql::Exec<'_>,
     ) -> Result<Vec<(Account, u64)>, sqlx::Error> {
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             ", (SELECT COUNT(*) FROM orders WHERE orders.account_id = accounts.id) AS order_count \
              FROM accounts WHERE eab_kid = ? ORDER BY created_at DESC, id DESC;"
         ))
         .bind(kid)
-        .fetch_all(&mut *connection)
+        .fetch_all(connection.reborrow())
         .await?;
         let accounts = rows
             .into_iter()
             .map(|row| {
-                let orders = row.try_get::<i64, _>("order_count")? as u64;
+                let orders = row.try_get::<i64>("order_count")? as u64;
                 Ok((Account::from_row(row)?, orders))
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
 
-        sqlx::query("DELETE FROM accounts WHERE eab_kid = ?;")
+        crate::sql::query("DELETE FROM accounts WHERE eab_kid = ?;")
             .bind(kid)
-            .execute(&mut *connection)
+            .execute(connection.reborrow())
             .await?;
         Ok(accounts)
     }
@@ -1450,10 +1446,10 @@ mod tests {
             )
             .await
             .unwrap();
-            sqlx::query("UPDATE accounts SET created_at = ? WHERE id = ?;")
+            crate::sql::query("UPDATE accounts SET created_at = ? WHERE id = ?;")
                 .bind(base - index as i64)
                 .bind(account.id)
-                .execute(&db.pool)
+                .execute(db)
                 .await
                 .unwrap();
             ids.push(account.id);
@@ -1577,7 +1573,7 @@ mod tests {
             "every caller must be handed the same account: {ids:?}"
         );
 
-        db.pool.close().await;
+        db.close().await;
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
         }

@@ -39,6 +39,7 @@ pub mod nonce;
 pub mod order;
 pub mod query;
 pub mod revocation;
+pub mod sql;
 pub mod status;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testutil;

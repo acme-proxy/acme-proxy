@@ -1,8 +1,7 @@
 use std::str::FromStr;
 
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -215,7 +214,7 @@ macro_rules! columns {
 pub const KNOWN_LOGIN_IPS: usize = 5;
 
 impl AdminUser {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         Ok(AdminUser {
             id: row.try_get("id")?,
             username: row.try_get("username")?,
@@ -277,7 +276,7 @@ impl AdminUser {
         };
 
         debug!(event = "db_admin_user_create_started", outcome = "progress", username = %user.username);
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO admin_users \
              (id, username, password_hash, status, role, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?);",
@@ -289,7 +288,7 @@ impl AdminUser {
         .bind(user.role.clone())
         .bind(user.created_at)
         .bind(user.updated_at)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         info!(event = "db_admin_user_created", outcome = "success", user_id = %user.id, username = %user.username);
@@ -301,13 +300,13 @@ impl AdminUser {
         database: &Database,
     ) -> Result<Option<AdminUser>, sqlx::Error> {
         debug!(event = "db_admin_user_find_by_id_started", outcome = "progress", id = ?id);
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_users WHERE id = ?;"
         ))
         .bind(id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(AdminUser::from_row).transpose()
@@ -323,13 +322,13 @@ impl AdminUser {
             event = "db_admin_user_find_by_username_started",
             outcome = "progress"
         );
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_users WHERE username = ?;"
         ))
         .bind(username.trim().to_lowercase())
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(AdminUser::from_row).transpose()
@@ -349,12 +348,12 @@ impl AdminUser {
             event = "db_admin_user_list_all_started",
             outcome = "progress"
         );
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_users ORDER BY created_at ASC, id ASC;"
         ))
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter().map(AdminUser::from_row).collect()
@@ -379,17 +378,17 @@ impl AdminUser {
             limit = limit,
             offset = offset
         );
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_users ORDER BY created_at ASC, id ASC LIMIT ? OFFSET ?;"
         ))
         .bind(limit)
         .bind(offset)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
-        let total: i64 = sqlx::query("SELECT COUNT(*) FROM admin_users;")
-            .fetch_one(&database.pool)
+        let total: i64 = crate::sql::query("SELECT COUNT(*) FROM admin_users;")
+            .fetch_one(database)
             .await?
             .try_get(0)?;
 
@@ -409,11 +408,11 @@ impl AdminUser {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?;")
+        crate::sql::query("UPDATE admin_users SET password_hash = ?, updated_at = ? WHERE id = ?;")
             .bind(password_hash)
             .bind(now)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.password_hash = password_hash.to_string();
@@ -432,11 +431,11 @@ impl AdminUser {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET status = ?, updated_at = ? WHERE id = ?;")
+        crate::sql::query("UPDATE admin_users SET status = ?, updated_at = ? WHERE id = ?;")
             .bind(status)
             .bind(now)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.status = status.to_string();
@@ -455,11 +454,11 @@ impl AdminUser {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET role = ?, updated_at = ? WHERE id = ?;")
+        crate::sql::query("UPDATE admin_users SET role = ?, updated_at = ? WHERE id = ?;")
             .bind(role.as_str())
             .bind(now)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.role = Some(role.as_str().to_string());
@@ -478,11 +477,11 @@ impl AdminUser {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET contact_email = ?, updated_at = ? WHERE id = ?;")
+        crate::sql::query("UPDATE admin_users SET contact_email = ?, updated_at = ? WHERE id = ?;")
             .bind(email)
             .bind(now)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.contact_email = email.map(str::to_string);
@@ -502,12 +501,14 @@ impl AdminUser {
         database: &Database,
     ) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_users SET totp_pending_secret = ?, updated_at = ? WHERE id = ?;")
-            .bind(secret)
-            .bind(now)
-            .bind(self.id)
-            .execute(&database.pool)
-            .await?;
+        crate::sql::query(
+            "UPDATE admin_users SET totp_pending_secret = ?, updated_at = ? WHERE id = ?;",
+        )
+        .bind(secret)
+        .bind(now)
+        .bind(self.id)
+        .execute(database)
+        .await?;
 
         self.totp_pending_secret = Some(secret.to_vec());
         self.updated_at = now;
@@ -530,14 +531,14 @@ impl AdminUser {
         };
 
         let now = now_secs();
-        sqlx::query(
+        crate::sql::query(
             "UPDATE admin_users SET totp_secret = totp_pending_secret, \
              totp_pending_secret = NULL, totp_last_step = NULL, updated_at = ? \
              WHERE id = ? AND totp_pending_secret IS NOT NULL;",
         )
         .bind(now)
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         self.totp_secret = Some(pending);
@@ -553,13 +554,13 @@ impl AdminUser {
     /// access to a factor that no longer exists is a second password.
     pub async fn clear_totp(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query(
+        crate::sql::query(
             "UPDATE admin_users SET totp_secret = NULL, totp_pending_secret = NULL, \
              totp_last_step = NULL, updated_at = ? WHERE id = ?;",
         )
         .bind(now)
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         self.totp_secret = None;
@@ -584,7 +585,7 @@ impl AdminUser {
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
         let now = now_secs();
-        let result = sqlx::query(
+        let result = crate::sql::query(
             "UPDATE admin_users SET totp_last_step = ?, updated_at = ? \
              WHERE id = ? AND (totp_last_step IS NULL OR totp_last_step < ?);",
         )
@@ -592,7 +593,7 @@ impl AdminUser {
         .bind(now)
         .bind(self.id)
         .bind(step)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         let claimed = result.rows_affected() == 1;
@@ -631,20 +632,20 @@ impl AdminUser {
             );
             // `Vec<String>` serialization is infallible.
             let known_json = Value::from(known.clone()).to_string();
-            sqlx::query(
+            crate::sql::query(
                 "UPDATE admin_users SET last_login_at = ?, known_login_ips = ? WHERE id = ?;",
             )
             .bind(now)
             .bind(known_json)
             .bind(self.id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
             self.known_login_ips = known;
         } else {
-            sqlx::query("UPDATE admin_users SET last_login_at = ? WHERE id = ?;")
+            crate::sql::query("UPDATE admin_users SET last_login_at = ? WHERE id = ?;")
                 .bind(now)
                 .bind(self.id)
-                .execute(&database.pool)
+                .execute(database)
                 .await?;
         }
 
@@ -657,9 +658,9 @@ impl AdminUser {
     /// and `connect_in_memory` both pin it. Returns whether a row existed.
     pub async fn delete(id: Uuid, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_admin_user_delete_started", outcome = "progress", id = ?id);
-        let result = sqlx::query("DELETE FROM admin_users WHERE id = ?;")
+        let result = crate::sql::query("DELETE FROM admin_users WHERE id = ?;")
             .bind(id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         let deleted = result.rows_affected() > 0;
@@ -877,10 +878,10 @@ mod tests {
         let newer = AdminUser::create("newer", "h", None, &db).await.unwrap();
         // Backdate one so the two no longer tie and `created_at ASC` is what
         // decides, rather than the UUID tiebreak.
-        sqlx::query("UPDATE admin_users SET created_at = ? WHERE id = ?;")
+        crate::sql::query("UPDATE admin_users SET created_at = ? WHERE id = ?;")
             .bind(older.created_at - 60)
             .bind(older.id)
-            .execute(&db.pool)
+            .execute(&db)
             .await
             .unwrap();
 

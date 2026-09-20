@@ -1,9 +1,8 @@
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 
 use crate::db::Database;
@@ -94,7 +93,7 @@ macro_rules! columns {
 }
 
 impl AdminSession {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         Ok(AdminSession {
             token_hash: row.try_get("token_hash")?,
             user_id: row.try_get("user_id")?,
@@ -162,7 +161,7 @@ impl AdminSession {
             user_agent: new.user_agent,
         };
 
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO admin_sessions (token_hash, user_id, csrf_token, state, created_at, \
              expires_at, last_seen_at, created_ip, user_agent) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
@@ -176,7 +175,7 @@ impl AdminSession {
         .bind(session.last_seen_at)
         .bind(&session.created_ip)
         .bind(&session.user_agent)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         // A fingerprint of the *hash*, not the token -- enough to follow one
@@ -215,15 +214,15 @@ impl AdminSession {
         ttl: Duration,
         database: &Database,
     ) -> Result<Option<AdminSession>, sqlx::Error> {
-        let mut tx = database.pool.begin().await?;
+        let mut tx = database.transaction().await?;
 
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_sessions WHERE token_hash = ? AND state = 'pending_mfa';"
         ))
         .bind(pending_token_hash)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(tx.conn())
         .await?;
 
         let Some(pending) = row.map(AdminSession::from_row).transpose()? else {
@@ -232,9 +231,9 @@ impl AdminSession {
 
         // The DELETE, not the SELECT, is what makes this exclusive: two
         // transactions can both read the pending row, but only one removes it.
-        let removed = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?;")
+        let removed = crate::sql::query("DELETE FROM admin_sessions WHERE token_hash = ?;")
             .bind(pending_token_hash)
-            .execute(&mut *tx)
+            .execute(tx.conn())
             .await?;
         if removed.rows_affected() != 1 {
             return Ok(None);
@@ -257,7 +256,7 @@ impl AdminSession {
             user_agent: pending.user_agent,
         };
 
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO admin_sessions (token_hash, user_id, csrf_token, state, created_at, \
              expires_at, last_seen_at, created_ip, user_agent) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
@@ -271,7 +270,7 @@ impl AdminSession {
         .bind(session.last_seen_at)
         .bind(&session.created_ip)
         .bind(&session.user_agent)
-        .execute(&mut *tx)
+        .execute(tx.conn())
         .await?;
 
         tx.commit().await?;
@@ -304,16 +303,16 @@ impl AdminSession {
         token_hash: &str,
         database: &Database,
     ) -> Result<Option<i64>, sqlx::Error> {
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "UPDATE admin_sessions SET mfa_attempts = mfa_attempts + 1 \
              WHERE token_hash = ? RETURNING mfa_attempts;",
         )
         .bind(token_hash)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         let attempts = row
-            .map(|row| row.try_get::<i64, _>("mfa_attempts"))
+            .map(|row| row.try_get::<i64>("mfa_attempts"))
             .transpose()?;
         if let Some(attempts) = attempts {
             debug!(event = "db_admin_session_mfa_failure_recorded",
@@ -331,13 +330,13 @@ impl AdminSession {
         token_hash: &str,
         database: &Database,
     ) -> Result<Option<AdminSession>, sqlx::Error> {
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             columns!(),
             " FROM admin_sessions WHERE token_hash = ?;"
         ))
         .bind(token_hash)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(AdminSession::from_row).transpose()
@@ -371,10 +370,10 @@ impl AdminSession {
     /// would otherwise take the WAL writer lock on every request.
     pub async fn touch(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         let now = now_secs();
-        sqlx::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = ?;")
+        crate::sql::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = ?;")
             .bind(now)
             .bind(&self.token_hash)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         self.last_seen_at = now;
@@ -383,9 +382,9 @@ impl AdminSession {
 
     /// Logout. Returns whether a row existed.
     pub async fn delete(token_hash: &str, database: &Database) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?;")
+        let result = crate::sql::query("DELETE FROM admin_sessions WHERE token_hash = ?;")
             .bind(token_hash)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         let deleted = result.rows_affected() > 0;
@@ -398,9 +397,9 @@ impl AdminSession {
     /// Revokes every session of one user -- `admin session revoke --user`, and
     /// the "log me out everywhere" case. Returns how many went.
     pub async fn delete_for_user(user_id: Uuid, database: &Database) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM admin_sessions WHERE user_id = ?;")
+        let result = crate::sql::query("DELETE FROM admin_sessions WHERE user_id = ?;")
             .bind(user_id)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         info!(event = "db_admin_sessions_revoked",
@@ -420,10 +419,10 @@ impl AdminSession {
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
         let result =
-            sqlx::query("DELETE FROM admin_sessions WHERE user_id = ? AND token_hash != ?;")
+            crate::sql::query("DELETE FROM admin_sessions WHERE user_id = ? AND token_hash != ?;")
                 .bind(user_id)
                 .bind(keep_token_hash)
-                .execute(&database.pool)
+                .execute(database)
                 .await?;
 
         info!(event = "db_admin_sessions_revoked",
@@ -437,8 +436,8 @@ impl AdminSession {
     /// Revokes every session on the server -- `admin session revoke --all`,
     /// the "log everybody out" lever after a scare. Returns how many went.
     pub async fn delete_all(database: &Database) -> Result<u64, sqlx::Error> {
-        let result = sqlx::query("DELETE FROM admin_sessions;")
-            .execute(&database.pool)
+        let result = crate::sql::query("DELETE FROM admin_sessions;")
+            .execute(database)
             .await?;
 
         // `scope` rather than the `user_id = "*"` this used to carry: three
@@ -468,21 +467,21 @@ impl AdminSession {
         // only `&'static str`, which is what stops a column list or a
         // predicate ever being interpolated in.
         let rows = match user_id {
-            Some(id) => sqlx::query(concat!(
+            Some(id) => crate::sql::query(concat!(
                 "SELECT ",
                 columns!(),
                 " FROM admin_sessions WHERE user_id = ? ORDER BY created_at DESC, token_hash ASC;"
             ))
             .bind(id)
-            .fetch_all(&database.pool)
+            .fetch_all(database)
             .await?,
             None => {
-                sqlx::query(concat!(
+                crate::sql::query(concat!(
                     "SELECT ",
                     columns!(),
                     " FROM admin_sessions ORDER BY created_at DESC, token_hash ASC;"
                 ))
-                .fetch_all(&database.pool)
+                .fetch_all(database)
                 .await?
             }
         };
@@ -508,7 +507,7 @@ impl AdminSession {
         // a column list or a predicate ever being interpolated in.
         let (rows, total) = match user_id {
             Some(id) => (
-                sqlx::query(concat!(
+                crate::sql::query(concat!(
                     "SELECT ",
                     columns!(),
                     " FROM admin_sessions WHERE user_id = ? \
@@ -517,16 +516,16 @@ impl AdminSession {
                 .bind(id)
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(&database.pool)
+                .fetch_all(database)
                 .await?,
-                sqlx::query("SELECT COUNT(*) FROM admin_sessions WHERE user_id = ?;")
+                crate::sql::query("SELECT COUNT(*) FROM admin_sessions WHERE user_id = ?;")
                     .bind(id)
-                    .fetch_one(&database.pool)
+                    .fetch_one(database)
                     .await?
-                    .try_get::<i64, _>(0)?,
+                    .try_get::<i64>(0)?,
             ),
             None => (
-                sqlx::query(concat!(
+                crate::sql::query(concat!(
                     "SELECT ",
                     columns!(),
                     " FROM admin_sessions ORDER BY created_at DESC, token_hash ASC \
@@ -534,12 +533,12 @@ impl AdminSession {
                 ))
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(&database.pool)
+                .fetch_all(database)
                 .await?,
-                sqlx::query("SELECT COUNT(*) FROM admin_sessions;")
-                    .fetch_one(&database.pool)
+                crate::sql::query("SELECT COUNT(*) FROM admin_sessions;")
+                    .fetch_one(database)
                     .await?
-                    .try_get::<i64, _>(0)?,
+                    .try_get::<i64>(0)?,
             ),
         };
 
@@ -557,12 +556,13 @@ impl AdminSession {
         let now = now_secs();
         let idle_cutoff = now.saturating_sub(idle_timeout.as_secs() as i64);
 
-        let result =
-            sqlx::query("DELETE FROM admin_sessions WHERE expires_at <= ? OR last_seen_at <= ?;")
-                .bind(now)
-                .bind(idle_cutoff)
-                .execute(&database.pool)
-                .await?;
+        let result = crate::sql::query(
+            "DELETE FROM admin_sessions WHERE expires_at <= ? OR last_seen_at <= ?;",
+        )
+        .bind(now)
+        .bind(idle_cutoff)
+        .execute(database)
+        .await?;
 
         debug!(
             event = "db_admin_session_cleanup_completed",
@@ -703,9 +703,9 @@ mod tests {
         let (db, user) = db_with_user().await;
         session(db.clone(), &user, "aaaa").await;
         let error =
-            sqlx::query("UPDATE admin_sessions SET state = 'whatever' WHERE token_hash = ?;")
+            crate::sql::query("UPDATE admin_sessions SET state = 'whatever' WHERE token_hash = ?;")
                 .bind("aaaa")
-                .execute(&db.pool)
+                .execute(&db)
                 .await
                 .unwrap_err();
         assert!(error.to_string().to_lowercase().contains("check"));
@@ -716,10 +716,10 @@ mod tests {
         let (db, user) = db_with_user().await;
         let mut created = session(db.clone(), &user, "aaaa").await;
         // Backdate so the advance is observable within one clock second.
-        sqlx::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = ?;")
+        crate::sql::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = ?;")
             .bind(created.created_at - 500)
             .bind("aaaa")
-            .execute(&db.pool)
+            .execute(&db)
             .await
             .unwrap();
 
@@ -905,14 +905,14 @@ mod tests {
         session(db.clone(), &user, "idle").await;
 
         let now = now_secs();
-        sqlx::query("UPDATE admin_sessions SET expires_at = ? WHERE token_hash = 'expired';")
+        crate::sql::query("UPDATE admin_sessions SET expires_at = ? WHERE token_hash = 'expired';")
             .bind(now - 1)
-            .execute(&db.pool)
+            .execute(&db)
             .await
             .unwrap();
-        sqlx::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = 'idle';")
+        crate::sql::query("UPDATE admin_sessions SET last_seen_at = ? WHERE token_hash = 'idle';")
             .bind(now - IDLE.as_secs() as i64 - 1)
-            .execute(&db.pool)
+            .execute(&db)
             .await
             .unwrap();
 
@@ -1143,11 +1143,13 @@ mod tests {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE admin_sessions SET expires_at = ? WHERE token_hash = 'abandoned';")
-            .bind(now_secs() - 1)
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        crate::sql::query(
+            "UPDATE admin_sessions SET expires_at = ? WHERE token_hash = 'abandoned';",
+        )
+        .bind(now_secs() - 1)
+        .execute(&db)
+        .await
+        .unwrap();
 
         assert_eq!(AdminSession::cleanup(IDLE, &db).await.unwrap(), 1);
         let left = AdminSession::list_all(None, &db).await.unwrap();

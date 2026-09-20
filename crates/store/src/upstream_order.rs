@@ -12,8 +12,7 @@
 //! - `mark_valid` / `mark_invalid`: terminal outcomes
 //! - `list_processing`: rows whose background task was lost to a restart
 
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
+use crate::sql::Row;
 use tracing::debug;
 use uuid::Uuid;
 
@@ -54,7 +53,7 @@ pub struct UpstreamOrder {
 }
 
 impl UpstreamOrder {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         Ok(UpstreamOrder {
             order_id: row.try_get("order_id")?,
             upstream_order_url: row.try_get("upstream_order_url")?,
@@ -106,7 +105,7 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
-        sqlx::query(
+        crate::sql::query(
             "UPDATE upstream_orders \
              SET client_ip = ?, client_ptr = ?, user_agent = ?, request_id = ? \
              WHERE order_id = ?;",
@@ -116,7 +115,7 @@ impl UpstreamOrder {
         .bind(&client.user_agent)
         .bind(&client.request_id)
         .bind(order_id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
         Ok(())
     }
@@ -155,7 +154,7 @@ impl UpstreamOrder {
         };
 
         debug!(event = "db_upstream_order_create_started", outcome = "progress", order_id = ?order_id);
-        let result = sqlx::query(
+        let result = crate::sql::query(
             "INSERT OR IGNORE INTO upstream_orders \
              (order_id, upstream_order_url, upstream_finalize_url, csr_der, status, \
               created_at, updated_at) \
@@ -168,7 +167,7 @@ impl UpstreamOrder {
         .bind(&record.status)
         .bind(record.created_at)
         .bind(record.updated_at)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -184,9 +183,9 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
-        let row = sqlx::query("SELECT * FROM upstream_orders WHERE order_id = ?;")
+        let row = crate::sql::query("SELECT * FROM upstream_orders WHERE order_id = ?;")
             .bind(order_id)
-            .fetch_optional(&database.pool)
+            .fetch_optional(database)
             .await?;
         row.map(UpstreamOrder::from_row).transpose()
     }
@@ -200,7 +199,7 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
-        sqlx::query(
+        crate::sql::query(
             "UPDATE upstream_orders \
              SET status = 'valid', upstream_certificate_url = ?, updated_at = ? \
              WHERE order_id = ?;",
@@ -208,7 +207,7 @@ impl UpstreamOrder {
         .bind(certificate_url)
         .bind(now_secs())
         .bind(order_id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
         Ok(())
     }
@@ -223,14 +222,14 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(());
         };
-        sqlx::query(
+        crate::sql::query(
             "UPDATE upstream_orders SET status = 'invalid', error = ?, updated_at = ? \
              WHERE order_id = ?;",
         )
         .bind(error)
         .bind(now_secs())
         .bind(order_id)
-        .execute(&database.pool)
+        .execute(database)
         .await?;
         Ok(())
     }
@@ -269,11 +268,11 @@ impl UpstreamOrder {
         // `AssertSqlSafe` because sqlx refuses a non-`'static` query string
         // outright: the only runtime part of this one is the count of `?`
         // placeholders, never a value.
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        let mut query = crate::sql::query(sql);
         for profile in profiles {
             query = query.bind(profile);
         }
-        let rows = query.fetch_all(&database.pool).await?;
+        let rows = query.fetch_all(database).await?;
         rows.into_iter().map(UpstreamOrder::from_row).collect()
     }
 }
@@ -322,7 +321,7 @@ impl UpstreamOrderRow {
          o.profile, o.account_id, o.identifiers, o.status AS local_status, \
          o.expires AS local_expires";
 
-    fn from_joined_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_joined_row(row: Row) -> Result<Self, sqlx::Error> {
         let identifiers_json: String = row.try_get("identifiers")?;
         let identifiers: Vec<Identifier> = serde_json::from_str(&identifiers_json)
             .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
@@ -343,7 +342,7 @@ impl UpstreamOrderRow {
             profile: row.try_get("profile")?,
             account_id: row.try_get("account_id")?,
             identifiers,
-            local_status: status::from_column(row.try_get::<&str, _>("local_status")?)?,
+            local_status: status::from_column(row.try_get::<String>("local_status")?.as_str())?,
             local_expires: row.try_get("local_expires")?,
         })
     }
@@ -375,7 +374,7 @@ pub struct UpstreamOrderQuery {
 impl UpstreamOrderQuery {
     /// The `WHERE` shared by the page query and the count, over the aliases
     /// `u` (`upstream_orders`) and `o` (`orders`). Every value is `push_bind`.
-    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+    fn push_predicates(&self, builder: &mut crate::sql::Builder) {
         crate::query::push_equalities(
             builder,
             crate::query::WHERE,
@@ -414,7 +413,7 @@ impl UpstreamOrder {
             offset = query.offset,
         );
 
-        let mut page = sqlx::QueryBuilder::new(format!(
+        let mut page = crate::sql::Builder::new(format!(
             "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
             UpstreamOrderRow::COLUMNS
         ));
@@ -424,21 +423,17 @@ impl UpstreamOrder {
         page.push(" OFFSET ");
         page.push_bind(query.offset);
 
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
         let items: Vec<UpstreamOrderRow> = rows
             .into_iter()
             .map(UpstreamOrderRow::from_joined_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = sqlx::QueryBuilder::new(
+        let mut count = crate::sql::Builder::new(
             "SELECT COUNT(*) FROM upstream_orders u JOIN orders o ON o.id = u.order_id",
         );
         query.push_predicates(&mut count);
-        let total: i64 = count
-            .build()
-            .fetch_one(&database.pool)
-            .await?
-            .try_get::<i64, _>(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((items, total))
     }
@@ -453,13 +448,13 @@ impl UpstreamOrder {
         let Some(order_id) = crate::id::parse(order_id) else {
             return Ok(None);
         };
-        let mut query = sqlx::QueryBuilder::new(format!(
+        let mut query = crate::sql::Builder::new(format!(
             "SELECT {} FROM upstream_orders u JOIN orders o ON o.id = u.order_id \
              WHERE u.order_id = ",
             UpstreamOrderRow::COLUMNS
         ));
         query.push_bind(order_id);
-        let row = query.build().fetch_optional(&database.pool).await?;
+        let row = query.build().fetch_optional(database).await?;
         row.map(UpstreamOrderRow::from_joined_row).transpose()
     }
 }

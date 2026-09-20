@@ -22,7 +22,7 @@
 /// executed — the property `search_binds_hostile_filters_as_values` exists for
 /// in each model's own suite.
 pub(crate) fn push_equalities(
-    builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>,
+    builder: &mut crate::sql::Builder,
     separator: &'static str,
     pairs: &[(&str, Option<&str>)],
 ) -> &'static str {
@@ -47,9 +47,9 @@ mod tests {
     use super::*;
 
     fn sql_of(pairs: &[(&str, Option<&str>)]) -> (String, &'static str) {
-        let mut builder = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT 1 FROM t");
+        let mut builder = crate::sql::Builder::new("SELECT 1 FROM t");
         let next = push_equalities(&mut builder, WHERE, pairs);
-        (builder.into_sql().as_str().to_string(), next)
+        (builder.sql().to_string(), next)
     }
 
     #[test]

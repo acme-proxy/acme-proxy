@@ -1486,7 +1486,7 @@ mod tests {
     /// The CRL row `ca` has stored, read straight from the table.
     async fn stored(ca: &LocalCa, database: &Database) -> acme_proxy_store::crl::StoredCrl {
         let mut tx = database.transaction().await.unwrap();
-        acme_proxy_store::crl::StoredCrl::find(ca.crl.issuer_id(), &mut *tx)
+        acme_proxy_store::crl::StoredCrl::find(ca.crl.issuer_id(), tx.conn())
             .await
             .unwrap()
             .expect("the CA has initialised")
@@ -1495,7 +1495,7 @@ mod tests {
     /// The revocation rows under `ca`'s issuer.
     async fn rows(ca: &LocalCa, database: &Database) -> Vec<Revocation> {
         let mut tx = database.transaction().await.unwrap();
-        Revocation::list_for_issuer(ca.crl.issuer_id(), &mut *tx)
+        Revocation::list_for_issuer(ca.crl.issuer_id(), tx.conn())
             .await
             .unwrap()
     }
@@ -1511,7 +1511,7 @@ mod tests {
             reason: Some(1),
             not_after,
         }
-        .insert_if_absent(&mut *tx)
+        .insert_if_absent(tx.conn())
         .await
         .unwrap();
         tx.commit().await.unwrap();
@@ -2361,7 +2361,7 @@ mod tests {
                 .map(|(_, na)| na),
         };
         let mut tx = database.transaction().await.unwrap();
-        row.insert_if_absent(&mut *tx).await.unwrap();
+        row.insert_if_absent(tx.conn()).await.unwrap();
         tx.commit().await.unwrap();
     }
 

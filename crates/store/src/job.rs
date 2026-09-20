@@ -16,9 +16,8 @@
 //! See `crates/store/migrations/20260815120000_add_jobs.sql` for why the table has no foreign
 //! key, why `kind` carries no `CHECK`, and why the identity index is partial.
 
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -101,7 +100,7 @@ impl JobQuery {
     /// Appends the `WHERE` clause shared by the page query and the count — one
     /// function so a filter applied to only one cannot report a total the rows
     /// disagree with. Every value goes through `push_bind`.
-    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+    fn push_predicates(&self, builder: &mut crate::sql::Builder) {
         crate::query::push_equalities(
             builder,
             crate::query::WHERE,
@@ -114,7 +113,7 @@ impl JobQuery {
 }
 
 impl Job {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let payload_json: String = row.try_get("payload")?;
         let payload: Value = serde_json::from_str(&payload_json)
             .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
@@ -146,17 +145,17 @@ impl Job {
     /// which is what makes a retried order and a periodic sweep both expressible
     /// without a second table.
     pub async fn enqueue(row: NewJob<'_>, database: &Database) -> Result<bool, sqlx::Error> {
-        Self::enqueue_on(row, &database.pool).await
+        Self::enqueue_on(row, database).await
     }
 
     /// [`enqueue`](Self::enqueue) on a connection of the caller's — inside a
     /// transaction, so the row lands with the write that owes it or not at all.
-    pub async fn enqueue_on<'e, E>(row: NewJob<'_>, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    pub async fn enqueue_on<'e>(
+        row: NewJob<'_>,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
         let now = now_secs();
-        let queued = sqlx::query(
+        let queued = crate::sql::query(
             "INSERT OR IGNORE INTO jobs \
              (id, kind, dedup_key, payload, status, run_at, attempts, max_attempts, \
               deadline, created_at, updated_at) \
@@ -234,7 +233,7 @@ impl Job {
              RETURNING {COLUMNS};"
         );
 
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let mut query = crate::sql::query(sql)
             .bind(runner_id)
             .bind(lease_until)
             .bind(now)
@@ -242,7 +241,7 @@ impl Job {
         for kind in kinds {
             query = query.bind(*kind);
         }
-        let row = query.fetch_optional(&database.pool).await?;
+        let row = query.fetch_optional(database).await?;
         let job = row.map(Self::from_row).transpose()?;
 
         if let Some(job) = &job {
@@ -337,14 +336,14 @@ impl Job {
              WHERE id = ? AND status = 'running' AND lease_owner = ?;",
             if reset_attempts { ", attempts = 0" } else { "" }
         );
-        let settled = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let settled = crate::sql::query(sql)
             .bind(status)
             .bind(error)
             .bind(run_at)
             .bind(now)
             .bind(id)
             .bind(runner_id)
-            .execute(&database.pool)
+            .execute(database)
             .await?
             .rows_affected()
             == 1;
@@ -357,13 +356,13 @@ impl Job {
     /// a counter rewritten to look better would let a job that crashes the
     /// process loop for ever.
     pub async fn reclaim_expired(now: i64, database: &Database) -> Result<u64, sqlx::Error> {
-        let reclaimed = sqlx::query(
+        let reclaimed = crate::sql::query(
             "UPDATE jobs SET status = 'ready', lease_owner = NULL, lease_until = NULL, \
              updated_at = ? WHERE status = 'running' AND lease_until <= ?;",
         )
         .bind(now)
         .bind(now)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected();
 
@@ -382,13 +381,13 @@ impl Job {
     /// What a graceful shutdown runs, so a restart re-claims its own work
     /// immediately instead of waiting out a full lease.
     pub async fn release_owned(runner_id: &str, database: &Database) -> Result<u64, sqlx::Error> {
-        let released = sqlx::query(
+        let released = crate::sql::query(
             "UPDATE jobs SET status = 'ready', lease_owner = NULL, lease_until = NULL, \
              updated_at = ? WHERE status = 'running' AND lease_owner = ?;",
         )
         .bind(now_secs())
         .bind(runner_id)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected();
 
@@ -407,9 +406,9 @@ impl Job {
         // A `QueryBuilder` rather than `sqlx::query`, which takes only
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
-        let mut query = sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM jobs WHERE id = "));
+        let mut query = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs WHERE id = "));
         query.push_bind(id);
-        let row = query.build().fetch_optional(&database.pool).await?;
+        let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
     }
 
@@ -419,14 +418,14 @@ impl Job {
         dedup_key: &str,
         database: &Database,
     ) -> Result<Option<Self>, sqlx::Error> {
-        let mut query = sqlx::QueryBuilder::new(format!(
+        let mut query = crate::sql::Builder::new(format!(
             "SELECT {COLUMNS} FROM jobs \
              WHERE status IN ('ready', 'running') AND kind = "
         ));
         query.push_bind(kind);
         query.push(" AND dedup_key = ");
         query.push_bind(dedup_key);
-        let row = query.build().fetch_optional(&database.pool).await?;
+        let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
     }
 
@@ -437,12 +436,13 @@ impl Job {
     /// `dedup_key` — a `notify_deliver` key is a per-occurrence uuid, so there
     /// is no single key to ask about.
     pub async fn count_live(kind: &str, database: &Database) -> Result<i64, sqlx::Error> {
-        let (count,): (i64,) = sqlx::query_as(
+        let count: i64 = crate::sql::query(
             "SELECT COUNT(*) FROM jobs WHERE status IN ('ready', 'running') AND kind = ?;",
         )
         .bind(kind)
-        .fetch_one(&database.pool)
-        .await?;
+        .fetch_one(database)
+        .await?
+        .try_get(0usize)?;
         Ok(count)
     }
 
@@ -474,7 +474,7 @@ impl Job {
             offset = query.offset,
         );
 
-        let mut page = sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM jobs"));
+        let mut page = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs"));
         query.push_predicates(&mut page);
         // Newest first, `id` breaking the tie: `created_at` is whole seconds,
         // and a v7 id sorts chronologically within one, so two jobs written in
@@ -484,19 +484,15 @@ impl Job {
         page.push(" OFFSET ");
         page.push_bind(query.offset);
 
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
         let jobs: Vec<Self> = rows
             .into_iter()
             .map(Self::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM jobs");
+        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM jobs");
         query.push_predicates(&mut count);
-        let total: i64 = count
-            .build()
-            .fetch_one(&database.pool)
-            .await?
-            .try_get::<i64, _>(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((jobs, total))
     }
@@ -513,12 +509,12 @@ impl Job {
         database: &Database,
     ) -> Result<Option<Self>, sqlx::Error> {
         let mut query =
-            sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM jobs WHERE kind = "));
+            crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM jobs WHERE kind = "));
         query.push_bind(kind);
         query.push(" AND dedup_key = ");
         query.push_bind(dedup_key);
         query.push(" ORDER BY created_at DESC, id DESC LIMIT 1");
-        let row = query.build().fetch_optional(&database.pool).await?;
+        let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
     }
 
@@ -556,11 +552,11 @@ impl Job {
              WHERE id = ? AND status = ? \
              RETURNING {COLUMNS};"
         );
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = crate::sql::query(sql)
             .bind(now_secs())
             .bind(id)
             .bind(from.as_str())
-            .fetch_optional(&database.pool)
+            .fetch_optional(database)
             .await?;
         let job = row.map(Self::from_row).transpose()?;
         if job.is_some() {
@@ -578,11 +574,11 @@ impl Job {
             "UPDATE jobs SET run_at = ?, updated_at = ? \
              WHERE id = ? AND status = 'ready' RETURNING {COLUMNS};"
         );
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = crate::sql::query(sql)
             .bind(now)
             .bind(now)
             .bind(id)
-            .fetch_optional(&database.pool)
+            .fetch_optional(database)
             .await?;
         let job = row.map(Self::from_row).transpose()?;
         if job.is_some() {
@@ -610,11 +606,11 @@ impl Job {
                  lease_owner = NULL, lease_until = NULL \
              WHERE id = ? AND status = 'failed' RETURNING {COLUMNS};"
         );
-        let row = sqlx::query(sqlx::AssertSqlSafe(sql))
+        let row = crate::sql::query(sql)
             .bind(now)
             .bind(now)
             .bind(id)
-            .fetch_optional(&database.pool)
+            .fetch_optional(database)
             .await?;
         let job = row.map(Self::from_row).transpose()?;
         if let Some(job) = &job {
@@ -633,12 +629,12 @@ impl Job {
     /// Only terminal ones: a `ready` job scheduled far in the future is not old,
     /// however long ago it was written, and a `running` one is somebody's work.
     pub async fn cleanup(cutoff: i64, database: &Database) -> Result<u64, sqlx::Error> {
-        let deleted = sqlx::query(
+        let deleted = crate::sql::query(
             "DELETE FROM jobs \
              WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < ?;",
         )
         .bind(cutoff)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected();
         info!(
@@ -1060,12 +1056,12 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_status_is_refused_by_the_check_constraint() {
         let database = db().await;
-        let error = sqlx::query(
+        let error = crate::sql::query(
             "INSERT INTO jobs (id, kind, dedup_key, payload, status, run_at, attempts, \
              max_attempts, created_at, updated_at) \
              VALUES ('x', 'test', 'k', '{}', 'halfway', 0, 0, 1, 0, 0);",
         )
-        .execute(&database.pool)
+        .execute(&database)
         .await
         .unwrap_err();
         assert!(error.to_string().contains("CHECK constraint failed"));
@@ -1114,13 +1110,13 @@ mod tests {
         database: &Database,
     ) -> Job {
         assert!(enqueue_kind(id, kind, key, now_secs(), max_attempts, database).await);
-        sqlx::query(
+        crate::sql::query(
             "UPDATE jobs SET status = 'failed', attempts = 1, \
              last_error = 'upstream said no', updated_at = ? WHERE id = ?;",
         )
         .bind(now_secs())
         .bind(id)
-        .execute(&database.pool)
+        .execute(database)
         .await
         .unwrap();
         Job::find_by_id(id, database).await.unwrap().unwrap()

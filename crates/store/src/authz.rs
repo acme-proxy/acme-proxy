@@ -1,6 +1,5 @@
+use crate::sql::Row;
 use serde_json::Value;
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -95,7 +94,7 @@ macro_rules! authz_columns {
 }
 
 impl Authorization {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let identifier_json: String = row.try_get("identifier")?;
         let identifier: Identifier =
             serde_json::from_str(&identifier_json).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
@@ -104,7 +103,7 @@ impl Authorization {
             id: row.try_get("id")?,
             order_id: row.try_get("order_id")?,
             identifier,
-            status: status::from_column(row.try_get::<&str, _>("status")?)?,
+            status: status::from_column(row.try_get::<String>("status")?.as_str())?,
             expires: row.try_get("expires")?,
             created_at: row.try_get("created_at")?,
         })
@@ -125,16 +124,16 @@ impl Authorization {
 
     /// Inserts the authorization using any executor — a pool, or a transaction
     /// (see [`crate::order::Order::insert`] for why that matters).
-    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    pub async fn insert<'e>(
+        &self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<(), sqlx::Error> {
         // `Identifier` derives `Serialize`, so this never fails in practice.
         let identifier_json = serde_json::to_string(&self.identifier)
             .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
 
         debug!(event = "db_authz_create_started", outcome = "progress", authz_id = ?self.id, order_id = ?self.order_id);
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) \
              VALUES (?, ?, ?, ?, ?, ?);",
         )
@@ -159,7 +158,7 @@ impl Authorization {
         database: &Database,
     ) -> Result<Authorization, sqlx::Error> {
         let authz = Authorization::new(order_id, identifier, expires);
-        authz.insert(&database.pool).await?;
+        authz.insert(database).await?;
         Ok(authz)
     }
 
@@ -171,13 +170,13 @@ impl Authorization {
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             authz_columns!(),
             " FROM authorizations WHERE id = ?;"
         ))
         .bind(id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Authorization::from_row).transpose()
@@ -189,17 +188,17 @@ impl Authorization {
         order_id: Uuid,
         database: &Database,
     ) -> Result<Vec<Authorization>, sqlx::Error> {
-        Self::find_by_order_with(order_id, &database.pool).await
+        Self::find_by_order_with(order_id, database).await
     }
 
     /// How many authorizations an order has. [`crate::order::Order::count_by_account`]'s
     /// counterpart, and for the same reason.
     pub async fn count_by_order(order_id: Uuid, database: &Database) -> Result<i64, sqlx::Error> {
-        let row = sqlx::query("SELECT COUNT(*) FROM authorizations WHERE order_id = ?;")
+        let row = crate::sql::query("SELECT COUNT(*) FROM authorizations WHERE order_id = ?;")
             .bind(order_id)
-            .fetch_one(&database.pool)
+            .fetch_one(database)
             .await?;
-        row.try_get::<i64, _>(0)
+        row.try_get::<i64>(0)
     }
 
     /// The authorization ids of several orders at once, keyed by order id.
@@ -225,7 +224,7 @@ impl Authorization {
         // keeps the ids parameters instead of interpolated SQL, the same rule
         // `OrderQuery::push_predicates` follows.
         let mut builder =
-            sqlx::QueryBuilder::new("SELECT id, order_id FROM authorizations WHERE order_id IN (");
+            crate::sql::Builder::new("SELECT id, order_id FROM authorizations WHERE order_id IN (");
         let mut separated = builder.separated(", ");
         for id in order_ids {
             separated.push_bind(*id);
@@ -237,7 +236,7 @@ impl Authorization {
             outcome = "success",
             orders = order_ids.len()
         );
-        for row in builder.build().fetch_all(&database.pool).await? {
+        for row in builder.build().fetch_all(database).await? {
             let order_id: Uuid = row.try_get("order_id")?;
             let id: Uuid = row.try_get("id")?;
             grouped.entry(order_id).or_default().push(id);
@@ -253,15 +252,12 @@ impl Authorization {
     /// the pool, two concurrent validations of two authorizations of one order
     /// can each read before the other's write commits, so neither sees a
     /// complete set and neither promotes the order.
-    pub async fn find_by_order_with<'e, E>(
+    pub async fn find_by_order_with<'e>(
         order_id: Uuid,
-        executor: E,
-    ) -> Result<Vec<Authorization>, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<Vec<Authorization>, sqlx::Error> {
         debug!(event = "db_authz_find_by_order_started", outcome = "progress", order_id = ?order_id);
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             authz_columns!(),
             " FROM authorizations WHERE order_id = ? ORDER BY created_at ASC;"
@@ -287,11 +283,11 @@ impl Authorization {
     /// client may have deactivated the authorization (RFC 8555 §7.5.2), or a
     /// sibling challenge may have decided it. An unguarded write would walk a
     /// `deactivated` or `invalid` authorization back to `valid`.
-    pub async fn set_valid<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written = sqlx::query(
+    pub async fn set_valid<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
             "UPDATE authorizations SET status = 'valid' WHERE id = ? AND status = 'pending';",
         )
         .bind(id)
@@ -303,11 +299,11 @@ impl Authorization {
 
     /// The `invalid` transition as a bare statement, guarded on `pending` for
     /// the same reason; see [`Authorization::set_valid`].
-    pub async fn set_invalid<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written = sqlx::query(
+    pub async fn set_invalid<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
             "UPDATE authorizations SET status = 'invalid' WHERE id = ? AND status = 'pending';",
         )
         .bind(id)
@@ -330,11 +326,11 @@ impl Authorization {
     ///
     /// Guarded on the two states §7.5.2 lets a client leave, so a verdict
     /// that landed since the caller read the row is never overwritten.
-    pub async fn set_deactivated<'e, E>(id: Uuid, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written = sqlx::query(
+    pub async fn set_deactivated<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
             "UPDATE authorizations SET status = 'deactivated' \
              WHERE id = ? AND status IN ('pending', 'valid');",
         )
@@ -350,7 +346,7 @@ impl Authorization {
     /// [`crate::order::Order::finalize`]); `false` when it was not `pending`.
     pub async fn mark_valid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_authz_mark_valid_started", outcome = "progress", authz_id = ?self.id);
-        if !Self::set_valid(self.id, &database.pool).await? {
+        if !Self::set_valid(self.id, database).await? {
             return Ok(false);
         }
 
@@ -367,7 +363,7 @@ impl Authorization {
     /// reads the reason from the challenge it triggered.
     pub async fn mark_invalid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_authz_mark_invalid_started", outcome = "progress", authz_id = ?self.id);
-        if !Self::set_invalid(self.id, &database.pool).await? {
+        if !Self::set_invalid(self.id, database).await? {
             return Ok(false);
         }
 
@@ -441,7 +437,7 @@ macro_rules! challenge_columns {
 }
 
 impl Challenge {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let error_json: Option<String> = row.try_get("error")?;
         let error = error_json
             .map(|json| serde_json::from_str(&json))
@@ -453,7 +449,7 @@ impl Challenge {
             authz_id: row.try_get("authz_id")?,
             typ: row.try_get("type")?,
             token: row.try_get("token")?,
-            status: status::from_column(row.try_get::<&str, _>("status")?)?,
+            status: status::from_column(row.try_get::<String>("status")?.as_str())?,
             validated: row.try_get("validated")?,
             error,
             created_at: row.try_get("created_at")?,
@@ -481,12 +477,12 @@ impl Challenge {
 
     /// Inserts the challenge using any executor — a pool, or a transaction
     /// (see [`crate::order::Order::insert`] for why that matters).
-    pub async fn insert<'e, E>(&self, executor: E) -> Result<(), sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+    pub async fn insert<'e>(
+        &self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<(), sqlx::Error> {
         debug!(event = "db_challenge_create_started", outcome = "progress", challenge_id = ?self.id, authz_id = ?self.authz_id);
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO challenges (id, authz_id, type, token, status, validated, created_at) \
              VALUES (?, ?, ?, ?, ?, NULL, ?);",
         )
@@ -511,7 +507,7 @@ impl Challenge {
         database: &Database,
     ) -> Result<Challenge, sqlx::Error> {
         let challenge = Challenge::new(authz_id, typ);
-        challenge.insert(&database.pool).await?;
+        challenge.insert(database).await?;
         Ok(challenge)
     }
 
@@ -523,13 +519,13 @@ impl Challenge {
         let Some(id) = crate::id::parse(id) else {
             return Ok(None);
         };
-        let row = sqlx::query(concat!(
+        let row = crate::sql::query(concat!(
             "SELECT ",
             challenge_columns!(),
             " FROM challenges WHERE id = ?;"
         ))
         .bind(id)
-        .fetch_optional(&database.pool)
+        .fetch_optional(database)
         .await?;
 
         row.map(Challenge::from_row).transpose()
@@ -542,13 +538,13 @@ impl Challenge {
         database: &Database,
     ) -> Result<Vec<Challenge>, sqlx::Error> {
         debug!(event = "db_challenge_find_by_authz_started", outcome = "progress", authz_id = ?authz_id);
-        let rows = sqlx::query(concat!(
+        let rows = crate::sql::query(concat!(
             "SELECT ",
             challenge_columns!(),
             " FROM challenges WHERE authz_id = ? ORDER BY created_at ASC;"
         ))
         .bind(authz_id)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter().map(Challenge::from_row).collect()
@@ -595,7 +591,7 @@ impl Challenge {
         database: &Database,
     ) -> Result<ValidationClaim, sqlx::Error> {
         debug!(event = "db_challenge_claim_started", outcome = "progress", challenge_id = ?self.id);
-        let claimed = sqlx::query(
+        let claimed = crate::sql::query(
             "UPDATE challenges SET status = 'processing' \
              WHERE id = ? AND status = 'pending' AND EXISTS ( \
                  SELECT 1 FROM authorizations a JOIN orders o ON o.id = a.order_id \
@@ -613,7 +609,7 @@ impl Challenge {
         .bind(self.id)
         .bind(max_in_flight)
         .bind(max_in_flight)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected()
             == 1;
@@ -637,7 +633,7 @@ impl Challenge {
     /// How many validations are in flight for the account this challenge
     /// belongs to.
     async fn in_flight_for_account(&self, database: &Database) -> Result<u32, sqlx::Error> {
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "SELECT COUNT(*) FROM challenges c \
              JOIN authorizations a ON a.id = c.authz_id \
              JOIN orders o ON o.id = a.order_id \
@@ -646,9 +642,9 @@ impl Challenge {
                  JOIN orders o2 ON o2.id = a2.order_id WHERE a2.id = ?);",
         )
         .bind(self.authz_id)
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?;
-        Ok(u32::try_from(row.try_get::<i64, _>(0)?).unwrap_or(u32::MAX))
+        Ok(u32::try_from(row.try_get::<i64>(0)?).unwrap_or(u32::MAX))
     }
 
     /// Gives a claim back, moving `processing` to `pending`.
@@ -665,11 +661,11 @@ impl Challenge {
         &mut self,
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
-        let released = sqlx::query(
+        let released = crate::sql::query(
             "UPDATE challenges SET status = 'pending' WHERE id = ? AND status = 'processing';",
         )
         .bind(self.id)
-        .execute(&database.pool)
+        .execute(database)
         .await?
         .rows_affected()
             == 1;
@@ -698,13 +694,13 @@ impl Challenge {
             event = "db_challenge_find_processing_started",
             outcome = "progress"
         );
-        let rows = sqlx::query(
+        let rows = crate::sql::query(
             "SELECT c.id, a.expires FROM challenges c \
              JOIN authorizations a ON a.id = c.authz_id \
              WHERE c.status = 'processing' AND a.expires > ?;",
         )
         .bind(now)
-        .fetch_all(&database.pool)
+        .fetch_all(database)
         .await?;
 
         rows.into_iter()
@@ -722,15 +718,12 @@ impl Challenge {
     /// Guarded on the challenge being undecided (`pending` or `processing`), and
     /// returns whether it wrote: a verdict is terminal (§7.1.6), so a second
     /// one — a redelivered job racing the first — leaves the first standing.
-    pub async fn set_valid<'e, E>(
+    pub async fn set_valid<'e>(
         id: Uuid,
         validated: i64,
-        executor: E,
-    ) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let written = sqlx::query(
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let written = crate::sql::query(
             "UPDATE challenges SET status = 'valid', validated = ? \
              WHERE id = ? AND status IN ('pending', 'processing');",
         )
@@ -744,17 +737,14 @@ impl Challenge {
 
     /// The `invalid` transition as a bare statement, guarded the same way; see
     /// [`Challenge::set_valid`].
-    pub async fn set_invalid<'e, E>(
+    pub async fn set_invalid<'e>(
         id: Uuid,
         error: &Value,
-        executor: E,
-    ) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
         let error_json =
             serde_json::to_string(error).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
-        let written = sqlx::query(
+        let written = crate::sql::query(
             "UPDATE challenges SET status = 'invalid', error = ? \
              WHERE id = ? AND status IN ('pending', 'processing');",
         )
@@ -771,7 +761,7 @@ impl Challenge {
     pub async fn mark_valid(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
         let validated = now_secs();
         debug!(event = "db_challenge_mark_valid_started", outcome = "progress", challenge_id = ?self.id);
-        if !Self::set_valid(self.id, validated, &database.pool).await? {
+        if !Self::set_valid(self.id, validated, database).await? {
             return Ok(false);
         }
 
@@ -793,7 +783,7 @@ impl Challenge {
         database: &Database,
     ) -> Result<bool, sqlx::Error> {
         debug!(event = "db_challenge_mark_invalid_started", outcome = "progress", challenge_id = ?self.id);
-        if !Self::set_invalid(self.id, &error, &database.pool).await? {
+        if !Self::set_invalid(self.id, &error, database).await? {
             return Ok(false);
         }
 
@@ -938,15 +928,15 @@ mod tests {
 
         // Everything the success path does, then abandoned rather than
         // committed — standing in for a failure after the first statement.
-        let mut tx = db.pool.begin().await.unwrap();
-        Challenge::set_valid(challenge.id, now_secs(), &mut *tx)
+        let mut tx = db.transaction().await.unwrap();
+        Challenge::set_valid(challenge.id, now_secs(), tx.conn())
             .await
             .unwrap();
-        Authorization::set_valid(authz.id, &mut *tx).await.unwrap();
-        Order::set_ready(oid.parse().unwrap(), &mut *tx)
+        Authorization::set_valid(authz.id, tx.conn()).await.unwrap();
+        Order::set_ready(oid.parse().unwrap(), tx.conn())
             .await
             .unwrap();
-        tx.rollback().await.unwrap();
+        drop(tx); // rolls back, which is what this test is about
 
         let reloaded_authz = Authorization::find_by_id(authz.id.to_string().as_str(), &db)
             .await
@@ -979,12 +969,12 @@ mod tests {
         .unwrap();
         let challenge = Challenge::create(authz.id, "http-01", &db).await.unwrap();
 
-        let mut tx = db.pool.begin().await.unwrap();
-        Challenge::set_valid(challenge.id, now_secs(), &mut *tx)
+        let mut tx = db.transaction().await.unwrap();
+        Challenge::set_valid(challenge.id, now_secs(), tx.conn())
             .await
             .unwrap();
-        Authorization::set_valid(authz.id, &mut *tx).await.unwrap();
-        Order::set_ready(oid.parse().unwrap(), &mut *tx)
+        Authorization::set_valid(authz.id, tx.conn()).await.unwrap();
+        Order::set_ready(oid.parse().unwrap(), tx.conn())
             .await
             .unwrap();
         tx.commit().await.unwrap();

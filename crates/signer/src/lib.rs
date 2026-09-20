@@ -1171,7 +1171,7 @@ mod tests {
         };
         let mut tx = parts.database.transaction().await.unwrap();
         assert!(
-            acme_proxy_store::crl::StoredCrl::find(&issuer, &mut *tx)
+            acme_proxy_store::crl::StoredCrl::find(&issuer, tx.conn())
                 .await
                 .unwrap()
                 .is_none(),

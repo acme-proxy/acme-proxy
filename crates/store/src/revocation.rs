@@ -5,7 +5,6 @@
 //! foreign key to `orders`, for the reason the migration gives: a revocation
 //! must outlive an order an operator deletes.
 
-use sqlx::Row;
 use tracing::{debug, info};
 
 use crate::db::Database;
@@ -31,11 +30,11 @@ impl Revocation {
     ///
     /// The first revocation wins: a repeat changes neither its time nor its
     /// reason, the rule the file-backed ledger's merge kept too.
-    pub async fn insert_if_absent<'e, E>(&self, executor: E) -> Result<bool, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let result = sqlx::query(
+    pub async fn insert_if_absent<'e>(
+        &self,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<bool, sqlx::Error> {
+        let result = crate::sql::query(
             "INSERT INTO revocations (issuer, serial, revoked_at, reason, not_after) \
              VALUES (?, ?, ?, ?, ?) ON CONFLICT (issuer, serial) DO NOTHING;",
         )
@@ -58,11 +57,11 @@ impl Revocation {
     }
 
     /// Every revocation recorded under `issuer`, oldest first.
-    pub async fn list_for_issuer<'e, E>(issuer: &str, executor: E) -> Result<Vec<Self>, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let rows = sqlx::query(
+    pub async fn list_for_issuer<'e>(
+        issuer: &str,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<Vec<Self>, sqlx::Error> {
+        let rows = crate::sql::query(
             "SELECT issuer, serial, revoked_at, reason, not_after FROM revocations \
              WHERE issuer = ? ORDER BY revoked_at, serial;",
         )
@@ -95,7 +94,7 @@ impl Revocation {
         listed_before: i64,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
-        let count: i64 = sqlx::query(
+        let count: i64 = crate::sql::query(
             "SELECT COUNT(*) FROM revocations \
              WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ? \
                AND revoked_at <= ?;",
@@ -103,7 +102,7 @@ impl Revocation {
         .bind(issuer)
         .bind(cutoff)
         .bind(listed_before)
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?
         .try_get(0)?;
         Ok(u64::try_from(count).unwrap_or_default())
@@ -131,16 +130,13 @@ impl Revocation {
     /// could be dropped without having been listed, and only if it is *also*
     /// already expired — a revocation of a certificate nothing would honour
     /// anyway.
-    pub async fn prune_expired<'e, E>(
+    pub async fn prune_expired<'e>(
         issuer: &str,
         cutoff: i64,
         listed_before: i64,
-        executor: E,
-    ) -> Result<u64, sqlx::Error>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-    {
-        let result = sqlx::query(
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<u64, sqlx::Error> {
+        let result = crate::sql::query(
             "DELETE FROM revocations \
              WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ? \
                AND revoked_at <= ?;",
@@ -181,17 +177,15 @@ mod tests {
 
         assert!(
             revocation("01", 100, None)
-                .insert_if_absent(&database.pool)
+                .insert_if_absent(&database)
                 .await
                 .unwrap()
         );
         let mut repeat = revocation("01", 200, Some(9));
         repeat.reason = Some(4);
-        assert!(!repeat.insert_if_absent(&database.pool).await.unwrap());
+        assert!(!repeat.insert_if_absent(&database).await.unwrap());
 
-        let listed = Revocation::list_for_issuer("ca", &database.pool)
-            .await
-            .unwrap();
+        let listed = Revocation::list_for_issuer("ca", &database).await.unwrap();
         assert_eq!(listed, vec![revocation("01", 100, None)]);
     }
 
@@ -200,22 +194,22 @@ mod tests {
     async fn issuers_do_not_see_each_others_rows() {
         let database = Database::connect_in_memory().await.unwrap();
         revocation("01", 100, None)
-            .insert_if_absent(&database.pool)
+            .insert_if_absent(&database)
             .await
             .unwrap();
         let mut other = revocation("01", 100, None);
         other.issuer = "other".to_string();
-        assert!(other.insert_if_absent(&database.pool).await.unwrap());
+        assert!(other.insert_if_absent(&database).await.unwrap());
 
         assert_eq!(
-            Revocation::list_for_issuer("ca", &database.pool)
+            Revocation::list_for_issuer("ca", &database)
                 .await
                 .unwrap()
                 .len(),
             1
         );
         assert!(
-            Revocation::list_for_issuer("nobody", &database.pool)
+            Revocation::list_for_issuer("nobody", &database)
                 .await
                 .unwrap()
                 .is_empty()
@@ -230,7 +224,7 @@ mod tests {
         let database = Database::connect_in_memory().await.unwrap();
         // Revoked at 10, expired at 50; the stored CRL was signed at 40.
         revocation("expired", 10, Some(50))
-            .insert_if_absent(&database.pool)
+            .insert_if_absent(&database)
             .await
             .unwrap();
 
@@ -241,7 +235,7 @@ mod tests {
             0
         );
         assert_eq!(
-            Revocation::prune_expired("ca", 50, 40, &database.pool)
+            Revocation::prune_expired("ca", 50, 40, &database)
                 .await
                 .unwrap(),
             0
@@ -249,7 +243,7 @@ mod tests {
 
         // A CRL signed at 60 carries it past its expiry, and now it may go.
         assert_eq!(
-            Revocation::prune_expired("ca", 60, 60, &database.pool)
+            Revocation::prune_expired("ca", 60, 60, &database)
                 .await
                 .unwrap(),
             1
@@ -265,11 +259,11 @@ mod tests {
             revocation("current", 3, Some(500)),
             revocation("unknown", 4, None),
         ] {
-            row.insert_if_absent(&database.pool).await.unwrap();
+            row.insert_if_absent(&database).await.unwrap();
         }
         let mut elsewhere = revocation("elsewhere", 5, Some(50));
         elsewhere.issuer = "other".to_string();
-        elsewhere.insert_if_absent(&database.pool).await.unwrap();
+        elsewhere.insert_if_absent(&database).await.unwrap();
 
         assert_eq!(
             Revocation::count_expired("ca", 100, 1_000, &database)
@@ -278,13 +272,13 @@ mod tests {
             1
         );
         assert_eq!(
-            Revocation::prune_expired("ca", 100, 1_000, &database.pool)
+            Revocation::prune_expired("ca", 100, 1_000, &database)
                 .await
                 .unwrap(),
             1
         );
 
-        let left: Vec<String> = Revocation::list_for_issuer("ca", &database.pool)
+        let left: Vec<String> = Revocation::list_for_issuer("ca", &database)
             .await
             .unwrap()
             .into_iter()
@@ -292,7 +286,7 @@ mod tests {
             .collect();
         assert_eq!(left, ["boundary", "current", "unknown"]);
         assert_eq!(
-            Revocation::list_for_issuer("other", &database.pool)
+            Revocation::list_for_issuer("other", &database)
                 .await
                 .unwrap()
                 .len(),
@@ -306,15 +300,13 @@ mod tests {
     #[tokio::test]
     async fn an_out_of_range_reason_reads_as_none() {
         let database = Database::connect_in_memory().await.unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO revocations (issuer, serial, revoked_at, reason) VALUES ('ca', '01', 1, -3);",
         )
-        .execute(&database.pool)
+        .execute(&database)
         .await
         .unwrap();
-        let listed = Revocation::list_for_issuer("ca", &database.pool)
-            .await
-            .unwrap();
+        let listed = Revocation::list_for_issuer("ca", &database).await.unwrap();
         assert_eq!(listed[0].reason, None);
     }
 }

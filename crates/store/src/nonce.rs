@@ -1,6 +1,5 @@
 use std::time::{Duration, SystemTime};
 
-use sqlx::Row;
 use tracing::{debug, info};
 
 use crate::db::Database;
@@ -82,10 +81,10 @@ impl Nonce {
     }
 
     pub async fn save(&self, database: &Database) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO nonces VALUES (?, ?);")
+        crate::sql::query("INSERT INTO nonces VALUES (?, ?);")
             .bind(self.value.clone())
             .bind(self.created_at)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
         // At `debug`, and a fingerprint rather than the value: this runs from
         // the response middleware, so it is the one log line in the server that
@@ -112,10 +111,10 @@ impl Nonce {
         // when `ttl` reaches back past the epoch.
         let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
 
-        let result = sqlx::query("DELETE FROM nonces WHERE value = ? AND created_at > ?;")
+        let result = crate::sql::query("DELETE FROM nonces WHERE value = ? AND created_at > ?;")
             .bind(nonce)
             .bind(cutoff)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         // A verified nonce is spent, so logging it would leak nothing — but a
@@ -152,18 +151,18 @@ impl Nonce {
     /// hover around the request rate times the TTL, and a number far above
     /// that means the reaper is not running.
     pub async fn count(database: &Database) -> Result<i64, sqlx::Error> {
-        sqlx::query("SELECT COUNT(*) FROM nonces;")
-            .fetch_one(&database.pool)
+        crate::sql::query("SELECT COUNT(*) FROM nonces;")
+            .fetch_one(database)
             .await?
-            .try_get(0)
+            .try_get(0usize)
     }
 
     pub async fn cleanup(database: &Database, ttl: Duration) -> Result<u64, sqlx::Error> {
         let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
 
-        let result = sqlx::query("DELETE FROM nonces WHERE created_at <= ?;")
+        let result = crate::sql::query("DELETE FROM nonces WHERE created_at <= ?;")
             .bind(cutoff)
-            .execute(&database.pool)
+            .execute(database)
             .await?;
 
         info!(event = "db_nonce_cleanup_completed",
@@ -185,9 +184,11 @@ mod tests {
     const TTL: Duration = Duration::from_secs(300);
 
     async fn nonce_count(database: &Arc<Database>) -> i64 {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM nonces;")
-            .fetch_one(&database.pool)
+        crate::sql::query("SELECT COUNT(*) FROM nonces;")
+            .fetch_one(database)
             .await
+            .unwrap()
+            .try_get(0usize)
             .unwrap()
     }
 
@@ -389,7 +390,7 @@ mod tests {
         assert_eq!(accepted, 1, "a nonce may be spent exactly once");
         assert_eq!(nonce_count(&database).await, 0, "the row is consumed");
 
-        database.pool.close().await;
+        database.close().await;
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
         }

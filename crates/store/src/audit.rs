@@ -6,9 +6,8 @@
 //! keys either — see the header comment in
 //! `crates/store/migrations/20260809120000_add_audit_log.sql`.
 
+use crate::sql::Row;
 use serde_json::{Value, json};
-use sqlx::Row;
-use sqlx::sqlite::SqliteRow;
 use tracing::debug;
 
 use crate::db::Database;
@@ -79,7 +78,7 @@ impl AuditQuery {
     /// function rather than two copies, for the reason
     /// [`crate::order::OrderQuery::push_predicates`] gives: a filter
     /// applied to only one of them reports a total the rows contradict.
-    fn push_predicates(&self, builder: &mut sqlx::QueryBuilder<sqlx::Sqlite>) {
+    fn push_predicates(&self, builder: &mut crate::sql::Builder) {
         let mut separator = " WHERE ";
         for (column, value) in [
             ("profile = ", self.profile.as_ref()),
@@ -107,7 +106,7 @@ impl AuditQuery {
 }
 
 impl AuditEntry {
-    fn from_row(row: SqliteRow) -> Result<Self, sqlx::Error> {
+    fn from_row(row: Row) -> Result<Self, sqlx::Error> {
         let identifiers_json: String = row.try_get("identifiers")?;
         let identifiers: Vec<String> = serde_json::from_str(&identifiers_json)
             .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
@@ -170,7 +169,7 @@ impl AuditEntry {
         let identifiers_json = Value::from(identifiers).to_string();
         let created_at = now_secs();
 
-        let id = sqlx::query(
+        let id = crate::sql::query(
             "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind, actor_id, \
              account_id, order_id, cert_serial, identifiers, client_ip, client_ptr, user_agent, \
              request_id, reason, detail) \
@@ -192,9 +191,9 @@ impl AuditEntry {
         .bind(&request_id)
         .bind(&reason)
         .bind(&detail)
-        .fetch_one(&database.pool)
+        .fetch_one(database)
         .await?
-        .try_get::<i64, _>("id")?;
+        .try_get::<i64>("id")?;
 
         debug!(
             event = "db_audit_row_written",
@@ -213,9 +212,9 @@ impl AuditEntry {
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
         let mut query =
-            sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM audit_log WHERE id = "));
+            crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM audit_log WHERE id = "));
         query.push_bind(id);
-        let row = query.build().fetch_optional(&database.pool).await?;
+        let row = query.build().fetch_optional(database).await?;
         row.map(Self::from_row).transpose()
     }
 
@@ -236,7 +235,7 @@ impl AuditEntry {
             offset = query.offset,
         );
 
-        let mut page = sqlx::QueryBuilder::new(format!("SELECT {COLUMNS} FROM audit_log"));
+        let mut page = crate::sql::Builder::new(format!("SELECT {COLUMNS} FROM audit_log"));
         query.push_predicates(&mut page);
         // Newest first. `id` breaks the tie rather than merely decorating the
         // clause: `created_at` is whole seconds and this table takes several
@@ -247,19 +246,15 @@ impl AuditEntry {
         page.push(" OFFSET ");
         page.push_bind(query.offset);
 
-        let rows = page.build().fetch_all(&database.pool).await?;
+        let rows = page.build().fetch_all(database).await?;
         let entries: Vec<Self> = rows
             .into_iter()
             .map(Self::from_row)
             .collect::<Result<_, _>>()?;
 
-        let mut count = sqlx::QueryBuilder::new("SELECT COUNT(*) FROM audit_log");
+        let mut count = crate::sql::Builder::new("SELECT COUNT(*) FROM audit_log");
         query.push_predicates(&mut count);
-        let total: i64 = count
-            .build()
-            .fetch_one(&database.pool)
-            .await?
-            .try_get::<i64, _>(0)?;
+        let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((entries, total))
     }
@@ -267,11 +262,11 @@ impl AuditEntry {
     /// How many rows are older than `cutoff` — what the purge prompt names
     /// before deleting anything.
     pub async fn count_older_than(cutoff: i64, database: &Database) -> Result<i64, sqlx::Error> {
-        sqlx::query("SELECT COUNT(*) FROM audit_log WHERE created_at < ?;")
+        crate::sql::query("SELECT COUNT(*) FROM audit_log WHERE created_at < ?;")
             .bind(cutoff)
-            .fetch_one(&database.pool)
+            .fetch_one(database)
             .await?
-            .try_get::<i64, _>(0)
+            .try_get::<i64>(0)
     }
 
     /// Deletes every row older than `cutoff`, returning how many went.
@@ -280,9 +275,9 @@ impl AuditEntry {
     /// an absolute cutoff rather than a duration so the CLI's `--older-than`
     /// and the `audit.retention_days` sweep run the identical delete.
     pub async fn cleanup(cutoff: i64, database: &Database) -> Result<u64, sqlx::Error> {
-        let deleted = sqlx::query("DELETE FROM audit_log WHERE created_at < ?;")
+        let deleted = crate::sql::query("DELETE FROM audit_log WHERE created_at < ?;")
             .bind(cutoff)
-            .execute(&database.pool)
+            .execute(database)
             .await?
             .rows_affected();
         debug!(
@@ -456,7 +451,7 @@ mod tests {
             None,
             None,
         );
-        order.insert(&db.pool).await.unwrap();
+        order.insert(&db).await.unwrap();
 
         let id = AuditEntry::insert(
             AuditRecord::new(
@@ -729,11 +724,11 @@ mod tests {
     async fn an_unknown_event_string_still_loads_and_simply_does_not_parse() {
         let db = db().await;
         // A value no `AuditEvent` variant spells — accepted by the schema now.
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
              VALUES (0, 'certificate_renewed', 'success', 'le', 'acme');",
         )
-        .execute(&db.pool)
+        .execute(&db)
         .await
         .unwrap();
         let entry = AuditEntry::search(
@@ -757,13 +752,13 @@ mod tests {
     async fn the_schema_refuses_an_outcome_or_actor_it_does_not_know() {
         let db = db().await;
         for (outcome, actor) in [("maybe", "acme"), ("success", "robot")] {
-            let error = sqlx::query(
+            let error = crate::sql::query(
                 "INSERT INTO audit_log (created_at, event, outcome, profile, actor_kind) \
                  VALUES (0, 'certificate_issued', ?, 'le', ?);",
             )
             .bind(outcome)
             .bind(actor)
-            .execute(&db.pool)
+            .execute(&db)
             .await
             .unwrap_err();
             assert!(

@@ -28,19 +28,30 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use sqlx::migrate::Migrator;
+use sqlx::postgres::{PgPoolOptions, Postgres};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Error, Pool, Sqlite, SqlitePool, migrate::MigrateDatabase};
 use tracing::{error, info};
 
-static MIGRATOR: Migrator = sqlx::migrate!(); // defaults to "./migrations"
+use crate::sql::{Dialect, Exec};
+
+/// The SQLite set, frozen and append-only since 0.1.0.
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// The PostgreSQL set. A schema of its own rather than a transcription: the
+/// SQLite files carry table rebuilds that exist only because SQLite cannot add
+/// a `CHECK`, and replaying those here would be archaeology rather than a
+/// schema. Append-only from its own first release, on the same rule.
+static PG_MIGRATOR: Migrator = sqlx::migrate!("./migrations-postgres");
 
 /// The connection pool, and the only way to reach it.
 ///
 /// The pool is private to this crate: everything else goes through a table
 /// module, [`Database::transaction`] or [`Database::pool_stats`]. That is what
 /// keeps SQL — and the dialect it is written in — in one crate.
-pub struct Database {
-    pub(crate) pool: Pool<Sqlite>,
+pub enum Database {
+    Sqlite(Pool<Sqlite>),
+    Postgres(Pool<Postgres>),
 }
 
 /// One database transaction, handed out by [`Database::transaction`].
@@ -48,29 +59,33 @@ pub struct Database {
 /// A wrapper rather than `sqlx::Transaction` itself, so the pool it is drawn
 /// from stays this crate's business: a caller outside it can open a
 /// transaction without being able to reach the pool. It derefs to the
-/// connection, so `&mut *tx` is what every table method taking an executor or a
+/// connection, so `tx.conn()` is what every table method taking an executor or a
 /// `&mut SqliteConnection` is handed. Dropped without [`Tx::commit`], it rolls
 /// back — `sqlx`'s own rule, unchanged.
-pub struct Tx(sqlx::Transaction<'static, Sqlite>);
+pub enum Tx {
+    Sqlite(sqlx::Transaction<'static, Sqlite>),
+    Postgres(sqlx::Transaction<'static, Postgres>),
+}
 
 impl Tx {
     /// Commits the transaction.
     pub async fn commit(self) -> Result<(), Error> {
-        self.0.commit().await
+        match self {
+            Tx::Sqlite(tx) => tx.commit().await,
+            Tx::Postgres(tx) => tx.commit().await,
+        }
     }
-}
 
-impl std::ops::Deref for Tx {
-    type Target = sqlx::SqliteConnection;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for Tx {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    /// The connection underneath, for a statement to run on.
+    ///
+    /// Replaces the `Deref` this used to carry: the target was
+    /// `SqliteConnection`, which is exactly the dialect this enum exists to
+    /// stop naming. `tx.conn()` is what `tx.conn()` used to be.
+    pub fn conn(&mut self) -> Exec<'_> {
+        match self {
+            Tx::Sqlite(tx) => Exec::SqliteConn(tx),
+            Tx::Postgres(tx) => Exec::PgConn(tx),
+        }
     }
 }
 
@@ -84,9 +99,30 @@ pub struct PoolStats {
 }
 
 impl Database {
+    /// Which dialect this database speaks.
+    #[must_use]
+    pub fn dialect(&self) -> Dialect {
+        match self {
+            Database::Sqlite(_) => Dialect::Sqlite,
+            Database::Postgres(_) => Dialect::Postgres,
+        }
+    }
+
+    /// This database as a target for one statement.
+    #[must_use]
+    pub fn exec(&self) -> Exec<'_> {
+        match self {
+            Database::Sqlite(pool) => Exec::SqlitePool(pool),
+            Database::Postgres(pool) => Exec::PgPool(pool),
+        }
+    }
+
     /// Begins a transaction.
     pub async fn transaction(&self) -> Result<Tx, Error> {
-        Ok(Tx(self.pool.begin().await?))
+        Ok(match self {
+            Database::Sqlite(pool) => Tx::Sqlite(pool.begin().await?),
+            Database::Postgres(pool) => Tx::Postgres(pool.begin().await?),
+        })
     }
 
     /// Begins a transaction that holds the **write lock from its first
@@ -101,15 +137,29 @@ impl Database {
     /// the lock up front makes the transaction wait its turn under
     /// `busy_timeout` instead, and then read what it writes against.
     pub async fn write_transaction(&self) -> Result<Tx, Error> {
-        Ok(Tx(self.pool.begin_with("BEGIN IMMEDIATE").await?))
+        Ok(match self {
+            Database::Sqlite(pool) => Tx::Sqlite(pool.begin_with("BEGIN IMMEDIATE").await?),
+            // PostgreSQL needs nothing here. The hazard this exists for is a
+            // WAL snapshot going stale between a read and the write that rests
+            // on it, which `SQLITE_BUSY_SNAPSHOT` reports and `busy_timeout`
+            // cannot help. Row-level locking means the same read-then-write
+            // either blocks or re-evaluates against what it locked.
+            Database::Postgres(pool) => Tx::Postgres(pool.begin().await?),
+        })
     }
 
     /// The pool's size and idle count, read now rather than tracked.
     #[must_use]
     pub fn pool_stats(&self) -> PoolStats {
-        PoolStats {
-            size: self.pool.size(),
-            idle: self.pool.num_idle(),
+        match self {
+            Database::Sqlite(pool) => PoolStats {
+                size: pool.size(),
+                idle: pool.num_idle(),
+            },
+            Database::Postgres(pool) => PoolStats {
+                size: pool.size(),
+                idle: pool.num_idle(),
+            },
         }
     }
 
@@ -124,7 +174,12 @@ impl Database {
     #[doc(hidden)]
     #[must_use]
     pub fn raw_pool(&self) -> &Pool<Sqlite> {
-        &self.pool
+        match self {
+            Database::Sqlite(pool) => pool,
+            Database::Postgres(_) => {
+                panic!("raw_pool() is a SQLite test fixture; this database is PostgreSQL")
+            }
+        }
     }
 
     /// Closes the pool: every later query fails with `PoolClosed`.
@@ -132,23 +187,49 @@ impl Database {
     /// Waits for checked-out connections to be returned. Also how a test
     /// simulates the database going away underneath a running server.
     pub async fn close(&self) {
-        self.pool.close().await;
+        match self {
+            Database::Sqlite(pool) => pool.close().await,
+            Database::Postgres(pool) => pool.close().await,
+        }
     }
 
-    /// Opens the `SQLite` database at `url`, creating the file if it does not
-    /// exist yet. **Does not migrate.**
+    /// Opens the database at `url`, whose **scheme picks the backend**.
+    /// **Does not migrate.**
+    ///
+    /// `sqlite:` creates the file if it is not there yet, and pins the two
+    /// pragmas the schema depends on. `postgres:`/`postgresql:` expects the
+    /// database to exist — creating one is a privileged act an operator
+    /// performs, not something a server does to a cluster it was pointed at.
+    /// Any other scheme is refused by name here, rather than as a driver error
+    /// several frames down.
     ///
     /// Applying the schema is a separate, named act: [`migrate`](Self::migrate),
     /// `acme-proxy migrate`, or the `worker` role at startup. It used to happen
     /// here, which meant every subcommand — `audit list`, `completions`, a
     /// health check — silently upgraded the schema of whatever database it was
     /// pointed at, and two processes starting together raced `MIGRATOR::run`
-    /// with no lock between them (`SQLite` gives `sqlx` none).
+    /// with no lock between them (`SQLite` gives `sqlx` none; PostgreSQL does,
+    /// an advisory lock, so there the one-owner rule is belt and braces).
     ///
     /// A caller that needs the schema present asks
     /// [`pending_migrations`](Self::pending_migrations) and refuses by name, or
     /// uses [`connect_and_migrate`](Self::connect_and_migrate).
     pub async fn open(url: &str) -> Result<Database, Error> {
+        match scheme_of(url) {
+            Some("sqlite") => Self::open_sqlite(url).await,
+            Some("postgres" | "postgresql") => Self::open_postgres(url).await,
+            _ => Err(Error::Configuration(
+                format!(
+                    "unsupported database URL scheme in `{}`: expected one of \
+                     sqlite://, postgres:// or postgresql://",
+                    Redacted(url)
+                )
+                .into(),
+            )),
+        }
+    }
+
+    async fn open_sqlite(url: &str) -> Result<Database, Error> {
         if !Sqlite::database_exists(url).await.unwrap_or(false) {
             info!(event = "db_creation_started", outcome = "progress", database_url = %url);
             Sqlite::create_database(url).await?;
@@ -166,9 +247,21 @@ impl Database {
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Duration::from_secs(5));
 
-        let pool = SqlitePool::connect_with(options).await?;
+        Ok(Database::Sqlite(SqlitePool::connect_with(options).await?))
+    }
 
-        Ok(Database { pool })
+    async fn open_postgres(url: &str) -> Result<Database, Error> {
+        // Neither pragma has an analogue: foreign keys are always enforced and
+        // there is no journal mode to choose. The pool is bounded because,
+        // unlike a file, a cluster has a global connection limit that several
+        // role processes share.
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(url)
+            .await?;
+
+        Ok(Database::Postgres(pool))
     }
 
     /// [`open`](Self::open) followed by [`migrate`](Self::migrate).
@@ -187,7 +280,18 @@ impl Database {
     /// Idempotent: `sqlx` tracks each file by version and checksum, so running
     /// this against an up-to-date database does nothing.
     pub async fn migrate(&self) -> Result<(), Error> {
-        run_migrations(&self.pool).await
+        match self {
+            Database::Sqlite(pool) => run_migrations(&MIGRATOR, pool).await,
+            Database::Postgres(pool) => run_migrations(&PG_MIGRATOR, pool).await,
+        }
+    }
+
+    /// The migration set this database is measured against.
+    fn migrator(&self) -> &'static Migrator {
+        match self {
+            Database::Sqlite(_) => &MIGRATOR,
+            Database::Postgres(_) => &PG_MIGRATOR,
+        }
     }
 
     /// The versions of the embedded migrations this database has not applied.
@@ -199,18 +303,19 @@ impl Database {
     /// A database with no `_sqlx_migrations` table has applied nothing — that
     /// is a freshly created file, not an error.
     pub async fn pending_migrations(&self) -> Result<Vec<i64>, Error> {
-        let applied: std::collections::HashSet<i64> =
-            match sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations;")
-                .fetch_all(&self.pool)
-                .await
-            {
-                Ok(versions) => versions.into_iter().collect(),
-                // No such table: nothing has ever been applied here.
-                Err(Error::Database(_)) => std::collections::HashSet::new(),
-                Err(error) => return Err(error),
-            };
+        let applied: std::collections::HashSet<i64> = if self.migrations_table_exists().await? {
+            crate::sql::query("SELECT version FROM _sqlx_migrations;")
+                .fetch_all(self)
+                .await?
+                .iter()
+                .map(|row| row.try_get::<i64>(0usize))
+                .collect::<Result<_, _>>()?
+        } else {
+            std::collections::HashSet::new()
+        };
 
-        Ok(MIGRATOR
+        Ok(self
+            .migrator()
             .iter()
             .filter(|migration| !migration.migration_type.is_down_migration())
             .map(|migration| migration.version)
@@ -227,14 +332,73 @@ impl Database {
             .connect_with(SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true))
             .await?;
 
-        run_migrations(&pool).await?;
+        run_migrations(&MIGRATOR, &pool).await?;
 
-        Ok(Database { pool })
+        Ok(Database::Sqlite(pool))
     }
 }
 
-async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
-    MIGRATOR.run(pool).await.map_err(|error| {
+/// Is there a `_sqlx_migrations` table to read?
+///
+/// Asked before reading it rather than by reading it and swallowing the error.
+/// On SQLite a missing table is a clean `Err(Database(_))` the caller can
+/// treat as "nothing applied"; on PostgreSQL the failed statement aborts the
+/// surrounding transaction, so the next query in the same connection fails too
+/// and the cause is three frames away from the mistake.
+impl Database {
+    async fn migrations_table_exists(&self) -> Result<bool, Error> {
+        let sql = match self {
+            Database::Sqlite(_) => {
+                "SELECT COUNT(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = '_sqlx_migrations';"
+            }
+            Database::Postgres(_) => {
+                "SELECT COUNT(*) FROM information_schema.tables \
+                 WHERE table_name = '_sqlx_migrations';"
+            }
+        };
+        let count: i64 = crate::sql::query(sql)
+            .fetch_one(self)
+            .await?
+            .try_get(0usize)?;
+        Ok(count > 0)
+    }
+}
+
+/// The scheme of a URL, lower-cased, or `None` if it has none.
+fn scheme_of(url: &str) -> Option<&str> {
+    let scheme = url.split("://").next()?;
+    (scheme != url).then_some(scheme)
+}
+
+/// A URL with any password replaced, for a message an operator will see.
+///
+/// A PostgreSQL DSN carries `user:password@`, and this type is what keeps it
+/// out of a startup error. The equivalent for logging lives in
+/// `acme_proxy_net::proxy`.
+struct Redacted<'a>(&'a str);
+
+impl std::fmt::Display for Redacted<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.split_once("://") {
+            Some((scheme, rest)) => match rest.split_once('@') {
+                Some((credential, host)) => {
+                    let user = credential.split_once(':').map_or(credential, |(u, _)| u);
+                    write!(f, "{scheme}://{user}:***@{host}")
+                }
+                None => write!(f, "{}", self.0),
+            },
+            None => write!(f, "{}", self.0),
+        }
+    }
+}
+
+async fn run_migrations<DB>(migrator: &Migrator, pool: &Pool<DB>) -> Result<(), Error>
+where
+    DB: sqlx::Database,
+    DB::Connection: sqlx::migrate::Migrate,
+{
+    migrator.run(pool).await.map_err(|error| {
         // Startup-only, and the caller exits on error — but a `Result`-returning
         // function should not decide that on its own by panicking.
         error!(event = "db_migration_failed", outcome = "failure", error = %error);
@@ -262,7 +426,7 @@ mod tests {
 
         // Migrations applied: the `nonces` table exists and is queryable.
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nonces;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
         assert_eq!(count, 0);
@@ -270,17 +434,17 @@ mod tests {
         // WAL and foreign-key enforcement are on: the schema's CASCADE rules
         // depend on the latter.
         let journal: String = sqlx::query_scalar("PRAGMA journal_mode;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
         assert_eq!(journal.to_lowercase(), "wal");
         let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys;")
-            .fetch_one(&database.pool)
+            .fetch_one(database.raw_pool())
             .await
             .unwrap();
         assert_eq!(foreign_keys, 1);
 
-        database.pool.close().await;
+        database.close().await;
         // WAL leaves sidecar files behind.
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
@@ -294,16 +458,16 @@ mod tests {
         let database = Database::connect_in_memory().await.unwrap();
 
         let mut tx = database.transaction().await.unwrap();
-        sqlx::query("INSERT INTO nonces VALUES ('dropped', 0);")
-            .execute(&mut *tx)
+        crate::sql::query("INSERT INTO nonces VALUES ('dropped', 0);")
+            .execute(tx.conn())
             .await
             .unwrap();
         drop(tx);
         assert_eq!(count(&database).await, 0, "a dropped Tx rolls back");
 
         let mut tx = database.transaction().await.unwrap();
-        sqlx::query("INSERT INTO nonces VALUES ('kept', 0);")
-            .execute(&mut *tx)
+        crate::sql::query("INSERT INTO nonces VALUES ('kept', 0);")
+            .execute(tx.conn())
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -317,7 +481,9 @@ mod tests {
         assert!(stats.idle <= 1, "{stats:?}");
 
         database.close().await;
-        let refused = sqlx::query("SELECT 1;").execute(database.raw_pool()).await;
+        let refused = crate::sql::query("SELECT 1;")
+            .execute(database.raw_pool())
+            .await;
         assert!(refused.is_err(), "a closed pool refuses work");
     }
 
@@ -335,7 +501,7 @@ mod tests {
         let database = Database::connect_in_memory().await.unwrap();
         let names: Vec<String> =
             sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type = 'index';")
-                .fetch_all(&database.pool)
+                .fetch_all(database.raw_pool())
                 .await
                 .unwrap();
 
@@ -666,43 +832,58 @@ mod tests {
             .await
             .unwrap();
 
-        let row = sqlx::query(
+        let row = crate::sql::query(
             "SELECT id, event, actor_id, account_id, order_id, cert_serial, identifiers, \
              client_ip, user_agent, reason, detail FROM audit_log;",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        use sqlx::Row as _;
         assert_eq!(
-            row.get::<i64, _>("id"),
+            row.try_get::<i64>("id").unwrap(),
             41812,
             "the id has to survive, `audit show <id>` uses it"
         );
-        assert_eq!(row.get::<String, _>("event"), "certificate_revoked");
         assert_eq!(
-            row.get::<Option<String>, _>("actor_id").as_deref(),
+            row.try_get::<String>("event").unwrap(),
+            "certificate_revoked"
+        );
+        assert_eq!(
+            row.try_get::<Option<String>>("actor_id")
+                .unwrap()
+                .as_deref(),
             Some("root")
         );
         assert_eq!(
-            row.get::<Option<String>, _>("account_id").as_deref(),
+            row.try_get::<Option<String>>("account_id")
+                .unwrap()
+                .as_deref(),
             Some("acct-1")
         );
         assert_eq!(
-            row.get::<Option<String>, _>("order_id").as_deref(),
+            row.try_get::<Option<String>>("order_id")
+                .unwrap()
+                .as_deref(),
             Some("order-1")
         );
-        assert_eq!(row.get::<String, _>("identifiers"), "[\"a.example\"]");
         assert_eq!(
-            row.get::<Option<String>, _>("cert_serial").as_deref(),
+            row.try_get::<String>("identifiers").unwrap(),
+            "[\"a.example\"]"
+        );
+        assert_eq!(
+            row.try_get::<Option<String>>("cert_serial")
+                .unwrap()
+                .as_deref(),
             Some("0a0b")
         );
         assert_eq!(
-            row.get::<Option<String>, _>("client_ip").as_deref(),
+            row.try_get::<Option<String>>("client_ip")
+                .unwrap()
+                .as_deref(),
             Some("203.0.113.7")
         );
         assert_eq!(
-            row.get::<Option<String>, _>("detail").as_deref(),
+            row.try_get::<Option<String>>("detail").unwrap().as_deref(),
             Some("by operator")
         );
 
@@ -810,7 +991,7 @@ VALUES
         let columns: Vec<(String, String)> =
             sqlx::query_as("SELECT name, type FROM pragma_table_info(?);")
                 .bind(table)
-                .fetch_all(&database.pool)
+                .fetch_all(database.raw_pool())
                 .await
                 .unwrap();
 
@@ -833,18 +1014,18 @@ VALUES
         let database = Database::connect_in_memory().await.unwrap();
         let cert_id = "aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE";
 
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
         let insert = |id: &'static str, status: &'static str| {
-            let pool = database.pool.clone();
+            let pool = database.raw_pool().clone();
             async move {
-                sqlx::query(
+                crate::sql::query(
                     "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, \
                      replaces, created_at) VALUES (?, 'default', 'acct', ?, '[]', 0, ?, 0);",
                 )
@@ -882,8 +1063,8 @@ VALUES
         insert("third", "invalid").await.unwrap();
 
         // And once the first claim goes invalid, the predecessor is free again.
-        sqlx::query("UPDATE orders SET status = 'invalid' WHERE id = 'first';")
-            .execute(&database.pool)
+        crate::sql::query("UPDATE orders SET status = 'invalid' WHERE id = 'first';")
+            .execute(database.raw_pool())
             .await
             .unwrap();
         insert("fourth", "pending").await.unwrap();
@@ -896,20 +1077,20 @@ VALUES
     async fn status_columns_reject_values_outside_the_state_machine() {
         let database = Database::connect_in_memory().await.unwrap();
 
-        let result = sqlx::query(
+        let result = crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('a', 'default', X'00', '[]', 'definitely-not-a-status', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await;
         assert!(result.is_err(), "an unknown account status must be refused");
 
         // And a legitimate one is accepted.
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('a', 'default', X'00', '[]', 'valid', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
     }
@@ -921,37 +1102,37 @@ VALUES
     async fn deleting_an_account_cascades_to_its_orders() {
         let database = Database::connect_in_memory().await.unwrap();
 
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at) \
              VALUES ('ord', 'default', 'acct', 'pending', '[]', 0, 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) \
              VALUES ('az', 'ord', '{}', 'pending', 0, 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO challenges (id, authz_id, type, token, status, created_at) \
              VALUES ('ch', 'az', 'http-01', 't', 'pending', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
-        sqlx::query("DELETE FROM accounts WHERE id = 'acct';")
-            .execute(&database.pool)
+        crate::sql::query("DELETE FROM accounts WHERE id = 'acct';")
+            .execute(database.raw_pool())
             .await
             .unwrap();
 
@@ -961,7 +1142,7 @@ VALUES
             ("challenges", "SELECT COUNT(*) FROM challenges;"),
         ] {
             let count: i64 = sqlx::query_scalar(query)
-                .fetch_one(&database.pool)
+                .fetch_one(database.raw_pool())
                 .await
                 .unwrap();
             assert_eq!(count, 0, "{table} should have been cascaded away");
@@ -972,28 +1153,28 @@ VALUES
     #[tokio::test]
     async fn an_order_cannot_have_duplicate_authorizations_for_one_identifier() {
         let database = Database::connect_in_memory().await.unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO accounts (id, profile, pubkey, contact, status, created_at) \
              VALUES ('acct', 'default', X'00', '[]', 'valid', 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
-        sqlx::query(
+        crate::sql::query(
             "INSERT INTO orders (id, profile, account_id, status, identifiers, expires, created_at) \
              VALUES ('ord', 'default', 'acct', 'pending', '[]', 0, 0);",
         )
-        .execute(&database.pool)
+        .execute(database.raw_pool())
         .await
         .unwrap();
 
         let insert = |id: &'static str| {
-            sqlx::query(
+            crate::sql::query(
                 "INSERT INTO authorizations (id, order_id, identifier, status, expires, created_at) \
                  VALUES (?, 'ord', '{\"type\":\"dns\",\"value\":\"example.com\"}', 'pending', 0, 0);",
             )
             .bind(id)
-            .execute(&database.pool)
+            .execute(database.raw_pool())
         };
 
         insert("az1").await.unwrap();
