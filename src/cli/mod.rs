@@ -49,6 +49,7 @@ pub mod profile;
 pub mod render;
 pub mod schema;
 pub mod style;
+pub mod transfer;
 pub mod upstream;
 pub mod webadmin;
 pub mod window;
@@ -135,6 +136,21 @@ pub enum Command {
     /// the `worker` role refuses to generate any, so a split deployment runs
     /// this once before starting anything.
     Init,
+    /// Copy every row into another database, which must already exist, be
+    /// migrated and be empty.
+    ///
+    /// The configured `database.url` is the source, and each URL's scheme
+    /// picks its backend — so this is how a SQLite deployment becomes a
+    /// PostgreSQL one, and the reverse is the same command with the two
+    /// swapped. **Stop the server first**: a copy taken while something is
+    /// writing is a torn snapshot, and nothing here can detect one.
+    Transfer {
+        /// The database to copy into.
+        #[arg(long = "to", value_name = "URL")]
+        to: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect and manage ACME accounts.
     Account {
         #[command(subcommand)]
@@ -380,6 +396,10 @@ pub async fn dispatch(
         Command::Serve { role } => serve(role, config.clone(), database).await,
         Command::Migrate => migrate(palette, database).await,
         Command::Init => init(palette, config, database).await,
+        Command::Transfer { to, json } => {
+            transfer::run_transfer_command(&to, json, yes, reader, &config.database.url, database)
+                .await
+        }
         Command::Account { command } => {
             account::run_account_command(command, yes, palette, reader, config, database).await
         }

@@ -32,6 +32,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 | Metrics | `crates/jobs/src/metrics.rs` | `operations/monitoring.md`, `operations/grafana.md` | [ADR 0011](doc/src/dev/adr/0011-metrics-on-prometheus-client.md) |
 | Reload on `SIGHUP` | `crates/server/src/reload.rs` | `operations/reload.md` | [ADR 0008](doc/src/dev/adr/0008-shared-state-in-the-database.md) |
 | The SQLite/PostgreSQL seam | `crates/store/src/sql.rs` | `dev/database.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
+| Moving between backends | `crates/store/src/transfer.rs`, `src/cli/transfer.rs` | `operations/cli.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
 | Role processes | `crates/server/src/roles.rs` | `getting_started/deployment.md` | [ADR 0007](doc/src/dev/adr/0007-role-processes.md) |
 | Web admin (`/ui`, `/api`) | `crates/admin/src/webadmin/` | `operations/webadmin.md`, `operations/webadmin_users.md` | `webadmin/session.rs` `//!` |
 | Admin CLI | `src/cli/`, `crates/admin/src/admin/` | `operations/cli.md` | — |
@@ -101,6 +102,7 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 - Runtime `sqlx::query(...)`, not `query!`, so no `DATABASE_URL` is needed to build.
 - Ids are UUID v7 — BLOBs on SQLite, native `uuid` on PostgreSQL, one Rust type for both. An id parameter typed `&str` came from outside and parses, a `Uuid` came from a row ([ADR 0004](doc/src/dev/adr/0004-uuid-v7-blob-ids.md)).
 - **A bound `None` carries its column's type** (`Value::Null(NullKind)`): PostgreSQL types every parameter and rejects a `bigint` null against a `uuid` column.
+- **A migration that adds a column adds it to `crates/store/src/transfer.rs`'s manifest too**, or `acme-proxy transfer` drops it silently. `the_manifest_names_every_column` introspects the live schema and refuses a manifest that has drifted.
 - An open vocabulary (audit events, roles, job kinds) is a Rust enum with no SQL `CHECK` ([ADR 0005](doc/src/dev/adr/0005-rust-enums-own-the-vocabularies.md)).
 
 ## Configuration

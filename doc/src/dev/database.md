@@ -17,6 +17,13 @@ recipes for reading it by hand at the bottom of this page. The SQL the server
 issues is written once; `crates/store/src/sql.rs` is the seam and its `//!`
 says what had to fork.
 
+A database is one backend or the other; there is no dual-write mode. Moving
+between them is
+[`acme-proxy transfer`](../operations/cli.md#moving-between-backends), which
+copies every row of every table and is guarded by
+`crates/store/src/transfer.rs`'s column manifest — **a migration that adds a
+column adds it there too**, or the copy would silently leave it behind.
+
 **There are two migration sets**, one per dialect, and both are **frozen and
 append-only** — SQLite's as of 0.1.0, PostgreSQL's from its first release. A
 schema change is a new `sqlx migrate add` file in *each*, never an edit to a

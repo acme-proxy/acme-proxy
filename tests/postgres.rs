@@ -461,6 +461,244 @@ async fn the_declared_widths_are_enforced_on_postgres() {
     assert_eq!(width("audit_log", "order_id").await, 36);
 }
 
+/// Every row survives a trip to the other backend and back.
+///
+/// The manifest guards say the copy *names* every column. This says it carries
+/// them: a `ColumnKind` that reads and writes consistently but wrongly — a
+/// `Blob` where the schema means `Uuid`, say — passes introspection and loses
+/// the value, and there is no second chance once the source file is gone.
+///
+/// Seeded through the real model APIs rather than hand-written SQL, so the rows
+/// are shaped the way the server actually writes them, `CHECK` constraints and
+/// foreign keys included.
+#[tokio::test]
+async fn a_database_survives_a_round_trip_through_the_other_backend() {
+    use acme_proxy_store::transfer;
+
+    let Some(postgres) = testutil::postgres_database().await else {
+        return;
+    };
+    let source = Arc::new(
+        Database::connect_in_memory()
+            .await
+            .expect("an in-memory SQLite always opens"),
+    );
+
+    seed(&source).await;
+    let before = row_counts(&source).await;
+    assert!(
+        before.iter().all(|(_, rows)| *rows > 0),
+        "every table must be seeded or the round trip proves nothing: {before:?}"
+    );
+
+    // Out…
+    let out = source
+        .transfer_to(&postgres)
+        .await
+        .expect("the copy into PostgreSQL works");
+    assert_eq!(out.total(), before.iter().map(|(_, n)| n).sum::<u64>());
+    assert_eq!(
+        row_counts(&postgres).await,
+        before,
+        "counts after the copy out"
+    );
+
+    // …and back into a database that has never seen any of it.
+    let returned = Database::connect_in_memory()
+        .await
+        .expect("a second SQLite");
+    postgres
+        .transfer_to(&returned)
+        .await
+        .expect("the copy back into SQLite works");
+    assert_eq!(
+        row_counts(&returned).await,
+        before,
+        "counts after the copy back"
+    );
+
+    // The values, not just the counts. A certificate whose serial did not
+    // survive is one nobody can revoke, which is the whole reason this exists.
+    let original = Order::search(&OrderQuery::default(), &source)
+        .await
+        .expect("the source lists")
+        .0;
+    let copied = Order::search(&OrderQuery::default(), &returned)
+        .await
+        .expect("the round-tripped database lists")
+        .0;
+    assert_eq!(copied.len(), original.len());
+    for (was, now) in original.iter().zip(&copied) {
+        assert_eq!(now.id, was.id, "the id an operator and a URL both carry");
+        assert_eq!(
+            now.cert_serial, was.cert_serial,
+            "revocation finds it by this"
+        );
+        assert_eq!(now.cert_pubkey, was.cert_pubkey, "a blob column");
+        assert_eq!(now.certificate, was.certificate);
+        assert_eq!(now.identifiers, was.identifiers, "a JSON column");
+        assert_eq!(now.status, was.status);
+        assert_eq!(
+            now.not_after, was.not_after,
+            "an absent integer stays absent"
+        );
+    }
+
+    // And the audit ids, which an operator types.
+    async fn audit_ids(database: &Database) -> Vec<i64> {
+        acme_proxy_store::sql::query("SELECT id FROM audit_log ORDER BY id;")
+            .fetch_all(database)
+            .await
+            .expect("audit ids should be listable")
+            .iter()
+            .map(|row| row.try_get::<i64>(0usize).expect("an id"))
+            .collect()
+    }
+    assert_eq!(audit_ids(&returned).await, audit_ids(&source).await);
+
+    /// Counts every table the manifest names, in its order.
+    async fn row_counts(database: &Database) -> Vec<(&'static str, u64)> {
+        let mut counts = Vec::new();
+        for spec in transfer::TABLES {
+            let sql = format!("SELECT COUNT(*) FROM \"{}\";", spec.name);
+            let rows: i64 = acme_proxy_store::sql::query(sqlx::AssertSqlSafe(sql))
+                .fetch_one(database)
+                .await
+                .expect("a count")
+                .try_get(0usize)
+                .expect("a count is an integer");
+            counts.push((
+                spec.name,
+                u64::try_from(rows).expect("a count is not negative"),
+            ));
+        }
+        counts
+    }
+}
+
+/// One row in every one of the fifteen tables.
+///
+/// A table left empty would let a broken `ColumnKind` through, so
+/// `a_database_survives_a_round_trip_through_the_other_backend` asserts the
+/// seed is complete before it copies anything.
+async fn seed(db: &Arc<Database>) {
+    use acme_proxy_core::audit::{Actor, AuditEvent, AuditRecord};
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::admin_recovery_code::AdminRecoveryCode;
+    use acme_proxy_store::admin_session::{AdminSession, NewSession};
+    use acme_proxy_store::admin_user::AdminUser;
+    use acme_proxy_store::audit::AuditEntry;
+    use acme_proxy_store::authz::{Authorization, Challenge};
+    use acme_proxy_store::crl::StoredCrl;
+    use acme_proxy_store::eab::Eab;
+    use acme_proxy_store::http01_token::Http01Token;
+    use acme_proxy_store::job::{Job, NewJob};
+    use acme_proxy_store::nonce::Nonce;
+    use acme_proxy_store::revocation::Revocation;
+    use acme_proxy_store::testutil as fixtures;
+    use acme_proxy_store::upstream_order::UpstreamOrder;
+    use std::time::Duration;
+
+    // The ACME graph: account -> order -> authorization -> challenge, plus the
+    // upstream row that hangs off an order.
+    let account = fixtures::account_id(db).await;
+    let order = fixtures::certified_order(db, account, Some(4_102_444_800)).await;
+
+    let authz = Authorization::create(order.id, Identifier::dns("example.com"), order.expires, db)
+        .await
+        .expect("an authorization");
+    Challenge::create(authz.id, "http-01", db)
+        .await
+        .expect("a challenge");
+
+    UpstreamOrder::create(
+        &order.id.to_string(),
+        "https://upstream.example/order/1",
+        None,
+        &[1u8, 2, 3],
+        db,
+    )
+    .await
+    .expect("an upstream order");
+
+    // The standalone tables.
+    Nonce::new().save(db).await.expect("a nonce");
+    Eab::create(Some("label".to_string()), Some("default".to_string()), db)
+        .await
+        .expect("an EAB key");
+    Job::enqueue(
+        NewJob {
+            id: acme_proxy_store::id::mint(),
+            kind: "seed_kind",
+            dedup_key: "seed",
+            payload: &serde_json::json!({"seeded": true}),
+            run_at: 0,
+            deadline: None,
+            max_attempts: 3,
+        },
+        db,
+    )
+    .await
+    .expect("a job");
+
+    let mut record = AuditRecord::new(
+        AuditEvent::CertificateIssued,
+        "default",
+        Actor::acme(account.to_string()),
+    );
+    record.order_id = Some(order.id.to_string());
+    record.cert_serial = order.cert_serial.clone();
+    record.identifiers = vec!["example.com".to_string()];
+    AuditEntry::insert(record, db).await.expect("an audit row");
+
+    Revocation {
+        issuer: "a".repeat(64),
+        serial: "0a0b".to_string(),
+        revoked_at: 1,
+        reason: Some(4),
+        not_after: Some(4_102_444_800),
+    }
+    .insert_if_absent(db)
+    .await
+    .expect("a revocation");
+
+    StoredCrl {
+        issuer: "a".repeat(64),
+        crl_number: 1,
+        der: vec![9, 9, 9],
+        this_update: 1,
+        next_update: 2,
+    }
+    .insert_initial(db)
+    .await
+    .expect("a CRL");
+
+    Http01Token::publish("tok", "tok.thumb", 1, 4_102_444_800, db)
+        .await
+        .expect("an http-01 token");
+
+    // The admin island.
+    let user = AdminUser::create("alice", "hash", None, db)
+        .await
+        .expect("an operator");
+    AdminSession::create(
+        NewSession {
+            user_id: user.id,
+            token_hash: "0123456789abcdef0123456789abcdef",
+            csrf_token: "the-csrf-token",
+            created_ip: Some("192.0.2.1".to_string()),
+            user_agent: Some("curl/8".to_string()),
+        },
+        Duration::from_secs(3600),
+        db,
+    )
+    .await
+    .expect("a session");
+    AdminRecoveryCode::replace_all(user.id, &["code-hash".to_string()], db)
+        .await
+        .expect("a recovery code");
+}
+
 /// The guard on the guard.
 ///
 /// Every test above skips on its own when there is no server, which means a CI

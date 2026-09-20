@@ -56,6 +56,7 @@ turning a remote party away — and each is attributed to `actor_kind = "admin"`
 | `session_revoked` | one session, all of an operator's sessions, or every session on the server was revoked (the `detail` says which) |
 | `job_cancelled` / `job_advanced` | a background job was cancelled or nudged/revived (`run-now`). A cancelled relay issuance instead writes `certificate_issue_failed` — it abandons a certificate order |
 | `nonce_cleanup_completed` / `audit_pruned` | the nonce table or the audit log itself was swept by hand (`audit_pruned` records its own action, so a manual prune always leaves the one row that says it happened) |
+| `database_transferred` | every row was copied into another backend (`acme-proxy transfer`). Written to the **source**, which is the database that holds the trail leading up to the move; the copy has already read past this row, so the target's own trail begins at the transfer it arrived in |
 
 The vocabulary is defined by `crate::audit::AuditEvent` in the binary, not by a
 database constraint, so a newer server writing a name an older one does not know

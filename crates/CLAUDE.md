@@ -120,6 +120,9 @@ call too; a handler keeps only what is HTTP.
   private to `store`; `raw_pool()` is SQLite-only and for test fixtures only.
 - `Order::search` is the one listing filter. Add a predicate there, not in a
   front end.
+- **`transfer::TABLES` names every column of every table**, parents first. A new
+  column or table belongs there as well as in both migration sets; the manifest
+  tests introspect the live schema and say so.
 - A new `AuditEvent` goes into `ALL_AUDIT_EVENTS` and bumps `EVENT_COUNT`; its
   `outcome` arm is exhaustive.
 

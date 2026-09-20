@@ -79,6 +79,19 @@ and bound `LIMIT`/`OFFSET` are already spelled the way both accept.
   PostgreSQL reports the constraint and never the columns. A matcher passes
   both spellings, so the index name is part of the schema rather than whatever
   the server happened to generate.
+- **A database is one backend or the other, and `acme-proxy transfer` is the
+  way across.** Not a dual-write mode and not a sync: an offline copy of every
+  row, refused unless the target is migrated and empty. It exists because the
+  order row is a certificate's only record — a deployment that moved to
+  PostgreSQL by starting empty would leave every certificate it had issued
+  impossible to revoke, which is the outcome `live_certificates_refusal`
+  exists to prevent. The copy is driven by a **declared column manifest**
+  rather than by reading the source's shape, because the seam decodes into a
+  known Rust type and "read this column as whatever it is" would mean deciding
+  at runtime whether SQLite's untyped BLOB is a `bytea` or a `uuid`. The
+  manifest's own hazard — a column added to the schema and forgotten here — is
+  answered the way ADR 0003 answers it for a table rebuild: by introspecting
+  the live schema and refusing a manifest that has drifted.
 - **The database URL is redacted wherever it is printed.** A DSN carries
   `user:password@`; the startup log line and the `SIGHUP` refusal both go
   through `logfields::redact_url`.
@@ -86,8 +99,10 @@ and bound `LIMIT`/`OFFSET` are already spelled the way both accept.
 ## Consequences
 
 - One binary and one container image serve both, and a deployment moves from
-  SQLite to PostgreSQL by changing one key — there is no migration path for the
-  *data*, which is a separate problem nobody has asked for yet.
+  SQLite to PostgreSQL by changing one key and running `acme-proxy transfer`.
+  What that command cannot check is that the source is stopped, so it says so
+  in its prompt: a copy taken while a worker is issuing is a torn snapshot that
+  looks exactly like a good one.
 - `Tx` no longer derefs to `SqliteConnection`. `tx.conn()` is what `&mut *tx`
   was, and `JobQueue::enqueue_in` takes a `sql::Exec` — the one SQLite-typed
   signature that had leaked outside `crates/store/`.
@@ -111,9 +126,19 @@ and bound `LIMIT`/`OFFSET` are already spelled the way both accept.
 
 ## Enforced by
 
+- **The whole `acme-proxy-store` suite, on both backends.** Every test there
+  calls `Database::connect_for_test()`, which is PostgreSQL when
+  `TEST_POSTGRES_URL` names one — the coverage that found `MAX(x, 0)`, SQLite's
+  scalar two-argument max, in a path no dialect-specific test would have
+  singled out. `connect_in_memory()` means SQLite, and is the opt-out for the
+  seven tests that are *about* SQLite.
 - `tests/postgres.rs`, which runs the dialect-sensitive paths against both
   backends, and `postgres_is_available_when_it_is_required`, which fails rather
   than skips when `ACME_PROXY_REQUIRE_POSTGRES` is set.
+- `transfer::tests::the_manifest_names_every_column` and
+  `…every_table`, against the live schema on whichever backend is running, plus
+  `a_database_survives_a_round_trip_through_the_other_backend`, which seeds all
+  fifteen tables and compares values after a copy out and back.
 - The `postgres` job in `.github/workflows/ci.yml`, which sets that variable
   and also runs `roles` and `reload` — several processes over one database,
   which is the deployment this exists for.

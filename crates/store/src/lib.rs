@@ -43,4 +43,5 @@ pub mod sql;
 pub mod status;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testutil;
+pub mod transfer;
 pub mod upstream_order;

@@ -438,6 +438,22 @@ pub fn job_advanced(actor: Actor, client: ClientContext, id: &str, revived: bool
     )
 }
 
+/// Every row moved into another backend.
+///
+/// Written to the **source**, which is the database that still has the trail
+/// leading up to the move — and which the copy has already read past, so the
+/// row does not travel with it. The target's own trail begins here, at the
+/// transfer it arrived in.
+#[must_use]
+pub fn database_transferred(actor: Actor, client: ClientContext, rows: u64) -> AuditRecord {
+    process_wide(
+        AuditEvent::DatabaseTransferred,
+        actor,
+        client,
+        format!("{rows} row(s) copied to another backend"),
+    )
+}
+
 #[must_use]
 pub fn nonce_cleanup_completed(actor: Actor, client: ClientContext, removed: u64) -> AuditRecord {
     process_wide(

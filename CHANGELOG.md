@@ -202,6 +202,22 @@ migrated configuration before restarting.
   [ADR 0007]: doc/src/dev/adr/0007-role-processes.md
   [ADR 0014]: doc/src/dev/adr/0014-postgresql-beside-sqlite.md
 
+- **`acme-proxy transfer --to <url>`** copies every row of the configured
+  database into another one, which is how an existing SQLite deployment moves
+  to PostgreSQL with its accounts, orders and audit trail intact. Row ids,
+  certificate serials and audit ids all survive, because each is something
+  outside the database still refers to — a `kid` a client stored, a serial the
+  CRL carries, an id an operator typed — so **a certificate issued before the
+  move is revocable after it**. Starting the new deployment empty instead would
+  have left every certificate already issued impossible to revoke.
+
+  The target must exist, be migrated and be empty; each is refused by name, and
+  a target that already holds rows has no override, because a transfer is a
+  copy and not a merge. **Stop the server first**: nothing can detect a writer,
+  and a copy taken during an issuance is a torn snapshot that looks like a good
+  one. `acme-proxy audit list` records the move on the source as
+  `database_transferred`.
+
 - **`challenge.max_in_flight_per_account`** (default `32`, `0` for no limit)
   caps how many of one account's challenges may be validating at once. A
   validation is queued work that reaches out to an address the client named,

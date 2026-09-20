@@ -172,6 +172,18 @@ bind! {
     &Uuid => Uuid, |v| Value::Uuid(*v),
 }
 
+/// A value that has already been through this enum once.
+///
+/// What [`crate::transfer`] binds: it reads a column at the type its manifest
+/// declares, carries it as a [`Value`], and writes it back without ever naming
+/// a Rust type again. The identity impl is what lets the copy stay one loop
+/// over 140 columns instead of a match per column.
+impl Bind for Value {
+    fn to_value(self) -> Value {
+        self
+    }
+}
+
 /// A nullable column bound from a reference to the `Option` that holds it.
 ///
 /// Most call sites write `.bind(&row.field)` rather than cloning first, so this

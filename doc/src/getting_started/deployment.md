@@ -356,6 +356,12 @@ NFS or across nodes. **Multi-node needs PostgreSQL**: point
 a file, run `acme-proxy migrate` once, and the three roles can then live on
 different hosts. Nothing else about the deployment changes.
 
+An existing SQLite deployment moves across with its accounts, orders and audit
+trail intact — stop the server, create and migrate the target, then
+[`acme-proxy transfer --to <url>`](../operations/cli.md#moving-between-backends).
+Starting the new deployment empty instead would leave every certificate it has
+already issued impossible to revoke, so this is not an optional step.
+
 Run one admin process either way; its login rate limiter is in memory, so two
 would each get their own budget.
 

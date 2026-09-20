@@ -50,6 +50,46 @@ account for a `relay` profile, a self-signed TLS certificate. It is the one
 command that *creates* key material, so a split deployment runs it once, as the
 uid that should own those files, before starting anything.
 
+## Moving between backends
+
+**`acme-proxy transfer --to <url>`** copies every row of the configured
+database into another one. The scheme of each URL picks its backend, so this is
+how a SQLite deployment becomes a PostgreSQL one — and the reverse is the same
+command with the two swapped.
+
+```console
+$ acme-proxy transfer --to postgres://acme@db.internal/acme
+Copy 14203 row(s) from sqlite://acme.db to postgres://acme:***@db.internal/acme?
+The source server must be stopped, or the copy is a torn snapshot.
+Continue? [y/N] y
+  accounts                 412
+  orders                  9881
+  audit_log               3910
+  …
+Copied 14203 row(s) into 15 table(s).
+```
+
+**Stop the server first.** Nothing can check it: a worker that issues a
+certificate while the copy is running writes rows the copy has already walked
+past, and the result looks exactly like a good one. That is the only part of
+this an operator has to get right unaided.
+
+The target must **already exist, be migrated and be empty**. Create the
+database, run `acme-proxy migrate` against it (this command will not — applying
+a schema belongs to `migrate`, `init` and the `worker` role, and nothing else),
+then transfer. A target that already holds rows is refused by name, listing
+them: a transfer is a copy, not a merge, and there is no flag that makes it
+one.
+
+Row ids, certificate serials and audit ids all survive, because all three are
+things something outside the database still refers to — a `kid` a client
+stored, a serial the CRL carries, an id an operator typed. A certificate
+issued before the move is revocable after it.
+
+What does not travel is the schema's own history: each backend keeps its own
+migration set and checksums. And `--json` answers
+`{"tables": [{"table", "rows"}], "total"}`, as every other listing does.
+
 ## Roles
 
 `serve` takes **`--role`**, a comma-separated list of `acme`, `admin` and

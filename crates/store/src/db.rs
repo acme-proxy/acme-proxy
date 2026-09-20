@@ -379,9 +379,15 @@ impl Database {
                 "SELECT COUNT(*) FROM sqlite_master \
                  WHERE type = 'table' AND name = '_sqlx_migrations';"
             }
+            // `to_regclass` resolves through `search_path`, which is what
+            // makes this the *current* schema's table rather than any schema's.
+            // `information_schema.tables` is not scoped, so a second schema in
+            // the same database — a test schema, a staging copy — answered yes
+            // for a database that had never been migrated, and the read that
+            // followed failed with `relation "_sqlx_migrations" does not exist`.
             Database::Postgres(_) => {
-                "SELECT COUNT(*) FROM information_schema.tables \
-                 WHERE table_name = '_sqlx_migrations';"
+                "SELECT CASE WHEN to_regclass('_sqlx_migrations') IS NULL \
+                        THEN 0 ELSE 1 END::bigint;"
             }
         };
         let count: i64 = crate::sql::query(sql)
