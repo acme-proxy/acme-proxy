@@ -351,14 +351,12 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          # Nothing here pushes, so the token has no business sitting in
-          # `.git/config` where any build script could read it.
-          persist-credentials: false
         if: steps.release.outputs.branch != ''
         with:
           ref: ${{ steps.release.outputs.branch }}
           path: release-branch
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
           persist-credentials: false
 
       - name: cargo-deny (${{ steps.release.outputs.branch }})
