@@ -49,6 +49,25 @@ use acme_proxy_store::db::Database;
 use acme_proxy_store::http01_token::Http01Token;
 use acme_proxy_store::nonce::now_secs;
 
+/// What a token store could not do.
+///
+/// A typed error rather than a `String` ([ADR 0010]): the relay retries a
+/// failed publish and the responder answers `500` for a failed lookup, and
+/// both read this rather than a sentence. The operation is named because the
+/// three call sites differ only in that, and the token is not: it is in the
+/// log line the store already wrote, and this text reaches a CA.
+///
+/// [ADR 0010]: https://github.com/acme-proxy/acme-proxy/blob/main/doc/src/dev/adr/0010-error-types.md
+#[derive(Debug, thiserror::Error)]
+pub enum TokenStoreError {
+    #[error("the http-01 token store could not {operation} the token")]
+    Unavailable {
+        operation: &'static str,
+        #[source]
+        source: sqlx::Error,
+    },
+}
+
 /// Holds the key authorizations the responder route serves.
 ///
 /// A trait rather than a concrete type for the same two reasons
@@ -64,7 +83,7 @@ pub trait TokenStore: Send + Sync {
     /// but a multi-perspective CA may still have a fetch in flight for a token
     /// published earlier, so entries never displace one another. An `Err` is a
     /// store that could not be written, which a relay attempt retries.
-    async fn publish(&self, token: &str, key_authorization: &str) -> Result<(), String>;
+    async fn publish(&self, token: &str, key_authorization: &str) -> Result<(), TokenStoreError>;
 
     /// Drops a previously published entry. Idempotent, and logs rather than
     /// returns a failure: by the time anything retracts, the upstream has
@@ -80,7 +99,7 @@ pub trait TokenStore: Send + Sync {
     /// [`SignerInfo::http01_tokens`] — and cannot downcast past it.
     ///
     /// [`SignerInfo::http01_tokens`]: crate::SignerInfo::http01_tokens
-    async fn lookup(&self, token: &str) -> Result<Option<String>, String>;
+    async fn lookup(&self, token: &str) -> Result<Option<String>, TokenStoreError>;
 }
 
 /// How long a published `http-01` token stays servable: the attempt's own poll
@@ -117,7 +136,7 @@ impl DbTokenStore {
 }
 
 /// Logs a store failure where it happened, and renders it for the caller.
-fn store_failure(operation: &'static str, token: &str, error: &sqlx::Error) -> String {
+fn store_failure(operation: &'static str, token: &str, error: sqlx::Error) -> TokenStoreError {
     error!(
         event = "http_01_token_store_failed",
         outcome = "failure",
@@ -125,12 +144,15 @@ fn store_failure(operation: &'static str, token: &str, error: &sqlx::Error) -> S
         token = %token,
         error = %error,
     );
-    format!("the http-01 token store could not {operation} `{token}`: {error}")
+    TokenStoreError::Unavailable {
+        operation,
+        source: error,
+    }
 }
 
 #[async_trait]
 impl TokenStore for DbTokenStore {
-    async fn publish(&self, token: &str, key_authorization: &str) -> Result<(), String> {
+    async fn publish(&self, token: &str, key_authorization: &str) -> Result<(), TokenStoreError> {
         let now = now_secs();
         let ttl = i64::try_from(self.ttl.as_secs()).unwrap_or(i64::MAX);
         Http01Token::publish(
@@ -141,19 +163,19 @@ impl TokenStore for DbTokenStore {
             &self.database,
         )
         .await
-        .map_err(|error| store_failure("publish", token, &error))
+        .map_err(|error| store_failure("publish", token, error))
     }
 
     async fn retract(&self, token: &str) {
         if let Err(error) = Http01Token::retract(token, &self.database).await {
-            store_failure("retract", token, &error);
+            let _ = store_failure("retract", token, error);
         }
     }
 
-    async fn lookup(&self, token: &str) -> Result<Option<String>, String> {
+    async fn lookup(&self, token: &str) -> Result<Option<String>, TokenStoreError> {
         Http01Token::lookup(token, now_secs(), &self.database)
             .await
-            .map_err(|error| store_failure("look up", token, &error))
+            .map_err(|error| store_failure("look up", token, error))
     }
 }
 
@@ -178,7 +200,7 @@ impl PublishedToken {
         store: Arc<dyn TokenStore>,
         token: &str,
         key_authorization: &str,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, TokenStoreError> {
         store.publish(token, key_authorization).await?;
         Ok(Self {
             store,

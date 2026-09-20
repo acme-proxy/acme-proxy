@@ -56,10 +56,15 @@ pub struct AppState {
 /// Deduplicated by pointer: [`signer::build_backends`] already shares one
 /// backend instance between profiles with identical `[signer]` sections, so
 /// several profiles usually contribute the *same* store. Two profiles relaying
-/// to two different upstreams contribute two, and the route consults both —
-/// there is nothing to isolate, because the token is the upstream's own random
-/// value and is itself the secret (RFC 8555 §8.3), so one merged view cannot
-/// answer the wrong challenge.
+/// to two different upstreams contribute two, and the route consults each in
+/// turn until one answers — there is nothing to isolate, because the token is
+/// the upstream's own random value and is itself the secret (RFC 8555 §8.3),
+/// so one merged view cannot answer the wrong challenge.
+///
+/// Every store built from a `[signer]` section reads the one `http01_tokens`
+/// table, so in practice the first answers and the rest are never asked. The
+/// list stays because `Http01TokenStore` is a trait: a provider that is not the
+/// database would be a second place a token can live.
 fn http01_stores(profiles: &[Arc<Profile>]) -> Vec<Arc<dyn signer::Http01TokenStore>> {
     let mut stores: Vec<Arc<dyn signer::Http01TokenStore>> = Vec::new();
     for profile in profiles {

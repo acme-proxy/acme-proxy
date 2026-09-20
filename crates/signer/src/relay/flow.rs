@@ -718,7 +718,7 @@ async fn answer_http01(
         // order, so the attempt is retried rather than failed.
         let published = http01::PublishedToken::publish(tokens.clone(), token, &key_authorization)
             .await
-            .map_err(RelayFailure::Retryable)?;
+            .map_err(|error| RelayFailure::Retryable(error.to_string()))?;
 
         // Returns only once the upstream's authorization is terminal, so every
         // validation fetch — including a multi-perspective CA's several — has
