@@ -34,6 +34,12 @@ before adding a case, and put a new case in the suite whose header claims it.
   and several processes), `reload.rs` (a real `config.toml` and real ports),
   `filters.rs` (the IPAM mocks on loopback, and scripts) and `custom_signer.rs`
   (scripts).
+- **`postgres.rs` runs against both backends** and skips when
+  `TEST_POSTGRES_URL` is unset, so a plain `cargo nextest run` is unaffected.
+  It covers where `crates/store/src/sql.rs` forks and the idioms whose
+  correctness belongs to the engine — a nonce race, a partial unique index, a
+  typed null, `uuid` ordering. A new fork owes it a case. CI sets
+  `ACME_PROXY_REQUIRE_POSTGRES`, which turns every skip into a failure.
 - Two suites read the repository's own source rather than running it:
   `layering.rs` (crate edges, the raw pool, signers on the request path, the
   schema owners) and `logging_convention.rs` (the nine logging rules). Read the

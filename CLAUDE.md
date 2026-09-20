@@ -31,6 +31,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 | Audit trail | `crates/core/src/audit/`, `crates/jobs/src/auditor/` | `operations/audit.md` | [ADR 0005](doc/src/dev/adr/0005-rust-enums-own-the-vocabularies.md) |
 | Metrics | `crates/jobs/src/metrics.rs` | `operations/monitoring.md`, `operations/grafana.md` | [ADR 0011](doc/src/dev/adr/0011-metrics-on-prometheus-client.md) |
 | Reload on `SIGHUP` | `crates/server/src/reload.rs` | `operations/reload.md` | [ADR 0008](doc/src/dev/adr/0008-shared-state-in-the-database.md) |
+| The SQLite/PostgreSQL seam | `crates/store/src/sql.rs` | `dev/database.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
 | Role processes | `crates/server/src/roles.rs` | `getting_started/deployment.md` | [ADR 0007](doc/src/dev/adr/0007-role-processes.md) |
 | Web admin (`/ui`, `/api`) | `crates/admin/src/webadmin/` | `operations/webadmin.md`, `operations/webadmin_users.md` | `webadmin/session.rs` `//!` |
 | Admin CLI | `src/cli/`, `crates/admin/src/admin/` | `operations/cli.md` | — |
@@ -77,6 +78,7 @@ The same binary carries every admin subcommand (`account`, `order`, `jobs`, `aud
 - **test** — `fmt --check`, `clippy -D warnings`, `llvm-cov nextest --fail-under-lines 97` (`main.rs` excluded), `cargo test --doc`, and `cargo doc` with `-D warnings -A rustdoc::private_intra_doc_links`.
 - **msrv** — `cargo check --locked` on the `rust-version` from `Cargo.toml`.
 - **hsm** — clippy and the suite with `--features acme-proxy-signer/hsm` against SoftHSM2.
+- **postgres** — `tests/postgres.rs`, `roles` and `reload` against a real server, with `ACME_PROXY_REQUIRE_POSTGRES=1` so a skip is a failure. Separate from **test** for `hsm`'s reason: the coverage floor is a ratchet over one configuration.
 - **supply-chain** — `cargo deny check`, with `all-features = true`.
 - **sbom** — regenerates `sbom.cdx.json` and fails on drift; regenerate it when `Cargo.lock` changes and when cutting a release.
 - **docs** — `mdbook build doc/` and `python3 doc/lint.py`.
@@ -91,12 +93,14 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 
 [ADR 0003](doc/src/dev/adr/0003-migrations-frozen-and-explicit.md) has the reasoning; `doc/src/dev/database.md` the schema.
 
-- **`crates/store/migrations/` is append-only.** Never edit a committed file, not even a comment — `sqlx` checksums each one and an edit fails every existing deployment at startup. A schema change is `sqlx migrate add <name>`.
+- **Two backends, chosen by `database.url`'s scheme** ([ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md)). The SQL is written **once**, in `crates/store/src/sql.rs` — the only module that names either driver. Statements keep `?` and the seam rewrites to `$1…$n` for PostgreSQL. Three things fork and each asks `Dialect`: the identifier search, the unique-violation matchers and the `_sqlx_migrations` probe. Nothing else may.
+- **Both migration directories are append-only** — `crates/store/migrations/` (SQLite) and `crates/store/migrations-postgres/`. Never edit a committed file, not even a comment — `sqlx` checksums each one and an edit fails every existing deployment at startup. A schema change is `sqlx migrate add <name>` in **each** set.
 - A new column is a new `ADD COLUMN` file. A new or dropped `CHECK`/`UNIQUE`/foreign key, or a wrong declared width, is a **table rebuild** in a new file — which must re-create the table's indexes, name every column, and park child rows before any `DROP` (the cascade hazard).
 - **Only `migrate`, `init` and a `worker`-role `serve` apply migrations**; everything else refuses a schema that is behind (`tests/layering.rs`).
 - **The pool is private to `crates/store/`.** Use a table module, `Database::transaction()` or `pool_stats()`; `raw_pool()` is for test fixtures only.
 - Runtime `sqlx::query(...)`, not `query!`, so no `DATABASE_URL` is needed to build.
-- Ids are UUID v7 BLOBs; an id parameter typed `&str` came from outside and parses, a `Uuid` came from a row ([ADR 0004](doc/src/dev/adr/0004-uuid-v7-blob-ids.md)).
+- Ids are UUID v7 — BLOBs on SQLite, native `uuid` on PostgreSQL, one Rust type for both. An id parameter typed `&str` came from outside and parses, a `Uuid` came from a row ([ADR 0004](doc/src/dev/adr/0004-uuid-v7-blob-ids.md)).
+- **A bound `None` carries its column's type** (`Value::Null(NullKind)`): PostgreSQL types every parameter and rejects a `bigint` null against a `uuid` column.
 - An open vocabulary (audit events, roles, job kinds) is a Rust enum with no SQL `CHECK` ([ADR 0005](doc/src/dev/adr/0005-rust-enums-own-the-vocabularies.md)).
 
 ## Configuration
@@ -112,6 +116,7 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 - **`cargo nextest run --workspace` is required, not preferred.** Tests that exec a script they just wrote fail `ETXTBSY` intermittently under the threads of `cargo test`.
 - **A test calling `Config::load()` holds `acme_proxy_core::config::ENV_LOCK`** (or `testutil::EnvGuard`).
 - Tests use an in-memory SQLite and an in-memory CA; nothing reaches a real network. The harness and its rules are in `tests/CLAUDE.md`.
+- **`tests/postgres.rs` runs the dialect-sensitive paths against both backends** and skips when `TEST_POSTGRES_URL` is unset. A new fork in `sql.rs` owes it a case.
 
 ## Conventions
 

@@ -30,7 +30,11 @@ upgrade step. Once the server could run as several processes ([ADR
 ## Decision
 
 **Append-only.** Every file in `crates/store/migrations/` is frozen, comments
-included. A schema change is a new file (`sqlx migrate add <name>`):
+included — and, since [ADR 0014](0014-postgresql-beside-sqlite.md), so is every
+file in `crates/store/migrations-postgres/`. A schema change is a new file in
+**each** set (`sqlx migrate add <name>`). The rules below describe SQLite's
+constraints; PostgreSQL needs no rebuild for a `CHECK` or a width, so its file
+is usually the one-line `ALTER TABLE` the change actually is:
 
 - A new column is a new `ALTER TABLE … ADD COLUMN` file, even when it plainly
   belongs to an existing table.
@@ -56,13 +60,17 @@ at `acme-proxy migrate`. A default single-process `serve` includes the worker
 role, so it still migrates a fresh database on its own.
 
 **The pool is private to `crates/store/`.** Everything else goes through a table
-module, `Database::transaction()` (a `Tx` that derefs to the connection) or
-`Database::pool_stats()`. `Database::raw_pool()` exists for test fixtures only.
-The connection pins two pragmas:
+module, `Database::transaction()` (a `Tx` whose `conn()` hands out the
+connection) or `Database::pool_stats()`. `Database::raw_pool()` exists for test
+fixtures only. On SQLite the connection pins two pragmas:
 
 - `foreign_keys(true)`, because the schema's `ON DELETE CASCADE` depends on it;
 - `journal_mode = WAL`, because every ACME response writes a nonce row, and the
   default rollback journal takes a database-wide exclusive lock on each write.
+
+PostgreSQL needs neither — foreign keys are always enforced and there is no
+journal mode to choose — so its pool pins a connection limit instead, which is
+the resource several role processes there actually share.
 
 **Runtime queries.** Queries use `sqlx::query(...)`, not the compile-time
 `query!` macros, so building needs no `DATABASE_URL`.
@@ -77,9 +85,13 @@ The connection pins two pragmas:
   `acme_proxy`. Treat grep results in `crates/store/migrations/` as read-only.
 - `sqlx::migrate!()` embeds the migration set at compile time. Adding a file
   does not invalidate the build on its own; touch `crates/store/src/db.rs`.
-- SQL, and the dialect it is written in, lives in one crate. That is what keeps
-  a second backend a contained change — the PostgreSQL one is
-  [issue #4](https://github.com/acme-proxy/acme-proxy/issues/4).
+- SQL, and the dialect it is written in, lives in one crate. That is what kept
+  a second backend a contained change when PostgreSQL arrived in
+  [ADR 0014](0014-postgresql-beside-sqlite.md).
+- PostgreSQL gives `sqlx` an advisory migration lock where SQLite gives it
+  none, so the race above cannot happen there. The one-owner rule still holds on
+  both: it is about which *process* may own the schema, which is a deployment
+  property, not only about the race that exposed it.
 
 ## Enforced by
 

@@ -182,6 +182,26 @@ migrated configuration before restarting.
 
 ### Added
 
+- **PostgreSQL, beside SQLite.** `database.url`'s scheme picks the backend:
+  `sqlite://` for a file, `postgres://`/`postgresql://` for a server that
+  already exists and has had `acme-proxy migrate` run against it once. Any
+  other scheme is refused by name at startup. This is what a **multi-node**
+  deployment needs — SQLite across processes is safe on one local disk and not
+  across hosts, so the three roles ([ADR 0007]) could only ever be three
+  processes on one filesystem. Nothing else changes: the same binary, the same
+  container image, the same configuration and the same ACME behaviour. There is
+  no migration path for existing *data*; a database is one backend or the
+  other.
+
+  The SQL is written once. `crates/store/src/sql.rs` is the only module that
+  names either driver, statements keep their `?` markers and are renumbered to
+  `$1…$n` on the way to PostgreSQL, and exactly three things fork: the
+  identifier search, the unique-violation matchers and the migration probe.
+  The reasoning, and what it rules out, is [ADR 0014].
+
+  [ADR 0007]: doc/src/dev/adr/0007-role-processes.md
+  [ADR 0014]: doc/src/dev/adr/0014-postgresql-beside-sqlite.md
+
 - **`challenge.max_in_flight_per_account`** (default `32`, `0` for no limit)
   caps how many of one account's challenges may be validating at once. A
   validation is queued work that reaches out to an address the client named,
@@ -266,6 +286,12 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **The database URL is redacted wherever it is printed.** The startup log line
+  and the `SIGHUP` refusal both render it as `postgres://acme:***@host/db`. It
+  was printed whole, which was harmless while the value was a SQLite path and
+  would have put the database password in an operator's log the first time they
+  pointed it at PostgreSQL. The scheme, the user and the host survive, because a
+  message that hid *which* database it meant would not be actionable.
 - **A `newAccount` that found an existing key logs `account_found`**, not
   `account_created` with `created = false`. Counting registrations no longer
   means filtering a field out of the count.

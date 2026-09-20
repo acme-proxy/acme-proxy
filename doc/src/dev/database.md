@@ -1,15 +1,31 @@
 # Database Schema
 
-`acme-proxy` stores everything in one SQLite file — accounts, orders, the audit
+`acme-proxy` stores everything in one database — accounts, orders, the audit
 trail and the web admin's own operators. There is no second datastore and no
 cache. This page describes what is in it and why, for anyone reading the
 database directly, writing a migration, or trying to understand what a delete
 cascades to.
 
-The migration set is **frozen and append-only as of 0.1.0**: a schema change is
-a new `sqlx migrate add` file, never an edit to a committed one. It is also the
-only surface frozen before 1.0.0 — the freeze says nothing about configuration
-keys, which may still be renamed. See
+**Two backends, one schema.** SQLite is the default and PostgreSQL is what a
+multi-node deployment needs; the scheme of
+[`database.url`](../configuration/reference.md#database) picks between
+them. Everything below describes both — the tables, the
+constraints, the cascades and the reasoning are the same either way. Where the
+two differ it is noted inline, and the differences are three: the column types
+(`BLOB`/`uuid`, `INTEGER`/`bigint`), the `AUTOINCREMENT` spelling, and the
+recipes for reading it by hand at the bottom of this page. The SQL the server
+issues is written once; `crates/store/src/sql.rs` is the seam and its `//!`
+says what had to fork.
+
+**There are two migration sets**, one per dialect, and both are **frozen and
+append-only** — SQLite's as of 0.1.0, PostgreSQL's from its first release. A
+schema change is a new `sqlx migrate add` file in *each*, never an edit to a
+committed one. The PostgreSQL set is deliberately not a transcription of the
+SQLite one: those files carry table rebuilds that exist only because SQLite
+cannot add a `CHECK`, a `UNIQUE` or a foreign key to an existing table, and no
+PostgreSQL deployment has that history to replay. The schema is also the only
+surface frozen before 1.0.0 — the freeze says nothing about configuration keys,
+which may still be renamed. See
 [Contributing](contributing.md#changing-the-database-schema) for the two
 consequences that catch people out.
 
@@ -367,11 +383,14 @@ share a prefix, and they sort by creation; why that matters, and the rule that
 an id's Rust type says where it came from, are in
 [ADR 0004](adr/0004-uuid-v7-blob-ids.md).
 
-The column holds the **sixteen bytes**, not the thirty-six characters of the
-rendering. Nothing on the wire changes for it — an id is still rendered by
-`Uuid::to_string`, so account URLs, `kid`s, order URLs and every admin API
-member are the same lower-case hyphenated form they always were. What changes is
-an ad-hoc query: an id column now prints as a blob and wants `hex()`.
+On SQLite the column holds the **sixteen bytes**, not the thirty-six characters
+of the rendering; on PostgreSQL it is a native `uuid`, and `sqlx` maps the same
+Rust type to both. Nothing on the wire changes either way — an id is still
+rendered by `Uuid::to_string`, so account URLs, `kid`s, order URLs and every
+admin API member are the same lower-case hyphenated form they always were.
+
+What changes is an ad-hoc query, and only on SQLite, where an id column prints
+as a blob and wants `hex()`:
 
 ```bash
 # Readable ids.
@@ -380,6 +399,13 @@ sqlite3 sqlite.db "SELECT lower(hex(id)), profile, status FROM accounts;"
 # Looking one up by the id from a URL or a log line.
 sqlite3 sqlite.db "SELECT status FROM orders
                     WHERE id = unhex(replace('6ba7b810-9dad-41d1-80b4-00c04fd430c8','-',''));"
+```
+
+PostgreSQL needs neither, since it prints and parses the hyphenated form:
+
+```bash
+psql -c "SELECT id, profile, status FROM accounts;"
+psql -c "SELECT status FROM orders WHERE id = '6ba7b810-9dad-41d1-80b4-00c04fd430c8';"
 ```
 
 A few columns look like ids and are not, so they stay text: `orders.replaces` is
@@ -392,14 +418,22 @@ ids, so a table holds both versions and only the v7s sort by creation.
 
 ## Reading it directly
 
-The file is `sqlite.db` by default and is opened in **WAL mode**, so there are
-normally `sqlite.db-wal` and `sqlite.db-shm` beside it. Copying only `sqlite.db`
-gives you a database missing every recent write; back up all three, or use
-`sqlite3 sqlite.db ".backup backup.db"`, which is consistent by construction.
+**On SQLite**, the file is `sqlite.db` by default and is opened in **WAL mode**,
+so there are normally `sqlite.db-wal` and `sqlite.db-shm` beside it. Copying
+only `sqlite.db` gives you a database missing every recent write; back up all
+three, or use `sqlite3 sqlite.db ".backup backup.db"`, which is consistent by
+construction. **On PostgreSQL**, back it up the way you back up any other
+database — `pg_dump` is consistent by construction and there are no sidecar
+files to miss.
 
-Ids are stored as bytes, so they need `hex()` on the way out and `unhex()` on
-the way in — see
+Ids are stored as bytes on SQLite, so they need `hex()` on the way out and
+`unhex()` on the way in; on PostgreSQL they are a native `uuid` and need
+neither. See
 [Ids are UUID v7, stored as bytes](#ids-are-uuid-v7-stored-as-bytes).
+
+The recipes below are SQLite's. On PostgreSQL the ids need no wrapping and the
+epoch-second columns read with `to_timestamp(created_at)` in place of
+`datetime(created_at,'unixepoch')`.
 
 ```bash
 # What has this account been issued?
@@ -418,7 +452,8 @@ sqlite3 sqlite.db "SELECT datetime(created_at,'unixepoch'), event, profile, clie
 sqlite3 sqlite.db "SELECT version, description, success FROM _sqlx_migrations;"
 ```
 
-Read-only inspection of a running server is safe under WAL. Writing to the
-database behind the server's back is not — the `CHECK` constraints will catch a
-bad status, but nothing will re-sync the in-memory state a handler is holding.
+Read-only inspection of a running server is safe under WAL, and on PostgreSQL
+by its own MVCC. Writing to the database behind the server's back is not — the
+`CHECK` constraints will catch a bad status, but nothing will re-sync the
+in-memory state a handler is holding.
 Use the [Admin CLI](../operations/cli.md) instead.

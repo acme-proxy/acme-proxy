@@ -42,7 +42,7 @@ endpoints it mounts.
 
 | Section | Controls | Overridable | Documented |
 | --- | --- | --- | --- |
-| `[database]` | The SQLite file | no | [below](#database) |
+| `[database]` | The SQLite file or PostgreSQL server | no | [below](#database) |
 | `[server]` | Listen socket, public URL, admission control | no | [below](#server) |
 | `[server.tls]` | HTTPS on the ACME listener | no | [below](#servertls) |
 | `[admin]` | The web admin listener and its sessions | no | [below](#admin) |
@@ -79,8 +79,29 @@ header, with every key in context.
 
 **`url`** (`String`) — *Default: `"sqlite://sqlite.db"` | Env: `ACME_PROXY_DATABASE__URL`*
 
-Database connection URL. Controls the SQLite persistence layer for accounts,
-orders, and certificates.
+Database connection URL, for accounts, orders, certificates and everything
+else this server keeps. **The scheme picks the backend**, and any other scheme
+is refused by name at startup:
+
+- `sqlite://<path>` — a file, created on first use. The default, and what a
+  single-host deployment wants. `sqlite:///var/lib/acme-proxy/acme.db` is an
+  absolute path (three slashes).
+- `postgres://` or `postgresql://` — a server, which must already exist:
+  creating a database is an operator's act, not something a server does to a
+  cluster it was pointed at. Run `acme-proxy migrate` once against it.
+
+PostgreSQL is what a **multi-node** deployment needs. SQLite across processes
+is fine on one local disk, and not safe on NFS or across hosts — see
+[Deployment](../getting_started/deployment.md). Nothing else changes with the
+backend: the same binary, the same configuration and the same ACME behaviour.
+
+A PostgreSQL URL usually carries `user:password@`. The password is **never
+logged**: the startup line and the `SIGHUP` refusal both print it as
+`postgres://acme:***@host/db`. It is still a credential in a configuration
+file, so give that file the permissions it deserves.
+
+This key cannot be changed by a reload — see
+[Reload](../operations/reload.md).
 
 ---
 

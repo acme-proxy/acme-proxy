@@ -84,6 +84,7 @@
   - [ADR 0011: Metrics are built on `prometheus-client`, one registry per scrape](dev/adr/0011-metrics-on-prometheus-client.md)
   - [ADR 0012: Images are built natively per architecture, uncached, and published only past a guard](dev/adr/0012-container-images-are-built-natively-per-architecture.md)
   - [ADR 0013: `main` is the trunk, and a patch line is a release branch cut when a fix needs one](dev/adr/0013-trunk-and-release-branches.md)
+  - [ADR 0014: PostgreSQL is chosen by the URL's scheme, over one set of queries](dev/adr/0014-postgresql-beside-sqlite.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)

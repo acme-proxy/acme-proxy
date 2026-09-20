@@ -4,7 +4,10 @@
 
 Accepted. The metrics clause is superseded by
 [ADR 0011](0011-metrics-on-prometheus-client.md): latency histograms were the
-case where a metrics library would earn its place, and they arrived.
+case where a metrics library would earn its place, and they arrived. The crypto
+clause is narrowed by [ADR 0014](0014-postgresql-beside-sqlite.md): it governs
+the crypto this project *calls*, not what a driver carries for a wire protocol
+of its own.
 
 ## Context
 
@@ -26,10 +29,19 @@ Two kinds of cost are easy to miss when choosing a dependency:
 
 ## Decision
 
-- **`ring` is the only crypto backend.** `rcgen`, `rustls`, `tokio-rustls`,
-  `hickory-proto`'s TSIG signing and `lettre`'s SMTP TLS are all built on it.
-  There is no `aws-lc-rs`, no `native-tls` and no OpenSSL. `subtle` supplies the
-  one constant-time comparison `ring` no longer offers.
+- **`ring` is the only crypto backend this project calls.** `rcgen`, `rustls`,
+  `tokio-rustls`, `hickory-proto`'s TSIG signing and `lettre`'s SMTP TLS are all
+  built on it, as is the PostgreSQL driver's TLS (`tls-rustls-ring`). There is
+  no `aws-lc-rs`, no `native-tls` and no OpenSSL. `subtle` supplies the one
+  constant-time comparison `ring` no longer offers.
+
+  **A driver may carry its own for a wire protocol of its own.** `sqlx-postgres`
+  brings RustCrypto (`sha2`, `hmac`, `md-5`, `stringprep`) because PostgreSQL
+  authenticates with SCRAM-SHA-256, and no configuration of the driver avoids
+  it. The narrowing is deliberate and bounded: that code is reachable only from
+  the driver's own handshake, never from anything here, and the alternative was
+  to have no second backend at all. A dependency that wanted a second stack for
+  work *this* project does — signing, hashing, comparing — is still refused.
 - **No global installs.** The rustls provider is passed to every config builder
   explicitly and never installed as the process default. The metrics registry is
   a value held by the assembly, never a global recorder.

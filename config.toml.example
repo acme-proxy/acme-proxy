@@ -27,7 +27,7 @@
 # appear inside a [profiles.<name>] block, where they override the value set
 # here; everything else is process-wide, one setting for the whole server.
 #
-#   [database]                          the SQLite file
+#   [database]                          the SQLite file or PostgreSQL server
 #   [server]                            listen socket, public URL, admission
 #   [server.tls]                        HTTPS on the ACME listener
 #   [admin]                             the web admin listener and its sessions
@@ -79,6 +79,10 @@
 
 [database]
 # Database connection URL. This database persists ACME orders and nonces.
+# The scheme picks the backend: `sqlite://<path>` for a file (created on first
+# use), or `postgres://user:pass@host/db` for a server, which must already
+# exist and needs `acme-proxy migrate` run against it once. PostgreSQL is what
+# a multi-node deployment needs; SQLite is not safe across hosts.
 url = "sqlite://sqlite.db"          # ACME_PROXY_DATABASE__URL
 
 [server]

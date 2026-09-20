@@ -349,11 +349,15 @@ ExecStart=/usr/local/bin/acme-proxy serve --role admin
 Environment=ACME_PROXY_METRICS__BIND_ADDRESS=127.0.0.1:3022
 ```
 
-**One host, one filesystem.** SQLite across processes is fine on a local disk in
-WAL mode, and `busy_timeout` is already set — it is *not* safe on NFS or across
-nodes. Multi-node needs PostgreSQL, which is not implemented yet. Run one admin
-process; its login rate limiter is in memory, so two would each get their own
-budget.
+**One host, one filesystem — on SQLite.** SQLite across processes is fine on a
+local disk in WAL mode, and `busy_timeout` is already set — it is *not* safe on
+NFS or across nodes. **Multi-node needs PostgreSQL**: point
+[`database.url`](../configuration/reference.md#database) at a server instead of
+a file, run `acme-proxy migrate` once, and the three roles can then live on
+different hosts. Nothing else about the deployment changes.
+
+Run one admin process either way; its login rate limiter is in memory, so two
+would each get their own budget.
 
 Each process reloads independently on `SIGHUP`, so a configuration change means
 reloading all three.

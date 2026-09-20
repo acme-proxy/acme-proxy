@@ -17,7 +17,9 @@ The result is a single binary carrying both the server and the
 - **Cargo**: the Rust package manager.
 
 SQLite is *not* a prerequisite: the driver is bundled with `sqlx`, the database
-file is created automatically, and `DATABASE_URL` is not needed to compile. A
+file is created automatically, and `DATABASE_URL` is not needed to compile.
+The PostgreSQL driver is bundled the same way, so the same binary speaks both —
+what it does need is a server and a database that already exist. A
 `sqlite3` binary is only useful if you want to inspect the database by hand.
 
 You can install Rust via [rustup](https://rustup.rs/):

@@ -20,11 +20,12 @@ status. Do not rewrite its argument after the fact.
 | [0006](0006-no-slow-or-privileged-work-in-a-request.md) | A request does no slow or privileged work; it queues it | Accepted |
 | [0007](0007-role-processes.md) | One binary runs as role processes, and only the worker holds the CA key | Accepted |
 | [0008](0008-shared-state-in-the-database.md) | State that more than one process can see lives in the database | Accepted. One exception stands, the web admin's login limiter, for as long as |
-| [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted; metrics clause superseded by [0011](0011-metrics-on-prometheus-client.md) |
+| [0009](0009-dependency-policy.md) | Dependencies are pure Rust on `ring`, add no global state, and earn their place | Accepted; metrics clause superseded by [0011](0011-metrics-on-prometheus-client.md), crypto clause narrowed by [0014](0014-postgresql-beside-sqlite.md) |
 | [0010](0010-error-types.md) | Errors derive `thiserror`, carry their whole message, and panic only at startup | Accepted. This was re-argued more than once before it was written down, which |
 | [0011](0011-metrics-on-prometheus-client.md) | Metrics are built on `prometheus-client`, one registry per scrape | Accepted |
 | [0012](0012-container-images-are-built-natively-per-architecture.md) | Images are built natively per architecture, uncached, and published only past a guard | Accepted |
 | [0013](0013-trunk-and-release-branches.md) | `main` is the trunk, and a patch line is a release branch cut when a fix needs one | Accepted |
+| [0014](0014-postgresql-beside-sqlite.md) | PostgreSQL is chosen by the URL's scheme, over one set of queries | Accepted |
 
 ### Decisions argued elsewhere
 
