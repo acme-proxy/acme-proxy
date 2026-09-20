@@ -96,10 +96,11 @@ struct PollConfig {
 
 /// The shared guts, behind one `Arc`.
 ///
-/// `SignerBackend::issue` takes `&self`, but the background task it spawns must
-/// be `'static` and so cannot borrow from it. One `Arc` cloned into the task is
-/// the cheapest way to bridge that; cloning five fields individually would say
-/// the same thing five times.
+/// `SignerBackend::issue` takes `&self`, but the relay job that carries the
+/// order the rest of the way runs with no borrow of it — in another process,
+/// after a restart, or in the next generation of this one. One `Arc` is what
+/// the job's state holds; cloning five fields individually would say the same
+/// thing five times.
 struct Inner {
     /// Shared with [`Inner::info`], so the read side answers from the directory
     /// this backend already discovered rather than fetching its own.
@@ -129,7 +130,7 @@ struct Inner {
     notifiers: acme_proxy_jobs::notify::Notifiers,
     /// Where this backend's settle-time audit rows go, counted into the
     /// process's Prometheus registry. Needed for the same reason `notifiers`
-    /// is: an issuance is recorded from a background task long after the
+    /// is: an issuance is recorded by the relay job, long after the
     /// `signer_issue` job answered `Processing` and moved on, with no
     /// `Auditor` of its in scope. An offline one — no resolver, since the address
     /// was resolved during the finalize request and parked on
@@ -159,16 +160,11 @@ pub struct RelaySigner(Arc<Inner>);
 /// Opaque on purpose: the handler lives in [`flow`] and reaches `Inner`
 /// directly, so nothing outside this module needs a single accessor. It exists
 /// only so [`crate::SignerBackend::relay_state`] has a type to name —
-/// the `crl_pruner` shape, with a concrete type instead of a trait object
+/// the `crl_refresher` shape, with a concrete type instead of a trait object
 /// because the one consumer is this backend's own handler rather than a third
 /// party that must be kept ignorant of what a [`RelaySigner`] is.
 pub struct RelayState(Arc<Inner>);
 
-/// The `Location` sidecar next to the account key: `foo.key` → `foo.kid`.
-///
-/// Same convention as `local_ca`'s ledger sidecar next to its CRL. Holding the
-/// `kid` locally is what keeps startup from depending on the upstream after the
-/// first successful registration.
 impl RelaySigner {
     /// Queues the job that carries `order_id` the rest of the way, and answers
     /// `Processing`.
@@ -418,7 +414,7 @@ impl SignerBackend for RelaySigner {
 
     /// This backend, as the shared [`flow::RelayJob`] sees it.
     ///
-    /// State rather than a handler, for the reason `crl_pruner` is: the
+    /// State rather than a handler, for the reason `crl_refresher` is: the
     /// registry refuses two handlers for one `kind`, and two relay profiles
     /// pointed at different upstreams are two backends.
     fn relay_state(&self) -> Option<RelayState> {

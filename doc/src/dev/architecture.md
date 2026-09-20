@@ -209,7 +209,7 @@ sequenceDiagram
     Axum Router-->>Client: 200 OK (Certificate URL)
 ```
 
-Three transactional properties hold this together:
+Four properties hold this together. Three are transactional:
 
 - Order creation inserts the order, its authorizations and their challenges in
   **one transaction**. A half-written order would be finalizable for names that
@@ -218,15 +218,19 @@ Three transactional properties hold this together:
   **together**, and the "is every authorization valid?" read happens *inside*
   that transaction. From the pool, two concurrent validations of one order could
   each read before the other's write landed, and neither would promote the order
-  to `ready`.
-- Challenge validation returns **`200` plus the challenge object whether it
-  passed or failed** (§7.5.1). A 4xx would surface as a transport failure to
-  certbot's `acme` library rather than as a failed challenge.
+  to `ready`. Every one of those writes is also **guarded on the state it
+  leaves**, since the verdict is computed by a job long after the request that
+  claimed the challenge read those rows.
 - `finalize` claims the order (`ready → processing`) and queues its
   `signer_issue` job in **one transaction**, so no crash can leave an order
   `processing` with nothing coming to settle it. The job runs in the `worker`
   role — the only one that builds a signing backend — which is what keeps the
   CA key out of the process parsing client requests.
+
+The fourth is about the answer rather than the write: challenge validation
+returns **`200` plus the challenge object whether it passed or failed**
+(§7.5.1). A 4xx would surface as a transport failure to certbot's `acme`
+library rather than as a failed challenge.
 
 
 ## Pluggable signing keys

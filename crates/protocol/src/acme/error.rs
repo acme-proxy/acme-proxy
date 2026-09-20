@@ -13,11 +13,10 @@ use acme_proxy_core::error::Problem;
 /// edge. Rebuilding every ACME error type here as a variant would be a second
 /// definition of each, free to drift from the first.
 ///
-/// The other variants exist because some caller **branches** on them rather than
-/// rendering them: an operator front end has its own answer for an order that is
-/// not found or not issued, and the HTTP edge needs data a problem document
-/// cannot carry (the `Location` of a conflicting account). Each one still maps to
-/// the problem an ACME client would have seen, through `From<Error> for Problem`.
+/// The other two variants exist because the HTTP edge needs data a problem
+/// document cannot carry: the `Link` to the terms of service, and the
+/// `Location` of the account already holding a key. Each still maps to the
+/// problem an ACME client would have seen, through `From<Error> for Problem`.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A refusal the client reads as it is.

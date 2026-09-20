@@ -119,7 +119,7 @@ RUN apt-get update \
 COPY --from=builder /app/acme-proxy /usr/local/bin/acme-proxy
 # Run as a non-root account that owns only its data directory (ASVS V13.2.2).
 # Everything the server writes — sqlite.db and its WAL siblings, the CA key
-# material, the CRL and its JSON ledger, a generated TLS cert, a mounted
+# material, the exported CRL, a generated TLS cert, a mounted
 # config.toml — lands in WORKDIR, so that is the one path this user needs. The
 # uid/gid is fixed at 1000 (unused in debian:trixie-slim) so a bind-mounted host
 # directory can be chowned to a predictable owner — see

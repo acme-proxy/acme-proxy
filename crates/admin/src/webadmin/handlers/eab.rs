@@ -62,8 +62,9 @@ impl DeleteEabParams {
 ///
 /// Takes `Query<PageParams>` directly rather than declaring the window inline:
 /// the `#[serde(flatten)]` trap documented on `AccountListParams` needs a
-/// filter to flatten *around*, and this listing has none. `oldest first` here,
-/// where the other lists are newest first — see [`Eab::search`].
+/// filter to flatten *around*, and this listing has none. Newest first, like
+/// every other listing — see [`Eab::search`] for why its tiebreak runs the
+/// same way as its primary key rather than against it.
 pub async fn list_eab(
     State(state): State<AdminState>,
     Query(params): Query<PageParams>,

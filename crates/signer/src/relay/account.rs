@@ -17,6 +17,10 @@ use acme_proxy_core::config::RelayConfig;
 use super::client::{AccountKey, AcmeClient, Signer, UpstreamError};
 use super::eab;
 
+/// The `Location` sidecar next to the account key: `foo.key` → `foo.kid`.
+///
+/// Holding the `kid` locally is what keeps startup from depending on the
+/// upstream after the first successful registration.
 pub(super) fn kid_path(account_key_path: &str) -> PathBuf {
     Path::new(account_key_path).with_extension("kid")
 }

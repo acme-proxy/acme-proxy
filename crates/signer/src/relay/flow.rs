@@ -119,7 +119,7 @@ pub(super) fn classify(error: &UpstreamError) -> RelayFailure {
 /// Encrypt endpoint beside a commercial CA is two backends. Returning a handler
 /// from each would therefore make that supported configuration a startup error,
 /// which is exactly what `SignerBackend::relay_state` handing over *state*
-/// avoids, the way `crl_pruner` already does for two local CAs.
+/// avoids, the way `crl_refresher` already does for two local CAs.
 ///
 /// Which backend answers for a row is decided per row, from the profile the
 /// payload names — the `notify_deliver` idiom. Everything else is still re-read

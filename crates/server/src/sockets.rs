@@ -41,8 +41,8 @@ pub(super) async fn bind_admin(config: &Arc<Config>) -> anyhow::Result<Option<Tc
 /// Refuses a `[metrics]` bind address that collides with another listener's.
 ///
 /// Pure, so a reload runs the same check before rebinding anything — the twin of
-/// [`acme_proxy_admin::webadmin::check_config`], and beside it in `apply_reload` for the
-/// same reason: a listener configuration that would not start must not be one a
+/// [`acme_proxy_admin::webadmin::check_config`], and beside it in
+/// [`prepare_reload`](crate::generation::prepare_reload) for the same reason: a listener configuration that would not start must not be one a
 /// running server can be reloaded into.
 ///
 /// Three listeners, so the check is pairwise. `webadmin` already refuses

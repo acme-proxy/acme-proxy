@@ -1,3 +1,21 @@
+//! The operator operation layer: what an operator may do to a stored row,
+//! independent of which front end asked.
+//!
+//! The counterpart of `acme_proxy_protocol::acme` for the operator surfaces.
+//! `/api`, `/ui` and the host CLI all reach these functions, so a listing
+//! filters the same way, a delete refuses the same way, and a revocation takes
+//! the same route whichever one was used. What stays with each front end is its
+//! rendering and its authorization.
+//!
+//! Two rules hold throughout:
+//!
+//! - **A delete that would remove the only record of a live certificate is
+//!   refused**, on every surface, with no override —
+//!   [`live_certificates_refusal`] is the one wording of it.
+//! - **Nothing here builds a signing backend.** A revocation is a route
+//!   (`acme_proxy_signer::revocation_route`) and, where the key is elsewhere, a
+//!   queued job — the same path `POST /revokeCert` takes.
+
 use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;
@@ -895,9 +913,10 @@ pub async fn confirm_cancel_job(
 /// attempt (`attempts` set to `max_attempts - 1`). Refused on
 /// `running`/`done`/`cancelled`.
 ///
-/// The runner picks the change up within `jobs.poll_interval_ms` — this does
-/// not wake it (the CLI has no runner; the web admin's `AdminState` holds no
-/// `JobQueue`).
+/// The runner picks the change up within `jobs.poll_interval_ms`: this writes
+/// the row and does not wake anything. Nudging the queue would be the panel's
+/// `JobQueue` to do, and this layer is below it — the CLI, which has no runner
+/// at all, calls the same function.
 ///
 /// Takes `actor`/`client` and writes its own `job_advanced` audit row, the
 /// shape [`cancel_job`] and [`revoke_order`] already keep. It did not, and the

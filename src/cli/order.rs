@@ -1,3 +1,12 @@
+//! `acme-proxy order` — list, show, revoke and clean up orders.
+//!
+//! Every listing here is paged and answers the admin API's envelope under
+//! `--json`; the query behind it is `Order::search`, the one listing filter.
+//! Revocation goes through `acme_proxy_admin::admin`, which routes it the way
+//! the server would: a local CA's revocation is a ledger row and a queued
+//! signing, a relay's or a script's is a `signer_revoke` job. **This process
+//! never loads a signing key** — `tests/layering.rs` pins that.
+
 use std::io::BufRead;
 use std::sync::Arc;
 use uuid::Uuid;

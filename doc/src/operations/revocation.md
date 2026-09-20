@@ -11,12 +11,18 @@ the certificate and an optional `reason` code.
 
 ### Two ways to authorize it
 
-RFC 8555 allows either, and `acme-proxy` accepts both:
+RFC 8555 §7.6 names three, and `acme-proxy` accepts two:
 
 1. **The order's account**, signing with its `kid` as usual.
 2. **The certificate's own key pair**, signing with an embedded `jwk` and *no
    account at all*. This is the RFC's accountless case, and it is what lets the
    holder of a compromised key revoke it even if the ACME account is gone.
+
+The third — an account holding valid authorizations for **every** identifier
+in the certificate, without being the one that ordered it — is **not**
+supported. It would let one account revoke another's certificate on the
+strength of authorizations obtained later, and an operator who needs that has
+`acme-proxy order revoke` and the panel, which are attributable.
 
 Because of the second form, this endpoint resolves authorization itself rather
 than going through the usual account lookup, and it is deliberately **not**
@@ -141,7 +147,9 @@ With the `local_ca` backend, the CRL (RFC 5280) is served unauthenticated at
   started with the CA, before anything has ever been revoked. Clients fetching
   it do not have to special-case "no revocations yet". Every role serves the
   stored CRL; none signs one but the worker.
-- It is signed again on every revocation, and by a daily refresh; see below.
+- It is signed again for every revocation — immediately where the process
+  holding the key records it, and otherwise by the `local_ca_crl_regenerate`
+  job that revocation queues — and by a daily refresh; see below.
 
 The revocations and the current signed CRL live in the **database**, keyed by
 the CA's key, so every process over one database — the server, a reloaded

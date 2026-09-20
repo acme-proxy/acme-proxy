@@ -96,8 +96,9 @@ impl AccountService<'_> {
             return Ok((account, false));
         }
 
-        // Checked before the EAB, so a client with a typo'd address hears about the
-        // typo rather than burning its one-shot EAB credential on a doomed request.
+        // Checked before the EAB, so a client with a typo'd address hears about
+        // the typo rather than having its credential refused for a reason that
+        // is not the credential's.
         validate_contacts(&payload.contact)?;
 
         // RFC 8555 §7.3.3: a client agrees to the terms by setting

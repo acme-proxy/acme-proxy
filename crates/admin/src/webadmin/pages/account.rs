@@ -106,7 +106,8 @@ pub async fn get_account(
 /// one.
 ///
 /// Takes the account password when a factor already exists — the card's own
-/// field, pulled in by `hx-include`. See [`check_step_up`].
+/// field, pulled in by `hx-include`. The check itself is the shared action's,
+/// which `/api` makes too.
 pub async fn begin_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
@@ -219,7 +220,7 @@ pub async fn confirm_totp(
 
 /// `POST /ui/account/mfa/totp/disable` — turn the factor off.
 ///
-/// Takes the account password ([`check_step_up`]): this is the most
+/// Takes the account password, as the shared action requires: this is the most
 /// consequential thing a stolen cookie could do here.
 pub async fn disable_totp(
     State(state): State<AdminState>,
@@ -261,9 +262,9 @@ pub async fn disable_totp(
 
 /// `POST /ui/account/mfa/recovery-codes` — mint a fresh set, **shown once**.
 ///
-/// Takes the account password ([`check_step_up`]): superseding the set the
-/// rightful operator would recover with is the same lockout as replacing the
-/// factor itself.
+/// Takes the account password, as the shared action requires: superseding the
+/// set the rightful operator would recover with is the same lockout as
+/// replacing the factor itself.
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,

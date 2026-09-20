@@ -107,7 +107,9 @@ impl Auditor {
     }
 
     /// Same, against a caller-supplied resolver — or none, for the reverse
-    /// lookup switched off. Used by tests and by [`Self::from_config`].
+    /// lookup switched off. What [`Auditor::offline`] and the tests build
+    /// through; [`Auditor::from_config`] assembles its own resolver from
+    /// `[dns]` and does not come this way.
     #[must_use]
     pub fn with_resolver(
         database: Arc<Database>,
@@ -180,10 +182,13 @@ impl Auditor {
     /// Attaches the Prometheus registry to an auditor built by
     /// [`Auditor::with_resolver`].
     ///
-    /// Exists for the test harness, which builds its auditor with a stub
-    /// resolver and still wants the counters. The serving path does **not** use
-    /// this — [`Auditor::from_config`] takes the registry as a parameter, so it
-    /// cannot be left off.
+    /// For every auditor not built by [`Auditor::from_config`], which takes the
+    /// registry as a parameter so it cannot be left off: the ones a background
+    /// task and the relay build through [`Auditor::offline`], and the test
+    /// harness's, which uses a stub resolver and still wants the counters.
+    ///
+    /// The CLI leaves it off deliberately — it serves no `/metrics`, so a count
+    /// there would reach nobody.
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
         self.metrics = Some(metrics);

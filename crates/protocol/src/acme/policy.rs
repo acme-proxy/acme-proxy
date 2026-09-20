@@ -1,3 +1,12 @@
+//! The configured policy applied to one request: the filter's identifier
+//! stage, and the problem a failed challenge validation maps to.
+//!
+//! The filter engine itself is `acme_proxy_policy`; what lives here is the two
+//! places the ACME protocol meets it — the identifiers an order or a CSR asks
+//! for, and the EAB credential that authorized the account asking. A refusal
+//! is a `Problem` the client reads, and a policy that could not be evaluated
+//! is a `500`: "denied" and "nobody decided" are different answers.
+
 use std::net::IpAddr;
 
 use tracing::error;

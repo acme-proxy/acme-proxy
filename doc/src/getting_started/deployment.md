@@ -407,7 +407,7 @@ Worth knowing before you do it:
   most likely cause is running an *older* binary against a database a newer one
   has already migrated.
 - **Files outside the database are untouched.** The CA key and certificate, the
-  CRL and its JSON ledger, the upstream account key and its `.kid` sidecar all
+  exported `ca.crl`, the upstream account key and its `.kid` sidecar all
   persist across an upgrade — back them up on the same schedule as the database,
   since the CA key is the one thing that cannot be regenerated without
   redistributing trust. See [Trusting the CA](trusting_the_ca.md).

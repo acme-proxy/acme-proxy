@@ -625,10 +625,10 @@ fn signer_paths(cfg: &SignerConfig) -> Vec<String> {
                 cfg.local_ca.crl_path.clone(),
             ];
             // A PKCS#11 key is shared state in exactly the way this check
-            // exists for: two `LocalCa`s over one token key would each keep
-            // their own revocation ledger and rewrite the CRL from it. Not a
-            // file, but the same hazard, so it goes in the same list under a
-            // pseudo-path that cannot collide with a real one.
+            // exists for: two `LocalCa`s over one token key are two writers of
+            // one CA's CRL, racing each other's `crlNumber` for as long as both
+            // run. Not a file, but the same hazard, so it goes in the same list
+            // under a pseudo-path that cannot collide with a real one.
             if cfg.local_ca.key_source == "pkcs11" {
                 paths.push(format!(
                     "pkcs11:{}#{}#{}#{}",

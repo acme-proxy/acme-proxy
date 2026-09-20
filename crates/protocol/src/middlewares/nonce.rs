@@ -1,30 +1,15 @@
-//! ACME Nonce Management Middleware
+//! The `Replay-Nonce` middleware (RFC 8555 §6.5).
 //!
-//! This module implements the Replay-Nonce middleware for ACME protocol compliance.
-//! The middleware automatically adds Replay-Nonce headers to all responses and
-//! ensures nonce management for anti-replay protection.
+//! Mints a fresh nonce, stores it, and puts it on the response — for the
+//! requests the RFC asks it of, which is **every POST and `newNonce`**, not
+//! every response. See [`mints_nonce`] for why the unauthenticated GETs are
+//! left out.
 //!
-//! ## ACME Protocol Requirements
-//!
-//! According to RFC 8555, the server must:
-//! - Generate a new nonce for each response
-//! - Include a `Replay-Nonce` header in all responses
-//! - Validate that received nonces are valid and not replayed
-//!
-//! ## Behavior
-//!
-//! The middleware:
-//! 1. Generates a new 256-bit base64url nonce for each request
-//! 2. Saves the nonce to the database
-//! 3. Adds the nonce to the `Replay-Nonce` header in the response
-//! 4. Handles database errors gracefully by logging and omitting the header
-//!
-//! ## Security Considerations
-//!
-//! - Nonces are single-use and are removed after validation
-//! - Expired nonces are automatically cleaned up
-//! - Failed nonce persistence does not break the request flow
-//! - Nonce TTL (Time To Live) prevents indefinite accumulation
+//! A nonce is single-use: the extractor consumes it ([`crate::extractors`]),
+//! the sweep deletes what expired unused, and a nonce that could not be stored
+//! is never advertised — the client would sign its next request with something
+//! that can never verify. None of those failures breaks the request; they cost
+//! the client one `badNonce` retry, which every ACME client already handles.
 
 use std::sync::Arc;
 

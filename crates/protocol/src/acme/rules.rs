@@ -23,7 +23,7 @@ use acme_proxy_core::identifier::Identifier;
 
 /// Parses a PKCS#10 CSR, which also verifies its own self-signature.
 ///
-/// Separated from [`csr_identifiers`] because `post_finalize` performs two checks
+/// Separated from [`csr_identifiers`] because `OrderService::finalize` performs two checks
 /// on the same CSR: parsing it once avoids reparsing it.
 pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParams, Problem> {
     let der = CertificateSigningRequestDer::from(csr_der.to_vec());
@@ -47,7 +47,7 @@ pub(crate) fn parse_csr(csr_der: &[u8]) -> Result<CertificateSigningRequestParam
 /// directly — but this check makes the guarantee independent of the backend.
 ///
 /// Raw comparison, without renormalizing the CSR side: the order identifiers
-/// have already been normalized by `post_new_order`, and normalizing here
+/// have already been normalized by `OrderService::new_order`, and normalizing here
 /// would allow signing a leaf bearing `EXAMPLE.COM.` when the check compared
 /// `example.com`. This is also what keeps this check and the one in `LocalCa::issue`
 /// in agreement byte for byte.
@@ -249,7 +249,7 @@ const MAX_DNS_LABEL: usize = 63;
 ///   deny-list bypass.
 ///
 /// **This covers the *order*'s identifiers and only those.** It is applied by
-/// `post_new_order`, so it reaches everything derived from an order — including
+/// `OrderService::new_order`, so it reaches everything derived from an order — including
 /// the `dns` entries [`csr_identifiers`] projects, which
 /// [`check_csr_matches_order`] has already required to equal them. It does *not*
 /// reach the `cn` and `other` entries that projection adds, which come from the
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn a_wildcard_csr_matching_its_order_is_accepted() {
-        // `post_new_order` has already refused the wildcard identifier if
+        // `new_order` has already refused the wildcard identifier if
         // `dns-01` is not enabled; here set equality is all that pins the CSR
         // to the order.
         let der = csr_with(

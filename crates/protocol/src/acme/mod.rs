@@ -19,10 +19,10 @@
 //!   identifier stage, and the problem a failed challenge validation maps to.
 //! - [`order`] — [`OrderService`], the order state machine: creating an order,
 //!   deactivating an authorization, claiming and validating a challenge,
-//!   finalizing. Plus the issuance bookkeeping the `signer_issue` job and the
-//!   relay share (`record_issuance`, `announce_issuance`,
-//!   `record_issue_failure`), since both complete an issuance long after the
-//!   request that started it.
+//!   finalizing. The issuance bookkeeping the `signer_issue` job and the relay
+//!   share — `record_issuance`, `announce_issuance`, `record_issue_failure` —
+//!   is `acme_proxy_signer::issuance`, below both of them, since the relay
+//!   completes an issuance with no request in scope at all.
 //! - [`issue`] — the `signer_issue` job `finalize` queues: the one place a
 //!   backend is asked to sign, and it runs in the `worker` role, the only one
 //!   that holds a backend.

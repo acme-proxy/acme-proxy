@@ -1,3 +1,16 @@
+//! `acme-proxy eab` — mint, list, revoke and delete external-account
+//! credentials (RFC 8555 §7.3.4).
+//!
+//! The secret is printed **once**, by `create`: nothing reads it back, and a
+//! lost credential is replaced rather than recovered. A credential scoped to a
+//! profile is checked against the mounted set here, as it is on `/api` and
+//! `/ui`, because one scoped to an endpoint this configuration does not serve
+//! would be accepted and then never usable.
+//!
+//! `delete` is the one command with a blast radius beyond its own row: it may
+//! deactivate or delete the accounts the credential bound, and is refused
+//! outright when that would leave a live certificate impossible to revoke.
+
 use std::io::BufRead;
 use std::sync::Arc;
 

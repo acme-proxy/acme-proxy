@@ -155,7 +155,7 @@ impl SweepJob {
     ///
     /// One handler and not one per profile because `JobRegistry::register`
     /// refuses a second handler for a kind — the same constraint that makes
-    /// `SignerBackend::crl_pruner` hand over state rather than a job. Profiles
+    /// `SignerBackend::crl_refresher` hands over state rather than a job. Profiles
     /// whose `order.retention_days` is `0` are simply absent from `retention`,
     /// so "keep everything" stays a profile the sweep never touches rather than
     /// a `DELETE` with a cutoff at the epoch.

@@ -523,8 +523,6 @@ async fn run_totp_command(
     Ok(())
 }
 
-/// Resolves a username, reporting an unknown one in words rather than as a
-/// silent no-op.
 /// Queues `admin_credential_changed` for a change made from the host, through
 /// the `[admin.notify]` dispatcher `serve` would build — delivered by the
 /// running server's worker, since this process has no job runner.

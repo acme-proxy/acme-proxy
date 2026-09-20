@@ -1,5 +1,9 @@
-//! The order state machine: authorizations, challenges, finalization and
-//! revocation, as operations on stored rows rather than on HTTP requests.
+//! The order state machine: creating an order, deactivating an authorization,
+//! claiming and validating a challenge, and finalizing — as operations on
+//! stored rows rather than on HTTP requests.
+//!
+//! Revocation is [`super::revoke`]: it starts from a certificate rather than
+//! from an order, and an operator reaches it without one.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -867,7 +871,7 @@ impl OrderService<'_> {
 /// authorization already `valid` can never be finalized and nothing re-derives
 /// readiness, because the check only ever ran from here and the client has no
 /// challenge left to answer to make it run again. The order is stuck until it
-/// expires. `post_new_order` has always used one transaction for the same
+/// expires. `new_order` has always used one transaction for the same
 /// reason.
 ///
 /// It also fixes a second, quieter bug. The readiness check used to re-read the
@@ -1614,7 +1618,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// The unique-violation arm in `post_new_order` only fires when two
+    /// The unique-violation arm in `new_order` only fires when two
     /// newOrder requests race — `check_replaces` and the partial index share a
     /// predicate, so nothing but real concurrency can make them disagree. This
     /// drives the matcher against errors the database actually produces, which

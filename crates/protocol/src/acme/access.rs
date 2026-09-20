@@ -1,3 +1,14 @@
+//! Who may touch what: the account a signature belongs to, and the ownership
+//! walk from a challenge up to its order.
+//!
+//! Every signed route that names a resource comes through here, and the answer
+//! is deliberately the same shape whatever went wrong: a resource of another
+//! account is "not found", never "not yours". The two would let a client map
+//! the server's contents by asking about ids it does not own.
+//!
+//! An account that has been deactivated (RFC 8555 §7.3.6) is refused here too,
+//! once, so no handler has to remember to ask.
+
 use std::sync::Arc;
 use uuid::Uuid;
 

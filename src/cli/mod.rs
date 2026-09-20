@@ -1,11 +1,16 @@
 //! The command tree.
 //!
-//! **Nothing here prints or exits.** Every command body returns
-//! `Result<(), CliError>` and [`dispatch`] routes to it, so each arm is a plain
-//! function a test can call and assert on rather than an unreachable dead end.
-//! `src/main.rs` is where that `Result` becomes an exit status, and it is the
-//! only place in the project that calls `std::process::exit` — a library whose
-//! failure mode is ending the process is one nothing else can use.
+//! **Nothing here exits.** Every command body returns `Result<(), CliError>`
+//! and [`dispatch`] routes to it, so each arm is a plain function a test can
+//! call and assert on rather than an unreachable dead end. `src/main.rs` is
+//! where that `Result` becomes an exit status, and it is the only place in the
+//! project that calls `std::process::exit` — a library whose failure mode is
+//! ending the process is one nothing else can use.
+//!
+//! What a command *prints* is its own: a body writes its answer to stdout,
+//! since that is the answer, and returns its refusal as a `CliError` for
+//! `main.rs` to render on stderr. A listing's rendering is `render`, and a
+//! `--json` body never sees a `Palette`.
 //!
 //! `serve` is one arm like the others: the server runtime itself lives in
 //! [`acme_proxy_server`], and [`serve`] only turns its failure into a [`CliError`].
@@ -35,8 +40,6 @@ pub mod generate;
 pub mod jobs;
 pub(crate) mod logging;
 
-/// Installs the `[logging]` configuration. Re-exported because `main.rs` is
-/// what calls it — see [`dispatch`].
 /// The `--log-level` flag and the per-invocation decision it feeds. Re-exported
 /// for `main.rs`, which is where the subscriber is installed.
 pub use logging::{LogLevel, LoggingPlan, plan_logging};

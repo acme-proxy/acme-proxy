@@ -33,7 +33,7 @@ impl JobRegistry {
     /// This is why **no subsystem registers a handler per instance**: one
     /// handler covers every profile or backend of its kind and picks the right
     /// one per row, from what the row itself names. `SignerBackend` therefore
-    /// hands over *state* (`crl_pruner`, `relay_state`) and never a handler —
+    /// hands over *state* (`crl_refresher`, `relay_state`) and never a handler —
     /// it returned one per backend until two relaying profiles against
     /// different upstreams met exactly this error at startup.
     pub fn register(&mut self, handler: Arc<dyn JobHandler>) -> anyhow::Result<()> {
