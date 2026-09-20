@@ -308,3 +308,123 @@ pub fn admin_session_fixture() -> crate::admin_session::AdminSession {
         user_agent: Some("curl/8".to_string()),
     }
 }
+
+/// The base URL of a PostgreSQL the test suite may create schemas in.
+///
+/// Unset on a developer machine, where the dialect-sensitive suites skip. CI's
+/// `postgres` job sets it, and [`REQUIRE_POSTGRES`] beside it.
+pub const TEST_POSTGRES_URL: &str = "TEST_POSTGRES_URL";
+
+/// Turns a skip into a failure.
+///
+/// Without it, a service that failed to start, a renamed image or a firewall
+/// rule turns every PostgreSQL test green while running none of them, and
+/// nothing else would notice — these suites are about a backend the coverage
+/// floor cannot see. The `ACME_PROXY_REQUIRE_SOFTHSM` treatment, for the same
+/// reason.
+pub const REQUIRE_POSTGRES: &str = "ACME_PROXY_REQUIRE_POSTGRES";
+
+/// A PostgreSQL database with the schema applied, or `None` to skip.
+///
+/// Each call gets a **schema of its own**, named from a UUID v7 so the tests
+/// can run concurrently in one database without a `DROP` in one emptying
+/// another. The pool pins `search_path` to it, so every unqualified name in the
+/// migration set and in every query lands there.
+///
+/// Schemas left behind by an earlier run are swept on the way in, by the
+/// timestamp their own name carries. Dropping at the end of a test would need
+/// async work in `Drop`; sweeping on entry costs one statement and survives a
+/// test that panicked, which is exactly when the schema would otherwise leak.
+///
+/// # Panics
+///
+/// When [`REQUIRE_POSTGRES`] is set and there is no server to talk to.
+pub async fn postgres_database() -> Option<crate::db::Database> {
+    let base = match std::env::var(TEST_POSTGRES_URL) {
+        Ok(url) if !url.is_empty() => url,
+        _ => {
+            assert!(
+                std::env::var_os(REQUIRE_POSTGRES).is_none(),
+                "{REQUIRE_POSTGRES} is set, so skipping is a failure: {TEST_POSTGRES_URL} \
+                 is unset or empty. These tests were about to report green without \
+                 running against PostgreSQL at all."
+            );
+            eprintln!(
+                "skipping: {TEST_POSTGRES_URL} is unset; start a PostgreSQL and set it to \
+                 run the dialect tests"
+            );
+            return None;
+        }
+    };
+
+    let schema = format!("acme_test_{}", crate::id::mint().simple());
+    let admin = crate::db::Database::open(&base)
+        .await
+        .expect("TEST_POSTGRES_URL should name a reachable PostgreSQL");
+
+    sweep_stale_schemas(&admin).await;
+    crate::sql::query(format!("CREATE SCHEMA {schema};"))
+        .execute(&admin)
+        .await
+        .expect("a test schema should be creatable");
+    admin.close().await;
+
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let database = crate::db::Database::open(&format!(
+        "{base}{separator}options=-c%20search_path%3D{schema}"
+    ))
+    .await
+    .expect("the schema-scoped pool should open");
+    database
+        .migrate()
+        .await
+        .expect("the PostgreSQL migration set should apply");
+    Some(database)
+}
+
+/// Drops test schemas from earlier runs, by the timestamp in their own name.
+///
+/// Best effort: a failure here is somebody else's schema or a permission this
+/// role does not have, neither of which should fail the test that asked.
+async fn sweep_stale_schemas(admin: &crate::db::Database) {
+    const STALE_AFTER_MS: u64 = 60 * 60 * 1000;
+
+    let Ok(rows) = crate::sql::query(
+        "SELECT schema_name FROM information_schema.schemata \
+         WHERE schema_name LIKE 'acme_test_%';",
+    )
+    .fetch_all(admin)
+    .await
+    else {
+        return;
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+
+    for row in rows {
+        let Ok(name) = row.try_get::<String>("schema_name") else {
+            continue;
+        };
+        // The suffix is a UUID v7 whose leading 48 bits are a millisecond
+        // timestamp, which is what makes "how old is this schema?" answerable
+        // from the name alone.
+        let Some(minted) = name
+            .strip_prefix("acme_test_")
+            .and_then(|hex| uuid::Uuid::try_parse(hex).ok())
+            .and_then(|id| id.get_timestamp())
+            .map(|ts| {
+                let (secs, nanos) = ts.to_unix();
+                secs * 1000 + u64::from(nanos) / 1_000_000
+            })
+        else {
+            continue;
+        };
+        if now.saturating_sub(minted) > STALE_AFTER_MS {
+            let _ = crate::sql::query(format!("DROP SCHEMA IF EXISTS {name} CASCADE;"))
+                .execute(admin)
+                .await;
+        }
+    }
+}

@@ -495,11 +495,72 @@ jobs:
   # the patch tag. The cost is two uncached native builds per merge, which a
   # public repository's runners do not bill.
   #
+  # The "same suite, a different backend" job, modelled on `hsm` and separate
+  # from `test` for the same reason: the coverage floor is a ratchet over one
+  # configuration, and a second one would fight it.
+  #
+  # `tests/postgres.rs` skips silently when `TEST_POSTGRES_URL` is unset, which
+  # is what keeps `cargo nextest run` on a developer machine unaffected. That is
+  # also exactly how a service that failed to start would take this job green,
+  # so `ACME_PROXY_REQUIRE_POSTGRES` turns every skip into a failure here and
+  # `postgres_is_available_when_it_is_required` names the cause directly rather
+  # than leaving it to be inferred from a suspiciously fast run.
+  postgres:
+    name: PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: acme
+        ports:
+          - 5432:5432
+        # Without this the job races the container: the first connection
+        # arrives before the cluster finishes initialising, and the failure
+        # reads as a bug in the backend rather than as a cold start.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here pushes, so the token has no business sitting in
+          # `.git/config` where any build script could read it.
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        with:
+          tool: cargo-nextest@0.9.145
+
+      # The dialect-sensitive suite, plus the two that run several processes
+      # over one database -- which is the multi-node deployment this backend
+      # exists for, and the thing a single-process SQLite run cannot cover.
+      - name: Test
+        run: |
+          cargo nextest run --locked --workspace --no-fail-fast \
+            -E 'binary(postgres) or binary(roles) or binary(reload)'
+        env:
+          ACME_PROXY_REQUIRE_POSTGRES: "1"
+          TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/acme
+
   # A called workflow's jobs can only narrow what the caller grants, so this
   # grants everything `release.yml` asks for.
   image:
     name: Publish the edge image
-    needs: [test, msrv, hsm, docs, supply-chain, sbom]
+    needs: [test, msrv, hsm, postgres, docs, supply-chain, sbom]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
