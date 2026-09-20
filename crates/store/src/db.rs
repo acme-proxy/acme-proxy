@@ -222,7 +222,7 @@ impl Database {
                 format!(
                     "unsupported database URL scheme in `{}`: expected one of \
                      sqlite://, postgres:// or postgresql://",
-                    Redacted(url)
+                    acme_proxy_core::logfields::redact_url(url)
                 )
                 .into(),
             )),
@@ -369,28 +369,6 @@ impl Database {
 fn scheme_of(url: &str) -> Option<&str> {
     let scheme = url.split("://").next()?;
     (scheme != url).then_some(scheme)
-}
-
-/// A URL with any password replaced, for a message an operator will see.
-///
-/// A PostgreSQL DSN carries `user:password@`, and this type is what keeps it
-/// out of a startup error. The equivalent for logging lives in
-/// `acme_proxy_net::proxy`.
-struct Redacted<'a>(&'a str);
-
-impl std::fmt::Display for Redacted<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0.split_once("://") {
-            Some((scheme, rest)) => match rest.split_once('@') {
-                Some((credential, host)) => {
-                    let user = credential.split_once(':').map_or(credential, |(u, _)| u);
-                    write!(f, "{scheme}://{user}:***@{host}")
-                }
-                None => write!(f, "{}", self.0),
-            },
-            None => write!(f, "{}", self.0),
-        }
-    }
 }
 
 async fn run_migrations<DB>(migrator: &Migrator, pool: &Pool<DB>) -> Result<(), Error>

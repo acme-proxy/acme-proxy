@@ -254,7 +254,9 @@ pub async fn serve_on_with_reloads(
         bind_address = %config.server.bind_address,
         base_url = %config.server.base_url,
         tls = config.server.tls.enabled,
-        database_database_url = %config.database.url
+        // A PostgreSQL DSN carries `user:password@`; this line is the one
+        // place the whole value is printed at INFO on every start.
+        database_database_url = %acme_proxy_core::logfields::redact_url(&config.database.url)
     );
 
     // The schema, before anything reads a row. **One owner**: the `worker` role

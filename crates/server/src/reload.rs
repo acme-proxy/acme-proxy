@@ -132,8 +132,17 @@ pub struct Applied<'a> {
 /// hold one, so the digest is gone with them. **The rule survives the code**:
 /// were an entry ever added back, a whole-section projection must be opaque iff
 /// any field it reaches can hold a credential.
+///
+/// The one entry left now reaches one too. `database.url` was a path with no
+/// password for as long as SQLite was the only backend; a PostgreSQL DSN
+/// carries `user:password@`, so it is projected through
+/// `logfields::redact_url`. It is redacted rather than digested because the
+/// point of this message is to tell an operator *which* value they may not
+/// change, and a digest of a connection string says nothing they can act on.
 type Projection = fn(&Applied<'_>) -> String;
-const FROZEN: &[(&str, Projection)] = &[("database.url", |a| a.config.database.url.clone())];
+const FROZEN: &[(&str, Projection)] = &[("database.url", |a| {
+    acme_proxy_core::logfields::redact_url(&a.config.database.url).into_owned()
+})];
 
 /// Why a reload did not happen.
 #[derive(Debug, thiserror::Error)]
@@ -647,6 +656,28 @@ mod frozen_tests {
         assert!(rendered.contains("sqlite://sqlite.db"), "{rendered}");
         assert!(rendered.contains("sqlite://elsewhere.db"), "{rendered}");
         assert_eq!(error.kind(), "frozen_key");
+    }
+
+    /// And names them with the password taken out.
+    ///
+    /// This message is logged, so a PostgreSQL DSN reaching it verbatim would
+    /// put the database password in the operator's log the first time somebody
+    /// sent `SIGHUP` after editing the URL. The host still has to survive it —
+    /// a refusal that hid *which* database it meant would not be actionable.
+    #[test]
+    fn a_refusal_over_a_dsn_keeps_the_host_and_drops_the_password() {
+        let error = refuse(|config, _| {
+            config.database.url = "postgres://acme:hunter2@db.internal/acme".to_string();
+        })
+        .expect_err("a changed database URL is refused");
+
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("hunter2"),
+            "the password must not reach a log line: {rendered}"
+        );
+        assert!(rendered.contains("db.internal"), "{rendered}");
+        assert!(rendered.contains("postgres://acme:***@"), "{rendered}");
     }
 
     /// The other two variants read as what they are: a file that would not load
