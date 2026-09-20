@@ -104,6 +104,11 @@ pub(super) struct CrlStore {
     database: Arc<Database>,
     issuer_id: String,
     signer: Arc<Issuer<'static, CaSigningKey>>,
+    /// The CA certificate's own `SubjectKeyIdentifier`, which every CRL this
+    /// store signs names as its `authorityKeyIdentifier`; see
+    /// [`acme_proxy_core::cert::subject_key_identifier`]. `None` for a CA
+    /// certificate carrying no such extension, where rcgen derives one.
+    key_identifier: Option<Vec<u8>>,
     /// `None` for an in-memory CA, which exports nothing and imports nothing.
     paths: Option<CrlPaths>,
     /// Set once this CA's `crls` row is known to exist. Not set by a failed
@@ -115,17 +120,37 @@ pub(super) struct CrlStore {
     regenerating: Mutex<()>,
 }
 
+/// The two bounds RFC 5280 §3.3 puts on dropping a revocation from the ledger.
+///
+/// `expired_before` bounds the certificate's own expiry, backdated by the
+/// clock-skew allowance and never later than the stored CRL's `thisUpdate`.
+/// `listed_before` is the instant that CRL was built: §3.3
+/// lets an entry go only once it "appears on one regularly scheduled CRL issued
+/// beyond the revoked certificate's validity period", and the stored CRL is
+/// that one — it was signed after the certificate expired, and it listed the
+/// entry because the entry was recorded before it was signed. Without the
+/// second bound, a certificate that expired between two signings was dropped
+/// while the newest CRL naming it predated its expiry, and a relying party
+/// holding that CRL would have kept honouring the revocation only by accident.
+#[derive(Debug, Clone, Copy)]
+struct Prune {
+    expired_before: i64,
+    listed_before: i64,
+}
+
 impl CrlStore {
     pub(super) fn new(
         database: Arc<Database>,
         issuer_id: String,
         signer: Arc<Issuer<'static, CaSigningKey>>,
+        key_identifier: Option<Vec<u8>>,
         paths: Option<CrlPaths>,
     ) -> Self {
         Self {
             database,
             issuer_id,
             signer,
+            key_identifier,
             paths,
             initialized: OnceCell::new(),
             regenerating: Mutex::new(()),
@@ -172,6 +197,7 @@ impl CrlStore {
         let paths = self.paths.clone();
         let signer = self.signer.clone();
         let issuer_id = self.issuer_id.clone();
+        let key_identifier = self.key_identifier.clone();
         let (imported, initial) = tokio::task::spawn_blocking(
             move || -> anyhow::Result<(Option<Vec<Revocation>>, StoredCrl)> {
                 let (entries, number) = match &paths {
@@ -192,7 +218,13 @@ impl CrlStore {
                     _ => (None, 0),
                 };
                 let rows: &[Revocation] = entries.as_deref().unwrap_or_default();
-                let crl = sign(rows, number + 1, &signer, &issuer_id)?;
+                let crl = sign(
+                    rows,
+                    number + 1,
+                    &signer,
+                    &issuer_id,
+                    key_identifier.as_deref(),
+                )?;
                 Ok((entries, crl))
             },
         )
@@ -275,27 +307,35 @@ impl CrlStore {
     /// Signs and stores a new CRL, retrying from a fresh snapshot while other
     /// writers keep storing first. Returns how many revocations the prune took.
     ///
-    /// `cutoff`, when given, first deletes the revocations whose certificates
-    /// expired before it (RFC 5280 §3.3). `covering` names a serial that must
+    /// `cutoff`, when given, first deletes the revocations [`Prune`] retires
+    /// (RFC 5280 §3.3). `covering` names a serial that must
     /// end up listed: if the stored CRL already lists it — because another
     /// writer's CRL included it — nothing is signed.
     async fn regenerate(
         &self,
-        cutoff: Option<i64>,
+        cutoff: Option<Prune>,
         covering: Option<&str>,
     ) -> Result<u64, SignerError> {
         let _serialised = self.regenerating.lock().await;
 
         let removed = match cutoff {
-            Some(cutoff) => {
+            Some(Prune {
+                expired_before,
+                listed_before,
+            }) => {
                 let mut tx = self
                     .database
                     .transaction()
                     .await
                     .map_err(database_failure)?;
-                let removed = Revocation::prune_expired(&self.issuer_id, cutoff, &mut *tx)
-                    .await
-                    .map_err(database_failure)?;
+                let removed = Revocation::prune_expired(
+                    &self.issuer_id,
+                    expired_before,
+                    listed_before,
+                    &mut *tx,
+                )
+                .await
+                .map_err(database_failure)?;
                 tx.commit().await.map_err(database_failure)?;
                 removed
             }
@@ -327,8 +367,11 @@ impl CrlStore {
 
             let signer = self.signer.clone();
             let issuer_id = self.issuer_id.clone();
+            let key_identifier = self.key_identifier.clone();
             let number = current.crl_number + 1;
-            let next = tokio::task::spawn_blocking(move || sign(&rows, number, &signer, &issuer_id))
+            let next = tokio::task::spawn_blocking(move || {
+                sign(&rows, number, &signer, &issuer_id, key_identifier.as_deref())
+            })
                 .await
                 .map_err(|error| {
                     error!(event = "local_ca_crl_signing_panicked", outcome = "failure", error = %error);
@@ -434,12 +477,28 @@ impl CrlRefresher for CrlStore {
     async fn refresh(&self) -> Result<u64, SignerError> {
         self.ensure_initialized().await?;
         let now = OffsetDateTime::now_utc();
-        let cutoff = (now - CLOCK_SKEW_ALLOWANCE).unix_timestamp();
-
-        let expired = Revocation::count_expired(&self.issuer_id, cutoff, &self.database)
-            .await
-            .map_err(database_failure)?;
         let current = self.stored().await?;
+        let prune = current.as_ref().map(|crl| Prune {
+            expired_before: (now - CLOCK_SKEW_ALLOWANCE)
+                .unix_timestamp()
+                .min(crl.this_update),
+            // `sign` backdates `thisUpdate` by the same allowance, so the
+            // instant the stored CRL was actually built — and therefore read
+            // the ledger — is that field plus the allowance.
+            listed_before: crl.this_update + CLOCK_SKEW_ALLOWANCE.whole_seconds(),
+        });
+
+        let expired = match prune {
+            Some(prune) => Revocation::count_expired(
+                &self.issuer_id,
+                prune.expired_before,
+                prune.listed_before,
+                &self.database,
+            )
+            .await
+            .map_err(database_failure)?,
+            None => 0,
+        };
         let half_life = Duration::days(CRL_VALIDITY_DAYS).whole_seconds() / 2;
         let stale = current.is_none_or(|crl| now.unix_timestamp() + half_life >= crl.next_update);
 
@@ -447,7 +506,7 @@ impl CrlRefresher for CrlStore {
         // without this key, whose regeneration job never ran: the daily pass
         // signs it in rather than leaving it off the CRL until it goes stale.
         if expired > 0 || stale || !self.lists_every_revocation().await? {
-            return self.regenerate(Some(cutoff), None).await;
+            return self.regenerate(prune, None).await;
         }
         self.export().await;
         Ok(0)
@@ -541,11 +600,19 @@ fn sign(
     crl_number: u64,
     issuer: &Issuer<'static, CaSigningKey>,
     issuer_id: &str,
+    key_identifier: Option<&[u8]>,
 ) -> anyhow::Result<StoredCrl> {
     let now = OffsetDateTime::now_utc();
     let this_update = now - CLOCK_SKEW_ALLOWANCE;
     let next_update = now + Duration::days(CRL_VALIDITY_DAYS);
-    let crl = build_crl(rows, crl_number, issuer, this_update, next_update)?;
+    let crl = build_crl(
+        rows,
+        crl_number,
+        issuer,
+        this_update,
+        next_update,
+        key_identifier,
+    )?;
     Ok(StoredCrl {
         issuer: issuer_id.to_string(),
         crl_number,
@@ -562,6 +629,7 @@ pub(super) fn build_crl(
     issuer: &Issuer<'static, CaSigningKey>,
     this_update: OffsetDateTime,
     next_update: OffsetDateTime,
+    key_identifier: Option<&[u8]>,
 ) -> anyhow::Result<rcgen::CertificateRevocationList> {
     // A serial that is not hex can only arrive from the sidecar import — an
     // operator-editable file — since every row this CA writes itself comes
@@ -593,7 +661,16 @@ pub(super) fn build_crl(
         crl_number: SerialNumber::from(crl_number),
         issuing_distribution_point: None,
         revoked_certs,
-        key_identifier_method: KeyIdMethod::Sha256,
+        // The CA certificate's own SubjectKeyIdentifier, so the CRL's
+        // authorityKeyIdentifier names the issuer the way its certificates do
+        // (RFC 5280 §5.2.1). rcgen's default derives one from the public key
+        // instead, which matches only by luck for a CA certificate this server
+        // did not generate — and an OpenSSL-style verifier rejects a CRL whose
+        // AKI matches no certificate in the chain.
+        key_identifier_method: match key_identifier {
+            Some(id) => KeyIdMethod::PreSpecified(id.to_vec()),
+            None => KeyIdMethod::Sha256,
+        },
     }
     .signed_by(issuer)
     .map_err(Into::into)

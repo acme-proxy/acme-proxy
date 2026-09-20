@@ -436,6 +436,16 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **A revocation is kept until a CRL issued past the certificate's expiry has
+  carried it** (RFC 5280 §3.3). The prune dropped an entry as soon as the
+  certificate expired, although the newest CRL naming it had usually been
+  signed days earlier — before the expiry — so a relying party holding that CRL
+  had never seen a CRL that both listed the entry and outlived the certificate.
+- **A local CA's CRL names the CA's own `SubjectKeyIdentifier`** as its
+  `authorityKeyIdentifier` (RFC 5280 §5.2.1), instead of an identifier derived
+  from the public key. The two agree by luck for a CA this server generated,
+  and not at all for an operator-supplied PEM or a PKCS#11 CA certificate made
+  out of band — whose CRL OpenSSL-style issuer matching then rejected.
 - **Two revocations of one certificate at once record one.** The order's
   revocation stamp was written unguarded while the ledger kept the first
   reason, so a client and an operator revoking together could leave the order

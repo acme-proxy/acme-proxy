@@ -34,6 +34,26 @@ pub fn issuer_id(spki_der: &[u8]) -> String {
     hex::encode(ring::digest::digest(&ring::digest::SHA256, spki_der).as_ref())
 }
 
+/// A certificate's `SubjectKeyIdentifier` extension, when it carries one.
+///
+/// What a CRL's `authorityKeyIdentifier` must equal: RFC 5280 §5.2.1 has a CRL
+/// name its issuer's key the same way the certificates that issuer signed do,
+/// and OpenSSL-style issuer matching refuses a CRL whose AKI does not match the
+/// CA certificate's own SKI. Deriving it instead — rcgen's default is a
+/// truncated SHA-256 of the SPKI — agrees only by luck, and never for a CA
+/// certificate made out of band (an operator's PEM, or the certificate beside a
+/// PKCS#11 key, which OpenSSL usually stamps with a SHA-1 identifier).
+pub fn subject_key_identifier(der: &[u8]) -> Option<Vec<u8>> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    cert.iter_extensions()
+        .find_map(|extension| match extension.parsed_extension() {
+            x509_parser::extensions::ParsedExtension::SubjectKeyIdentifier(id) => {
+                Some(id.0.to_vec())
+            }
+            _ => None,
+        })
+}
+
 /// Extracts a single certificate's serial (hex-encoded, no separators) and
 /// the DER encoding of its `SubjectPublicKeyInfo` from raw X.509 DER bytes.
 ///

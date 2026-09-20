@@ -351,6 +351,11 @@ impl LocalCa {
         // The key, not a path or a profile, is what the revocation state is
         // stored under — see `cert::issuer_id`.
         let info = Arc::new(LocalCaInfo::new(ca_pem.clone(), database.clone())?);
+        // Read from the certificate, not derived: every CRL this CA signs names
+        // its key the same way the leaves it signs do.
+        let key_identifier = acme_proxy_core::cert::leaf_der_from_chain(&ca_pem)
+            .ok()
+            .and_then(|der| acme_proxy_core::cert::subject_key_identifier(&der));
         let issuer = Arc::new(issuer);
         Ok(Self {
             issuer: issuer.clone(),
@@ -361,6 +366,7 @@ impl LocalCa {
                 database,
                 info.issuer().to_string(),
                 issuer,
+                key_identifier,
                 paths,
             )),
             info,
@@ -2075,6 +2081,104 @@ mod tests {
         assert!(!lists(&der, "0a"), "long expired");
         assert!(lists(&der, "0b"), "inside the clock-skew allowance");
         assert!(lists(&der, "0c"), "an unknown expiry is not an expired one");
+    }
+
+    /// RFC 5280 §5.2.1: the CRL names its issuer's key the same way the
+    /// certificates that issuer signed do. Deriving the identifier instead
+    /// agrees only by luck, and never for a CA certificate made out of band —
+    /// whose CRL an OpenSSL-style verifier then matches to no certificate in
+    /// the chain.
+    #[tokio::test]
+    async fn the_crl_names_the_cas_own_key_identifier() {
+        use x509_parser::extensions::ParsedExtension;
+        use x509_parser::prelude::FromDer;
+        use x509_parser::revocation_list::CertificateRevocationList;
+
+        let database = memory_db().await;
+        // A CA certificate made out of band, whose SubjectKeyIdentifier is not
+        // the truncated SHA-256 of its SPKI that rcgen would derive — the shape
+        // an operator's PEM, or the certificate beside a PKCS#11 key, usually
+        // has. Deriving the CRL's AKI would disagree with it.
+        let dir = acme_proxy_core::testutil::TempDir::new("ca-key-id");
+        let key_pair = KeyPair::generate().unwrap();
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_identifier_method = rcgen::KeyIdMethod::PreSpecified(vec![0xab; 20]);
+        let ca_pem = params.self_signed(&key_pair).unwrap().pem();
+        std::fs::write(dir.join("ca.pem"), &ca_pem).unwrap();
+        std::fs::write(dir.join("ca.key"), key_pair.serialize_pem()).unwrap();
+        let ca = LocalCa::load_or_generate(&ca_config(&dir), database.clone()).unwrap();
+
+        let ca_der = acme_proxy_core::cert::leaf_der_from_chain(&ca.ca_pem).unwrap();
+        let ski = acme_proxy_core::cert::subject_key_identifier(&ca_der)
+            .expect("this CA certificate carries a SubjectKeyIdentifier");
+        assert_eq!(ski, vec![0xab; 20]);
+
+        let der = served(&ca).await;
+        let (_, crl) = CertificateRevocationList::from_der(&der).unwrap();
+        let aki = crl
+            .extensions()
+            .iter()
+            .find_map(|extension| match extension.parsed_extension() {
+                ParsedExtension::AuthorityKeyIdentifier(id) => id.key_identifier.as_ref(),
+                _ => None,
+            })
+            .expect("every CRL carries an authorityKeyIdentifier");
+        assert_eq!(aki.0, ski.as_slice());
+
+        // And a leaf this CA signs names the same key.
+        let chain = issue_chain(
+            &ca,
+            &make_csr_der("a.example.com"),
+            &[Identifier::dns("a.example.com")],
+        )
+        .await
+        .unwrap();
+        let leaf = first_certificate(&chain);
+        let (_, leaf_cert) = x509_parser::parse_x509_certificate(&leaf).unwrap();
+        let leaf_aki = leaf_cert
+            .iter_extensions()
+            .find_map(|extension| match extension.parsed_extension() {
+                ParsedExtension::AuthorityKeyIdentifier(id) => id.key_identifier.as_ref(),
+                _ => None,
+            })
+            .expect("a leaf names the key that signed it");
+        assert_eq!(leaf_aki.0, ski.as_slice());
+    }
+
+    /// RFC 5280 §3.3: an entry stays until it has appeared on a CRL issued
+    /// *after* the certificate expired. The stored CRL here was signed while
+    /// the certificate was still valid, so the entry survives this refresh even
+    /// though the certificate is now long gone; the next CRL is what carries it
+    /// past its expiry, and only then may it go.
+    #[tokio::test]
+    async fn an_entry_no_crl_has_outlived_stays_listed() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        served(&ca).await;
+        let now = OffsetDateTime::now_utc();
+
+        // Revoked and expired long ago, but the stored CRL is older still.
+        let long_ago = (now - Duration::days(365)).unix_timestamp();
+        record(&ca, &database, "0a", Some(long_ago)).await;
+        sqlx::query("UPDATE crls SET this_update = ?;")
+            .bind((now - Duration::days(400)).unix_timestamp())
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 0);
+        assert!(
+            lists(&served(&ca).await, "0a"),
+            "no CRL issued past its expiry lists it yet"
+        );
+
+        // That refresh signed a fresh CRL — it found the stored one stale — and
+        // this one was issued well beyond the certificate's expiry, so the next
+        // pass may retire the entry.
+        assert!(stored(&ca, &database).await.this_update > long_ago);
+        assert_eq!(ca.crl_refresher().unwrap().refresh().await.unwrap(), 1);
+        assert!(!lists(&served(&ca).await, "0a"));
     }
 
     // ---- The sweep job -------------------------------------------------------

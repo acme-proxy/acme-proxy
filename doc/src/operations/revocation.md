@@ -178,10 +178,11 @@ the history the sidecar holds; the import is tried again on the next attempt.
 
 ### Expired entries are dropped
 
-A revocation entry is not kept for ever. RFC 5280 §3.3 permits removing one once
-the certificate itself has expired — nothing can present it any more — and this
-is what stops the CRL growing for the life of the deployment. The prune runs
-daily, starting shortly after startup.
+A revocation entry is not kept for ever. RFC 5280 §3.3 lets one go once it has
+appeared on a CRL issued **after** the certificate expired — nothing can
+present the certificate any more, and every relying party has had a CRL saying
+so — and this is what stops the CRL growing for the life of the deployment. The
+prune runs daily, starting shortly after startup.
 
 The same daily pass re-signs a CRL that has less than half of its seven-day
 validity left, even when nothing was revoked or pruned, so a quiet CA's CRL
@@ -193,6 +194,12 @@ Two rules are worth knowing:
   A relying party whose clock is behind yours still considers the certificate
   valid for a moment, and that moment is exactly when it would otherwise accept
   one you revoked.
+- An entry is dropped only once the **stored CRL** was issued past that
+  `notAfter`, which is §3.3's actual condition. A certificate that expires
+  between two signings therefore stays listed for one more pass: the newest CRL
+  a relying party can fetch predates the expiry, and dropping the entry would
+  leave that CRL as the last word on a certificate it still lists as valid to
+  anyone whose clock disagrees.
 - An entry whose expiry is **unknown** is never dropped. That is any entry
   recorded before this server started tracking expiries (see below), and an
   unknown expiry is not an expired one.

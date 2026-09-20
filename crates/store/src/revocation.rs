@@ -87,19 +87,22 @@ impl Revocation {
             .collect()
     }
 
-    /// How many revocations under `issuer` have a known `notAfter` before
-    /// `cutoff` — what [`Self::prune_expired`] would delete.
+    /// How many revocations under `issuer` [`Self::prune_expired`] would delete
+    /// for the same pair of bounds.
     pub async fn count_expired(
         issuer: &str,
         cutoff: i64,
+        listed_before: i64,
         database: &Database,
     ) -> Result<u64, sqlx::Error> {
         let count: i64 = sqlx::query(
             "SELECT COUNT(*) FROM revocations \
-             WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ?;",
+             WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ? \
+               AND revoked_at <= ?;",
         )
         .bind(issuer)
         .bind(cutoff)
+        .bind(listed_before)
         .fetch_one(&database.pool)
         .await?
         .try_get(0)?;
@@ -107,14 +110,31 @@ impl Revocation {
     }
 
     /// Deletes the revocations under `issuer` whose certificates expired before
-    /// `cutoff` (RFC 5280 §3.3), returning how many went.
+    /// `cutoff`, and which a CRL issued at or after `listed_before` already
+    /// carried (RFC 5280 §3.3), returning how many went.
     ///
     /// **A row with no `not_after` is never deleted**: an unknown expiry is not
     /// an expired one. The caller backdates `cutoff` by the clock-skew
     /// allowance.
+    ///
+    /// `listed_before` is the stored CRL's `thisUpdate`, and the second bound
+    /// is what §3.3 actually asks for: an entry "MUST NOT be removed from the
+    /// CRL until it appears on one regularly scheduled CRL issued beyond the
+    /// revoked certificate's validity period". A certificate that expired an
+    /// hour ago has not yet appeared on any such CRL, so dropping it here would
+    /// leave a relying party holding the last CRL that listed it — signed
+    /// before the expiry — with nothing to replace it.
+    ///
+    /// The `revoked_at` bound is inclusive: the CRL is signed from the rows as
+    /// they stand when it is built, so an entry stamped in the same second is
+    /// one it carries. An entry recorded in that second but after the snapshot
+    /// could be dropped without having been listed, and only if it is *also*
+    /// already expired — a revocation of a certificate nothing would honour
+    /// anyway.
     pub async fn prune_expired<'e, E>(
         issuer: &str,
         cutoff: i64,
+        listed_before: i64,
         executor: E,
     ) -> Result<u64, sqlx::Error>
     where
@@ -122,10 +142,12 @@ impl Revocation {
     {
         let result = sqlx::query(
             "DELETE FROM revocations \
-             WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ?;",
+             WHERE issuer = ? AND not_after IS NOT NULL AND not_after < ? \
+               AND revoked_at <= ?;",
         )
         .bind(issuer)
         .bind(cutoff)
+        .bind(listed_before)
         .execute(executor)
         .await?;
         info!(
@@ -200,6 +222,40 @@ mod tests {
         );
     }
 
+    /// §3.3: an entry stays until it has appeared on a CRL issued after the
+    /// certificate expired. A CRL signed before the expiry does not count, so
+    /// the entry it lists is kept even though the certificate is gone.
+    #[tokio::test]
+    async fn an_entry_no_crl_has_outlived_is_kept() {
+        let database = Database::connect_in_memory().await.unwrap();
+        // Revoked at 10, expired at 50; the stored CRL was signed at 40.
+        revocation("expired", 10, Some(50))
+            .insert_if_absent(&database.pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            Revocation::count_expired("ca", 50, 40, &database)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            Revocation::prune_expired("ca", 50, 40, &database.pool)
+                .await
+                .unwrap(),
+            0
+        );
+
+        // A CRL signed at 60 carries it past its expiry, and now it may go.
+        assert_eq!(
+            Revocation::prune_expired("ca", 60, 60, &database.pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn the_prune_takes_only_known_expiries_before_the_cutoff() {
         let database = Database::connect_in_memory().await.unwrap();
@@ -216,13 +272,13 @@ mod tests {
         elsewhere.insert_if_absent(&database.pool).await.unwrap();
 
         assert_eq!(
-            Revocation::count_expired("ca", 100, &database)
+            Revocation::count_expired("ca", 100, 1_000, &database)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
-            Revocation::prune_expired("ca", 100, &database.pool)
+            Revocation::prune_expired("ca", 100, 1_000, &database.pool)
                 .await
                 .unwrap(),
             1

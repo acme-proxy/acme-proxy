@@ -1,7 +1,8 @@
 //! The daily CRL refresh, as a job.
 //!
-//! RFC 5280 §3.3 permits dropping a revocation once the certificate itself has
-//! expired, and a CRL claims to be current only until its `nextUpdate`. Doing
+//! RFC 5280 §3.3 lets a revocation go once a CRL issued past the certificate's
+//! own expiry has carried it, and a CRL claims to be current only until its
+//! `nextUpdate`. Doing
 //! either only on revocation would be proportional to the wrong thing: a CA
 //! that revokes a batch and then goes quiet never sheds anything, and its CRL
 //! lapses while nobody is looking. So once a day, every CA prunes what has
