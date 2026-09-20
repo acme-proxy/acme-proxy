@@ -200,6 +200,11 @@ fn load_from(dir: &TempDir) -> Config {
 }
 
 async fn boot(config: Config, with_admin: bool) -> Server {
+    boot_as(RoleSet::default(), config, with_admin).await
+}
+
+/// [`boot`] for a process running only some of the roles.
+async fn boot_as(roles: RoleSet, config: Config, with_admin: bool) -> Server {
     let database = Arc::new(
         Database::connect_and_migrate(&config.database.url)
             .await
@@ -220,9 +225,9 @@ async fn boot(config: Config, with_admin: bool) -> Server {
     let (reload, reloads) = acme_proxy_server::reload::channel();
     let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(serve_on_with_reloads(
-        // Every role: this suite's subject is what a reload does to a running
-        // server, not how the roles split.
-        RoleSet::default(),
+        // Every role by default: this suite's subject is what a reload does to
+        // a running server, not how the roles split.
+        roles,
         Arc::new(config),
         database,
         ServerSockets {
@@ -1146,6 +1151,53 @@ async fn the_egress_sections_reload_where_they_used_to_be_refused() {
 
     // The generation really is the new one, not a refusal that happened to
     // return `Ok`.
+    let after = get(server.acme, "/profile/default/directory").await;
+    assert!(after.contains("https://after.example"), "{after}");
+
+    server.stop().await;
+}
+
+/// A process that does not run the `admin` role reloads over an `[admin]`
+/// section it would refuse to serve.
+///
+/// Startup validates the panel's configuration only where it binds the panel's
+/// socket, so an acme-only process starts happily beside one. A reload that
+/// validated it anyway would refuse every `SIGHUP` from then on, over a setting
+/// this process never reads — and an operator would see `systemctl reload`
+/// fail on one host of a split deployment and not another.
+#[tokio::test]
+async fn a_process_without_the_admin_role_reloads_over_an_admin_section() {
+    let dir = TempDir::new("reload-roles");
+    write_config(&dir, false, "https://before.example", "");
+    // Every role but `admin`: the worker is what generates this CA, and what
+    // this is about is the panel's configuration, not the key.
+    let server = boot_as(
+        RoleSet::parse(Some("acme,worker")).unwrap(),
+        load_from(&dir),
+        false,
+    )
+    .await;
+
+    // A panel bound off loopback with no TLS: exactly what `check_config`
+    // refuses, and exactly what this process does not serve.
+    write_config_on(
+        &dir,
+        Sockets {
+            server: "127.0.0.1:0",
+            admin: "0.0.0.0:0",
+            admin_enabled: true,
+        },
+        false,
+        "https://after.example",
+        "",
+    );
+    let report = server
+        .reload
+        .reload()
+        .await
+        .expect("a role this process does not run must not refuse its reloads");
+    assert_eq!(report.generation, 2);
+
     let after = get(server.acme, "/profile/default/directory").await;
     assert!(after.contains("https://after.example"), "{after}");
 

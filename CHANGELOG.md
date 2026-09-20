@@ -442,6 +442,18 @@ migrated configuration before restarting.
   its live certificate. A challenge under an authorization or order that is
   already `invalid` is now refused (`400 malformed`) rather than probed, and an
   authorization whose order is `processing` can no longer be deactivated.
+- **A shutdown waits for the job runner to release its leases.** The runner
+  took the same signal as the listeners, but nothing waited for its stop, so it
+  was aborted mid-drain — immediately, in a worker-only process — and every job
+  in flight waited out its whole lease before another process could claim it.
+  `job_runner_stopped` was never logged either.
+- **A reload no longer validates the web admin in a process that does not run
+  it.** Startup checks `[admin]` only where it binds that socket, so an
+  acme-only or worker-only process could start beside a setting the check
+  refuses and then reject every `SIGHUP` over it. Such a process now builds no
+  admin router either.
+- **A `SIGHUP` that reaches no reload supervisor is logged**
+  (`server_reload_supervisor_gone`) instead of being dropped silently.
 - **The `custom` signer's read hooks no longer spawn a process per request.**
   `GET /crl` and `GET /renewalInfo/{certID}` are unauthenticated, and each one
   ran the operator's script: the CRL answer is now cached for a minute, and at

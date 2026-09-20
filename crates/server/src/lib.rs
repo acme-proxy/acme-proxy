@@ -144,7 +144,19 @@ async fn watch_for_hangup(handle: crate::reload::ReloadHandle) {
         }
     };
     while hangups.recv().await.is_some() {
-        handle.trigger();
+        // `false` means the supervisor is gone — it panicked, or the server is
+        // already shutting down — so this signal, and every later one, does
+        // nothing. Silence there is an operator whose `systemctl reload`
+        // reports success and changes nothing.
+        if !handle.trigger() {
+            error!(
+                event = "server_reload_supervisor_gone",
+                outcome = "failure",
+                signal = "SIGHUP",
+                "the reload supervisor is not accepting requests; restart the process to \
+                 apply a configuration change"
+            );
+        }
     }
 }
 
@@ -292,8 +304,8 @@ pub async fn serve_on_with_reloads(
         store_first_crls(&parts.signers).await;
     }
 
-    let generation =
-        build_generation(&config, &resolved, &assembly, &parts, None).inspect_err(|error| {
+    let generation = build_generation(roles, &config, &resolved, &assembly, &parts, None)
+        .inspect_err(|error| {
             error!(event = "profile_init_failed", outcome = "failure", error = %error);
         })?;
 
@@ -321,7 +333,10 @@ pub async fn serve_on_with_reloads(
     // short is re-claimed from its own row rather than lost. It takes the same
     // shutdown signal as both listeners, so a stop is graceful rather than an
     // abort: it releases its leases on the way out, and a restart therefore
-    // re-claims its own work immediately instead of waiting one out.
+    // re-claims its own work immediately instead of waiting one out. The wait
+    // for that stop is at the end of this function — `AbortOnDrop` is the
+    // backstop for the paths that return before it, where an abort is the only
+    // thing on offer.
     //
     // Neither the registry it drains nor the `[jobs]` section it paces itself
     // from is a value: both are cells a reload republishes, so a changed
@@ -335,7 +350,7 @@ pub async fn serve_on_with_reloads(
     // not anything is draining here.
     let (registry_tx, registry_rx) = tokio::sync::watch::channel(Arc::new(job_registry));
     let (jobs_tx, jobs_rx) = tokio::sync::watch::channel(Arc::new(config.jobs.clone()));
-    let _job_runner = roles.has(ProcessRole::Worker).then(|| {
+    let mut job_runner = roles.has(ProcessRole::Worker).then(|| {
         AbortOnDrop(acme_proxy_jobs::jobs::spawn_runner_watching(
             job_queue,
             registry_rx,
@@ -447,15 +462,39 @@ pub async fn serve_on_with_reloads(
     )));
 
     // Nothing is drained here any more. A notification in flight at shutdown is
-    // a `notify_deliver` row, not a spawned task: the runner released its lease
+    // a `notify_deliver` row, not a spawned task: the runner releases its lease
     // on the way out and whoever starts next claims it. That is what replaced a
     // best-effort five-second drain which still lost anything slower than it.
     tokio::try_join!(acme, admin, metrics)?;
+
+    // The listeners are done; the runner may not be. It takes the same shutdown
+    // signal, but returning here would drop its `AbortOnDrop` and cut its stop
+    // short — and in a worker-only process, where the three futures above have
+    // nothing to finish, that happens immediately. Waiting for it is what makes
+    // the release of its leases real: without it a job in flight waits out its
+    // whole lease before another process may claim it, and `job_runner_stopped`
+    // is never logged. Bounded, because a handler that ignores the signal must
+    // not hold the process open: the runner's own budget plus a margin.
+    if let Some(mut runner) = job_runner.take()
+        && tokio::time::timeout(RUNNER_SHUTDOWN_BUDGET, runner.take())
+            .await
+            .is_err()
+    {
+        warn!(
+            event = "job_runner_shutdown_timed_out",
+            outcome = "failure",
+            budget_ms = acme_proxy_core::logfields::millis(RUNNER_SHUTDOWN_BUDGET),
+            "the job runner did not stop in time; its leases expire on their own"
+        );
+    }
     Ok(())
 }
 
-/// Applies the migrations, or refuses to serve against a schema that is behind.
-///
+/// How long [`serve_on`] waits for the job runner to stop once both listeners
+/// have. The runner's own drain budget is five seconds, so this is that plus
+/// room for the writes that release its leases.
+const RUNNER_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Stores each local CA's first CRL before this process serves anything.
 ///
 /// Every role serves `GET /crl` from the stored row, and the read side never
@@ -467,9 +506,16 @@ pub async fn serve_on_with_reloads(
 /// worker. A failure is logged where it happened
 /// (`local_ca_crl_initialization_failed`) and the sweep's first pass tries
 /// again, so it never stops the process.
+/// Once per CA, not once per profile: two profiles over one `[signer]` section
+/// share a backend, and a third naming the same CA by another path is still
+/// the same issuer. Refreshing twice would sign the same CRL twice and export
+/// it twice.
 pub(crate) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
+    let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (_, backend) in signers.by_profile() {
-        if let Some(refresher) = backend.crl_refresher() {
+        if let Some(refresher) = backend.crl_refresher()
+            && done.insert(refresher.issuer().to_string())
+        {
             let _ = refresher.refresh().await;
         }
     }
@@ -568,6 +614,15 @@ async fn shutdown_signal() {
 
 /// Aborts a background task when it goes out of scope.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl AbortOnDrop {
+    /// Takes the handle back, so the caller can await the task's own stop
+    /// instead of aborting it. What is left behind is an already-finished
+    /// handle, whose abort on drop is a no-op.
+    fn take(&mut self) -> tokio::task::JoinHandle<()> {
+        std::mem::replace(&mut self.0, tokio::spawn(std::future::ready(())))
+    }
+}
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {

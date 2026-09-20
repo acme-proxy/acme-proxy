@@ -85,7 +85,9 @@ pub(super) async fn supervise_reloads(
         };
         // A CA this reload mounted has no stored CRL yet, and the read side
         // never signs one. Stored here, before the routers that serve it are
-        // published, for startup's reason — see `store_first_crls`.
+        // published, for startup's reason — see `store_first_crls`. Run over
+        // every CA of the new generation, once each: for one already serving, a
+        // refresh that finds a fresh CRL and nothing expired signs nothing.
         if let Ok(prepared) = &outcome
             && roles.has(super::ProcessRole::Worker)
         {

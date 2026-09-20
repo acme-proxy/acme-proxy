@@ -292,6 +292,7 @@ The events worth building alerts on:
 | `order_finalize_queued` | info | `finalize` accepted a CSR, claimed the order and queued its signing. Logged by the process serving ACME; the outcome is logged by the worker that signs. |
 | `local_ca_leaf_issued`, `order_finalized` | info | A certificate was issued. Logged by the worker. |
 | `order_finalize_bad_csr`, `order_finalize_issuance_failed` | warn / error | The signer backend rejected the CSR (the order goes `invalid` with `badCSR`), or failed to sign (the job retries). |
+| `server_reload_supervisor_gone` | error | A `SIGHUP` arrived but nothing is left to act on it — the process is shutting down, or the reload supervisor died. The configuration on disk is **not** in effect; restart to apply it. |
 | `order_finalize_authority_withdrawn` | warn | The account, or one of the order's authorizations, was deactivated after `finalize` queued the signing. The order goes `invalid` with `unauthorized` and nothing is signed. |
 | `order_finalize_abandoned` | warn | The queue gave up on an issuance — the attempts ran out, or the order expired under it — and marked the order `invalid` so the client stops polling. Carries the last reason. A steady stream means the backend is down; alert on it. |
 | `certificate_revoked`, `certificate_revoke_signer_failed` | info / error | Revocation succeeded, or the signer refused it — in which case the order is left un-revoked for a retry. |

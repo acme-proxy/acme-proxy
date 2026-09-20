@@ -56,13 +56,19 @@ pub(crate) struct Generation {
 /// login limiter all have to appear in the generation *before* there is a
 /// listener to serve them.
 pub(crate) fn build_generation(
+    roles: crate::RoleSet,
     config: &Arc<Config>,
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
     previous_logins: Option<&acme_proxy_admin::webadmin::LoginLimiter>,
 ) -> anyhow::Result<Generation> {
-    let admin_enabled = config.admin.enabled;
+    // A process that does not run the `admin` role binds no admin socket
+    // (`sockets::bind_admin`), so building its router, its TLS and its login
+    // limiter would be work for a listener that will never exist — and it would
+    // make `[admin]` settings this process never serves able to fail its
+    // reloads.
+    let admin_enabled = config.admin.enabled && roles.has(crate::ProcessRole::Admin);
     let database = assembly.database.clone();
     let profiles = crate::profile::build_all_with(config, resolved, parts)?;
 
@@ -496,8 +502,14 @@ pub(super) fn prepare_reload(
     // that would refuse to start refuses to be reloaded into. It also compiles
     // every `admin.template_dir` override, which is what keeps a broken one a
     // failed reload rather than a 500 in a browser.
-    acme_proxy_admin::webadmin::check_config(&next)
-        .map_err(|error| ReloadError::Build(error.to_string()))?;
+    // Only where this process serves the panel, exactly as startup checks it
+    // (`sockets::bind_admin`). An acme-only or worker-only process that can
+    // start with an `[admin]` section it never serves must not then refuse
+    // every `SIGHUP` over it.
+    if roles.has(crate::ProcessRole::Admin) {
+        acme_proxy_admin::webadmin::check_config(&next)
+            .map_err(|error| ReloadError::Build(error.to_string()))?;
+    }
     // Its twin for the third listener: `webadmin::check_config` sees the
     // admin-versus-server pair, this one sees the two it cannot.
     check_metrics_config(&next).map_err(|error| ReloadError::Build(error.to_string()))?;
@@ -517,7 +529,7 @@ pub(super) fn prepare_reload(
     let parts = assembly
         .build_parts(&next_resolved, &next)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
-    let generation = build_generation(&next, &next_resolved, assembly, &parts, logins)
+    let generation = build_generation(roles, &next, &next_resolved, assembly, &parts, logins)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
 
     // Compared by name against what is running, not against what is written

@@ -12,9 +12,6 @@ use super::*;
 /// under `dir`, so a test never touches the repository.
 fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
     let dir = dir.as_ref();
-    let _lock = acme_proxy_core::config::ENV_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ca = dir.join("ca");
     let body = format!(
         r#"
@@ -35,6 +32,15 @@ fn config_in(dir: impl AsRef<std::path::Path>, tls: bool) -> Config {
         dir = dir.display(),
         ca = ca.display(),
     );
+    load_config(dir, &body)
+}
+
+/// Writes `body` as `dir/config.toml` and loads it, holding the environment
+/// lock across the `ACME_PROXY_CONFIG` that points at it.
+fn load_config(dir: &std::path::Path, body: &str) -> Config {
+    let _lock = acme_proxy_core::config::ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     std::fs::write(dir.join("config.toml"), body).unwrap();
     // SAFETY: the lock above makes this the only thread touching the
     // environment, and the variable is removed before returning.
@@ -541,6 +547,149 @@ async fn an_unbindable_address_is_reported() {
         .await
         .expect_err("binding an unroutable address must fail");
     assert!(error.to_string().contains("192.0.2.1:1"), "{error}");
+}
+/// An order claimed for issuance, with the valid authorization the worker
+/// re-checks before it signs.
+#[cfg(test)]
+async fn claimed_order(database: &Arc<Database>) -> acme_proxy_store::order::Order {
+    use acme_proxy_core::identifier::Identifier;
+    use acme_proxy_store::authz::Authorization;
+    use acme_proxy_store::order::Order;
+
+    let account = acme_proxy_store::testutil::account_id(database).await;
+    let mut order = Order::create(
+        "default",
+        account,
+        vec![Identifier::dns("a.example.com")],
+        2_000_000_000,
+        None,
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+    let mut authz = Authorization::create(
+        order.id,
+        Identifier::dns("a.example.com"),
+        order.expires,
+        database,
+    )
+    .await
+    .unwrap();
+    assert!(authz.mark_valid(database).await.unwrap());
+    assert!(order.mark_ready(database).await.unwrap());
+    assert!(order.claim_for_finalize(database).await.unwrap());
+    order
+}
+
+/// A shutdown waits for the job runner to stop, so the leases it holds are
+/// released rather than left to expire.
+///
+/// The runner is held under `AbortOnDrop`, which is the right thing for every
+/// path that returns early and the wrong thing here: returning as soon as the
+/// listeners are done would abort the stop mid-drain. In a worker-only process
+/// the listeners have nothing to finish, so the abort would land immediately
+/// and every job in flight would wait out its whole lease before another
+/// process could claim it.
+#[tokio::test]
+async fn a_shutdown_waits_for_the_runner_to_release_its_leases() {
+    use acme_proxy_jobs::jobs::JobQueue;
+    use acme_proxy_store::job::Job;
+
+    let dir = temp_dir();
+    // A signer that takes longer than the runner's drain budget, so the job is
+    // still in flight when the signal arrives and the lease is genuinely held.
+    let script = acme_proxy_core::testutil::write_script(
+        &dir,
+        "slow-signer.sh",
+        "#!/bin/sh\ncat > /dev/null\nsleep 30\n",
+    );
+    let config = load_config(
+        dir.path(),
+        &format!(
+            r#"
+            [server]
+            bind_address = "127.0.0.1:0"
+            base_url = "http://localhost:3000"
+
+            [jobs]
+            poll_interval_ms = 10
+
+            [profiles.default]
+            signer.backend = "custom"
+            signer.custom.script_path = "{script}"
+            signer.custom.timeout_ms = 60000
+            "#,
+            script = script.display(),
+        ),
+    );
+
+    let database = Arc::new(Database::connect_in_memory().await.unwrap());
+    let queue = JobQueue::new(database.clone(), &config.jobs);
+    let order = claimed_order(&database).await;
+    queue
+        .enqueue(acme_proxy_protocol::acme::issue::signer_issue_spec(
+            &order,
+            b"not-a-csr",
+            &acme_proxy_core::audit::ClientContext::default(),
+            None,
+        ))
+        .await
+        .unwrap();
+    let queued = Job::find_live("signer_issue", &order.id.to_string(), &database)
+        .await
+        .unwrap()
+        .expect("the row is queued");
+
+    let sockets = Sockets {
+        acme: None,
+        admin: None,
+        metrics: None,
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let (_handle, reloads) = crate::reload::channel();
+    let serving = tokio::spawn(serve_on_with_reloads(
+        RoleSet::parse(Some("worker")).unwrap(),
+        Arc::new(config),
+        database.clone(),
+        sockets,
+        async {
+            let _ = rx.await;
+        },
+        reloads,
+    ));
+
+    // Wait for the runner to have claimed the row.
+    let claimed = async {
+        loop {
+            let row = Job::find_by_id(queued.id, &database).await.unwrap();
+            if row.is_some_and(|row| row.lease_owner.is_some()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), claimed)
+        .await
+        .expect("the runner must claim the queued row");
+
+    let _ = tx.send(());
+    tokio::time::timeout(Duration::from_secs(15), serving)
+        .await
+        .expect("the process must stop within the runner's budget")
+        .unwrap()
+        .unwrap();
+
+    // Released, not left leased: the next process claims it at once.
+    let row = Job::find_by_id(queued.id, &database)
+        .await
+        .unwrap()
+        .expect("the row outlives the process that leased it");
+    assert_eq!(
+        row.lease_owner, None,
+        "the lease must be released on the way out"
+    );
+    assert_eq!(row.status, "ready");
 }
 
 /// Only the `worker` role builds a backend: a process running `acme` and
