@@ -260,7 +260,16 @@ only implementation.
 
 ### `[signer.relay.dns01.rfc2136]`
 
-All default to `""` and are required once the `dns01` strategy is selected.
+The address, zone, and TSIG fields are required for the `dns01` strategy.
+
+**`timeout_secs`** (`u64`) — *Default: `10` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TIMEOUT_SECS`*
+
+Maximum seconds for one UPDATE, with TCP fallback. The range is
+`1..3600`. API bridges can make multiple API calls for one UPDATE. For example,
+an UPDATE timeout of 60 seconds permits multiple API calls with 15-second
+timeouts.
+The relay's `poll_timeout_secs` must also cover publication, propagation,
+validation, and cleanup for all names in the order.
 
 **`server`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER`*
 `host:port` of the nameserver accepting the dynamic update, e.g. `10.0.0.53:53`.

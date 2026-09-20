@@ -187,9 +187,11 @@ impl Default for Dns01PropagationConfig {
     }
 }
 /// RFC 2136 dynamic DNS update, authenticated with TSIG.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Rfc2136Config {
+    /// Maximum seconds for one UPDATE, with TCP fallback.
+    pub timeout_secs: u64,
     /// `host:port` of the authoritative server accepting the update.
     pub server: String,
     /// The zone to update, e.g. `example.org.`.
@@ -200,6 +202,18 @@ pub struct Rfc2136Config {
     /// environment variable over a file on disk.
     pub tsig_key_secret: String,
     pub tsig_algorithm: String,
+}
+impl Default for Rfc2136Config {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 10,
+            server: String::new(),
+            zone: String::new(),
+            tsig_key_name: String::new(),
+            tsig_key_secret: String::new(),
+            tsig_algorithm: String::new(),
+        }
+    }
 }
 /// Configuration for the persistent local-CA signer backend.
 #[derive(Debug, Clone, Deserialize)]

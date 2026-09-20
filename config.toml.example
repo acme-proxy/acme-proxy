@@ -551,6 +551,9 @@ hmac_key = ""                       # ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY
 provider = "rfc2136"                # ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER
 
 [signer.relay.dns01.rfc2136]
+# Maximum seconds for one UPDATE, with TCP fallback (1..3600).
+# Set 60 for a bridge with multiple API calls.
+timeout_secs = 10                   # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TIMEOUT_SECS
 # host:port of the authoritative server that accepts the update.
 server = ""                         # ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER
 # The zone being updated, e.g. "example.org." (trailing dot).

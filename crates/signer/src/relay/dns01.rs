@@ -86,9 +86,6 @@ pub struct Rfc2136Updater {
 /// TTL for a published challenge record, in seconds.
 const CHALLENGE_TTL: u32 = 60;
 
-/// Budget for one update exchange.
-const UPDATE_TIMEOUT: Duration = Duration::from_secs(10);
-
 impl Rfc2136Updater {
     /// Validates the configuration and builds the TSIG signer.
     ///
@@ -98,6 +95,9 @@ impl Rfc2136Updater {
     pub fn from_config(cfg: &Rfc2136Config) -> anyhow::Result<Self> {
         use base64::prelude::*;
 
+        if !(1..=3600).contains(&cfg.timeout_secs) {
+            anyhow::bail!("signer.relay.dns01.rfc2136.timeout_secs must be between 1 and 3600");
+        }
         if cfg.server.is_empty() {
             anyhow::bail!("signer.relay.dns01.rfc2136.server is not set");
         }
@@ -138,7 +138,7 @@ impl Rfc2136Updater {
             server,
             zone,
             signer,
-            timeout: UPDATE_TIMEOUT,
+            timeout: Duration::from_secs(cfg.timeout_secs),
             ttl: CHALLENGE_TTL,
         })
     }
@@ -368,6 +368,33 @@ mod tests {
             tsig_key_name: "acme-key.".to_string(),
             tsig_key_secret: BASE64_STANDARD.encode(b"0123456789abcdef0123456789abcdef"),
             tsig_algorithm: "hmac-sha256".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn update_timeout_preserves_default_and_accepts_bridge_budget() {
+        let mut cfg = config();
+        assert_eq!(
+            Rfc2136Updater::from_config(&cfg).unwrap().timeout,
+            Duration::from_secs(10)
+        );
+        for seconds in [1, 60, 3600] {
+            cfg.timeout_secs = seconds;
+            assert_eq!(
+                Rfc2136Updater::from_config(&cfg).unwrap().timeout,
+                Duration::from_secs(seconds)
+            );
+        }
+        for seconds in [0, 3601, u64::MAX] {
+            cfg.timeout_secs = seconds;
+            assert!(
+                Rfc2136Updater::from_config(&cfg)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("timeout_secs")
+            );
         }
     }
 
