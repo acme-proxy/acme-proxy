@@ -269,7 +269,7 @@ impl UpstreamOrder {
         // `AssertSqlSafe` because sqlx refuses a non-`'static` query string
         // outright: the only runtime part of this one is the count of `?`
         // placeholders, never a value.
-        let mut query = crate::sql::query(sql);
+        let mut query = crate::sql::query(sqlx::AssertSqlSafe(sql));
         for profile in profiles {
             query = query.bind(profile);
         }

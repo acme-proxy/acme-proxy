@@ -463,8 +463,8 @@ impl AdminSession {
         user_id: Option<Uuid>,
         database: &Database,
     ) -> Result<Vec<AdminSession>, sqlx::Error> {
-        // Two literal statements rather than one built up: `sqlx::query` takes
-        // only `&'static str`, which is what stops a column list or a
+        // Two literal statements rather than one built up: `sql::query` takes
+        // only a `&'static str`, which is what stops a column list or a
         // predicate ever being interpolated in.
         let rows = match user_id {
             Some(id) => crate::sql::query(concat!(
@@ -503,7 +503,7 @@ impl AdminSession {
         database: &Database,
     ) -> Result<(Vec<AdminSession>, i64), sqlx::Error> {
         // Two literal statements rather than one built up, [`Self::list_all`]'s
-        // reason: `sqlx::query` takes only `&'static str`, which is what stops
+        // reason: `sql::query` takes only a `&'static str`, which is what stops
         // a column list or a predicate ever being interpolated in.
         let (rows, total) = match user_id {
             Some(id) => (

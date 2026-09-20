@@ -319,7 +319,7 @@ pub const UNPARSABLE_NOT_AFTER: i64 = -1;
 /// function: a predicate applied to only one of them reports a total the rows
 /// do not match, which a page control shows and nothing else does.
 ///
-/// A function over a `QueryBuilder` rather than the `macro_rules!` this used to
+/// A function over a `sql::Builder` rather than the `macro_rules!` this used to
 /// be, because `profile` became optional when the admin surfaces arrived and a
 /// `concat!` literal cannot carry a conditional clause. The three predicates
 /// after it are unconditional and each carries its reason on
@@ -570,7 +570,7 @@ impl Order {
     /// listing, which meant one meaning of `--status` written twice and a whole
     /// table loaded to filter three fields.
     ///
-    /// Built with a [`sqlx::QueryBuilder`]: `sqlx::query` takes only
+    /// Built with a [`crate::sql::Builder`]: `sql::query` takes only
     /// `&'static str`, and every value below goes through `push_bind`, so
     /// nothing operator- or client-supplied is ever interpolated into the SQL.
     pub async fn search(

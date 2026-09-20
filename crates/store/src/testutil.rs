@@ -363,7 +363,7 @@ pub async fn postgres_database() -> Option<crate::db::Database> {
         .expect("TEST_POSTGRES_URL should name a reachable PostgreSQL");
 
     sweep_stale_schemas(&admin).await;
-    crate::sql::query(format!("CREATE SCHEMA {schema};"))
+    crate::sql::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema};")))
         .execute(&admin)
         .await
         .expect("a test schema should be creatable");
@@ -422,9 +422,11 @@ async fn sweep_stale_schemas(admin: &crate::db::Database) {
             continue;
         };
         if now.saturating_sub(minted) > STALE_AFTER_MS {
-            let _ = crate::sql::query(format!("DROP SCHEMA IF EXISTS {name} CASCADE;"))
-                .execute(admin)
-                .await;
+            let _ = crate::sql::query(sqlx::AssertSqlSafe(format!(
+                "DROP SCHEMA IF EXISTS {name} CASCADE;"
+            )))
+            .execute(admin)
+            .await;
         }
     }
 }

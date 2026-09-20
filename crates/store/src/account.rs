@@ -564,7 +564,7 @@ impl Account {
     /// wants. `eab_kid` narrows to the accounts one EAB credential bound —
     /// what the credential card links to before an operator deletes it.
     ///
-    /// A [`sqlx::QueryBuilder`] with one predicate function shared by the page
+    /// A [`crate::sql::Builder`] with one predicate function shared by the page
     /// and the count, [`crate::query`]'s shape. It was two literal
     /// statements per branch while `profile` was the only filter; a second
     /// optional filter made that four shapes, each a place for the page and the

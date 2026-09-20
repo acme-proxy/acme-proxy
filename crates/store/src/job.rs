@@ -236,7 +236,7 @@ impl Job {
              RETURNING {COLUMNS};"
         );
 
-        let mut query = crate::sql::query(sql)
+        let mut query = crate::sql::query(sqlx::AssertSqlSafe(sql))
             .bind(runner_id)
             .bind(lease_until)
             .bind(now)
@@ -339,7 +339,7 @@ impl Job {
              WHERE id = ? AND status = 'running' AND lease_owner = ?;",
             if reset_attempts { ", attempts = 0" } else { "" }
         );
-        let settled = crate::sql::query(sql)
+        let settled = crate::sql::query(sqlx::AssertSqlSafe(sql))
             .bind(status)
             .bind(error)
             .bind(run_at)
@@ -406,7 +406,7 @@ impl Job {
 
     /// One row by id.
     pub async fn find_by_id(id: Uuid, database: &Database) -> Result<Option<Self>, sqlx::Error> {
-        // A `QueryBuilder` rather than `sqlx::query`, which takes only
+        // A `sql::Builder` rather than `sql::query`, which takes only a
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
         let mut query = crate::sql::Builder::new(
@@ -459,7 +459,7 @@ impl Job {
     /// match unpaged. The only cross-kind listing this model offers, for the
     /// operator surface (`acme-proxy jobs list`, `GET /api/jobs`).
     ///
-    /// Built with a [`sqlx::QueryBuilder`] rather than `sqlx::query`, which
+    /// Built with a [`crate::sql::Builder`] rather than `sql::query`, which
     /// takes only `&'static str` and so cannot be handed the shared `COLUMNS`
     /// — the same reason [`Self::find_by_id`] does. Every value goes through
     /// `push_bind`, so nothing operator-supplied is interpolated.
@@ -564,7 +564,7 @@ impl Job {
              WHERE id = ? AND status = ? \
              RETURNING {COLUMNS};"
         );
-        let row = crate::sql::query(sql)
+        let row = crate::sql::query(sqlx::AssertSqlSafe(sql))
             .bind(now_secs())
             .bind(id)
             .bind(from.as_str())
@@ -586,7 +586,7 @@ impl Job {
             "UPDATE jobs SET run_at = ?, updated_at = ? \
              WHERE id = ? AND status = 'ready' RETURNING {COLUMNS};"
         );
-        let row = crate::sql::query(sql)
+        let row = crate::sql::query(sqlx::AssertSqlSafe(sql))
             .bind(now)
             .bind(now)
             .bind(id)
@@ -618,7 +618,7 @@ impl Job {
                  lease_owner = NULL, lease_until = NULL \
              WHERE id = ? AND status = 'failed' RETURNING {COLUMNS};"
         );
-        let row = crate::sql::query(sql)
+        let row = crate::sql::query(sqlx::AssertSqlSafe(sql))
             .bind(now)
             .bind(now)
             .bind(id)

@@ -16,9 +16,9 @@
 #   crates/                  — every library crate of the workspace, including
 #                              the assets `include_str!`ed from them
 #                              (crates/*/src/webadmin/static/, the `/ui` and
-#                              notification templates) and
-#                              crates/store/migrations/, which `sqlx::migrate!()`
-#                              embeds
+#                              notification templates) and both migration sets,
+#                              crates/store/migrations{,-postgres}/, which
+#                              `sqlx::migrate!()` embeds at compile time
 #
 # `tests/` is deliberately absent: the only thing outside the sources it is
 # reached for is `tests/fixtures/rsa_test_key.pk8`, `include_bytes!`d from a

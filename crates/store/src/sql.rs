@@ -38,7 +38,7 @@
 
 use sqlx::postgres::{PgConnection, PgRow};
 use sqlx::sqlite::{SqliteConnection, SqliteRow};
-use sqlx::{Postgres, Row as _, Sqlite};
+use sqlx::{Postgres, Row as _, SqlSafeStr as _, Sqlite};
 use uuid::Uuid;
 
 use crate::db::Database;
@@ -222,15 +222,22 @@ pub fn to_dollar_placeholders(sql: &str) -> String {
 
 /// A statement and its parameters, before either driver has seen it.
 pub struct Query {
-    sql: String,
+    sql: sqlx::SqlStr,
     args: Vec<Value>,
 }
 
 /// Starts a statement. The SQL is written with `?` markers.
+///
+/// Takes [`sqlx::SqlSafeStr`], which is `&'static str` or an explicit
+/// [`sqlx::AssertSqlSafe`] — not any `String`. That is the whole of what stops
+/// a column list, a predicate or a value being interpolated into a statement
+/// by accident: a literal needs nothing, and a statement built at runtime has
+/// to say so at the call site. Every value goes through [`Query::bind`]
+/// regardless, so a filter is compared and never executed.
 #[must_use]
-pub fn query(sql: impl Into<String>) -> Query {
+pub fn query(sql: impl sqlx::SqlSafeStr) -> Query {
     Query {
-        sql: sql.into(),
+        sql: sql.into_sql_str(),
         args: Vec::new(),
     }
 }
@@ -268,8 +275,8 @@ impl Query {
     #[must_use]
     pub fn sql_for(&self, dialect: Dialect) -> String {
         match dialect {
-            Dialect::Sqlite => self.sql.clone(),
-            Dialect::Postgres => to_dollar_placeholders(&self.sql),
+            Dialect::Sqlite => self.sql.as_str().to_string(),
+            Dialect::Postgres => to_dollar_placeholders(self.sql.as_str()),
         }
     }
 
@@ -351,7 +358,7 @@ impl Query {
 
     /// The SQLite statement, with its arguments bound in order.
     fn sqlite(self) -> sqlx::query::Query<'static, Sqlite, sqlx::sqlite::SqliteArguments> {
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(self.sql));
+        let mut q = sqlx::query(self.sql);
         for value in self.args {
             q = match value {
                 Value::Null(NullKind::Bool) => q.bind(None::<bool>),
@@ -371,7 +378,9 @@ impl Query {
 
     /// The PostgreSQL statement, with `?` rewritten and its arguments bound.
     fn postgres(self) -> sqlx::query::Query<'static, Postgres, sqlx::postgres::PgArguments> {
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(to_dollar_placeholders(&self.sql)));
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(to_dollar_placeholders(
+            self.sql.as_str(),
+        )));
         for value in self.args {
             q = match value {
                 Value::Null(NullKind::Bool) => q.bind(None::<bool>),
@@ -645,10 +654,16 @@ impl Builder {
     }
 
     /// Hands the built statement over to be run.
+    ///
+    /// The assertion is the builder's own: every fragment reaching [`push`] is
+    /// a literal from this crate, and every value went through
+    /// [`push_bind`](Self::push_bind) as a `?`.
+    ///
+    /// [`push`]: Self::push
     #[must_use]
     pub fn build(self) -> Query {
         Query {
-            sql: self.sql,
+            sql: sqlx::AssertSqlSafe(self.sql).into_sql_str(),
             args: self.args,
         }
     }

@@ -208,7 +208,7 @@ impl AuditEntry {
 
     /// One row by id — what `acme-proxy audit show <id>` reads.
     pub async fn find_by_id(id: i64, database: &Database) -> Result<Option<Self>, sqlx::Error> {
-        // A `QueryBuilder` rather than `sqlx::query`, which takes only
+        // A `sql::Builder` rather than `sql::query`, which takes only a
         // `&'static str` and so cannot be handed the shared `COLUMNS`. `id`
         // still goes through `push_bind`, so nothing is interpolated.
         let mut query = crate::sql::Builder::new(
