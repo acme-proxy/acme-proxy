@@ -98,19 +98,24 @@ fn bad_status(error: UnknownStatus) -> AdminError {
     AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
 }
 
-/// `GET /api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
-pub async fn list_orders(
-    State(state): State<AdminState>,
-    Query(params): Query<OrderListParams>,
-    _auth: Authenticated,
-) -> Result<Json<Value>, AdminError> {
-    let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
+/// The listing query `params` asks for, refusals and all.
+///
+/// Both front ends build it here: the two copies this replaced had the same
+/// three refusals worded twice, and the page answered a generic
+/// `bad_request` where the API named `invalid_status` or
+/// `conflicting_identifier_filter`. `Order::search` is the one listing filter
+/// (see `crates/CLAUDE.md`), so this is the one place its parameters are
+/// assembled.
+pub(crate) fn order_query(
+    params: OrderListParams,
+    page: crate::webadmin::handlers::paging::Page,
+) -> Result<OrderQuery, AdminError> {
     // Parsed before the move, since the helpers borrow `params`.
     let status = params.parsed_status().map_err(bad_status)?;
     params
         .check_identifier_filters()
         .map_err(bad_identifier_filters)?;
-    let query = OrderQuery {
+    Ok(OrderQuery {
         profile: params.profile,
         account_id: params.account_id,
         status,
@@ -119,7 +124,17 @@ pub async fn list_orders(
         cert_serial: params.cert_serial,
         limit: page.limit,
         offset: page.offset,
-    };
+    })
+}
+
+/// `GET /api/orders?profile=&accountId=&status=&identifier=&identifierContains=&certSerial=&limit=&offset=`
+pub async fn list_orders(
+    State(state): State<AdminState>,
+    Query(params): Query<OrderListParams>,
+    _auth: Authenticated,
+) -> Result<Json<Value>, AdminError> {
+    let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
+    let query = order_query(params, page)?;
     let (orders, total) = Order::search(&query, &state.database).await?;
 
     let items = render_orders(&orders, &state).await?;

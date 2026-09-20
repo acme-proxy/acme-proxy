@@ -375,6 +375,15 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **The credential writes are shared by `/api` and `/ui` too**: the password
+  change, the TOTP enrolment, its confirmation, disabling it and reissuing
+  recovery codes. These were the writes commit 8f5c0e0 left as two copies, and
+  they had already drifted — `POST /api/mfa/totp` began a **new** enrolment
+  where `/ui` resumed the pending one, so an operator who had scanned a secret
+  and then used the other surface was handed a different one. Both now resume,
+  and a refusal is worded once. The order listing's query and its refusal codes
+  (`invalid_status`, `conflicting_identifier_filter`) are shared the same way;
+  the page answered a generic `bad_request` for both.
 - **Every web-admin write now logs and audits identically through `/api` and
   `/ui`.** Each action (EAB create, revoke and delete; account contact,
   deactivate and delete; order revoke and delete; job cancel and run-now; nonce

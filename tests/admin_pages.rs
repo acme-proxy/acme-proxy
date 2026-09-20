@@ -4472,6 +4472,151 @@ async fn last_audit_id(database: &std::sync::Arc<acme_proxy_store::db::Database>
     rows.first().map_or(0, |row| row.id)
 }
 
+/// The credential writes, through both front ends, leaving the same rows.
+///
+/// These are self-service — an operator's own password and second factor — so
+/// they have no subject to vary and could not join the table below: each one
+/// changes the very credential the next case needs. Driven as a sequence
+/// instead, API first and `/ui` second, with the audit rows compared pair by
+/// pair. What it would catch is one surface quietly doing the write without
+/// the notification and the row that must follow it, which is exactly how the
+/// two copies these replaced had drifted.
+#[tokio::test]
+async fn both_surfaces_record_the_same_credential_changes() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+
+    // Password: A → B through `/api`, B → C through `/ui`.
+    let mut rows = Vec::new();
+    for (surface, current, next) in [
+        ("api", ADMIN_PASSWORD, "another-long-password"),
+        ("ui", "another-long-password", "a-third-long-password"),
+    ] {
+        let before = last_audit_id(&database).await;
+        let response = match surface {
+            "api" => {
+                admin_request(
+                    &app,
+                    Method::POST,
+                    "/api/account/password",
+                    Some(&session),
+                    Some(json!({ "current_password": current, "new_password": next })),
+                )
+                .await
+            }
+            _ => {
+                admin_form_request(
+                    &app,
+                    Method::POST,
+                    "/ui/account/password",
+                    Some(&session),
+                    Some(&[("current_password", current), ("new_password", next)]),
+                )
+                .await
+            }
+        };
+        assert!(
+            response.status().is_success(),
+            "password change via /{surface}: {}",
+            response.status()
+        );
+        rows.push(rows_since(&database, before).await);
+    }
+    assert!(!rows[0].is_empty(), "a password change is audited");
+    assert_eq!(rows[0], rows[1], "the two surfaces wrote different rows");
+
+    // Enrol through `/api`, confirm through `/ui`: both halves record the one
+    // `second factor enabled` change.
+    let begun = admin_request(
+        &app,
+        Method::POST,
+        "/api/mfa/totp",
+        Some(&session),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(begun.status(), StatusCode::CREATED);
+    let secret = base32_decode(json_body(begun).await["secret"].as_str().unwrap());
+
+    // The pending enrolment is resumed rather than restarted, whichever
+    // surface asks — an operator who has already scanned the secret must not
+    // be handed a different one.
+    let resumed = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/mfa/totp",
+        Some(&session),
+        Some(&[]),
+    )
+    .await;
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let body = html_body(resumed).await;
+    let shown = between(&body, r#"<pre class="secret">"#, "</pre>");
+    assert_eq!(
+        base32_decode(&shown),
+        secret,
+        "the secret `/api` began must be the one `/ui` shows"
+    );
+
+    let before = last_audit_id(&database).await;
+    let confirmed = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/mfa/totp/confirm",
+        Some(&session),
+        Some(&[("code", &totp_code(&secret, 0))]),
+    )
+    .await;
+    assert_eq!(confirmed.status(), StatusCode::OK);
+    let enabled = rows_since(&database, before).await;
+    assert!(!enabled.is_empty(), "enabling a factor is audited");
+
+    // Recovery codes, then disabling the factor: each through the surface the
+    // other did not use.
+    let password = "a-third-long-password";
+    let before = last_audit_id(&database).await;
+    let reissued = admin_request(
+        &app,
+        Method::POST,
+        "/api/mfa/recovery-codes",
+        Some(&session),
+        Some(json!({ "password": password })),
+    )
+    .await;
+    assert!(reissued.status().is_success(), "{}", reissued.status());
+    let api_codes = rows_since(&database, before).await;
+
+    let before = last_audit_id(&database).await;
+    let reissued = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/mfa/recovery-codes",
+        Some(&session),
+        Some(&[("password", password)]),
+    )
+    .await;
+    assert!(reissued.status().is_success(), "{}", reissued.status());
+    assert_eq!(
+        api_codes,
+        rows_since(&database, before).await,
+        "reissuing recovery codes wrote different rows"
+    );
+
+    let before = last_audit_id(&database).await;
+    let disabled = admin_form_request(
+        &app,
+        Method::POST,
+        "/ui/account/mfa/totp/disable",
+        Some(&session),
+        Some(&[("password", password)]),
+    )
+    .await;
+    assert!(disabled.status().is_success(), "{}", disabled.status());
+    assert!(
+        !rows_since(&database, before).await.is_empty(),
+        "disabling a factor is audited"
+    );
+}
+
 /// Every audited write the two front ends share, done once through `/api` and
 /// once through `/ui` against a fresh subject each: the rows must match.
 ///

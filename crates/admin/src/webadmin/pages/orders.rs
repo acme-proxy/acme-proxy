@@ -21,7 +21,6 @@ use crate::webadmin::pages::{
     ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
 };
 use acme_proxy_store::order::Order;
-use acme_proxy_store::order::OrderQuery;
 
 /// The revoke control posts a `<select>`, whose empty option means "no reason".
 #[derive(Debug, Deserialize, Default)]
@@ -46,28 +45,10 @@ pub async fn list_orders(
         .with("identifier", params.identifier.as_deref())
         .with("identifierContains", params.identifier_contains.as_deref())
         .with("certSerial", params.cert_serial.as_deref());
-    // Same refusals the API gives, rendered as a page rather than as JSON.
-    let parsed = params
-        .parsed_status()
-        .map_err(|error| PageError::bad_request(error.to_string()))?;
-    params
-        .check_identifier_filters()
-        .map_err(|message| PageError::bad_request(message.to_string()))?;
-
-    let (orders, total) = Order::search(
-        &OrderQuery {
-            profile: params.profile.clone(),
-            account_id: params.account_id.clone(),
-            status: parsed,
-            identifier: params.identifier.clone(),
-            identifier_contains: params.identifier_contains.clone(),
-            cert_serial: params.cert_serial.clone(),
-            limit: page.limit,
-            offset: page.offset,
-        },
-        &state.database,
-    )
-    .await?;
+    // The API's own query, refusals and codes included, rendered as a page
+    // rather than as JSON.
+    let query = crate::webadmin::handlers::orders::order_query(params, page)?;
+    let (orders, total) = Order::search(&query, &state.database).await?;
     let items = render_orders(&orders, &state).await?;
 
     let mut context = chrome(&session, "orders", "Orders");

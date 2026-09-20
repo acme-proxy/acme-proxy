@@ -17,13 +17,12 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::admin;
-use crate::admin::password::PasswordContext;
-use crate::admin::users::{self, UserError};
 use crate::admin::{mfa, totp};
 use crate::webadmin::AdminState;
+use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::account::apply_revoke_own_session;
-use crate::webadmin::handlers::mfa::{check_step_up, verify_current_password};
+use crate::webadmin::handlers::mfa::verify_current_password;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSelfServiceWrite, PageSession};
 use crate::webadmin::pages::error::PageError;
@@ -54,29 +53,21 @@ pub struct StepUpForm {
 /// the wording are taken from the error rather than hardcoded: a lockout renders
 /// at 429 and says how long to wait, exactly as `post_login` re-renders its own
 /// refusals at their real status.
-async fn refuse_without_password(
+async fn refuse_on_the_card(
     state: &AdminState,
     user: &AdminUser,
     csrf_token: &str,
-    password: &str,
-    client: Option<std::net::IpAddr>,
-) -> Result<Option<Response>, PageError> {
-    let Err(error) = check_step_up(user, password, client, &state.logins) else {
-        return Ok(None);
-    };
+    error: &AdminError,
+) -> Result<Response, PageError> {
     // `refuse_with_card` keeps this page's own wording for the wrong-password
     // case (`AdminError`'s is "invalid username or password", a script's answer
     // to a sign-in, naming a field this card does not have) and carries every
-    // other refusal's message through — today only the rate limit, which is the
-    // one that says how long to wait. It also keeps the error's *headers*,
-    // which this rebuilt its response without: a `429` lost its `Retry-After`.
+    // other refusal's message through — the rate limit, which says how long to
+    // wait, and the two the shared actions raise. It also keeps the error's
+    // *headers*, which a rebuilt response lost: a `429` without its
+    // `Retry-After`.
     let context = card_context(state, user, csrf_token).await?;
-    Ok(Some(super::refuse_with_card(
-        state,
-        "account/_mfa.html",
-        context,
-        &error,
-    )?))
+    super::refuse_with_card(state, "account/_mfa.html", context, error)
 }
 
 /// `GET /ui/account` — the second-factor status card, the password card, and
@@ -123,24 +114,20 @@ pub async fn begin_totp(
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.enrol.user;
-    if let Some(refusal) = refuse_without_password(
+    let enrolment = match crate::webadmin::handlers::mfa::begin_totp_for(
         &state,
-        &user,
-        &session.enrol.session.csrf_token,
+        &mut user,
         &body.password,
         client,
     )
-    .await?
+    .await
     {
-        return Ok(refusal);
-    }
-
-    let enrolment = mfa::resume_or_begin_totp_enrolment(
-        &mut user,
-        &state.config.admin.base_url,
-        state.database.clone(),
-    )
-    .await?;
+        Ok(enrolment) => enrolment,
+        Err(error) => {
+            return refuse_on_the_card(&state, &user, &session.enrol.session.csrf_token, &error)
+                .await;
+        }
+    };
 
     let mut context = Map::new();
     context.insert(
@@ -176,10 +163,18 @@ pub async fn confirm_totp(
 ) -> Result<Response, PageError> {
     let mut user = session.enrol.user;
     let keep = session.enrol.session.token_hash.clone();
+    let user_agent = crate::webadmin::user_agent_of(&headers);
 
-    let Some(codes) =
-        mfa::confirm_totp_enrolment(&mut user, &body.code, Some(&keep), state.database.clone())
-            .await?
+    let Some(codes) = crate::webadmin::handlers::mfa::confirm_totp_for(
+        &state,
+        &request_context,
+        &mut user,
+        &body.code,
+        &keep,
+        client,
+        user_agent.as_deref(),
+    )
+    .await?
     else {
         // Re-render the enrolment step with the same secret still pending, so
         // the operator can simply try the next code their app shows.
@@ -217,18 +212,6 @@ pub async fn confirm_totp(
             .into_response());
     };
 
-    state
-        .record_credential_change(
-            &request_context,
-            &user.username,
-            &user,
-            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled,
-            true,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
-
     let mut context = card_context(&state, &user, &session.enrol.session.csrf_token).await?;
     context.insert("recovery_codes".to_string(), json!(codes));
     Ok(respond_fragment(&state, "account/_codes.html", context)?.into_response())
@@ -246,55 +229,23 @@ pub async fn disable_totp(
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    if state.config.admin.require_mfa {
-        // A banner, not a page: the refusal is about this card's own state.
-        let mut context =
-            card_context(&state, &session.auth.user, &session.auth.session.csrf_token).await?;
-        context.insert(
-            "flash".to_string(),
-            super::flash_error(
-                "mfa_required",
-                "This server requires a second factor of every operator.",
-            ),
-        );
-        return Ok((
-            StatusCode::CONFLICT,
-            respond_fragment(&state, "account/_mfa.html", context)?,
-        )
-            .into_response());
-    }
-
     let mut user = session.auth.user;
-    if let Some(refusal) = refuse_without_password(
+    let user_agent = crate::webadmin::user_agent_of(&headers);
+    // A banner, not a page: every refusal here — the server requiring a factor,
+    // a wrong password, a rate limit — is about this card's own state.
+    if let Err(error) = crate::webadmin::handlers::mfa::disable_totp_for(
         &state,
-        &user,
-        &session.auth.session.csrf_token,
-        &body.password,
-        client,
-    )
-    .await?
-    {
-        return Ok(refusal);
-    }
-
-    mfa::disable_totp(
+        &request_context,
         &mut user,
-        Some(&session.auth.session.token_hash),
-        state.database.clone(),
+        &body.password,
+        &session.auth.session.token_hash,
+        client,
+        user_agent.as_deref(),
     )
-    .await?;
-
-    state
-        .record_credential_change(
-            &request_context,
-            &user.username,
-            &user,
-            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
-            true,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
+    .await
+    {
+        return refuse_on_the_card(&state, &user, &session.auth.session.csrf_token, &error).await;
+    }
 
     let mut context = card_context(&state, &user, &session.auth.session.csrf_token).await?;
     context.insert(
@@ -321,48 +272,28 @@ pub async fn regenerate_recovery_codes(
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    if !session.auth.user.has_totp() {
-        let mut context =
-            card_context(&state, &session.auth.user, &session.auth.session.csrf_token).await?;
-        context.insert(
-            "flash".to_string(),
-            super::flash_error(
-                "mfa_not_enabled",
-                "There is no second factor for these codes to recover access to.",
-            ),
-        );
-        return Ok((
-            StatusCode::CONFLICT,
-            respond_fragment(&state, "account/_mfa.html", context)?,
-        )
-            .into_response());
-    }
-
-    if let Some(refusal) = refuse_without_password(
+    let user_agent = crate::webadmin::user_agent_of(&headers);
+    let codes = match crate::webadmin::handlers::mfa::regenerate_recovery_codes_for(
         &state,
+        &request_context,
         &session.auth.user,
-        &session.auth.session.csrf_token,
         &body.password,
         client,
+        user_agent.as_deref(),
     )
-    .await?
+    .await
     {
-        return Ok(refusal);
-    }
-
-    let codes = mfa::regenerate_recovery_codes(&session.auth.user, state.database.clone()).await?;
-
-    state
-        .record_credential_change(
-            &request_context,
-            &session.auth.user.username,
-            &session.auth.user,
-            acme_proxy_jobs::notify::AdminCredentialChange::RecoveryCodesRegenerated,
-            true,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
+        Ok(codes) => codes,
+        Err(error) => {
+            return refuse_on_the_card(
+                &state,
+                &session.auth.user,
+                &session.auth.session.csrf_token,
+                &error,
+            )
+            .await;
+        }
+    };
 
     let mut context =
         card_context(&state, &session.auth.user, &session.auth.session.csrf_token).await?;
@@ -497,35 +428,12 @@ fn password_card_context(csrf_token: &str) -> Map<String, Value> {
     context
 }
 
-/// [`verify_current_password`] with the refusal rendered as the password
-/// card's own banner. Unlike [`refuse_without_password`] this runs
-/// unconditionally: ASVS V6.2.3 asks for the current password on every
-/// change of it, whether or not a second factor exists, so there is no
-/// `has_totp()` exemption to inherit from `check_step_up` here.
-async fn refuse_without_current_password(
-    state: &AdminState,
-    csrf_token: &str,
-    user: &AdminUser,
-    password: &str,
-    client: Option<std::net::IpAddr>,
-) -> Result<Option<Response>, PageError> {
-    let Err(error) = verify_current_password(user, password, client, &state.logins) else {
-        return Ok(None);
-    };
-    Ok(Some(super::refuse_with_card(
-        state,
-        "account/_password.html",
-        password_card_context(csrf_token),
-        &error,
-    )?))
-}
-
 /// `POST /ui/account/password` — change this operator's own password.
 ///
-/// Takes the current password ([`refuse_without_current_password`]) and the
-/// new one; on success every *other* session of this operator is revoked
-/// ([`users::change_own_password`]) and the one making this request stays
-/// signed in.
+/// Takes the current password and the new one; on success every *other*
+/// session of this operator is revoked and the one making this request stays
+/// signed in. The change itself is
+/// `handlers::account::change_own_password_for`, which `/api` calls too.
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
@@ -536,72 +444,34 @@ pub async fn change_password(
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
     let csrf_token = session.auth.session.csrf_token.clone();
-
-    if let Some(refusal) =
-        refuse_without_current_password(&state, &csrf_token, &user, &body.current_password, client)
-            .await?
-    {
-        return Ok(refusal);
-    }
-
-    let context = PasswordContext::from_config(&state.config, &user.username);
+    let user_agent = crate::webadmin::user_agent_of(&headers);
     let mut fragment_context = password_card_context(&csrf_token);
 
-    match users::change_own_password(
+    // Every refusal is a banner on this card, and its wording is the API's:
+    // one change, one set of sentences, whichever surface asked.
+    if let Err(error) = crate::webadmin::handlers::account::change_own_password_for(
+        &state,
+        &request_context,
         &mut user,
+        &body.current_password,
         &body.new_password,
-        &context,
         &session.auth.session.token_hash,
-        state.database.clone(),
+        client,
+        user_agent.as_deref(),
     )
     .await
     {
-        Ok(()) => {
-            state
-                .record_credential_change(
-                    &request_context,
-                    &user.username,
-                    &user,
-                    acme_proxy_jobs::notify::AdminCredentialChange::Password,
-                    true,
-                    client,
-                    crate::webadmin::user_agent_of(&headers),
-                )
-                .await;
-            fragment_context.insert(
-                "flash".to_string(),
-                super::flash(
-                    "ok",
-                    "Your password was changed. Every other session of yours was signed out.",
-                ),
-            );
-            Ok(
-                respond_fragment(&state, "account/_password.html", fragment_context)?
-                    .into_response(),
-            )
-        }
-        Err(UserError::Policy(message)) => {
-            // Same code the API answers for the identical policy failure
-            // (`AdminError::bad_request`), so the two front ends never
-            // describe one refusal differently.
-            fragment_context.insert(
-                "flash".to_string(),
-                super::flash_error("bad_request", message),
-            );
-            Ok((
-                StatusCode::BAD_REQUEST,
-                respond_fragment(&state, "account/_password.html", fragment_context)?,
-            )
-                .into_response())
-        }
-        Err(UserError::Database(error)) => Err(error.into()),
-        Err(UserError::DuplicateUsername(_) | UserError::InvalidContact(_)) => {
-            // `change_own_password` never constructs either variant; the arm
-            // exists only because `UserError` is shared with `create_user` and
-            // `set_contact_email`.
-            Err(PageError::internal())
-        }
+        return super::refuse_with_card(&state, "account/_password.html", fragment_context, &error);
     }
+
+    fragment_context.insert(
+        "flash".to_string(),
+        super::flash(
+            "ok",
+            "Your password was changed. Every other session of yours was signed out.",
+        ),
+    );
+    Ok(respond_fragment(&state, "account/_password.html", fragment_context)?.into_response())
 }
 
 /// `POST /ui/account/sessions/{id}/revoke` — end one of this operator's own

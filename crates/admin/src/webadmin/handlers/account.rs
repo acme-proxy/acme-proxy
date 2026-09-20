@@ -96,37 +96,66 @@ pub async fn change_password(
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = auth.user;
-    verify_current_password(&user, &body.current_password, client, &state.logins)?;
+    change_own_password_for(
+        &state,
+        &request_context,
+        &mut user,
+        &body.current_password,
+        &body.new_password,
+        &auth.session.token_hash,
+        client,
+        crate::webadmin::user_agent_of(&headers).as_deref(),
+    )
+    .await?;
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The password change itself, the one function both front ends call: the
+/// current password, the policy, the write that revokes this operator's other
+/// sessions, and the notification and audit row that follow it.
+///
+/// What stays with each front end is the rendering — a `204`, or the password
+/// card with a banner. A refusal is an [`AdminError`] either way, so the policy
+/// message a script reads and the one a browser shows are the same sentence.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn change_own_password_for(
+    state: &AdminState,
+    request: &acme_proxy_core::audit::RequestContext,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
+    current_password: &str,
+    new_password: &str,
+    keep: &str,
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<&str>,
+) -> Result<(), AdminError> {
+    verify_current_password(user, current_password, client, &state.logins)?;
 
     let context = PasswordContext::from_config(&state.config, &user.username);
-    users::change_own_password(
-        &mut user,
-        &body.new_password,
-        &context,
-        &auth.session.token_hash,
-        state.database.clone(),
-    )
-    .await
-    .map_err(|error| match error {
-        UserError::Policy(message) | UserError::InvalidContact(message) => {
-            AdminError::bad_request(message)
-        }
-        UserError::Database(_) | UserError::DuplicateUsername(_) => AdminError::internal(),
-    })?;
+    users::change_own_password(user, new_password, &context, keep, state.database.clone())
+        .await
+        .map_err(|error| match error {
+            // `change_own_password` never builds `InvalidContact`; it is here
+            // because the shared `UserError` carries it, and a 400 is what it
+            // would mean.
+            UserError::Policy(message) | UserError::InvalidContact(message) => {
+                AdminError::bad_request(message)
+            }
+            UserError::Database(_) | UserError::DuplicateUsername(_) => AdminError::internal(),
+        })?;
 
     state
         .record_credential_change(
-            &request_context,
+            request,
             &user.username,
-            &user,
+            user,
             acme_proxy_jobs::notify::AdminCredentialChange::Password,
             true,
             client,
-            crate::webadmin::user_agent_of(&headers),
+            user_agent.map(str::to_string),
         )
         .await;
-
-    Ok(StatusCode::NO_CONTENT.into_response())
+    Ok(())
 }
 
 /// `GET /api/account/sessions?limit=&offset=` — this operator's own live

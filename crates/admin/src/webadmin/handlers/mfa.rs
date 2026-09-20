@@ -147,6 +147,242 @@ pub(crate) fn verify_current_password(
     }
 }
 
+/// The four second-factor writes, each one function both front ends call.
+///
+/// What is shared is every decision: the step-up password, the refusals, the
+/// service call, and the notification and audit row that follow it. What stays
+/// in each handler is only its own rendering — a JSON body, or a card fragment
+/// with a banner. The two copies these replaced had already drifted: `/api`
+/// began a *new* enrolment where `/ui` resumed the pending one, so an operator
+/// who had scanned a secret got a different one back depending on which surface
+/// asked.
+mod actions {
+    use super::{AdminError, AdminState, check_step_up, mfa};
+    use acme_proxy_core::audit::RequestContext;
+    use acme_proxy_jobs::notify::AdminCredentialChange;
+    use acme_proxy_store::admin_user::AdminUser;
+    use std::net::IpAddr;
+
+    /// What every one of these writes knows about the operator who asked: the
+    /// address it came from and the browser that sent it, which the
+    /// notification names so a stolen session shows up in it.
+    #[derive(Clone, Copy)]
+    pub(super) struct Origin<'a> {
+        pub(super) client: Option<IpAddr>,
+        pub(super) user_agent: Option<&'a str>,
+    }
+
+    // These writes are self-service — the operator is the actor and the
+    // subject — so the only thing the audit row needs beyond the user is the
+    // request it arrived on. There is no `surface` field to set: both front
+    // ends write the same row.
+
+    /// Begins, or resumes, a TOTP enrolment.
+    ///
+    /// **Resumes** where one is pending: an operator who reloads after scanning
+    /// the secret into their authenticator must not be handed a different one,
+    /// and a second `POST` from a script is the same request twice.
+    pub(super) async fn begin_totp(
+        state: &AdminState,
+        user: &mut AdminUser,
+        password: &str,
+        origin: Origin<'_>,
+    ) -> Result<crate::admin::totp::Enrolment, AdminError> {
+        check_step_up(user, password, origin.client, &state.logins)?;
+        Ok(mfa::resume_or_begin_totp_enrolment(
+            user,
+            &state.config.admin.base_url,
+            state.database.clone(),
+        )
+        .await?)
+    }
+
+    /// Proves a code against the pending enrolment. `None` is a code that did
+    /// not match, which each front end words for itself.
+    pub(super) async fn confirm_totp(
+        state: &AdminState,
+        request: &RequestContext,
+        user: &mut AdminUser,
+        code: &str,
+        keep: &str,
+        origin: Origin<'_>,
+    ) -> Result<Option<Vec<String>>, AdminError> {
+        let Some(codes) =
+            mfa::confirm_totp_enrolment(user, code, Some(keep), state.database.clone()).await?
+        else {
+            return Ok(None);
+        };
+        record(
+            state,
+            request,
+            user,
+            AdminCredentialChange::SecondFactorEnabled,
+            origin,
+        )
+        .await;
+        Ok(Some(codes))
+    }
+
+    /// Removes the factor and every recovery code.
+    pub(super) async fn disable_totp(
+        state: &AdminState,
+        request: &RequestContext,
+        user: &mut AdminUser,
+        password: &str,
+        keep: &str,
+        origin: Origin<'_>,
+    ) -> Result<(), AdminError> {
+        if state.config.admin.require_mfa {
+            return Err(AdminError::conflict(
+                "mfa_required",
+                "admin.require_mfa is on: this server requires a second factor of every operator",
+            ));
+        }
+        check_step_up(user, password, origin.client, &state.logins)?;
+        mfa::disable_totp(user, Some(keep), state.database.clone()).await?;
+        record(
+            state,
+            request,
+            user,
+            AdminCredentialChange::SecondFactorDisabled,
+            origin,
+        )
+        .await;
+        Ok(())
+    }
+
+    /// Mints a fresh recovery set, superseding the last.
+    pub(super) async fn regenerate_recovery_codes(
+        state: &AdminState,
+        request: &RequestContext,
+        user: &AdminUser,
+        password: &str,
+        origin: Origin<'_>,
+    ) -> Result<Vec<String>, AdminError> {
+        if !user.has_totp() {
+            return Err(AdminError::conflict(
+                "mfa_not_enabled",
+                "there is no second factor for these codes to recover access to",
+            ));
+        }
+        check_step_up(user, password, origin.client, &state.logins)?;
+        let codes = mfa::regenerate_recovery_codes(user, state.database.clone()).await?;
+        record(
+            state,
+            request,
+            user,
+            AdminCredentialChange::RecoveryCodesRegenerated,
+            origin,
+        )
+        .await;
+        Ok(codes)
+    }
+
+    /// The notification and audit row every one of these owes, written after
+    /// the change and never before it.
+    async fn record(
+        state: &AdminState,
+        request: &RequestContext,
+        user: &AdminUser,
+        change: AdminCredentialChange,
+        origin: Origin<'_>,
+    ) {
+        state
+            .record_credential_change(
+                request,
+                &user.username,
+                user,
+                change,
+                true,
+                origin.client,
+                origin.user_agent.map(str::to_string),
+            )
+            .await;
+    }
+}
+
+/// The four shared writes as the pages side calls them, with `Origin` spelled
+/// out: a page handler holds the address and the User-Agent as two values and
+/// has no reason to know the shape this module packs them into.
+pub(crate) async fn begin_totp_for(
+    state: &AdminState,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+) -> Result<crate::admin::totp::Enrolment, AdminError> {
+    actions::begin_totp(
+        state,
+        user,
+        password,
+        actions::Origin {
+            client,
+            user_agent: None,
+        },
+    )
+    .await
+}
+
+/// See [`begin_totp_for`].
+pub(crate) async fn confirm_totp_for(
+    state: &AdminState,
+    request: &acme_proxy_core::audit::RequestContext,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
+    code: &str,
+    keep: &str,
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<&str>,
+) -> Result<Option<Vec<String>>, AdminError> {
+    actions::confirm_totp(
+        state,
+        request,
+        user,
+        code,
+        keep,
+        actions::Origin { client, user_agent },
+    )
+    .await
+}
+
+/// See [`begin_totp_for`].
+pub(crate) async fn disable_totp_for(
+    state: &AdminState,
+    request: &acme_proxy_core::audit::RequestContext,
+    user: &mut acme_proxy_store::admin_user::AdminUser,
+    password: &str,
+    keep: &str,
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<&str>,
+) -> Result<(), AdminError> {
+    actions::disable_totp(
+        state,
+        request,
+        user,
+        password,
+        keep,
+        actions::Origin { client, user_agent },
+    )
+    .await
+}
+
+/// See [`begin_totp_for`].
+pub(crate) async fn regenerate_recovery_codes_for(
+    state: &AdminState,
+    request: &acme_proxy_core::audit::RequestContext,
+    user: &acme_proxy_store::admin_user::AdminUser,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+    user_agent: Option<&str>,
+) -> Result<Vec<String>, AdminError> {
+    actions::regenerate_recovery_codes(
+        state,
+        request,
+        user,
+        password,
+        actions::Origin { client, user_agent },
+    )
+    .await
+}
+
 /// `GET /api/mfa` — this operator's second-factor state.
 ///
 /// Never the secret, and never a recovery code: only whether one exists and how
@@ -181,16 +417,14 @@ pub async fn begin_totp(
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
-    check_step_up(
-        &user,
-        &body.unwrap_or_default().password,
-        client,
-        &state.logins,
-    )?;
-    let enrolment = mfa::begin_totp_enrolment(
+    let enrolment = actions::begin_totp(
+        &state,
         &mut user,
-        &state.config.admin.base_url,
-        state.database.clone(),
+        &body.unwrap_or_default().password,
+        actions::Origin {
+            client,
+            user_agent: None,
+        },
     )
     .await?;
 
@@ -224,27 +458,25 @@ pub async fn confirm_totp(
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
     let keep = enrol.session.token_hash.clone();
+    let user_agent = crate::webadmin::user_agent_of(&headers);
 
-    let Some(codes) =
-        mfa::confirm_totp_enrolment(&mut user, &body.code, Some(&keep), state.database.clone())
-            .await?
+    let Some(codes) = actions::confirm_totp(
+        &state,
+        &request_context,
+        &mut user,
+        &body.code,
+        &keep,
+        actions::Origin {
+            client,
+            user_agent: user_agent.as_deref(),
+        },
+    )
+    .await?
     else {
         return Err(AdminError::bad_request(
             "that code does not match the pending enrolment",
         ));
     };
-
-    state
-        .record_credential_change(
-            &request_context,
-            &user.username,
-            &user,
-            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled,
-            true,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
 
     let body = json!({ "recoveryCodes": codes });
 
@@ -282,38 +514,20 @@ pub async fn disable_totp(
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
-    if state.config.admin.require_mfa {
-        return Err(AdminError::conflict(
-            "mfa_required",
-            "admin.require_mfa is on: this server requires a second factor of every operator",
-        ));
-    }
-
     let mut user = auth.user;
-    check_step_up(
-        &user,
-        &body.unwrap_or_default().password,
-        client,
-        &state.logins,
-    )?;
-    mfa::disable_totp(
+    let user_agent = crate::webadmin::user_agent_of(&headers);
+    actions::disable_totp(
+        &state,
+        &request_context,
         &mut user,
-        Some(&auth.session.token_hash),
-        state.database.clone(),
+        &body.unwrap_or_default().password,
+        &auth.session.token_hash,
+        actions::Origin {
+            client,
+            user_agent: user_agent.as_deref(),
+        },
     )
     .await?;
-
-    state
-        .record_credential_change(
-            &request_context,
-            &user.username,
-            &user,
-            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
-            true,
-            client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
 
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -332,32 +546,18 @@ pub async fn regenerate_recovery_codes(
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    if !auth.user.has_totp() {
-        return Err(AdminError::conflict(
-            "mfa_not_enabled",
-            "there is no second factor for these codes to recover access to",
-        ));
-    }
-    check_step_up(
+    let user_agent = crate::webadmin::user_agent_of(&headers);
+    let codes = actions::regenerate_recovery_codes(
+        &state,
+        &request_context,
         &auth.user,
         &body.unwrap_or_default().password,
-        client,
-        &state.logins,
-    )?;
-
-    let codes = mfa::regenerate_recovery_codes(&auth.user, state.database.clone()).await?;
-
-    state
-        .record_credential_change(
-            &request_context,
-            &auth.user.username,
-            &auth.user,
-            acme_proxy_jobs::notify::AdminCredentialChange::RecoveryCodesRegenerated,
-            true,
+        actions::Origin {
             client,
-            crate::webadmin::user_agent_of(&headers),
-        )
-        .await;
+            user_agent: user_agent.as_deref(),
+        },
+    )
+    .await?;
 
     Ok(Json(json!({ "recoveryCodes": codes })))
 }
