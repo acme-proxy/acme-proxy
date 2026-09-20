@@ -12,6 +12,7 @@ struct StubUpdater {
     published_at: std::sync::Mutex<Option<std::time::Instant>>,
     deleted_at: std::sync::Mutex<Option<std::time::Instant>>,
     fail: bool,
+    cleanup_fail: bool,
 }
 
 #[async_trait]
@@ -33,6 +34,9 @@ impl dns01::DnsUpdater for StubUpdater {
             .unwrap()
             .push((name.to_string(), value.to_string()));
         *self.deleted_at.lock().unwrap() = Some(std::time::Instant::now());
+        if self.cleanup_fail {
+            return Err("cleanup failed".into());
+        }
         Ok(())
     }
 }
@@ -563,4 +567,106 @@ async fn bypass_prefers_a_challenge_it_could_answer() {
 
     assert_eq!(upstream.challenge_triggered(), 1);
     assert_eq!(upstream.tokenless_triggered(), 0);
+}
+
+#[tokio::test]
+async fn cancellation_during_update_waits_for_the_write_before_cleanup() {
+    struct SlowUpdater {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        deleted: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl dns01::DnsUpdater for SlowUpdater {
+        async fn upsert_txt(&self, _: &str, _: &str) -> Result<(), String> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+        async fn delete_txt(&self, _: &str, value: &str) -> Result<(), String> {
+            assert_eq!(value, "attempt-value");
+            self.deleted.notify_one();
+            Ok(())
+        }
+    }
+    let updater = Arc::new(SlowUpdater {
+        started: Default::default(),
+        release: Default::default(),
+        deleted: Default::default(),
+    });
+    let worker_updater = updater.clone();
+    let task = tokio::spawn(async move {
+        super::super::dns01_cleanup::PublishedTxt::publish(
+            worker_updater,
+            Duration::from_secs(1),
+            "_acme-challenge.example.org.".into(),
+            "attempt-value".into(),
+        )
+        .await
+    });
+    updater.started.notified().await;
+    task.abort();
+    let _ = task.await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), updater.deleted.notified())
+            .await
+            .is_err()
+    );
+    updater.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), updater.deleted.notified())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_failure_preserves_the_ca_result() {
+    for fail_challenge in [false, true] {
+        let upstream = testsrv::start(Script {
+            chain: real_chain().await,
+            pose_challenge: true,
+            fail_challenge,
+            ..Script::default()
+        })
+        .await;
+        let dir = TempDir::new("cleanup-failure");
+        let db = database().await;
+        let queue = test_queue(db.clone());
+        let updater = Arc::new(StubUpdater {
+            cleanup_fail: true,
+            ..Default::default()
+        });
+        let signer = with_updater(
+            RelaySigner::from_config(
+                &config(&upstream, &dir),
+                &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+            )
+            .unwrap(),
+            updater.clone(),
+        );
+        let _runner = TestRunner::start(queue, &signer);
+        let order = ready_order(db.clone()).await;
+        signer
+            .issue(
+                &order.id.to_string(),
+                &csr_der(),
+                &identifiers(),
+                RequestedValidity::default(),
+            )
+            .await
+            .unwrap();
+        let expected = if fail_challenge {
+            OrderStatus::Invalid
+        } else {
+            OrderStatus::Valid
+        };
+        await_status(db.clone(), &order.id.to_string(), expected).await;
+        assert_eq!(updater.deleted.lock().unwrap().len(), 2);
+        if fail_challenge {
+            let mapping = UpstreamOrder::find_by_order_id(&order.id.to_string(), &db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(mapping.error.unwrap().contains("upstream rejected"));
+        }
+    }
 }

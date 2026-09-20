@@ -483,7 +483,7 @@ async fn relay(
         ChallengeStrategy::Dns01(updater) => {
             let view = poll_until(inner, order_url, &["pending", "ready", "valid"]).await?;
             if view.status == "pending" {
-                answer_dns01(inner, updater.as_ref(), &view.authorizations).await?;
+                answer_dns01(inner, updater, &view.authorizations).await?;
             }
         }
         ChallengeStrategy::Http01(tokens) => {
@@ -583,7 +583,7 @@ fn upstream_thumbprint(inner: &Inner) -> Result<String, RelayFailure> {
 /// `jwk_thumbprint` rather than rebuilt here.
 async fn answer_dns01(
     inner: &Inner,
-    updater: &dyn dns01::DnsUpdater,
+    updater: &Arc<dyn dns01::DnsUpdater>,
     authorizations: &[String],
 ) -> Result<(), RelayFailure> {
     let thumbprint = upstream_thumbprint(inner)?;
@@ -628,9 +628,14 @@ async fn answer_dns01(
 
         // Retryable: a nameserver that refused an update, or was unreachable,
         // is the commonest transient failure on this path.
-        updater.upsert_txt(&fqdn, &value).await.map_err(|error| {
-            RelayFailure::Retryable(format!("publishing {fqdn} failed: {error}"))
-        })?;
+        let published = super::dns01_cleanup::PublishedTxt::publish(
+            updater.clone(),
+            inner.dns01_update_timeout,
+            fqdn.clone(),
+            value.clone(),
+        )
+        .await
+        .map_err(|error| RelayFailure::Retryable(format!("publishing {fqdn} failed: {error}")))?;
 
         // Before the trigger, never after: once the upstream looks and finds
         // nothing, the authorization is `invalid` for good (see
@@ -640,9 +645,8 @@ async fn answer_dns01(
 
         // Cleanup is best-effort and happens whether or not validation passed:
         // a challenge record has no reason to outlive the attempt.
-        if let Err(error) = updater.delete_txt(&fqdn, &value).await {
-            warn!(event = "signer_relay_dns_01_cleanup_failed", outcome = "failure", name = %fqdn, error = %error);
-        }
+        let _ = published.cleanup().await;
+
         triggered?;
     }
     Ok(())

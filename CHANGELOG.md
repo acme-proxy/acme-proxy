@@ -170,6 +170,9 @@ migrated configuration before restarting.
 
 ### Added
 
+- Configurable RFC 2136 UPDATE timeout through
+  `signer.relay.dns01.rfc2136.timeout_secs`, with the existing 10-second default.
+
 - **Latency histograms on `/metrics`.**
   `acme_proxy_request_duration_seconds{role,profile,route}` times each request
   to its response head (buckets from 5 ms to 10 s).
@@ -351,6 +354,9 @@ migrated configuration before restarting.
   gone now costs the retry budget before `notify_delivery_abandoned`.
 
 ### Fixed
+
+- DNS-01 cleanup continues after cancellation and uncertain publication.
+  Bounded retries remove only the current attempt's TXT value.
 
 - **Every web-admin write now logs and audits identically through `/api` and
   `/ui`.** Each action (EAB create, revoke and delete; account contact,
