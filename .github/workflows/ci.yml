@@ -106,6 +106,22 @@ jobs:
       # metric without anyone being able to act on it — and the regex has to be
       # repeated per invocation, since the filtering happens at report time.
       #
+      # **`--no-run --workspace`, not the `report` subcommand.** `report` takes
+      # no `--workspace` — the flag belongs to `test`/`nextest`/`--no-run` and
+      # is refused there — and with no package selection it reports the package
+      # cargo picks, which at a root that is also a package is that package
+      # alone. These four views spent their life measuring `src/cli/` while
+      # every crate under `crates/` sat outside the floor, which is how
+      # `crates/store/src/transfer.rs` reached 30% line coverage without
+      # anything going red. `-p` per member is not the fix: a crate built twice
+      # under different features then contributes two coverage maps and its
+      # lines are counted twice. `--no-run` reuses the profiles the step above
+      # left on disk, so this re-runs nothing (~2s).
+      #
+      # `--no-run` prints a deprecation notice pointing at `report`, which
+      # cannot express this scope. `cargo-llvm-cov` is pinned above; whoever
+      # lifts the pin owes this a re-check.
+      #
       # `lcov.info` is the machine-readable form (any coverage viewer, and the
       # input a service would take if one is ever added); the HTML tree is what
       # a human actually opens from the artifact; the summary goes to the job
@@ -113,20 +129,25 @@ jobs:
       # downloading anything or unfolding a log group.
       - name: Coverage reports
         run: |
-          cargo llvm-cov report --lcov --output-path lcov.info \
+          cargo llvm-cov --no-run --workspace --lcov --output-path lcov.info \
             --ignore-filename-regex 'src/main\.rs'
-          cargo llvm-cov report --html \
+          cargo llvm-cov --no-run --workspace --html \
             --ignore-filename-regex 'src/main\.rs'
           {
             echo '## Coverage'
             echo
             echo '```text'
-            cargo llvm-cov report --summary-only \
+            cargo llvm-cov --no-run --workspace --summary-only \
               --ignore-filename-regex 'src/main\.rs'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The ratchet, set just below the current line coverage (~97.3%).
+      # The ratchet, set just below the current line coverage (96.67% over the
+      # whole workspace). It read ~97.3% while it was measuring `src/cli/`
+      # alone, so the number fell when the scope widened rather than when the
+      # code got worse: the copy engine in `crates/store/src/transfer.rs`, which
+      # only the `postgres` job exercises, is inside the metric now and never
+      # was before.
       #
       # `--fail-under-lines` reads the **Lines** column, not the `Regions` one
       # the summary prints first — they differ by more than a point here, and
@@ -136,9 +157,9 @@ jobs:
       # question.
       - name: Coverage floor
         run: >
-          cargo llvm-cov report --summary-only
+          cargo llvm-cov --no-run --workspace --summary-only
           --ignore-filename-regex 'src/main\.rs'
-          --fail-under-lines 97
+          --fail-under-lines 96
 
       # `always()`, because the run where the floor was missed is exactly the
       # run whose report somebody wants to read. Retained for a fortnight

@@ -67,7 +67,7 @@ sudo pacman -S softhsm
 
 When no SoftHSM2 module is found the PKCS#11 tests **skip** with a message
 rather than failing, so `--features hsm` stays green without it. CI has a
-dedicated `hsm` job — separate from `test` so the 97% coverage floor, which a
+dedicated `hsm` job — separate from `test` so the coverage floor, which a
 feature-gated file sits outside of entirely, does not fight the feature.
 
 > `cargo nextest` matters more than usual here: `SOFTHSM2_CONF` is
@@ -77,13 +77,31 @@ feature-gated file sits outside of entirely, does not fight the feature.
 
 ## Code coverage
 
-CI enforces a hard floor with `cargo llvm-cov nextest --workspace
---fail-under-lines 97` (`main.rs` is excluded — it is pure socket and exit
-wiring). Locally:
+CI enforces a hard floor of **96% of lines**, over every package in the
+workspace (`main.rs` is excluded — it is pure socket and exit wiring). The
+shortest way to see the same number locally:
 
 ```bash
 cargo llvm-cov nextest --workspace --summary-only
 ```
+
+CI splits that in two, because it wants several views of one test run: the run
+itself with `--no-report`, then `lcov.info`, an HTML tree and the summary that
+gates, each generated from the profiles left on disk.
+
+> **`--workspace` has to reach the report, and the `report` subcommand cannot
+> take it.** `cargo llvm-cov report` rejects the flag, and with no package
+> selection it measures the package cargo picks — at a root that is also a
+> package, the root package alone. Reporting from saved profiles at workspace
+> scope is `cargo llvm-cov --no-run --workspace`, which is what CI uses:
+>
+> ```bash
+> cargo llvm-cov --no-run --workspace --summary-only \
+>   --ignore-filename-regex 'src/main\.rs' --fail-under-lines 96
+> ```
+>
+> Not `-p` once per member either: a crate built twice under different features
+> contributes two coverage maps that way, and its lines are counted twice.
 
 > **Gotcha:** a handler annotated with `#[instrument]` reports far lower
 > coverage than it actually has. The attribute moves the body into a generated
