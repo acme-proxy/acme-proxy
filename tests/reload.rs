@@ -675,6 +675,60 @@ async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
     server.stop().await;
 }
 
+/// `[admin.filter]` is rebuilt on `SIGHUP`: a policy written into a running
+/// panel starts refusing on the next request, and a broken one is refused
+/// without dropping the policy already serving.
+#[tokio::test]
+async fn the_admin_filter_reloads_and_a_broken_one_is_refused() {
+    let dir = TempDir::new("reload-admin-filter");
+    write_config_with_admin(&dir, false, true, "https://before.example", "");
+    let server = boot(load_from(&dir), true).await;
+    let admin = server.admin.expect("the admin listener is enabled");
+    assert!(get(admin, "/health").await.starts_with("HTTP/1.1 200"));
+
+    // Every test dials from loopback, so an allowlist without it shuts us out.
+    let only_elsewhere = r#"
+        [admin.filter]
+        rules = ["mgmt"]
+
+        [admin.filter.check.net]
+        type = "allowed_ip"
+        allow = ["192.0.2.0/24"]
+
+        [admin.filter.rule.mgmt]
+        when = "net"
+        then = "allow"
+        "#;
+    write_config_with_admin(&dir, false, true, "https://before.example", only_elsewhere);
+    server.reload.reload().await.expect("the reload must apply");
+    let refused = get(admin, "/health").await;
+    assert!(refused.starts_with("HTTP/1.1 403"), "{refused}");
+
+    write_config_with_admin(
+        &dir,
+        false,
+        true,
+        "https://before.example",
+        &only_elsewhere.replace("allowed_ip", "identifiers"),
+    );
+    let error = server
+        .reload
+        .reload()
+        .await
+        .expect_err("an identifier-stage admin.filter must not be applied");
+    assert!(
+        error.to_string().contains("admin.filter.check.net"),
+        "{error}"
+    );
+    let still = get(admin, "/health").await;
+    assert!(
+        still.starts_with("HTTP/1.1 403"),
+        "the policy already serving must stay: {still}"
+    );
+
+    server.stop().await;
+}
+
 /// A **keep-alive** connection sees the new router on its next request.
 ///
 /// This is the property `crates/server/src/reload.rs` states as the reason `SwapService` is a

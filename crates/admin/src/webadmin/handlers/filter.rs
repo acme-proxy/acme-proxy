@@ -3,8 +3,8 @@
 //! **`show`, never `explain`.** [`acme_proxy_policy::filter::explain::explain`] executes
 //! the operator's `custom` scripts and issues real IPAM and DNS requests
 //! against an address and names the *caller* chose; behind a session that is
-//! script execution plus SSRF from one stolen cookie, on a listener that
-//! deliberately carries no filter chain and no admission control. That refusal
+//! script execution plus SSRF from one stolen cookie, on a listener that has no
+//! admission control and filters nothing unless `[admin.filter]` says so. That refusal
 //! stands, and there is no route for it here. This one builds a document from
 //! [`acme_proxy_policy::filter::explain::policy_json`], which calls four accessors on a
 //! [`FilterPolicy`](acme_proxy_policy::filter::FilterPolicy) and reaches nothing outside

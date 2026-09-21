@@ -357,6 +357,12 @@ pub(crate) fn build_generation(
     let (admin_app, logins) = match admin_enabled {
         false => (None, None),
         true => {
+            // Built again, although `check_config` already did: that call is
+            // the refusal, this one is the policy the router keeps.
+            let policy =
+                acme_proxy_admin::webadmin::filter::build(config).inspect_err(|error| {
+                    error!(event = "admin_filter_init_failed", outcome = "failure", error = %error);
+                })?;
             let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
                 database.clone(),
                 config.clone(),
@@ -364,6 +370,7 @@ pub(crate) fn build_generation(
                 auditor.clone(),
                 assembly.notifiers.clone(),
                 assembly.jobs.clone(),
+                policy,
                 previous_logins,
             );
             (Some(router), Some(logins))

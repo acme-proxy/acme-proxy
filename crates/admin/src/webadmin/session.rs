@@ -170,18 +170,17 @@ pub fn cookie_value(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-/// The peer address of an admin request, if the socket carried one.
+/// The client address of an admin request, if the socket carried one.
 ///
-/// Its own extractor rather than [`acme_proxy_core::client::ClientIp`],
-/// because that one is populated by the ACME filter middleware and this
-/// listener deliberately runs none (see `build_admin_app`).
+/// Its own extractor rather than [`acme_proxy_core::client::ClientIp`], so a
+/// router built without the `[admin.filter]` layer (a test driving one handler)
+/// still gets the socket peer rather than `None`.
 ///
-/// **No forwarded-header handling.** `filter.trusted_proxies` governs the ACME
-/// listener, and honouring `X-Forwarded-For` here without an equivalent
-/// allowlist would let any caller spoof the key the login limiter counts on.
-/// Behind a reverse proxy the limiter therefore counts the proxy — which is a
-/// real limitation, and the reason the recommended way to reach this listener
-/// remotely is an SSH tunnel rather than a proxy.
+/// **Forwarded headers only from `admin.filter.trusted_proxies`.** That layer
+/// resolves the address and records a `ClientIp`, which this prefers; its
+/// absence falls back to the peer. Honouring `X-Forwarded-For` from anyone else
+/// would let a caller spoof the key the login limiter counts on — and with no
+/// trusted proxy listed, the limiter behind a reverse proxy counts the proxy.
 #[derive(Debug, Clone, Copy)]
 pub struct AdminClientIp(pub Option<IpAddr>);
 
@@ -189,6 +188,13 @@ impl<S: Sync> FromRequestParts<S> for AdminClientIp {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(acme_proxy_core::client::ClientIp(resolved)) = parts
+            .extensions
+            .get::<acme_proxy_core::client::ClientIp>()
+            .copied()
+        {
+            return Ok(AdminClientIp(resolved));
+        }
         let address = parts
             .extensions
             .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -741,6 +747,50 @@ mod tests {
             );
         }
         map
+    }
+
+    async fn client_ip_of(request: axum::http::Request<()>) -> Option<IpAddr> {
+        let (mut parts, ()) = request.into_parts();
+        let AdminClientIp(ip) = AdminClientIp::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+        ip
+    }
+
+    /// Behind a trusted proxy the `[admin.filter]` layer has resolved the real
+    /// client, and that — not the proxy — is what the login limiter must count.
+    #[tokio::test]
+    async fn the_resolved_client_is_preferred_to_the_peer() {
+        let mut request = axum::http::Request::new(());
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [172, 18, 0, 2],
+                4711,
+            ))));
+        request
+            .extensions_mut()
+            .insert(acme_proxy_core::client::ClientIp(Some(
+                "198.51.100.9".parse().unwrap(),
+            )));
+        assert_eq!(
+            client_ip_of(request).await,
+            Some("198.51.100.9".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_filter_layer_the_peer_is_the_client() {
+        let mut request = axum::http::Request::new(());
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "[::ffff:192.0.2.7]:4711"
+                .parse::<std::net::SocketAddr>()
+                .unwrap(),
+        ));
+        assert_eq!(
+            client_ip_of(request).await,
+            Some("192.0.2.7".parse().unwrap())
+        );
     }
 
     #[test]

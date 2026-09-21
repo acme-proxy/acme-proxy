@@ -143,6 +143,11 @@ impl AdminError {
         Self::new(StatusCode::BAD_GATEWAY, "signer_failed", message)
     }
 
+    /// `403` — `admin.filter` refused the caller before any handler ran.
+    pub fn access_denied(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "access_denied", message)
+    }
+
     /// `500` — anything the operator can only find in the log.
     pub fn internal() -> Self {
         Self::new(

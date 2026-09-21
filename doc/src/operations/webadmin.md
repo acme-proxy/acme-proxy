@@ -30,11 +30,12 @@ load, a filter chain, a small body limit.
 The admin listener has the opposite shape. It defaults to loopback, requires a
 session on every route but sign-in, and deliberately carries **no admission
 control** (the availability concern here is credential brute force, which the
-login rate limiter handles and admission control would not touch) and **no
-filter chain** (filters are a per-profile ACME concern; `filter.exempt_paths`
-matches profile-stripped paths, so wiring them here would be a category error).
+login rate limiter handles and admission control would not touch). It does not
+inherit the profiles' `[filter]` either: it has a policy of its own,
+[`[admin.filter]`](#restricting-who-can-reach-it).
 
-Access control on this listener is the bind address, TLS, and the session.
+Access control on this listener is the bind address, TLS, `[admin.filter]`, and
+the session.
 
 Putting both on one socket would have meant one set of defaults for two very
 different threat models.
@@ -118,6 +119,60 @@ DNS record.
 Nothing to worry about while `admin.tls.enabled` is `false` and the bind is
 loopback — a browser ignores the header entirely over plain HTTP (RFC 6797
 §7.2), which is why it is emitted unconditionally rather than gated.
+
+### Restricting who can reach it
+
+Where a host firewall can guard the port, use it. Where it cannot — a container
+runtime owns the host's netfilter tables, so an `nftables` rule on the host is
+not yours to write — `[admin.filter]` puts the same policy engine the ACME
+listener uses in front of every admin request, `/health` included:
+
+```toml
+[admin]
+enabled      = true
+bind_address = "0.0.0.0:3001"
+base_url     = "https://admin.example.com:3001"
+
+[admin.tls]
+enabled = true
+
+[admin.filter]
+rules = ["mgmt"]
+
+[admin.filter.check.mgmt-net]
+type  = "allowed_ip"
+allow = ["10.20.0.0/24", "127.0.0.1/32"]
+
+[admin.filter.rule.mgmt]
+when = "mgmt-net"
+then = "allow"
+```
+
+A caller outside `10.20.0.0/24` gets `403` before any handler runs: the admin
+API's `access_denied` error under `/api`, the HTML error page elsewhere. Only
+checks that read the request itself make sense here — `allowed_ip`, `path`,
+`reverse_dns`, `custom` — and startup refuses the others by name. The check and
+rule syntax is the one [Filters](../filters/index.md) documents; the section's
+own rules are in the
+[Configuration Reference](../configuration/reference.md#adminfilter).
+
+Two things are worth knowing in a container:
+
+- **Container networking rewrites addresses.** Published ports usually keep the
+  client's address, but some setups (rootless Docker's port forwarder, a
+  userland proxy) make every connection appear to come from the bridge
+  gateway. Check the `client_ip` on the admin access line before relying on an
+  allowlist.
+- **A reverse proxy in front** (Traefik, Caddy, nginx) is every peer. List its
+  network in `admin.filter.trusted_proxies`, and the policy, the access line and
+  the sign-in rate limiter all see the real client from its `X-Forwarded-For`.
+  The loopback-or-TLS rule above still applies to the bind: a proxy in another
+  container reaches the panel over the network, so keep `[admin.tls]` on and
+  have the proxy speak HTTPS to it.
+
+A health check run inside the container (Docker's `HEALTHCHECK`) arrives from
+loopback, so allow `127.0.0.1/32` as above. An orchestrator probing from
+outside needs a `type = "path"` check for `/health` and a rule allowing it.
 
 ## Authentication
 
@@ -516,18 +571,18 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
 ## Security notes
 
 - This is a second attack surface on a certificate authority. It is off by
-  default, binds loopback, and needs a session — but everything the ACME side
-  hardened (admission control, filters) is absent here by design, and that is
+  default, binds loopback, and needs a session — but it has no admission
+  control, and filters nothing until `[admin.filter]` names a rule. That is
   worth knowing rather than discovering.
 - Sign-in is protected by a fixed-window rate limiter
   (`admin.login_max_attempts` per `admin.login_window_seconds`, keyed on the
   client address). Over the limit, the password hash is not computed at all —
   600 000 iterations is a denial-of-service lever otherwise.
-- **There is no forwarded-header handling on this listener.**
-  `filter.trusted_proxies` governs the ACME listener only; honouring
-  `X-Forwarded-For` here without an equivalent allowlist would let any caller
-  spoof the key the rate limiter counts on. Behind a reverse proxy the limiter
-  therefore counts the proxy, which is another reason to prefer an SSH tunnel.
+- **A forwarded-for header is believed only from
+  `admin.filter.trusted_proxies`**, never from the ACME listener's
+  `filter.trusted_proxies`; honouring it from anyone else would let a caller
+  spoof the key the rate limiter counts on. Behind a reverse proxy that is not
+  listed there, the limiter counts the proxy.
 - Every response carries `Content-Security-Policy: default-src 'none';
   script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self';
   form-action 'self'; frame-ancestors 'none'; base-uri 'none'`. No
@@ -552,7 +607,7 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
 ## Configuration
 
 See the [Configuration Reference](../configuration/reference.md) for every
-`[admin]` and `[admin.tls]` key, and [Customizing the
+`[admin]`, `[admin.filter]` and `[admin.tls]` key, and [Customizing the
 Panel](webadmin_templates.md) for `admin.template_dir`.
 
 [htmx]: https://htmx.org [minijinja]: https://docs.rs/minijinja

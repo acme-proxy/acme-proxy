@@ -20,8 +20,8 @@
 //! That is also why this is a host-only command. The inputs — a client address
 //! and a list of names — are chosen by the caller, so behind an admin session
 //! it would be script execution and outbound requests driven from one stolen
-//! cookie, on a listener that deliberately carries no filter chain and no
-//! admission control.
+//! cookie, on a listener that has no admission control and filters nothing
+//! unless `[admin.filter]` says so.
 //!
 //! [`render_policy`] and [`policy_json`] are the other half of that argument
 //! rather than an exception to it: they call four accessors on an

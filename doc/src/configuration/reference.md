@@ -46,6 +46,7 @@ endpoints it mounts.
 | `[server]` | Listen socket, public URL, admission control | no | [below](#server) |
 | `[server.tls]` | HTTPS on the ACME listener | no | [below](#servertls) |
 | `[admin]` | The web admin listener and its sessions | no | [below](#admin) |
+| `[admin.filter]` | Who may reach the admin listener | no | [below](#adminfilter) |
 | `[admin.notify]` | Operator security notifications | no | [below](#adminnotify) |
 | `[admin.tls]` | HTTPS on the admin listener | no | [below](#admintls) |
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
@@ -192,8 +193,9 @@ there is no sign-up page.
 
 **`bind_address`** (`String`) — *Default: `"127.0.0.1:3001"` | Env: `ACME_PROXY_ADMIN__BIND_ADDRESS`*
 
-Loopback on purpose. This listener has no admission control, no filter chain and
-— until `[admin.tls]` is on — no transport security.
+Loopback on purpose. This listener has no admission control, filters nothing
+until [`[admin.filter]`](#adminfilter) names a rule, and — until `[admin.tls]`
+is on — has no transport security.
 
 **Startup refuses a non-loopback bind while `admin.tls.enabled` is `false`.**
 The session cookie is always sent `Secure`, and a browser silently declines to
@@ -234,10 +236,10 @@ Failed sign-ins allowed from one address per window, then `429` with a
 at 600 000 iterations), so this is an availability control as much as a
 credential one: over the limit, the hash is not computed at all.
 
-Keyed on the peer address. **There is no forwarded-header handling on this
-listener** — `filter.trusted_proxies` governs the ACME one, and trusting
-`X-Forwarded-For` here without an equivalent allowlist would let any caller
-spoof the key. Behind a reverse proxy the limiter counts the proxy.
+Keyed on the client address. The forwarded-for header is believed only from a
+peer listed in [`admin.filter.trusted_proxies`](#adminfilter) — never from
+`filter.trusted_proxies`, which governs the ACME listener. With no trusted
+proxy listed, the limiter behind a reverse proxy counts the proxy.
 
 **`require_mfa`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_ADMIN__REQUIRE_MFA`*
 
@@ -274,6 +276,33 @@ other twenty at their defaults. Every template is compiled at startup, so a
 broken override refuses to start rather than serving a `500` later. Applies to
 the `/ui` pages only; the JSON API has nothing to template. See
 [Customizing the Panel](../operations/webadmin_templates.md).
+
+### `[admin.filter]`
+
+Who may reach the admin listener at all — for the deployment that cannot put a
+host firewall in front of the port, such as a container. The same policy engine
+and the same keys as the ACME listener's
+[`[filter]`](../filters/index.md#reference) (`rules`, `default`,
+`trusted_proxies`, `forwarded_header`, `[admin.filter.check.<name>]`,
+`[admin.filter.rule.<name>]`), under
+`ACME_PROXY_ADMIN__FILTER__…`, with four differences:
+
+- **It is its own section.** Nothing is inherited from the global `[filter]`,
+  which is the ACME profiles' base: an edit made for one listener must not open
+  or shut the other.
+- **Only the connection stage exists here**, so only `allowed_ip`, `path`,
+  `reverse_dns` and `custom` checks are accepted. An `identifiers`, `eab` or
+  `ipam` check, or a rule whose checks were moved to the identifier stage with
+  `stages`, is refused by name at startup and on reload.
+- **Empty `rules` filters nothing**, and logs no warning.
+- **`trusted_proxies` also keys the login limiter** (see
+  `admin.login_max_attempts`): it is the one list the admin listener believes a
+  forwarded-for header from, and it applies whether or not a rule is written.
+
+Every request is evaluated, `/health` included. A refusal is `403` — the admin
+API's JSON error (`access_denied`) under `/api`, the HTML error page elsewhere —
+and is logged as `filter_request_blocked` with `listener = "admin"`. See
+[Web Admin — Restricting who can reach it](../operations/webadmin.md#restricting-who-can-reach-it).
 
 ### `[admin.notify]`
 

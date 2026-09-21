@@ -99,9 +99,9 @@ impl Default for TlsConfig {
 #[serde(default)]
 pub struct AdminConfig {
     pub enabled: bool,
-    /// Loopback on purpose. This listener has no admission control and no
-    /// filter chain, and until [`AdminTlsConfig::enabled`] is set, no
-    /// transport security either. `webadmin::check_config` refuses to start on
+    /// Loopback on purpose. This listener has no admission control, filters
+    /// nothing until [`AdminConfig::filter`] names a rule, and until
+    /// [`AdminTlsConfig::enabled`] is set, has no transport security either. `webadmin::check_config` refuses to start on
     /// a non-loopback bind while TLS is off.
     pub bind_address: String,
     /// The origin the panel is reached at. Load-bearing three times over: the
@@ -150,6 +150,16 @@ pub struct AdminConfig {
     /// own `contact_email`. Disabled (empty `enabled`) by default, and only
     /// built at all when `admin.enabled`.
     pub notify: super::NotifyConfig,
+    /// Who may reach this listener: the `[filter]` policy engine, evaluated at
+    /// the connection stage on every request, `/health` included.
+    ///
+    /// Its own section rather than an inheritance of the global `[filter]`:
+    /// that one is the ACME profiles' base, and a panel that silently took the
+    /// ACME policy would be refused or opened by an edit made for another
+    /// listener. Empty (no `rules`) filters nothing, as `[filter]` does.
+    /// `webadmin::check_config` refuses a rule that cannot decide at the
+    /// connection stage, since no identifier is ever asked about here.
+    pub filter: super::FilterConfig,
 }
 
 impl Default for AdminConfig {
@@ -168,6 +178,7 @@ impl Default for AdminConfig {
             template_dir: String::new(),
             tls: AdminTlsConfig::default(),
             notify: super::NotifyConfig::default(),
+            filter: super::FilterConfig::default(),
         }
     }
 }

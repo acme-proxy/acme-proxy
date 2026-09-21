@@ -12,11 +12,12 @@
 //!
 //! The ACME listener is public, unauthenticated and often internet-facing.
 //! This one defaults to loopback, requires a session on every route but login,
-//! and carries no admission control or filter chain because neither fits it
-//! (see `build_admin_app`). Keeping them on one socket would have meant one
+//! carries no admission control, and runs its own address policy,
+//! `[admin.filter]` (see [`filter`]), rather than the ACME profiles' one. Keeping them on one socket would have meant one
 //! set of defaults for two very different threat models.
 
 pub mod error;
+pub mod filter;
 pub mod handlers;
 pub mod pages;
 pub mod session;
@@ -376,10 +377,16 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 ///   session on every route but login; the real availability concern is
 ///   credential brute force, which admission control would not touch and the
 ///   login limiter does.
-/// - **No filter chain.** Filters are a per-profile ACME concern, and
-///   `filter.exempt_paths` matches profile-stripped paths. Wiring them here
-///   would be a category error. Access control on this listener is the bind
-///   address, TLS, and the session.
+/// - **No profile filter.** The profiles' `[filter]` is an ACME concern, and
+///   inheriting it would let an edit made for the ACME listener open or shut
+///   this one. The listener's own policy is `[admin.filter]` ([`filter`]),
+///   beside the bind address, TLS and the session.
+///
+/// # Panics
+///
+/// On an `admin.filter` that [`check_config`] would have refused. The server
+/// builds the policy itself and calls [`build_admin_app_with_logins`]; this is
+/// the convenience form tests and fixtures use.
 pub fn build_admin_app(
     database: Arc<Database>,
     config: Arc<Config>,
@@ -388,7 +395,11 @@ pub fn build_admin_app(
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
-    build_admin_app_with_logins(database, config, profiles, audit, notifiers, jobs, None).0
+    let policy = filter::build(&config).expect("admin.filter must be valid");
+    build_admin_app_with_logins(
+        database, config, profiles, audit, notifiers, jobs, policy, None,
+    )
+    .0
 }
 
 /// [`build_admin_app`], carrying login counters across a configuration reload.
@@ -396,6 +407,7 @@ pub fn build_admin_app(
 /// Returns the limiter it ended up with as well as the router, because the
 /// generation after this one has to carry it in turn — an `Arc<LoginLimiter>`
 /// that only ever moved forward is the whole point.
+#[allow(clippy::too_many_arguments)]
 pub fn build_admin_app_with_logins(
     database: Arc<Database>,
     config: Arc<Config>,
@@ -403,6 +415,7 @@ pub fn build_admin_app_with_logins(
     audit: Arc<acme_proxy_jobs::auditor::Auditor>,
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
+    policy: Arc<acme_proxy_policy::filter::FilterPolicy>,
     previous_logins: Option<&LoginLimiter>,
 ) -> (Router, Arc<LoginLimiter>) {
     let state = AdminState::with_logins(
@@ -597,6 +610,14 @@ pub fn build_admin_app_with_logins(
                  frame-ancestors 'none'; base-uri 'none'",
             ),
         ))
+        // `[admin.filter]`, just inside the access line: a refused caller still
+        // gets an `x-request-id` and is logged, and every header layer above
+        // still applies to the refusal. Resolves the client address the login
+        // limiter reads, too, so it runs whether or not a rule is configured.
+        .layer(middleware::from_fn_with_state(
+            policy,
+            filter::admin_filter_middleware,
+        ))
         // Outermost, and the same middleware the ACME listener uses: an admin
         // request gets an `x-request-id` and an access line on identical
         // terms. Its `profile` field stays `field::Empty` and renders as
@@ -747,6 +768,7 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
           bind_address = %admin.bind_address);
 
     check_templates(&admin.template_dir)?;
+    filter::build(config)?;
 
     Ok(())
 }
@@ -923,6 +945,16 @@ mod tests {
                 "`{bind}` must be refused without TLS, got: {error}"
             );
         }
+    }
+
+    /// A policy that would refuse to build refuses the process, at startup and
+    /// on `SIGHUP` alike, since both run `check_config`.
+    #[test]
+    fn a_broken_admin_filter_is_a_startup_error() {
+        let mut config = enabled();
+        config.admin.filter.trusted_proxies = vec!["not-a-network".to_string()];
+        let error = check_config(&config).unwrap_err().to_string();
+        assert!(error.starts_with("admin.filter: "), "{error}");
     }
 
     #[test]

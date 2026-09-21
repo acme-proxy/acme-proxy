@@ -676,6 +676,39 @@ mod tests {
         );
     }
 
+    /// `[admin.filter]` from the environment alone — the container deployment
+    /// the section exists for is the one most likely to have no file. Its
+    /// list fields sit one table deeper than `[filter]`'s, and must split the
+    /// same way; the global `[filter]` must not leak into it.
+    #[test]
+    fn the_admin_filter_round_trips_through_the_environment() {
+        let _guard = EnvGuard::new(&[
+            ("ACME_PROXY_ADMIN__FILTER__RULES", "mgmt"),
+            ("ACME_PROXY_ADMIN__FILTER__TRUSTED_PROXIES", "172.16.0.0/12"),
+            ("ACME_PROXY_ADMIN__FILTER__CHECK__NET__TYPE", "allowed_ip"),
+            (
+                "ACME_PROXY_ADMIN__FILTER__CHECK__NET__ALLOW",
+                "10.20.0.0/24,127.0.0.1/32",
+            ),
+            ("ACME_PROXY_ADMIN__FILTER__RULE__MGMT__WHEN", "net"),
+            ("ACME_PROXY_ADMIN__FILTER__RULE__MGMT__THEN", "allow"),
+            ("ACME_PROXY_FILTER__RULES", "acme-only"),
+        ]);
+
+        let config = Config::load().unwrap();
+        let filter = &config.admin.filter;
+        assert_eq!(filter.rules, vec!["mgmt"]);
+        assert_eq!(filter.trusted_proxies, vec!["172.16.0.0/12"]);
+        assert_eq!(filter.check["net"].r#type, "allowed_ip");
+        assert_eq!(
+            filter.check["net"].allow,
+            vec!["10.20.0.0/24", "127.0.0.1/32"]
+        );
+        assert_eq!(filter.rule["mgmt"].when, "net");
+        assert_eq!(filter.default, FilterConfig::default().default);
+        assert_eq!(config.filter.rules, vec!["acme-only"]);
+    }
+
     /// The `[proxy]` section, the other one an environment-only deployment is
     /// likely to set without a file at all.
     ///

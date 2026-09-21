@@ -202,6 +202,18 @@ migrated configuration before restarting.
   [ADR 0007]: doc/src/dev/adr/0007-role-processes.md
   [ADR 0014]: doc/src/dev/adr/0014-postgresql-beside-sqlite.md
 
+- **`[admin.filter]`: who may reach the web admin listener.** The same policy
+  engine, keys and check syntax as the ACME listener's `[filter]`, evaluated at
+  the connection stage on every admin request (`/health` included) — for a
+  deployment that cannot firewall the port on the host, such as a container.
+  Its own section, not inherited from `[filter]`; only `allowed_ip`, `path`,
+  `reverse_dns` and `custom` checks are accepted, and the others are refused by
+  name. A refusal is `403` (`access_denied` under `/api`, the HTML error page
+  elsewhere). `admin.filter.trusted_proxies` is also the first list the admin
+  listener believes `X-Forwarded-For` from, so the sign-in rate limiter behind a
+  reverse proxy can at last count the client instead of the proxy. Empty by
+  default, which filters nothing: an existing configuration behaves as before.
+
 - **`acme-proxy transfer --to <url>`** copies every row of the configured
   database into another one, which is how an existing SQLite deployment moves
   to PostgreSQL with its accounts, orders and audit trail intact. Row ids,
