@@ -430,3 +430,164 @@ async fn sweep_stale_schemas(admin: &crate::db::Database) {
         }
     }
 }
+
+/// One row in every one of the fifteen tables [`crate::transfer::TABLES`]
+/// names, seeded through the real model APIs rather than hand-written SQL —
+/// so the rows are shaped the way the server actually writes them, `CHECK`
+/// constraints and foreign keys included.
+///
+/// A table left empty would let a broken
+/// [`ColumnKind`](crate::transfer::ColumnKind) through unnoticed, so a caller
+/// asserts the seed is complete (every count above zero) before it copies
+/// anything.
+///
+/// **Two accounts, not one.** `terms_of_service_agreed` is the manifest's only
+/// `Bool` column and it is nullable, so one account agrees and the other does
+/// not; with a single row the copy could carry `NULL` as `false` — or drop a
+/// `true` — and every count would still match.
+pub async fn seed_every_table(db: &std::sync::Arc<crate::db::Database>) {
+    use crate::admin_recovery_code::AdminRecoveryCode;
+    use crate::admin_session::{AdminSession, NewSession};
+    use crate::admin_user::AdminUser;
+    use crate::audit::AuditEntry;
+    use crate::authz::{Authorization, Challenge};
+    use crate::crl::StoredCrl;
+    use crate::eab::Eab;
+    use crate::http01_token::Http01Token;
+    use crate::job::{Job, NewJob};
+    use crate::nonce::Nonce;
+    use crate::revocation::Revocation;
+    use crate::upstream_order::UpstreamOrder;
+    use acme_proxy_core::audit::{Actor, AuditEvent, AuditRecord};
+    use acme_proxy_core::identifier::Identifier;
+    use std::time::Duration;
+
+    // The ACME graph: account -> order -> authorization -> challenge, plus the
+    // upstream row that hangs off an order.
+    let account = account_id(db).await;
+    let order = certified_order(db, account, Some(4_102_444_800)).await;
+
+    let authz = Authorization::create(order.id, Identifier::dns("example.com"), order.expires, db)
+        .await
+        .expect("an authorization");
+    Challenge::create(authz.id, "http-01", db)
+        .await
+        .expect("a challenge");
+
+    UpstreamOrder::create(
+        &order.id.to_string(),
+        "https://upstream.example/order/1",
+        None,
+        &[1u8, 2, 3],
+        db,
+    )
+    .await
+    .expect("an upstream order");
+
+    // The second account, the one that agreed. See the doc above.
+    let mut agreed = account_seen_from(&[4u8, 5, 6], &ClientContext::default(), db).await;
+    agreed
+        .set_terms_agreed(db)
+        .await
+        .expect("the agreement is recordable");
+
+    // The standalone tables.
+    Nonce::new().save(db).await.expect("a nonce");
+    Eab::create(Some("label".to_string()), Some("default".to_string()), db)
+        .await
+        .expect("an EAB key");
+    Job::enqueue(
+        NewJob {
+            id: crate::id::mint(),
+            kind: "seed_kind",
+            dedup_key: "seed",
+            payload: &serde_json::json!({"seeded": true}),
+            run_at: 0,
+            deadline: None,
+            max_attempts: 3,
+        },
+        db,
+    )
+    .await
+    .expect("a job");
+
+    let mut record = AuditRecord::new(
+        AuditEvent::CertificateIssued,
+        "default",
+        Actor::acme(account.to_string()),
+    );
+    record.order_id = Some(order.id.to_string());
+    record.cert_serial = order.cert_serial.clone();
+    record.identifiers = vec!["example.com".to_string()];
+    AuditEntry::insert(record, db).await.expect("an audit row");
+
+    Revocation {
+        issuer: "a".repeat(64),
+        serial: "0a0b".to_string(),
+        revoked_at: 1,
+        reason: Some(4),
+        not_after: Some(4_102_444_800),
+    }
+    .insert_if_absent(db)
+    .await
+    .expect("a revocation");
+
+    StoredCrl {
+        issuer: "a".repeat(64),
+        crl_number: 1,
+        der: vec![9, 9, 9],
+        this_update: 1,
+        next_update: 2,
+    }
+    .insert_initial(db)
+    .await
+    .expect("a CRL");
+
+    Http01Token::publish("tok", "tok.thumb", 1, 4_102_444_800, db)
+        .await
+        .expect("an http-01 token");
+
+    // The admin island.
+    let user = AdminUser::create("alice", "hash", None, db)
+        .await
+        .expect("an operator");
+    AdminSession::create(
+        NewSession {
+            user_id: user.id,
+            token_hash: "0123456789abcdef0123456789abcdef",
+            csrf_token: "the-csrf-token",
+            created_ip: Some("192.0.2.1".to_string()),
+            user_agent: Some("curl/8".to_string()),
+        },
+        Duration::from_secs(3600),
+        db,
+    )
+    .await
+    .expect("a session");
+    AdminRecoveryCode::replace_all(user.id, &["code-hash".to_string()], db)
+        .await
+        .expect("a recovery code");
+}
+
+/// Counts every table [`crate::transfer::TABLES`] names, in its order.
+///
+/// The shape a transfer is asserted against: comparing two of these compares
+/// the tables as well as the numbers, so a table that stopped being copied
+/// reads as a missing pair rather than as a total that happens to be smaller.
+pub async fn row_counts(database: &crate::db::Database) -> Vec<(&'static str, u64)> {
+    let mut counts = Vec::new();
+    for spec in crate::transfer::TABLES {
+        let sql = format!("SELECT COUNT(*) FROM \"{}\";", spec.name);
+        let rows: i64 = crate::sql::query(sqlx::AssertSqlSafe(sql))
+            .fetch_one(database)
+            .await
+            .expect("a count")
+            .try_get(0usize)
+            .expect("a count is an integer");
+        counts.push((
+            spec.name,
+            u64::try_from(rows).expect("a count is not negative"),
+        ));
+    }
+    counts
+}

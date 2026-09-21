@@ -77,7 +77,7 @@ feature-gated file sits outside of entirely, does not fight the feature.
 
 ## Code coverage
 
-CI enforces a hard floor of **96% of lines**, over every package in the
+CI enforces a hard floor of **97% of lines**, over every package in the
 workspace (`main.rs` is excluded — it is pure socket and exit wiring). The
 shortest way to see the same number locally:
 
@@ -97,7 +97,7 @@ gates, each generated from the profiles left on disk.
 >
 > ```bash
 > cargo llvm-cov --no-run --workspace --summary-only \
->   --ignore-filename-regex 'src/main\.rs' --fail-under-lines 96
+>   --ignore-filename-regex 'src/main\.rs' --fail-under-lines 97
 > ```
 >
 > Not `-p` once per member either: a crate built twice under different features

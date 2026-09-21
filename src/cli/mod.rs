@@ -1228,6 +1228,36 @@ mod tests {
         }
     }
 
+    /// `Transfer`'s arm, which the list above cannot hold.
+    ///
+    /// Every command there has to succeed against one empty database, and a
+    /// transfer needs a second one that exists, is migrated and is empty. So
+    /// it is routed here instead, against the one refusal that opens nothing:
+    /// a `--to` naming the configured database is a copy into itself. The
+    /// command's own behaviour is `cli::transfer`'s suite.
+    #[tokio::test]
+    async fn dispatch_routes_transfer() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let config = Arc::new(Config::default());
+        let mut reader: &[u8] = &[];
+
+        let error = dispatch(
+            Some(Command::Transfer {
+                to: config.database.url.clone(),
+                json: false,
+            }),
+            true,
+            ColorChoice::Never,
+            &mut reader,
+            &config,
+            database,
+        )
+        .await
+        .expect_err("the source and the target are one database");
+
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
+    }
+
     /// A failing command's message reaches [`dispatch`]'s caller rather than
     /// exiting the process where it was raised.
     #[tokio::test]

@@ -571,6 +571,7 @@ fn quote(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// Every column of every table is in the manifest, and nothing else is.
     ///
@@ -665,6 +666,170 @@ mod tests {
                     spec.name
                 );
             }
+        }
+    }
+
+    /// The copy carries every table, and reads the source without writing it.
+    ///
+    /// The manifest guards above say the copy *names* every column; this says
+    /// it moves them. Both databases come from `connect_for_test`, so the same
+    /// test is SQLite to SQLite under `cargo nextest` and PostgreSQL to
+    /// PostgreSQL — two schemas of one server — under `TEST_POSTGRES_URL`,
+    /// which is the only way the `OVERRIDING SYSTEM VALUE` and `setval` arms
+    /// are ever executed.
+    #[tokio::test]
+    async fn a_copy_carries_every_table_and_leaves_the_source_alone() {
+        let source = Arc::new(Database::connect_for_test().await.unwrap());
+        let target = Database::connect_for_test().await.unwrap();
+
+        crate::testutil::seed_every_table(&source).await;
+        let before = crate::testutil::row_counts(&source).await;
+        assert!(
+            before.iter().all(|(_, rows)| *rows > 0),
+            "every table must be seeded or this proves nothing: {before:?}"
+        );
+        assert!(
+            non_empty_tables(&target)
+                .await
+                .expect("an empty target counts")
+                .is_empty(),
+            "the target starts empty"
+        );
+
+        let report = source
+            .transfer_to(&target)
+            .await
+            .expect("the copy should succeed");
+
+        assert_eq!(
+            report.total(),
+            before.iter().map(|(_, rows)| rows).sum::<u64>(),
+            "the report counts what the tables hold"
+        );
+        assert_eq!(
+            report.tables.len(),
+            TABLES.len(),
+            "every table is reported, including any that were empty"
+        );
+        assert_eq!(
+            crate::testutil::row_counts(&target).await,
+            before,
+            "the target holds what the source held"
+        );
+        assert_eq!(
+            crate::testutil::row_counts(&source).await,
+            before,
+            "the source is only read"
+        );
+
+        // The nullable `Bool` the seed sets on one account and leaves absent on
+        // the other. Counts cannot see this: a copy that carried `NULL` as
+        // `false` would match every number above.
+        let agreed = crate::sql::query(
+            "SELECT terms_of_service_agreed FROM accounts ORDER BY created_at, id;",
+        )
+        .fetch_all(&target)
+        .await
+        .expect("the accounts are readable")
+        .iter()
+        .map(|row| {
+            row.try_get::<Option<bool>>(0usize)
+                .expect("a nullable bool")
+        })
+        .collect::<Vec<_>>();
+        assert!(
+            agreed.contains(&Some(true)) && agreed.contains(&None),
+            "an agreement and its absence both survive: {agreed:?}"
+        );
+    }
+
+    /// A table longer than one batch arrives whole, and no row arrives twice.
+    ///
+    /// `copy_table` pages with a keyset rather than an offset, so the boundary
+    /// at [`BATCH`] is where a wrong comparison truncates the tail or repeats
+    /// the seam — and either failure looks like a successful copy.
+    ///
+    /// Two tables, because `read_batch` builds a different `WHERE` for each:
+    /// `nonces` resumes from one column, and `revocations` — the manifest's
+    /// only composite key — from the `(a, b) > (?, ?)` row comparison that is
+    /// the one spelling both dialects accept. Neither is reached at all by a
+    /// table that fits in a single batch.
+    #[tokio::test]
+    async fn a_table_longer_than_one_batch_is_copied_whole() {
+        let source = Arc::new(Database::connect_for_test().await.unwrap());
+        let target = Database::connect_for_test().await.unwrap();
+
+        let rows = u64::try_from(BATCH).expect("the batch size is positive") + 1;
+        for index in 0..rows {
+            crate::nonce::Nonce::new()
+                .save(&source)
+                .await
+                .expect("a nonce is storable");
+            crate::revocation::Revocation {
+                issuer: "a".repeat(64),
+                serial: format!("{index:08x}"),
+                revoked_at: 1,
+                reason: None,
+                not_after: None,
+            }
+            .insert_if_absent(&source)
+            .await
+            .expect("a revocation is storable");
+        }
+
+        let report = source
+            .transfer_to(&target)
+            .await
+            .expect("the copy should succeed");
+
+        for table in ["nonces", "revocations"] {
+            let reported = report
+                .tables
+                .iter()
+                .find(|entry| entry.table == table)
+                .unwrap_or_else(|| panic!("{table} is in the manifest"));
+            assert_eq!(reported.rows, rows, "{table}: one batch and one row");
+            assert_eq!(
+                count(table, &target).await.expect("a count"),
+                rows,
+                "{table}: and the target agrees"
+            );
+        }
+    }
+
+    /// A copy that fails partway leaves the target exactly as it was.
+    ///
+    /// The whole transfer is one transaction on the target, which is what lets
+    /// an operator retry after fixing the cause instead of hunting for how far
+    /// it got. `admin_users` is the eighth of fifteen tables and its username
+    /// is `UNIQUE`, so a target that already holds the seed's operator fails
+    /// there — after seven tables have been written and before the seven that
+    /// follow, `accounts` and `orders` among them.
+    #[tokio::test]
+    async fn a_failed_copy_leaves_the_target_as_it_was() {
+        let source = Arc::new(Database::connect_for_test().await.unwrap());
+        let target = Arc::new(Database::connect_for_test().await.unwrap());
+
+        crate::testutil::seed_every_table(&source).await;
+        crate::admin_user::AdminUser::create("alice", "hash", None, &target)
+            .await
+            .expect("the target has an operator of its own");
+
+        let error = source
+            .transfer_to(&target)
+            .await
+            .expect_err("the duplicate username must fail the copy");
+        assert!(
+            crate::sql::is_unique_violation(&error),
+            "the cause is the username, not something else: {error}"
+        );
+
+        for (table, rows) in crate::testutil::row_counts(&target).await {
+            let expected = u64::from(table == "admin_users");
+            assert_eq!(
+                rows, expected,
+                "`{table}` should hold {expected} row(s) after the rollback"
+            );
         }
     }
 

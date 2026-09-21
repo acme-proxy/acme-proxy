@@ -142,12 +142,12 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The ratchet, set just below the current line coverage (96.67% over the
-      # whole workspace). It read ~97.3% while it was measuring `src/cli/`
-      # alone, so the number fell when the scope widened rather than when the
-      # code got worse: the copy engine in `crates/store/src/transfer.rs`, which
-      # only the `postgres` job exercises, is inside the metric now and never
-      # was before.
+      # The ratchet, set just below the current line coverage (97.1% over the
+      # whole workspace). Widening the scope from `src/cli/` to every package
+      # first took it to 96.67%, because the copy engine in
+      # `crates/store/src/transfer.rs` — which only the `postgres` job
+      # exercised — came inside the metric at 30%; the tests it now has are
+      # what put the number back.
       #
       # `--fail-under-lines` reads the **Lines** column, not the `Regions` one
       # the summary prints first — they differ by more than a point here, and
@@ -159,7 +159,7 @@ jobs:
         run: >
           cargo llvm-cov --no-run --workspace --summary-only
           --ignore-filename-regex 'src/main\.rs'
-          --fail-under-lines 96
+          --fail-under-lines 97
 
       # `always()`, because the run where the floor was missed is exactly the
       # run whose report somebody wants to read. Retained for a fortnight

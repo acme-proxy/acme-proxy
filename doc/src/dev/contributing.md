@@ -54,7 +54,7 @@ Your pull request has to pass all of these:
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo llvm-cov nextest --workspace --summary-only --fail-under-lines 96
+cargo llvm-cov nextest --workspace --summary-only --fail-under-lines 97
 cargo test --workspace --doc   # llvm-cov skips doc-tests
 cargo deny check               # supply-chain audit, against deny.toml
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \

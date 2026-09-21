@@ -76,7 +76,7 @@ The same binary carries every admin subcommand (`account`, `order`, `jobs`, `aud
 
 `.github/workflows/ci.yml`. **Every cargo command takes `--workspace`** — at a root that is also a package, a bare one acts on that package alone. `doc/src/dev/contributing.md` has the full list with reasons.
 
-- **test** — `fmt --check`, `clippy -D warnings`, `llvm-cov nextest` with a **96%** line floor over the whole workspace (`main.rs` excluded), `cargo test --doc`, and `cargo doc` with `-D warnings -A rustdoc::private_intra_doc_links`. The four report views spell it `cargo llvm-cov --no-run --workspace`, never the `report` subcommand: `report` refuses `--workspace` and silently grades the root package alone, which is how `crates/` stayed outside the floor.
+- **test** — `fmt --check`, `clippy -D warnings`, `llvm-cov nextest` with a **97%** line floor over the whole workspace (`main.rs` excluded), `cargo test --doc`, and `cargo doc` with `-D warnings -A rustdoc::private_intra_doc_links`. The four report views spell it `cargo llvm-cov --no-run --workspace`, never the `report` subcommand: `report` refuses `--workspace` and silently grades the root package alone, which is how `crates/` stayed outside the floor.
 - **msrv** — `cargo check --locked` on the `rust-version` from `Cargo.toml`.
 - **hsm** — clippy and the suite with `--features acme-proxy-signer/hsm` against SoftHSM2.
 - **postgres** — the whole `acme-proxy-store` suite plus `tests/postgres.rs`, `roles` and `reload` against a real server, with `ACME_PROXY_REQUIRE_POSTGRES=1` so a skip is a failure. Separate from **test** for `hsm`'s reason: the coverage floor is a ratchet over one configuration.
