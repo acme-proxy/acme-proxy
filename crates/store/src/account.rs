@@ -514,9 +514,14 @@ impl Account {
     /// re-registering under an existing key does not restate the agreement,
     /// and a ToS added to the configuration later does not retroactively make
     /// old accounts look like they accepted it.
+    ///
+    /// The value is **bound**, never written as the literal `1` SQLite would
+    /// also take: this is the schema's only boolean column, and PostgreSQL
+    /// refuses an integer against it.
     pub async fn set_terms_agreed(&mut self, database: &Database) -> Result<(), sqlx::Error> {
         debug!(event = "db_account_terms_agreed_started", outcome = "progress", account_id = ?self.id);
-        crate::sql::query("UPDATE accounts SET terms_of_service_agreed = 1 WHERE id = ?;")
+        crate::sql::query("UPDATE accounts SET terms_of_service_agreed = ? WHERE id = ?;")
+            .bind(true)
             .bind(self.id)
             .execute(database)
             .await?;
@@ -1005,6 +1010,34 @@ mod tests {
         .unwrap();
         assert!(!is_new);
         assert_eq!(found.eab_kid, Some(kid));
+    }
+
+    /// The flag is a bound `bool`, never the integer SQLite would also take:
+    /// `terms_of_service_agreed` is the schema's only boolean column, and
+    /// PostgreSQL refuses `= 1` against it. Production records the agreement
+    /// in the insert, so without this the statement is reached only through
+    /// `seed_every_table`.
+    #[tokio::test]
+    async fn the_agreement_is_recorded_as_a_bound_boolean() {
+        let db = Database::connect_for_test().await.unwrap();
+        let (mut account, _) =
+            Account::find_or_create("default", &[9u8], vec![], &ClientContext::default(), &db)
+                .await
+                .unwrap();
+        assert_eq!(account.terms_of_service_agreed, None, "unset at creation");
+
+        account.set_terms_agreed(&db).await.unwrap();
+        assert_eq!(account.terms_of_service_agreed, Some(true));
+
+        let stored = Account::find_by_id("default", &account.id.to_string(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.terms_of_service_agreed,
+            Some(true),
+            "and it round-trips from the row"
+        );
     }
 
     /// The traceability columns are admin-visible only: the ACME account object
