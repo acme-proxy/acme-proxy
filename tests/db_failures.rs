@@ -1,5 +1,11 @@
-//! Exercises the request-path DB-failure branches by closing the pool out from
-//! under a running app.
+//! Exercises the request-path DB-failure branches of a running app, by closing
+//! its pool or by sabotaging one table.
+//!
+//! **Prefer sabotage.** A closed pool fails the first database call of the
+//! request, which for every signed route is the extractor's nonce check, so a
+//! pool-close case proves only that the extractor degrades. A dropped table or
+//! a trigger refusing one write lets the request through to the handler's own
+//! call ([`assert_500_after_sabotage`]).
 //!
 //! Two properties: a failed DB call becomes a 500 `serverInternal` rather than a
 //! panic or a wrong answer, and the nonce middleware drops the `Replay-Nonce`
@@ -140,6 +146,12 @@ const REFUSE_ACCOUNT_UPDATE: &str = "CREATE TRIGGER refuse_account_update BEFORE
                                      accounts BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
 const REFUSE_ORDER_INSERT: &str = "CREATE TRIGGER refuse_order_insert BEFORE INSERT ON orders \
                                    BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+const REFUSE_CHALLENGE_UPDATE: &str = "CREATE TRIGGER refuse_challenge_update BEFORE UPDATE ON \
+                                       challenges BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+const REFUSE_AUTHZ_UPDATE: &str = "CREATE TRIGGER refuse_authz_update BEFORE UPDATE ON \
+                                   authorizations BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
+const REFUSE_JOB_INSERT: &str = "CREATE TRIGGER refuse_job_insert BEFORE INSERT ON jobs \
+                                 BEGIN SELECT RAISE(ABORT, 'sabotage'); END;";
 
 /// `newAccount`'s own `INSERT`, which the pool-close driver cannot reach: the
 /// nonce check fails first there, so nothing ever proved that a failed account
@@ -386,49 +398,130 @@ async fn order_with_challenge(
     (authz_url, challenge_url)
 }
 
-/// Triggering a challenge with no database is a 500, not a panic.
+/// The claim a trigger writes on the challenge row (`challenge_claim_failed`).
 ///
-/// `post_challenge` writes its outcome — challenge, authorization and order —
-/// in **one** transaction, precisely so a partial write cannot park an order
-/// `pending` with every authorization `valid`, a state nothing re-derives. A
-/// closed pool fails at the handler's first read rather than mid-transaction,
-/// so what this pins is the reachable half: the handler degrades into a problem
-/// document instead of panicking, and no `Replay-Nonce` is advertised for a
-/// nonce that could not be persisted.
+/// This used to close the pool, which fails the extractor's nonce check —
+/// the first database call — and so proved nothing about the handler. A
+/// refused `UPDATE` lets every read through and fails exactly the claim.
 #[tokio::test]
 async fn challenge_trigger_db_error_returns_500() {
-    assert_500_after_pool_close("challenge trigger", |app, signer, db| async move {
-        let account_url = register(&app, &signer).await;
-        let (_authz_url, challenge_url) = order_with_challenge(&app, &signer, &account_url).await;
-        let nonce = fetch_nonce(&app).await;
-        let path = challenge_url
-            .strip_prefix(common::HOST)
-            .unwrap()
-            .to_string();
-        let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
-        (app, db, path, body)
-    })
+    assert_500_after_sabotage(
+        "challenge claim",
+        &[REFUSE_CHALLENGE_UPDATE],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let (_authz_url, challenge_url) =
+                order_with_challenge(&app, &signer, &account_url).await;
+            let nonce = fetch_nonce(&app).await;
+            let path = challenge_url
+                .strip_prefix(common::HOST)
+                .unwrap()
+                .to_string();
+            let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
+            (app, db, path, body)
+        },
+    )
+    .await;
+}
+
+/// The challenge read that starts a trigger's ownership walk
+/// (`challenge_lookup_failed`), with the nonce and account reads still up.
+#[tokio::test]
+async fn challenge_lookup_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "challenge lookup",
+        &["DROP TABLE challenges;"],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let (_authz_url, challenge_url) =
+                order_with_challenge(&app, &signer, &account_url).await;
+            let nonce = fetch_nonce(&app).await;
+            let path = challenge_url
+                .strip_prefix(common::HOST)
+                .unwrap()
+                .to_string();
+            let body = signer.sign_kid(&account_url, &challenge_url, &nonce, &json!({}));
+            (app, db, path, body)
+        },
+    )
+    .await;
+}
+
+/// The authorization read of a POST-as-GET (`authz_lookup_failed`).
+#[tokio::test]
+async fn authorization_lookup_db_error_returns_500() {
+    assert_500_after_sabotage(
+        "authorization lookup",
+        &["DROP TABLE authorizations;"],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let (authz_url, _challenge_url) =
+                order_with_challenge(&app, &signer, &account_url).await;
+            let nonce = fetch_nonce(&app).await;
+            let path = authz_url.strip_prefix(common::HOST).unwrap().to_string();
+            let body = signer.sign_kid_empty(&account_url, &authz_url, &nonce);
+            (app, db, path, body)
+        },
+    )
     .await;
 }
 
 /// §7.5.2's deactivate-and-demote pair is one transaction for the same reason
-/// `post_challenge`'s outcome is; same coverage caveat as above.
+/// a validation verdict is. A refused `UPDATE` of the authorization fails that
+/// transaction itself, where a closed pool only ever reached the nonce check.
 #[tokio::test]
 async fn authorization_deactivation_db_error_returns_500() {
-    assert_500_after_pool_close("authz deactivation", |app, signer, db| async move {
-        let account_url = register(&app, &signer).await;
-        let (authz_url, _challenge_url) = order_with_challenge(&app, &signer, &account_url).await;
-        let nonce = fetch_nonce(&app).await;
-        let path = authz_url.strip_prefix(common::HOST).unwrap().to_string();
-        let body = signer.sign_kid(
-            &account_url,
-            &authz_url,
-            &nonce,
-            &json!({ "status": "deactivated" }),
-        );
-        (app, db, path, body)
-    })
+    assert_500_after_sabotage(
+        "authz deactivation",
+        &[REFUSE_AUTHZ_UPDATE],
+        |app, signer, db| async move {
+            let account_url = register(&app, &signer).await;
+            let (authz_url, _challenge_url) =
+                order_with_challenge(&app, &signer, &account_url).await;
+            let nonce = fetch_nonce(&app).await;
+            let path = authz_url.strip_prefix(common::HOST).unwrap().to_string();
+            let body = signer.sign_kid(
+                &account_url,
+                &authz_url,
+                &nonce,
+                &json!({ "status": "deactivated" }),
+            );
+            (app, db, path, body)
+        },
+    )
     .await;
+}
+
+/// The work a trigger claims and then fails to queue must be given back. The
+/// claim is on the row and nothing is coming for it, so without the release
+/// the client would poll a `processing` challenge until its authorization
+/// expired. After the 500, a retry once the queue works must validate.
+#[tokio::test]
+async fn a_challenge_whose_validation_cannot_be_queued_is_released() {
+    let (app, db) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let (_authz_url, challenge_url) = order_with_challenge(&app, &signer, &account_url).await;
+
+    sqlx::query(REFUSE_JOB_INSERT)
+        .execute(db.raw_pool())
+        .await
+        .unwrap();
+    let res = common::acme::trigger(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:serverInternal");
+
+    sqlx::query("DROP TRIGGER refuse_job_insert;")
+        .execute(db.raw_pool())
+        .await
+        .unwrap();
+    let challenge =
+        common::acme::trigger_and_settle(&app, &signer, &account_url, &challenge_url).await;
+    assert_eq!(
+        challenge["status"], "valid",
+        "the claim must have been released: {challenge}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -465,24 +558,60 @@ async fn key_change_db_error_returns_500() {
 
 /// Retrieving an issued certificate by signed POST-as-GET (§7.4.2).
 ///
-/// A read rather than a write, but it goes through the same extractor and the
-/// same order lookup, and a client polling for its chain must be told to come
-/// back rather than handed an empty body.
+/// A read rather than a write, but a client polling for its chain must be told
+/// to come back rather than handed an empty body. `orders` is dropped so the
+/// order lookup itself fails (`order_lookup_failed`), after the nonce and the
+/// account have been read.
 #[tokio::test]
 async fn certificate_retrieval_db_error_returns_500() {
-    assert_500_after_pool_close("certificate retrieval", |app, signer, db| async move {
-        // One registration: `ready_order` does it, and registering again with
-        // the same key is a find-or-create `200`, not a `201`.
-        let (account_url, order_url, _order) =
-            common::acme::ready_order(&app, &signer, &["example.com"]).await;
-        let order_id = order_url.rsplit('/').next().unwrap().to_string();
-        let certificate_url = format!("{BASE}/certificate/{order_id}");
+    assert_500_after_sabotage(
+        "certificate retrieval",
+        &["DROP TABLE orders;"],
+        |app, signer, db| async move {
+            // One registration: `ready_order` does it, and registering again
+            // with the same key is a find-or-create `200`, not a `201`.
+            let (account_url, order_url, _order) =
+                common::acme::ready_order(&app, &signer, &["example.com"]).await;
+            let order_id = order_url.rsplit('/').next().unwrap().to_string();
+            let certificate_url = format!("{BASE}/certificate/{order_id}");
 
-        let nonce = fetch_nonce(&app).await;
-        let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
-        (app, db, p(&format!("/certificate/{order_id}")), body)
-    })
+            let nonce = fetch_nonce(&app).await;
+            let body = signer.sign_kid_empty(&account_url, &certificate_url, &nonce);
+            (app, db, p(&format!("/certificate/{order_id}")), body)
+        },
+    )
     .await;
+}
+
+/// `GET /renewalInfo/{id}` (RFC 9773) is unsigned, so its order lookup by
+/// serial is the first database call it makes; a failure there is a 500, not
+/// the `404`-shaped "unknown certificate" that would tell the client to stop
+/// asking.
+#[tokio::test]
+async fn renewal_info_lookup_db_error_returns_500() {
+    let (app, db) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let (_account_url, _order_url, pem) =
+        common::acme::issue_certificate(&app, &signer, &["example.com"]).await;
+    let leaf = acme_proxy_core::cert::leaf_der_from_chain(&pem).unwrap();
+    let cert_id = acme_proxy_core::cert::ari_cert_id(&leaf).unwrap();
+
+    sqlx::query("DROP TABLE orders;")
+        .execute(db.raw_pool())
+        .await
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::get(p(&format!("/renewalInfo/{cert_id}")))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:serverInternal");
 }
 
 /// `newOrder` carrying `replaces` (RFC 9773 §5): the "already replaced?" lookup
