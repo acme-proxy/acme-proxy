@@ -68,8 +68,8 @@ pub enum DeleteOutcome {
     /// [`live_certificates_refusal`] for what to tell the operator, and
     /// `live_certificate!` in `crates/store/src/order.rs` for what "live" means.
     ///
-    /// Only an account or an order can answer this; an operator holds no
-    /// certificate.
+    /// Only an account or an order can answer this; an operator's delete
+    /// answers `admin::users::UserDeleteOutcome`, which has no such variant.
     LiveCertificates(u64),
 }
 

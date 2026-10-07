@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::admin::ops::DeleteOutcome;
 use crate::admin::password::{self, PasswordContext};
 use crate::admin::prompt::confirm;
 use acme_proxy_store::admin_session::AdminSession;
@@ -347,15 +346,28 @@ pub async fn delete_user(username: &str, database: Arc<Database>) -> Result<bool
     AdminUser::delete(user.id, &database).await
 }
 
+/// What [`confirm_delete_user`] did.
+///
+/// [`DeleteOutcome`](crate::admin::ops::DeleteOutcome) less its `LiveCertificates` refusal: an operator holds no
+/// certificate, so a caller matching on that variant here had only an
+/// `unreachable!` to put in the arm.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UserDeleteOutcome {
+    NotFound,
+    Cancelled,
+    /// Deleted, carrying the sessions that cascaded with it.
+    Deleted(crate::admin::ops::Deleted),
+}
+
 /// [`delete_user`], asking first and naming what goes with it.
 pub async fn confirm_delete_user(
     username: &str,
     assume_yes: bool,
     reader: &mut impl BufRead,
     database: Arc<Database>,
-) -> Result<DeleteOutcome, sqlx::Error> {
+) -> Result<UserDeleteOutcome, sqlx::Error> {
     let Some(user) = AdminUser::find_by_username(username, &database).await? else {
-        return Ok(DeleteOutcome::NotFound);
+        return Ok(UserDeleteOutcome::NotFound);
     };
     let sessions = AdminSession::list_all(Some(user.id), &database)
         .await?
@@ -365,10 +377,10 @@ pub async fn confirm_delete_user(
         user.username, user.status
     );
     if !confirm(&prompt, assume_yes, reader) {
-        return Ok(DeleteOutcome::Cancelled);
+        return Ok(UserDeleteOutcome::Cancelled);
     }
     AdminUser::delete(user.id, &database).await?;
-    Ok(DeleteOutcome::Deleted(crate::admin::ops::Deleted {
+    Ok(UserDeleteOutcome::Deleted(crate::admin::ops::Deleted {
         cascaded: sessions as u64,
     }))
 }
@@ -939,7 +951,7 @@ mod tests {
             confirm_delete_user("nobody", true, &mut empty, db.clone())
                 .await
                 .unwrap(),
-            DeleteOutcome::NotFound
+            UserDeleteOutcome::NotFound
         );
 
         user_with_cheap_password("alice", "pw", db.clone()).await;
@@ -948,7 +960,7 @@ mod tests {
             confirm_delete_user("alice", false, &mut no, db.clone())
                 .await
                 .unwrap(),
-            DeleteOutcome::Cancelled
+            UserDeleteOutcome::Cancelled
         );
         assert!(
             AdminUser::find_by_username("alice", &db)
@@ -962,7 +974,7 @@ mod tests {
             confirm_delete_user("alice", true, &mut empty, db.clone())
                 .await
                 .unwrap(),
-            DeleteOutcome::Deleted(crate::admin::ops::Deleted { cascaded: 0 })
+            UserDeleteOutcome::Deleted(crate::admin::ops::Deleted { cascaded: 0 })
         );
         assert!(
             AdminUser::find_by_username("alice", &db)

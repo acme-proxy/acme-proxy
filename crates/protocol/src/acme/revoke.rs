@@ -452,16 +452,15 @@ impl Revocations<'_> {
             return Err(RevokeError::BadReason(code));
         }
 
-        if let Revoker::Queued { jobs, wait } = self.revoker {
+        match self.revoker {
             // Everything past this point is the job's: its tail writes the
             // `certificate_revoked` row and the notification, from the process
             // that holds the backend.
-            return self
-                .revoke_through_the_queue(&order, reason, &actor, &client, jobs, wait)
-                .await;
-        }
-
-        match self.revoker {
+            Revoker::Queued { jobs, wait } => {
+                return self
+                    .revoke_through_the_queue(&order, reason, &actor, &client, jobs, wait)
+                    .await;
+            }
             // The signer first, then the order: the CA-side action is
             // authoritative, so a failure there must leave the order un-revoked
             // for a retry — and is audited as the attempt it was, whoever asked.
@@ -516,7 +515,6 @@ impl Revocations<'_> {
                 jobs.enqueue_or_log(acme_proxy_signer::local_ca::sweep::regenerate_spec(issuer))
                     .await;
             }
-            Revoker::Queued { .. } => unreachable!("answered above"),
         }
 
         info!(event = "certificate_revoked", outcome = "success", order_id = %order.id, cert_serial = %serial_hex);

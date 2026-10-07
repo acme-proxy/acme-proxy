@@ -22,10 +22,10 @@ use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use acme_proxy_admin::admin;
 use acme_proxy_admin::admin::mfa;
-use acme_proxy_admin::admin::ops::DeleteOutcome;
 use acme_proxy_admin::admin::password::PasswordContext;
 use acme_proxy_admin::admin::prompt::confirm;
 use acme_proxy_admin::admin::users;
+use acme_proxy_admin::admin::users::UserDeleteOutcome;
 use acme_proxy_admin::admin::users::UserError;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
@@ -393,12 +393,9 @@ async fn run_user_command(
         }
         AdminUserCommand::Delete { username } => {
             match users::confirm_delete_user(&username, yes, reader, database.clone()).await? {
-                DeleteOutcome::NotFound => return Err(not_found(&username)),
-                DeleteOutcome::LiveCertificates(_) => {
-                    unreachable!("an operator holds no certificate")
-                }
-                DeleteOutcome::Cancelled => println!("Cancelled."),
-                DeleteOutcome::Deleted(_) => {
+                UserDeleteOutcome::NotFound => return Err(not_found(&username)),
+                UserDeleteOutcome::Cancelled => println!("Cancelled."),
+                UserDeleteOutcome::Deleted(_) => {
                     audit_admin::record_cli_action(&database, |actor, client| {
                         audit_admin::operator_deleted(actor, client, &username)
                     })

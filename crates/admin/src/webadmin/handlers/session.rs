@@ -83,15 +83,15 @@ pub(crate) async fn sign_in(
         users::authenticate(&body.username, &body.password, state.database.clone()).await?;
 
     // Every failure answers identically; only the log says which.
-    let mut user = match outcome {
-        AuthOutcome::Authenticated(user) => *user,
-        other => {
-            let reason = match other {
-                AuthOutcome::UnknownUser => "unknown_user",
-                AuthOutcome::WrongPassword(_) => "wrong_password",
-                AuthOutcome::Disabled(_) => "account_disabled",
-                AuthOutcome::Authenticated(_) => unreachable!("handled above"),
-            };
+    let refused = match outcome {
+        AuthOutcome::Authenticated(user) => Ok(*user),
+        AuthOutcome::UnknownUser => Err("unknown_user"),
+        AuthOutcome::WrongPassword(_) => Err("wrong_password"),
+        AuthOutcome::Disabled(_) => Err("account_disabled"),
+    };
+    let mut user = match refused {
+        Ok(user) => user,
+        Err(reason) => {
             attempt.failed();
             log_login(false, &body.username, client, reason);
             return Err(AdminError::invalid_credentials());
