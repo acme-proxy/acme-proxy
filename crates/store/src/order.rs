@@ -1056,9 +1056,17 @@ impl Order {
         Ok(written == 1)
     }
 
-    /// The `pending` transition as a bare statement, guarded on `ready` (the
-    /// one backwards transition, [`Order::mark_pending`]); see
+    /// The `pending` transition as a bare statement, guarded on `ready`; see
     /// [`Order::set_invalid`].
+    ///
+    /// The only backwards transition in the order state machine, taken when an
+    /// authorization of a `ready` order stops being `valid` — in practice, a
+    /// client deactivating one (RFC 8555 §7.5.2). §7.5.2's "the server MUST NOT
+    /// treat deactivated authorization objects as sufficient for issuing
+    /// certificates" has to hold for an order that already reached `ready`, or
+    /// `finalize` would still accept it. §7.1.6's diagram draws
+    /// `pending → ready` as the state becoming true rather than a one-way
+    /// latch, so re-deriving it is in keeping with the model.
     pub async fn set_pending<'e>(
         id: Uuid,
         executor: impl Into<crate::sql::Exec<'e>>,
@@ -1105,28 +1113,6 @@ impl Order {
 
         self.status = OrderStatus::Ready;
         info!(event = "db_order_marked_ready", outcome = "success", order_id = ?self.id);
-        Ok(true)
-    }
-
-    /// Moves the order back from `ready` to `pending`, after one of its
-    /// authorizations stopped being `valid` — in practice, a client
-    /// deactivating one (RFC 8555 §7.5.2).
-    ///
-    /// The only backwards transition in the order state machine, and it exists
-    /// because §7.5.2's "the server MUST NOT treat deactivated authorization
-    /// objects as sufficient for issuing certificates" has to hold for an order
-    /// that already reached `ready` — otherwise `finalize` would still accept
-    /// it. RFC 8555 §7.1.6's diagram draws `pending → ready` as the state
-    /// becoming true rather than a one-way latch, so re-deriving it is in
-    /// keeping with the model.
-    pub async fn mark_pending(&mut self, database: &Database) -> Result<bool, sqlx::Error> {
-        debug!(event = "db_order_mark_pending_started", outcome = "progress", order_id = ?self.id);
-        if !Self::set_pending(self.id, database).await? {
-            return Ok(false);
-        }
-
-        self.status = OrderStatus::Pending;
-        info!(event = "db_order_marked_pending", outcome = "success", order_id = ?self.id);
         Ok(true)
     }
 

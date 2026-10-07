@@ -26,15 +26,15 @@ use axum::{
     response::IntoResponse,
 };
 
-/// The one resource that does not carry the link.
-const DIRECTORY_PATH: &str = "/directory";
+use acme_proxy_core::routes::DIRECTORY;
 
 pub async fn add_index_link_middleware(
     State(link_value): State<HeaderValue>,
     request: Request<Body>,
     next: Next,
 ) -> impl IntoResponse {
-    let is_directory = request.uri().path() == DIRECTORY_PATH;
+    // The one resource that does not carry the link.
+    let is_directory = request.uri().path() == DIRECTORY;
 
     let mut response = next.run(request).await;
 

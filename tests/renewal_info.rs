@@ -313,12 +313,12 @@ async fn renewal_info_rejects_invalid_id_format() {
     );
 }
 
-/// Les deux moitiés doivent être un base64url *valide* et le certificat
-/// simplement inconnu, sinon le handler s'arrête un cran plus tôt, au décodage.
-/// `"dummy"` fait 5 caractères et `5 % 4 == 1` n'est pas une longueur base64
-/// possible : une version précédente de ce test visait donc « certID
-/// illisible », pas « certificat inconnu », tout en portant le second nom —
-/// les deux rendant le même 400 + `malformed`, rien ne le signalait.
+/// Both halves must be *valid* base64url and the certificate merely unknown,
+/// or the handler stops one step earlier, at decoding. `"dummy"` is 5
+/// characters and `5 % 4 == 1` is not a possible base64 length, so an earlier
+/// version of this test exercised "unreadable certID", not "unknown
+/// certificate", while carrying the second name — and since both answer the
+/// same 400 + `malformed`, nothing flagged it.
 #[tokio::test]
 async fn renewal_info_rejects_unknown_certificate() {
     let app = test_app().await;
@@ -330,7 +330,7 @@ async fn renewal_info_rejects_unknown_certificate() {
     assert_eq!(body["type"], "urn:ietf:params:acme:error:malformed");
     assert_eq!(
         body["detail"], "Unknown certificate",
-        "doit atteindre la recherche par numéro de série, pas échouer au décodage"
+        "must reach the serial-number lookup, not fail at decoding"
     );
 }
 
@@ -348,7 +348,7 @@ async fn renewal_info_rejects_a_serial_that_is_not_base64url() {
             .as_str()
             .unwrap_or_default()
             .contains("serial number encoding"),
-        "doit nommer la moitié fautive : {body}"
+        "must name the faulty half: {body}"
     );
 }
 
@@ -393,21 +393,21 @@ async fn an_unreachable_upstream_falls_back_to_the_local_window() {
     assert_eq!(
         res.status(),
         StatusCode::OK,
-        "un amont muet ne doit pas se propager au client"
+        "a silent upstream must not reach the client"
     );
     let window = body_json(res).await["suggestedWindow"].clone();
 
-    // La fenêtre locale d'un certificat de 90 jours non révoqué est à venir.
+    // The local window of an unrevoked 90-day certificate lies in the future.
     let start = OffsetDateTime::parse(window["start"].as_str().unwrap(), &Rfc3339).unwrap();
     let end = OffsetDateTime::parse(window["end"].as_str().unwrap(), &Rfc3339).unwrap();
     assert!(start < end);
     assert!(start > OffsetDateTime::now_utc());
 }
 
-/// RFC 9773 §4.2 : « `explanationURL` […] Clients SHOULD provide this URL to
-/// their operator, if present. » Seul un backend qui délègue en a un, et il doit
-/// traverser le proxy intact — c'est la seule information de contexte que ce
-/// serveur ne peut pas reconstituer.
+/// RFC 9773 §4.2: "`explanationURL` […] Clients SHOULD provide this URL to
+/// their operator, if present." Only a delegating backend has one, and it must
+/// cross the proxy intact — it is the one piece of context this server cannot
+/// reconstruct.
 #[tokio::test]
 async fn an_upstream_explanation_url_reaches_the_client() {
     const URL: &str = "https://ca.example/incidents/2026-08";
@@ -472,13 +472,13 @@ async fn revocation_beats_an_upstream_window_in_the_future() {
     let end = OffsetDateTime::parse(window["end"].as_str().unwrap(), &Rfc3339).unwrap();
     assert!(
         start < now && end <= now,
-        "la fenêtre d'un certificat révoqué doit être entièrement passée, \
-         pas celle que l'amont a proposée"
+        "a revoked certificate's window must lie wholly in the past, \
+         not be the one the upstream proposed"
     );
 }
 
-/// Une commande retrouvée par son numéro de série mais dont la colonne
-/// `certificate` est vide : la ligne existe, le certificat non.
+/// An order found by its serial number whose `certificate` column is empty:
+/// the row exists, the certificate does not.
 #[tokio::test]
 async fn renewal_info_rejects_an_order_whose_certificate_is_missing() {
     let (app, db) = test_app_with_db().await;
@@ -500,10 +500,9 @@ async fn renewal_info_rejects_an_order_whose_certificate_is_missing() {
     assert_eq!(body["detail"], "Order does not have a certificate");
 }
 
-/// Un certificat émis avant que l'AC locale ne pose d'AKI n'en a aucun : la
-/// vérification de la moitié AKI doit alors dire « impossible à vérifier », pas
-/// « rejeté », sinon tout certificat émis par une version antérieure devient
-/// définitivement inconsultable.
+/// A certificate issued before the local CA set an AKI has none: checking the
+/// AKI half must then mean "cannot be verified", not "rejected", or every
+/// certificate issued by an earlier version becomes permanently unqueryable.
 #[tokio::test]
 async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     let (app, db) = test_app_with_db().await;
@@ -511,9 +510,9 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     let account_url = register(&app, &ec).await;
     let chain = issue_certificate(&app, &ec, &account_url, make_csr("example.com")).await;
 
-    // Un certificat auto-signé sans AKI, portant le même numéro de série que
-    // celui que la commande a enregistré — c'est ce que produisait `local_ca`
-    // avant que `use_authority_key_identifier_extension` ne soit posé.
+    // A self-signed certificate with no AKI, carrying the serial number the
+    // order recorded — what `local_ca` produced before
+    // `use_authority_key_identifier_extension` was set.
     let leaf = first_certificate(&chain);
     let (serial_hex, _) = acme_proxy_core::cert::cert_serial_and_spki(&leaf).unwrap();
     let serial_bytes = hex::decode(&serial_hex).unwrap();
@@ -524,7 +523,7 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     let no_aki = params.self_signed(&key).unwrap();
     assert!(
         acme_proxy_core::cert::ari_cert_id(no_aki.der()).is_err(),
-        "précondition : ce certificat ne porte pas d'AKI"
+        "precondition: this certificate carries no AKI"
     );
 
     sqlx::query("UPDATE orders SET certificate = ?")
@@ -533,8 +532,8 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
         .await
         .unwrap();
 
-    // N'importe quelle moitié AKI syntaxiquement valide passe, faute de quoi
-    // comparer contre.
+    // Any syntactically valid AKI half passes, for want of anything to compare
+    // it against.
     let id = format!(
         "{}.{}",
         BASE64_URL_SAFE_NO_PAD.encode([0xAAu8; 20]),
@@ -546,10 +545,10 @@ async fn a_certificate_without_an_aki_still_answers_on_its_serial_alone() {
     assert!(body_json(res).await["suggestedWindow"]["start"].is_string());
 }
 
-/// RFC 9773 §4.2 : « A RenewalInfo object in which the end timestamp equals or
+/// RFC 9773 §4.2: "A RenewalInfo object in which the end timestamp equals or
 /// precedes the start timestamp is invalid. Servers MUST NOT serve such a
-/// response. » Vérifié à la sortie, quel que soit le producteur de la fenêtre —
-/// ici un amont qui en renvoie une dégénérée.
+/// response." Checked on the way out, whoever produced the window — here an
+/// upstream that returns a degenerate one.
 #[tokio::test]
 async fn a_degenerate_window_is_never_served() {
     let signer = Arc::new(ScriptedAriSigner::new(AriAnswer::Window(END, START)).await);
@@ -563,8 +562,8 @@ async fn a_degenerate_window_is_never_served() {
     assert_eq!(
         res.status(),
         StatusCode::INTERNAL_SERVER_ERROR,
-        "mieux vaut ne rien servir qu'une fenêtre que le client doit traiter \
-         comme une absence de réponse"
+        "better to serve nothing than a window the client must treat as no \
+         answer at all"
     );
     assert_eq!(
         body_json(res).await["type"],
@@ -572,8 +571,8 @@ async fn a_degenerate_window_is_never_served() {
     );
 }
 
-/// Une chaîne stockée illisible est un bug de ce serveur, pas du client : 500,
-/// et surtout pas un 4xx qui inviterait le client à « corriger » sa requête.
+/// An unreadable stored chain is this server's bug, not the client's: a 500,
+/// and above all not a 4xx inviting the client to "fix" its request.
 #[tokio::test]
 async fn renewal_info_reports_an_unparsable_stored_chain_as_internal() {
     let (app, db) = test_app_with_db().await;

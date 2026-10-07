@@ -14,7 +14,6 @@ use crate::db::Database;
 use crate::nonce::now_secs;
 use crate::order::rfc3339;
 use acme_proxy_core::audit::Actor;
-use acme_proxy_core::audit::ActorKind;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
@@ -22,7 +21,7 @@ use acme_proxy_core::audit::ClientContext;
 /// One stored audit row.
 ///
 /// `event` and `actor_kind` come back as the strings they were stored as rather
-/// than as [`AuditEvent`]/[`ActorKind`]: a `CHECK` constraint written before a
+/// than as [`AuditEvent`]/[`ActorKind`](acme_proxy_core::audit::ActorKind): a `CHECK` constraint written before a
 /// future variant existed is exactly the thing that would make a read of an
 /// older database fail, and a listing that renders an unrecognised event name
 /// is a better outcome than one that refuses to load. [`AuditEntry::event`]
@@ -333,18 +332,6 @@ impl AuditEntry {
         }
         value
     }
-}
-
-/// The `actor_kind` values, for the CLI help and the page filter. Mirrors
-/// [`acme_proxy_core::audit::ActorKind`]; the `CHECK` in the migration is the authority.
-#[must_use]
-pub fn actor_kinds() -> [&'static str; 4] {
-    [
-        ActorKind::Acme.as_str(),
-        ActorKind::Admin.as_str(),
-        ActorKind::Cli.as_str(),
-        ActorKind::System.as_str(),
-    ]
 }
 
 /// The `created_at` below which an audit row is past `retention_days`.
@@ -772,13 +759,6 @@ mod tests {
                 "{outcome}/{actor} was accepted: {error}"
             );
         }
-    }
-
-    /// Mirrors `acme_proxy_core::audit::ActorKind`, and is what the CLI help and the page
-    /// filter read.
-    #[test]
-    fn the_actor_kinds_helper_lists_every_variant() {
-        assert_eq!(actor_kinds(), ["acme", "admin", "cli", "system"]);
     }
 
     /// One cutoff function, so `audit cleanup --older-than` and the
