@@ -3689,12 +3689,21 @@ async fn a_blank_filter_leaves_every_list_page_unfiltered() {
             .status(),
         StatusCode::BAD_REQUEST
     );
-    assert_eq!(
-        admin_page(&app, "/ui/jobs?status=typo", Some(&session), true)
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
+    // Every list page, with the API's own refusal: the pages used to answer
+    // a generic `bad_request` where `/ui/orders` and `/api` said
+    // `invalid_status`.
+    for path in [
+        "/ui/orders?status=typo",
+        "/ui/jobs?status=typo",
+        "/ui/upstream-orders?status=typo",
+    ] {
+        let response = admin_page(&app, path, Some(&session), true).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        assert!(
+            html_body(response).await.contains("typo"),
+            "{path} must name the refused value"
+        );
+    }
     // `?kind=typo` is *not* refused — kinds are an open set — it just matches
     // nothing.
     assert_eq!(

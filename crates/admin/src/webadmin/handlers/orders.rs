@@ -14,7 +14,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::handlers::params::{empty_is_absent, empty_is_absent_serial};
+use crate::webadmin::handlers::params::{bad_status, empty_is_absent, empty_is_absent_serial};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::order::Order;
@@ -91,11 +91,6 @@ pub struct RevokeRequest {
     /// RFC 5280 §5.3.1 reason code. Absent means "no reason recorded".
     #[serde(default)]
     pub reason: Option<u32>,
-}
-
-/// Turns an unparseable `status=` into a `400`, for either front end.
-fn bad_status(error: UnknownStatus) -> AdminError {
-    AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
 }
 
 /// The listing query `params` asks for, refusals and all.
@@ -340,30 +335,13 @@ pub(crate) async fn apply_delete_order(
     Ok(deleted.cascaded)
 }
 
-/// Renders a page of orders, each with its authorization ids.
-///
-/// Shared with `/api/accounts/{id}/orders` and with the `/ui` order lists,
-/// which all return the same shape.
+/// Renders a page of orders, each with its authorization ids
+/// ([`admin::orders_json`]).
 pub(crate) async fn render_orders(
     orders: &[Order],
     state: &AdminState,
 ) -> Result<Vec<Value>, AdminError> {
-    // One query for the whole page, not one per row: a default page of 50 used
-    // to cost 51.
-    let ids: Vec<Uuid> = orders.iter().map(|order| order.id).collect();
-    let mut grouped = Authorization::find_ids_by_orders(&ids, &state.database).await?;
-
-    let items = orders
-        .iter()
-        .map(|order| {
-            admin::render_order_json(
-                order,
-                &state.config.server.base_url,
-                &grouped.remove(&order.id).unwrap_or_default(),
-            )
-        })
-        .collect();
-    Ok(items)
+    Ok(admin::orders_json(orders, &state.config.server.base_url, &state.database).await?)
 }
 
 /// The authorization ids `Order::to_json` needs to build its `authorizations`

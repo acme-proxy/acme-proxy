@@ -9,7 +9,6 @@
 
 use std::io::BufRead;
 use std::sync::Arc;
-use uuid::Uuid;
 
 use clap::Subcommand;
 
@@ -21,7 +20,6 @@ use acme_proxy_admin::admin::DeleteOutcome;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_signer as signer;
-use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;
@@ -147,10 +145,7 @@ pub async fn run_order_command(
             // Refused by name rather than passed through: an unknown status
             // would match no rows, which reads exactly like "nothing is in
             // that state". The same rule `audit list --event` follows.
-            let status = status
-                .map(|value| value.parse::<OrderStatus>())
-                .transpose()
-                .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
+            let status = super::parse_flag::<OrderStatus>("--status", status)?;
 
             // Filtered in SQL, by the same `Order::search` the web admin uses.
             // It used to load every order in the database and filter the three
@@ -174,25 +169,14 @@ pub async fn run_order_command(
             let (orders, total) = Order::search(&query, &database).await?;
             // Not `render::print_page`, and this is the only listing that opts
             // out: the `--json` rendering needs one batched authorization
-            // lookup for the whole page, not one query per row — the N+1 the
-            // web admin's `render_orders` already avoids, and what
-            // `find_ids_by_orders` exists for. Handing that closure to
-            // `print_page` would make the text path pay for a query it never
-            // reads, so the two halves are spelled out and the shared envelope
-            // and footer are called directly.
+            // lookup for the whole page (`admin::orders_json`, which the web
+            // admin renders through too). Handing that to `print_page` would
+            // make the text path pay for a query it never reads, so the two
+            // halves are spelled out and the shared envelope and footer are
+            // called directly.
             if json {
-                let ids: Vec<Uuid> = orders.iter().map(|o| o.id).collect();
-                let mut authz_ids = Authorization::find_ids_by_orders(&ids, &database).await?;
-                let rendered: Vec<_> = orders
-                    .iter()
-                    .map(|order| {
-                        admin::render_order_json(
-                            order,
-                            &config.server.base_url,
-                            &authz_ids.remove(&order.id).unwrap_or_default(),
-                        )
-                    })
-                    .collect();
+                let rendered =
+                    admin::orders_json(&orders, &config.server.base_url, &database).await?;
                 println!("{}", render::json_page(rendered, total, window));
             } else {
                 for order in &orders {

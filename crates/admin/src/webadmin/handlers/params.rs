@@ -17,7 +17,18 @@
 //! `push_predicates` would be a second definition of the same rule, sitting
 //! where nothing in the query string can be seen.
 
+use axum::http::StatusCode;
 use serde::Deserialize;
+
+use crate::webadmin::error::AdminError;
+use acme_proxy_store::status::UnknownStatus;
+
+/// An unknown `status=` is a `400 invalid_status`, on every list and both front
+/// ends — never passed to SQL, where it would match no row and read like an
+/// empty state.
+pub(crate) fn bad_status(error: UnknownStatus) -> AdminError {
+    AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
+}
 
 /// A form field or query value left blank is absent, not the empty string.
 ///

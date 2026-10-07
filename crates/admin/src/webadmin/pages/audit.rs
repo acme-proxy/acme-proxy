@@ -16,7 +16,7 @@ use crate::webadmin::handlers::audit::AuditListParams;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
+use crate::webadmin::pages::{ListFilters, chrome, page_value, pager, respond};
 use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_store::audit::AuditEntry;
 use acme_proxy_store::audit::AuditQuery;
@@ -56,10 +56,7 @@ pub async fn list_audit(
 
     let items: Vec<Value> = entries.iter().map(AuditEntry::to_json).collect();
     let mut context = chrome(&session, "audit", "Audit");
-    context.insert(
-        "page".to_string(),
-        serde_json::json!({ "items": items, "total": total }),
-    );
+    context.insert("page".to_string(), page_value(items, total));
     context.insert(
         "pager".to_string(),
         pager(page, total, "/ui/audit", &filters.pairs(), "#audit-table"),

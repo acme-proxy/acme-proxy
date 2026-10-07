@@ -206,9 +206,7 @@ async fn run_user_command(
             role,
             contact,
         } => {
-            let role: AdminRole = role
-                .parse()
-                .map_err(|error| CliError::bad_request(format!("--role: {error}")))?;
+            let role = super::parse_value::<AdminRole>("--role", &role)?;
             let password = read_password(password_file.as_deref(), reader)?;
             let context = PasswordContext::from_config(config, &username);
             // The tier goes in with the row: one write, so there is no window

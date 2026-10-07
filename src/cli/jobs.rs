@@ -76,10 +76,7 @@ pub async fn run_jobs_command(
             // Refused by name rather than passed through: an unknown status
             // would match no rows, which reads exactly like "nothing is in
             // that state" (the `order list --status` rule).
-            let status = status
-                .map(|value| value.parse::<JobStatus>())
-                .transpose()
-                .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
+            let status = super::parse_flag::<JobStatus>("--status", status)?;
             let window = Window::resolve(limit, offset);
             let query = JobQuery {
                 kind,

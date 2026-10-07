@@ -17,10 +17,9 @@ use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::handlers::upstream_orders::UpstreamOrderListParams;
 use crate::webadmin::pages::auth::PageSession;
 use crate::webadmin::pages::error::PageError;
-use crate::webadmin::pages::{ListFilters, chrome, pager, respond};
+use crate::webadmin::pages::{ListFilters, chrome, page_value, pager, respond, vocabulary};
 use acme_proxy_store::status::UpstreamOrderStatus;
 use acme_proxy_store::upstream_order::UpstreamOrder;
-use acme_proxy_store::upstream_order::UpstreamOrderQuery;
 
 /// `GET /ui/upstream-orders?profile=&status=&limit=&offset=`
 pub async fn list_upstream_orders(
@@ -32,27 +31,13 @@ pub async fn list_upstream_orders(
     let filters = ListFilters::new()
         .with("profile", params.profile.as_deref())
         .with("status", params.status.as_deref());
-    let parsed = params
-        .parsed_status()
-        .map_err(|error| PageError::bad_request(error.to_string()))?;
-
-    let (rows, total) = UpstreamOrder::search(
-        &UpstreamOrderQuery {
-            profile: params.profile.clone(),
-            status: parsed,
-            limit: page.limit,
-            offset: page.offset,
-        },
-        &state.database,
-    )
-    .await?;
+    // The API's own query, so a bad `status=` is its `invalid_status`.
+    let query = crate::webadmin::handlers::upstream_orders::upstream_order_query(&params, page)?;
+    let (rows, total) = UpstreamOrder::search(&query, &state.database).await?;
     let items: Vec<Value> = rows.iter().map(admin::render_upstream_order_json).collect();
 
     let mut context = chrome(&session, "upstream_orders", "Upstream orders");
-    context.insert(
-        "page".to_string(),
-        serde_json::json!({ "items": items, "total": total }),
-    );
+    context.insert("page".to_string(), page_value(items, total));
     context.insert(
         "pager".to_string(),
         pager(
@@ -66,12 +51,7 @@ pub async fn list_upstream_orders(
     context.insert("filters".to_string(), filters.to_value());
     context.insert(
         "statuses".to_string(),
-        Value::Array(
-            UpstreamOrderStatus::ALL
-                .iter()
-                .map(|s| Value::from(s.as_str()))
-                .collect(),
-        ),
+        vocabulary(UpstreamOrderStatus::ALL, |status| status.as_str()),
     );
     context.insert(
         "profiles".to_string(),

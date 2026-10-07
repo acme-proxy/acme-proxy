@@ -9,7 +9,6 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -18,7 +17,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::handlers::params::empty_is_absent;
+use crate::webadmin::handlers::params::{bad_status, empty_is_absent};
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 use acme_proxy_store::job::Job;
 use acme_proxy_store::job::JobQuery;
@@ -47,9 +46,19 @@ impl JobListParams {
     }
 }
 
-/// Turns an unparseable `status=` into a `400`, for either front end.
-pub(crate) fn bad_status(error: UnknownStatus) -> AdminError {
-    AdminError::with_code(StatusCode::BAD_REQUEST, "invalid_status", error.to_string())
+/// The listing query `params` asks for, refusals and all — what both front
+/// ends search with, so `/ui/jobs` refuses a bad `status=` with the API's
+/// `invalid_status` (the [`super::orders::order_query`] rule).
+pub(crate) fn job_query(
+    params: &JobListParams,
+    page: crate::webadmin::handlers::paging::Page,
+) -> Result<JobQuery, AdminError> {
+    Ok(JobQuery {
+        kind: params.kind.clone(),
+        status: params.parsed_status().map_err(bad_status)?,
+        limit: page.limit,
+        offset: page.offset,
+    })
 }
 
 /// `GET /api/jobs?kind=&status=&limit=&offset=`
@@ -59,13 +68,7 @@ pub async fn list_jobs(
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let status = params.parsed_status().map_err(bad_status)?;
-    let query = JobQuery {
-        kind: params.kind,
-        status,
-        limit: page.limit,
-        offset: page.offset,
-    };
+    let query = job_query(&params, page)?;
     let (jobs, total) = Job::search(&query, &state.database).await?;
     let items = jobs.iter().map(admin::render_job_json).collect();
     Ok(Json(page_envelope(items, total, page)))

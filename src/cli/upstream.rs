@@ -191,10 +191,7 @@ pub async fn run_upstream_command(
                 offset,
                 json,
             } => {
-                let status = status
-                    .map(|value| value.parse::<UpstreamOrderStatus>())
-                    .transpose()
-                    .map_err(|error| CliError::bad_request(format!("--status: {error}")))?;
+                let status = super::parse_flag::<UpstreamOrderStatus>("--status", status)?;
                 let window = Window::resolve(limit, offset);
                 let query = UpstreamOrderQuery {
                     profile,

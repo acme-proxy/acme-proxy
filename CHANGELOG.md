@@ -454,6 +454,9 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **`/ui/jobs` and `/ui/upstream-orders` refuse an unknown `?status=` with
+  `invalid_status`**, as `/ui/orders` and the API do. They answered a generic
+  `bad_request`.
 - **`admin user role` and `admin user passwd` write no `session_revoked` row
   when the operator held no session**, as `admin user disable` and the panel
   already did. A row counting zero sessions recorded nothing.

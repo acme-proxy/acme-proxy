@@ -17,9 +17,8 @@ use serde_json::Value;
 use crate::admin;
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::jobs::bad_status;
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
-use crate::webadmin::handlers::params::empty_is_absent;
+use crate::webadmin::handlers::params::{bad_status, empty_is_absent};
 use crate::webadmin::session::Authenticated;
 use acme_proxy_store::status::UnknownStatus;
 use acme_proxy_store::status::UpstreamOrderStatus;
@@ -45,6 +44,20 @@ impl UpstreamOrderListParams {
     }
 }
 
+/// The listing query `params` asks for, refusals and all — shared with
+/// `/ui/upstream-orders` (the [`super::orders::order_query`] rule).
+pub(crate) fn upstream_order_query(
+    params: &UpstreamOrderListParams,
+    page: crate::webadmin::handlers::paging::Page,
+) -> Result<UpstreamOrderQuery, AdminError> {
+    Ok(UpstreamOrderQuery {
+        profile: params.profile.clone(),
+        status: params.parsed_status().map_err(bad_status)?,
+        limit: page.limit,
+        offset: page.offset,
+    })
+}
+
 /// `GET /api/upstream-orders?profile=&status=&limit=&offset=`
 pub async fn list_upstream_orders(
     State(state): State<AdminState>,
@@ -52,13 +65,7 @@ pub async fn list_upstream_orders(
     _auth: Authenticated,
 ) -> Result<Json<Value>, AdminError> {
     let page = PageParams::from(params.limit, params.offset).resolve(&state.config);
-    let status = params.parsed_status().map_err(bad_status)?;
-    let query = UpstreamOrderQuery {
-        profile: params.profile,
-        status,
-        limit: page.limit,
-        offset: page.offset,
-    };
+    let query = upstream_order_query(&params, page)?;
     let (rows, total) = UpstreamOrder::search(&query, &state.database).await?;
     let items = rows.iter().map(admin::render_upstream_order_json).collect();
     Ok(Json(page_envelope(items, total, page)))

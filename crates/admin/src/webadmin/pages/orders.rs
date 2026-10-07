@@ -18,7 +18,8 @@ use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::{PageError, redirect};
 use crate::webadmin::pages::{
-    ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
+    ListFilters, chrome, flash, flash_error, page_value, pager, respond, respond_fragment,
+    vocabulary,
 };
 use acme_proxy_store::order::Order;
 
@@ -52,25 +53,17 @@ pub async fn list_orders(
     let items = render_orders(&orders, &state).await?;
 
     let mut context = chrome(&session, "orders", "Orders");
-    context.insert(
-        "page".to_string(),
-        serde_json::json!({ "items": items, "total": total }),
-    );
+    context.insert("page".to_string(), page_value(items, total));
     context.insert(
         "pager".to_string(),
         pager(page, total, "/ui/orders", &filters.pairs(), "#orders-table"),
     );
     context.insert("filters".to_string(), filters.to_value());
-    // From the enum `?status=` is parsed against, so a status added there is
-    // offered here rather than being filterable only by hand-typed URL.
     context.insert(
         "statuses".to_string(),
-        Value::Array(
-            acme_proxy_store::status::OrderStatus::ALL
-                .iter()
-                .map(|status| Value::from(status.as_str()))
-                .collect(),
-        ),
+        vocabulary(acme_proxy_store::status::OrderStatus::ALL, |status| {
+            status.as_str()
+        }),
     );
     context.insert(
         "profiles".to_string(),

@@ -316,6 +316,30 @@ pub enum CliErrorKind {
     BadRequest,
 }
 
+/// Parses a closed-vocabulary flag's value, refusing an unknown one by name.
+///
+/// Passed through instead, an unknown `--status` would match no rows, which
+/// reads exactly like "nothing is in that state". The vocabulary's own error
+/// names the alternatives; this prefixes the flag the operator typed.
+pub(crate) fn parse_value<T>(flag: &str, value: &str) -> Result<T, CliError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .parse::<T>()
+        .map_err(|error| CliError::bad_request(format!("{flag}: {error}")))
+}
+
+/// [`parse_value`] for a flag that may be left out.
+pub(crate) fn parse_flag<T>(flag: &str, value: Option<String>) -> Result<Option<T>, CliError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value.map(|value| parse_value(flag, &value)).transpose()
+}
+
 impl CliError {
     /// A `Failed` error — the host could not carry out the request.
     pub fn failed(message: impl Into<String>) -> Self {

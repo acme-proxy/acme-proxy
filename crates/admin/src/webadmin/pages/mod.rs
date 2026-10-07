@@ -346,6 +346,14 @@ pub(crate) fn page_value(items: Vec<Value>, total: i64) -> Value {
     json!({ "items": items, "total": total })
 }
 
+/// A closed vocabulary as the filter `<select>` offers it: every value of the
+/// enum the matching `?status=` is parsed against, so a status added there is
+/// offered here rather than being filterable only by a hand-typed URL.
+#[must_use]
+pub(crate) fn vocabulary<T: Copy>(all: &[T], name: impl Fn(T) -> &'static str) -> Value {
+    Value::Array(all.iter().map(|value| Value::from(name(*value))).collect())
+}
+
 /// The filters a list page is showing, stated once.
 ///
 /// Each list handler used to spell its filter set three times — the

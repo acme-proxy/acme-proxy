@@ -16,10 +16,10 @@ use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageSession, PageSessionWrite};
 use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::{
-    ListFilters, chrome, flash, flash_error, pager, respond, respond_fragment,
+    ListFilters, chrome, flash, flash_error, page_value, pager, respond, respond_fragment,
+    vocabulary,
 };
 use acme_proxy_store::job::Job;
-use acme_proxy_store::job::JobQuery;
 
 /// The kinds the filter `<select>` offers. A free-typed `?kind=` still filters
 /// — this is only the dropdown, and a job row's kind is a closed code set.
@@ -55,42 +55,23 @@ pub async fn list_jobs(
     let filters = ListFilters::new()
         .with("kind", params.kind.as_deref())
         .with("status", params.status.as_deref());
-    let parsed = params
-        .parsed_status()
-        .map_err(|error| PageError::bad_request(error.to_string()))?;
-
-    let (jobs, total) = Job::search(
-        &JobQuery {
-            kind: params.kind.clone(),
-            status: parsed,
-            limit: page.limit,
-            offset: page.offset,
-        },
-        &state.database,
-    )
-    .await?;
+    // The API's own query, so a bad `status=` is its `invalid_status`.
+    let query = crate::webadmin::handlers::jobs::job_query(&params, page)?;
+    let (jobs, total) = Job::search(&query, &state.database).await?;
     let items: Vec<Value> = jobs.iter().map(admin::render_job_json).collect();
 
     let mut context = chrome(&session, "jobs", "Jobs");
-    context.insert(
-        "page".to_string(),
-        serde_json::json!({ "items": items, "total": total }),
-    );
+    context.insert("page".to_string(), page_value(items, total));
     context.insert(
         "pager".to_string(),
         pager(page, total, "/ui/jobs", &filters.pairs(), "#jobs-table"),
     );
     context.insert("filters".to_string(), filters.to_value());
-    // From the enum `?status=` is parsed against, so a status added there is
-    // offered here rather than being filterable only by hand-typed URL.
     context.insert(
         "statuses".to_string(),
-        Value::Array(
-            acme_proxy_store::status::JobStatus::ALL
-                .iter()
-                .map(|status| Value::from(status.as_str()))
-                .collect(),
-        ),
+        vocabulary(acme_proxy_store::status::JobStatus::ALL, |status| {
+            status.as_str()
+        }),
     );
     context.insert(
         "kinds".to_string(),

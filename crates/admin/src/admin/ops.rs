@@ -586,6 +586,31 @@ pub async fn confirm_cleanup_audit(
     Ok(Some(AuditEntry::cleanup(cutoff, &database).await?))
 }
 
+/// A page of orders as their admin JSON, each with its authorization ids.
+///
+/// One query for the whole page rather than one per row — a default page of
+/// 50 used to cost 51. The CLI's `order list --json`, `/api/orders`,
+/// `/api/accounts/{id}/orders` and the `/ui` order lists all render through
+/// here, so they cannot disagree on the shape or on the cost.
+pub async fn orders_json(
+    orders: &[Order],
+    base_url: &str,
+    database: &Database,
+) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let ids: Vec<uuid::Uuid> = orders.iter().map(|order| order.id).collect();
+    let mut grouped = Authorization::find_ids_by_orders(&ids, database).await?;
+    Ok(orders
+        .iter()
+        .map(|order| {
+            crate::admin::render_order_json(
+                order,
+                base_url,
+                &grouped.remove(&order.id).unwrap_or_default(),
+            )
+        })
+        .collect())
+}
+
 /// Loads order detail.
 pub async fn load_order_detail(
     id: &str,
