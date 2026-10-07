@@ -98,6 +98,11 @@ pub struct Script {
     /// "the relay said it triggered" into "the bytes were actually served",
     /// the one claim the `http01` strategy rests on.
     pub http01_responder: Option<String>,
+    /// Advertise no `finalize` URL on the order: a CA answering `ready` with
+    /// nothing to finalize at.
+    pub omit_finalize_url: bool,
+    /// Advertise no `certificate` URL on a `valid` order.
+    pub omit_certificate_url: bool,
 }
 
 /// A running fake upstream. Dropping it stops the accept loop.
@@ -443,7 +448,7 @@ async fn route(
             let location = (!script.omit_location).then(|| format!("{base}/order/1"));
             json_response(
                 201,
-                &order_object(base, "pending", false),
+                &order_object(base, "pending", false, script),
                 location,
                 counters,
             )
@@ -541,11 +546,21 @@ async fn route(
                 );
             }
             if script.order_fails {
-                return json_response(200, &order_object(base, "invalid", false), None, counters);
+                return json_response(
+                    200,
+                    &order_object(base, "invalid", false, script),
+                    None,
+                    counters,
+                );
             }
             // While a posed challenge is unanswered the order stays pending.
             if script.pose_challenge && counters.challenge_triggered.load(Ordering::SeqCst) == 0 {
-                return json_response(200, &order_object(base, "pending", false), None, counters);
+                return json_response(
+                    200,
+                    &order_object(base, "pending", false, script),
+                    None,
+                    counters,
+                );
             }
             let status = if counters.finalized.load(Ordering::SeqCst) == 0 {
                 // Before finalize: hold at `processing`, then offer `ready`.
@@ -563,7 +578,12 @@ async fn route(
                     "processing"
                 }
             };
-            let response = json_response(200, &order_object(base, status, true), None, counters);
+            let response = json_response(
+                200,
+                &order_object(base, status, true, script),
+                None,
+                counters,
+            );
             if script.retry_after && status == "processing" {
                 insert_header(&response, "Retry-After: 0")
             } else {
@@ -590,7 +610,7 @@ async fn route(
             counters.finalized.fetch_add(1, Ordering::SeqCst);
             json_response(
                 200,
-                &order_object(base, "processing", false),
+                &order_object(base, "processing", false, script),
                 None,
                 counters,
             )
@@ -617,13 +637,15 @@ async fn route(
     }
 }
 
-fn order_object(base: &str, status: &str, with_certificate: bool) -> Value {
+fn order_object(base: &str, status: &str, with_certificate: bool, script: &Script) -> Value {
     let mut object = json!({
         "status": status,
-        "finalize": format!("{base}/order/1/finalize"),
         "authorizations": [format!("{base}/authz/1")],
     });
-    if with_certificate && status == "valid" {
+    if !script.omit_finalize_url {
+        object["finalize"] = json!(format!("{base}/order/1/finalize"));
+    }
+    if with_certificate && status == "valid" && !script.omit_certificate_url {
         object["certificate"] = json!(format!("{base}/cert/1"));
     }
     if status == "invalid" {

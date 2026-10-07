@@ -401,6 +401,65 @@ async fn issue_polls_until_the_upstream_settles() {
     );
 }
 
+/// An upstream answering with an order missing the URL the next step needs —
+/// `ready` with no `finalize`, `valid` with no `certificate` — is a permanent
+/// failure, not a retry: polling again returns the same object. The order is
+/// left `invalid` with the reason, rather than retried until its jobs give up.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upstream_order_missing_its_next_url_fails_the_order() {
+    for (script, missing) in [
+        (
+            Script {
+                omit_finalize_url: true,
+                ..Script::default()
+            },
+            "finalize URL",
+        ),
+        (
+            Script {
+                omit_certificate_url: true,
+                ..Script::default()
+            },
+            "certificate URL",
+        ),
+    ] {
+        let upstream = testsrv::start(script).await;
+        let dir = TempDir::new("upstream");
+        let db = database().await;
+        let queue = test_queue(db.clone());
+        let signer = RelaySigner::from_config(
+            &config(&upstream, &dir),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        )
+        .unwrap();
+        let _runner = TestRunner::start(queue, &signer);
+        let order = ready_order(db.clone()).await;
+
+        signer
+            .issue(
+                order.id.to_string().as_str(),
+                &csr_der(),
+                &identifiers(),
+                RequestedValidity::default(),
+            )
+            .await
+            .unwrap();
+
+        await_status(
+            db.clone(),
+            order.id.to_string().as_str(),
+            OrderStatus::Invalid,
+        )
+        .await;
+        let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
+            .await
+            .unwrap()
+            .unwrap();
+        let reason = mapping.error.unwrap_or_default();
+        assert!(reason.contains(missing), "{missing}: {reason}");
+    }
+}
+
 /// An upstream that refuses the order must leave the local order
 /// terminally `invalid` with a problem document the client can read —
 /// never stuck in `processing` forever.
