@@ -15,6 +15,7 @@
 //! - [`totp`], [`recovery`], [`mfa`] — the second factor: RFC 6238 over RFC 4226,
 //!   single-use recovery codes, and where those two meet the database.
 //! - [`prompt`] — confirmation, over an injectable reader so it is testable.
+//! - [`subject`] — the one "not found" sentence per kind of row.
 //!
 //! **Destructive operations come in pairs**: a bare form, and a `confirm_*`
 //! wrapper taking `assume_yes` and a reader. Those two arguments are a
@@ -28,6 +29,7 @@ pub mod password;
 pub mod prompt;
 pub mod recovery;
 pub mod render;
+pub mod subject;
 pub mod totp;
 pub mod users;
 

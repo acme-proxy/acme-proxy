@@ -220,7 +220,7 @@ fn deleted_line(kid: &str, deleted: &DeletedEab) -> String {
 }
 
 fn not_found(kid: &str) -> CliError {
-    CliError::bad_request(format!("no such EAB credential: {kid}"))
+    CliError::bad_request(acme_proxy_admin::admin::subject::Subject::EabCredential.missing(kid))
 }
 
 #[cfg(test)]

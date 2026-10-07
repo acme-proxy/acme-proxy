@@ -167,7 +167,7 @@ pub async fn run_jobs_command(
 }
 
 fn not_found(id: &str) -> CliError {
-    CliError::bad_request(format!("no such job: {id}"))
+    CliError::bad_request(acme_proxy_admin::admin::subject::Subject::Job.missing(id))
 }
 
 #[cfg(test)]

@@ -53,5 +53,5 @@ pub async fn get_profile_filter(
 /// raises: there the resource exists and its endpoint does not, which is a
 /// conflict, and here the endpoint *is* the resource being asked for.
 fn not_found(name: &str) -> AdminError {
-    AdminError::not_found(format!("no profile named `{name}` is mounted"))
+    AdminError::not_found(crate::admin::subject::Subject::Profile.missing(name))
 }

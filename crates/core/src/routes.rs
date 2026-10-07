@@ -34,3 +34,34 @@ pub const CA_CHAIN: &str = "/ca.pem";
 /// root and a profile can never collide with one, now or when the next one is
 /// added.
 pub const PROFILE_PREFIX: &str = "/profile";
+
+/// The path profile `name` is mounted at: `/profile/<name>`.
+#[must_use]
+pub fn profile_path(name: &str) -> String {
+    format!("{PROFILE_PREFIX}/{name}")
+}
+
+/// The public base URL of profile `name` under the process's `base_url` —
+/// what every URL a client is handed starts with. One derivation, shared by
+/// the router that serves the profile and the admin output that links to it,
+/// so the two cannot disagree on a trailing slash.
+#[must_use]
+pub fn profile_base_url(base_url: &str, name: &str) -> String {
+    format!("{}{}", base_url.trim_end_matches('/'), profile_path(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_profile_base_url_has_one_slash_whatever_the_base_ends_with() {
+        for base in ["https://acme.example", "https://acme.example/"] {
+            assert_eq!(
+                profile_base_url(base, "le"),
+                "https://acme.example/profile/le"
+            );
+        }
+        assert_eq!(profile_path("le"), "/profile/le");
+    }
+}

@@ -250,5 +250,5 @@ pub(crate) async fn apply_revoke_own_session(
 }
 
 fn session_not_found(id: &str) -> AdminError {
-    AdminError::not_found(format!("no such session: {id}"))
+    AdminError::not_found(crate::admin::subject::Subject::Session.missing(id))
 }

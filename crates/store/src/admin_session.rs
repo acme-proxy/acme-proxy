@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use crate::db::Database;
 use crate::nonce::{fingerprint, now_secs};
-use crate::order::rfc3339;
+use acme_proxy_core::datetime::rfc3339;
 
 /// One logged-in browser session of an [`crate::admin_user::AdminUser`].
 ///

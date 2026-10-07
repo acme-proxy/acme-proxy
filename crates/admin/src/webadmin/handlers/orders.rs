@@ -431,5 +431,5 @@ pub(crate) async fn resolve_order_profile(
 }
 
 fn not_found(id: &str) -> AdminError {
-    AdminError::not_found(format!("no such order: {id}"))
+    AdminError::not_found(crate::admin::subject::Subject::Order.missing(id))
 }

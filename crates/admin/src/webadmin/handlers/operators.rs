@@ -610,9 +610,9 @@ pub(crate) async fn find(username: &str, state: &AdminState) -> Result<AdminUser
 }
 
 fn operator_not_found(username: &str) -> AdminError {
-    AdminError::not_found(format!("no such operator: {username}"))
+    AdminError::not_found(crate::admin::subject::Subject::Operator.missing(username))
 }
 
 fn session_not_found(id: &str) -> AdminError {
-    AdminError::not_found(format!("no such session: {id}"))
+    AdminError::not_found(crate::admin::subject::Subject::Session.missing(id))
 }

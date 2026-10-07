@@ -226,5 +226,5 @@ pub(crate) async fn apply_run_job(
 }
 
 fn not_found(id: &str) -> AdminError {
-    AdminError::not_found(format!("no such job: {id}"))
+    AdminError::not_found(crate::admin::subject::Subject::Job.missing(id))
 }

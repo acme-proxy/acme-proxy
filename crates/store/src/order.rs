@@ -33,9 +33,8 @@
 //! wildcard order; a search for the wildcard string does.
 
 use crate::sql::Row;
+use acme_proxy_core::datetime::rfc3339;
 use serde_json::Value;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -231,17 +230,6 @@ impl OrderQuery {
         // below a clause that did not would open with ` WHERE ` a second time.
         let _ = separator;
     }
-}
-
-/// Renders epoch `secs` as an RFC3339 datetime string (the shape RFC 8555 uses
-/// for order datetime fields), falling back to an empty string for the
-/// out-of-range timestamps that should never occur in practice. Shared with the
-/// authorization/challenge model, which renders datetimes the same way.
-pub fn rfc3339(secs: i64) -> String {
-    OffsetDateTime::from_unix_timestamp(secs)
-        .ok()
-        .and_then(|dt| dt.format(&Rfc3339).ok())
-        .unwrap_or_default()
 }
 
 /// Every column, in one place: each lookup, both listings and the paged search

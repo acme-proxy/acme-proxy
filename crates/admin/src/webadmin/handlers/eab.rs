@@ -298,5 +298,5 @@ pub(crate) fn require_mounted_profile(
 }
 
 fn not_found(kid: &str) -> AdminError {
-    AdminError::not_found(format!("no such EAB credential: {kid}"))
+    AdminError::not_found(crate::admin::subject::Subject::EabCredential.missing(kid))
 }

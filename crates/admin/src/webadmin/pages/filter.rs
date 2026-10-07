@@ -53,5 +53,5 @@ pub async fn get_profile_filter(
 }
 
 fn not_found(name: &str) -> PageError {
-    AdminError::not_found(format!("no profile named `{name}` is mounted")).into()
+    AdminError::not_found(crate::admin::subject::Subject::Profile.missing(name)).into()
 }

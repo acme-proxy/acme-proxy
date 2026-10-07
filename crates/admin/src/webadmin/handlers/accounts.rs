@@ -277,5 +277,5 @@ pub(crate) async fn apply_delete_account(
 }
 
 fn not_found(id: &str) -> AdminError {
-    AdminError::not_found(format!("no such account: {id}"))
+    AdminError::not_found(crate::admin::subject::Subject::Account.missing(id))
 }

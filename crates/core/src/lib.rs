@@ -17,6 +17,7 @@ pub mod audit;
 pub mod cert;
 pub mod client;
 pub mod config;
+pub mod datetime;
 pub mod eab;
 pub mod error;
 pub mod identifier;

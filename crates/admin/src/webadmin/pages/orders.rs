@@ -275,5 +275,5 @@ async fn load(id: &str, state: &AdminState) -> Result<Value, PageError> {
 }
 
 fn not_found(id: &str) -> PageError {
-    PageError::not_found(format!("no such order: {id}"))
+    PageError::not_found(crate::admin::subject::Subject::Order.missing(id))
 }

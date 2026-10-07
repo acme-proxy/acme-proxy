@@ -323,6 +323,9 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **`acme-proxy admin user …` refuses an unknown username as `no such
+  operator: <name>`** (was `no such admin user: <name>`), the sentence the web
+  admin already used.
 - **Another account's order, authorization, challenge or certificate is
   `400 malformed` "Unknown …"**, byte for byte what an id that never existed
   gets. It used to be `403 unauthorized` "Order belongs to a different

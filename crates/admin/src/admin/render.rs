@@ -19,6 +19,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::admin::ops::{JobDetail, OrderDetail, UpstreamOrderDetail};
+use acme_proxy_core::datetime::rfc3339;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::account::pubkey_fingerprint;
 use acme_proxy_store::admin_session::AdminSession;
@@ -27,22 +28,9 @@ use acme_proxy_store::eab::Eab;
 use acme_proxy_store::expiring::ExpiringEntry;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
-use acme_proxy_store::order::rfc3339;
 use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
-/// The public base URL of one endpoint, as the server itself derives it.
-///
-/// Admin output is rendered from `server.base_url`, which names the process,
-/// not an endpoint — every URL a client was ever handed carries the owning
-/// profile's prefix, so this puts it back.
-#[must_use]
-pub fn profile_base_url(base_url: &str, profile: &str) -> String {
-    format!(
-        "{}{}/{profile}",
-        base_url.trim_end_matches('/'),
-        acme_proxy_core::routes::PROFILE_PREFIX
-    )
-}
+use acme_proxy_core::routes::profile_base_url;
 
 /// JSON representation for account admin display.
 ///

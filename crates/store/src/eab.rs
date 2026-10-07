@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::account::Account;
 use crate::db::Database;
 use crate::nonce::now_secs;
-use crate::order::rfc3339;
+use acme_proxy_core::datetime::rfc3339;
 use acme_proxy_core::random::random_bytes;
 
 /// An External Account Binding credential (RFC 8555 §7.3.4): a pre-shared

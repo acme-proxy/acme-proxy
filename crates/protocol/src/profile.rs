@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use acme_proxy_core::config;
 use acme_proxy_core::routes;
-use acme_proxy_core::routes::PROFILE_PREFIX;
 use acme_proxy_jobs::notify::NotifyDispatcher;
 use acme_proxy_net::challenge::ChallengeRegistry;
 use acme_proxy_policy::filter::FilterPolicy;
@@ -73,11 +72,10 @@ impl Profile {
     /// the two are never configured, so they cannot drift from each other or
     /// from what the database records.
     pub fn new(name: &str, base_url: &str, parts: ProfileParts) -> Self {
-        let path = format!("{PROFILE_PREFIX}/{name}");
         Self {
             name: name.to_string(),
-            base_url: format!("{}{path}", base_url.trim_end_matches('/')),
-            path,
+            base_url: routes::profile_base_url(base_url, name),
+            path: routes::profile_path(name),
             signer_info: parts.signer_info,
             filter: parts.filter,
             challenges: parts.challenges,

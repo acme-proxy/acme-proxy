@@ -26,6 +26,7 @@ use acme_proxy_admin::admin::ProfileSummary;
 use acme_proxy_admin::admin::ops::JobDetail;
 use acme_proxy_admin::admin::ops::OrderDetail;
 use acme_proxy_admin::admin::ops::UpstreamOrderDetail;
+use acme_proxy_core::datetime::rfc3339;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::account::pubkey_fingerprint;
@@ -36,7 +37,6 @@ use acme_proxy_store::eab::Eab;
 use acme_proxy_store::expiring::ExpiringEntry;
 use acme_proxy_store::job::Job;
 use acme_proxy_store::order::Order;
-use acme_proxy_store::order::rfc3339;
 use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
 /// An address and the reverse name it had, as `ip (ptr)`.

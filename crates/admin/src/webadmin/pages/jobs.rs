@@ -205,5 +205,5 @@ async fn load(id: &str, state: &AdminState) -> Result<Value, PageError> {
 }
 
 fn not_found(id: &str) -> PageError {
-    PageError::not_found(format!("no such job: {id}"))
+    PageError::not_found(crate::admin::subject::Subject::Job.missing(id))
 }

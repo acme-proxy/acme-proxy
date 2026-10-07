@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::nonce::now_secs;
-use crate::order::rfc3339;
+use acme_proxy_core::datetime::rfc3339;
 
 /// One single-use recovery code of an [`crate::admin_user::AdminUser`].
 ///

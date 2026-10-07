@@ -470,7 +470,7 @@ async fn run_expiring(
 }
 
 fn not_found(id: &str) -> CliError {
-    CliError::bad_request(format!("no such order: {id}"))
+    CliError::bad_request(acme_proxy_admin::admin::subject::Subject::Order.missing(id))
 }
 
 #[cfg(test)]

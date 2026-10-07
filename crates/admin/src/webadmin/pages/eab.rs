@@ -253,5 +253,5 @@ async fn load(kid: &str, state: &AdminState) -> Result<Value, PageError> {
 }
 
 fn not_found(kid: &str) -> PageError {
-    PageError::not_found(format!("no such EAB credential: {kid}"))
+    PageError::not_found(crate::admin::subject::Subject::EabCredential.missing(kid))
 }

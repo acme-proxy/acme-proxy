@@ -12,11 +12,11 @@ use tracing::debug;
 
 use crate::db::Database;
 use crate::nonce::now_secs;
-use crate::order::rfc3339;
 use acme_proxy_core::audit::Actor;
 use acme_proxy_core::audit::AuditEvent;
 use acme_proxy_core::audit::AuditRecord;
 use acme_proxy_core::audit::ClientContext;
+use acme_proxy_core::datetime::rfc3339;
 
 /// One stored audit row.
 ///

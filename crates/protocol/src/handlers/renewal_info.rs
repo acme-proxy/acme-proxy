@@ -176,11 +176,11 @@ pub async fn get_renewal_info(
     let mut suggested = serde_json::Map::new();
     suggested.insert(
         "start".to_string(),
-        json!(acme_proxy_store::order::rfc3339(window.start)),
+        json!(acme_proxy_core::datetime::rfc3339(window.start)),
     );
     suggested.insert(
         "end".to_string(),
-        json!(acme_proxy_store::order::rfc3339(window.end)),
+        json!(acme_proxy_core::datetime::rfc3339(window.end)),
     );
 
     let mut body = serde_json::Map::new();

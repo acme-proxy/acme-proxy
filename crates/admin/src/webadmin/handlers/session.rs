@@ -462,7 +462,7 @@ pub async fn post_session(
 pub async fn get_session_mfa(pending: PendingMfa) -> Json<serde_json::Value> {
     Json(json!({
         "step": pending.step.as_str(),
-        "expiresAt": acme_proxy_store::order::rfc3339(pending.session.expires_at),
+        "expiresAt": acme_proxy_core::datetime::rfc3339(pending.session.expires_at),
     }))
 }
 
@@ -496,7 +496,7 @@ fn signed_in_response(signed_in: &SignedIn) -> Response {
             "mfaRequired": true,
             "step": step.as_str(),
             "csrfToken": signed_in.session.csrf_token,
-            "expiresAt": acme_proxy_store::order::rfc3339(signed_in.session.expires_at),
+            "expiresAt": acme_proxy_core::datetime::rfc3339(signed_in.session.expires_at),
         }),
     };
 
@@ -574,6 +574,6 @@ fn session_body(user: &AdminUser, session: &AdminSession) -> serde_json::Value {
     json!({
         "user": crate::admin::render_admin_user_json(user),
         "csrfToken": session.csrf_token,
-        "expiresAt": acme_proxy_store::order::rfc3339(session.expires_at),
+        "expiresAt": acme_proxy_core::datetime::rfc3339(session.expires_at),
     })
 }

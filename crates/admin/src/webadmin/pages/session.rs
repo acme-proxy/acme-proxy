@@ -150,7 +150,7 @@ pub async fn post_login_mfa(
             context.insert("step".to_string(), Value::String(step.as_str().to_string()));
             context.insert(
                 "expiresAt".to_string(),
-                Value::String(acme_proxy_store::order::rfc3339(expires_at)),
+                Value::String(acme_proxy_core::datetime::rfc3339(expires_at)),
             );
             context.insert("flash".to_string(), flash);
             Ok((status, render_challenge(&state, context)?).into_response())
@@ -294,7 +294,9 @@ async fn challenge(
     );
     context.insert(
         "expiresAt".to_string(),
-        Value::String(acme_proxy_store::order::rfc3339(pending.session.expires_at)),
+        Value::String(acme_proxy_core::datetime::rfc3339(
+            pending.session.expires_at,
+        )),
     );
     if let Some(flash) = flash {
         context.insert("flash".to_string(), flash);

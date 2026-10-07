@@ -768,7 +768,7 @@ fn user_error(error: UserError) -> CliError {
 }
 
 fn not_found(username: &str) -> CliError {
-    CliError::bad_request(format!("no such admin user: {username}"))
+    CliError::bad_request(acme_proxy_admin::admin::subject::Subject::Operator.missing(username))
 }
 
 #[cfg(test)]
@@ -1250,7 +1250,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             error,
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
     }
 
@@ -1277,7 +1277,7 @@ mod tests {
             run(show("nobody", false), "", db.clone())
                 .await
                 .unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
 
         // The three states the detail shape distinguishes, walked in order: no
@@ -1424,7 +1424,7 @@ mod tests {
         for command in [disable("nobody"), enable("nobody")] {
             assert_eq!(
                 run(command, "", db.clone()).await.unwrap_err(),
-                CliError::bad_request("no such admin user: nobody".to_string())
+                CliError::bad_request("no such operator: nobody".to_string())
             );
         }
     }
@@ -1540,7 +1540,7 @@ mod tests {
             run(role("nobody", "viewer"), "", db.clone())
                 .await
                 .unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
 
         let error = run(role("alice", "root"), "", db).await.unwrap_err();
@@ -1569,7 +1569,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
 
         run(create("alice"), &format!("{GOOD}\n"), db.clone())
@@ -1669,7 +1669,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
     }
 
@@ -1735,7 +1735,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
 
         run(
@@ -1818,7 +1818,7 @@ mod tests {
         // An unknown user is refused before the session lookup.
         assert_eq!(
             revoke(Some("nobody"), Some("11111111")).await.unwrap_err(),
-            CliError::bad_request("no such admin user: nobody".to_string())
+            CliError::bad_request("no such operator: nobody".to_string())
         );
 
         revoke(Some("alice"), Some("11111111")).await.unwrap();
@@ -2050,7 +2050,7 @@ mod tests {
     #[tokio::test]
     async fn every_totp_arm_refuses_an_unknown_operator() {
         let db = db().await;
-        let expected = CliError::bad_request("no such admin user: nobody".to_string());
+        let expected = CliError::bad_request("no such operator: nobody".to_string());
 
         for command in [
             AdminUserTotpCommand::Status {

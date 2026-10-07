@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::db::Database;
 use crate::nonce::now_secs;
-use crate::order::rfc3339;
 use crate::status::{self, AuthzStatus, ChallengeStatus};
+use acme_proxy_core::datetime::rfc3339;
 use acme_proxy_core::identifier::Identifier;
 use acme_proxy_core::random::random_token;
 
