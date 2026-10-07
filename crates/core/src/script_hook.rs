@@ -176,36 +176,49 @@ impl ScriptHook {
         let stdout_pipe = child.stdout.take();
         let stderr_pipe = child.stderr.take();
 
-        let mut stdin_error = None;
-        if let ScriptStdin::Json(payload) = stdin {
-            let bytes =
-                serde_json::to_vec(payload).map_err(|e| ScriptError::Serialize(e.to_string()))?;
-            if let Some(mut pipe) = child.stdin.take() {
-                // Recorded rather than propagated; see `ScriptOutcome::stdin_error`.
-                if let Err(error) = pipe.write_all(&bytes).await {
-                    stdin_error = Some(error.to_string());
-                } else if let Err(error) = pipe.flush().await {
-                    stdin_error = Some(error.to_string());
-                }
-                if let Some(detail) = &stdin_error {
-                    debug!(
-                        event = "script_stdin_write_failed",
-                        outcome = "failure",
-                        script_path = %self.path.display(),
-                        error = %detail,
-                    );
-                }
-                // `pipe` drops here, closing the write end.
+        let payload = match stdin {
+            ScriptStdin::Json(payload) => Some(
+                serde_json::to_vec(payload).map_err(|e| ScriptError::Serialize(e.to_string()))?,
+            ),
+            ScriptStdin::Null => None,
+        };
+        let stdin_pipe = child.stdin.take();
+
+        // Writing the payload is one of the joined futures, under the same
+        // timeout, not a step before them. Sequenced first, a script that never
+        // reads stdin — sleeping, or blocked writing a stdout nobody drains yet
+        // — held a payload larger than the pipe buffer in `write_all` with no
+        // deadline at all, since the timeout had not started.
+        let feed = async move {
+            let (Some(bytes), Some(mut pipe)) = (payload, stdin_pipe) else {
+                return Ok::<_, ScriptError>(None);
+            };
+            // Recorded rather than propagated; see `ScriptOutcome::stdin_error`.
+            let mut stdin_error = None;
+            if let Err(error) = pipe.write_all(&bytes).await {
+                stdin_error = Some(error.to_string());
+            } else if let Err(error) = pipe.flush().await {
+                stdin_error = Some(error.to_string());
             }
-        }
+            if let Some(detail) = &stdin_error {
+                debug!(
+                    event = "script_stdin_write_failed",
+                    outcome = "failure",
+                    script_path = %self.path.display(),
+                    error = %detail,
+                );
+            }
+            // `pipe` drops here, closing the write end.
+            Ok(stdin_error)
+        };
 
         // `wait_with_output()`'s job, minus its unbounded appetite: it collects
         // both pipes with no ceiling, which on the `filter` and `ipam` hooks is
         // a per-request allocation an operator script gets to choose the size
-        // of. The three futures are joined rather than sequenced for the reason
+        // of. The four futures are joined rather than sequenced for the reason
         // given at the `take()` above.
         let collect = async {
-            let (status, stdout, stderr) = tokio::try_join!(
+            let (status, stdout, stderr, stdin_error) = tokio::try_join!(
                 async {
                     child
                         .wait()
@@ -214,24 +227,29 @@ impl ScriptHook {
                 },
                 read_capped(stdout_pipe, "stdout"),
                 read_capped(stderr_pipe, "stderr"),
+                feed,
             )?;
-            Ok(Output {
-                status,
-                stdout,
-                stderr,
+            Ok(ScriptOutcome {
+                output: Output {
+                    status,
+                    stdout,
+                    stderr,
+                },
+                stdin_error,
             })
         };
 
         match tokio::time::timeout(self.timeout, collect).await {
-            Ok(Ok(output)) => Ok(ScriptOutcome {
-                output,
-                stdin_error,
-            }),
-            Ok(Err(error)) => Err(error),
+            Ok(result) => result,
             // The child is killed here rather than left running: `kill_on_drop`
             // is set above and `child` is dropped as this future is. That covers
             // the `OutputTooLarge` arm too, where the script is very likely
             // still writing into a pipe this side has stopped reading.
+            //
+            // Only the child: a process the script started itself (a `sleep`
+            // under `sh`, say) is not in reach of `kill_on_drop` and finishes
+            // on its own. A script that forks long-lived work should `exec` it
+            // or reap it.
             Err(_) => Err(ScriptError::Timeout(self.timeout)),
         }
     }
@@ -382,6 +400,36 @@ mod tests {
             .unwrap();
 
         assert!(outcome.output.status.success());
+    }
+
+    /// The payload write is under the timeout too. It used to run before the
+    /// timeout started, so a script that never read its stdin held a payload
+    /// larger than the pipe buffer in `write_all` until the script exited on
+    /// its own — here five seconds, against a 300 ms deadline.
+    #[tokio::test]
+    async fn a_script_that_never_reads_a_large_payload_still_times_out() {
+        let dir = TempDir::new("script-hook");
+        let script = write_script(
+            &dir,
+            "deaf.sh",
+            "#!/bin/sh
+exec sleep 5
+",
+        );
+
+        let payload = serde_json::json!({ "blob": "x".repeat(256 * 1024) });
+        let started = std::time::Instant::now();
+        let error = hook(&script, 300)
+            .run(&[], ScriptStdin::Json(&payload))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, ScriptError::Timeout(_)), "got {error:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the deadline did not bound the write: {:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

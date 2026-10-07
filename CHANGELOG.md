@@ -451,6 +451,11 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **A script hook's timeout now covers writing its JSON payload.** The write ran
+  before the deadline started, so a `filter`, `ipam` or `custom` signer script
+  that never read stdin held a payload larger than a pipe buffer until it
+  exited on its own. The write now runs alongside the output collection, under
+  `timeout_ms`.
 - **A challenge trigger that raced its own verdict answered `400 malformed`**
   instead of the decided challenge. A trigger reads the challenge, its
   authorization and the order one statement at a time, while a verdict writes
