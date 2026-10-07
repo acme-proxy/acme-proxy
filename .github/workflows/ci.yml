@@ -558,13 +558,14 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Install cargo-nextest
+      - name: Install cargo-llvm-cov and cargo-nextest
         uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
         with:
-          tool: cargo-nextest@0.9.145
+          tool: cargo-llvm-cov@0.8.7,cargo-nextest@0.9.145
 
       # The store's whole suite, plus the dialect-sensitive cases and the two
       # suites that run several processes over one database -- which is the
@@ -577,14 +578,35 @@ jobs:
       # found `MAX(x, 0)` -- SQLite's scalar two-argument max, which PostgreSQL
       # has only as an aggregate, in a code path no dialect-specific test
       # would have thought to cover.
+      #
+      # Run under coverage because the `test` job's report cannot see this
+      # backend: every `Dialect::Postgres` arm of `crates/store/src/sql.rs` is
+      # zero there, so the seam ADR 0014 confines the forks to is the one file
+      # whose PostgreSQL half no number describes. The report below is that
+      # number, with no floor yet — a floor is set from a measured run, never
+      # guessed, and lives here rather than in `test` for `hsm`'s reason.
       - name: Test
         run: |
-          cargo nextest run --locked --workspace --no-fail-fast \
+          cargo llvm-cov nextest --locked --workspace --no-report --no-fail-fast \
             -E 'package(acme-proxy-store) or binary(postgres)
                 or binary(roles) or binary(reload)'
         env:
           ACME_PROXY_REQUIRE_POSTGRES: "1"
           TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/acme
+
+      # `--no-run --workspace`, never `report`: the `test` job's comment says
+      # why. Scoped to the store crate, the only one these suites set out to
+      # cover on this backend.
+      - name: PostgreSQL coverage
+        run: |
+          {
+            echo '## Coverage on PostgreSQL (`crates/store`)'
+            echo
+            echo '```text'
+            cargo llvm-cov --no-run --workspace --summary-only \
+              --ignore-filename-regex 'crates/(core|net|policy|jobs|signer|protocol|admin|server)/|/src/(cli/|main\.rs|lib\.rs)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # A called workflow's jobs can only narrow what the caller grants, so this
   # grants everything `release.yml` asks for.
