@@ -95,10 +95,14 @@ What contains it instead:
 - The shared `challenge.timeout_ms` bounds the whole attempt, redirects
   included.
 - `follow_redirects = false` turns the surface off entirely.
-- **The fetched body is never echoed back to the client.** The error a client
-  sees reports only the body's *length* on a mismatch; a truncated preview is
-  written to the log at `debug` level. This is what stops the challenge from
-  becoming a general-purpose read primitive against your internal network.
+- **Nothing the fetch learned is echoed back to the client.** The error a
+  client sees names its kind — `connection` or `unauthorized` — and the
+  identifier, and says the server's log has the reason. The status, the body
+  length, the socket error and any redirect target stay in
+  `challenge_validation_failed`; a truncated body preview is logged at `debug`.
+  This is what stops the challenge from becoming a read primitive or a port
+  scanner against your internal network. What remains is the kind itself: a
+  client can still tell "nothing answered" from "something answered wrongly".
 
 If your threat model does not tolerate this, disable redirects, or use
 [`dns-01`](dns_01.md), which makes no outbound connection to the client at all.
@@ -113,7 +117,7 @@ Look for these events in the log:
 | `challenge_http_01_matched` | The body matched. Validation passed. |
 | `challenge_http_01_mismatch` | The responder answered with the wrong content. Check that it is serving the key authorization, not just the token, and not the digest. |
 | `challenge_http_01_redirect` | A redirect was followed; the target is logged. |
-| `challenge_validation_failed` | The attempt failed. The detail says whether it was a connection error, a timeout, or a mismatch. |
+| `challenge_validation_failed` | The attempt failed. The detail says whether it was a connection error, a timeout, or a mismatch, with the status or socket error — the client is told only the kind. |
 
 A connection failure usually means one of: the name does not resolve through
 `dns.resolver`; nothing is listening on `port`; or a firewall blocks the proxy's

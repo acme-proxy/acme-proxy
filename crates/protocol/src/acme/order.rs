@@ -689,7 +689,8 @@ impl OrderService<'_> {
                 commit_validation(challenge, authz, order, database).await?;
             }
             Err(error) => {
-                let problem = challenge_problem(&error).to_value();
+                let problem =
+                    challenge_problem(&error, &challenge.typ, authz.base_identifier()).to_value();
                 warn!(
                     event = "challenge_failed",
                     outcome = "failure",

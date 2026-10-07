@@ -323,6 +323,14 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **An `http-01` failure no longer tells the client what the probe found.**
+  The problem detail used to carry the status (`… responded with HTTP 401`),
+  the body length, the socket error, and the URL of whichever redirect hop
+  failed. With redirects followed and the client choosing where its name
+  resolves, that described hosts inside the network to whoever asked. The
+  detail is now one fixed sentence per kind naming the identifier; the
+  problem type is unchanged, and the full reason is still in
+  `challenge_validation_failed`.
 - **The database URL is redacted wherever it is printed.** The startup log line
   and the `SIGHUP` refusal both render it as `postgres://acme:***@host/db`. It
   was printed whole, which was harmless while the value was a SQLite path and

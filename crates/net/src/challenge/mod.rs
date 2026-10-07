@@ -154,7 +154,41 @@ impl ChallengeError {
         }
     }
 
-    /// The human-readable detail, shown to the client.
+    /// What the client is told about this failure of a `typ` challenge for
+    /// `identifier`.
+    ///
+    /// For `dns-01` and `tls-alpn-01` that is [`Self::detail`]. For `http-01` it
+    /// is one fixed sentence per kind: that validator follows redirects to
+    /// wherever a `Location` points and the client chooses where its name
+    /// resolves, so the detail — a status, a body length, a socket error, the
+    /// next hop's `Location` — would describe hosts inside the network to
+    /// whoever asked. The kind still reaches the client as the problem type;
+    /// the specifics stay in `challenge_validation_failed`, at `warn`.
+    #[must_use]
+    pub fn client_detail(&self, typ: &str, identifier: &str) -> std::borrow::Cow<'_, str> {
+        if typ != HTTP_01 {
+            return self.detail().into();
+        }
+        match self {
+            Self::Connection(_) => format!(
+                "could not fetch the http-01 response for {identifier}; \
+                 the server's log has the reason"
+            )
+            .into(),
+            Self::Unauthorized(_) => format!(
+                "{identifier} did not serve the key authorization; \
+                 the server's log has the reason"
+            )
+            .into(),
+            Self::Dns(detail)
+            | Self::IncorrectResponse(detail)
+            | Self::Tls(detail)
+            | Self::Internal(detail) => detail.as_str().into(),
+        }
+    }
+
+    /// The full detail, for the log. What the client reads is
+    /// [`Self::client_detail`].
     #[must_use]
     pub fn detail(&self) -> &str {
         match self {

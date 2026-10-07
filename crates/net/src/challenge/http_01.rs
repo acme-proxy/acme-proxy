@@ -18,9 +18,13 @@
 //! - only `http` and `https`, only the two configured ports;
 //! - at most `max_redirects` hops, and `follow_redirects` turns it off entirely;
 //! - the whole chain shares the registry's one timeout;
-//! - **the fetched body is never echoed into the client-visible error**. The
-//!   client is told the status and the length, nothing more. A truncated preview
-//!   is logged at `debug`, server-side.
+//! - **nothing the probe learned reaches the client**. Not the body, and not
+//!   the status, the length, the socket error or the next hop's `Location`:
+//!   with redirects followed and the client choosing where its name resolves,
+//!   each would describe a host inside the network to whoever asked.
+//!   `ChallengeError::client_detail` turns every `http-01` failure into one
+//!   fixed sentence per kind; the details are logged with
+//!   `challenge_validation_failed`, and a truncated body preview at `debug`.
 //!
 //! Operators who want the request itself not to happen have
 //! `filter.allowed_ip` and

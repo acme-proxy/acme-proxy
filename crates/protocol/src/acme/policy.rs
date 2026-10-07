@@ -99,14 +99,17 @@ async fn resolve_eab(
     }))
 }
 
-/// Maps a failed challenge validation to the ACME error that describes it.
-pub(crate) fn challenge_problem(error: &ChallengeError) -> Problem {
+/// Maps a failed validation of a `typ` challenge for `identifier` to the ACME
+/// error that describes it, with the detail the client may see
+/// ([`ChallengeError::client_detail`]).
+pub(crate) fn challenge_problem(error: &ChallengeError, typ: &str, identifier: &str) -> Problem {
+    let detail = error.client_detail(typ, identifier).into_owned();
     match error {
-        ChallengeError::Connection(detail) => Problem::connection(detail.clone()),
-        ChallengeError::Dns(detail) => Problem::dns(detail.clone()),
-        ChallengeError::IncorrectResponse(detail) => Problem::incorrect_response(detail.clone()),
-        ChallengeError::Tls(detail) => Problem::tls(detail.clone()),
-        ChallengeError::Unauthorized(detail) => Problem::access_denied(detail.clone()),
+        ChallengeError::Connection(_) => Problem::connection(detail),
+        ChallengeError::Dns(_) => Problem::dns(detail),
+        ChallengeError::IncorrectResponse(_) => Problem::incorrect_response(detail),
+        ChallengeError::Tls(_) => Problem::tls(detail),
+        ChallengeError::Unauthorized(_) => Problem::access_denied(detail),
         ChallengeError::Internal(_) => Problem::server_internal("Challenge validation failed"),
     }
 }
@@ -192,16 +195,49 @@ mod tests {
         ];
 
         for (error, typ, status) in cases {
-            let value = challenge_problem(&error).to_value();
+            let value = challenge_problem(&error, "dns-01", "example.com").to_value();
             assert_eq!(value["type"], typ);
             assert_eq!(value["status"], status);
             assert_eq!(value["detail"], error.detail());
         }
 
-        let internal = challenge_problem(&ChallengeError::Internal("no validator".into()));
+        let internal = challenge_problem(
+            &ChallengeError::Internal("no validator".into()),
+            "dns-01",
+            "example.com",
+        );
         let value = internal.to_value();
         assert_eq!(value["type"], "urn:ietf:params:acme:error:serverInternal");
         assert_eq!(value["status"], 500);
         assert!(!value["detail"].as_str().unwrap().contains("no validator"));
+    }
+
+    /// `http-01` follows redirects wherever they point, so what it learned
+    /// about the hosts it reached — a status, a length, a socket error, the
+    /// next `Location` — is the server's to log, never the client's to read.
+    /// The kind still reaches the client, as the problem type.
+    #[test]
+    fn an_http_01_failure_tells_the_client_its_kind_and_nothing_it_probed() {
+        for (error, typ) in [
+            (
+                ChallengeError::Unauthorized(
+                    "http://10.0.0.5:8080/.well-known/acme-challenge/t responded with HTTP 401"
+                        .into(),
+                ),
+                "urn:ietf:params:acme:error:unauthorized",
+            ),
+            (
+                ChallengeError::Connection("tcp connect to 10.0.0.5:80: Connection refused".into()),
+                "urn:ietf:params:acme:error:connection",
+            ),
+        ] {
+            let value = challenge_problem(&error, "http-01", "app.example.com").to_value();
+            assert_eq!(value["type"], typ);
+            let detail = value["detail"].as_str().unwrap();
+            assert!(detail.contains("app.example.com"), "{detail}");
+            for leaked in ["10.0.0.5", "401", "refused", "8080"] {
+                assert!(!detail.contains(leaked), "{leaked} leaked: {detail}");
+            }
+        }
     }
 }
