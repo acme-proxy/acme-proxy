@@ -323,6 +323,11 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **Another account's order, authorization, challenge or certificate is
+  `400 malformed` "Unknown …"**, byte for byte what an id that never existed
+  gets. It used to be `403 unauthorized` "Order belongs to a different
+  account", which confirmed the id existed — and an authorization or challenge
+  of another endpoint answered "Unknown order", naming the order behind it.
 - **An `http-01` failure no longer tells the client what the probe found.**
   The problem detail used to carry the status (`… responded with HTTP 401`),
   the body length, the socket error, and the URL of whichever redirect hop

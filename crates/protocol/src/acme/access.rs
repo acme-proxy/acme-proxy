@@ -2,9 +2,11 @@
 //! walk from a challenge up to its order.
 //!
 //! Every signed route that names a resource comes through here, and the answer
-//! is deliberately the same shape whatever went wrong: a resource of another
-//! account is "not found", never "not yours". The two would let a client map
-//! the server's contents by asking about ids it does not own.
+//! is deliberately the same whatever went wrong: a resource of another account,
+//! or of another endpoint, is `malformed` "Unknown <resource>" — byte for byte
+//! what an id that never existed gets, and naming the resource the client
+//! asked about rather than the order the walk reached. Any difference would let
+//! a client map the server's contents by asking about ids it does not own.
 //!
 //! An account that has been deactivated (RFC 8555 §7.3.6) is refused here too,
 //! once, so no handler has to remember to ask.
@@ -55,18 +57,29 @@ pub(crate) async fn load_owned_order(
     account: &Account,
     database: &Arc<Database>,
 ) -> Result<Order, Problem> {
+    owned_order(id, account, database, "Unknown order").await
+}
+
+/// [`load_owned_order`], answering `unknown` for an order that is not the
+/// signer's — so a walk that started at an authorization or a challenge says
+/// that resource is unknown, not the order behind it.
+async fn owned_order(
+    id: &str,
+    account: &Account,
+    database: &Arc<Database>,
+    unknown: &'static str,
+) -> Result<Order, Problem> {
     let order = Order::find_by_id(id, database)
         .await
         .map_err(|error| {
             error!(event = "order_lookup_failed", outcome = "failure", order_id = %id, error = %error);
             Problem::server_internal("Order lookup failed")
         })?
-        .ok_or_else(|| Problem::malformed("Unknown order"))?;
+        .ok_or_else(|| Problem::malformed(unknown))?;
 
-    // An order belongs to the endpoint it was placed at. Refusing it as
-    // *unknown* rather than unauthorized is deliberate: the two answers differ,
-    // so anything else would let one endpoint's client probe another's for
-    // which order ids exist.
+    // An order belongs to the endpoint it was placed at, and to the account
+    // that placed it. Either mismatch is answered as *unknown*, exactly like an
+    // id that does not exist (see the module doc).
     if order.profile != account.profile {
         warn!(
             event = "order_profile_mismatch",
@@ -75,14 +88,12 @@ pub(crate) async fn load_owned_order(
             order_profile = %order.profile,
             request_profile = %account.profile
         );
-        return Err(Problem::malformed("Unknown order"));
+        return Err(Problem::malformed(unknown));
     }
 
     if order.account_id != account.id {
         warn!(event = "order_ownership_mismatch", outcome = "failure", order_id = %id, account_id = %account.id);
-        return Err(Problem::unauthorized(
-            "Order belongs to a different account",
-        ));
+        return Err(Problem::malformed(unknown));
     }
 
     if order.status != OrderStatus::Valid && order.expires <= now_secs() {
@@ -98,15 +109,25 @@ pub(crate) async fn load_owned_authz(
     account: &Account,
     database: &Arc<Database>,
 ) -> Result<(Authorization, Order), Problem> {
+    owned_authz(id, account, database, "Unknown authorization").await
+}
+
+/// [`load_owned_authz`], answering `unknown` for anything not the signer's.
+async fn owned_authz(
+    id: &str,
+    account: &Account,
+    database: &Arc<Database>,
+    unknown: &'static str,
+) -> Result<(Authorization, Order), Problem> {
     let authz = Authorization::find_by_id(id, database)
         .await
         .map_err(|error| {
             error!(event = "authz_lookup_failed", outcome = "failure", authz_id = %id, error = %error);
             Problem::server_internal("Authorization lookup failed")
         })?
-        .ok_or_else(|| Problem::malformed("Unknown authorization"))?;
+        .ok_or_else(|| Problem::malformed(unknown))?;
 
-    let order = load_owned_order(authz.order_id.to_string().as_str(), account, database).await?;
+    let order = owned_order(&authz.order_id.to_string(), account, database, unknown).await?;
     Ok((authz, order))
 }
 
@@ -124,8 +145,13 @@ pub(crate) async fn load_owned_challenge(
         })?
         .ok_or_else(|| Problem::malformed("Unknown challenge"))?;
 
-    let (authz, order) =
-        load_owned_authz(challenge.authz_id.to_string().as_str(), account, database).await?;
+    let (authz, order) = owned_authz(
+        &challenge.authz_id.to_string(),
+        account,
+        database,
+        "Unknown challenge",
+    )
+    .await?;
     Ok((challenge, authz, order))
 }
 

@@ -250,8 +250,13 @@ async fn another_account_cannot_deactivate_the_authorization() {
     let stranger = EcSigner::new();
     let stranger_url = register(&app, &stranger).await;
 
+    // Refused as unknown, exactly like an id that never existed: the stranger
+    // learns nothing about whether the authorization is there.
     let res = deactivate(&app, &stranger, &stranger_url, &authz_url).await;
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+    assert_eq!(problem["detail"], "Unknown authorization");
 
     // And the authorization is untouched.
     let authz = read(&app, &owner, &owner_url, &authz_url).await;

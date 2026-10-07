@@ -577,8 +577,8 @@ async fn post_as_get_rejects_different_account() {
     let res = post(&app, order_path, body).await;
     assert_problem(
         res,
-        StatusCode::UNAUTHORIZED,
-        "urn:ietf:params:acme:error:unauthorized",
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:malformed",
     )
     .await;
 }
@@ -797,8 +797,8 @@ async fn authz_rejects_different_account() {
     let res = post(&app, authz_path, body).await;
     assert_problem(
         res,
-        StatusCode::UNAUTHORIZED,
-        "urn:ietf:params:acme:error:unauthorized",
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:malformed",
     )
     .await;
 }
@@ -817,8 +817,8 @@ async fn challenge_trigger_rejects_different_account() {
     let res = trigger_challenge(&app, &intruder, &intruder_url, &challenge_url).await;
     assert_problem(
         res,
-        StatusCode::UNAUTHORIZED,
-        "urn:ietf:params:acme:error:unauthorized",
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:malformed",
     )
     .await;
 }
@@ -1560,11 +1560,11 @@ async fn a_csr_whose_self_signature_does_not_verify_is_bad_csr() {
 /// certificate directly rather than through the order would take the check with
 /// it and nothing would fail.
 ///
-/// `unauthorized` specifically, not merely "not 200": a `404` would also be
-/// safe, but it is a different answer to the client and the suite should say
-/// which one this server gives.
+/// `malformed` "Unknown order" specifically, not merely "not 200": the same
+/// answer an id that never existed gets, so the refusal says nothing about
+/// whether the certificate is there (`acme::access`'s module doc).
 #[tokio::test]
-async fn the_certificate_of_another_account_is_unauthorized() {
+async fn the_certificate_of_another_account_is_unknown() {
     let (app, owner, owner_url, order_url) = setup_ready_order().await;
 
     let res = finalize(
@@ -1597,8 +1597,8 @@ async fn the_certificate_of_another_account_is_unauthorized() {
     let body = intruder.sign_kid_empty(&intruder_url, &certificate_url, &nonce);
     assert_problem(
         post(&app, certificate_path, body).await,
-        StatusCode::UNAUTHORIZED,
-        "urn:ietf:params:acme:error:unauthorized",
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:malformed",
     )
     .await;
 }
