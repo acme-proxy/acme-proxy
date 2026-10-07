@@ -285,6 +285,31 @@ fn is_dns_name(name: &str) -> bool {
     name.split('.').all(is_dns_label)
 }
 
+/// Whether a `dns` identifier is really an IP address in disguise.
+///
+/// [`well_formed_name`] accepts `10.0.0.5`: every label is digits, and digits
+/// are a legal label. But `challenge::http_01` hands the name to `Url::parse`,
+/// whose WHATWG host parser reads `10.0.0.5` — and `2130706433`, `0x7f.1`,
+/// `127.1` — as an IPv4 address. A name-shaped `filter.identifiers` regex then
+/// judges one string while the validator connects to another address, and the
+/// certificate would carry an address in a dNSName SAN. RFC 1123 §2.1 already
+/// says a host name's last label is never all-numeric.
+///
+/// The question is answered by the **same** parser the validator uses, so the
+/// two can never disagree about what counts as an address. Kept apart from
+/// [`well_formed_name`] on purpose: that function also decides whether a CSR
+/// common name is a name being asserted, and `10.0.0.5` must stay one there.
+#[must_use]
+pub fn names_an_ip_address(value: &str) -> bool {
+    let name = value.strip_prefix("*.").unwrap_or(value);
+    // A name the parser refuses outright (bad punycode, say) is no address:
+    // `Url::parse` refuses it the same way, so the validator never connects.
+    matches!(
+        url::Host::parse(name),
+        Ok(url::Host::Ipv4(_) | url::Host::Ipv6(_))
+    )
+}
+
 /// Whether one dot-separated component is a valid label.
 fn is_dns_label(label: &str) -> bool {
     !label.is_empty()
@@ -498,6 +523,7 @@ mod tests {
             // server exists to serve, and are deliberately allowed.
             "_acme.example.com",
             "single-label",
+            // Syntactically a name; `names_an_ip_address` is what refuses it.
             "1.2.3.4",
             "*.sub.example.com",
         ] {
@@ -528,6 +554,36 @@ mod tests {
             "a.-b.com",
         ] {
             assert!(!well_formed_name(bad), "{bad:?} must not be well formed");
+        }
+    }
+
+    /// Every spelling the WHATWG host parser reads as an address, and none it
+    /// reads as a name.
+    #[test]
+    fn an_address_spelled_as_a_dns_name_is_recognised() {
+        for address in [
+            "10.0.0.5",
+            "127.0.0.1",
+            "169.254.169.254",
+            "2130706433",
+            "0x7f.1",
+            "127.1",
+            "0177.0.0.1",
+            "1.2.3.4.",
+            "*.10.0.0.5",
+        ] {
+            assert!(names_an_ip_address(address), "{address} is an address");
+        }
+        for name in [
+            "example.com",
+            "1.2.3.4.example.com",
+            "10-0-0-5.internal",
+            "single-label",
+            "_acme.example.com",
+            "*.example.com",
+            "0x7f.example",
+        ] {
+            assert!(!names_an_ip_address(name), "{name} is a name");
         }
     }
 

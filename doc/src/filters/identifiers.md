@@ -19,6 +19,13 @@ A Certificate Signing Request (CSR) can contain identifiers in multiple places
   labels (e.g., `"rcgen self signed cert"`). It is not a true identifier the
   certificate is *for*, so it is exempt from strict allow-listing.
 
+## What reaches the filter
+An order's `dns` identifiers are checked for shape before any rule runs: a
+value that is not a DNS name is `malformed`, and one the URL parser would read
+as an IPv4 or IPv6 address — `10.0.0.5`, but also `2130706433` or `0x7f.1`,
+which name `127.0.0.1` — is `rejectedIdentifier`. A rule written for names
+therefore never has to anticipate an address spelled as one.
+
 ## Regex anchoring
 All matching is performed via Regular Expressions (Regex).
 > **Security Notice**: `acme-proxy` automatically anchors all regexes as

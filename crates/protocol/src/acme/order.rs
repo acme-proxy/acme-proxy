@@ -19,8 +19,8 @@ use super::access::signer_account;
 use super::error::Error;
 use super::policy::{challenge_problem, check_identifiers};
 use super::rules::{
-    check_csr_matches_order, csr_identifiers, is_wildcard, normalize_dns_name, parse_csr,
-    parse_rfc3339, well_formed_name,
+    check_csr_matches_order, csr_identifiers, is_wildcard, names_an_ip_address, normalize_dns_name,
+    parse_csr, parse_rfc3339, well_formed_name,
 };
 use crate::profile::Profile;
 use acme_proxy_core::audit::RequestContext;
@@ -324,7 +324,16 @@ impl OrderService<'_> {
                     warn!(event = "order_identifier_malformed", outcome = "failure", value = %identifier.value);
                     Some(
                         Problem::malformed(format!(
-                            "Malformed identifier {}: `*` is only legal as a single leading `*.`",
+                            "Malformed identifier {}: not a DNS name (a `*` is only legal as a single leading `*.`)",
+                            identifier.value
+                        ))
+                        .with_identifier(identifier),
+                    )
+                } else if names_an_ip_address(&identifier.value) {
+                    warn!(event = "order_identifier_is_address", outcome = "failure", value = %identifier.value);
+                    Some(
+                        Problem::rejected_identifier(format!(
+                            "Identifier {} is an IP address, which a dns identifier cannot name",
                             identifier.value
                         ))
                         .with_identifier(identifier),

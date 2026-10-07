@@ -380,6 +380,43 @@ async fn a_malformed_wildcard_identifier_is_rejected_as_malformed() {
     }
 }
 
+/// An address spelled as a `dns` identifier used to pass: every label is
+/// digits, and digits are a legal label. `http-01` then handed it to the WHATWG
+/// URL parser, which reads `2130706433` as `127.0.0.1` — so a name-shaped
+/// `filter.identifiers` pattern judged one string while the validator connected
+/// to another address, and the certificate would have carried an address in a
+/// dNSName SAN.
+#[tokio::test]
+async fn an_ip_address_is_not_a_dns_identifier() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    for value in [
+        "10.0.0.5",
+        "169.254.169.254",
+        "2130706433",
+        "0x7f.1",
+        "*.10.0.0.5",
+    ] {
+        let res = new_order(&app, &signer, &account_url, value).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{value}");
+        let problem = body_json(res).await;
+        assert_eq!(
+            problem["type"], "urn:ietf:params:acme:error:rejectedIdentifier",
+            "{value}"
+        );
+        assert!(
+            problem["detail"].as_str().unwrap().contains("IP address"),
+            "{problem}"
+        );
+    }
+
+    // A name that merely starts with digits is still a name.
+    let res = new_order(&app, &signer, &account_url, "10.0.0.5.example.com").await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}
+
 // ---------------------------------------------------------------------------
 // Identifier normalization
 // ---------------------------------------------------------------------------

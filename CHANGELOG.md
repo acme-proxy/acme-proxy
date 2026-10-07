@@ -517,6 +517,13 @@ migrated configuration before restarting.
 
 ### Security
 
+- **An IP address is no longer accepted as a `dns` identifier.** Every label
+  of `10.0.0.5` is digits, which is a legal label, so `newOrder` took it — and
+  `2130706433` and `0x7f.1`, which the URL parser `http-01` uses reads as
+  `127.0.0.1`. A name-shaped `filter.identifiers` pattern judged one string
+  while the validator connected to another address, and the certificate would
+  have carried an address in a dNSName SAN. Such an identifier is now
+  `403 rejectedIdentifier`, decided by the same parser the validator uses.
 - **No secret in a `Debug` rendering or a routine log line.** An `Eab` row
   carries the HMAC secret the credential is, and `eab delete` hands the row up
   to the operation layer, where one `{:?}` would have printed it; its `Debug`
