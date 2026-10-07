@@ -55,7 +55,6 @@ pub struct ChangeContactRequest {
 pub async fn change_contact(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<ChangeContactRequest>>,
@@ -71,7 +70,6 @@ pub async fn change_contact(
         &mut target,
         body.contact.as_deref(),
         client,
-        &headers,
         &request_context,
         "api",
     )
@@ -90,7 +88,6 @@ pub async fn change_contact(
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: axum::http::HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<ChangePasswordRequest>,
@@ -104,7 +101,6 @@ pub async fn change_password(
         &body.new_password,
         &auth.session.token_hash,
         client,
-        crate::webadmin::user_agent_of(&headers).as_deref(),
     )
     .await?;
 
@@ -118,7 +114,6 @@ pub async fn change_password(
 /// What stays with each front end is the rendering — a `204`, or the password
 /// card with a banner. A refusal is an [`AdminError`] either way, so the policy
 /// message a script reads and the one a browser shows are the same sentence.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn change_own_password_for(
     state: &AdminState,
     request: &acme_proxy_core::audit::RequestContext,
@@ -127,7 +122,6 @@ pub(crate) async fn change_own_password_for(
     new_password: &str,
     keep: &str,
     client: Option<std::net::IpAddr>,
-    user_agent: Option<&str>,
 ) -> Result<(), AdminError> {
     verify_current_password(user, current_password, client, &state.logins).await?;
 
@@ -152,7 +146,6 @@ pub(crate) async fn change_own_password_for(
             acme_proxy_jobs::notify::AdminCredentialChange::Password,
             true,
             client,
-            user_agent.map(str::to_string),
         )
         .await;
     Ok(())

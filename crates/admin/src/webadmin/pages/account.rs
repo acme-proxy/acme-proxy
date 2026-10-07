@@ -11,7 +11,7 @@
 //! page, and minting a credential is where that line is drawn.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -157,14 +157,12 @@ pub async fn begin_totp(
 pub async fn confirm_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageEnrolWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<ConfirmForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.enrol.user;
     let keep = session.enrol.session.token_hash.clone();
-    let user_agent = crate::webadmin::user_agent_of(&headers);
 
     let Some(codes) = crate::webadmin::handlers::mfa::confirm_totp_for(
         &state,
@@ -173,7 +171,6 @@ pub async fn confirm_totp(
         &body.code,
         &keep,
         client,
-        user_agent.as_deref(),
     )
     .await?
     else {
@@ -225,13 +222,11 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
-    let user_agent = crate::webadmin::user_agent_of(&headers);
     // A banner, not a page: every refusal here — the server requiring a factor,
     // a wrong password, a rate limit — is about this card's own state.
     if let Err(error) = crate::webadmin::handlers::mfa::disable_totp_for(
@@ -241,7 +236,6 @@ pub async fn disable_totp(
         &body.password,
         &session.auth.session.token_hash,
         client,
-        user_agent.as_deref(),
     )
     .await
     {
@@ -268,19 +262,16 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
 ) -> Result<Response, PageError> {
-    let user_agent = crate::webadmin::user_agent_of(&headers);
     let codes = match crate::webadmin::handlers::mfa::regenerate_recovery_codes_for(
         &state,
         &request_context,
         &session.auth.user,
         &body.password,
         client,
-        user_agent.as_deref(),
     )
     .await
     {
@@ -354,7 +345,6 @@ fn contact_card_context(
 pub async fn change_contact(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<ContactForm>,
@@ -380,7 +370,6 @@ pub async fn change_contact(
         &mut target,
         Some(form.contact.as_str()),
         client,
-        &headers,
         &request_context,
         "ui",
     )
@@ -438,14 +427,12 @@ fn password_card_context(csrf_token: &str) -> Map<String, Value> {
 pub async fn change_password(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageSelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<ChangePasswordForm>,
 ) -> Result<Response, PageError> {
     let mut user = session.auth.user;
     let csrf_token = session.auth.session.csrf_token.clone();
-    let user_agent = crate::webadmin::user_agent_of(&headers);
     let mut fragment_context = password_card_context(&csrf_token);
 
     // Every refusal is a banner on this card, and its wording is the API's:
@@ -458,7 +445,6 @@ pub async fn change_password(
         &body.new_password,
         &session.auth.session.token_hash,
         client,
-        user_agent.as_deref(),
     )
     .await
     {

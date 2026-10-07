@@ -33,7 +33,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::Value;
@@ -106,7 +106,6 @@ pub async fn disable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
@@ -117,7 +116,6 @@ pub async fn disable_operator(
         &username,
         &body.unwrap_or_default().password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetStatus { active: false },
     )
@@ -130,7 +128,6 @@ pub async fn enable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
@@ -141,7 +138,6 @@ pub async fn enable_operator(
         &username,
         &body.unwrap_or_default().password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetStatus { active: true },
     )
@@ -156,7 +152,6 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
@@ -167,7 +162,6 @@ pub async fn reset_operator_totp(
         &username,
         &body.unwrap_or_default().password,
         client,
-        &headers,
         &request_context,
         OperatorAction::ResetTotp,
     )
@@ -180,7 +174,6 @@ pub async fn revoke_operator_session(
     State(state): State<AdminState>,
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
@@ -191,7 +184,6 @@ pub async fn revoke_operator_session(
         &username,
         &body.unwrap_or_default().password,
         client,
-        &headers,
         &request_context,
         OperatorAction::RevokeSession { fingerprint: &id },
     )
@@ -224,7 +216,6 @@ pub async fn set_operator_contact(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<SetOperatorContactRequest>>,
@@ -236,7 +227,6 @@ pub async fn set_operator_contact(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetContact {
             contact: body.contact.as_deref(),
@@ -258,7 +248,6 @@ pub async fn set_operator_role(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     AdminWrite(auth): AdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<SetOperatorRoleRequest>>,
@@ -271,7 +260,6 @@ pub async fn set_operator_role(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetRole { role },
     )
@@ -286,14 +274,12 @@ pub async fn set_operator_role(
 /// The `/ui` twin runs the same four steps but renders the password refusal as
 /// the operator card's own banner, so it calls the pieces itself rather than
 /// this wrapper.
-#[allow(clippy::too_many_arguments)]
 async fn act(
     state: &AdminState,
     caller: &AdminUser,
     username: &str,
     password: &str,
     client: Option<std::net::IpAddr>,
-    headers: &HeaderMap,
     request_context: &acme_proxy_core::audit::RequestContext,
     action: OperatorAction<'_>,
 ) -> Result<(), AdminError> {
@@ -306,7 +292,6 @@ async fn act(
         &mut target,
         action,
         client,
-        headers,
         request_context,
         "api",
     )
@@ -344,14 +329,12 @@ pub(crate) enum OperatorAction<'a> {
 ///
 /// `target` is updated in place, so the page front end re-renders its card from
 /// it rather than reading the row back.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_operator_action(
     state: &AdminState,
     caller: &AdminUser,
     target: &mut AdminUser,
     action: OperatorAction<'_>,
     client: Option<std::net::IpAddr>,
-    headers: &HeaderMap,
     request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
@@ -428,7 +411,6 @@ pub(crate) async fn apply_operator_action(
                     acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
                     false,
                     client,
-                    crate::webadmin::user_agent_of(headers),
                 )
                 .await;
             tracing::info!(event = "admin_operator_totp_reset",
@@ -469,7 +451,6 @@ pub(crate) async fn apply_operator_action(
                 target,
                 contact,
                 client,
-                headers,
                 request_context,
                 surface,
             )
@@ -530,14 +511,12 @@ pub(crate) async fn apply_operator_action(
 /// `target`. Setting an address to what it already was writes no row and sends
 /// no message: telling somebody their alarms moved to the address they were
 /// already using is noise that teaches them to ignore the real one.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_contact_change(
     state: &AdminState,
     caller: &AdminUser,
     target: &mut AdminUser,
     contact: Option<&str>,
     client: Option<std::net::IpAddr>,
-    headers: &HeaderMap,
     request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
@@ -559,7 +538,6 @@ pub(crate) async fn apply_contact_change(
             previous,
             caller.id == target.id,
             client,
-            crate::webadmin::user_agent_of(headers),
         )
         .await;
     tracing::info!(event = "admin_operator_contact_updated",

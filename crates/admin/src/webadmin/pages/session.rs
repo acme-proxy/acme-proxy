@@ -201,7 +201,6 @@ async fn confirm_enrolment(
             acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled,
             true,
             client,
-            pending.session.user_agent.clone(),
         )
         .await;
 

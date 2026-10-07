@@ -9,7 +9,6 @@
 //! half-disabled copy of this page's own template.
 
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -96,7 +95,6 @@ pub async fn disable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
@@ -107,7 +105,6 @@ pub async fn disable_operator(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetStatus { active: false },
         flash("ok", "Operator disabled. Their sessions were revoked."),
@@ -120,7 +117,6 @@ pub async fn enable_operator(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
@@ -131,7 +127,6 @@ pub async fn enable_operator(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetStatus { active: true },
         flash("ok", "Operator enabled."),
@@ -144,7 +139,6 @@ pub async fn reset_operator_totp(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
@@ -155,7 +149,6 @@ pub async fn reset_operator_totp(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::ResetTotp,
         flash(
@@ -172,7 +165,6 @@ pub async fn revoke_operator_session(
     State(state): State<AdminState>,
     Path((username, id)): Path<(String, String)>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(body): axum::Form<StepUpForm>,
@@ -183,7 +175,6 @@ pub async fn revoke_operator_session(
         &username,
         &body.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::RevokeSession { fingerprint: &id },
         flash("ok", "Session revoked."),
@@ -215,7 +206,6 @@ pub async fn set_operator_contact(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<OperatorContactForm>,
@@ -237,7 +227,6 @@ pub async fn set_operator_contact(
         &username,
         &form.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetContact {
             contact: Some(form.contact.as_str()),
@@ -252,7 +241,6 @@ pub async fn set_operator_role(
     State(state): State<AdminState>,
     Path(username): Path<String>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     session: PageAdminWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     axum::Form(form): axum::Form<OperatorRoleForm>,
@@ -281,7 +269,6 @@ pub async fn set_operator_role(
         &username,
         &form.password,
         client,
-        &headers,
         &request_context,
         OperatorAction::SetRole { role },
         flash(
@@ -309,7 +296,6 @@ async fn act(
     username: &str,
     password: &str,
     client: Option<std::net::IpAddr>,
-    headers: &HeaderMap,
     request_context: &acme_proxy_core::audit::RequestContext,
     action: OperatorAction<'_>,
     banner: Value,
@@ -328,7 +314,6 @@ async fn act(
         &mut target,
         action,
         client,
-        headers,
         request_context,
         "ui",
     )

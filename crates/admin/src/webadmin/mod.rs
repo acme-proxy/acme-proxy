@@ -192,7 +192,6 @@ impl AdminState {
     ///
     /// `previous_recipient` is the address a `ContactAddress` change replaced,
     /// and `None` for every other change.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn notify_credential_change(
         &self,
         user: &acme_proxy_store::admin_user::AdminUser,
@@ -229,8 +228,8 @@ impl AdminState {
     /// event from it makes that unrepresentable.
     ///
     /// `by_self` is `false` when another operator made the change; `actor` is
-    /// whoever made it, which is not always `user`.
-    #[allow(clippy::too_many_arguments)]
+    /// whoever made it, which is not always `user`. The notification names the
+    /// `User-Agent` `request_context` carries.
     pub(crate) async fn record_credential_change(
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
@@ -239,25 +238,14 @@ impl AdminState {
         change: acme_proxy_jobs::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
-        user_agent: Option<String>,
     ) {
-        self.record_change(
-            request_context,
-            actor,
-            user,
-            change,
-            by_self,
-            client,
-            user_agent,
-            None,
-        )
-        .await;
+        self.record_change(request_context, actor, user, change, by_self, client, None)
+            .await;
     }
 
     /// [`Self::record_credential_change`] for the notification address, which
     /// is the one change that has to know what it replaced: the message goes
     /// *there*. `user` is the operator as they are after the change.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_contact_change(
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
@@ -266,7 +254,6 @@ impl AdminState {
         previous_recipient: Option<String>,
         by_self: bool,
         client: Option<std::net::IpAddr>,
-        user_agent: Option<String>,
     ) {
         self.record_change(
             request_context,
@@ -275,7 +262,6 @@ impl AdminState {
             acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress,
             by_self,
             client,
-            user_agent,
             previous_recipient,
         )
         .await;
@@ -290,7 +276,6 @@ impl AdminState {
         change: acme_proxy_jobs::notify::AdminCredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
-        user_agent: Option<String>,
         previous_recipient: Option<String>,
     ) {
         use acme_proxy_jobs::notify::AdminCredentialChange as Change;
@@ -336,7 +321,7 @@ impl AdminState {
             change,
             by_self,
             client,
-            user_agent,
+            request_context.user_agent.clone(),
             previous_recipient,
         )
         .await;

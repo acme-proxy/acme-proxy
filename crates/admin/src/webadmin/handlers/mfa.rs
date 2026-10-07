@@ -10,7 +10,7 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -167,12 +167,12 @@ mod actions {
     use std::net::IpAddr;
 
     /// What every one of these writes knows about the operator who asked: the
-    /// address it came from and the browser that sent it, which the
-    /// notification names so a stolen session shows up in it.
+    /// address it came from, which the notification names so a stolen session
+    /// shows up in it. The browser it names comes from the request's
+    /// `RequestContext`, which carries the same capped `User-Agent`.
     #[derive(Clone, Copy)]
-    pub(super) struct Origin<'a> {
+    pub(super) struct Origin {
         pub(super) client: Option<IpAddr>,
-        pub(super) user_agent: Option<&'a str>,
     }
 
     // These writes are self-service — the operator is the actor and the
@@ -189,7 +189,7 @@ mod actions {
         state: &AdminState,
         user: &mut AdminUser,
         password: &str,
-        origin: Origin<'_>,
+        origin: Origin,
     ) -> Result<crate::admin::totp::Enrolment, AdminError> {
         check_step_up(user, password, origin.client, &state.logins).await?;
         Ok(mfa::resume_or_begin_totp_enrolment(
@@ -208,7 +208,7 @@ mod actions {
         user: &mut AdminUser,
         code: &str,
         keep: &str,
-        origin: Origin<'_>,
+        origin: Origin,
     ) -> Result<Option<Vec<String>>, AdminError> {
         let Some(codes) =
             mfa::confirm_totp_enrolment(user, code, Some(keep), state.database.clone()).await?
@@ -233,7 +233,7 @@ mod actions {
         user: &mut AdminUser,
         password: &str,
         keep: &str,
-        origin: Origin<'_>,
+        origin: Origin,
     ) -> Result<(), AdminError> {
         if state.config.admin.require_mfa {
             return Err(AdminError::conflict(
@@ -260,7 +260,7 @@ mod actions {
         request: &RequestContext,
         user: &AdminUser,
         password: &str,
-        origin: Origin<'_>,
+        origin: Origin,
     ) -> Result<Vec<String>, AdminError> {
         if !user.has_totp() {
             return Err(AdminError::conflict(
@@ -288,18 +288,10 @@ mod actions {
         request: &RequestContext,
         user: &AdminUser,
         change: AdminCredentialChange,
-        origin: Origin<'_>,
+        origin: Origin,
     ) {
         state
-            .record_credential_change(
-                request,
-                &user.username,
-                user,
-                change,
-                true,
-                origin.client,
-                origin.user_agent.map(str::to_string),
-            )
+            .record_credential_change(request, &user.username, user, change, true, origin.client)
             .await;
     }
 }
@@ -313,16 +305,7 @@ pub(crate) async fn begin_totp_for(
     password: &str,
     client: Option<std::net::IpAddr>,
 ) -> Result<crate::admin::totp::Enrolment, AdminError> {
-    actions::begin_totp(
-        state,
-        user,
-        password,
-        actions::Origin {
-            client,
-            user_agent: None,
-        },
-    )
-    .await
+    actions::begin_totp(state, user, password, actions::Origin { client }).await
 }
 
 /// See [`begin_totp_for`].
@@ -333,17 +316,8 @@ pub(crate) async fn confirm_totp_for(
     code: &str,
     keep: &str,
     client: Option<std::net::IpAddr>,
-    user_agent: Option<&str>,
 ) -> Result<Option<Vec<String>>, AdminError> {
-    actions::confirm_totp(
-        state,
-        request,
-        user,
-        code,
-        keep,
-        actions::Origin { client, user_agent },
-    )
-    .await
+    actions::confirm_totp(state, request, user, code, keep, actions::Origin { client }).await
 }
 
 /// See [`begin_totp_for`].
@@ -354,7 +328,6 @@ pub(crate) async fn disable_totp_for(
     password: &str,
     keep: &str,
     client: Option<std::net::IpAddr>,
-    user_agent: Option<&str>,
 ) -> Result<(), AdminError> {
     actions::disable_totp(
         state,
@@ -362,7 +335,7 @@ pub(crate) async fn disable_totp_for(
         user,
         password,
         keep,
-        actions::Origin { client, user_agent },
+        actions::Origin { client },
     )
     .await
 }
@@ -374,16 +347,9 @@ pub(crate) async fn regenerate_recovery_codes_for(
     user: &acme_proxy_store::admin_user::AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
-    user_agent: Option<&str>,
 ) -> Result<Vec<String>, AdminError> {
-    actions::regenerate_recovery_codes(
-        state,
-        request,
-        user,
-        password,
-        actions::Origin { client, user_agent },
-    )
-    .await
+    actions::regenerate_recovery_codes(state, request, user, password, actions::Origin { client })
+        .await
 }
 
 /// `GET /api/mfa` — this operator's second-factor state.
@@ -424,10 +390,7 @@ pub async fn begin_totp(
         &state,
         &mut user,
         &body.unwrap_or_default().password,
-        actions::Origin {
-            client,
-            user_agent: None,
-        },
+        actions::Origin { client },
     )
     .await?;
 
@@ -454,14 +417,12 @@ pub async fn begin_totp(
 pub async fn confirm_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     enrol: EnrolWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<ConfirmRequest>,
 ) -> Result<Response, AdminError> {
     let mut user = enrol.user;
     let keep = enrol.session.token_hash.clone();
-    let user_agent = crate::webadmin::user_agent_of(&headers);
 
     let Some(codes) = actions::confirm_totp(
         &state,
@@ -469,10 +430,7 @@ pub async fn confirm_totp(
         &mut user,
         &body.code,
         &keep,
-        actions::Origin {
-            client,
-            user_agent: user_agent.as_deref(),
-        },
+        actions::Origin { client },
     )
     .await?
     else {
@@ -512,23 +470,18 @@ pub async fn confirm_totp(
 pub async fn disable_totp(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Response, AdminError> {
     let mut user = auth.user;
-    let user_agent = crate::webadmin::user_agent_of(&headers);
     actions::disable_totp(
         &state,
         &request_context,
         &mut user,
         &body.unwrap_or_default().password,
         &auth.session.token_hash,
-        actions::Origin {
-            client,
-            user_agent: user_agent.as_deref(),
-        },
+        actions::Origin { client },
     )
     .await?;
 
@@ -544,21 +497,16 @@ pub async fn disable_totp(
 pub async fn regenerate_recovery_codes(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
-    headers: HeaderMap,
     SelfServiceWrite(auth): SelfServiceWrite,
     request_context: acme_proxy_core::audit::RequestContext,
     body: Option<Json<StepUpRequest>>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
-    let user_agent = crate::webadmin::user_agent_of(&headers);
     let codes = actions::regenerate_recovery_codes(
         &state,
         &request_context,
         &auth.user,
         &body.unwrap_or_default().password,
-        actions::Origin {
-            client,
-            user_agent: user_agent.as_deref(),
-        },
+        actions::Origin { client },
     )
     .await?;
 
