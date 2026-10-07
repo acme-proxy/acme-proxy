@@ -508,26 +508,15 @@ pub async fn deactivate_account(
 /// profile's dispatcher, where there is one: the `certificate_revoked`
 /// notification is about the certificate, so it goes out however it was
 /// revoked.
-#[allow(clippy::too_many_arguments)]
 pub async fn revoke_order(
     id: &str,
     reason: Option<u32>,
     actor: Actor,
     client: ClientContext,
-    audit: &Auditor,
-    database: Arc<Database>,
-    revoker: acme_proxy_protocol::acme::revoke::Revoker<'_>,
-    notify: Option<&acme_proxy_jobs::notify::NotifyDispatcher>,
+    revocations: acme_proxy_protocol::acme::revoke::Revocations<'_>,
 ) -> Result<RevokeOutcome, RevokeError> {
-    use acme_proxy_protocol::acme::revoke::Revocations;
     use acme_proxy_protocol::acme::revoke::RevokeError as Refusal;
 
-    let revocations = Revocations {
-        database: &database,
-        audit,
-        notify,
-        revoker,
-    };
     match revocations.revoke_order(id, reason, actor, client).await {
         Ok(order) => Ok(RevokeOutcome::Revoked(Box::new(order))),
         Err(Refusal::NotFound) => Ok(RevokeOutcome::NotFound),
@@ -1118,10 +1107,12 @@ mod tests {
                 ptr: Some("desk.example.com".to_string()),
                 ..ClientContext::default()
             },
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1148,10 +1139,12 @@ mod tests {
             None,
             Actor::admin("root"),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1198,10 +1191,12 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            Some(&dispatcher),
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &Auditor::offline(db.clone()),
+                notify: Some(&dispatcher),
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1226,10 +1221,12 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1691,10 +1688,14 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(
+                    in_memory_ca(&db).as_ref(),
+                ),
+            },
         )
         .await
         .unwrap();
@@ -1722,10 +1723,14 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(in_memory_ca(&db).as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(
+                    in_memory_ca(&db).as_ref(),
+                ),
+            },
         )
         .await
         .unwrap();
@@ -1743,10 +1748,12 @@ mod tests {
             Some(1),
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1780,10 +1787,12 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db.clone(),
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1792,10 +1801,12 @@ mod tests {
             None,
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db,
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap();
@@ -1813,10 +1824,12 @@ mod tests {
             Some(999),
             cli_actor(),
             ClientContext::default(),
-            &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
-            db,
-            acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
-            None,
+            acme_proxy_protocol::acme::revoke::Revocations {
+                database: &db,
+                audit: &acme_proxy_jobs::auditor::Auditor::offline(db.clone()),
+                notify: None,
+                revoker: acme_proxy_protocol::acme::revoke::Revoker::Backend(signer.as_ref()),
+            },
         )
         .await
         .unwrap_err();

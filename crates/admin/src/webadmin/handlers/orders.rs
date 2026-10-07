@@ -226,10 +226,12 @@ pub(crate) async fn apply_revoke_order(
         reason,
         acme_proxy_core::audit::Actor::admin(caller.username()),
         state.audit.client(caller.request).await,
-        &state.audit,
-        state.database.clone(),
-        revoker(state, &route),
-        Some(&profile.notify),
+        acme_proxy_protocol::acme::revoke::Revocations {
+            database: &state.database,
+            audit: &state.audit,
+            notify: Some(&profile.notify),
+            revoker: revoker(state, &route),
+        },
     )
     .await
     .map_err(revoke_error)?;

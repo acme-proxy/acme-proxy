@@ -118,14 +118,16 @@ pub async fn run_order_command(
             // that means the same thing on both queries, so it is passed
             // straight through.
             if let Some(days) = expiring_in {
-                return run_expiring(
-                    days,
-                    profile,
+                refuse_plain_listing_filters(
                     account_id.as_deref(),
                     status.as_deref(),
                     identifier.as_deref(),
                     identifier_contains.as_deref(),
                     cert_serial.as_deref(),
+                )?;
+                return run_expiring(
+                    days,
+                    profile,
                     hide_superseded,
                     window,
                     json,
@@ -310,10 +312,12 @@ pub async fn run_order_command(
                 reason,
                 actor,
                 client,
-                &audit,
-                database.clone(),
-                revoker,
-                notify,
+                acme_proxy_protocol::acme::revoke::Revocations {
+                    database: &database,
+                    audit: &audit,
+                    notify,
+                    revoker,
+                },
             )
             .await;
             // A bad `--reason` code is the operator's to fix (exit 3); every
@@ -383,47 +387,15 @@ const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
 /// predicate. `acme_proxy_store::expiring::annotate_expiring` still reads each account's orders once
 /// for the whole page rather than once per row, which is what keeps a page over
 /// a single busy account from re-reading its history fifty times.
-#[allow(clippy::too_many_arguments)]
 async fn run_expiring(
     days: u64,
     profile: Option<String>,
-    account_id: Option<&str>,
-    status: Option<&str>,
-    identifier: Option<&str>,
-    identifier_contains: Option<&str>,
-    cert_serial: Option<&str>,
     hide_superseded: bool,
     window: Window,
     json: bool,
     palette: Palette,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
-    if status.is_some() {
-        return Err(CliError::bad_request(
-            "--status does not apply with --expiring-in: the expiry listing is issued, \
-             unrevoked certificates by definition, so a status filter here would mean \
-             something other than it does everywhere else"
-                .to_string(),
-        ));
-    }
-    if account_id.is_some() {
-        return Err(CliError::bad_request(
-            "--account-id does not apply with --expiring-in: the expiry listing has no \
-             account predicate, and answering as though it did would report one \
-             subscriber's certificates as every subscriber's"
-                .to_string(),
-        ));
-    }
-    if identifier.is_some() || identifier_contains.is_some() || cert_serial.is_some() {
-        return Err(CliError::bad_request(
-            "--identifier, --identifier-contains and --cert-serial do not apply with \
-             --expiring-in: the expiry listing is ordered by expiry over a fixed status \
-             set, so a name or serial filter here would mean something other than it \
-             does on the plain listing"
-                .to_string(),
-        ));
-    }
-
     let query = acme_proxy_store::expiring::ExpiringQuery {
         profile,
         before: acme_proxy_store::expiring::expiring_horizon(days),
@@ -449,6 +421,44 @@ async fn run_expiring(
             println!("{}", render::render_expiring_line(entry, palette));
         }
         render::print_expiring_footer(entries.len(), total, hidden);
+    }
+    Ok(())
+}
+
+/// The plain listing's filters that `--expiring-in` cannot honour, refused
+/// **by name** rather than ignored: an argument silently dropped answers with
+/// rows that look like it was honoured.
+fn refuse_plain_listing_filters(
+    account_id: Option<&str>,
+    status: Option<&str>,
+    identifier: Option<&str>,
+    identifier_contains: Option<&str>,
+    cert_serial: Option<&str>,
+) -> Result<(), CliError> {
+    if status.is_some() {
+        return Err(CliError::bad_request(
+            "--status does not apply with --expiring-in: the expiry listing is issued, \
+             unrevoked certificates by definition, so a status filter here would mean \
+             something other than it does everywhere else"
+                .to_string(),
+        ));
+    }
+    if account_id.is_some() {
+        return Err(CliError::bad_request(
+            "--account-id does not apply with --expiring-in: the expiry listing has no \
+             account predicate, and answering as though it did would report one \
+             subscriber's certificates as every subscriber's"
+                .to_string(),
+        ));
+    }
+    if identifier.is_some() || identifier_contains.is_some() || cert_serial.is_some() {
+        return Err(CliError::bad_request(
+            "--identifier, --identifier-contains and --cert-serial do not apply with \
+             --expiring-in: the expiry listing is ordered by expiry over a fixed status \
+             set, so a name or serial filter here would mean something other than it \
+             does on the plain listing"
+                .to_string(),
+        ));
     }
     Ok(())
 }
