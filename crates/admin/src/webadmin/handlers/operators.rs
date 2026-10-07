@@ -299,7 +299,7 @@ async fn act(
 ) -> Result<(), AdminError> {
     let mut target = find(username, state).await?;
     refuse_self_target(caller, &target)?;
-    verify_current_password(caller, password, client, &state.logins)?;
+    verify_current_password(caller, password, client, &state.logins).await?;
     apply_operator_action(
         state,
         caller,

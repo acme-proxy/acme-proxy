@@ -363,7 +363,7 @@ pub async fn change_contact(
     let csrf_token = session.auth.session.csrf_token.clone();
 
     if let Err(error) =
-        verify_current_password(&caller, &form.current_password, client, &state.logins)
+        verify_current_password(&caller, &form.current_password, client, &state.logins).await
     {
         return super::refuse_with_card(
             &state,

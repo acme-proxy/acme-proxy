@@ -62,7 +62,7 @@ pub async fn change_contact(
 ) -> Result<Response, AdminError> {
     let body = body.unwrap_or_default();
     let caller = auth.user;
-    verify_current_password(&caller, &body.current_password, client, &state.logins)?;
+    verify_current_password(&caller, &body.current_password, client, &state.logins).await?;
 
     let mut target = caller.clone();
     super::operators::apply_contact_change(
@@ -129,7 +129,7 @@ pub(crate) async fn change_own_password_for(
     client: Option<std::net::IpAddr>,
     user_agent: Option<&str>,
 ) -> Result<(), AdminError> {
-    verify_current_password(user, current_password, client, &state.logins)?;
+    verify_current_password(user, current_password, client, &state.logins).await?;
 
     let context = PasswordContext::from_config(&state.config, &user.username);
     users::change_own_password(user, new_password, &context, keep, state.database.clone())

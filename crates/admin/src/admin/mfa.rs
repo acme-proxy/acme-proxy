@@ -118,7 +118,7 @@ pub async fn verify_second_factor(
     }
 
     for code in AdminRecoveryCode::list_unused(user.id, &database).await? {
-        match password::verify_password(&code.code_hash, &candidate) {
+        match password::verify_password_off_runtime(&code.code_hash, &candidate).await {
             Ok(true) => {
                 if !AdminRecoveryCode::consume(code.id, &database).await? {
                     // Lost the race to a concurrent submission of this very

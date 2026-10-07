@@ -362,7 +362,8 @@ async fn refuse_without_password(
     password: &str,
     client: Option<std::net::IpAddr>,
 ) -> Result<Option<Response>, PageError> {
-    let Err(error) = verify_current_password(&session.auth.user, password, client, &state.logins)
+    let Err(error) =
+        verify_current_password(&session.auth.user, password, client, &state.logins).await
     else {
         return Ok(None);
     };

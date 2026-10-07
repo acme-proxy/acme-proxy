@@ -517,6 +517,12 @@ migrated configuration before restarting.
 
 ### Security
 
+- **A parallel burst of admin logins no longer outruns the rate limiter.** The
+  limiter read its counter before the 600 000-iteration hash and wrote it after,
+  so every request of a burst from one address found the budget untouched, and
+  each one held a runtime worker for the whole hash. An attempt now counts from
+  the moment it starts, the hash runs on the blocking pool, and an IPv6 client
+  is counted by its /64 rather than its /128.
 - **An IP address is no longer accepted as a `dns` identifier.** Every label
   of `10.0.0.5` is digits, which is a legal label, so `newOrder` took it — and
   `2130706433` and `0x7f.1`, which the URL parser `http-01` uses reads as

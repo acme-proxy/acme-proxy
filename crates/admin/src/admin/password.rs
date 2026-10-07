@@ -410,6 +410,45 @@ pub fn verify_password(stored: &str, password: &str) -> Result<bool, PasswordErr
     .is_ok())
 }
 
+/// [`verify_password`] on tokio's blocking pool.
+///
+/// 600 000 iterations is ~85 ms of one core. Run inline in an async handler it
+/// holds a runtime worker for all of that, and a burst of logins stalls every
+/// other task scheduled on the same workers — the ACME listener included. Every
+/// verification an async caller makes goes through here; the synchronous
+/// function stays for the CLI and the tests.
+///
+/// A panic in the KDF resumes on the caller, exactly as it would have inline. A
+/// task cancelled because the runtime is shutting down verified nothing, and
+/// answers `Ok(false)`.
+pub async fn verify_password_off_runtime(
+    stored: &str,
+    password: &str,
+) -> Result<bool, PasswordError> {
+    let (stored, password) = (stored.to_owned(), password.to_owned());
+    match tokio::task::spawn_blocking(move || verify_password(&stored, &password)).await {
+        Ok(verified) => verified,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_) => Ok(false),
+        },
+    }
+}
+
+/// [`hash_password`] on tokio's blocking pool, for the login path's rehash.
+/// `None` only when the runtime is shutting down; the rehash then waits for the
+/// next login.
+pub async fn hash_password_off_runtime(password: &str) -> Option<String> {
+    let password = password.to_owned();
+    match tokio::task::spawn_blocking(move || hash_password(&password)).await {
+        Ok(hash) => Some(hash),
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(_) => None,
+        },
+    }
+}
+
 /// Whether `stored` was written under parameters this build has since moved
 /// past -- a different algorithm, or a lower iteration count.
 ///

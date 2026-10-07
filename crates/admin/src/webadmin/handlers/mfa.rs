@@ -54,7 +54,7 @@ pub struct StepUpRequest {
 ///
 /// The refusal is `invalid_credentials`, the same answer sign-in gives, so this
 /// is not a second oracle for whether a password is right.
-pub(crate) fn check_step_up(
+pub(crate) async fn check_step_up(
     user: &acme_proxy_store::admin_user::AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
@@ -63,7 +63,7 @@ pub(crate) fn check_step_up(
     if !user.has_totp() {
         return Ok(());
     }
-    verify_current_password(user, password, client, logins)
+    verify_current_password(user, password, client, logins).await
 }
 
 /// The part of step-up that always applies: proves the caller still knows the
@@ -75,7 +75,7 @@ pub(crate) fn check_step_up(
 /// current password on *every* change of it, whether or not a second factor
 /// exists -- so `handlers::account::change_password` and its `/ui` twin call
 /// this directly instead of `check_step_up`.
-pub(crate) fn verify_current_password(
+pub(crate) async fn verify_current_password(
     user: &acme_proxy_store::admin_user::AdminUser,
     password: &str,
     client: Option<std::net::IpAddr>,
@@ -103,17 +103,20 @@ pub(crate) fn verify_current_password(
     // `admin_sessions` — deliberately not done, because unlike a six-digit code
     // a password behind 85 ms of PBKDF2 per guess is not reachable that way, and
     // the address bucket already removes the DoS lever.
-    if let Err(retry_after) = logins.check(client) {
-        warn!(
-            event = "admin_mfa_step_up_refused",
-            outcome = "failure",
-            username = %user.username,
-            reason = "rate_limited"
-        );
-        return Err(AdminError::rate_limited(retry_after));
-    }
+    let attempt = match logins.begin(client) {
+        Ok(attempt) => attempt,
+        Err(retry_after) => {
+            warn!(
+                event = "admin_mfa_step_up_refused",
+                outcome = "failure",
+                username = %user.username,
+                reason = "rate_limited"
+            );
+            return Err(AdminError::rate_limited(retry_after));
+        }
+    };
 
-    match crate::admin::password::verify_password(&user.password_hash, password) {
+    match crate::admin::password::verify_password_off_runtime(&user.password_hash, password).await {
         Ok(true) => {
             // No `record_success`. `sign_in` moved its own to the *promotion*
             // past the second factor for exactly this reason: clearing the
@@ -123,7 +126,7 @@ pub(crate) fn verify_current_password(
             Ok(())
         }
         Ok(false) => {
-            logins.record_failure(client);
+            attempt.failed();
             warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "wrong_password");
             Err(AdminError::invalid_credentials())
         }
@@ -131,7 +134,7 @@ pub(crate) fn verify_current_password(
             // A stored hash this process cannot parse is a corrupt row, not a
             // wrong password. Refuse rather than let the change through.
             //
-            // No `record_failure`: `decode` failed before the KDF ran, so
+            // No `attempt.failed()`: `decode` failed before the KDF ran, so
             // nothing was guessed and no work was spent. Counting it would let
             // one corrupt row lock its own owner out of sign-in as well — the
             // one account that most needs to reach an operator.
@@ -188,7 +191,7 @@ mod actions {
         password: &str,
         origin: Origin<'_>,
     ) -> Result<crate::admin::totp::Enrolment, AdminError> {
-        check_step_up(user, password, origin.client, &state.logins)?;
+        check_step_up(user, password, origin.client, &state.logins).await?;
         Ok(mfa::resume_or_begin_totp_enrolment(
             user,
             &state.config.admin.base_url,
@@ -238,7 +241,7 @@ mod actions {
                 "admin.require_mfa is on: this server requires a second factor of every operator",
             ));
         }
-        check_step_up(user, password, origin.client, &state.logins)?;
+        check_step_up(user, password, origin.client, &state.logins).await?;
         mfa::disable_totp(user, Some(keep), state.database.clone()).await?;
         record(
             state,
@@ -265,7 +268,7 @@ mod actions {
                 "there is no second factor for these codes to recover access to",
             ));
         }
-        check_step_up(user, password, origin.client, &state.logins)?;
+        check_step_up(user, password, origin.client, &state.logins).await?;
         let codes = mfa::regenerate_recovery_codes(user, state.database.clone()).await?;
         record(
             state,
@@ -606,41 +609,51 @@ mod tests {
     }
 
     /// The gate is scoped to operators who *have* something to protect.
-    #[test]
-    fn a_factorless_operator_passes_without_a_password() {
+    #[tokio::test]
+    async fn a_factorless_operator_passes_without_a_password() {
         let user = user_with("not-even-a-valid-hash", None);
         let logins = limiter();
-        assert!(check_step_up(&user, "", client(), &logins).is_ok());
-        assert!(check_step_up(&user, "anything", client(), &logins).is_ok());
+        assert!(check_step_up(&user, "", client(), &logins).await.is_ok());
+        assert!(
+            check_step_up(&user, "anything", client(), &logins)
+                .await
+                .is_ok()
+        );
     }
 
     /// The inverse of the test above: `verify_current_password` carries no
     /// `has_totp()` exemption, since a password change needs the current
     /// password proven whether or not a second factor exists.
-    #[test]
-    fn verify_current_password_runs_even_for_a_factorless_operator() {
+    #[tokio::test]
+    async fn verify_current_password_runs_even_for_a_factorless_operator() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, None);
         let logins = limiter();
 
         assert!(
             verify_current_password(&user, "correct horse battery staple", client(), &logins)
+                .await
                 .is_ok()
         );
         let error = verify_current_password(&user, "wrong", client(), &logins)
+            .await
             .expect_err("a wrong password must refuse even with no factor enrolled");
         assert_eq!(error.code, AdminError::invalid_credentials().code);
     }
 
-    #[test]
-    fn a_live_factor_needs_the_right_password() {
+    #[tokio::test]
+    async fn a_live_factor_needs_the_right_password() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
         let logins = limiter();
 
-        assert!(check_step_up(&user, "correct horse battery staple", client(), &logins).is_ok());
+        assert!(
+            check_step_up(&user, "correct horse battery staple", client(), &logins)
+                .await
+                .is_ok()
+        );
         for wrong in ["", "Correct horse battery staple", "wrong"] {
-            let Err(error) = check_step_up(&user, wrong, client(), &logins) else {
+            let Err(error) = check_step_up(&user, wrong, client(), &logins).await else {
                 panic!("{wrong:?} must be refused");
             };
             // Byte-identical to a wrong password at sign-in, so this is not a
@@ -652,11 +665,12 @@ mod tests {
 
     /// A stored hash this process cannot parse is a corrupt row, not a correct
     /// password. It must refuse rather than let the factor change through.
-    #[test]
-    fn an_unreadable_stored_hash_refuses_rather_than_admits() {
+    #[tokio::test]
+    async fn an_unreadable_stored_hash_refuses_rather_than_admits() {
         let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
         let logins = limiter();
         let error = check_step_up(&user, "anything", client(), &logins)
+            .await
             .expect_err("a corrupt hash must refuse");
         assert_eq!(error.code, AdminError::invalid_credentials().code);
     }
@@ -669,19 +683,21 @@ mod tests {
     /// it afterwards would bound nothing — the expensive work would already be
     /// done, and that expense is the denial-of-service lever `sign_in` runs its
     /// own check ahead of.
-    #[test]
-    fn a_wrong_password_counts_against_the_login_limiter() {
+    #[tokio::test]
+    async fn a_wrong_password_counts_against_the_login_limiter() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
         let logins = limiter();
 
         for _ in 0..MAX_ATTEMPTS {
             let error = check_step_up(&user, "wrong", client(), &logins)
+                .await
                 .expect_err("a wrong password must refuse");
             assert_eq!(error.code, AdminError::invalid_credentials().code);
         }
 
         let error = check_step_up(&user, "correct horse battery staple", client(), &logins)
+            .await
             .expect_err("the budget is spent, so even a correct password waits");
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
     }
@@ -693,20 +709,33 @@ mod tests {
     /// to reset the budget at will and brute-force the six digits behind it. A
     /// step-up caller holds a session, so they are in that position by
     /// definition.
-    #[test]
-    fn a_correct_password_does_not_clear_the_bucket() {
+    #[tokio::test]
+    async fn a_correct_password_does_not_clear_the_bucket() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
         let logins = limiter();
 
         for _ in 0..MAX_ATTEMPTS - 1 {
-            assert!(check_step_up(&user, "wrong", client(), &logins).is_err());
+            assert!(
+                check_step_up(&user, "wrong", client(), &logins)
+                    .await
+                    .is_err()
+            );
         }
-        assert!(check_step_up(&user, "correct horse battery staple", client(), &logins).is_ok());
+        assert!(
+            check_step_up(&user, "correct horse battery staple", client(), &logins)
+                .await
+                .is_ok()
+        );
 
         // One guess left, not a fresh five.
-        assert!(check_step_up(&user, "wrong", client(), &logins).is_err());
+        assert!(
+            check_step_up(&user, "wrong", client(), &logins)
+                .await
+                .is_err()
+        );
         let error = check_step_up(&user, "wrong", client(), &logins)
+            .await
             .expect_err("the budget survives a correct password");
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
     }
@@ -714,28 +743,36 @@ mod tests {
     /// An operator with no factor never spends the budget, since the gate
     /// returns before any KDF runs — there is nothing to bound, and charging
     /// them would let a factorless account lock its own address out of sign-in.
-    #[test]
-    fn a_factorless_operator_never_touches_the_limiter() {
+    #[tokio::test]
+    async fn a_factorless_operator_never_touches_the_limiter() {
         let user = user_with("not-even-a-valid-hash", None);
         let logins = limiter();
 
         for _ in 0..MAX_ATTEMPTS + 1 {
-            assert!(check_step_up(&user, "anything", client(), &logins).is_ok());
+            assert!(
+                check_step_up(&user, "anything", client(), &logins)
+                    .await
+                    .is_ok()
+            );
         }
-        assert!(logins.check(client()).is_ok());
+        assert!(logins.begin(client()).is_ok());
     }
 
     /// A corrupt row refuses, but must not lock its own owner out of sign-in:
     /// `decode` failed before the KDF ran, so nothing was guessed and no work
     /// was spent.
-    #[test]
-    fn an_unreadable_stored_hash_does_not_lock_the_address_out() {
+    #[tokio::test]
+    async fn an_unreadable_stored_hash_does_not_lock_the_address_out() {
         let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
         let logins = limiter();
 
         for _ in 0..MAX_ATTEMPTS + 1 {
-            assert!(check_step_up(&user, "anything", client(), &logins).is_err());
+            assert!(
+                check_step_up(&user, "anything", client(), &logins)
+                    .await
+                    .is_err()
+            );
         }
-        assert!(logins.check(client()).is_ok());
+        assert!(logins.begin(client()).is_ok());
     }
 }

@@ -613,6 +613,17 @@ pub fn check_origin(headers: &HeaderMap, base_url: &str) -> Result<(), AdminErro
 /// In-process on purpose: it protects a listener that defaults to loopback and
 /// holds a handful of accounts, and a database-backed counter would add a
 /// write to the very path being flooded.
+///
+/// **An attempt is counted when it starts, not when it fails.** [`begin`]
+/// reserves a slot under the lock and refuses once failures *plus attempts
+/// still in flight* reach the limit. Counting only finished failures was a
+/// check-then-act race: a burst of parallel requests from one address all
+/// passed the check before the first of them had paid its 600 000 iterations
+/// and recorded anything, so the burst bought as many guesses — and as much
+/// KDF time — as it had requests. The slot is a [`LoginAttempt`] guard, so
+/// every early return (a database error included) gives it back.
+///
+/// [`begin`]: LoginLimiter::begin
 #[derive(Debug)]
 pub struct LoginLimiter {
     max_attempts: u32,
@@ -623,7 +634,25 @@ pub struct LoginLimiter {
 #[derive(Debug, Clone, Copy)]
 struct Bucket {
     failures: u32,
+    /// Attempts begun and not yet settled. Never carried across a reload: see
+    /// [`LoginLimiter::rebuilt`].
+    in_flight: u32,
     window_started: i64,
+}
+
+/// The bucket an address counts against.
+///
+/// An IPv6 client is keyed by its /64. A single subscriber routinely holds a
+/// whole /64 and can rotate through it at will, so keying the full /128 gave
+/// one attacker 2^64 fresh budgets. An IPv4-mapped address is its IPv4 self.
+fn bucket_key(client: IpAddr) -> IpAddr {
+    match client.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => {
+            let prefix = u128::from(v6) & (u128::MAX << 64);
+            IpAddr::V6(std::net::Ipv6Addr::from(prefix))
+        }
+    }
 }
 
 impl LoginLimiter {
@@ -648,9 +677,17 @@ impl LoginLimiter {
     /// Carrying the whole limiter across instead would be the other error,
     /// leaving `login_max_attempts` and `login_window_seconds` silently stale.
     /// So the counters move and the limits do not.
+    ///
+    /// The in-flight counts do **not** move: their guards hold the old limiter
+    /// and settle against it, so a count copied here would never be released.
+    /// The cost is that an attempt straddling a reload is not counted, once.
     #[must_use]
     pub fn rebuilt(&self, max_attempts: u32, window_seconds: u64) -> Self {
-        let buckets = std::mem::take(&mut *self.buckets.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut buckets =
+            std::mem::take(&mut *self.buckets.lock().unwrap_or_else(|e| e.into_inner()));
+        for bucket in buckets.values_mut() {
+            bucket.in_flight = 0;
+        }
         Self {
             max_attempts,
             window: Duration::from_secs(window_seconds),
@@ -658,62 +695,111 @@ impl LoginLimiter {
         }
     }
 
-    /// Whether this address may attempt a login now. `Err` carries the seconds
-    /// left in the window.
+    /// Starts a login attempt from this address, or refuses it. `Err` carries
+    /// the seconds left in the window.
     ///
     /// Called **before** the password hash runs: 600 000 iterations is a
     /// denial-of-service lever, so a limited caller must not pay it — nor make
-    /// the server pay it.
-    pub fn check(&self, client: Option<IpAddr>) -> Result<(), u64> {
+    /// the server pay it. The returned guard holds the slot until it is
+    /// [`failed`](LoginAttempt::failed) or dropped.
+    pub fn begin(&self, client: Option<IpAddr>) -> Result<LoginAttempt<'_>, u64> {
         // No address means no key. This is not a bypass: the limiter is a
         // convenience over the bind address and the session, and an admin
         // listener always has a peer address in practice (`TapIo` carries it
         // through TLS). Failing closed here would lock out every request
         // rather than every attacker.
-        let Some(client) = client else { return Ok(()) };
+        let Some(key) = client.map(bucket_key) else {
+            return Ok(LoginAttempt {
+                limiter: self,
+                key: None,
+            });
+        };
         let now = now_secs();
         let window = self.window.as_secs() as i64;
 
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        // Pruned under the same lock, so the map cannot grow without bound.
-        buckets.retain(|_, bucket| now - bucket.window_started < window);
+        // Pruned under the same lock, so the map cannot grow without bound. A
+        // bucket with an attempt in flight is kept, its failures forgotten.
+        buckets.retain(|_, bucket| now - bucket.window_started < window || bucket.in_flight > 0);
 
-        match buckets.get(&client) {
-            Some(bucket) if bucket.failures >= self.max_attempts => {
-                Err((window - (now - bucket.window_started)).max(1) as u64)
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Records a failed attempt.
-    pub fn record_failure(&self, client: Option<IpAddr>) {
-        let Some(client) = client else { return };
-        let now = now_secs();
-        let window = self.window.as_secs() as i64;
-
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        let bucket = buckets.entry(client).or_insert(Bucket {
+        let bucket = buckets.entry(key).or_insert(Bucket {
             failures: 0,
+            in_flight: 0,
             window_started: now,
         });
         if now - bucket.window_started >= window {
-            *bucket = Bucket {
-                failures: 0,
-                window_started: now,
-            };
+            bucket.failures = 0;
+            bucket.window_started = now;
         }
-        bucket.failures += 1;
+        if bucket.failures.saturating_add(bucket.in_flight) >= self.max_attempts {
+            return Err((window - (now - bucket.window_started)).max(1) as u64);
+        }
+        bucket.in_flight += 1;
+        Ok(LoginAttempt {
+            limiter: self,
+            key: Some(key),
+        })
     }
 
-    /// Clears an address's counter after a successful login, so one operator
+    /// Clears an address's counter after a completed login, so one operator
     /// fumbling their password does not spend the window for the next.
     pub fn record_success(&self, client: Option<IpAddr>) {
-        let Some(client) = client else { return };
-        self.buckets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&client);
+        let Some(key) = client.map(bucket_key) else {
+            return;
+        };
+        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(bucket) = buckets.get_mut(&key) {
+            // Another attempt may still be in flight; its guard needs the
+            // bucket to settle against.
+            bucket.failures = 0;
+            if bucket.in_flight == 0 {
+                buckets.remove(&key);
+            }
+        }
+    }
+
+    /// Gives back an in-flight slot, and turns it into a failure if `failed`.
+    fn settle(&self, key: IpAddr, failed: bool) {
+        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
+        // Absent when `rebuilt` emptied this limiter mid-attempt.
+        let Some(bucket) = buckets.get_mut(&key) else {
+            return;
+        };
+        bucket.in_flight = bucket.in_flight.saturating_sub(1);
+        if failed {
+            bucket.failures += 1;
+        } else if bucket.failures == 0 && bucket.in_flight == 0 {
+            buckets.remove(&key);
+        }
+    }
+}
+
+/// One login attempt's slot in the [`LoginLimiter`].
+///
+/// Dropping it releases the slot without counting anything: a correct password
+/// waiting on its second factor, a refused origin, a database error. Only
+/// [`failed`](Self::failed) spends the budget.
+#[derive(Debug)]
+#[must_use = "dropping the attempt releases its slot at once"]
+pub struct LoginAttempt<'a> {
+    limiter: &'a LoginLimiter,
+    key: Option<IpAddr>,
+}
+
+impl LoginAttempt<'_> {
+    /// Counts this attempt as a failure against its address.
+    pub fn failed(mut self) {
+        if let Some(key) = self.key.take() {
+            self.limiter.settle(key, true);
+        }
+    }
+}
+
+impl Drop for LoginAttempt<'_> {
+    fn drop(&mut self) {
+        if let Some(key) = self.key.take() {
+            self.limiter.settle(key, false);
+        }
     }
 }
 
@@ -985,32 +1071,71 @@ mod tests {
         Some(IpAddr::from([192, 0, 2, last]))
     }
 
+    /// One failed attempt, start to finish.
+    fn fail(limiter: &LoginLimiter, client: Option<IpAddr>) {
+        limiter.begin(client).unwrap().failed();
+    }
+
     #[test]
     fn the_limiter_permits_up_to_the_limit_then_refuses() {
         let limiter = LoginLimiter::new(3, 300);
 
         for attempt in 0..3 {
-            assert!(limiter.check(ip(1)).is_ok(), "attempt {attempt} must pass");
-            limiter.record_failure(ip(1));
+            let slot = limiter.begin(ip(1));
+            assert!(slot.is_ok(), "attempt {attempt} must pass");
+            slot.unwrap().failed();
         }
 
-        let retry_after = limiter.check(ip(1)).unwrap_err();
+        let retry_after = limiter.begin(ip(1)).unwrap_err();
         assert!(retry_after > 0 && retry_after <= 300, "got {retry_after}");
 
         // Scoped to the address that failed.
-        assert!(limiter.check(ip(2)).is_ok());
+        assert!(limiter.begin(ip(2)).is_ok());
+    }
+
+    /// The race this type exists to close: a burst whose attempts are all in
+    /// flight at once must not each find the budget untouched.
+    #[test]
+    fn attempts_in_flight_count_against_the_limit() {
+        let limiter = LoginLimiter::new(3, 300);
+        let held: Vec<_> = (0..3).map(|_| limiter.begin(ip(1)).unwrap()).collect();
+        assert!(
+            limiter.begin(ip(1)).is_err(),
+            "a fourth concurrent attempt must be refused before any has failed"
+        );
+
+        // Settled without failing — a right password awaiting its second
+        // factor — the slots come back.
+        drop(held);
+        assert!(limiter.begin(ip(1)).is_ok());
+        assert!(
+            limiter.buckets.lock().unwrap().is_empty(),
+            "a bucket with nothing to remember must not linger"
+        );
     }
 
     #[test]
     fn a_success_clears_the_counter() {
         let limiter = LoginLimiter::new(2, 300);
-        limiter.record_failure(ip(1));
+        fail(&limiter, ip(1));
         limiter.record_success(ip(1));
-        limiter.record_failure(ip(1));
+        fail(&limiter, ip(1));
         assert!(
-            limiter.check(ip(1)).is_ok(),
+            limiter.begin(ip(1)).is_ok(),
             "the pre-success failure must not still count"
         );
+    }
+
+    /// A success while another attempt is in flight keeps the bucket that
+    /// attempt will settle against, so its slot is still released.
+    #[test]
+    fn a_success_beside_an_attempt_in_flight_keeps_its_slot() {
+        let limiter = LoginLimiter::new(1, 300);
+        let other = limiter.begin(ip(1)).unwrap();
+        limiter.record_success(ip(1));
+        assert!(limiter.begin(ip(1)).is_err(), "the slot is still taken");
+        drop(other);
+        assert!(limiter.begin(ip(1)).is_ok());
     }
 
     #[test]
@@ -1018,15 +1143,15 @@ mod tests {
         // A one-second window, so the rollover is observable without sleeping
         // on a wall clock the test does not control.
         let limiter = LoginLimiter::new(1, 1);
-        limiter.record_failure(ip(1));
-        assert!(limiter.check(ip(1)).is_err());
+        fail(&limiter, ip(1));
+        assert!(limiter.begin(ip(1)).is_err());
 
         // Backdate the bucket past the window.
         {
             let mut buckets = limiter.buckets.lock().unwrap();
             buckets.get_mut(&ip(1).unwrap()).unwrap().window_started -= 5;
         }
-        assert!(limiter.check(ip(1)).is_ok(), "the window must roll over");
+        assert!(limiter.begin(ip(1)).is_ok(), "the window must roll over");
         assert!(
             limiter.buckets.lock().unwrap().is_empty(),
             "a stale bucket must be pruned, or the map grows without bound"
@@ -1036,12 +1161,42 @@ mod tests {
     #[test]
     fn a_missing_client_address_is_not_limited() {
         let limiter = LoginLimiter::new(1, 300);
-        limiter.record_failure(None);
+        fail(&limiter, None);
         limiter.record_success(None);
         assert!(
-            limiter.check(None).is_ok(),
+            limiter.begin(None).is_ok(),
             "failing closed here would lock out every request, not every attacker"
         );
+    }
+
+    /// Rotating through one /64 is one budget; a different /64 is another, and
+    /// an IPv4-mapped address is its IPv4 self.
+    #[test]
+    fn an_ipv6_client_is_limited_by_its_slash_64() {
+        let limiter = LoginLimiter::new(1, 300);
+        let v6 = |s: &str| Some(s.parse::<IpAddr>().unwrap());
+
+        fail(&limiter, v6("2001:db8:1:2::1"));
+        assert!(limiter.begin(v6("2001:db8:1:2:ffff::9")).is_err());
+        assert!(limiter.begin(v6("2001:db8:1:3::1")).is_ok());
+
+        fail(&limiter, ip(7));
+        assert!(limiter.begin(v6("::ffff:192.0.2.7")).is_err());
+    }
+
+    /// The failures cross a reload; the in-flight counts must not, or a slot
+    /// held across it would never come back.
+    #[test]
+    fn a_rebuilt_limiter_keeps_failures_and_drops_slots_in_flight() {
+        let old = LoginLimiter::new(2, 300);
+        fail(&old, ip(1));
+        let straddling = old.begin(ip(1)).unwrap();
+
+        let new = old.rebuilt(2, 300);
+        drop(straddling);
+        assert!(new.begin(ip(1)).is_ok(), "one failure of two is spent");
+        fail(&new, ip(1));
+        assert!(new.begin(ip(1)).is_err());
     }
 
     #[test]

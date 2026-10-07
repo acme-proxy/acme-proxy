@@ -391,11 +391,12 @@ pub async fn authenticate(
 ) -> Result<AuthOutcome, sqlx::Error> {
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         // Deliberately discarded: the point is the time it took.
-        let _ = password::verify_password(password::dummy_hash(), plaintext);
+        let _ = password::verify_password_off_runtime(password::dummy_hash(), plaintext).await;
         return Ok(AuthOutcome::UnknownUser);
     };
 
-    let verified = match password::verify_password(&user.password_hash, plaintext) {
+    let verified = match password::verify_password_off_runtime(&user.password_hash, plaintext).await
+    {
         Ok(verified) => verified,
         Err(error) => {
             // A corrupt row is not a wrong password. Refuse the login, but say
@@ -422,8 +423,9 @@ pub async fn authenticate(
     // The one place a stored hash is ever upgraded. Doing it here, on a
     // verified password, is the only moment the plaintext is available to
     // re-derive from.
-    if password::needs_rehash(&user.password_hash) {
-        let rehashed = password::hash_password(plaintext);
+    if password::needs_rehash(&user.password_hash)
+        && let Some(rehashed) = password::hash_password_off_runtime(plaintext).await
+    {
         user.set_password_hash(&rehashed, &database).await?;
         info!(event = "admin_password_rehashed", outcome = "success", user_id = %user.id);
     }

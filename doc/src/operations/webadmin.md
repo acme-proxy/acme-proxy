@@ -576,8 +576,12 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
   worth knowing rather than discovering.
 - Sign-in is protected by a fixed-window rate limiter
   (`admin.login_max_attempts` per `admin.login_window_seconds`, keyed on the
-  client address). Over the limit, the password hash is not computed at all —
-  600 000 iterations is a denial-of-service lever otherwise.
+  client address — an IPv6 client by its /64, which one subscriber can rotate
+  through at will). An attempt counts from the moment it starts, so a parallel
+  burst gets no more guesses than a sequence. Over the limit, the password hash
+  is not computed at all — 600 000 iterations is a denial-of-service lever
+  otherwise — and the hash that does run is on the blocking pool, off the
+  workers that serve requests.
 - **A forwarded-for header is believed only from
   `admin.filter.trusted_proxies`**, never from the ACME listener's
   `filter.trusted_proxies`; honouring it from anyone else would let a caller

@@ -201,6 +201,54 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
     );
 }
 
+/// A burst is bounded like a sequence. The limiter used to read the counter
+/// before the hash and write it after, so every request of a parallel burst
+/// from one address found the budget untouched — as many guesses, and as many
+/// 600 000-iteration hashes, as the burst had requests.
+#[tokio::test]
+async fn a_parallel_burst_of_logins_gets_no_more_guesses_than_the_limit() {
+    let mut config = admin_config();
+    config.admin.login_max_attempts = 3;
+    let (app, database) = test_admin_app(config).await;
+    acme_proxy_admin::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database,
+    )
+    .await
+    .unwrap();
+
+    let mut burst = tokio::task::JoinSet::new();
+    for _ in 0..12 {
+        let app = app.clone();
+        burst.spawn(async move {
+            admin_request(
+                &app,
+                Method::POST,
+                "/api/session",
+                None,
+                Some(json!({ "username": "alice", "password": "wrong" })),
+            )
+            .await
+            .status()
+        });
+    }
+    let statuses = burst.join_all().await;
+
+    let guessed = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::UNAUTHORIZED)
+        .count();
+    let limited = statuses
+        .iter()
+        .filter(|status| **status == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert_eq!(guessed + limited, 12, "{statuses:?}");
+    assert!(guessed <= 3, "{guessed} guesses got through: {statuses:?}");
+}
+
 /// Two sign-ins from two browsers are two independent sessions. Signing in on
 /// a second machine must not log you out on the first.
 #[tokio::test]

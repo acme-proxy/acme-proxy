@@ -71,10 +71,13 @@ pub(crate) async fn sign_in(
     let body = credentials;
     check_origin(headers, &state.config.admin.base_url)?;
 
-    if let Err(retry_after) = state.logins.check(client) {
-        log_login(false, &body.username, client, "rate_limited");
-        return Err(AdminError::rate_limited(retry_after));
-    }
+    let attempt = match state.logins.begin(client) {
+        Ok(attempt) => attempt,
+        Err(retry_after) => {
+            log_login(false, &body.username, client, "rate_limited");
+            return Err(AdminError::rate_limited(retry_after));
+        }
+    };
 
     let outcome =
         users::authenticate(&body.username, &body.password, state.database.clone()).await?;
@@ -89,7 +92,7 @@ pub(crate) async fn sign_in(
                 AuthOutcome::Disabled(_) => "account_disabled",
                 AuthOutcome::Authenticated(_) => unreachable!("handled above"),
             };
-            state.logins.record_failure(client);
+            attempt.failed();
             log_login(false, &body.username, client, reason);
             return Err(AdminError::invalid_credentials());
         }
@@ -161,7 +164,8 @@ pub(crate) async fn sign_in(
     //   "typed the right password".
     // - `log_login(true, …)`: the login has not succeeded yet.
     //
-    // No `record_failure` either: the password *was* right.
+    // No `attempt.failed()` either: the password *was* right. Dropping the
+    // attempt gives its slot back uncounted.
     let session = AdminSession::create_pending(
         NewSession {
             user_id: user.id,
@@ -206,10 +210,13 @@ pub(crate) async fn finish_mfa(
 ) -> Result<SignedIn, AdminError> {
     // The origin gate already ran, in `PendingMfaSubmit`'s extractor -- it is
     // what stands in for the CSRF token this route cannot have.
-    if let Err(retry_after) = state.logins.check(client) {
-        log_login(false, &pending.user.username, client, "rate_limited");
-        return Err(AdminError::rate_limited(retry_after));
-    }
+    let attempt = match state.logins.begin(client) {
+        Ok(attempt) => attempt,
+        Err(retry_after) => {
+            log_login(false, &pending.user.username, client, "rate_limited");
+            return Err(AdminError::rate_limited(retry_after));
+        }
+    };
 
     let mut user = pending.user;
     let outcome =
@@ -217,7 +224,7 @@ pub(crate) async fn finish_mfa(
             .await?;
 
     let MfaOutcome::Accepted { via, .. } = outcome else {
-        state.logins.record_failure(client);
+        attempt.failed();
 
         // The bound the address-keyed limiter cannot provide. A `pending_mfa`
         // cookie is valid from any address on purpose, so without this an
