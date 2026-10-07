@@ -106,6 +106,10 @@ async fn key_change_succeeds_ec() {
     let body = old_signer.sign_kid(&account_url, &account_url, &nonce, &json!({}));
     let res = post(&app, path, body).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:unauthorized"
+    );
 
     // ...but the new one does, proving the rollover actually took effect.
     let nonce = fetch_nonce(&app).await;
@@ -209,6 +213,10 @@ async fn key_change_rejects_inner_signature_tampered() {
     let body = old_signer.sign_kid(&account_url, KEY_CHANGE_URL, &nonce, &inner_value);
     let res = key_change(&app, body).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:unauthorized"
+    );
 }
 
 #[tokio::test]
@@ -331,6 +339,10 @@ async fn key_change_rejects_deactivated_account() {
     let body = key_change_body(&old_signer, &new_signer, &account_url, &nonce);
     let res = key_change(&app, body).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:unauthorized"
+    );
 }
 
 /// The outer JWS's own generic checks (RFC 8555 §6.4/§6.5) still apply here,

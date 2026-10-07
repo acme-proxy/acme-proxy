@@ -165,6 +165,10 @@ async fn update_signed_by_different_account_key_is_unauthorized() {
     let body = signer_a.sign_kid(&url_a, &url_b, &nonce, &json!({ "contact": [] }));
     let res = post(&app, path_b, body).await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:unauthorized"
+    );
 }
 
 #[tokio::test]

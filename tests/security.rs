@@ -194,6 +194,10 @@ async fn a_deactivated_account_cannot_finalize_a_ready_order() {
     )
     .await;
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:unauthorized"
+    );
 }
 
 /// `newAccount` must refuse a deactivated key too — on **both** its branches.

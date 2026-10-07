@@ -1,3 +1,12 @@
+//! The admin command tree driven end to end over an in-memory database: each
+//! `run_*_command` entry point with the arguments clap would hand it.
+//!
+//! Output goes to stdout, which this suite does not capture — the rendering is
+//! pinned by `src/cli/render.rs`'s own tests. What a case here asserts is the
+//! **state** a mutating command leaves behind, and that a read-only one
+//! answers `Ok` on both its human and `--json` paths. A declined confirmation
+//! must change nothing; `--yes` must do the work.
+
 use std::sync::Arc;
 
 use acme_proxy::cli::account::{AccountCommand, run_account_command};
@@ -116,6 +125,13 @@ async fn account_cli_update_deactivate_delete() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        stored_account(&db, &account.id.to_string())
+            .await
+            .unwrap()
+            .contact,
+        ["mailto:updated@example.com"]
+    );
 
     run_account_command(
         AccountCommand::Deactivate {
@@ -130,6 +146,13 @@ async fn account_cli_update_deactivate_delete() {
     .await
     .unwrap();
 
+    assert!(
+        stored_account(&db, &account.id.to_string())
+            .await
+            .unwrap()
+            .is_deactivated()
+    );
+
     let mut reader = b"no\n".as_slice();
     run_account_command(
         AccountCommand::Delete {
@@ -143,6 +166,10 @@ async fn account_cli_update_deactivate_delete() {
     )
     .await
     .unwrap();
+    assert!(
+        stored_account(&db, &account.id.to_string()).await.is_some(),
+        "a declined delete must delete nothing"
+    );
 
     let mut reader: &[u8] = &[];
     run_account_command(
@@ -157,6 +184,11 @@ async fn account_cli_update_deactivate_delete() {
     )
     .await
     .unwrap();
+    assert!(stored_account(&db, &account.id.to_string()).await.is_none());
+}
+
+async fn stored_account(db: &Database, id: &str) -> Option<Account> {
+    Account::find_by_id("default", id, db).await.unwrap()
 }
 
 #[tokio::test]
@@ -277,6 +309,13 @@ async fn order_cli_list_show_delete() {
     )
     .await
     .unwrap();
+    assert!(
+        Order::find_by_id(&order.id.to_string(), &db)
+            .await
+            .unwrap()
+            .is_some(),
+        "a declined delete must delete nothing"
+    );
 
     let mut reader: &[u8] = &[];
     run_order_command(
@@ -291,12 +330,30 @@ async fn order_cli_list_show_delete() {
     )
     .await
     .unwrap();
+    assert!(
+        Order::find_by_id(&order.id.to_string(), &db)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn nonce_cli_cleanup() {
     let db = Arc::new(Database::connect_in_memory().await.unwrap());
     let config = Config::default();
+    let now = acme_proxy_store::nonce::now_secs();
+    for (value, created_at) in [("stale", now - 3_600), ("fresh", now)] {
+        sqlx::query("INSERT INTO nonces (value, created_at) VALUES (?, ?)")
+            .bind(value)
+            .bind(created_at)
+            .execute(db.raw_pool())
+            .await
+            .unwrap();
+    }
+    let count = |db: Arc<Database>| async move {
+        acme_proxy_store::nonce::Nonce::count(&db).await.unwrap()
+    };
 
     let mut reader = b"no\n".as_slice();
     run_nonce_command(
@@ -310,6 +367,11 @@ async fn nonce_cli_cleanup() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        count(db.clone()).await,
+        2,
+        "a declined cleanup removes nothing"
+    );
 
     let mut reader: &[u8] = &[];
     run_nonce_command(
@@ -321,6 +383,11 @@ async fn nonce_cli_cleanup() {
     )
     .await
     .unwrap();
+    assert_eq!(
+        count(db.clone()).await,
+        1,
+        "only the nonce past the configured ttl goes"
+    );
 }
 
 #[tokio::test]
@@ -386,9 +453,14 @@ async fn eab_cli_create_list_show_revoke() {
     .await
     .unwrap();
 
-    let (keys, _) = acme_proxy_store::eab::Eab::search(50, 0, &db)
+    let (keys, total) = acme_proxy_store::eab::Eab::search(50, 0, &db)
         .await
         .unwrap();
+    assert_eq!(total, 2);
+    assert!(
+        keys.iter()
+            .any(|key| key.label.as_deref() == Some("test-label"))
+    );
     let kid = keys[0].kid;
 
     run_eab_command(
@@ -431,6 +503,11 @@ async fn eab_cli_create_list_show_revoke() {
     )
     .await
     .unwrap();
+    let (keys, _) = acme_proxy_store::eab::Eab::search(50, 0, &db)
+        .await
+        .unwrap();
+    let revoked = keys.iter().find(|key| key.kid == kid).unwrap();
+    assert_eq!(revoked.status, "revoked");
 }
 
 /// `order list --expiring-in <days>`, both output branches, over a listing

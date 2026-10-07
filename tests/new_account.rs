@@ -180,6 +180,10 @@ async fn wrong_url_is_rejected() {
 
     let res = post_new_account(&app, body).await;
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:malformed"
+    );
 }
 
 #[tokio::test]
