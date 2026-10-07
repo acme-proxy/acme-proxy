@@ -119,10 +119,9 @@ pub(crate) async fn sign_in(
     let minted = mint_token();
     let csrf_token = mint_csrf_token();
     let created_ip = client.map(|ip| ip.to_string());
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    // Capped: an unauthenticated caller writes this into the session row and
+    // into the sign-in notification's durable payload.
+    let user_agent = crate::webadmin::user_agent_of(headers);
 
     let Some(step) = step else {
         let ttl = Duration::from_secs(state.config.admin.session_ttl_seconds);

@@ -547,6 +547,11 @@ migrated configuration before restarting.
 
 ### Security
 
+- **A web-admin login stores a capped `User-Agent`.** Sign-in wrote the raw
+  header into the session row and the sign-in notification's durable payload,
+  so an unauthenticated caller chose their size; `user_agent_of`'s comment
+  said the login route was capped, and it was not. Capped at the 256
+  characters the audit trail keeps.
 - **A parallel burst of admin logins no longer outruns the rate limiter.** The
   limiter read its counter before the 600 000-iteration hash and wrote it after,
   so every request of a burst from one address found the budget untouched, and

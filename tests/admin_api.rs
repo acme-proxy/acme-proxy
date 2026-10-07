@@ -201,6 +201,40 @@ async fn login_is_rate_limited_before_the_password_hash_runs() {
     );
 }
 
+/// The `User-Agent` a login stores is capped. An unauthenticated caller writes
+/// it into the session row and into the sign-in notification's durable
+/// payload, so uncapped the sender chose how large both became.
+#[tokio::test]
+async fn a_login_stores_a_capped_user_agent() {
+    let (app, database) = test_admin_app(admin_config()).await;
+    acme_proxy_admin::admin::users::create_user(
+        "alice",
+        ADMIN_PASSWORD,
+        &PasswordContext::empty(),
+        None,
+        database.clone(),
+    )
+    .await
+    .unwrap();
+
+    let request = Request::post("/api/session")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::USER_AGENT, "x".repeat(4_096))
+        .body(Body::from(
+            json!({ "username": "alice", "password": ADMIN_PASSWORD }).to_string(),
+        ))
+        .unwrap();
+    let response = send_from(&app, request, "127.0.0.1:40000").await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let sessions = AdminSession::list_all(None, &database).await.unwrap();
+    let stored = sessions[0].user_agent.as_deref().unwrap_or_default();
+    assert_eq!(
+        stored.chars().count(),
+        acme_proxy_core::audit::USER_AGENT_MAX
+    );
+}
+
 /// A burst is bounded like a sequence. The limiter used to read the counter
 /// before the hash and write it after, so every request of a parallel burst
 /// from one address found the budget untouched — as many guesses, and as many
