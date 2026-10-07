@@ -425,6 +425,109 @@ async fn disabling_an_operator_stops_their_live_session() {
     );
 }
 
+/// The guard behind the purge above. `set_status` deletes a disabled
+/// operator's sessions first, so the test above never reaches the resolver's
+/// own `is_active()` check. A row that survives — a restore from backup, a
+/// write that raced the disable — must still not authenticate a disabled
+/// operator.
+#[tokio::test]
+async fn a_surviving_session_of_a_disabled_operator_is_refused() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    sqlx::query("UPDATE admin_users SET status = 'disabled' WHERE username = 'alice'")
+        .execute(database.raw_pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        acme_proxy_store::admin_session::AdminSession::list_all(None, &database)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "precondition: the session row is still there"
+    );
+
+    let response = admin_request(&app, Method::GET, "/api/session", Some(&session), None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["error"], "session_invalid");
+}
+
+/// A session in use has its idle deadline moved. Without the touch, an
+/// operator working steadily would be signed out `session_idle_timeout_seconds`
+/// after signing in, as if they had walked away.
+#[tokio::test]
+async fn a_session_in_use_is_touched_so_it_does_not_go_idle() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let token_hash = acme_proxy_admin::webadmin::session::hash_token(&session.cookie);
+    sqlx::query("UPDATE admin_sessions SET last_seen_at = last_seen_at - 120")
+        .execute(database.raw_pool())
+        .await
+        .unwrap();
+    let backdated =
+        acme_proxy_store::admin_session::AdminSession::find_by_token_hash(&token_hash, &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seen_at;
+
+    assert_eq!(
+        admin_request(&app, Method::GET, "/api/session", Some(&session), None)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let touched =
+        acme_proxy_store::admin_session::AdminSession::find_by_token_hash(&token_hash, &database)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seen_at;
+    assert!(
+        touched >= backdated + 120,
+        "last_seen_at must advance: {backdated} -> {touched}"
+    );
+}
+
+/// `DELETE /api/session?all=true` ends every session the caller holds, not
+/// just the one asking, and — unlike a plain logout — records it, since it
+/// ends sessions the operator is not holding.
+#[tokio::test]
+async fn signing_out_everywhere_ends_every_session_and_is_audited() {
+    let (app, database, session) = test_admin_app_logged_in(admin_config()).await;
+    let other = admin_login(&app, "alice", ADMIN_PASSWORD).await;
+
+    let response = admin_request(
+        &app,
+        Method::DELETE,
+        "/api/session?all=true",
+        Some(&session),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    for handle in [&session, &other] {
+        assert_eq!(
+            admin_request(&app, Method::GET, "/api/session", Some(handle), None)
+                .await
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let query = acme_proxy_store::audit::AuditQuery {
+        limit: 50,
+        ..acme_proxy_store::audit::AuditQuery::default()
+    };
+    let (rows, _) = AuditEntry::search(&query, &database).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.event == "session_revoked")
+            .count(),
+        1,
+        "{:?}",
+        rows.iter().map(|row| &row.event).collect::<Vec<_>>()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Second factor
 // ---------------------------------------------------------------------------
