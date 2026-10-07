@@ -744,3 +744,53 @@ async fn a_process_without_the_worker_role_builds_no_backend() {
         Some(std::fs::read_to_string(dir.join("ca.pem")).unwrap())
     );
 }
+
+/// The table sweeps a generation registers follow its configuration. Nothing
+/// else notices a dropped registration: a sweep that is never registered never
+/// runs, and the table it should have pruned just grows.
+#[tokio::test]
+async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
+    use acme_proxy_jobs::jobs::{JobHandler, SweepJob};
+
+    let dir = temp_dir();
+    for retention_days in [0, 30] {
+        let mut config = config_in(dir.path(), false);
+        config.audit.retention_days = retention_days;
+        config.jobs.retention_days = retention_days;
+        let config = Arc::new(config);
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
+        let resolved = config.resolve_profiles().unwrap();
+        let (assembly, parts) = Assembly::new(
+            RoleSet::default(),
+            &resolved,
+            database.clone(),
+            queue,
+            &config,
+        )
+        .unwrap();
+
+        let generation = crate::generation::build_generation(
+            RoleSet::default(),
+            &config,
+            &resolved,
+            &assembly,
+            &parts,
+            None,
+        )
+        .unwrap();
+        let kinds = generation.job_registry.kinds();
+
+        let nonces = SweepJob::nonces(database.clone(), Duration::from_secs(60)).kind();
+        let audit = SweepJob::audit(database.clone(), 1).kind();
+        let jobs = SweepJob::jobs(database.clone(), 1).kind();
+        assert!(kinds.contains(&nonces), "always swept: {kinds:?}");
+        for kind in [audit, jobs] {
+            assert_eq!(
+                kinds.contains(&kind),
+                retention_days > 0,
+                "{kind} with retention_days = {retention_days}: {kinds:?}"
+            );
+        }
+    }
+}

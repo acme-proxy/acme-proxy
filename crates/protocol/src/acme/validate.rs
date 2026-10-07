@@ -550,6 +550,62 @@ mod tests {
         ));
     }
 
+    /// Every link of the walk from the challenge up: gone for good is
+    /// `Failed`, unreadable is `Retry`. With foreign keys off, so removing one
+    /// parent leaves the challenge row the job starts from — otherwise the
+    /// cascade takes the challenge too, and only the first link is reached.
+    #[tokio::test]
+    async fn a_vanished_parent_is_failed_and_an_unreadable_one_retried() {
+        // Literals: `sqlx::query` takes only audited, static SQL.
+        for (table, reason, delete, drop) in [
+            (
+                "authorizations",
+                "authorization",
+                "DELETE FROM authorizations;",
+                "DROP TABLE authorizations;",
+            ),
+            (
+                "orders",
+                "order",
+                "DELETE FROM orders;",
+                "DROP TABLE orders;",
+            ),
+            (
+                "accounts",
+                "account",
+                "DELETE FROM accounts;",
+                "DROP TABLE accounts;",
+            ),
+        ] {
+            for drop_table in [false, true] {
+                let database = Arc::new(Database::connect_in_memory().await.unwrap());
+                let account = account(&database).await;
+                let (_, _, challenge) = subject(&database, &account).await;
+                // Off for the drop too: SQLite's `DROP TABLE` is an implicit
+                // `DELETE`, which would cascade to the challenge.
+                let target = if drop_table { drop } else { delete };
+                for statement in ["PRAGMA foreign_keys = OFF;", target] {
+                    sqlx::query(statement)
+                        .execute(database.raw_pool())
+                        .await
+                        .unwrap();
+                }
+
+                let job = handler(&database, ChallengeRegistry::default());
+                let outcome = job.run(&row(challenge.id.to_string().as_str())).await;
+                match (drop_table, outcome) {
+                    (false, JobOutcome::Failed(why)) => {
+                        assert!(why.contains(reason), "{table}: {why}");
+                    }
+                    (true, JobOutcome::Retry(why)) => {
+                        assert!(why.contains(reason), "{table}: {why}");
+                    }
+                    (_, other) => panic!("{table}, dropped {drop_table}: {other:?}"),
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_payload_naming_no_challenge_is_failed() {
         let database = Arc::new(Database::connect_in_memory().await.unwrap());

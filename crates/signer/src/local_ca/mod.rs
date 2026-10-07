@@ -2315,6 +2315,33 @@ mod tests {
         assert!(!refresher.republish().await.unwrap());
     }
 
+    /// A stored CRL that no longer parses is read as listing nothing, which
+    /// fails safe: `republish` finds a revocation "missing" and signs a fresh
+    /// CRL from the ledger. Pinned because the opposite reading — an unparsable
+    /// CRL taken as complete — would leave every revocation off the next CRL a
+    /// relying party fetches.
+    #[tokio::test]
+    async fn a_corrupt_stored_crl_is_re_signed_from_the_ledger() {
+        let database = memory_db().await;
+        let ca = LocalCa::generate_in_memory("ecdsa-p256", 90, database.clone()).unwrap();
+        let (leaf, serial) = issued(&ca, "example.com").await;
+        ca.revoke(&leaf, Some(1)).await.unwrap();
+        assert!(lists(&served(&ca).await, &serial));
+
+        sqlx::query("UPDATE crls SET der = X'00';")
+            .execute(database.raw_pool())
+            .await
+            .unwrap();
+
+        let refresher = ca.crl_refresher().unwrap();
+        assert!(
+            refresher.republish().await.unwrap(),
+            "a CRL that does not parse must be re-signed"
+        );
+        assert!(lists(&served(&ca).await, &serial));
+        assert!(lists(&stored(&ca, &database).await.der, &serial));
+    }
+
     /// The daily refresh is the safety net for a regeneration job that never
     /// ran: a recorded revocation its CRL does not list is signed in even when
     /// nothing expired and the CRL is fresh.
