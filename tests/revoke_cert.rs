@@ -156,9 +156,26 @@ async fn revoke(app: &Router, body: String) -> Response {
     post(app, &p("/revokeCert"), body).await
 }
 
+/// What a revocation left behind, for a database holding one order: the
+/// order's `(revoked_at is set, revocation_reason)`, and the CA ledger's row
+/// count. A `200` alone would also pass for a handler that answered and wrote
+/// nothing.
+async fn stored_revocation(database: &acme_proxy_store::db::Database) -> (bool, Option<i64>, i64) {
+    let (revoked_at, reason): (Option<i64>, Option<i64>) =
+        sqlx::query_as("SELECT revoked_at, revocation_reason FROM orders")
+            .fetch_one(database.raw_pool())
+            .await
+            .unwrap();
+    let ledger: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM revocations")
+        .fetch_one(database.raw_pool())
+        .await
+        .unwrap();
+    (revoked_at.is_some(), reason, ledger)
+}
+
 #[tokio::test]
 async fn revoke_via_account_kid_with_no_reason_succeeds() {
-    let app = test_app().await;
+    let (app, database) = test_app_with_db().await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
@@ -168,11 +185,12 @@ async fn revoke_via_account_kid_with_no_reason_succeeds() {
     let body = signer.sign_kid(&account_url, REVOKE_URL, &nonce, &payload);
     let res = revoke(&app, body).await;
     assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(stored_revocation(&database).await, (true, None, 1));
 }
 
 #[tokio::test]
 async fn revoke_via_account_kid_with_a_valid_reason_succeeds() {
-    let app = test_app().await;
+    let (app, database) = test_app_with_db().await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
     let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
@@ -182,11 +200,16 @@ async fn revoke_via_account_kid_with_a_valid_reason_succeeds() {
     let body = signer.sign_kid(&account_url, REVOKE_URL, &nonce, &payload);
     let res = revoke(&app, body).await;
     assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        stored_revocation(&database).await,
+        (true, Some(1), 1),
+        "the reason the client gave is the one recorded"
+    );
 }
 
 #[tokio::test]
 async fn revoke_via_certificate_own_keypair_succeeds() {
-    let app = test_app().await;
+    let (app, database) = test_app_with_db().await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
     let (csr, cert_signer) = make_csr_and_keypair("example.com");
@@ -199,6 +222,51 @@ async fn revoke_via_certificate_own_keypair_succeeds() {
     let body = cert_signer.sign(REVOKE_URL, &nonce, &payload);
     let res = revoke(&app, body).await;
     assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(stored_revocation(&database).await, (true, None, 1));
+}
+
+/// §7.6 lets the account key sign with an embedded `jwk` as well as a `kid`;
+/// the server then finds the account by its key. This is that branch, which
+/// no other case reaches: every other account-signed revocation uses `kid`.
+#[tokio::test]
+async fn revoke_signed_by_the_account_key_as_a_jwk_succeeds() {
+    let (app, database) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
+
+    let nonce = fetch_nonce(&app).await;
+    let payload = json!({ "certificate": cert_field(&chain) });
+    let res = revoke(&app, signer.sign(REVOKE_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(stored_revocation(&database).await, (true, None, 1));
+}
+
+/// Two revocations of one certificate racing each other: exactly one wins,
+/// the other is told `alreadyRevoked`, and the CA's ledger holds one row. Two
+/// rows would list the serial twice in the next CRL; two `200`s would tell a
+/// client its reason was recorded when the other one was.
+#[tokio::test]
+async fn concurrent_revocations_of_one_certificate_record_one() {
+    let (app, database) = test_app_with_db().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let chain = issue_certificate(&app, &signer, &account_url, make_csr("example.com")).await;
+    let payload = json!({ "certificate": cert_field(&chain) });
+
+    let first = signer.sign_kid(&account_url, REVOKE_URL, &fetch_nonce(&app).await, &payload);
+    let second = signer.sign_kid(&account_url, REVOKE_URL, &fetch_nonce(&app).await, &payload);
+    let (a, b) = tokio::join!(revoke(&app, first), revoke(&app, second));
+
+    let mut statuses = [a.status(), b.status()];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::BAD_REQUEST]);
+    let loser = if a.status() == StatusCode::OK { b } else { a };
+    assert_eq!(
+        body_json(loser).await["type"],
+        "urn:ietf:params:acme:error:alreadyRevoked"
+    );
+    assert_eq!(stored_revocation(&database).await, (true, None, 1));
 }
 
 #[tokio::test]
