@@ -116,6 +116,11 @@ struct Inner {
     /// A field beside the strategy rather than inside `ChallengeStrategy::Dns01`,
     /// so a test swapping the updater keeps whatever wait was configured.
     dns01_propagation: propagation::Propagation,
+    /// The absolute record name every `dns01` challenge is published at under
+    /// alias mode (see [`dns01`]); `None` publishes at each identifier's own
+    /// name, and under every other strategy. Beside the strategy for the same
+    /// reason as `dns01_propagation`.
+    dns01_alias: Option<String>,
     poll: PollConfig,
     /// The whole `profile name -> dispatcher` map, not merely the profiles this
     /// backend relays for: a cheap clone either way, and it sidesteps keeping a
@@ -226,19 +231,33 @@ impl RelaySigner {
         // do a blocking DNS resolution, and that must stay off the caller's
         // tokio worker thread for exactly the same reason the network
         // provisioning below does.
-        let (client, account, kid, strategy) = std::thread::scope(|scope| {
+        let (client, account, kid, strategy, dns01_alias) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {
                     // Validated whether or not it is the selected strategy, for
                     // the reason `challenge::from_config` validates names
                     // before checking `bypass`: a typo must not sit unnoticed
                     // until someone switches strategies.
+                    let mut dns01_alias = None;
                     let strategy = match cfg.challenge_strategy.as_str() {
                         "bypass" => ChallengeStrategy::Bypass,
                         "dns01" => match cfg.dns01.provider.as_str() {
-                            "rfc2136" => ChallengeStrategy::Dns01(Arc::new(
-                                dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?,
-                            )),
+                            "rfc2136" => {
+                                let updater =
+                                    dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?;
+                                // An alias the key cannot write is refused now,
+                                // not at the first issuance.
+                                dns01_alias = dns01::alias_record_name(&cfg.dns01.challenge_alias)?;
+                                if let Some(alias) = &dns01_alias {
+                                    updater.check_in_zone(alias).map_err(|error| {
+                                        anyhow::anyhow!(
+                                            "signer.relay.dns01.challenge_alias cannot be \
+                                             published through rfc2136.zone: {error}"
+                                        )
+                                    })?;
+                                }
+                                ChallengeStrategy::Dns01(Arc::new(updater))
+                            }
                             other => anyhow::bail!(
                                 "unknown signer.relay.dns01.provider: {other} (supported: rfc2136)"
                             ),
@@ -281,7 +300,7 @@ impl RelaySigner {
                         .enable_all()
                         .build()?
                         .block_on(provision(cfg, outbound, poll.timeout))?;
-                    Ok((client, account, kid, strategy))
+                    Ok((client, account, kid, strategy, dns01_alias))
                 })
                 .join()
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("upstream provisioning thread panicked")))
@@ -306,6 +325,7 @@ impl RelaySigner {
             database: parts.database.clone(),
             strategy,
             dns01_propagation,
+            dns01_alias,
             poll,
             notifiers: parts.notifiers.clone(),
             audit: Arc::new(

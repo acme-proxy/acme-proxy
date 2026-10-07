@@ -572,6 +572,11 @@ hmac_key = ""                       # ACME_PROXY_SIGNER__RELAY__EAB__HMAC_KEY
 # update (BIND, PowerDNS, Knot, CoreDNS with the `update` plugin) rather than
 # tying the server to one cloud vendor's API.
 provider = "rfc2136"                # ACME_PROXY_SIGNER__RELAY__DNS01__PROVIDER
+# DNS alias mode: publish every challenge record at _acme-challenge.<alias>
+# instead of _acme-challenge.<domain>, after CNAMEing each domain's
+# _acme-challenge name there once. The alias must lie inside rfc2136.zone.
+# Empty (the default) writes in each domain's own zone.
+challenge_alias = ""                # ACME_PROXY_SIGNER__RELAY__DNS01__CHALLENGE_ALIAS
 
 [signer.relay.dns01.rfc2136]
 # host:port of the authoritative server that accepts the update.

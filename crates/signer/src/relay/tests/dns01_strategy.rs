@@ -222,6 +222,101 @@ async fn dns01_publishes_triggers_and_cleans_up() {
     assert_eq!(updater.deleted.lock().unwrap().clone(), published);
 }
 
+/// `config` selecting `dns01` through an RFC 2136 key over `zone`, with
+/// `challenge_alias` set to `alias`. Building it contacts no nameserver.
+fn aliased_config(upstream: &Upstream, dir: &TempDir, zone: &str, alias: &str) -> RelayConfig {
+    use base64::prelude::*;
+    let mut cfg = config(upstream, dir);
+    cfg.challenge_strategy = "dns01".to_string();
+    cfg.dns01.challenge_alias = alias.to_string();
+    cfg.dns01.rfc2136 = acme_proxy_core::config::Rfc2136Config {
+        server: "127.0.0.1:53".to_string(),
+        zone: zone.to_string(),
+        tsig_key_name: "acme-key.".to_string(),
+        tsig_key_secret: BASE64_STANDARD.encode(b"0123456789abcdef0123456789abcdef"),
+        tsig_algorithm: "hmac-sha256".to_string(),
+    };
+    cfg
+}
+
+/// Alias mode: the record goes to `_acme-challenge.<alias>`, not the
+/// identifier's own name, carrying the same digest — the operator's CNAME is
+/// what sends the CA there. Built through `from_config`, so the configured
+/// alias survives `with_updater` swapping only the transport.
+#[tokio::test(flavor = "multi_thread")]
+async fn dns01_publishes_at_the_alias_when_set() {
+    let upstream = testsrv::start(Script {
+        chain: real_chain().await,
+        pose_challenge: true,
+        ..Script::default()
+    })
+    .await;
+    let dir = TempDir::new("upstream");
+    let db = database().await;
+    let updater = Arc::new(StubUpdater::default());
+    let queue = test_queue(db.clone());
+    let signer = with_updater(
+        RelaySigner::from_config(
+            &aliased_config(&upstream, &dir, "acme-alias.net.", "acme-alias.net"),
+            &relay_parts(db.clone(), no_notifiers(), queue.clone()),
+        )
+        .unwrap(),
+        updater.clone(),
+    );
+    let _runner = TestRunner::start(queue, &signer);
+    let order = ready_order(db.clone()).await;
+
+    signer
+        .issue(
+            order.id.to_string().as_str(),
+            &csr_der(),
+            &identifiers(),
+            RequestedValidity::default(),
+        )
+        .await
+        .unwrap();
+    await_status(db, order.id.to_string().as_str(), OrderStatus::Valid).await;
+
+    let thumbprint =
+        acme_proxy_core::jws::signature::jwk_thumbprint(signer.0.account.spki_der()).unwrap();
+    let expected = acme_proxy_net::challenge::dns_01::expected_value(&format!(
+        "upstream-token-value.{thumbprint}"
+    ));
+    let published = updater.published.lock().unwrap().clone();
+    assert_eq!(
+        published,
+        vec![("_acme-challenge.acme-alias.net.".to_string(), expected)]
+    );
+    assert_eq!(updater.deleted.lock().unwrap().clone(), published);
+}
+
+/// An alias the update key cannot write, or that is not a usable domain,
+/// stops the server rather than failing the first issuance.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unusable_challenge_alias_is_a_startup_error() {
+    let upstream = testsrv::start(Script::default()).await;
+    let dir = TempDir::new("upstream");
+
+    for (alias, expected) in [
+        ("acme-alias.org.", "outside the zone"),
+        ("*.acme-alias.net.", "cannot be a wildcard"),
+        ("_acme-challenge.acme-alias.net.", "drop the leading"),
+    ] {
+        let error = startup_error(RelaySigner::from_config(
+            &aliased_config(&upstream, &dir, "acme-alias.net.", alias),
+            &relay_parts(
+                database().await,
+                no_notifiers(),
+                test_queue(database().await),
+            ),
+        ));
+        assert!(
+            error.contains(expected) && error.contains("challenge_alias"),
+            "{alias}: expected {expected:?} in: {error}"
+        );
+    }
+}
+
 /// Replaces the configured propagation wait on an already-built signer, the
 /// `with_updater` way — a delay short enough for a test, which configuration
 /// cannot express in whole seconds.

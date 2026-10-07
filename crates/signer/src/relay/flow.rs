@@ -615,21 +615,29 @@ async fn answer_dns01(
 
         // Name and digest come from the inbound validator's own helpers, so the
         // two directions cannot disagree about the convention.
-        let name = acme_proxy_net::challenge::dns_01::record_name(&authz.identifier.value);
+        let identifier = &authz.identifier.value;
         let key_authorization = format!("{token}.{thumbprint}");
         let value = acme_proxy_net::challenge::dns_01::expected_value(&key_authorization);
 
-        // RFC 2136 wants an absolute name.
-        let fqdn = if name.ends_with('.') {
-            name.clone()
-        } else {
-            format!("{name}.")
+        // Under alias mode the name is already absolute; otherwise RFC 2136
+        // wants it made so.
+        let (fqdn, shown) = match &inner.dns01_alias {
+            Some(alias) => (alias.clone(), format!("{alias} (alias for {identifier})")),
+            None => {
+                let name = acme_proxy_net::challenge::dns_01::record_name(identifier);
+                let fqdn = if name.ends_with('.') {
+                    name
+                } else {
+                    format!("{name}.")
+                };
+                (fqdn.clone(), fqdn)
+            }
         };
 
         // Retryable: a nameserver that refused an update, or was unreachable,
         // is the commonest transient failure on this path.
         updater.upsert_txt(&fqdn, &value).await.map_err(|error| {
-            RelayFailure::Retryable(format!("publishing {fqdn} failed: {error}"))
+            RelayFailure::Retryable(format!("publishing {shown} failed: {error}"))
         })?;
 
         // Before the trigger, never after: once the upstream looks and finds
@@ -641,7 +649,7 @@ async fn answer_dns01(
         // Cleanup is best-effort and happens whether or not validation passed:
         // a challenge record has no reason to outlive the attempt.
         if let Err(error) = updater.delete_txt(&fqdn, &value).await {
-            warn!(event = "signer_relay_dns_01_cleanup_failed", outcome = "failure", name = %fqdn, error = %error);
+            warn!(event = "signer_relay_dns_01_cleanup_failed", outcome = "failure", name = %fqdn, identifier = %identifier, error = %error);
         }
         triggered?;
     }

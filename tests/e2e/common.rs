@@ -466,6 +466,34 @@ impl Lab {
         self.exec_in(&self.dns, &script).await;
     }
 
+    /// Makes the lab's BIND authoritative for `zone` (no trailing dot),
+    /// updatable with the lab's TSIG key. Idempotent.
+    pub async fn dns_add_zone(&self, zone: &str) {
+        let setup_script = format!(
+            r#"
+            if ! grep -q 'zone "{0}"' /var/bind/lab/named.conf; then
+                echo 'zone "{0}" {{ type master; file "/var/bind/lab/{0}.zone"; allow-update {{ key "tsig-key."; }}; }};' >> /var/bind/lab/named.conf
+                printf '$TTL 60\n@ IN SOA ns.lab. admin.lab. ( 1 3600 1800 604800 60 )\n@ IN NS ns.lab.\n' > /var/bind/lab/{0}.zone
+                chown bind:bind /var/bind/lab/named.conf /var/bind/lab/{0}.zone
+                kill -HUP 1
+                sleep 1
+            fi
+        "#,
+            zone
+        );
+        self.exec_in(&self.dns, &setup_script).await;
+    }
+
+    /// Publishes `name CNAME target` (both absolute) through the lab's TSIG key.
+    pub async fn dns_add_cname(&self, name: &str, target: &str) {
+        let tsig = "-y hmac-sha256:tsig-key.:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let script = format!(
+            "printf 'server 127.0.0.1\\nupdate add {} 60 CNAME {}\\nsend\\n' | nsupdate {}",
+            name, target, tsig
+        );
+        self.exec_in(&self.dns, &script).await;
+    }
+
     pub async fn dns_add_ptr(&self, ip: &str, host: &str) {
         let parts: Vec<&str> = ip.split('.').collect();
         assert_eq!(
@@ -479,19 +507,7 @@ impl Lab {
             parts[3], parts[2], parts[1], parts[0]
         );
 
-        let setup_script = format!(
-            r#"
-            if ! grep -q 'zone "{0}"' /var/bind/lab/named.conf; then
-                echo 'zone "{0}" {{ type master; file "/var/bind/lab/{0}.zone"; allow-update {{ key "tsig-key."; }}; }};' >> /var/bind/lab/named.conf
-                printf '$TTL 60\n@ IN SOA ns.lab. admin.lab. ( 1 3600 1800 604800 60 )\n@ IN NS ns.lab.\n' > /var/bind/lab/{0}.zone
-                chown bind:bind /var/bind/lab/named.conf /var/bind/lab/{0}.zone
-                kill -HUP 1
-                sleep 1
-            fi
-        "#,
-            rev_zone
-        );
-        self.exec_in(&self.dns, &setup_script).await;
+        self.dns_add_zone(&rev_zone).await;
 
         let tsig = "-y hmac-sha256:tsig-key.:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let update_script = format!(

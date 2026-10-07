@@ -164,6 +164,107 @@ async fn test_relay_signer_dns_01() {
     );
 }
 
+/// The `dns01` strategy in DNS alias mode (#13): the update key writes only the
+/// `acme-alias` zone, the identifier lives in `lab`, and a CNAME joins them.
+/// The upstream validates by resolving `_acme-challenge.signer-alias.lab`
+/// through the CNAME, as a public CA would.
+#[tokio::test]
+#[ignore]
+async fn test_relay_signer_dns_01_alias() {
+    let lab = Lab::new_with_upstream(
+        vec![
+            ("ACME_PROXY_SIGNER__BACKEND", "relay"),
+            ("ACME_PROXY_SIGNER__RELAY__DIRECTORY_URL", "UPSTREAM_URL"),
+            (
+                "ACME_PROXY_SIGNER__RELAY__ACCOUNT_KEY_PATH",
+                "/tmp/upstream_account.key",
+            ),
+            ("ACME_PROXY_SIGNER__RELAY__CHALLENGE_STRATEGY", "dns01"),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__CHALLENGE_ALIAS",
+                "acme-alias.",
+            ),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__SERVER",
+                "DNS_SERVER_HOST:53",
+            ),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__ZONE",
+                "acme-alias.",
+            ),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_NAME",
+                "tsig-key.",
+            ),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_KEY_SECRET",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            (
+                "ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM",
+                "hmac-sha256",
+            ),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_INTERVAL_MS", "500"),
+            ("ACME_PROXY_SIGNER__RELAY__POLL_TIMEOUT_SECS", "60"),
+        ],
+        vec![
+            ("ACME_PROXY_CHALLENGE__ENABLED", "dns-01"),
+            ("ACME_PROXY_CHALLENGE__BYPASS", "false"),
+            ("ACME_PROXY_DNS__RESOLVER", "DNS_SERVER_HOST:53"),
+        ],
+    )
+    .await;
+
+    lab.dns_add_zone("acme-alias").await;
+    lab.dns_add_cname(
+        "_acme-challenge.signer-alias.lab.",
+        "_acme-challenge.acme-alias.",
+    )
+    .await;
+
+    let certbot_script = format!(
+        r#"
+        set -e
+        mkdir -p /tmp/webroot
+        certbot register \
+            --agree-tos --email test@example.com \
+            --server {0} \
+            --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
+            --non-interactive
+        certbot certonly \
+            --domains signer-alias.lab \
+            --server {0} \
+            --config-dir /tmp/certbot/config --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs \
+            --non-interactive \
+            --webroot --webroot-path /tmp/webroot
+    "#,
+        lab.proxy_url
+    );
+
+    let (success, out, err) = lab.exec_in_with_output(&lab.certbot, &certbot_script).await;
+    if !success {
+        println!("Certbot Stdout:\n{}", out);
+        println!("Certbot Stderr:\n{}", err);
+        println!("PROXY LOGS ON FAILURE:\n{}", lab.get_proxy_logs().await);
+        println!(
+            "UPSTREAM LOGS ON FAILURE:\n{}",
+            lab.get_proxy_upstream_logs().await
+        );
+        panic!("Certbot failed");
+    }
+
+    let proxy_logs = lab.get_proxy_logs().await;
+    assert!(
+        proxy_logs.contains("upstream_relay_succeeded"),
+        "the relay never completed"
+    );
+    let upstream_logs = lab.get_proxy_upstream_logs().await;
+    assert!(
+        upstream_logs.contains("challenge_dns_01_matched"),
+        "the upstream never matched the record behind the CNAME"
+    );
+}
+
 /// The relaying backend's `http01` strategy: the downstream proxy answers the
 /// upstream's own challenge from its root router, and the upstream validates it
 /// for real (`challenge.bypass = false`, `challenge.enabled = ["http-01"]`).

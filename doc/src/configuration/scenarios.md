@@ -56,6 +56,10 @@ bypass = false
 enabled = true
 ```
 
+The key above writes only inside `internal.company.com.`. For names spread over
+several zones, [DNS alias mode](../signers/relay.md#dns-alias-mode) points every
+domain's challenge at one alias zone instead of needing a profile per zone.
+
 ## Public CA relay with HTTP validation
 
 The same relay as above, for an operator who has no RFC 2136 write access to the

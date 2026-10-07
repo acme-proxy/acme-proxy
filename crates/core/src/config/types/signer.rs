@@ -150,6 +150,12 @@ pub struct RelayEabConfig {
 #[serde(default)]
 pub struct Dns01Config {
     pub provider: String,
+    /// DNS alias mode: a domain, e.g. `acme-alias.net.`, under which every
+    /// challenge record is published as `_acme-challenge.<alias>` instead of
+    /// `_acme-challenge.<identifier>`. The operator CNAMEs each
+    /// `_acme-challenge.<identifier>` there; the CA follows the CNAME. Empty
+    /// (the default) publishes at the identifier's own name.
+    pub challenge_alias: String,
     pub rfc2136: Rfc2136Config,
     pub propagation: Dns01PropagationConfig,
 }
@@ -158,6 +164,7 @@ impl Default for Dns01Config {
     fn default() -> Self {
         Self {
             provider: "rfc2136".to_string(),
+            challenge_alias: String::new(),
             rfc2136: Rfc2136Config::default(),
             propagation: Dns01PropagationConfig::default(),
         }

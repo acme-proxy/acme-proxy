@@ -311,6 +311,15 @@ migrated configuration before restarting.
   between publishing the TXT record and triggering the challenge, for a DNS
   provider that accepts an update before serving it. The default, `none`, keeps
   today's behaviour.
+- **DNS alias mode for the `dns01` relay**
+  ([#13](https://github.com/acme-proxy/acme-proxy/issues/13)):
+  `signer.relay.dns01.challenge_alias = "acme-alias.net."` publishes every
+  challenge record at `_acme-challenge.acme-alias.net.`, which the operator
+  CNAMEs each `_acme-challenge.<domain>` to. One update key over one alias zone
+  then serves names in any number of zones, instead of one profile per zone.
+  An alias outside `rfc2136.zone`, a wildcard, or a value already starting with
+  `_acme-challenge.` is refused at startup. Empty by default, which keeps
+  today's behaviour.
 
 ### Changed
 

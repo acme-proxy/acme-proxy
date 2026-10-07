@@ -76,6 +76,38 @@ TSIG (Transaction Signature) to publish the TXT record. **Note:** The TXT record
 uses the thumbprint of the proxy's upstream account key, *not* the internal
 client's key.
 
+#### DNS alias mode
+
+By default the record is written at `_acme-challenge.<domain>`, so the update
+key needs write access to every zone a profile issues for. Alias mode moves the
+record to one name in a zone set aside for it, the way acme.sh's
+`--challenge-alias` does. Delegate each domain once with a CNAME, then point
+`zone` and `challenge_alias` at the alias zone:
+
+```text
+_acme-challenge.www.example.com.  CNAME  _acme-challenge.acme-alias.net.
+_acme-challenge.api.example.org.  CNAME  _acme-challenge.acme-alias.net.
+```
+
+```toml
+[signer.relay.dns01]
+challenge_alias = "acme-alias.net."
+
+[signer.relay.dns01.rfc2136]
+zone = "acme-alias.net."
+```
+
+The CA follows the CNAME itself; nothing changes on its side. Every domain of
+the profile shares the one record name, which is safe because values are added
+and removed one by one. The alias is configured rather than found by following
+the CNAME, because this server's resolver need not see what the CA sees, and a
+record published at the wrong name invalidates the upstream authorization for
+good.
+
+Whoever can write the alias name can pass `dns-01` for every domain pointing at
+it. Domains that must not share that power belong in separate profiles, each
+with its own alias and key.
+
 ### `http01`
 The proxy answers the upstream's `http-01` challenge by serving the key
 authorization itself, from a route on its own root router at
@@ -257,6 +289,14 @@ Only consulted when `challenge_strategy = "dns01"`.
 
 DNS provider used to publish the upstream TXT record. `rfc2136` is currently the
 only implementation.
+
+**`challenge_alias`** (`String`) — *Default: `""` | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__CHALLENGE_ALIAS`*
+
+A domain, e.g. `acme-alias.net.`, under which every challenge record is
+published as `_acme-challenge.<alias>` — see [DNS alias mode](#dns-alias-mode).
+Empty publishes at each domain's own `_acme-challenge` name. The alias must lie
+inside `rfc2136.zone`; one outside it, a wildcard, or a value that already
+starts with `_acme-challenge.` is a **startup error**.
 
 ### `[signer.relay.dns01.rfc2136]`
 

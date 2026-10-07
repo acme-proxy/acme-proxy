@@ -21,6 +21,18 @@
 //! computation, and this module calls into it. Restating either would risk the
 //! publisher and the validator drifting into a record this server accepts but
 //! a real CA rejects.
+//!
+//! ## Alias mode
+//!
+//! With `challenge_alias` set, every record goes to `_acme-challenge.<alias>`
+//! and the operator CNAMEs each `_acme-challenge.<identifier>` there, so one
+//! update key over one alias zone serves names in any number of zones. The
+//! alias is configured, never discovered by following the CNAME: this server's
+//! resolver need not see what the CA sees (split horizon, an internal
+//! recursor), and publishing at the wrong name makes the upstream
+//! authorization `invalid` for good. Every authorization sharing one name is
+//! safe for the reason a wildcard and its base already are: [`DnsUpdater`]
+//! appends and retracts by value.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -143,14 +155,23 @@ impl Rfc2136Updater {
         })
     }
 
-    /// One TXT record, as the update messages want it.
-    fn txt_record(&self, name: &str, value: &str) -> Result<Record, String> {
+    /// Parses `name` and refuses it unless it lies inside the configured zone.
+    ///
+    /// The one zone test, shared by every update and by the startup check on
+    /// `challenge_alias`, so the two cannot disagree about what is inside.
+    pub fn check_in_zone(&self, name: &str) -> Result<Name, String> {
         let name =
             Name::from_utf8(name).map_err(|error| format!("{name} is not a DNS name: {error}"))?;
         // The server would answer NOTZONE anyway; refusing here says why.
         if !self.zone.zone_of(&name) {
             return Err(format!("{name} is outside the zone {}", self.zone));
         }
+        Ok(name)
+    }
+
+    /// One TXT record, as the update messages want it.
+    fn txt_record(&self, name: &str, value: &str) -> Result<Record, String> {
+        let name = self.check_in_zone(name)?;
         let mut record = Record::from_rdata(
             name,
             self.ttl,
@@ -335,6 +356,35 @@ impl DnsUpdater for Rfc2136Updater {
     }
 }
 
+/// Turns `signer.relay.dns01.challenge_alias` into the absolute record name
+/// every challenge is published at, or `None` when alias mode is off.
+///
+/// The value is a domain, not a record name: `_acme-challenge.` is prepended by
+/// the same [`acme_proxy_net::challenge::dns_01::record_name`] the unaliased
+/// path uses. A value already carrying that label is refused rather than
+/// doubled, and so is a wildcard, which no CNAME can point at.
+pub fn alias_record_name(alias: &str) -> anyhow::Result<Option<String>> {
+    let alias = alias.trim();
+    if alias.is_empty() {
+        return Ok(None);
+    }
+    let bare = alias.trim_end_matches('.');
+    if bare.starts_with('*') {
+        anyhow::bail!("signer.relay.dns01.challenge_alias ({alias}) cannot be a wildcard");
+    }
+    if bare.to_ascii_lowercase().starts_with("_acme-challenge.") {
+        anyhow::bail!(
+            "signer.relay.dns01.challenge_alias ({alias}) is a domain: drop the leading \
+             _acme-challenge., which is added to it"
+        );
+    }
+    let name = format!("{}.", acme_proxy_net::challenge::dns_01::record_name(bare));
+    Name::from_utf8(&name).map_err(|error| {
+        anyhow::anyhow!("signer.relay.dns01.challenge_alias ({alias}) is not a DNS name: {error}")
+    })?;
+    Ok(Some(name))
+}
+
 /// Maps the configured algorithm name to hickory's enum. Only the HMAC-SHA2
 /// family is offered: HMAC-MD5 is still widely configured but is not something
 /// to add a fresh deployment to.
@@ -480,6 +530,51 @@ mod tests {
                 .txt_record("_acme-challenge.WWW.Example.ORG.", "value")
                 .is_ok()
         );
+    }
+
+    /// The alias is a domain: `_acme-challenge.` is added once, the result is
+    /// absolute with or without a trailing dot, and empty means "off".
+    #[test]
+    fn an_alias_becomes_one_absolute_record_name() {
+        assert_eq!(alias_record_name("").unwrap(), None);
+        assert_eq!(alias_record_name("  ").unwrap(), None);
+        for alias in ["acme-alias.net", "acme-alias.net.", " acme-alias.net. "] {
+            assert_eq!(
+                alias_record_name(alias).unwrap().as_deref(),
+                Some("_acme-challenge.acme-alias.net."),
+                "{alias:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unusable_alias_is_refused_by_key_name() {
+        for (alias, expected) in [
+            ("*.acme-alias.net", "wildcard"),
+            ("_ACME-Challenge.acme-alias.net.", "drop the leading"),
+            ("not a dns name", "not a DNS name"),
+        ] {
+            let error = alias_record_name(alias).unwrap_err().to_string();
+            assert!(
+                error.contains("challenge_alias") && error.contains(expected),
+                "{alias:?}: {error}"
+            );
+        }
+    }
+
+    /// The zone test the startup check on the alias shares with every update.
+    #[test]
+    fn the_zone_check_is_the_updates_own() {
+        let updater = Rfc2136Updater::from_config(&config()).unwrap();
+        assert!(
+            updater
+                .check_in_zone("_acme-challenge.example.org.")
+                .is_ok()
+        );
+        let error = updater
+            .check_in_zone("_acme-challenge.example.net.")
+            .unwrap_err();
+        assert!(error.contains("outside the zone"), "{error}");
     }
 
     /// A loopback RFC 2136 responder: one UDP socket and one TCP listener on
