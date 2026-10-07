@@ -540,9 +540,7 @@ pub async fn revoke_order(
         Err(Refusal::Pending { job }) => Ok(RevokeOutcome::Queued(job)),
         Err(Refusal::Abandoned { job, reason }) => Err(RevokeError::Abandoned { job, reason }),
         // Only the ACME door refuses this way; an operator is never turned away.
-        Err(Refusal::Refused(problem)) => Err(RevokeError::Internal(
-            problem.to_value()["detail"].to_string(),
-        )),
+        Err(Refusal::Refused(problem)) => Err(RevokeError::Internal(problem.detail().to_owned())),
     }
 }
 

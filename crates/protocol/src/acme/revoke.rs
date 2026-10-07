@@ -111,7 +111,7 @@ impl Client<'_> {
 pub enum RevokeError {
     /// A refusal only the ACME path makes — an unknown certificate, a request
     /// signed by a key that may not revoke it — already audited and logged.
-    #[error("{}", .0.to_value()["detail"].as_str().unwrap_or_default())]
+    #[error("{}", .0.detail())]
     Refused(Problem),
     /// No order has that id.
     #[error("no such order")]

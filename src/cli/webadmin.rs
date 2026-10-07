@@ -300,12 +300,16 @@ async fn run_user_command(
                         )
                     })
                     .await;
-                    revoked_sessions_row(
-                        SessionScope::AllOf(user.username.clone()),
-                        revoked,
-                        &database,
-                    )
-                    .await;
+                    // Only when something was revoked, as `disable` and the
+                    // panel do: a row saying "0 sessions" records nothing.
+                    if revoked > 0 {
+                        revoked_sessions_row(
+                            SessionScope::AllOf(user.username.clone()),
+                            revoked,
+                            &database,
+                        )
+                        .await;
+                    }
                     println!(
                         "Role of {} set to {role}. Every session they held was revoked ({revoked}).",
                         user.username
@@ -370,12 +374,16 @@ async fn run_user_command(
                         None,
                     )
                     .await;
-                    revoked_sessions_row(
-                        SessionScope::AllOf(user.username.clone()),
-                        revoked,
-                        &database,
-                    )
-                    .await;
+                    // Only when something was revoked, as `disable` and the
+                    // panel do: a row saying "0 sessions" records nothing.
+                    if revoked > 0 {
+                        revoked_sessions_row(
+                            SessionScope::AllOf(user.username.clone()),
+                            revoked,
+                            &database,
+                        )
+                        .await;
+                    }
                     println!(
                         "Password changed for {}. Every session they held was revoked ({revoked}).",
                         user.username
@@ -904,6 +912,47 @@ mod tests {
                 "an operator action is not scoped to a profile"
             );
         }
+    }
+
+    /// A role change for an operator holding no session writes the role row
+    /// and nothing else — as `disable` and the panel do. A `session_revoked`
+    /// row counting zero recorded nothing.
+    #[tokio::test]
+    async fn a_role_change_with_no_session_writes_no_session_row() {
+        use acme_proxy_store::audit::AuditEntry;
+        use acme_proxy_store::audit::AuditQuery;
+
+        let db = db().await;
+        for name in ["alice", "root"] {
+            run(create(name), &format!("{GOOD}\n"), db.clone())
+                .await
+                .unwrap();
+        }
+        run(
+            AdminCommand::User {
+                command: AdminUserCommand::Role {
+                    username: "alice".to_string(),
+                    role: "operator".to_string(),
+                },
+            },
+            "",
+            db.clone(),
+        )
+        .await
+        .unwrap();
+
+        let (rows, _) = AuditEntry::search(
+            &AuditQuery {
+                limit: 50,
+                ..AuditQuery::default()
+            },
+            &db,
+        )
+        .await
+        .unwrap();
+        let events: Vec<&str> = rows.iter().map(|r| r.event.as_str()).collect();
+        assert!(events.contains(&"operator_role_changed"), "{events:?}");
+        assert!(!events.contains(&"session_revoked"), "{events:?}");
     }
 
     #[tokio::test]

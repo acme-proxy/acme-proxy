@@ -367,6 +367,14 @@ impl Problem {
         self.status
     }
 
+    /// The human-readable detail, as text — for a caller that carries a
+    /// problem into an error of its own. Reading it back out of
+    /// [`Problem::to_value`] gives a JSON string, quotes included.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
     /// Attaches the identifier this problem is about (RFC 8555 §9.7.7).
     ///
     /// Only meaningful on a problem destined to become a *subproblem*: §6.7.1
@@ -673,5 +681,14 @@ mod tests {
         let name = "evil.example.com";
         let value = Problem::rejected_identifier(format!("identifier {name} is denied")).to_value();
         assert_eq!(value["detail"], "identifier evil.example.com is denied");
+    }
+
+    /// The text itself. Reading it through `to_value()["detail"].to_string()`
+    /// — which an operator's revoke error once did — keeps the JSON quotes.
+    #[test]
+    fn detail_is_the_text_without_json_quoting() {
+        let problem = Problem::unauthorized("not \"yours\"");
+        assert_eq!(problem.detail(), "not \"yours\"");
+        assert_ne!(problem.to_value()["detail"].to_string(), problem.detail());
     }
 }

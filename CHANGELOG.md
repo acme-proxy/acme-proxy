@@ -451,6 +451,12 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **`admin user role` and `admin user passwd` write no `session_revoked` row
+  when the operator held no session**, as `admin user disable` and the panel
+  already did. A row counting zero sessions recorded nothing.
+- **An operator's revocation refused by the ACME path reports its detail
+  without JSON quotes.** The error read the detail back out of the problem
+  document, quotes included.
 - **A script hook's timeout now covers writing its JSON payload.** The write ran
   before the deadline started, so a `filter`, `ipam` or `custom` signer script
   that never read stdin held a payload larger than a pipe buffer until it
