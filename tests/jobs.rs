@@ -306,15 +306,20 @@ async fn a_dispatched_notification_is_delivered_through_the_queue() {
     until(|| delivered.load(Ordering::SeqCst) == 1).await;
 
     // Delivered exactly once, and nothing is still owed. The settle is a second
-    // write after the delivery, so the row is read after a beat rather than the
-    // instant the counter moved.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(delivered.load(Ordering::SeqCst), 1);
+    // write after the delivery, so it is waited for rather than read the
+    // instant the counter moved — a fixed beat was a race on a loaded runner.
+    for _ in 0..400 {
+        if Job::count_live("notify_deliver", &database).await.unwrap() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(
         Job::count_live("notify_deliver", &database).await.unwrap(),
         0,
         "a delivered notification leaves no live row"
     );
+    assert_eq!(delivered.load(Ordering::SeqCst), 1);
 }
 
 /// A backend counting its deliveries, so "delivered twice" is observable.

@@ -153,14 +153,19 @@ mod tests {
     /// first, which is what makes this deterministic rather than a race.
     #[tokio::test]
     async fn a_request_past_the_limit_is_shed_rather_than_queued() {
-        let app = app(Admission::new(1, 0, 10_000), 300);
+        let admission = Admission::new(1, 0, 10_000);
+        let app = app(admission.clone(), 300);
 
         let first = tokio::spawn({
             let app = app.clone();
             async move { get_slow(&app).await }
         });
-        // Let the first request take the only permit.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait until the first request actually holds the only permit. A fixed
+        // sleep here let a loaded runner send the second request first, which
+        // then took the permit and was served.
+        while admission.available() > 0 {
+            tokio::task::yield_now().await;
+        }
 
         let shed = get_slow(&app).await;
         assert_eq!(shed.status(), StatusCode::SERVICE_UNAVAILABLE);
