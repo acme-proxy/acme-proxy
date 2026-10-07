@@ -425,6 +425,95 @@ async fn an_issued_order_refuses_deactivation() {
     );
 }
 
+/// One step before issued: the order is `processing`, the issuance queued and
+/// possibly signing. Refused for the same reason, and the authorization keeps
+/// its status — the `signer_issue` job re-checks it before it signs.
+#[tokio::test]
+async fn an_order_being_issued_refuses_deactivation() {
+    let (app, _db) = common::test_app_with_signer(Arc::new(common::DelegatingSigner)).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let (order_url, authz_url) =
+        order_with_one_authz(&app, &signer, &account_url, "h.example.com").await;
+
+    let res = trigger_first_challenge(&app, &signer, &account_url, &authz_url).await;
+    assert_eq!(body_json(res).await["status"], "valid");
+    let order = read(&app, &signer, &account_url, &order_url).await;
+    let finalize_url = order["finalize"].as_str().unwrap().to_string();
+    let res = common::acme::finalize(
+        &app,
+        &signer,
+        &account_url,
+        &finalize_url,
+        &["h.example.com"],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        read(&app, &signer, &account_url, &order_url).await["status"],
+        "processing",
+        "precondition: a delegating signer leaves the order processing"
+    );
+
+    let res = deactivate(&app, &signer, &account_url, &authz_url).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("being issued"),
+        "{problem}"
+    );
+    assert_eq!(
+        read(&app, &signer, &account_url, &authz_url).await["status"],
+        "valid"
+    );
+}
+
+/// An authorization that already failed is terminal (§7.1.6): there is no
+/// ability left to relinquish, and `deactivated` would rewrite why it ended.
+#[tokio::test]
+async fn an_invalid_authorization_refuses_deactivation() {
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        challenges_with(
+            &["http-01"],
+            vec![Arc::new(StubValidator::failing("http-01", "no such file"))],
+        ),
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let (_order_url, authz_url) =
+        order_with_one_authz(&app, &signer, &account_url, "i.example.com").await;
+
+    let res = trigger_first_challenge(&app, &signer, &account_url, &authz_url).await;
+    assert_eq!(body_json(res).await["status"], "invalid");
+    assert_eq!(
+        read(&app, &signer, &account_url, &authz_url).await["status"],
+        "invalid",
+        "precondition: the failed challenge failed its authorization"
+    );
+
+    let res = deactivate(&app, &signer, &account_url, &authz_url).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let problem = body_json(res).await;
+    assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+    assert!(
+        problem["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("terminal"),
+        "{problem}"
+    );
+    assert_eq!(
+        read(&app, &signer, &account_url, &authz_url).await["status"],
+        "invalid"
+    );
+}
+
 /// §7.5.2 describes a client sending the same static object to *each*
 /// authorization of an identifier. A retry after a partial failure must not
 /// start erroring on the ones that already went through.
