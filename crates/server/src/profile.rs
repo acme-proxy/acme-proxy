@@ -185,6 +185,25 @@ mod tests {
         config
     }
 
+    /// `body` over a global `[signer.local_ca]` whose files live in `dir`.
+    ///
+    /// A `local_ca` profile left on the default paths generates `ca.pem` and
+    /// `ca.key` in the crate directory, and nextest runs every test in its own
+    /// process at once: one reads the certificate of one generation beside the
+    /// key of another, and fails only when the files were absent to begin with.
+    fn config_with_ca_in(dir: impl AsRef<std::path::Path>, body: &str) -> Config {
+        let ca = dir.as_ref().join("ca");
+        config_from(&format!(
+            r#"
+            [signer.local_ca]
+            cert_path = "{ca}.pem"
+            key_path = "{ca}.key"
+            crl_path = "{ca}.crl"
+            {body}"#,
+            ca = ca.display(),
+        ))
+    }
+
     /// A CA-material-free configuration: `local_ca` writes files at startup, so
     /// each profile gets its own throwaway directory.
     fn two_profiles_config(dir: impl AsRef<std::path::Path>) -> Config {
@@ -258,7 +277,9 @@ mod tests {
     /// with several mounted, "unknown challenge type" alone would not say where.
     #[tokio::test]
     async fn build_all_names_the_profile_a_failure_came_from() {
-        let config = config_from(
+        let dir = acme_proxy_core::testutil::TempDir::new("names");
+        let config = config_with_ca_in(
+            &dir,
             r#"
             [profiles.le]
             challenge.enabled = ["not-a-challenge"]
@@ -337,7 +358,9 @@ mod tests {
     /// independent. A configuration the old check refused must now start.
     #[tokio::test]
     async fn a_challenge_timeout_above_the_deadline_is_no_longer_refused() {
-        let config = config_from(
+        let dir = acme_proxy_core::testutil::TempDir::new("challenge");
+        let config = config_with_ca_in(
+            &dir,
             r#"
             [server]
             request_timeout_ms = 1000
@@ -359,7 +382,9 @@ mod tests {
     /// says nothing about how long this profile's requests take.
     #[tokio::test]
     async fn an_unused_custom_signer_timeout_does_not_constrain_the_deadline() {
-        let config = config_from(
+        let dir = acme_proxy_core::testutil::TempDir::new("unused");
+        let config = config_with_ca_in(
+            &dir,
             r#"
             [server]
             request_timeout_ms = 2000
