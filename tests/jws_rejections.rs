@@ -241,6 +241,11 @@ async fn an_unsupported_algorithm_is_bad_signature_algorithm_and_lists_the_suppo
         ("an alg that disagrees with the embedded key type", "RS256"),
         // An algorithm this server implements for neither key type.
         ("an algorithm nobody here implements", "ES512"),
+        // The two classic downgrades: no signature at all, and an HMAC keyed
+        // with whatever the verifier would use as the "secret". §6.2: the
+        // server "MUST NOT allow `none`" and MAC-based algorithms.
+        ("the unsigned alg", "none"),
+        ("a MAC algorithm", "HS256"),
     ] {
         let nonce = fetch_nonce(&app).await;
         let res = post(
@@ -450,4 +455,69 @@ async fn a_jws_addressed_elsewhere_is_refused_before_the_account_is_looked_up() 
             .contains("URL"),
         "expected the url check to refuse first, got {problem}"
     );
+}
+
+/// A request whose protected header lacks one of the two members RFC 8555
+/// §6.4/§6.5 make mandatory is `malformed`, and reaches no handler. Not
+/// `badNonce` for the missing nonce: that type asks the client to retry with a
+/// fresh one, and a client that sends none will send none again. §6.5 answers
+/// a nonce that cannot be decoded as `malformed` too.
+#[tokio::test]
+async fn a_protected_header_without_its_nonce_or_url_is_refused() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let payload = BASE64_URL_SAFE_NO_PAD.encode(b"{\"termsOfServiceAgreed\":true}");
+
+    let nonce = fetch_nonce(&app).await;
+    for (name, protected, typ) in [
+        (
+            "no nonce",
+            json!({ "alg": "ES256", "jwk": signer.jwk(), "url": NEW_ACCOUNT_URL }),
+            "urn:ietf:params:acme:error:malformed",
+        ),
+        (
+            "no url",
+            json!({ "alg": "ES256", "jwk": signer.jwk(), "nonce": nonce }),
+            "urn:ietf:params:acme:error:malformed",
+        ),
+    ] {
+        let protected_b64 = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(&protected).unwrap());
+        let sig = signer.sign_input(format!("{protected_b64}.{payload}").as_bytes());
+        let res = post(&app, flattened_jws(&protected_b64, &payload, &sig)).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{name}");
+        assert_eq!(body_json(res).await["type"], typ, "{name}");
+    }
+}
+
+/// The core of `kid` authentication: the account a `kid` names is only the
+/// signer when the signature verifies under **that account's** key. A request
+/// naming account A and signed by key B — a perfectly valid signature, by the
+/// wrong key — must be refused, and must not touch A.
+#[tokio::test]
+async fn a_kid_signed_by_another_key_is_refused() {
+    let app = test_app().await;
+    let owner = EcSigner::new();
+    let owner_url = common::acme::register(&app, &owner).await;
+    let intruder = EcSigner::new();
+
+    let nonce = fetch_nonce(&app).await;
+    let new_order = "http://localhost:3000/profile/default/newOrder";
+    let body = intruder.sign_kid(
+        &owner_url,
+        new_order,
+        &nonce,
+        &json!({ "identifiers": [{ "type": "dns", "value": "example.com" }] }),
+    );
+    let res = common::acme::post(&app, &p("/newOrder"), body).await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    let problem = body_json(res).await;
+    assert_eq!(
+        problem["type"], "urn:ietf:params:acme:error:unauthorized",
+        "{problem}"
+    );
+
+    // And nothing was created under the account the intruder named.
+    let orders_url = format!("{owner_url}/orders");
+    let orders = common::acme::post_as_get(&app, &owner, &owner_url, &orders_url).await;
+    assert_eq!(orders["orders"], json!([]), "{orders}");
 }
