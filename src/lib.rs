@@ -30,7 +30,8 @@
 //!   an upstream blip is retried rather than invalidating a client's order
 //! - Configuration reload on `SIGHUP` — a rebuild and a swap, with
 //!   `database.url` the only key that still needs a restart
-//! - `SQLite` persistence for accounts, nonces, orders and the audit trail
+//! - `SQLite` or `PostgreSQL` persistence for accounts, nonces, orders and the
+//!   audit trail, and `acme-proxy transfer` to move between them
 //! - Configurable via TOML, environment variables, or defaults
 //!
 //! ## Architecture
@@ -41,8 +42,8 @@
 //! - [`acme_proxy_core`] - Configuration, the ACME wire types (identifiers,
 //!   JWS, problem documents, routes), certificate parsing, EAB and key-change
 //!   verification, and the audit trail's vocabulary
-//! - [`acme_proxy_store`] - The SQLite storage layer, one module per table, and
-//!   the embedded migrations
+//! - [`acme_proxy_store`] - The storage layer over `SQLite` or `PostgreSQL`, one
+//!   module per table, and both embedded migration sets
 //! - [`acme_proxy_net`] - DNS, outbound HTTP and forward proxies, TLS, the
 //!   listeners, and the challenge validators (http-01, dns-01, tls-alpn-01)
 //! - [`acme_proxy_policy`] - The filter engine (who may ask for what) and the

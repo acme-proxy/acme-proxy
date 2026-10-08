@@ -20,11 +20,12 @@
 //! without typing anything. `handlers::account::change_password` already made
 //! exactly this choice for its own ASVS V6.2.3 reason.
 //!
-//! The tail of every mutation — the write, the audit row, the log line and the
-//! notification — is [`apply_operator_action`], shared with the `/ui` twin
-//! (`crate::webadmin::pages::operators`). Only the extractors, the `surface`
-//! field and the response shape differ between the two, and writing that tail
-//! out twice is what let `/ui` drift away from `/api` before.
+//! The tail of every mutation is [`apply_operator_action`], shared with the
+//! `/ui` twin (`crate::webadmin::pages::operators`): it calls
+//! `crate::admin::changes`, which owns the write, the audit rows, the
+//! revoked-sessions row and the notification for the CLI as well, and adds
+//! the web surface's log line. Only the extractors, the `surface` field and
+//! the response shape differ between `/api` and `/ui`.
 //!
 //! `create`/`passwd` are deliberately absent, on both this surface and the
 //! page it backs: those mint a credential, which is where "no sign-up page"
@@ -317,15 +318,15 @@ pub(crate) enum OperatorAction<'a> {
     SetRole { role: AdminRole },
 }
 
-/// Performs `action` and everything that owes: the write, the audit row(s), the
-/// log line, and — where a credential of the operator's changed — the
-/// notification to them.
+/// Performs `action` through `crate::admin::changes`, which owns the write,
+/// the audit row(s) and — where a credential of the operator's changed — the
+/// notification to them, and adds the web surface's log line.
 ///
-/// Shared by `/api` and `/ui` so a row or a notification cannot be written on
-/// one surface and forgotten on the other, which is what happened while each
-/// spelled this tail out for itself. The caller has already resolved `target`,
-/// refused a self-target and re-proved its own password; `surface` is the only
-/// thing it contributes here.
+/// Shared by `/api` and `/ui`, as `changes` is shared with the CLI, so a row or
+/// a notification cannot be written on one surface and forgotten on another,
+/// which is what happened while each spelled this tail out for itself. The
+/// caller has already resolved `target`, refused a self-target and re-proved
+/// its own password; `surface` is the only thing it contributes here.
 ///
 /// `target` is updated in place, so the page front end re-renders its card from
 /// it rather than reading the row back.

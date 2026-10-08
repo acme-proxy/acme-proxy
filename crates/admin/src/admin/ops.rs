@@ -497,17 +497,16 @@ pub async fn deactivate_account(
 /// agnostic — it is the same reason the destructive operations come in a bare
 /// and a `confirm_*` form.
 ///
-/// `revoker` is what withdraws the trust — for every front end,
-/// [`Revoker::for_route`](acme_proxy_protocol::acme::revoke::Revoker::for_route): a local
-/// CA's ledger, or the queue a worker drains. Neither front end holds a
+/// `revocations` carries the database, the auditor, the order's profile's
+/// dispatcher and the revoker. The revoker is what withdraws the trust — for
+/// every front end,
+/// [`Revoker::for_route`](acme_proxy_protocol::acme::revoke::Revoker::for_route):
+/// a local CA's ledger, or the queue a worker drains. Neither front end holds a
 /// backend.
 ///
 /// The operation itself is [`acme_proxy_protocol::acme::revoke::Revocations::revoke_order`],
 /// the same tail `POST /revokeCert` runs; this wrapper only sorts its answers
-/// into the outcomes an operator front end reports. `notify` is the order's
-/// profile's dispatcher, where there is one: the `certificate_revoked`
-/// notification is about the certificate, so it goes out however it was
-/// revoked.
+/// into the outcomes an operator front end reports.
 pub async fn revoke_order(
     id: &str,
     reason: Option<u32>,

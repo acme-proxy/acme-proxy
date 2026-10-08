@@ -470,7 +470,7 @@ mod frozen_tests {
     /// come back `Ok` (nothing changed as far as the table can see) or name some
     /// *other* key. Both are failures, so this is the completeness check as well
     /// as the naming one — a key added to `FROZEN` with no row here is caught by
-    /// `the_table_and_this_suite_cover_the_same_keys` below.
+    /// the comparison of the two key sets at the end.
     #[test]
     fn every_frozen_key_is_refused_by_its_own_name() {
         #[allow(clippy::type_complexity)]

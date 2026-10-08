@@ -56,7 +56,7 @@ use uuid::Uuid;
 /// A fresh row id.
 ///
 /// The single place the version is chosen, which is what lets
-/// `declared_id_widths_match_a_minted_id` (`crate::db`) pin it and what
+/// `every_id_column_is_declared_a_blob` (`crate::db`) pin it and what
 /// would make a move to some later version one line plus one test.
 #[must_use]
 pub fn mint() -> Uuid {

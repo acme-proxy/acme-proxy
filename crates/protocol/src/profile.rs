@@ -51,8 +51,7 @@ pub struct Profile {
 ///
 /// A struct because [`Profile::new`] took nine positional parameters, four of
 /// them `Arc<dyn …>` or config sections that a reader has to count commas to
-/// tell apart. It also retires the crate's last
-/// `#[allow(clippy::too_many_arguments)]`.
+/// tell apart.
 ///
 /// `name` and `base_url` stay positional: they are what the constructor
 /// *derives* from rather than stores, and keeping them out of here is what

@@ -42,8 +42,9 @@
 //! is shaped for the backends that do. Like `filter::Check`, it needs
 //! `#[async_trait]`: `Arc<dyn SignerBackend>` with an `async fn` is not dyn-safe.
 //!
-//! Construction stays synchronous: [`from_config`] runs once at startup, where a
-//! failure is fatal anyway.
+//! Construction stays synchronous: [`from_config`] runs at startup, and again
+//! for a backend a reload rebuilds (see below), where a failure is fatal to the
+//! process or to the reload anyway.
 //!
 //! ## Certificate validity is a backend policy
 //!

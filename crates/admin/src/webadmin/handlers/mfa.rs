@@ -297,8 +297,8 @@ mod actions {
 }
 
 /// The four shared writes as the pages side calls them, with `Origin` spelled
-/// out: a page handler holds the address and the User-Agent as two values and
-/// has no reason to know the shape this module packs them into.
+/// out: a page handler holds the client address as a plain value and has no
+/// reason to know the shape this module packs it into.
 pub(crate) async fn begin_totp_for(
     state: &AdminState,
     user: &mut acme_proxy_store::admin_user::AdminUser,

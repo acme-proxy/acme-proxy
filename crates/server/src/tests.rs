@@ -149,9 +149,9 @@ async fn a_cleartext_server_answers_then_shuts_down() {
         .expect("a clean shutdown is not an error");
 }
 
-/// The same path with `server.tls.enabled`, which swaps the listener
-/// for a `TlsListener` — a different `axum::serve` arm, and the only
-/// place `TlsListener::spawn` is wired up in production.
+/// The same path with `server.tls.enabled`, which makes the ACME role's
+/// `RoleSocket` hand `axum::serve` TLS connections instead of cleartext ones —
+/// the only way to know the handshake is really wired up in production.
 #[tokio::test]
 async fn a_tls_server_answers_over_a_real_handshake() {
     use tokio_rustls::TlsConnector;
@@ -330,11 +330,10 @@ async fn metrics_disabled_binds_nothing() {
 ///
 /// `[server.tls]` and `[admin.tls]` are separate settings with separate
 /// certificate paths, on purpose — the two listeners answer to
-/// different names — and they go through separate `axum::serve` arms in
-/// `serve_admin`. `a_tls_server_answers_over_a_real_handshake` covers
-/// the ACME one; this one was the only `TlsListener::spawn` call site
-/// in the crate with no test at all, which for the listener that
-/// carries an operator's session cookie is the wrong one to miss.
+/// different names — and each role's `RoleSocket` is handed its own.
+/// `a_tls_server_answers_over_a_real_handshake` covers the ACME one; this
+/// is the admin one, which for the listener that carries an operator's
+/// session cookie is the wrong one to leave untested.
 #[tokio::test]
 async fn the_admin_listener_answers_over_its_own_tls() {
     use tokio_rustls::TlsConnector;

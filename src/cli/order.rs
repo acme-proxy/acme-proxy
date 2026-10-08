@@ -409,9 +409,9 @@ async fn run_list(
 ///
 /// A branch rather than a sibling subcommand because it is still "list orders",
 /// asked with a different filter -- but it is a different *query*
-/// (`Order::find_expiring`, ordered by expiry rather than by age) with its own
-/// fixed status set, so the two filters that cannot mean anything here are
-/// refused instead of ignored.
+/// (`acme_proxy_store::expiring::list_expiring`, ordered by expiry rather than
+/// by age) with its own fixed status set. The plain listing's filters that
+/// cannot mean anything here are refused by [`run_list`] before it gets here.
 ///
 /// Paged like the rest of `order list`, and reporting `hidden` beside the total
 /// exactly as `GET /api/expiring` does -- `total` counts the *window*, not the

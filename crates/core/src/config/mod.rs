@@ -12,7 +12,7 @@ pub use types::*;
 /// The eight sections a profile can carry (`signer`, `filter`, `ipam`,
 /// `challenge`, `eab`, `order`, `notify`, `meta`) are kept here as the **base
 /// every profile inherits**; nothing serves them directly. The rest (`database`, `server`,
-/// `admin`, `nonce`, `audit`, `jobs`, `logging`, `dns`, `proxy`) is process-wide and has no
+/// `admin`, `nonce`, `audit`, `jobs`, `metrics`, `logging`, `dns`, `proxy`) is process-wide and has no
 /// per-profile form — an operator of the web admin manages every endpoint this process
 /// serves, so `admin` in particular has no per-profile meaning, `audit`
 /// records one trail for the whole CA, and `jobs` drains one queue.

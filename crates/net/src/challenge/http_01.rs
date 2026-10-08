@@ -746,7 +746,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        /// Every test here targets `127.0.0.1` literally, so `resolve_first`
+        /// Every test here targets `127.0.0.1` literally, so `dns::connect`
         /// short-circuits before ever asking a resolver anything.
         struct UnreachableResolver;
 

@@ -172,7 +172,7 @@ impl Default for WebhookNotifyConfig {
     }
 }
 /// Configuration for one named `custom` notify script/webhook — the
-/// notify-side counterpart of `CustomFilterConfig`/`CustomSignerConfig`.
+/// notify-side counterpart of a `custom` filter check and `CustomSignerConfig`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CustomNotifyConfig {

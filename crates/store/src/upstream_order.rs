@@ -1,9 +1,9 @@
 //! The mapping between a local order and the order the `relay` signer
 //! backend opened for it at the upstream CA.
 //!
-//! Kept in SQLite alongside the rest of the data model rather than in a
-//! sidecar file the way `signer::local_ca`'s revocation ledger is:
-//! this state *is* per-order, so it belongs with the orders.
+//! Kept in the database alongside the rest of the data model, as
+//! `signer::local_ca`'s revocation ledger now is too: this state *is*
+//! per-order, so it belongs with the orders.
 //!
 //! ## Methods
 //!

@@ -357,9 +357,10 @@ impl crate::admin::changes::OperatorTrail for WebTrail<'_> {
     }
 }
 
-/// The `User-Agent` header as an owned string, for the security-notification
-/// payloads. Its own function so the ~5 credential-change call sites spell it
-/// one way.
+/// The `User-Agent` header as an owned string, capped at
+/// [`USER_AGENT_MAX`](acme_proxy_core::audit::USER_AGENT_MAX), for the sign-in
+/// notification. Every other credential change reads it from the request's
+/// `RequestContext`, which caps it the same way.
 pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::USER_AGENT)

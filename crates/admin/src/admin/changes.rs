@@ -1,6 +1,6 @@
-//! An operator changed by another operator: each change with everything it
-//! owes — the write, the audit rows, the message — in one function both front
-//! ends call.
+//! A change to an operator — by another operator, or, for the contact
+//! address, by themselves: each change with everything it owes — the write,
+//! the audit rows, the message — in one function both front ends call.
 //!
 //! The CLI and the web admin each used to spell these four as "apply → audit →
 //! revoked-sessions row → notify", and the copies had drifted twice over: the

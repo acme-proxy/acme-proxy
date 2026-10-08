@@ -1,5 +1,5 @@
-//! Persistence: one module per table, over `sqlx` and SQLite — acme-proxy's
-//! storage layer, below everything that reads or writes a row. An internal
+//! Persistence: one module per table, over `sqlx` and SQLite or PostgreSQL —
+//! acme-proxy's storage layer, below everything that reads or writes a row. An internal
 //! crate of the `acme-proxy` binary, published in lockstep with it and with no
 //! semver promise of its own.
 //!

@@ -11,8 +11,9 @@
 //!   when `[admin]` is enabled.
 //! - [`serve_on_with`] does everything else — profile resolution, deduplicated
 //!   signer backends, per-profile filters and validators, TLS, the job registry
-//!   (every signer's handlers, notification delivery and the four table sweeps),
-//!   the runner draining it, and `axum::serve` with connect info attached.
+//!   (every signer's handlers, notification delivery and the six table sweeps,
+//!   built by `generation::job_registry_for`), the runner draining it, and
+//!   `axum::serve` with connect info attached.
 //!
 //! That assembly is [`generation::build_generation`], and it is called again on
 //! every reload rather than only at startup — so the two cannot drift, and a
@@ -25,6 +26,8 @@
 //! - [`generation`] — one generation built, then published: the reload policy.
 //! - [`supervisor`] — the task that serialises reloads.
 //! - [`sockets`] — the three listeners' binds, plans and announcements.
+//! - [`roles`] — which of `acme`, `admin` and `worker` this process runs.
+//! - [`logging`] — the subscriber `serve` installs, and its reloadable filter.
 //!
 //! What it serves sits below it: the endpoint itself is
 //! [`acme_proxy_protocol::profile::Profile`], and the routers each listener serves, with
@@ -524,9 +527,10 @@ pub(crate) async fn store_first_crls(signers: &acme_proxy_signer::SignerSet) {
 }
 
 /// **The `worker` role owns the schema.** Every other role checks and stops by
-/// name, which is what removes the startup race: `SQLite` gives `sqlx` no
+/// name, which is what removes the startup race: on `SQLite` `sqlx` takes no
 /// migration lock, so two processes that both ran `MIGRATOR::run` could
-/// interleave. Naming `acme-proxy migrate` in the refusal also means a split
+/// interleave. (`PostgreSQL`'s advisory lock would serialize them, but a
+/// process that is not the worker still has no business changing the schema.) Naming `acme-proxy migrate` in the refusal also means a split
 /// deployment fails at the process that started too early rather than later, as
 /// a missing table in a request.
 ///

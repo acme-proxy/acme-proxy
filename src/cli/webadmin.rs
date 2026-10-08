@@ -651,8 +651,9 @@ async fn run_session_command(
 }
 
 /// Records a `session_revoked` audit row for a host-CLI action that ended
-/// sessions -- `admin session revoke`, and the implicit revoke a `passwd`,
-/// `role` or `disable` change carries.
+/// sessions -- `admin session revoke`, and the implicit revoke a `passwd`
+/// carries. A `role` or `disable` change writes its own, through
+/// `admin::changes`.
 ///
 /// `count` is how many actually went: on the plural scopes the sentence alone
 /// cannot tell forty live cookies from none, which is what an operator reading

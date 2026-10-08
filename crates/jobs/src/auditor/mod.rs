@@ -235,7 +235,7 @@ impl Auditor {
 /// request — would turn a certificate this CA has already signed into a 500 the
 /// client retries, issuing a second one, which is a worse outcome for the same
 /// underlying fault. It is also nearly unreachable in practice: this is the
-/// same SQLite file the order was just written to, so a failure here means the
+/// same database the order was just written to, so a failure here means the
 /// write that preceded it had already failed. The `error!` carries the record's
 /// identifying fields, so the trail survives in the log even when the table did
 /// not get it.

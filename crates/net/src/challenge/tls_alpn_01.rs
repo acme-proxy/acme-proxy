@@ -657,7 +657,7 @@ mod tests {
         use tokio::net::TcpListener;
         use tokio_rustls::TlsAcceptor;
 
-        /// Every test here targets `127.0.0.1` literally, so `resolve_first`
+        /// Every test here targets `127.0.0.1` literally, so `dns::connect`
         /// short-circuits before ever asking a resolver anything.
         struct UnreachableResolver;
 

@@ -408,9 +408,10 @@ pub struct RequestContext {
 /// attacker-controlled and ends up in a database column and an HTML page, so it
 /// gets a ceiling rather than trust.
 ///
-/// `pub(crate)` for `webadmin::user_agent_of`, which caps the *same* header on
-/// the way into a notification payload. One constant, so the two answers to
-/// "how much of this do we keep?" cannot drift.
+/// Public because the web admin's sign-in path (`webadmin::user_agent_of`)
+/// caps the *same* header on the way into a notification payload, and
+/// `middlewares::access` borrows the reasoning for `x-request-id`. One
+/// constant, so the answers to "how much of this do we keep?" cannot drift.
 pub const USER_AGENT_MAX: usize = 256;
 
 impl RequestContext {

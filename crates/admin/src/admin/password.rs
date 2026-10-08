@@ -383,9 +383,8 @@ pub const RECOVERY_ITERATIONS: u32 = 10_000;
 /// choose a cost, only to pick one of the two named above.
 fn hash_with_iterations(password: &str, iterations: u32) -> String {
     let mut salt = [0u8; SALT_LEN];
-    // Same trade-off as `acme_proxy_store::eab::generate_secret` and
-    // `authz::generate_token`: an unavailable system RNG is unrecoverable, and
-    // threading the error out would only move the panic.
+    // Same trade-off as `acme_proxy_core::random`: an unavailable system RNG
+    // is unrecoverable, and threading the error out would only move the panic.
     SystemRandom::new()
         .fill(&mut salt)
         .expect("system RNG unavailable");

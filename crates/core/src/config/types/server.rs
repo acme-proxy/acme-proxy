@@ -43,10 +43,12 @@ pub struct ServerConfig {
     /// to absorb a burst, short enough that the queue behind the limit can never
     /// grow deeper than this in time.
     pub admission_wait_ms: u64,
-    /// A whole-request deadline. Must exceed every hook the server runs *inside*
-    /// a request — `challenge.timeout_ms` and `signer.custom.timeout_ms` — or a
-    /// validation still in progress is cut off and reported as a server failure;
-    /// `server::profile::build_all` refuses to start if it does not.
+    /// A whole-request deadline. Must exceed every hook the server still runs
+    /// *inside* a request, or work still in progress is cut off and reported as a
+    /// server failure. Challenge validation runs in the job queue, so that is
+    /// `signer.custom.timeout_ms` while a custom signer answers `GET /crl` or
+    /// renewal information; `server::profile::check_request_timeout` refuses to
+    /// start if it does not.
     pub request_timeout_ms: u64,
     /// Largest request body accepted. An ACME body is a JWS carrying at most a
     /// CSR, i.e. kilobytes; axum's implicit default is 2 MiB.

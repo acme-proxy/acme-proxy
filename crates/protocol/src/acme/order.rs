@@ -936,7 +936,10 @@ impl OrderService<'_> {
 /// before the other's write landed: neither would see a complete set, and
 /// neither would promote. Reading inside the transaction that just wrote means
 /// SQLite serializes the two writers, and whichever commits second is the one
-/// that sees them all `valid`.
+/// that sees them all `valid`. **PostgreSQL does not**: under its default READ
+/// COMMITTED isolation the two transactions lock different authorization rows,
+/// and each read sees only its own uncommitted write, so the race above is
+/// still open there.
 async fn commit_validation(
     challenge: &mut Challenge,
     authz: &mut Authorization,

@@ -5,8 +5,8 @@
 //! surfaces that are pure verification ([`eab`], [`key_change`]), certificate
 //! parsing ([`cert`]), the audit trail's vocabulary ([`audit`]), where a
 //! request came from ([`client`]), and the small shared helpers
-//! ([`logfields`], [`palette`], [`pemfile`], [`random`], [`script_hook`],
-//! [`templating`]).
+//! ([`datetime`], [`logfields`], [`palette`], [`pemfile`], [`random`],
+//! [`script_hook`], [`templating`]).
 //!
 //! Nothing here opens a database, dials a network or knows a signer; the
 //! crates that do are built on it. An internal crate of the `acme-proxy`
