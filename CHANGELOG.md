@@ -7,8 +7,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Compatibility
 
 **Before 1.0.0, the database schema is the only compatibility guarantee.**
-`crates/store/migrations/` is append-only: a schema change is a new migration
-file, never an edit to a committed one. Upgrading is therefore just starting the new binary
+`crates/store/migrations/` and `crates/store/migrations-postgres/` are
+append-only: a schema change is a new migration file in each, never an edit to a
+committed one. Upgrading is therefore just starting the new binary
 against the existing database — there is no dump/restore step, and no upgrade
 procedure beyond replacing the binary.
 
@@ -33,6 +34,11 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **`[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]` and
+  `[filter.custom.<name>]` are refused by name at startup.** They were replaced
+  by `[filter.check.<name>]` entries when `[filter]` became a policy, but a
+  configuration still carrying them was silently ignored rather than refused as
+  the book said. Move each table's keys onto a check of that `type`.
 - **Every request but `newAccount` and `revokeCert` must be signed with `kid`**
   (RFC 8555 §6.2), plus the two resources a client may POST-as-GET before it
   has an account, `directory` and `newNonce`. An embedded `jwk` elsewhere —

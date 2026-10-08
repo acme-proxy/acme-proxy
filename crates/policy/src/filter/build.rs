@@ -426,6 +426,23 @@ fn refuse_removed_keys(cfg: &FilterConfig) -> anyhow::Result<()> {
          so each script is a [filter.check.<name>] with type = \"custom\", and filter.rules \
          already says which run and in what order."
     );
+    for (table, present) in [
+        ("allowed_ip", cfg.allowed_ip.is_some()),
+        ("reverse_dns", cfg.reverse_dns.is_some()),
+        ("identifiers", cfg.identifiers.is_some()),
+    ] {
+        anyhow::ensure!(
+            !present,
+            "[filter.{table}] is no longer a section: its keys move onto a \
+             [filter.check.<name>] with type = \"{table}\", named by a [filter.rule.<name>] \
+             listed in filter.rules."
+        );
+    }
+    anyhow::ensure!(
+        cfg.custom.is_none(),
+        "[filter.custom.<name>] is no longer a section: each script is a \
+         [filter.check.<name>] with type = \"custom\" and the same keys."
+    );
     Ok(())
 }
 
@@ -622,6 +639,7 @@ mod tests {
     use acme_proxy_core::config::IpamConfig;
     use acme_proxy_core::testutil::TempDir;
     use acme_proxy_core::testutil::write_script;
+    use serde::de::IgnoredAny;
 
     fn no_ipam() -> Option<Arc<IpamRegistry>> {
         None
@@ -1174,6 +1192,26 @@ mod tests {
                 |cfg| cfg.custom_enabled = vec!["hook".to_string()],
                 "filter.custom_enabled",
                 "ordinary check type",
+            ),
+            (
+                |cfg| cfg.allowed_ip = Some(IgnoredAny),
+                "[filter.allowed_ip]",
+                "type = \"allowed_ip\"",
+            ),
+            (
+                |cfg| cfg.reverse_dns = Some(IgnoredAny),
+                "[filter.reverse_dns]",
+                "type = \"reverse_dns\"",
+            ),
+            (
+                |cfg| cfg.identifiers = Some(IgnoredAny),
+                "[filter.identifiers]",
+                "type = \"identifiers\"",
+            ),
+            (
+                |cfg| cfg.custom = Some(IgnoredAny),
+                "[filter.custom.<name>]",
+                "type = \"custom\"",
             ),
         ];
 

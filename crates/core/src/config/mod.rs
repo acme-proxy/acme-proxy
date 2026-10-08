@@ -352,6 +352,34 @@ mod tests {
         Config::load().expect("the configuration must load")
     }
 
+    /// The removed `[filter]` sub-tables have to land somewhere, or the
+    /// `config` crate drops them and `filter::build` never sees them to refuse.
+    #[test]
+    fn the_removed_filter_sub_tables_still_parse() {
+        let config = load_toml(
+            r#"
+            [filter.allowed_ip]
+            allow = ["10.0.0.0/8"]
+
+            [filter.reverse_dns]
+            suffixes = ["example.com"]
+
+            [filter.identifiers]
+            allow = ["*.example.com"]
+
+            [filter.custom.hook]
+            command = "/bin/true"
+
+            [profiles.le]
+            "#,
+        );
+
+        assert!(config.filter.allowed_ip.is_some());
+        assert!(config.filter.reverse_dns.is_some());
+        assert!(config.filter.identifiers.is_some());
+        assert!(config.filter.custom.is_some());
+    }
+
     #[test]
     fn a_bare_profile_table_inherits_every_global_section() {
         let config = load_toml(
@@ -985,6 +1013,10 @@ mod tests {
         assert!(config.filter.enabled.is_empty());
         assert!(config.filter.exempt_paths.is_empty());
         assert!(config.filter.custom_enabled.is_empty());
+        assert!(config.filter.allowed_ip.is_none());
+        assert!(config.filter.reverse_dns.is_none());
+        assert!(config.filter.identifiers.is_none());
+        assert!(config.filter.custom.is_none());
         assert!(!config.eab.enabled);
         assert!(config.notify.enabled.is_empty());
         assert!(config.notify.custom_enabled.is_empty());

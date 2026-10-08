@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use super::string_list;
 
@@ -72,6 +73,17 @@ pub struct FilterConfig {
     /// says which run and in what order. See `enabled`.
     #[serde(deserialize_with = "string_list")]
     pub custom_enabled: Vec<String>,
+    /// Removed: the type's keys move onto a `[filter.check.<name>]` with
+    /// `type = "allowed_ip"`. Its contents are never read, only its presence.
+    /// See `enabled`.
+    pub allowed_ip: Option<IgnoredAny>,
+    /// Removed: a `type = "reverse_dns"` check. See `allowed_ip`.
+    pub reverse_dns: Option<IgnoredAny>,
+    /// Removed: a `type = "identifiers"` check. See `allowed_ip`.
+    pub identifiers: Option<IgnoredAny>,
+    /// Removed: each `[filter.custom.<name>]` is a `type = "custom"` check.
+    /// See `allowed_ip`.
+    pub custom: Option<IgnoredAny>,
 }
 
 impl Default for FilterConfig {
@@ -89,6 +101,10 @@ impl Default for FilterConfig {
             enabled: Vec::new(),
             exempt_paths: Vec::new(),
             custom_enabled: Vec::new(),
+            allowed_ip: None,
+            reverse_dns: None,
+            identifiers: None,
+            custom: None,
         }
     }
 }
