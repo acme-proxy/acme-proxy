@@ -356,7 +356,7 @@ impl Collector for PoolConnections {
         let idle = i64::try_from(stats.idle).unwrap_or(i64::MAX);
         let mut metric = encoder.encode_descriptor(
             "database_pool_connections",
-            "Connections in the SQLite pool.",
+            "Connections in the database pool.",
             None,
             MetricType::Gauge,
         )?;

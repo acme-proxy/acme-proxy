@@ -21,12 +21,12 @@ editing, as one line each. The reasoning is elsewhere, in exactly one place:
 
 | Crate (`crates/<dir>`) | Modules | Depends on |
 |---|---|---|
-| `acme-proxy-core` (`core`) | `audit` (the vocabulary), `cert`, `client`, `config`, `eab`, `error`, `identifier`, `jws`, `key_change`, `logfields`, `palette`, `pemfile`, `random`, `routes`, `script_hook`, `templating` | — |
+| `acme-proxy-core` (`core`) | `audit` (the vocabulary), `cert`, `client`, `config`, `datetime`, `eab`, `error`, `identifier`, `jws`, `key_change`, `logfields`, `palette`, `pemfile`, `random`, `routes`, `script_hook`, `templating` | — |
 | `acme-proxy-store` (`store`) | one module per table, **at the crate root** (`acme_proxy_store::order::Order`), plus `sql` (the dialect seam), `migrations/` and `migrations-postgres/` | core |
 | `acme-proxy-net` (`net`) | `challenge`, `dns`, `egress`, `http_client`, `listener`, `proxy`, `tls` | core |
 | `acme-proxy-policy` (`policy`) | `filter`, `ipam` | core, net |
 | `acme-proxy-jobs` (`jobs`) | `auditor`, `jobs`, `metrics`, `notify` | core, net, store |
-| `acme-proxy-signer` (`signer`) | `local_ca`, `relay`, `custom`, `info`, **at the crate root**; owns the `hsm` feature | core, jobs, net, store |
+| `acme-proxy-signer` (`signer`) | `local_ca`, `relay`, `custom`, `info`, `issuance`, **at the crate root**; owns the `hsm` feature | core, jobs, net, store |
 | `acme-proxy-protocol` (`protocol`) | `acme` (the services), `extractors`, `handlers`, `middlewares`, `profile`, `router` | everything above |
 | `acme-proxy-admin` (`admin`) | `admin` (the operation layer), `webadmin` | protocol and below, not net |
 | `acme-proxy-server` (`server`) | the runtime, **at the crate root** (`acme_proxy_server::serve_on`): roles, assembly, generations, sockets, `reload`, `logging` | all of the above |

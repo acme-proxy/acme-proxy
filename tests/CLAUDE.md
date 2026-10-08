@@ -29,14 +29,16 @@ before adding a case, and put a new case in the suite whose header claims it.
   tables.
 - The admin harness mounts an **inactive** filter policy; a test about the
   policy itself uses `test_admin_app_logged_in_with_filter`.
-- **Nothing reaches a real network.** Four suites touch the disk or a
+- **Nothing reaches a real network.** Five suites touch the disk or a
   loopback socket, each for a stated reason: `roles.rs` (a file-backed database
   and several processes), `reload.rs` (a real `config.toml` and real ports),
-  `filters.rs` (the IPAM mocks on loopback, and scripts) and `custom_signer.rs`
-  (scripts).
+  `filters.rs` (the IPAM mocks on loopback, and scripts), `custom_signer.rs`
+  (scripts) and `revoke_cert.rs` (a CA on disk shared by two processes).
+  `postgres.rs` reaches a PostgreSQL server, and only when `TEST_POSTGRES_URL`
+  names one.
 - **A `crates/store/` test calls `Database::connect_for_test()`**, which is
   PostgreSQL when `TEST_POSTGRES_URL` is set. `connect_in_memory()` means
-  SQLite and is what the seven schema-introspection and migration-replay tests
+  SQLite and is what the schema-introspection and migration-replay tests
   in `db.rs` call.
 - **`postgres.rs` runs against both backends** and skips when
   `TEST_POSTGRES_URL` is unset, so a plain `cargo nextest run` is unaffected.

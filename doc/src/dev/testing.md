@@ -25,8 +25,18 @@ To run the complete in-memory test suite:
 ```bash
 cargo nextest run --workspace
 ```
-These tests utilize an in-memory SQLite database and an in-memory Local CA. No
-disk writes or network calls are made.
+These tests use an in-memory SQLite database and an in-memory local CA, and
+nothing reaches a real network. A few suites write to a temporary directory or
+bind a loopback socket, each because the thing under test needs one: `roles`
+and `reload` (real processes, ports and a `config.toml`), `filters` and
+`custom_signer` (scripts, and the IPAM mocks), and `revoke_cert` (a CA on disk
+that two processes share).
+
+**PostgreSQL.** Set `TEST_POSTGRES_URL` to a server's URL and every
+`crates/store/` test that calls `Database::connect_for_test()` runs against it
+instead of SQLite; `tests/postgres.rs` runs the dialect-sensitive paths against
+both, and skips without it. CI's `postgres` job sets
+`ACME_PROXY_REQUIRE_POSTGRES=1` as well, which turns that skip into a failure.
 
 **A test that calls `Config::load()` holds `ENV_LOCK`**
 (`acme_proxy_core::config::ENV_LOCK`, or `testutil::EnvGuard`, which holds it

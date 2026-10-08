@@ -1,8 +1,11 @@
 # Admin CLI
 
 `acme-proxy` embeds an administrative command-line interface in the same binary,
-so a full deployment never needs a separate tool to manage its state (accounts,
-orders, the audit trail, nonces, the upstream account, and EAB credentials).
+so a full deployment never needs a separate tool to manage its state: accounts,
+orders, the audit trail, the job queue, nonces, EAB credentials, the upstream
+account, the web admin's operators and sessions, and the database itself
+(`migrate`, `init`, `transfer`). `profile` and `filter` read the configuration
+back as the server would build it.
 
 ## Invoking it
 
@@ -18,9 +21,10 @@ working directory, or `ACME_PROXY_CONFIG`, plus `ACME_PROXY_*` environment
 overrides — so it must be run where the configuration points at the same
 database. There is no `--config` flag.
 
-Commands operate directly on SQLite. Running them against a live server is safe
-(the database is in WAL mode), but they act immediately and are not
-transactional across the server's own in-flight requests.
+Commands operate directly on the database, SQLite or PostgreSQL. Running them
+against a live server is safe (SQLite runs in WAL mode; PostgreSQL is built for
+concurrent writers), but they act immediately and are not transactional across
+the server's own in-flight requests.
 
 ## The schema is applied explicitly
 
@@ -88,7 +92,8 @@ issued before the move is revocable after it.
 
 What does not travel is the schema's own history: each backend keeps its own
 migration set and checksums. And `--json` answers
-`{"tables": [{"table", "rows"}], "total"}`, as every other listing does.
+`{"tables": [{"table", "rows"}], "total"}` — a report of a copy, not a listing,
+so it has its own shape rather than the paged envelope.
 
 ## Roles
 
@@ -122,24 +127,22 @@ and the periodic sweeps all wait for a process that does.
 
 **`-y`, `--yes`** — skip the interactive "Are you sure?" prompt on destructive
 commands. It is a global flag, so it may be given anywhere on the line. `account
-delete`, `order delete`, `eab delete`, `audit cleanup`, `admin user delete` and
-`admin user totp reset` prompt; nothing else is gated by it.
+delete`, `order delete`, `eab delete`, `jobs cancel`, `audit cleanup`, `nonce
+cleanup`, `transfer`, `admin user delete` and `admin user totp reset` prompt;
+nothing else is gated by it.
 
 **`--json`** — where supported, emit JSON instead of the human-readable line
-format. Single-item commands print one JSON object. A **paged** list command
-(`account list`, `order list`, `audit list`) prints the same envelope the admin
-JSON API returns, so a script does not learn one shape for the shell and another
-for the API:
+format. Single-item commands print one JSON object. Every list command prints
+the same envelope the admin JSON API returns, so a script does not learn one
+shape for the shell and another for the API:
 
 ```json
 { "items": [ … ], "total": 137, "limit": 50, "offset": 0 }
 ```
 
 `total` is what the same filters match *unpaged*, which is the difference
-between having read the table and having read a page of it. The unpaged
-listings — `eab list`, `admin user list`, `admin session list` — print a bare
-JSON array: those are tables an operator mints by hand, so there is no page and
-no total to report. (Neither shape is newline-delimited JSON.)
+between having read the table and having read a page of it. See
+[Paging](#paging). (It is not newline-delimited JSON.)
 
 **`--color <auto|always|never>`** — when to colour the human-readable output.
 Also global. The default is `auto`: colour when the stream is a terminal and
@@ -213,7 +216,7 @@ re-running the identical command is worth it.
 | `0` | Success — the command did what was asked. | |
 | `1` | The host could not carry out the request. Worth retrying, or fixing the host and retrying. | A database that will not open, a signer or CA error, an unreadable `--password-file`, an unreachable upstream, a broken `[dns]`/`[proxy]` section, invalid configuration. |
 | `2` | The command line itself was rejected. Emitted by the argument parser. | An unknown flag or subcommand, a missing argument. |
-| `3` | The request cannot be satisfied as written. Re-running the identical command will not help. | No object with that id (`no such order …`); an object in the wrong state (`… is already revoked`, `only ready or failed jobs can be cancelled`); an unknown `--status`/`--event`/`--outcome`/`--role` value; contradictory flags (`--hide-superseded` without `--expiring-in`); nothing supplied on stdin where a password or an EAB key was asked for. |
+| `3` | The request cannot be satisfied as written. Re-running the identical command will not help. | No object with that id (`no such order …`); an object in the wrong state (`… is already revoked`, `only ready or failed jobs can be cancelled`); an unknown `--status`/`--event`/`--outcome` value, or `--role` on `admin user create`; contradictory flags (`--hide-superseded` without `--expiring-in`); nothing supplied on stdin where a password or an EAB key was asked for. |
 
 `serve` exits `1` for any startup failure and otherwise runs until it is
 signalled.
@@ -225,7 +228,8 @@ signalled.
 command tree `clap` parses, so it covers every subcommand and flag, four levels
 deep — `acme-proxy admin user totp ` completes to `status`, `reset` and
 `recovery-codes`. Flag *values* complete only where the flag has a fixed set
-`clap` knows about, which today is `--color`; `--status` and `--outcome` take a
+`clap` knows about, which today is `--color`, `--log-level` and `completions`'
+own `<shell>`; `--status` and `--outcome` take a
 string the command refuses by name, so a shell has nothing to offer for them.
 
 The command reads neither the configuration nor the database, so it works
@@ -309,8 +313,10 @@ Read it without installing anything with `acme-proxy man | man -l -`.
 | `order show <id>` | `--json` |
 | `order chain <id>` | — |
 | `order delete <id>` | *(prompts)* |
-| `order revoke <id>` | `--reason <n>`, `--wait <seconds>` |
+| `order revoke <id>` | `--reason <n>`, `--wait <seconds>` (default 30) |
 
+- `--status` is one of `pending`, `ready`, `processing`, `valid` and `invalid`,
+  and is refused by name otherwise.
 - `--identifier <name>` finds the orders that name that identifier **exactly**
   (case-insensitive): the answer to "which order covers `web.corp.example.com`".
   It is an exact match on purpose — `--identifier example.com` will not surface
@@ -333,7 +339,10 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   it. It is the same listing the `[notify.expiry]` digest mails and the panel
   shows at `/ui/expiring`, so the three cannot come to disagree about what
   "expiring" or "already replaced" means. Add `--hide-superseded` to drop the
-  rows that have a successor and leave only the ones to act on.
+  rows that have a successor and leave only the ones to act on. Under `--json`
+  the envelope carries two more members, as `GET /api/expiring` does: `hidden`,
+  the rows `--hide-superseded` dropped from this page, and `days`, the window
+  asked for.
 - **`--status`, `--account-id`, `--identifier`, `--identifier-contains` and
   `--cert-serial` are refused with `--expiring-in`**, by name. The expiry
   listing is issued, unrevoked certificates by definition, has no account
@@ -370,6 +379,13 @@ Read it without installing anything with `acme-proxy man | man -l -`.
   loads a CA key or contacts an upstream itself; the running server does the
   signing, as [Revocation & CRL](revocation.md) describes. It is **not**
   confirm-gated, because revocation only ever tightens trust.
+
+  `--reason` is the RFC 5280 reason code: `0`–`6` or `8`–`10`, since `7` is
+  unused; any other value is refused. Omitted, the revocation carries no
+  reason. For a `relay` or `custom` profile the revocation is queued for the
+  running server, and `--wait` is how many seconds the command waits for it to
+  land before returning (default 30); `--wait 0` queues it and returns at once.
+  A local CA's revocation is recorded immediately and does not wait.
 
 ## Job queue
 
@@ -425,7 +441,7 @@ and run-now behind an `operator`-or-higher session.
 | `audit show <id>` | `--json` |
 | `audit cleanup` | `--older-than <days>` *(prompts)* |
 
-- `audit list` is paged like the other two listings; see [Paging](#paging).
+- `audit list` is paged like every listing; see [Paging](#paging).
 - **An unknown `--event` or `--outcome` is refused by name**, listing the values
   this build knows. Passed through to SQL it would answer "no rows", which reads
   exactly like "nothing happened".
@@ -441,16 +457,17 @@ The web admin can read this trail but not prune it — see
 ## Paging
 
 **Every listing in this binary is paged.** `account list`, `order list` (both
-of its queries), `audit list`, `eab list`, `admin user list` and
-`admin session list` all take `--limit <n>` and `--offset <n>`, defaulting to
-**50 rows**. `orders` and `audit_log` each grow a row per issuance for the life
-of the deployment, so there is deliberately no "everything" spelling and
-`--limit 0` is not a way around it: on a year-old CA that is a terminal full of
-scrollback and a table loaded into memory. A nonsense window is corrected rather
-than refused — a `--limit 0` becomes one row, a negative `--offset` becomes
-zero.
+of its queries), `audit list`, `jobs list`, `eab list`, `upstream order list`,
+`admin user list` and `admin session list` all take `--limit <n>` and
+`--offset <n>`, defaulting to **50 rows**. `orders` and `audit_log` each grow a
+row per issuance for the life of the deployment, so there is deliberately no
+"everything" spelling and `--limit 0` is not a way around it: on a year-old CA
+that is a terminal full of scrollback and a table loaded into memory. A
+nonsense window is corrected rather than refused — a `--limit 0` becomes one
+row, a negative `--offset` becomes zero.
 
-The last three used to answer a bare JSON array with no window, on the argument
+`eab list`, `admin user list` and `admin session list` used to answer a bare
+JSON array with no window, on the argument
 that an operator mints those rows by hand a few at a time. That was true of how
 the tables fill and said nothing about how long they have been filling — and it
 made a script learn one shape for the shell and another for `/api`.
@@ -483,7 +500,8 @@ $ acme-proxy order list --expiring-in 30 --hide-superseded --limit 20
 ```
 
 Under `--json` every one of them answers the same envelope the admin API
-returns, member for member:
+returns, member for member (`order list --expiring-in` adds `hidden` and `days`,
+as its API twin does):
 
 ```console
 $ acme-proxy eab list --limit 2 --json
@@ -499,7 +517,7 @@ shell on the host.
 | Command | Flags |
 | --- | --- |
 | `filter show` | `--profile <name>`, `--json` |
-| `filter explain` | `--profile <name>`, `--client-ip <ip>`, `--identifier <name>`, `--path <p>`, `--account-id <id>`, `--json` |
+| `filter explain` | `--profile <name>`, `--client-ip <ip>`, `--identifier <name>` (repeatable), `--path <p>` (default `/newOrder`), `--account-id <id>` (default `explain`), `--json` |
 
 `--profile` may be omitted only when exactly one profile exists, the same rule
 `upstream show` follows: `[filter]` is per-profile, so acting on "the policy"
@@ -513,7 +531,9 @@ precedence without reading the grammar.
 
 Both commands *build* the policy rather than reading the file back, so every
 startup refusal reaches you here too. `filter show` is therefore the cheapest
-way to check a policy before restarting the server:
+way to check a policy before restarting the server. Like every command but
+`completions` and `man`, they open the configured database first, so on a fresh
+host run `acme-proxy migrate` before them:
 
 ```console
 $ acme-proxy filter show
@@ -575,9 +595,9 @@ run".
 > **This really runs the policy.** `filter explain` executes your `custom`
 > scripts and issues real IPAM and DNS requests, exactly as a request would,
 > because a stubbed answer would be worse than nothing the first time it
-> disagreed with production. It touches no database and creates nothing, and it
-> names the checks that reached outside the process at the end of its output
-> (`sideEffects` under `--json`).
+> disagreed with production. It writes nothing, and it names the checks that
+> reached outside the process at the end of its output (`sideEffects` under
+> `--json`).
 >
 > That is also why **`explain`** is a host-only command with no web-admin
 > equivalent: the address and names are chosen by the caller, so behind a
@@ -591,7 +611,7 @@ run".
 | Command | Flags |
 | --- | --- |
 | `nonce count` | `--json` |
-| `nonce cleanup` | `--ttl-seconds <n>` |
+| `nonce cleanup` | `--ttl-seconds <n>` *(prompts)* |
 
 `nonce cleanup` deletes expired nonces. The server already sweeps them on an
 interval for the life of the process, so this is mainly a debugging tool.
@@ -660,7 +680,8 @@ omitted only when exactly one profile exists. `upstream order list` takes
 
 `upstream register` performs this proxy's own `newAccount` at the upstream CA
 and stores the resulting account URL beside `account_key_path` with a `.kid`
-extension. Only that first startup ever contacts the upstream.
+extension. It is the only time the account is registered: `serve` reads the
+stored `kid` and never needs the EAB credential again.
 
 > **Security note**: the EAB HMAC secret is read from `--eab-hmac-key-file`, or
 > prompted on **stdin**. It is deliberately not accepted as a command-line
@@ -721,7 +742,7 @@ is running.
 | `admin user show <username>` | `--json` |
 | `admin user passwd <username>` | `--password-file <path>` |
 | `admin user role <username> <admin\|operator\|viewer>` | revokes the operator's sessions |
-| `admin user contact <username>` | `--contact <address>` (omit to clear) |
+| `admin user contact <username>` | `--contact <address>` (omit, or pass empty, to clear) |
 | `admin user delete <username>` | confirm-gated; `-y` skips |
 | `admin user disable\|enable <username>` | — |
 | `admin user totp status <username>` | `--json` |
@@ -774,8 +795,11 @@ Created admin user alice (bac6a47e-711b-4e8e-858e-417da905dab9), role admin.
   refused second factor, a lockout, a credential change — see [Web Admin —
   Security notifications](webadmin.md#security-notifications)). The address is
   validated as a mailbox; a bad one is refused. `admin user contact` with no
-  `--contact` clears it. Notifications are delivered only when `[admin.notify]`
-  is configured, and changes made from this CLI are not themselves notified.
+  `--contact`, or an empty one, clears it. Notifications are delivered only when
+  `admin.enabled` and `[admin.notify]` are configured. A change made from this
+  CLI — a contact address, `passwd`, `totp reset`, `recovery-codes` — is
+  notified like one made in the panel: the CLI queues the message and the
+  running server's worker sends it.
 - `admin session list` shows a fingerprint of the stored token hash, never the
   hash itself. That fingerprint is the `<id>` `admin session revoke --user <u>
   --session <id>` takes to end one session rather than all of an operator's —

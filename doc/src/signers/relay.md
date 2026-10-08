@@ -321,9 +321,9 @@ error**, not a runtime one. This key is legitimately long-lived, so unlike a
 one-shot EAB credential it belongs in configuration; still prefer the
 environment variable over a file on disk.
 
-**`tsig_algorithm`** — *Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM`*
-The TSIG algorithm, e.g. `hmac-sha256`. Must match the key as your nameserver
-defines it.
+**`tsig_algorithm`** (`String`) — *Default: `""` (read as `hmac-sha256`) | Env: `ACME_PROXY_SIGNER__RELAY__DNS01__RFC2136__TSIG_ALGORITHM`*
+The TSIG algorithm: `hmac-sha256`, `hmac-sha384` or `hmac-sha512`. Must match
+the key as your nameserver defines it.
 
 Records are added and removed by value, so other TXT values at the same name —
 another order's for that name, or ones this server did not write — are left

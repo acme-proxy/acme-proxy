@@ -13,7 +13,7 @@ template_dir = "/etc/acme-proxy/admin-templates"
 Each name is looked for in that directory first and falls back to the
 compiled-in default. **The override is per file**, not per directory: a
 directory holding only `layout.html` restyles the chrome of every page and
-leaves the other twenty exactly as shipped.
+leaves the other fifty-five exactly as shipped.
 
 Every template is compiled at startup. A broken override **refuses to start**,
 naming the file and the parse error, rather than serving a `500` the first time
@@ -35,9 +35,14 @@ each other in `{% extends %}` and `{% include %}`.
 | `account/index.html`, `account/_mfa.html` | The operator's own page, and the fragment every mutation on it swaps |
 | `account/_card.html` | The second-factor card itself, with no `id` — so `_codes.html` can wrap it without nesting two elements carrying one |
 | `account/_enrol.html`, `account/_codes.html` | The enrolment step, and the codes plus the refreshed card |
+| `account/_password.html`, `account/_password_card.html` | The password-change swap target, and the form inside it |
+| `account/_contact.html` | Where this operator's own security notifications go |
+| `account/_sessions.html` | This operator's own live sessions, the swap target of revoking one |
 | `index.html` | The overview: four counts and the endpoint list |
 | `partials/_flash.html` | The inline banner every mutation's answer renders |
 | `partials/_pager.html` | The previous/next controls under a list |
+| `partials/_filter_meta.html` | The tail of every list's filter form: the loading indicator and the way back to the unfiltered list |
+| `partials/_sessions_table.html` | A table of live sessions, shared by the account page and an operator's card |
 | `accounts/list.html`, `accounts/_table.html` | The account list, and the table htmx swaps |
 | `accounts/detail.html`, `accounts/_card.html` | One account, and the card every account mutation returns |
 | `orders/list.html`, `orders/_table.html` | The order list |
@@ -49,6 +54,14 @@ each other in `{% extends %}` and `{% include %}`.
 | `nonces/index.html`, `nonces/_panel.html` | The nonce count and the sweep control |
 | `profiles/list.html`, `profiles/_table.html` | The mounted endpoints |
 | `profiles/filter.html` | One endpoint's resolved access policy. No fragment: nothing on it swaps |
+| `audit/list.html`, `audit/_table.html` | The audit trail |
+| `audit/detail.html`, `audit/_card.html` | One audit row |
+| `jobs/list.html`, `jobs/_table.html` | The background job queue |
+| `jobs/detail.html`, `jobs/_card.html` | One job, and the card its cancel and run-now actions return |
+| `upstream_orders/list.html`, `upstream_orders/_table.html` | The relay backend's upstream orders. Read-only |
+| `upstream_orders/detail.html`, `upstream_orders/_card.html` | One upstream order, cross-linked to its job |
+| `operators/list.html`, `operators/_table.html` | The web admin's operators |
+| `operators/detail.html`, `operators/_card.html` | One operator and their live sessions, re-rendered by every mutation on the page |
 
 A file whose name starts with `_` is a **fragment**: htmx swaps it on its own,
 so it must not contain `<html>` or `<body>`, and it must keep the `id` on its

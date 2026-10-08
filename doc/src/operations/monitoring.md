@@ -77,7 +77,7 @@ acme_proxy_certificate_issue_failures_total{role="acme,admin,worker",profile="de
 acme_proxy_certificate_issue_duration_seconds_sum{role="acme,admin,worker",profile="default"} 45.0
 acme_proxy_certificate_issue_duration_seconds_count{role="acme,admin,worker",profile="default"} 41
 …
-# HELP acme_proxy_database_pool_connections Connections in the SQLite pool.
+# HELP acme_proxy_database_pool_connections Connections in the database pool.
 # TYPE acme_proxy_database_pool_connections gauge
 acme_proxy_database_pool_connections{role="acme,admin,worker",state="idle"} 4
 acme_proxy_database_pool_connections{role="acme,admin,worker",state="busy"} 1
@@ -269,7 +269,9 @@ The events worth building alerts on:
 | `server_listening`, `profile_mounted` | info | Startup completed; one `profile_mounted` per enabled profile. `server_listening` is repeated by a reload that moved this socket, carrying the address it moved to. A reload emits `profile_mounted` only for an endpoint that was not previously served. |
 | `profile_unmounted` | warn | A reload stopped serving an endpoint. Its accounts and orders stay in the database; an issuance still waiting on an upstream has no handler left to finish it. |
 | `server_fatal_error`, `profile_init_failed` | error | The process is not serving. |
-| `server_socket_bind_failed` | error | A socket could not be bound. At startup the process does not serve; on a reload nothing is applied and whatever was already listening keeps listening. |
+| `server_socket_bind_failed`, `admin_socket_bind_failed`, `metrics_socket_bind_failed` | error | The ACME, admin or metrics socket could not be bound. At startup the process does not serve; on a reload nothing is applied and whatever was already listening keeps listening. |
+| `metrics_listening` | info | The metrics listener started. Its message is the reminder that the endpoint is unauthenticated by design, so the port must be firewalled. |
+| `metrics_config_invalid` | error | `metrics.bind_address` names the same socket as the ACME or admin listener. The process did not start. |
 | `server_listener_stopped` | info | A listener was switched off by a reload (`admin.enabled` or `metrics.enabled`). The socket is released; established connections finish. |
 | `server_config_reloaded` | info | A `SIGHUP` applied. Carries `generation`, which counts from 1 and rises by one per reload — the quickest check that one landed — and `listeners_rebound`, naming any socket that moved. |
 | `server_config_reload_refused` | warn | The new file changes a key that cannot change while the process runs. Nothing was applied; the `error` field names the key. |
@@ -278,7 +280,7 @@ The events worth building alerts on:
 | `db_migration_failed` | error | Startup aborted before serving. |
 | `request_shed` | warn | A request was refused with `503` + `Retry-After: 5` because `server.max_concurrent_requests` was saturated for longer than `admission_wait_ms`. Sustained occurrences mean the limit is too low, or something is retrying hot. |
 | `request_deadline_exceeded` | warn | A request exceeded `server.request_timeout_ms`. |
-| `request_handler_panicked` | error | A route handler panicked. The client got a `500` in the listener's normal error shape rather than a dropped connection, and the process is unaffected — but a handler panic is always a bug. Alert on it. The `listener` (`acme` / `admin`) and, for the panel, `surface` (`api` / `page`) fields say where; the panic message is in `error`. |
+| `request_handler_panicked` | error | A route handler panicked. The client got a `500` in the listener's normal error shape rather than a dropped connection, and the process is unaffected — but a handler panic is always a bug. Alert on it. The `listener` (`acme` / `admin`) and, for the panel, `surface` (`api` / `ui`) fields say where; the panic message is in `error`. |
 | `filter_request_blocked`, `filter_denied` | warn | The filter policy refused a request. Expected in normal operation; a spike is either an attack or a policy change that broke a legitimate client. `listener = "admin"` on `filter_request_blocked` marks an `[admin.filter]` refusal. |
 | `filter_rule_warned` | warn | A `mode = "warn"` rule matched and did **not** decide. This is the line a dry-run rollout is watched on: when it stops appearing for legitimate clients, the rule is safe to switch to `enforce`. |
 | `challenge_validation_failed`, `challenge_failed`, `challenge_validation_timeout` | warn | Domain-control validation did not pass. The most useful signal that clients are misconfigured — or that egress to them is blocked. The `timeout` variant means nothing answered within `challenge.timeout_ms` at all. |
@@ -315,7 +317,7 @@ The events worth building alerts on:
 | `job_lease_lost` | warn | A job finished after its lease had already been reclaimed, so its result was discarded and another runner will repeat the work. Means an attempt is overrunning `jobs.lease_seconds`. |
 | `job_deadline_passed` | warn | A job was claimed after its own deadline and retired without running. For a relay that means the local order had already expired. |
 | `job_runner_retuned` | info | A configuration reload moved the runner's pacing, and it is now running under the new values — which `server_config_reloaded` alone does not tell you. Carries all five: `poll_interval_ms`, `lease_seconds`, `retry_base_seconds`, `retry_max_seconds` and `max_concurrent`. Silent when a reload leaves `[jobs]` alone. |
-| `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. Note the four table sweeps and every notification run through this runner, so a runner that is not started is a server that is not sweeping or notifying either. |
+| `job_runner_started`, `job_runner_stopped` | info | The queue runner's lifecycle. `job_runner_stopped` carries how many leases it released on the way out; a *missing* one after a restart is why work waits out a lease instead of resuming immediately. Note the six table sweeps and every notification run through this runner, so a runner that is not started is a server that is not sweeping or notifying either. |
 | `upstream_bad_nonce_retry` | debug | Normal ACME churn against the upstream; only interesting in bulk. |
 | `notify_delivery_failed` | warn | One delivery attempt did not land. Never affects the ACME response, and no longer the end of the story: it carries `retryable`, and a `true` there means the delivery went back in the queue. |
 | `notify_delivery_target_missing` | warn | A queued delivery names a profile or backend this process does not have. It is retried rather than dropped, since another process over the same database may be on a newer configuration; a target that really is gone ends in `notify_delivery_abandoned` once the attempts run out. |
@@ -326,6 +328,8 @@ The events worth building alerts on:
 | `nonce_reaper_swept` | debug | The periodic nonce cleanup ran. It is a `nonce_sweep` job, so its absence over a long window means the job runner is unwell — check `job_runner_started`. |
 | `audit_write_failed` | warn | An [audit](audit.md) row could not be written. The failure is **swallowed deliberately** — a certificate the CA has already signed must not become a `500` the client retries into a second issuance — so this line is the *only* evidence that the trail has a hole in it. Alert on it. |
 | `audit_reverse_dns_failed`, `audit_reverse_dns_timeout` | debug | A PTR lookup for a client address found nothing in time. Costs a `NULL` in one column, never a refused request. Routine where no reverse zone exists; turn `audit.reverse_dns` off there. |
+| `job_retention_sweep_failed` | warn | The daily sweep of finished jobs past `jobs.retention_days` failed. Nothing is lost; the table grows until the next one succeeds. |
+| `notify_expiry_digest_failed` | error | The `[notify.expiry]` digest for one profile could not be built — usually the database. Carries `profile`. The digest is rescheduled at its interval regardless, so one failure costs one digest, not the schedule. |
 | `audit_reaper_swept`, `audit_reaper_failed` | debug / warn | The daily retention sweep, only with a non-zero `audit.retention_days`. `audit_reaper_swept` carries the rows removed and the cutoff. Runs as the `audit_sweep` job. |
 | `order_reaper_swept`, `order_reaper_failed` | info / error | The daily order-retention sweep, one line **per profile**, carrying that profile's rows removed and cutoff. Runs as the `order_sweep` job, and only for profiles with a non-zero `order.retention_days`. It deletes expired, non-`valid` orders and cascades to their authorizations and challenges; a `valid` order is never swept, so revocation and renewal information stay available for every certificate actually issued. |
 | `ipam_netbox_tls_verification_disabled` | warn | Emitted on **every** start while `insecure_skip_verify` is set, deliberately not once-only. |
@@ -337,20 +341,25 @@ Only with `[admin]` enabled — see [Web Admin](webadmin.md):
 | --- | --- | --- |
 | `admin_listening`, `admin_origin_resolved` | info | The web admin started. `admin_origin_resolved` carries the origin the CSRF check will compare against, and the resolved bind address — check these agree with how you actually reach the panel. |
 | `admin_config_invalid` | error | `[admin]` cannot work; the process did not start. The message names the two keys that disagree. |
+| `admin_tls_init_failed`, `admin_filter_init_failed` | error | `[admin.tls]` or `[admin.filter]` could not be built — an unreadable certificate, a policy that does not parse. At startup the process does not serve; on a reload nothing is applied. |
 | `admin_no_users` | warn | The panel is enabled but has no operators — a running service with no way in. Fix with `acme-proxy admin user create`. |
 | `admin_login_succeeded` | info | Carries `username` and `client_ip`. |
 | `admin_login_failed` | warn | Carries `reason`: `wrong_password`, `unknown_user`, `account_disabled` or `rate_limited`. **The client is told none of this** — every failure returns one `invalid_credentials` — so this log line is the only place the distinction exists. A run of `unknown_user` from one address is somebody guessing usernames; a run of `rate_limited` is a brute-force attempt, or an operator locked out by their own retries. |
 | `admin_logout` | info | Carries `scope = "one"` or `"all"`, and `surface = "api"` or `"ui"`. |
+| `admin_mfa_enrolled` | info | An operator confirmed a second factor; carries `username`. |
+| `admin_mfa_recovery_codes_regenerated` | info | A fresh set of recovery codes was minted, from the panel or `admin user totp recovery-codes`. Carries `username` and `minted`. |
+| `admin_mfa_step_up_refused` | warn | A sensitive change asked for the operator's password again and did not get it. `reason` is `wrong_password` or `rate_limited`; a run of them on a signed-in session is somebody holding a session who does not know its password. |
 | `admin_password_hash_unreadable` | warn | A stored hash could not be decoded. The account is unusable until `acme-proxy admin user passwd` rewrites it, and nothing else will tell you. |
 | `db_admin_user_created`, `db_admin_user_deleted`, `db_admin_user_password_changed`, `db_admin_user_status_changed`, `db_admin_user_role_changed`, `db_admin_user_contact_changed` | info | The operator audit trail. `db_admin_user_contact_changed` carries `cleared` (whether the notification address was removed rather than set). |
 | `db_admin_sessions_revoked`, `db_admin_session_deleted` | info | Sessions ended, by a password change, a disable, or an explicit revoke. `db_admin_sessions_revoked` carries `scope`: `user`, `user_except_current` (what a password change does, so the operator making it is not logged out by their own action) or `all`. |
 | `admin_eab_created`, `admin_eab_revoked`, `admin_eab_deleted` | info | Carries the `kid` and the operator who did it — **never** the secret. `admin_eab_deleted` carries `accounts`: `keep`, `deactivate` or `delete`. |
 | `db_account_delete_blocked`, `db_order_delete_blocked`, `db_eab_delete_blocked` | info | An operator delete was refused because it would have removed the only record of a live certificate. Carries `live_certificates`. Nothing was changed. |
 | `admin_order_revoked`, `admin_order_revoke_queued`, `admin_order_deleted`, `admin_account_contact_updated`, `admin_account_deactivated`, `admin_account_deleted`, `admin_nonces_cleaned`, `admin_session_revoked` | info | Admin writes, each naming the operator. Each carries `surface = "api"` or `"ui"`: the JSON API and the HTML panel run one shared action, so the same write logs the same line whichever surface it came through. |
+| `admin_operator_role_changed`, `admin_operator_contact_updated` | info | An operator's privilege tier (carries `role`) or notification address (carries `contact_set`) was changed in the panel. `username` is who made the change and `target_username` whose it was — the same name when an operator edits their own address. Carries `surface`. |
 | `admin_job_cancelled`, `admin_job_advanced`, `admin_job_revived` | info | An operator acting on the background queue through `/api/jobs` or `/ui/jobs`. (The `acme-proxy jobs` subcommand writes the matching audit rows but emits no log line: a non-`serve` invocation installs no subscriber.) Each carries `surface` and the operator. `admin_job_cancelled` on a `signer_relay_issue` job also carries `order_abandoned = true` and the `order_id` — the ACME order was marked `invalid` and the upstream mapping abandoned. `admin_job_revived` carries `attempts` (set to `max_attempts - 1`). |
 | `admin_revoke_signer_failed` | error | The CA-side revocation failed, so the order is left un-revoked for a retry. Answered as `502` rather than `500`. |
 | `admin_db_error` | error | A database failure on an admin route. The `sqlx` message is here and deliberately *not* in the response body, which says only "internal error". |
-| `admin_session_reaper_swept` | debug | The periodic session sweep ran, as the `admin_session_sweep` job. |
+| `admin_session_reaper_swept`, `admin_session_reaper_failed` | debug / error | The periodic session sweep ran, or failed, as the `admin_session_sweep` job. A failure leaves expired sessions in the table, but they are refused on use regardless. |
 | `admin_session_orphaned` | warn | A session outlived its user despite the FK cascade. Should be impossible; the session is deleted and refused. |
 
 The full set is much broader than this table — several hundred names, of which

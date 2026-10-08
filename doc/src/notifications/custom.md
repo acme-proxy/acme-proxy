@@ -7,7 +7,7 @@ cannot satisfy.
 
 ## Configuration
 
-`custom` is a **named map**, exactly like `[filter.custom]`. Two keys switch it
+`custom` is a **named map**, like `[filter.check]`. Two keys switch it
 on: `notify.enabled` activates the backend, and `notify.custom_enabled` selects
 *which* scripts run, and in what order.
 

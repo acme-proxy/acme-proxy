@@ -33,7 +33,7 @@ cannot add a `CHECK`, a `UNIQUE` or a foreign key to an existing table, and no
 PostgreSQL deployment has that history to replay. The schema is also the only
 surface frozen before 1.0.0 — the freeze says nothing about configuration keys,
 which may still be renamed. See
-[Contributing](contributing.md#changing-the-database-schema) for the two
+[Contributing](contributing.md#changing-the-database-schema) for the three
 consequences that catch people out.
 
 ## The tables at a glance
@@ -200,8 +200,9 @@ challenge trigger was a full table scan. That migration rebuilt the four ACME
 tables to add both halves at once:
 
 - `ON DELETE CASCADE` on every foreign key, so an account or an order can
-  genuinely be deleted. This depends on the `foreign_keys` pragma, which
-  `Database::connect` pins on — see [Architecture](architecture.md#migrations).
+  genuinely be deleted. On SQLite this depends on the `foreign_keys` pragma,
+  which `crates/store/src/db.rs` pins on for every connection; PostgreSQL
+  always enforces them.
 - An index on every foreign key: `idx_orders_account_id`,
   `idx_authorizations_order`, `idx_challenges_authz`.
 
@@ -299,7 +300,8 @@ Three more shapes worth knowing before touching it:
   crash-looping. The same reasoning is why the reclaim sweep leaves the counter
   alone.
 
-`status = 'cancelled'` is declared and written by nothing — the
+`status = 'cancelled'` is written by `jobs cancel` and its panel and API
+twins. It was declared before anything wrote it — the
 `admin_sessions.state = 'pending_mfa'` treatment, where a `CHECK` was written
 before anything filled it precisely so no rebuild would be needed later.
 

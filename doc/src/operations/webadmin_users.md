@@ -545,9 +545,9 @@ browser update.
 
 ### From the panel
 
-The CLI's `revoke` only ever takes a whole operator (`--user`) or the whole
-server (`--all`) — before this there was no single-session form at all, on
-either front end. The panel now has one, at two different trust levels:
+`admin session revoke` takes a whole operator (`--user`), one of their sessions
+(`--user` with `--session`), or the whole server (`--all`). The panel has the
+single-session form too, at two different trust levels:
 
 **Your own sessions.** Sign in, open your username in the top-right corner,
 and scroll to **Sessions**: every browser currently signed in as you, the one

@@ -61,7 +61,7 @@ endpoints it mounts.
 | `[profiles.<name>]` | An ACME endpoint | — | [below](#profilesname) |
 | `[signer]` | How a certificate is obtained | **yes** | [Signers](../signers/index.md) |
 | `[filter]` | Who may ask, and for what | **yes** | [Filters](../filters/index.md) |
-| `[ipam]` | The inventory `filter.ipam` consults | **yes** | [IPAM](../ipam/index.md) |
+| `[ipam]` | The inventory an `ipam` filter check consults | **yes** | [IPAM](../ipam/index.md) |
 | `[challenge]` | How control of a name is proven | **yes** | [Challenge Validation](../challenges/index.md#reference) |
 | `[notify]` | Outbound notifications | **yes** | [Notifications](../notifications/index.md) |
 | `[eab]` | External Account Binding | **yes** | [EAB](../features/eab.md) |
@@ -272,7 +272,7 @@ larger request is clamped, not refused.
 Override individual page templates on disk, mirroring `notify.template_dir`.
 Empty means the compiled-in defaults. The override is per *file*: a directory
 holding only `layout.html` restyles the chrome of every page and leaves the
-other twenty at their defaults. Every template is compiled at startup, so a
+other fifty-five at their defaults. Every template is compiled at startup, so a
 broken override refuses to start rather than serving a `500` later. Applies to
 the `/ui` pages only; the JSON API has nothing to template. See
 [Customizing the Panel](../operations/webadmin_templates.md).

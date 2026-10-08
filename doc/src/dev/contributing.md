@@ -73,7 +73,7 @@ numbered headings, every fence tagged, every relative link and anchor
 resolving, every ADR listed, and **no configuration key documented in two
 files** — two copies of a default drift silently.
 
-Two more jobs check what the ones above cannot:
+Four more jobs check what the ones above cannot:
 
 - **`msrv`** reads `rust-version` out of `Cargo.toml` and runs `cargo check
   --locked --workspace --all-targets --all-features` on exactly that toolchain,
@@ -82,6 +82,12 @@ Two more jobs check what the ones above cannot:
   against SoftHSM2. `--all-targets` enables no features, so without this job the
   PKCS#11 code would be neither linted nor tested; it is not folded into the
   coverage job, whose floor a feature-gated file sits outside of.
+- **`postgres`** runs the whole `acme-proxy-store` suite, `tests/postgres.rs`,
+  `roles` and `reload` against a real PostgreSQL server, with
+  `ACME_PROXY_REQUIRE_POSTGRES=1` so a skipped test is a failure. It is separate
+  from the coverage job for `hsm`'s reason.
+- **`e2e`** runs nightly, not on a push: a subset of the container lab in
+  `tests/e2e/`, with real certbot, acme.sh and lego clients.
 
 The `sbom` job additionally regenerates `sbom.cdx.json` and fails if it differs
 from the commit — see [Changing dependencies](#changing-dependencies).
@@ -106,7 +112,7 @@ See the [Testing & Coverage](testing.md) page for more details.
 - Document public APIs using rustdoc comments (`///`).
 - Comments, doc comments and error-message strings are written in **English**,
   as are identifiers and log messages.
-- Every `tracing` call carries `event = "<subsystem>_<outcome>"` as its
+- Every `tracing` call carries `event = "<subsystem>_<object>_<outcome>"` as its
   **first** field, as a string literal rather than a computed value, so the name
   stays greppable. Several are asserted by the end-to-end suite — grep before
   renaming one.
@@ -115,17 +121,19 @@ See the [Testing & Coverage](testing.md) page for more details.
 
 ## Changing the database schema
 
-**`crates/store/migrations/` is append-only as of 0.1.0.** Add a migration; never edit a
-committed one:
+**Both migration directories are append-only**: `crates/store/migrations/`
+(SQLite, since 0.1.0) and `crates/store/migrations-postgres/` (PostgreSQL). Add
+a migration to **each**; never edit a committed one:
 
 ```bash
-sqlx migrate add add_widget_table
+sqlx migrate add --source crates/store/migrations add_widget_table
+sqlx migrate add --source crates/store/migrations-postgres add_widget_table
 ```
 
 `sqlx` tracks each migration by a checksum, so editing a file that has already
 run turns every existing deployment into a startup failure. One build-system
 trap while you work: `sqlx::migrate!()` embeds the set at **compile** time and
-adding or removing a file under `crates/store/migrations/` does not on its own
+adding or removing a file under either directory does not on its own
 invalidate the build, so a test can be run against the previous set — `touch
 crates/store/src/db.rs` after changing the directory. This reverses the rule
 that held before the first release, when the server had never been deployed and
@@ -135,9 +143,12 @@ Three consequences:
 
 - **A new column is a new file**, even when it plainly belongs to an existing
   table. `ALTER TABLE ADD COLUMN` is cheap; putting it in the original `CREATE
-  TABLE` is what breaks.
-- **A new `CHECK`, `UNIQUE` or foreign key needs a table rebuild**, because
-  SQLite cannot add one to an existing table. Write the rebuild in the new
+  TABLE` is what breaks. Name it in `crates/store/src/transfer.rs`'s manifest
+  too, or `acme-proxy transfer` drops it; `the_manifest_names_every_column`
+  refuses a manifest that has drifted.
+- **A new `CHECK`, `UNIQUE` or foreign key needs a table rebuild** in the SQLite
+  set, because SQLite cannot add one to an existing table; PostgreSQL's
+  `ALTER TABLE … ADD CONSTRAINT` needs none. Write the rebuild in the new
   migration, and remember the two things a rebuild loses silently: an
   `INSERT … SELECT` drops any column you forget to name, and `DROP TABLE`
   takes the table's indexes with it — including ones declared in an earlier

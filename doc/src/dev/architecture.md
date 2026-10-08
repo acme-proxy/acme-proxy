@@ -16,7 +16,7 @@ crates beneath it:
 | Crate | What it holds | Depends on |
 |---|---|---|
 | `acme-proxy-core` | configuration, the ACME wire types, certificate parsing, the audit vocabulary | — |
-| `acme-proxy-store` | the SQLite storage layer, one module per table, and the migrations | core |
+| `acme-proxy-store` | the storage layer over SQLite or PostgreSQL, one module per table, and both migration sets | core |
 | `acme-proxy-net` | DNS, outbound HTTP and proxies, TLS, listeners, the challenge validators | core |
 | `acme-proxy-policy` | the filter engine and the IPAM inventories | core, net |
 | `acme-proxy-jobs` | the job queue, notifications, the audit writer, metrics | core, net, store |
@@ -92,11 +92,13 @@ accounts.
 
 ## Database & persistence
 
-The server uses `sqlx` with `sqlite`.
+The server uses `sqlx` over SQLite or PostgreSQL, chosen by `database.url`'s
+scheme ([ADR 0014](adr/0014-postgresql-beside-sqlite.md)). The SQL is written
+once, in `crates/store/src/sql.rs`, the only module that names either driver.
 
 The connection pool is private to `crates/store/src/`. Everything else reaches
-the database through a table module, `Database::transaction()` (a transaction
-that derefs to the connection the table methods take) or
+the database through a table module, `Database::transaction()` (a `Tx` whose
+`conn()` is the connection the table methods take) or
 `Database::pool_stats()` (the metrics gauge), so SQL and its dialect stay in one
 module tree. `Database::raw_pool()` exists only for test fixtures, and
 `tests/layering.rs` fails the build when production code calls it.
@@ -137,13 +139,15 @@ src/cli/            crates/admin/src/webadmin/
        \               /
         crates/admin/src/admin/ops.rs      — delete_account, revoke_order, load_order_detail…
         crates/admin/src/admin/users.rs    — create_user, authenticate, set_password…
-        crates/admin/src/admin/render.rs   — render_*_line (human) / render_*_json (API)
+        crates/admin/src/admin/changes.rs  — an operator change: write, audit row, sessions, notification
+        crates/admin/src/admin/render.rs   — render_*_json, the one JSON shape of each object
         crates/admin/src/admin/password.rs — the KDF, shared by both
 ```
 
 A handler in `crates/admin/src/webadmin/handlers/` is a few lines over an
 `admin::ops` call and a `render_*_json`, the same way a `src/cli/` command body
-is a few lines over the same call and a `render_*_line`. That is what keeps the
+is a few lines over the same call and either the same `render_*_json` or a
+`render_*_line` of its own, in `src/cli/render.rs`. That is what keeps the
 password policy, the duplicate check and the rehash-on-login identical between
 them.
 

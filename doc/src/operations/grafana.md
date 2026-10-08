@@ -53,7 +53,7 @@ record.
 **Requests** — request rate by route and by status, the 5xx share, requests shed
 by admission control, unmatched paths, and the p50 and p95 latency by route.
 
-**Database** — the SQLite pool by state, and its saturation.
+**Database** — the database pool by state, and its saturation.
 
 The latency panels are `histogram_quantile` over the buckets, so a percentile
 is only as fine as the buckets around it; see

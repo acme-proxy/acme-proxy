@@ -58,7 +58,7 @@ turning a remote party away — and each is attributed to `actor_kind = "admin"`
 | `nonce_cleanup_completed` / `audit_pruned` | the nonce table or the audit log itself was swept by hand (`audit_pruned` records its own action, so a manual prune always leaves the one row that says it happened) |
 | `database_transferred` | every row was copied into another backend (`acme-proxy transfer`). Written to the **source**, which is the database that holds the trail leading up to the move; the copy has already read past this row, so the target's own trail begins at the transfer it arrived in |
 
-The vocabulary is defined by `crate::audit::AuditEvent` in the binary, not by a
+The vocabulary is defined by `acme_proxy_core::audit::AuditEvent`, not by a
 database constraint, so a newer server writing a name an older one does not know
 still loads on the older one — it simply shows the raw string. The web audit
 surface stays **read-only**: a stolen session that could erase the trail would

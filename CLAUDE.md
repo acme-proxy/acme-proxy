@@ -118,7 +118,7 @@ A handler carrying `#[instrument]` reports far lower coverage than it has; check
 - **`cargo nextest run --workspace` is required, not preferred.** Tests that exec a script they just wrote fail `ETXTBSY` intermittently under the threads of `cargo test`.
 - **A test calling `Config::load()` holds `acme_proxy_core::config::ENV_LOCK`** (or `testutil::EnvGuard`).
 - Tests use an in-memory SQLite and an in-memory CA; nothing reaches a real network. The harness and its rules are in `tests/CLAUDE.md`.
-- **A store test calls `Database::connect_for_test()`**, which is PostgreSQL when `TEST_POSTGRES_URL` is set and in-memory SQLite otherwise — so CI runs all 239 on each backend. `connect_in_memory()` stays and *means* SQLite: the seven tests that read `pragma_table_info`/`sqlite_master` or replay the migration set call it, and that is their whole opt-out.
+- **A store test calls `Database::connect_for_test()`**, which is PostgreSQL when `TEST_POSTGRES_URL` is set and in-memory SQLite otherwise — so CI runs the store suite on each backend. `connect_in_memory()` stays and *means* SQLite: the tests in `db.rs` that read `pragma_table_info`/`sqlite_master` or replay the migration set call it, and that is their whole opt-out.
 - **`tests/postgres.rs` runs the dialect-sensitive paths against both backends** and skips when `TEST_POSTGRES_URL` is unset. A new fork in `sql.rs` owes it a case.
 - **Assert a constraint violation with `sql::is_check_violation`/`is_foreign_key_violation`/`is_unique_violation`**, never on the driver's message text — the two dialects word every one of them differently.
 
