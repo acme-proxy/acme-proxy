@@ -57,6 +57,7 @@ pub enum AdminUserCommand {
     /// Create an operator. The password is read from `--password-file`, or
     /// from stdin.
     Create {
+        /// The name the operator signs in with.
         username: String,
         /// Read the password from this file instead of stdin. A single
         /// trailing newline is stripped.
@@ -69,33 +70,43 @@ pub enum AdminUserCommand {
         role: String,
         /// Address to send this operator security notifications to (a sign-in
         /// from an unfamiliar address, a refused second factor, a credential
-        /// change). Requires `[admin.notify]` to be configured.
+        /// change). Stored either way; delivered only while `admin.enabled`
+        /// and `[admin.notify]` are configured.
         #[arg(long)]
         contact: Option<String>,
     },
     /// List operators, oldest first. Never shows a password hash.
     List {
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
     /// Show one operator, second factor included. Never shows a password hash.
     Show {
+        /// The operator.
         username: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Replace an operator's password, revoking every session they hold.
     Passwd {
+        /// The operator.
         username: String,
+        /// Read the password from this file instead of stdin. A single
+        /// trailing newline is stripped.
         #[arg(long = "password-file")]
         password_file: Option<PathBuf>,
     },
     /// Change an operator's privilege tier, revoking every session they hold.
     Role {
+        /// The operator.
         username: String,
         /// The new tier: `admin`, `operator` or `viewer`.
         role: String,
@@ -103,16 +114,27 @@ pub enum AdminUserCommand {
     /// Set or clear the address an operator receives security notifications
     /// at. Omit `--contact` (or pass an empty value) to clear it.
     Contact {
+        /// The operator.
         username: String,
+        /// The new address. Omitted or empty, the address is cleared.
         #[arg(long)]
         contact: Option<String>,
     },
     /// Delete an operator and every session of theirs.
-    Delete { username: String },
+    Delete {
+        /// The operator.
+        username: String,
+    },
     /// Bar an operator from signing in, dropping their current sessions.
-    Disable { username: String },
+    Disable {
+        /// The operator.
+        username: String,
+    },
     /// Undo `disable`.
-    Enable { username: String },
+    Enable {
+        /// The operator.
+        username: String,
+    },
     /// Inspect or remove an operator's second factor.
     Totp {
         #[command(subcommand)]
@@ -130,10 +152,12 @@ pub enum AdminUserCommand {
 /// an operator who has lost the factor and so cannot sign in to fix it.
 #[derive(Subcommand)]
 pub enum AdminUserTotpCommand {
-    /// Whether an operator has a second factor, and how many recovery codes
-    /// are left.
+    /// Print whether an operator has a second factor, and how many recovery
+    /// codes are left.
     Status {
+        /// The operator.
         username: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -142,10 +166,16 @@ pub enum AdminUserTotpCommand {
     ///
     /// The lockout lever: a lost phone is a shell command on the host, not a
     /// database edit. Asks first, because it takes a security control away.
-    Reset { username: String },
+    Reset {
+        /// The operator.
+        username: String,
+    },
     /// Mint a fresh set of recovery codes, printed once. The previous set stops
     /// working immediately.
-    RecoveryCodes { username: String },
+    RecoveryCodes {
+        /// The operator.
+        username: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,10 +185,13 @@ pub enum AdminSessionCommand {
         /// Only this operator's sessions.
         #[arg(long)]
         user: Option<String>,
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },

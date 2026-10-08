@@ -3,7 +3,9 @@
 //! Opening the database used to apply the migrations as a side effect, which
 //! made every subcommand an upgrade step — `acme-proxy audit list` against a
 //! newer binary silently rewrote the schema — and let two processes starting
-//! together race `MIGRATOR::run`, `SQLite` giving `sqlx` no migration lock.
+//! together race `MIGRATOR::run` on `SQLite`, where `sqlx` takes no migration
+//! lock. (`PostgreSQL` has one, an advisory lock, which serializes the race but
+//! does nothing for the first problem.)
 //!
 //! So the act is named now, and this is the decision: one owner per
 //! invocation, everybody else checks and refuses. It lives here rather than in
@@ -38,18 +40,16 @@ pub enum SchemaPlan {
 /// answered in `main.rs` before the configuration or the database.
 ///
 /// The split exists because migrating used to be a side effect of opening the
-/// database, which made `acme-proxy audit list` an upgrade step. It also raced:
-/// two processes starting together both ran `MIGRATOR::run`, and `SQLite` gives
-/// `sqlx` no migration lock. One owner, named on the command line, removes
-/// both.
+/// database, which made `acme-proxy audit list` an upgrade step. It also raced
+/// on `SQLite`: two processes starting together both ran `MIGRATOR::run`, and
+/// `sqlx` takes no migration lock there. One owner, named on the command line,
+/// removes both.
 #[must_use]
 pub fn plan_schema(command: Option<&Command>) -> SchemaPlan {
     match command {
         // `serve` with no `--role` runs the worker, which owns the schema; a
-        // `--role` naming it does too. The roles are parsed again inside
-        // `serve`, where an unknown one is refused by name — an unparseable
-        // value here simply does not claim ownership, and the refusal comes
-        // from the one place that words it.
+        // `--role` naming it does too. `clap` has already parsed the roles,
+        // refusing an unknown one before anything reached this.
         // `None` is `serve` — the default subcommand — so it takes the same
         // arm as an explicit one, `plan_logging`'s own shape.
         None => SchemaPlan::Migrate,

@@ -32,8 +32,11 @@ pub struct OrderListArgs {
     /// Restrict the listing to one ACME endpoint.
     #[arg(long)]
     pub profile: Option<String>,
+    /// Only this account's orders.
     #[arg(long = "account-id")]
     pub account_id: Option<String>,
+    /// Only orders in this state: `pending`, `ready`, `processing`, `valid` or
+    /// `invalid`.
     #[arg(long)]
     pub status: Option<String>,
     /// Only orders naming this identifier exactly (case-insensitive).
@@ -43,8 +46,9 @@ pub struct OrderListArgs {
     /// (case-insensitive). Mutually exclusive with `--identifier`.
     #[arg(long = "identifier-contains", conflicts_with = "identifier")]
     pub identifier_contains: Option<String>,
-    /// Only the order whose issued certificate has this serial (hex, no
-    /// separators) -- the value an abuse report hands you.
+    /// Only the order whose issued certificate has this serial, in hex — the
+    /// value an abuse report hands you. Case and `:` or `-` separators do not
+    /// matter.
     #[arg(long = "cert-serial")]
     pub cert_serial: Option<String>,
     /// Instead: the certificates lapsing within N days, soonest first,
@@ -55,10 +59,13 @@ pub struct OrderListArgs {
     /// `--expiring-in`, which is where the annotation comes from.
     #[arg(long = "hide-superseded")]
     pub hide_superseded: bool,
+    /// Rows per page. A value below 1 is read as 1.
     #[arg(long, default_value_t = DEFAULT_LIMIT)]
     pub limit: i64,
+    /// Rows to skip before the page starts.
     #[arg(long, default_value_t = 0)]
     pub offset: i64,
+    /// Print the page as JSON: `{items, total, limit, offset}`.
     #[arg(long)]
     pub json: bool,
 }
@@ -69,17 +76,28 @@ pub enum OrderCommand {
     List(OrderListArgs),
     /// Show one order plus its authorizations and challenges.
     Show {
+        /// The order id.
         id: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Print the issued certificate chain, as PEM, on stdout.
-    Chain { id: String },
+    Chain {
+        /// The order id.
+        id: String,
+    },
     /// Hard-delete the order and everything under it.
-    Delete { id: String },
+    Delete {
+        /// The order id.
+        id: String,
+    },
     /// Revoke the order's issued certificate.
     Revoke {
+        /// The order id.
         id: String,
+        /// The RFC 5280 reason code: 0-6 or 8-10 (7 is unused). Omitted, the
+        /// revocation carries no reason.
         #[arg(long)]
         reason: Option<u32>,
         /// For a `relay` or `custom` profile, how many seconds to wait for a

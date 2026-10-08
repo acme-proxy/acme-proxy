@@ -16,12 +16,17 @@ use acme_proxy_store::db::Database;
 pub enum AuditCommand {
     /// List audit rows, newest first.
     List {
+        /// Only rows about this ACME endpoint.
         #[arg(long)]
         profile: Option<String>,
+        /// Only rows about this account.
         #[arg(long = "account-id")]
         account_id: Option<String>,
+        /// Only rows about this order.
         #[arg(long = "order-id")]
         order_id: Option<String>,
+        /// Only rows about the certificate with this serial, in hex. Case and
+        /// `:` or `-` separators do not matter.
         #[arg(long = "cert-serial")]
         cert_serial: Option<String>,
         /// An audit event name — `certificate_issued`, `account_deleted`,
@@ -35,16 +40,21 @@ pub enum AuditCommand {
         /// Only rows from the last N days.
         #[arg(long = "since-days")]
         since_days: Option<u64>,
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
     /// Show one audit row in full.
     Show {
+        /// The row id, as `audit list` prints it.
         id: i64,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -53,7 +63,8 @@ pub enum AuditCommand {
     /// The only command in this binary that destroys audit history, which is
     /// why it prompts with the number of rows it is about to remove.
     Cleanup {
-        #[arg(long = "older-than")]
+        /// Delete rows older than this many days.
+        #[arg(long = "older-than", value_name = "DAYS")]
         older_than: u64,
     },
 }

@@ -27,15 +27,17 @@ pub enum FilterCommand {
         /// Which endpoint's policy. Optional when exactly one is configured.
         #[arg(long)]
         profile: Option<String>,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Evaluate the policy against a hypothetical request.
     ///
     /// This really runs your `custom` scripts and really queries the
-    /// inventory, exactly as a request would. It touches no database and
-    /// creates nothing.
+    /// inventory, exactly as a request would. It writes nothing, but like every
+    /// command but `serve` it needs a database that is migrated.
     Explain {
+        /// Which endpoint's policy. Optional when exactly one is configured.
         #[arg(long)]
         profile: Option<String>,
         /// The address the request would come from.
@@ -50,6 +52,7 @@ pub enum FilterCommand {
         /// The account id the request would come from.
         #[arg(long, default_value = "explain")]
         account_id: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },

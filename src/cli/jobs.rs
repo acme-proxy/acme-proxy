@@ -35,27 +35,40 @@ pub enum JobsCommand {
         /// nothing rather than being an error — unlike `--status`.
         #[arg(long)]
         kind: Option<String>,
+        /// Only jobs in this state: `ready`, `running`, `done`, `failed` or
+        /// `cancelled`.
         #[arg(long)]
         status: Option<String>,
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
     /// Show one job, plus the upstream order it drives if it is a relay job.
     Show {
+        /// The job id.
         id: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Retire a job. On an in-flight relay issuance this also marks the ACME
     /// order invalid and abandons the upstream mapping.
-    Cancel { id: String },
+    Cancel {
+        /// The job id.
+        id: String,
+    },
     /// Make a job eligible to run at the next queue poll. On a failed job this
     /// grants exactly one more attempt.
-    RunNow { id: String },
+    RunNow {
+        /// The job id.
+        id: String,
+    },
 }
 
 pub async fn run_jobs_command(

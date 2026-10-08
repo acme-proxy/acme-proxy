@@ -15,11 +15,13 @@ use acme_proxy_store::nonce::Nonce;
 pub enum NonceCommand {
     /// Delete nonces older than the TTL.
     Cleanup {
+        /// The age past which a nonce is deleted. Defaults to `nonce.ttl_seconds`.
         #[arg(long = "ttl-seconds")]
         ttl_seconds: Option<u64>,
     },
-    /// How many nonces the table holds, and the window they are fresh for.
+    /// Print how many nonces the table holds, and the window they are fresh for.
     Count {
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },

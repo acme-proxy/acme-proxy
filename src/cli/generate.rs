@@ -25,6 +25,10 @@ use crate::cli::{Cli, CliError, Command};
 /// than written out, so a moved documentation site moves this too.
 const BOOK_URL: &str = env!("CARGO_PKG_HOMEPAGE");
 
+/// The book's Admin CLI chapter, which holds the per-flag reference this page
+/// leaves out. `CARGO_PKG_HOMEPAGE` ends in a `/`.
+const CLI_CHAPTER_URL: &str = concat!(env!("CARGO_PKG_HOMEPAGE"), "operations/cli.html");
+
 /// Routes the two generator commands.
 ///
 /// Shared by `src/main.rs` (which answers them before opening anything) and by
@@ -58,8 +62,9 @@ pub fn write_completions(shell: Shell, out: &mut impl Write) -> Result<(), CliEr
 /// Writes the roff source of `acme-proxy.1`.
 ///
 /// Rendered section by section rather than through `Man::render`, because
-/// three of them are facts `clap` has no way to know: the environment this
-/// binary reads, the file it looks for, and where the full documentation is.
+/// five of them are facts `clap` has no way to know: what the exit status
+/// means, a few typical invocations, the environment this binary reads, the
+/// file it looks for, and where the full documentation is.
 /// They are written as roff here rather than hung off `after_long_help`, which
 /// would put the same block — `.TP` markup and all — into `--help`.
 ///
@@ -77,6 +82,8 @@ pub fn write_man(out: &mut impl Write) -> Result<(), CliError> {
         man.render_description_section(out)?;
         man.render_options_section(out)?;
         man.render_subcommands_section(out)?;
+        render_exit_status_section(out)?;
+        render_examples_section(out)?;
         render_environment_section(out)?;
         render_files_section(out)?;
         render_see_also_section(out)?;
@@ -84,6 +91,78 @@ pub fn write_man(out: &mut impl Write) -> Result<(), CliError> {
     };
 
     render(out).map_err(|error| CliError::failed(format!("cannot write the man page: {error}")))
+}
+
+/// The contract `CliErrorKind` keeps, as `doc/src/operations/cli.md`'s exit
+/// code table states it.
+fn render_exit_status_section(out: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(out, ".SH EXIT STATUS")?;
+    for (code, meaning) in [
+        ("0", "Success."),
+        (
+            "1",
+            "The host could not carry out the request: a database that will not \
+             open, a signer or CA error, an unreadable file, an unreachable \
+             upstream, invalid configuration. Worth retrying once the host is \
+             fixed. \\fBserve\\fR exits 1 for any startup failure.",
+        ),
+        (
+            "2",
+            "The command line was rejected by the argument parser: an unknown \
+             flag, subcommand or \\fB\\-\\-role\\fR, a missing argument.",
+        ),
+        (
+            "3",
+            "The request cannot be satisfied as written: no object with that id, \
+             an object in the wrong state, an unknown \\fB\\-\\-status\\fR, \
+             \\fB\\-\\-event\\fR or \\fB\\-\\-outcome\\fR value, \
+             contradictory flags. Re-running the identical command will not help.",
+        ),
+    ] {
+        writeln!(out, ".TP")?;
+        writeln!(out, "\\fB{code}\\fR")?;
+        writeln!(out, "{meaning}")?;
+    }
+    Ok(())
+}
+
+/// A handful of invocations, one per kind of task, so the page answers "how do
+/// I start" without the book. Not a reference: every flag is in `--help`.
+fn render_examples_section(out: &mut dyn Write) -> std::io::Result<()> {
+    writeln!(out, ".SH EXAMPLES")?;
+    for (what, command) in [
+        (
+            "Prepare a new deployment, then run every role in one process:",
+            "acme\\-proxy init\nacme\\-proxy serve",
+        ),
+        (
+            "Create the first web admin operator, reading the password from stdin:",
+            "acme\\-proxy admin user create alice",
+        ),
+        (
+            "Find the order behind a certificate serial, and revoke it:",
+            "acme\\-proxy order list \\-\\-cert\\-serial 03:a1:5f\n\
+             acme\\-proxy order revoke <order\\-id> \\-\\-reason 1",
+        ),
+        (
+            "Page through the audit trail as JSON:",
+            "acme\\-proxy audit list \\-\\-since\\-days 7 \\-\\-limit 100 \\-\\-offset 100 \\-\\-json",
+        ),
+        (
+            "Check a configuration's access policy before restarting:",
+            "acme\\-proxy filter explain \\-\\-client\\-ip 192.0.2.10 \\-\\-identifier www.example.com",
+        ),
+    ] {
+        writeln!(out, ".PP")?;
+        writeln!(out, "{what}")?;
+        writeln!(out, ".PP")?;
+        writeln!(out, ".nf")?;
+        writeln!(out, ".RS 4")?;
+        writeln!(out, "{command}")?;
+        writeln!(out, ".RE")?;
+        writeln!(out, ".fi")?;
+    }
+    Ok(())
 }
 
 /// What `Config::load` and `main.rs` actually read from the environment.
@@ -97,8 +176,8 @@ fn render_environment_section(out: &mut dyn Write) -> std::io::Result<()> {
     writeln!(out, "\\fBACME_PROXY_CONFIG\\fR")?;
     writeln!(
         out,
-        "Path to the configuration file, without its extension. \
-         Defaults to \\fBconfig\\fR in the working directory."
+        "Path to the configuration file; its \\fB.toml\\fR extension may be \
+         omitted. Defaults to \\fBconfig\\fR in the working directory."
     )?;
     writeln!(out, ".TP")?;
     writeln!(out, "\\fBACME_PROXY_*\\fR")?;
@@ -120,8 +199,10 @@ fn render_environment_section(out: &mut dyn Write) -> std::io::Result<()> {
     writeln!(out, "\\fBRUST_LOG\\fR")?;
     writeln!(
         out,
-        "Overrides the log filter from \\fB[logging]\\fR, in \
-         \\fBtracing-subscriber\\fR's \\fBEnvFilter\\fR syntax."
+        "A log filter in \\fBtracing-subscriber\\fR's \\fBEnvFilter\\fR \
+         syntax. For \\fBserve\\fR it overrides \\fB[logging]\\fR, and \
+         \\fB\\-\\-log\\-level\\fR overrides it. For every other command, \
+         set and non-empty, it turns logging on, on stderr."
     )
 }
 
@@ -143,8 +224,14 @@ fn render_see_also_section(out: &mut dyn Write) -> std::io::Result<()> {
     writeln!(out, ".SH SEE ALSO")?;
     writeln!(
         out,
-        "The full documentation, including the per-flag reference for every \
-         subcommand above, the configuration reference and the operator \
+        "The per-flag reference for every subcommand above is the Admin CLI \
+         chapter of the book:"
+    )?;
+    writeln!(out, ".UR {CLI_CHAPTER_URL}")?;
+    writeln!(out, ".UE")?;
+    writeln!(
+        out,
+        "The whole book, with the configuration reference and the operator \
          guides:"
     )?;
     writeln!(out, ".UR {BOOK_URL}")?;
@@ -240,6 +327,9 @@ mod tests {
             "config.toml",
             ".SH SEE ALSO",
             BOOK_URL,
+            CLI_CHAPTER_URL,
+            ".SH EXIT STATUS",
+            ".SH EXAMPLES",
         ] {
             assert!(page.contains(section), "the page omits `{section}`");
         }

@@ -28,6 +28,7 @@ use acme_proxy_core::palette::Palette;
 pub enum ProfileCommand {
     /// List the ACME endpoints this configuration mounts, name-sorted.
     List {
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },

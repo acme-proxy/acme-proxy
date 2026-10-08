@@ -42,8 +42,8 @@ pub enum UpstreamCommand {
         /// upstream requires no External Account Binding.
         #[arg(long = "eab-kid")]
         eab_kid: Option<String>,
-        /// Read the EAB HMAC secret (base64url) from this file instead of
-        /// prompting on stdin. The file is read, used, and never copied.
+        /// Read the EAB HMAC secret (base64, URL-safe or standard, padded or
+        /// not) from this file instead of prompting on stdin. The file is read, used, and never copied.
         #[arg(long = "eab-hmac-key-file")]
         eab_hmac_key_file: Option<PathBuf>,
         /// Which profile's upstream to register with. Optional when the
@@ -53,6 +53,7 @@ pub enum UpstreamCommand {
     },
     /// Show the configured upstream and whether this server is registered.
     Show {
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
         /// Which profile's upstream to describe. Optional when the
@@ -76,19 +77,26 @@ pub enum UpstreamOrderCommand {
         /// Restrict to one ACME endpoint (the local order's profile).
         #[arg(long)]
         profile: Option<String>,
+        /// Only upstream orders in this state: `processing`, `valid` or
+        /// `invalid`.
         #[arg(long)]
         status: Option<String>,
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
-    /// Show one upstream order by its **local** order id, cross-linked to its
+    /// Show one upstream order by its local order id, cross-linked to its
     /// relay job.
     Show {
+        /// The local order id.
         id: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },

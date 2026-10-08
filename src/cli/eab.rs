@@ -31,39 +31,52 @@ use acme_proxy_store::eab::Eab;
 
 #[derive(Subcommand)]
 pub enum EabCommand {
-    /// Generate a new EAB key and print its kid + secret ONCE.
+    /// Generate a new EAB key and print its kid and secret. The secret is
+    /// shown this once and never again.
     Create {
+        /// A name for the key, shown in listings and matched by `eab` filter
+        /// checks.
         #[arg(long)]
         label: Option<String>,
         /// Bind the credential to one ACME endpoint. Omitted, it is accepted
         /// at every profile — which is what an unscoped credential means.
         #[arg(long)]
         profile: Option<String>,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// List EAB keys, newest first. Never shows the secret.
     List {
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
     /// Show one EAB key. Never shows the secret.
     Show {
+        /// The key id.
         kid: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Revoke a key. The row stays, so accounts registered with it still
     /// resolve to it (and to its label, for `eab` filter checks).
-    Revoke { kid: String },
+    Revoke {
+        /// The key id.
+        kid: String,
+    },
     /// Delete a key. Accounts registered with it are kept unless told
     /// otherwise, and then no longer resolve to any credential, so every `eab`
     /// filter check refuses them.
     Delete {
+        /// The key id.
         kid: String,
         /// Also deactivate every account registered with it. Their orders are
         /// kept, so their certificates stay revocable.

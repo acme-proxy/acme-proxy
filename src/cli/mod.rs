@@ -115,11 +115,7 @@ pub enum Command {
         /// several times, each naming its own roles. Only a process running
         /// `worker` applies migrations, generates first-run material and drains
         /// the job queue; the others check the schema and refuse if it is not
-        /// current.
-        ///
-        /// Parsed by `clap` itself, so an unknown name is refused with usage
-        /// before the configuration is read or the database file is created —
-        /// a typo must not be diagnosed as something else further down.
+        /// current. An unknown role is refused with usage, exit 2.
         #[arg(long, value_name = "ROLES", value_parser = parse_roles)]
         role: Option<acme_proxy_server::RoleSet>,
     },
@@ -142,12 +138,13 @@ pub enum Command {
     /// The configured `database.url` is the source, and each URL's scheme
     /// picks its backend — so this is how a SQLite deployment becomes a
     /// PostgreSQL one, and the reverse is the same command with the two
-    /// swapped. **Stop the server first**: a copy taken while something is
-    /// writing is a torn snapshot, and nothing here can detect one.
+    /// swapped. Stop the server first: a copy taken while something is writing
+    /// is a torn snapshot, and nothing here can detect one.
     Transfer {
         /// The database to copy into.
         #[arg(long = "to", value_name = "URL")]
         to: String,
+        /// Print the per-table row counts as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -171,7 +168,7 @@ pub enum Command {
         #[command(subcommand)]
         command: JobsCommand,
     },
-    /// Nonce table maintenance.
+    /// Count and prune the replay-nonce table.
     Nonce {
         #[command(subcommand)]
         command: NonceCommand,
@@ -310,8 +307,9 @@ pub enum CliErrorKind {
     #[default]
     Failed,
     /// The request cannot be satisfied as written — no object with that id, an
-    /// object in the wrong state, an unknown `--status`/`--event`/`--role`
-    /// value, contradictory flags. Re-running the identical command will not
+    /// object in the wrong state, an unknown `--status`/`--event`/`--outcome`
+    /// value or `admin user create --role`, contradictory flags. (`serve
+    /// --role` is parsed by `clap`, so its typo exits `2` with usage.) Re-running the identical command will not
     /// help. Exit `3`.
     BadRequest,
 }

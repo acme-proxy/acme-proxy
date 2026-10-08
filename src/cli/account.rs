@@ -24,29 +24,43 @@ pub enum AccountCommand {
         /// Restrict the listing to the accounts one EAB credential bound.
         #[arg(long)]
         eab_kid: Option<String>,
+        /// Rows per page. A value below 1 is read as 1.
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
+        /// Rows to skip before the page starts.
         #[arg(long, default_value_t = 0)]
         offset: i64,
+        /// Print the page as JSON: `{items, total, limit, offset}`.
         #[arg(long)]
         json: bool,
     },
     /// Show one account.
     Show {
+        /// The account id.
         id: String,
+        /// Print it as JSON.
         #[arg(long)]
         json: bool,
     },
     /// Replace an account's contact list.
     UpdateContact {
+        /// The account id.
         id: String,
+        /// A contact URL, `mailto:` for an address. Repeat it for several;
+        /// omit it to clear the list.
         #[arg(long = "contact")]
         contact: Vec<String>,
     },
-    /// Set status = deactivated (RFC 8555 §7.3.6, terminal).
-    Deactivate { id: String },
+    /// Deactivate an account (RFC 8555 §7.3.6). There is no way back.
+    Deactivate {
+        /// The account id.
+        id: String,
+    },
     /// Hard-delete the account and everything under it.
-    Delete { id: String },
+    Delete {
+        /// The account id.
+        id: String,
+    },
 }
 
 pub async fn run_account_command(
