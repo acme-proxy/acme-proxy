@@ -1,3 +1,11 @@
+//! The account resource: `newAccount` (RFC 8555 §7.3), `POST` to an account
+//! URL (update, deactivate, §7.3.2/§7.3.6), `keyChange` (§7.3.5) and the
+//! account's `orders` list (§7.1.2.1).
+//!
+//! `newAccount` is the one route besides `revokeCert` signed with an embedded
+//! `jwk` rather than a `kid`; everything else here names an account the
+//! extractor has already resolved, within this profile.
+
 use axum::{
     Extension, Json,
     extract::{Path, State},

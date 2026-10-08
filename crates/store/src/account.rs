@@ -1,3 +1,18 @@
+//! ACME accounts (RFC 8555 §7.1.2) — the `accounts` table.
+//!
+//! Three rules the request path leans on:
+//!
+//! - **An account belongs to one profile.** Every lookup takes the profile, so
+//!   an account URL minted at one endpoint is not a `kid` at another, and the
+//!   same key registers separately at each.
+//! - **Registration is find-or-create, decided by the database.** Two
+//!   concurrent `newAccount`s with one key end as one row: the unique key on
+//!   `(profile, pubkey)` refuses the second insert, and its caller reads the
+//!   winner's row instead ([`Account::find_or_register`]).
+//! - **A delete never takes a live certificate with it.** [`Account::delete`]
+//!   re-checks inside the `DELETE` and refuses, since the order rows the
+//!   cascade would remove are the certificates' only record.
+
 use crate::sql::Row;
 use serde_json::Value;
 use tracing::{debug, info};
@@ -24,14 +39,15 @@ use acme_proxy_core::audit::ClientContext;
 ///
 /// - The public key is stored in DER SPKI format for consistent hashing and lookup
 /// - Contact information is serialized as JSON for flexible storage
-/// - The ID is generated as a UUID v4 for uniqueness
+/// - The ID is a UUID v7, minted by `crate::id::mint`
 /// - Status is tracked to support account lifecycle management
 ///
 /// ## Methods
 ///
-/// - `find_by_pubkey`: Lookup account by public key
-/// - `find_by_id`: Lookup account by ID
-/// - `find_or_create`: Create new account or return existing one (RFC 8555 §7.3)
+/// - `find_by_pubkey`: Lookup account by public key, within one profile
+/// - `find_by_id`: Lookup account by ID, within one profile
+/// - `find_or_create` / `find_or_register`: Create new account or return the
+///   existing one (RFC 8555 §7.3)
 /// - `delete`: Hard-delete an account, cascading to its orders, unless one
 ///   holds a live certificate (admin CLI and web admin)
 /// - `to_json`: Convert to RFC 8555 account JSON object format
@@ -164,6 +180,8 @@ impl Account {
         })
     }
 
+    /// Looks an account up by its public key (DER SPKI) **within one profile**:
+    /// the `jwk`-signed `newAccount` path, and `onlyReturnExisting`.
     #[tracing::instrument(name = "Account::find_by_pubkey", skip(pubkey, database))]
     pub async fn find_by_pubkey(
         profile: &str,

@@ -1,3 +1,8 @@
+//! The `[y/N]` confirmation every destructive CLI command asks.
+//!
+//! Anything but `y` or `yes` — including an empty line or a closed stdin — is
+//! a no, so a script that forgot `--yes` stops rather than deleting.
+
 use std::io::{BufRead, Write};
 
 /// Prints `"{prompt} [y/N] "` and reads one line from `reader`.

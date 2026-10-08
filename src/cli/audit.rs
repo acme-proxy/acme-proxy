@@ -1,3 +1,10 @@
+//! `acme-proxy audit` — read the audit trail, and prune it.
+//!
+//! An unknown `--event` or `--outcome` is refused by name rather than passed
+//! to SQL, where it would answer "no rows". `cleanup` is the only command in the
+//! binary that destroys audit history, so it prompts with the row count and
+//! records its own row.
+
 use std::io::BufRead;
 use std::sync::Arc;
 

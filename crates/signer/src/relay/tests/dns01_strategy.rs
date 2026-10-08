@@ -1,3 +1,6 @@
+//! The `dns-01` answering strategy: publishing the upstream's TXT record over
+//! RFC 2136.
+
 use super::*;
 use acme_proxy_store::status::OrderStatus;
 

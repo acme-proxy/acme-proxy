@@ -1,3 +1,11 @@
+//! `acme-proxy account` — list, show, update the contacts of, deactivate and
+//! delete ACME accounts.
+//!
+//! Each write goes through `admin::ops`, the same operation the web admin runs,
+//! and records an audit row. `delete` is refused while any of the account's
+//! orders holds a live certificate, since the order row is the certificate's
+//! only record.
+
 use std::io::BufRead;
 use std::sync::Arc;
 

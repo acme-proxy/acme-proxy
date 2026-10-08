@@ -1,3 +1,14 @@
+//! Verifying a JWS signature, and converting an account key between the two
+//! forms it travels in: a JWK on the wire, DER SPKI in the `accounts` table.
+//!
+//! Exactly two algorithms are accepted — `ES256` on P-256 and `RS256` with a
+//! 2048–8192-bit modulus — and anything else is
+//! [`SignatureError::BadAlgorithm`], which RFC 8555 §6.2 answers with
+//! `badSignatureAlgorithm` and the list a client may retry with. A key's `alg`
+//! must match its type; an EC key signed as `RS256` is refused rather than
+//! tried. The account key is stored as DER SPKI so a lookup by key is a byte
+//! comparison, and [`jwk_thumbprint`] (RFC 7638) is computed from that form.
+
 use base64::prelude::*;
 use ring::{digest, signature};
 use simple_asn1::{ASN1Block, BigInt, BigUint};

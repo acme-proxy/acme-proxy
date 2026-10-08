@@ -1,3 +1,10 @@
+//! The web admin's second-factor recovery codes — the `admin_recovery_codes`
+//! table.
+//!
+//! Only hashes are stored ([`AdminRecoveryCode`] says why), a new set replaces
+//! the old one in one transaction, and spending a code is a guarded `UPDATE`
+//! whose `rows_affected` decides, so one code cannot sign in twice.
+
 use crate::sql::Row;
 use tracing::{info, warn};
 use uuid::Uuid;

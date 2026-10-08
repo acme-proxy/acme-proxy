@@ -1,3 +1,5 @@
+//! RFC 9773 renewal windows from the upstream, and the `UpstreamError` mapping.
+
 use super::*;
 
 #[test]

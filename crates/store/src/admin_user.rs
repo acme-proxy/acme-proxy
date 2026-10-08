@@ -1,3 +1,13 @@
+//! The web admin's operators — the `admin_users` table — and their privilege
+//! tier, [`AdminRole`].
+//!
+//! An operator is a person, not an ACME client, and is scoped to no profile.
+//! The traps: usernames are lowercased on the way in; a `NULL` role reads as
+//! [`AdminRole::Admin`] so a row older than the column keeps its authority; and
+//! accepting a TOTP code is a guarded `UPDATE` on the last step used
+//! ([`AdminUser::claim_totp_step`]), so a code cannot be replayed inside its
+//! own window.
+
 use std::str::FromStr;
 
 use crate::sql::Row;
@@ -295,6 +305,7 @@ impl AdminUser {
         Ok(user)
     }
 
+    /// Looks an operator up by id: the session path, which carries the id.
     pub async fn find_by_id(
         id: Uuid,
         database: &Database,

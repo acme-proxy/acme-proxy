@@ -1,3 +1,10 @@
+//! The web admin's browser sessions — the `admin_sessions` table.
+//!
+//! The row is keyed by a hash of the session token, which never reaches this
+//! crate in the clear ([`AdminSession`] says why). Expiry is not a property of
+//! the sweep: `webadmin::session` checks both deadlines on every request, so an
+//! expired row is refused whether or not [`AdminSession::cleanup`] has run.
+
 use std::time::Duration;
 use uuid::Uuid;
 

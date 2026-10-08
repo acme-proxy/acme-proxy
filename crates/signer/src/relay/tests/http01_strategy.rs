@@ -1,3 +1,6 @@
+//! The `http-01` answering strategy: serving the upstream's key authorization
+//! from the database.
+
 use super::*;
 use acme_proxy_store::status::OrderStatus;
 

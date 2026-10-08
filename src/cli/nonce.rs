@@ -1,3 +1,8 @@
+//! `acme-proxy nonce` — count the replay-nonce table, and sweep it by hand.
+//!
+//! The server already sweeps it on an interval; these exist to debug a table
+//! that is growing. Nonce values are bearer credentials and are never listed.
+
 use std::io::BufRead;
 use std::sync::Arc;
 use std::time::Duration;

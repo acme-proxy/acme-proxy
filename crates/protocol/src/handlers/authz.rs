@@ -1,3 +1,10 @@
+//! Authorizations (RFC 8555 §7.5) and challenges (§7.5.1).
+//!
+//! `POST` to a challenge does not validate it: it claims the challenge and
+//! queues the validation for the worker (ADR 0006), answering `processing`. The
+//! client learns the verdict by polling, which is why a `pending` or
+//! `processing` answer carries `Retry-After`.
+
 use axum::{
     Extension, Json,
     extract::{Path, State},

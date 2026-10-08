@@ -1,3 +1,17 @@
+//! Replay nonces (RFC 8555 §6.5): minted on every response, spent by the next
+//! signed request.
+//!
+//! Three rules the request path leans on:
+//!
+//! - **Spending is one `DELETE`.** [`Nonce::verify`] deletes the live row and
+//!   lets `rows_affected` answer, so two requests replaying one nonce cannot
+//!   both pass — there is no read to race.
+//! - **A value is never logged whole.** An unspent nonce is a bearer
+//!   credential; every log line here carries its [`fingerprint`].
+//! - **Expiry is a predicate, not a sweep.** A row older than the TTL is
+//!   refused by `verify` whether or not [`Nonce::cleanup`] has run; the sweep
+//!   only keeps the table from growing.
+
 use std::time::{Duration, SystemTime};
 
 use tracing::{debug, info};
@@ -72,6 +86,7 @@ pub fn now_secs() -> i64 {
 }
 
 impl Nonce {
+    /// A fresh nonce, stamped now. Not stored until [`save`](Self::save).
     #[must_use]
     pub fn new() -> Self {
         Nonce {
@@ -80,6 +95,7 @@ impl Nonce {
         }
     }
 
+    /// Stores the nonce so a later [`verify`](Self::verify) can spend it.
     pub async fn save(&self, database: &Database) -> Result<(), sqlx::Error> {
         crate::sql::query("INSERT INTO nonces VALUES (?, ?);")
             .bind(self.value.clone())
@@ -157,6 +173,8 @@ impl Nonce {
             .try_get(0usize)
     }
 
+    /// Deletes every nonce older than `ttl`, returning how many went. The
+    /// `nonce_sweep` job and `acme-proxy nonce cleanup` both land here.
     pub async fn cleanup(database: &Database, ttl: Duration) -> Result<u64, sqlx::Error> {
         let cutoff = now_secs().saturating_sub(ttl.as_secs() as i64);
 

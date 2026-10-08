@@ -1,3 +1,6 @@
+//! Startup, provisioning, `issue` through relay to settlement, revocation and
+//! recovery.
+
 use super::*;
 use acme_proxy_store::status::OrderStatus;
 

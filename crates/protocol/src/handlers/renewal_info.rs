@@ -1,3 +1,10 @@
+//! ACME Renewal Information (RFC 9773): when a client should renew a
+//! certificate.
+//!
+//! An unauthenticated `GET`, as §4.1 describes. The window is the last part of
+//! the validity period ([`calculate_suggested_window`]); for a revoked
+//! certificate it lies entirely in the past, so a client renews at once.
+
 use axum::{
     Json,
     extract::{Path, State},

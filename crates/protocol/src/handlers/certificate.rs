@@ -1,3 +1,11 @@
+//! Certificates: the chain by POST-as-GET (RFC 8555 §7.4.2), `revokeCert`
+//! (§7.6), and two unauthenticated CA-infrastructure routes outside the
+//! directory, `GET /crl` and `GET /ca.pem`.
+//!
+//! `revokeCert` may be signed by the account that ordered the certificate or by
+//! the certificate's own key (§7.6), and goes through the same
+//! `revoke::Revocations` the operator front ends use.
+
 use axum::{
     extract::{Path, State},
     http::{StatusCode, header},

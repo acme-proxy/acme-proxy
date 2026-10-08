@@ -1,3 +1,12 @@
+//! External Account Binding credentials (RFC 8555 §7.3.4) — the `eab_keys`
+//! table. [`Eab`] describes the row and its methods.
+//!
+//! The secret is the credential, so it leaves this module exactly once: in
+//! [`Eab::create`]'s return value, which `eab create` prints. `Debug` redacts
+//! it and [`Eab::to_json`] omits it. A delete that would take an account
+//! holding a live certificate with it is refused inside the same transaction,
+//! as every operator delete is.
+
 use crate::sql::Row;
 use serde_json::Value;
 use tracing::{debug, info};
@@ -84,6 +93,7 @@ impl BoundAccounts {
     /// Every spelling [`BoundAccounts::parse`] accepts, for a refusal to list.
     pub const ALL: [BoundAccounts; 3] = [Self::Keep, Self::Deactivate, Self::Delete];
 
+    /// The spelling the CLI flag, the API and the audit row all use.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -93,6 +103,7 @@ impl BoundAccounts {
         }
     }
 
+    /// The mode [`as_str`](Self::as_str) spells `value`, or `None`.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|mode| mode.as_str() == value)

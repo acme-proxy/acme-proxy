@@ -1,3 +1,10 @@
+//! The routes a client calls before it holds an account: the directory
+//! (RFC 8555 §7.1.1), `newNonce` (§7.2) in all three of its methods, and the
+//! health check.
+//!
+//! Every `newNonce` answer carries [`NO_STORE`]: a cached nonce is a nonce
+//! that will be refused as already used.
+
 use axum::{
     Json,
     extract::State,

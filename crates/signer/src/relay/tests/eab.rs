@@ -1,3 +1,6 @@
+//! The upstream's External Account Binding credential, from configuration and
+//! from `upstream register`.
+
 use super::*;
 
 /// An upstream that demands EAB, and finds no credential at all — neither

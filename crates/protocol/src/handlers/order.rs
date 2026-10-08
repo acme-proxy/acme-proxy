@@ -1,3 +1,10 @@
+//! Orders: `newOrder` (RFC 8555 §7.4), `POST` to an order URL, and `finalize`.
+//!
+//! `finalize` does not sign. It claims the order (`ready → processing`, a
+//! guarded write that refuses a second finalize) and queues the signing for
+//! the worker, which is the only process holding a signer; the client polls
+//! the order, and a `pending` or `processing` answer carries `Retry-After`.
+
 use axum::{
     Extension, Json,
     extract::{Path, State},

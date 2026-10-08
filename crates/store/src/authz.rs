@@ -1,3 +1,13 @@
+//! ACME authorizations (RFC 8555 §7.1.4) and their challenges (§8) — the
+//! `authorizations` and `challenges` tables.
+//!
+//! Every state change here is a guarded write whose `rows_affected` decides a
+//! race, because validation runs in a queued job and the rows it read may have
+//! moved under it. [`Challenge::claim_for_validation`] is the one to read
+//! first: it decides, in one statement, whether a triggered challenge is
+//! validated at all. Wildcards are stored in wildcard form
+//! ([`Authorization`] says why).
+
 use crate::sql::Row;
 use serde_json::Value;
 use tracing::{debug, info};
