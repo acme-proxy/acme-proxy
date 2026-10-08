@@ -128,11 +128,8 @@ async fn settle(app: &Router, signer: &impl TestSigner, account_url: &str, url: 
 
 /// Polls a challenge until it is no longer `processing`.
 ///
-/// By re-POSTing `{}`, not POST-as-GET: §7.5.1 defines the challenge resource's
-/// POST body as the trigger and this server accepts no empty payload there, and
-/// the same section makes a retry explicitly *not* a state change — the claim
-/// simply fails and the object comes back as it stands. That is what a client
-/// polling a `processing` challenge against its `Retry-After` actually sends.
+/// By POST-as-GET (§6.3), which reads the challenge without claiming it or
+/// queueing validation — what a client polling against its `Retry-After` sends.
 async fn await_decided(
     app: &Router,
     signer: &impl TestSigner,
@@ -140,7 +137,7 @@ async fn await_decided(
     url: &str,
 ) -> Value {
     for _ in 0..600 {
-        let challenge = body_json(trigger(app, signer, account_url, url).await).await;
+        let challenge = read(app, signer, account_url, url).await;
         if challenge["status"] != "processing" {
             return challenge;
         }
@@ -1083,4 +1080,163 @@ async fn a_trigger_over_the_accounts_validation_cap_is_rate_limited() {
     let body = signer.sign_kid(&account_url, &second_url, &nonce, &json!({}));
     let res = post(&app, second_url.strip_prefix(common::HOST).unwrap(), body).await;
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn post_as_get_reads_pending_processing_and_valid_without_activation() {
+    let validator = BlockingValidator::gating_the_first("http-01");
+    let (calls, gate, entered) = validator.handles();
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        challenges_with(&["http-01"], vec![Arc::new(validator)]),
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let res = new_order(&app, &signer, &account_url, &["example.com"]).await;
+    let order_url = res.headers()["location"].to_str().unwrap().to_string();
+    let order = body_json(res).await;
+    let authz_url = order["authorizations"][0].as_str().unwrap();
+    let authz = read(&app, &signer, &account_url, authz_url).await;
+    let url = challenge_url_of_type(&authz, "http-01");
+    let path = url.strip_prefix(common::HOST).unwrap();
+
+    for _ in 0..2 {
+        let nonce = fetch_nonce(&app).await;
+        let res = post(
+            &app,
+            path,
+            signer.sign_kid_empty(&account_url, &url, &nonce),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["retry-after"], "5");
+        let links: Vec<_> = res
+            .headers()
+            .get_all("link")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert!(links.contains(&format!("<{authz_url}>;rel=\"up\"").as_str()));
+        assert!(links.iter().any(|link| link.contains("rel=\"index\"")));
+        assert_eq!(body_json(res).await, authz["challenges"][0]);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(read(&app, &signer, &account_url, authz_url).await, authz);
+    assert_eq!(read(&app, &signer, &account_url, &order_url).await, order);
+
+    // A nonempty {} remains the acknowledgement that starts validation.
+    let res = trigger(&app, &signer, &account_url, &url).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["retry-after"], "5");
+    let processing = body_json(res).await;
+    assert_eq!(processing["status"], "processing");
+    let permit = tokio::time::timeout(std::time::Duration::from_secs(5), entered.acquire())
+        .await
+        .unwrap()
+        .unwrap();
+    permit.forget();
+    for _ in 0..2 {
+        assert_eq!(read(&app, &signer, &account_url, &url).await, processing);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    gate.add_permits(1);
+    let valid = await_decided(&app, &signer, &account_url, &url).await;
+    assert_eq!(valid["status"], "valid");
+    let valid_authz = read(&app, &signer, &account_url, authz_url).await;
+    let ready_order = read(&app, &signer, &account_url, &order_url).await;
+    for _ in 0..2 {
+        let nonce = fetch_nonce(&app).await;
+        let res = post(
+            &app,
+            path,
+            signer.sign_kid_empty(&account_url, &url, &nonce),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key("retry-after"));
+        assert_eq!(body_json(res).await, valid);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        read(&app, &signer, &account_url, authz_url).await,
+        valid_authz
+    );
+    assert_eq!(
+        read(&app, &signer, &account_url, &order_url).await,
+        ready_order
+    );
+}
+
+#[tokio::test]
+async fn post_as_get_and_ack_require_challenge_ownership() {
+    let app = test_app().await;
+    let owner = EcSigner::new();
+    let owner_url = register(&app, &owner).await;
+    let foreign = EcSigner::new();
+    let foreign_url = register(&app, &foreign).await;
+    let order = body_json(new_order(&app, &owner, &owner_url, &["example.com"]).await).await;
+    let authz = read(
+        &app,
+        &owner,
+        &owner_url,
+        order["authorizations"][0].as_str().unwrap(),
+    )
+    .await;
+    let url = challenge_url_of_type(&authz, "http-01");
+    for empty in [true, false] {
+        let nonce = fetch_nonce(&app).await;
+        let body = if empty {
+            foreign.sign_kid_empty(&foreign_url, &url, &nonce)
+        } else {
+            foreign.sign_kid(&foreign_url, &url, &nonce, &json!({}))
+        };
+        let res = post(&app, url.strip_prefix(common::HOST).unwrap(), body).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let problem = body_json(res).await;
+        assert_eq!(problem["type"], "urn:ietf:params:acme:error:malformed");
+        assert_eq!(problem["detail"], "Unknown challenge");
+    }
+    assert_eq!(
+        read(&app, &owner, &owner_url, &url).await,
+        authz["challenges"][0]
+    );
+}
+
+#[tokio::test]
+async fn challenge_invalid_json_is_not_post_as_get() {
+    use base64::prelude::*;
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let order = body_json(new_order(&app, &signer, &account_url, &["example.com"]).await).await;
+    let authz = read(
+        &app,
+        &signer,
+        &account_url,
+        order["authorizations"][0].as_str().unwrap(),
+    )
+    .await;
+    let url = challenge_url_of_type(&authz, "http-01");
+    let nonce = fetch_nonce(&app).await;
+    let envelope: Value =
+        serde_json::from_str(&signer.sign_kid_empty(&account_url, &url, &nonce)).unwrap();
+    let protected = envelope["protected"].as_str().unwrap();
+    let payload = BASE64_URL_SAFE_NO_PAD.encode(b"{");
+    let signature = signer.sign_input(format!("{protected}.{payload}").as_bytes());
+    let res = post(
+        &app,
+        url.strip_prefix(common::HOST).unwrap(),
+        common::flattened_jws(protected, &payload, &signature),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(res).await["type"],
+        "urn:ietf:params:acme:error:malformed"
+    );
+    assert_eq!(
+        read(&app, &signer, &account_url, &url).await,
+        authz["challenges"][0]
+    );
 }
