@@ -3,7 +3,7 @@
 //!
 //! Every signed route that names a resource comes through here, and the answer
 //! is deliberately the same whatever went wrong: a resource of another account,
-//! or of another endpoint, is `malformed` "Unknown <resource>" — byte for byte
+//! or of another endpoint, is `malformed` `"Unknown <resource>"` — byte for byte
 //! what an id that never existed gets, and naming the resource the client
 //! asked about rather than the order the walk reached. Any difference would let
 //! a client map the server's contents by asking about ids it does not own.
