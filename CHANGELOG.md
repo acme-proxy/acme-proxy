@@ -32,6 +32,13 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A challenge URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)
+  with the current challenge, instead of `malformed` ("Payload JSON invalid for
+  this endpoint"). It claims nothing and queues no validation; a nonempty `{}`
+  still triggers validation. win-acme, which polls this way, could not enrol.
+
 ## [0.6.0] — 2026-10-08
 
 ### Breaking
