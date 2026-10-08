@@ -198,7 +198,7 @@ async fn confirm_enrolment(
             request_context,
             &user.username,
             &user,
-            acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorEnabled,
+            crate::webadmin::CredentialChange::SecondFactorEnabled,
             true,
             client,
         )

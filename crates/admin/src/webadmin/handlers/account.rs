@@ -143,7 +143,7 @@ pub(crate) async fn change_own_password_for(
             request,
             &user.username,
             user,
-            acme_proxy_jobs::notify::AdminCredentialChange::Password,
+            crate::webadmin::CredentialChange::Password,
             true,
             client,
         )

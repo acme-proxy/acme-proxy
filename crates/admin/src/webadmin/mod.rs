@@ -230,16 +230,20 @@ impl AdminState {
     /// `by_self` is `false` when another operator made the change; `actor` is
     /// whoever made it, which is not always `user`. The notification names the
     /// `User-Agent` `request_context` carries.
+    ///
+    /// A contact-address change is not one of these: it goes through
+    /// [`crate::admin::changes::change_contact`], which the CLI shares and
+    /// which knows the address the change replaced.
     pub(crate) async fn record_credential_change(
         &self,
         request_context: &acme_proxy_core::audit::RequestContext,
         actor: &str,
         user: &acme_proxy_store::admin_user::AdminUser,
-        change: acme_proxy_jobs::notify::AdminCredentialChange,
+        change: CredentialChange,
         by_self: bool,
         client: Option<std::net::IpAddr>,
     ) {
-        use acme_proxy_jobs::notify::AdminCredentialChange as Change;
+        use CredentialChange as Change;
 
         self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
             Change::Password => acme_proxy_jobs::auditor::admin::operator_password_changed(
@@ -268,24 +272,40 @@ impl AdminState {
                     &user.username,
                 )
             }
-            Change::ContactAddress => acme_proxy_jobs::auditor::admin::operator_contact_updated(
-                audit_actor,
-                ctx,
-                &user.username,
-                user.contact_email.is_some(),
-            ),
         })
         .await;
 
         self.notify_credential_change(
             user,
-            change,
+            change.into(),
             by_self,
             client,
             request_context.user_agent.clone(),
             None,
         )
         .await;
+    }
+}
+
+/// The credential changes [`AdminState::record_credential_change`] records:
+/// [`AdminCredentialChange`](acme_proxy_jobs::notify::AdminCredentialChange)
+/// less the contact address, which [`crate::admin::changes`] owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialChange {
+    Password,
+    SecondFactorEnabled,
+    SecondFactorDisabled,
+    RecoveryCodesRegenerated,
+}
+
+impl From<CredentialChange> for acme_proxy_jobs::notify::AdminCredentialChange {
+    fn from(change: CredentialChange) -> Self {
+        match change {
+            CredentialChange::Password => Self::Password,
+            CredentialChange::SecondFactorEnabled => Self::SecondFactorEnabled,
+            CredentialChange::SecondFactorDisabled => Self::SecondFactorDisabled,
+            CredentialChange::RecoveryCodesRegenerated => Self::RecoveryCodesRegenerated,
+        }
     }
 }
 

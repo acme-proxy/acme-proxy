@@ -161,8 +161,8 @@ pub(crate) async fn verify_current_password(
 /// asked.
 mod actions {
     use super::{AdminError, AdminState, check_step_up, mfa};
+    use crate::webadmin::CredentialChange;
     use acme_proxy_core::audit::RequestContext;
-    use acme_proxy_jobs::notify::AdminCredentialChange;
     use acme_proxy_store::admin_user::AdminUser;
     use std::net::IpAddr;
 
@@ -219,7 +219,7 @@ mod actions {
             state,
             request,
             user,
-            AdminCredentialChange::SecondFactorEnabled,
+            CredentialChange::SecondFactorEnabled,
             origin,
         )
         .await;
@@ -247,7 +247,7 @@ mod actions {
             state,
             request,
             user,
-            AdminCredentialChange::SecondFactorDisabled,
+            CredentialChange::SecondFactorDisabled,
             origin,
         )
         .await;
@@ -274,7 +274,7 @@ mod actions {
             state,
             request,
             user,
-            AdminCredentialChange::RecoveryCodesRegenerated,
+            CredentialChange::RecoveryCodesRegenerated,
             origin,
         )
         .await;
@@ -287,7 +287,7 @@ mod actions {
         state: &AdminState,
         request: &RequestContext,
         user: &AdminUser,
-        change: AdminCredentialChange,
+        change: CredentialChange,
         origin: Origin,
     ) {
         state
