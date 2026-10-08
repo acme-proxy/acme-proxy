@@ -454,6 +454,9 @@ migrated configuration before restarting.
 
 ### Fixed
 
+- **`admin user contact` setting an address to what it already was writes no
+  audit row**, as the web admin already did; it wrote an
+  `operator_contact_updated` row recording no change.
 - **`/ui/jobs` and `/ui/upstream-orders` refuse an unknown `?status=` with
   `invalid_status`**, as `/ui/orders` and the API do. They answered a generic
   `bad_request`.

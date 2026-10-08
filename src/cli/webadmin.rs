@@ -21,6 +21,7 @@ use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use acme_proxy_admin::admin;
+use acme_proxy_admin::admin::changes::{self, OperatorTrail};
 use acme_proxy_admin::admin::mfa;
 use acme_proxy_admin::admin::password::PasswordContext;
 use acme_proxy_admin::admin::prompt::confirm;
@@ -244,70 +245,31 @@ async fn run_user_command(
             );
         }
         AdminUserCommand::Contact { username, contact } => {
-            // Read first: the notification for this change goes to the address
-            // it replaces — whoever changed it controls the new one.
-            let previous = AdminUser::find_by_username(&username, &database)
-                .await?
-                .and_then(|user| user.contact_email);
-            match users::set_contact_email(&username, contact.as_deref(), database.clone())
+            let trail = CliTrail::new(config, &database);
+            match changes::change_contact(&username, contact.as_deref(), database.clone(), &trail)
                 .await
                 .map_err(user_error)?
             {
                 None => return Err(not_found(&username)),
-                Some(user) => {
-                    let set = user.contact_email.is_some();
-                    audit_admin::record_cli_action(&database, |actor, client| {
-                        audit_admin::operator_contact_updated(actor, client, &user.username, set)
-                    })
-                    .await;
-                    if user.contact_email != previous {
-                        notify_credential_change(
-                            config,
-                            &database,
-                            &user,
-                            acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress,
-                            previous,
-                        )
-                        .await;
+                Some((user, _changed)) => match user.contact_email {
+                    Some(address) => {
+                        println!("Contact address for {} set to {address}.", user.username)
                     }
-                    match user.contact_email {
-                        Some(address) => {
-                            println!("Contact address for {} set to {address}.", user.username)
-                        }
-                        None => println!("Contact address for {} cleared.", user.username),
-                    }
-                }
+                    None => println!("Contact address for {} cleared.", user.username),
+                },
             }
         }
         AdminUserCommand::Role { username, role } => {
             let role: AdminRole = role
                 .parse()
                 .map_err(|error| CliError::bad_request(format!("role: {error}")))?;
-            match users::set_role(&username, role, database.clone())
+            let trail = CliTrail::new(config, &database);
+            match changes::change_role(&username, role, database.clone(), &trail)
                 .await
                 .map_err(user_error)?
             {
                 None => return Err(not_found(&username)),
                 Some((user, revoked)) => {
-                    audit_admin::record_cli_action(&database, |actor, client| {
-                        audit_admin::operator_role_changed(
-                            actor,
-                            client,
-                            &user.username,
-                            role.as_str(),
-                        )
-                    })
-                    .await;
-                    // Only when something was revoked, as `disable` and the
-                    // panel do: a row saying "0 sessions" records nothing.
-                    if revoked > 0 {
-                        revoked_sessions_row(
-                            SessionScope::AllOf(user.username.clone()),
-                            revoked,
-                            &database,
-                        )
-                        .await;
-                    }
                     println!(
                         "Role of {} set to {role}. Every session they held was revoked ({revoked}).",
                         user.username
@@ -406,11 +368,11 @@ async fn run_user_command(
             // Both audit rows -- the status change and the sessions it took --
             // are written inside `set_status_or_not_found`, so a future caller
             // cannot get one without the other.
-            set_status_or_not_found(&username, AdminStatus::Disabled, database).await?;
+            set_status_or_not_found(&username, AdminStatus::Disabled, config, database).await?;
             println!("Disabled {username}. Their sessions were revoked.");
         }
         AdminUserCommand::Enable { username } => {
-            set_status_or_not_found(&username, AdminStatus::Active, database).await?;
+            set_status_or_not_found(&username, AdminStatus::Active, config, database).await?;
             println!("Enabled {username}.");
         }
         AdminUserCommand::Totp { command } => {
@@ -467,21 +429,10 @@ async fn run_totp_command(
                 return Ok(());
             }
 
-            // `None`: this is a change made on the operator's behalf, from a
-            // shell they are not signed in from, so there is no session to keep.
-            mfa::disable_totp(&mut user, None, database.clone()).await?;
-            audit_admin::record_cli_action(&database, |actor, client| {
-                audit_admin::operator_totp_disabled(actor, client, &user.username, true)
-            })
-            .await;
-            notify_credential_change(
-                config,
-                &database,
-                &user,
-                acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
-                None,
-            )
-            .await;
+            // A change made on the operator's behalf, from a shell they are
+            // not signed in from, so there is no session of theirs to keep.
+            let trail = CliTrail::new(config, &database);
+            changes::reset_totp(&mut user, database.clone(), &trail).await?;
             println!(
                 "Removed the second factor for {}. Their sessions were revoked; \
                  they can sign in with a password alone until they enrol again.",
@@ -683,24 +634,51 @@ async fn revoked_sessions_row(scope: SessionScope, count: u64, database: &Databa
 async fn set_status_or_not_found(
     username: &str,
     status: AdminStatus,
+    config: &Config,
     database: Arc<Database>,
 ) -> Result<(), CliError> {
-    let Some((user, revoked)) = users::set_status(username, status, database.clone()).await? else {
-        return Err(not_found(username));
-    };
-    audit_admin::record_cli_action(&database, |actor, client| {
-        audit_admin::operator_status_changed(
-            actor,
-            client,
-            &user.username,
-            status == AdminStatus::Active,
-        )
-    })
-    .await;
-    if revoked > 0 {
-        revoked_sessions_row(SessionScope::AllOf(user.username), revoked, &database).await;
+    let trail = CliTrail::new(config, &database);
+    match changes::change_status(username, status, database.clone(), &trail).await? {
+        Some(_) => Ok(()),
+        None => Err(not_found(username)),
     }
-    Ok(())
+}
+
+/// The CLI's [`OperatorTrail`]: rows attributed to the host CLI, written
+/// straight to the database, and messages queued for the running server's
+/// worker to deliver.
+struct CliTrail<'a> {
+    config: &'a Config,
+    database: &'a Arc<Database>,
+}
+
+impl<'a> CliTrail<'a> {
+    fn new(config: &'a Config, database: &'a Arc<Database>) -> Self {
+        Self { config, database }
+    }
+}
+
+impl OperatorTrail for CliTrail<'_> {
+    async fn record(
+        &self,
+        build: impl FnOnce(
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> acme_proxy_core::audit::AuditRecord
+        + Send,
+    ) {
+        audit_admin::record_cli_action(self.database, build).await;
+    }
+
+    async fn notify(
+        &self,
+        user: &AdminUser,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
+        previous_recipient: Option<String>,
+    ) {
+        notify_credential_change(self.config, self.database, user, change, previous_recipient)
+            .await;
+    }
 }
 
 /// Reads a password from a file, or one line of `reader`.

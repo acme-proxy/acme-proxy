@@ -140,6 +140,9 @@ call too; a handler keeps only what is HTTP.
   `crates/admin/src/webadmin/static/README.md`.
 - `handlers/params.rs`: a blank query value is absent, and `#[serde(default)]`
   must accompany `deserialize_with`.
+- An operator changed by another — status, role, contact, TOTP reset — goes
+  through `admin::changes` with the surface's `OperatorTrail`; a front end keeps
+  only its output and its log line.
 - **No `#[instrument]` in `webadmin/` or `jobs/runner.rs`.**
 - CLI command bodies return `CliError` and never print or exit; only
   `src/main.rs` does. `Palette::plain()` is the identity, `--json` never sees a

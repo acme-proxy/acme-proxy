@@ -239,45 +239,6 @@ impl AdminState {
         by_self: bool,
         client: Option<std::net::IpAddr>,
     ) {
-        self.record_change(request_context, actor, user, change, by_self, client, None)
-            .await;
-    }
-
-    /// [`Self::record_credential_change`] for the notification address, which
-    /// is the one change that has to know what it replaced: the message goes
-    /// *there*. `user` is the operator as they are after the change.
-    pub(crate) async fn record_contact_change(
-        &self,
-        request_context: &acme_proxy_core::audit::RequestContext,
-        actor: &str,
-        user: &acme_proxy_store::admin_user::AdminUser,
-        previous_recipient: Option<String>,
-        by_self: bool,
-        client: Option<std::net::IpAddr>,
-    ) {
-        self.record_change(
-            request_context,
-            actor,
-            user,
-            acme_proxy_jobs::notify::AdminCredentialChange::ContactAddress,
-            by_self,
-            client,
-            previous_recipient,
-        )
-        .await;
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn record_change(
-        &self,
-        request_context: &acme_proxy_core::audit::RequestContext,
-        actor: &str,
-        user: &acme_proxy_store::admin_user::AdminUser,
-        change: acme_proxy_jobs::notify::AdminCredentialChange,
-        by_self: bool,
-        client: Option<std::net::IpAddr>,
-        previous_recipient: Option<String>,
-    ) {
         use acme_proxy_jobs::notify::AdminCredentialChange as Change;
 
         self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
@@ -322,9 +283,57 @@ impl AdminState {
             by_self,
             client,
             request_context.user_agent.clone(),
-            previous_recipient,
+            None,
         )
         .await;
+    }
+}
+
+/// The web admin's [`OperatorTrail`](crate::admin::changes::OperatorTrail):
+/// rows attributed to the signed-in operator through the process's auditor,
+/// and messages through its admin dispatcher, naming the request's address
+/// and browser.
+pub(crate) struct WebTrail<'a> {
+    pub(crate) state: &'a AdminState,
+    pub(crate) request_context: &'a acme_proxy_core::audit::RequestContext,
+    /// The signed-in operator making the change.
+    pub(crate) actor: &'a str,
+    pub(crate) client: Option<std::net::IpAddr>,
+    /// Whether the operator changed is the one making the change — what the
+    /// message tells them.
+    pub(crate) by_self: bool,
+}
+
+impl crate::admin::changes::OperatorTrail for WebTrail<'_> {
+    async fn record(
+        &self,
+        build: impl FnOnce(
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> acme_proxy_core::audit::AuditRecord
+        + Send,
+    ) {
+        self.state
+            .record_admin_action(self.request_context, self.actor, build)
+            .await;
+    }
+
+    async fn notify(
+        &self,
+        user: &acme_proxy_store::admin_user::AdminUser,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
+        previous_recipient: Option<String>,
+    ) {
+        self.state
+            .notify_credential_change(
+                user,
+                change,
+                self.by_self,
+                self.client,
+                self.request_context.user_agent.clone(),
+                previous_recipient,
+            )
+            .await;
     }
 }
 

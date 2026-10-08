@@ -40,12 +40,12 @@ use serde_json::Value;
 
 use crate::admin;
 use crate::admin::users::UserError;
-use crate::admin::{mfa, users};
-use crate::webadmin::AdminState;
+use crate::admin::{changes, mfa, users};
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::mfa::{StepUpRequest, verify_current_password};
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, AdminRead, AdminWrite};
+use crate::webadmin::{AdminState, WebTrail};
 use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::AdminRole;
 use acme_proxy_store::admin_user::AdminStatus;
@@ -338,6 +338,13 @@ pub(crate) async fn apply_operator_action(
     request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
+    let trail = WebTrail {
+        state,
+        request_context,
+        actor: &caller.username,
+        client,
+        by_self: caller.id == target.id,
+    };
     match action {
         OperatorAction::SetStatus { active } => {
             let status = if active {
@@ -349,37 +356,10 @@ pub(crate) async fn apply_operator_action(
             // moment ago and is gone now, so this reports "no such operator"
             // rather than a `204` with no write behind it.
             let (updated, revoked) =
-                users::set_status(&target.username, status, state.database.clone())
+                changes::change_status(&target.username, status, state.database.clone(), &trail)
                     .await?
                     .ok_or_else(|| operator_not_found(&target.username))?;
             *target = updated;
-            state
-                .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    acme_proxy_jobs::auditor::admin::operator_status_changed(
-                        actor,
-                        ctx,
-                        &target.username,
-                        active,
-                    )
-                })
-                .await;
-            // Disabling drops every session the operator held. That is a
-            // second thing that happened, so it is a second row: the status
-            // change alone does not say how much access was withdrawn.
-            if revoked > 0 {
-                state
-                    .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                        acme_proxy_jobs::auditor::admin::session_revoked(
-                            actor,
-                            ctx,
-                            acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
-                                target.username.clone(),
-                            ),
-                            revoked,
-                        )
-                    })
-                    .await;
-            }
             if active {
                 tracing::info!(event = "admin_operator_enabled",
                                outcome = "success",
@@ -396,23 +376,10 @@ pub(crate) async fn apply_operator_action(
             }
         }
         OperatorAction::ResetTotp => {
-            // `None`: this is being done to a *different* operator's factor,
-            // from a session that is not theirs, so there is no session of the
-            // target's to keep — the same call `admin user totp reset` makes.
-            mfa::disable_totp(target, None, state.database.clone()).await?;
-            // The row and the message together: the operator whose factor was
-            // reset should hear about it, the change having been made from a
-            // session that is not theirs — hence `by_self = false`.
-            state
-                .record_credential_change(
-                    request_context,
-                    &caller.username,
-                    target,
-                    acme_proxy_jobs::notify::AdminCredentialChange::SecondFactorDisabled,
-                    false,
-                    client,
-                )
-                .await;
+            // A *different* operator's factor (`refuse_self_target` ran), so
+            // the trail's `by_self` is false — the same change `admin user
+            // totp reset` makes.
+            changes::reset_totp(target, state.database.clone(), &trail).await?;
             tracing::info!(event = "admin_operator_totp_reset",
                            outcome = "success",
                            surface = surface,
@@ -458,38 +425,11 @@ pub(crate) async fn apply_operator_action(
         }
         OperatorAction::SetRole { role } => {
             let (updated, revoked) =
-                users::set_role(&target.username, role, state.database.clone())
+                changes::change_role(&target.username, role, state.database.clone(), &trail)
                     .await
                     .map_err(user_error)?
                     .ok_or_else(|| operator_not_found(&target.username))?;
             *target = updated;
-            state
-                .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    acme_proxy_jobs::auditor::admin::operator_role_changed(
-                        actor,
-                        ctx,
-                        &target.username,
-                        role.as_str(),
-                    )
-                })
-                .await;
-            // The disable rule: the sessions going is a second thing that
-            // happened, and the role row alone does not say how much access
-            // was withdrawn.
-            if revoked > 0 {
-                state
-                    .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                        acme_proxy_jobs::auditor::admin::session_revoked(
-                            actor,
-                            ctx,
-                            acme_proxy_jobs::auditor::admin::SessionScope::AllOf(
-                                target.username.clone(),
-                            ),
-                            revoked,
-                        )
-                    })
-                    .await;
-            }
             tracing::info!(event = "admin_operator_role_changed",
                            outcome = "success",
                            surface = surface,
@@ -520,26 +460,22 @@ pub(crate) async fn apply_contact_change(
     request_context: &acme_proxy_core::audit::RequestContext,
     surface: &'static str,
 ) -> Result<(), AdminError> {
-    let previous = target.contact_email.clone();
-    let updated = users::set_contact_email(&target.username, contact, state.database.clone())
-        .await
-        .map_err(user_error)?
-        .ok_or_else(|| operator_not_found(&target.username))?;
+    let trail = WebTrail {
+        state,
+        request_context,
+        actor: &caller.username,
+        client,
+        by_self: caller.id == target.id,
+    };
+    let (updated, changed) =
+        changes::change_contact(&target.username, contact, state.database.clone(), &trail)
+            .await
+            .map_err(user_error)?
+            .ok_or_else(|| operator_not_found(&target.username))?;
     *target = updated;
-    if target.contact_email == previous {
+    if !changed {
         return Ok(());
     }
-
-    state
-        .record_contact_change(
-            request_context,
-            &caller.username,
-            target,
-            previous,
-            caller.id == target.id,
-            client,
-        )
-        .await;
     tracing::info!(event = "admin_operator_contact_updated",
                    outcome = "success",
                    surface = surface,

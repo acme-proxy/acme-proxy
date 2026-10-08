@@ -12,6 +12,8 @@
 //!   exactly one consumer and live in `cli::render`, which is where
 //!   colour is woven in — and therefore cannot reach a `--json` shape.
 //! - [`password`], [`users`] — the credential store and the KDF.
+//! - [`changes`] — one operator changed by another, with its audit rows and
+//!   message, for both front ends.
 //! - [`totp`], [`recovery`], [`mfa`] — the second factor: RFC 6238 over RFC 4226,
 //!   single-use recovery codes, and where those two meet the database.
 //! - [`prompt`] — confirmation, over an injectable reader so it is testable.
@@ -23,6 +25,7 @@
 //! form — rather than an HTTP caller passing `true` and an empty reader to
 //! assert a confirmation that never happened.
 
+pub mod changes;
 pub mod mfa;
 pub mod ops;
 pub mod password;
