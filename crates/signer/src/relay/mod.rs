@@ -234,67 +234,8 @@ impl RelaySigner {
         let (client, account, kid, strategy, dns01_alias) = std::thread::scope(|scope| {
             scope
                 .spawn(|| -> anyhow::Result<_> {
-                    // Validated whether or not it is the selected strategy, for
-                    // the reason `challenge::from_config` validates names
-                    // before checking `bypass`: a typo must not sit unnoticed
-                    // until someone switches strategies.
-                    let mut dns01_alias = None;
-                    let strategy = match cfg.challenge_strategy.as_str() {
-                        "bypass" => ChallengeStrategy::Bypass,
-                        "dns01" => match cfg.dns01.provider.as_str() {
-                            "rfc2136" => {
-                                let updater =
-                                    dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?;
-                                // An alias the key cannot write is refused now,
-                                // not at the first issuance.
-                                dns01_alias = dns01::alias_record_name(&cfg.dns01.challenge_alias)?;
-                                if let Some(alias) = &dns01_alias {
-                                    updater.check_in_zone(alias).map_err(|error| {
-                                        anyhow::anyhow!(
-                                            "signer.relay.dns01.challenge_alias cannot be \
-                                             published through rfc2136.zone: {error}"
-                                        )
-                                    })?;
-                                }
-                                ChallengeStrategy::Dns01(Arc::new(updater))
-                            }
-                            other => anyhow::bail!(
-                                "unknown signer.relay.dns01.provider: {other} (supported: rfc2136)"
-                            ),
-                        },
-                        "http01" => {
-                            // Nothing to validate: unlike `dns01`, this
-                            // strategy has no credential and no remote
-                            // endpoint — the responder is a route on this
-                            // server's own root router. What it *does* need is
-                            // out of this process's reach, so say so on every
-                            // startup rather than at the first failed issuance.
-                            info!(
-                                event = "signer_relay_http_01_selected",
-                                outcome = "advisory",
-                                path = acme_proxy_net::challenge::http_01::WELL_KNOWN_PREFIX,
-                                "the upstream will fetch \
-                                 http://<identifier>:80/.well-known/acme-challenge/<token>; a \
-                                 reverse proxy must forward or redirect that path to this server \
-                                 (RFC 8555 §8.3 permits a redirect, so it need not share the name)"
-                            );
-                            // In the database, not in this backend: the relay
-                            // job publishing a token and the route serving it
-                            // need not be one process, and a backend rebuilt by
-                            // a reload serves what the outgoing one published.
-                            // An entry outlives the attempt that published it
-                            // by a margin at most, that attempt's own budget
-                            // being the longest any fetch can matter.
-                            ChallengeStrategy::Http01(Arc::new(http01::DbTokenStore::new(
-                                parts.database.clone(),
-                                http01::token_ttl(poll.timeout),
-                            )))
-                        }
-                        other => anyhow::bail!(
-                            "unknown signer.relay.challenge_strategy: {other} \
-                             (supported: bypass, dns01, http01)"
-                        ),
-                    };
+                    let (strategy, dns01_alias) =
+                        build_challenge_strategy(cfg, &parts.database, poll.timeout)?;
 
                     let (client, account, kid) = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -335,6 +276,80 @@ impl RelaySigner {
             jobs: parts.jobs.clone(),
         })))
     }
+}
+
+/// The upstream challenge strategy `cfg` selects, and the `dns01` alias it
+/// publishes under, if any.
+///
+/// Runs on the provisioning thread with the rest of construction:
+/// `Rfc2136Updater::from_config` can resolve a name, which must stay off the
+/// caller's runtime.
+fn build_challenge_strategy(
+    cfg: &RelayConfig,
+    database: &Arc<Database>,
+    poll_timeout: Duration,
+) -> anyhow::Result<(ChallengeStrategy, Option<String>)> {
+    // Validated whether or not it is the selected strategy, for
+    // the reason `challenge::from_config` validates names
+    // before checking `bypass`: a typo must not sit unnoticed
+    // until someone switches strategies.
+    let mut dns01_alias = None;
+    let strategy = match cfg.challenge_strategy.as_str() {
+        "bypass" => ChallengeStrategy::Bypass,
+        "dns01" => match cfg.dns01.provider.as_str() {
+            "rfc2136" => {
+                let updater = dns01::Rfc2136Updater::from_config(&cfg.dns01.rfc2136)?;
+                // An alias the key cannot write is refused now,
+                // not at the first issuance.
+                dns01_alias = dns01::alias_record_name(&cfg.dns01.challenge_alias)?;
+                if let Some(alias) = &dns01_alias {
+                    updater.check_in_zone(alias).map_err(|error| {
+                        anyhow::anyhow!(
+                            "signer.relay.dns01.challenge_alias cannot be \
+                             published through rfc2136.zone: {error}"
+                        )
+                    })?;
+                }
+                ChallengeStrategy::Dns01(Arc::new(updater))
+            }
+            other => {
+                anyhow::bail!("unknown signer.relay.dns01.provider: {other} (supported: rfc2136)")
+            }
+        },
+        "http01" => {
+            // Nothing to validate: unlike `dns01`, this
+            // strategy has no credential and no remote
+            // endpoint — the responder is a route on this
+            // server's own root router. What it *does* need is
+            // out of this process's reach, so say so on every
+            // startup rather than at the first failed issuance.
+            info!(
+                event = "signer_relay_http_01_selected",
+                outcome = "advisory",
+                path = acme_proxy_net::challenge::http_01::WELL_KNOWN_PREFIX,
+                "the upstream will fetch \
+                 http://<identifier>:80/.well-known/acme-challenge/<token>; a \
+                 reverse proxy must forward or redirect that path to this server \
+                 (RFC 8555 §8.3 permits a redirect, so it need not share the name)"
+            );
+            // In the database, not in this backend: the relay
+            // job publishing a token and the route serving it
+            // need not be one process, and a backend rebuilt by
+            // a reload serves what the outgoing one published.
+            // An entry outlives the attempt that published it
+            // by a margin at most, that attempt's own budget
+            // being the longest any fetch can matter.
+            ChallengeStrategy::Http01(Arc::new(http01::DbTokenStore::new(
+                database.clone(),
+                http01::token_ttl(poll_timeout),
+            )))
+        }
+        other => anyhow::bail!(
+            "unknown signer.relay.challenge_strategy: {other} \
+             (supported: bypass, dns01, http01)"
+        ),
+    };
+    Ok((strategy, dns01_alias))
 }
 
 /// Loads (or creates) the account key, then loads (or registers) the `kid`.

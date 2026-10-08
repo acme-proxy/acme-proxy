@@ -182,110 +182,9 @@ where
 
     let signing_input = format!("{}.{}", jws.protected, jws.payload);
 
-    let mut signer_account: Option<Account> = None;
-    let pubkey = match (&header.jwk, &header.kid) {
-        (Some(_), Some(_)) => {
-            warn!(event = "jws_jwk_and_kid_both_present", outcome = "failure", url = %header.url, algorithm = %header.alg);
-            return Err(Problem::malformed("jwk and kid are mutually exclusive"));
-        }
-        (Some(_), None) => {
-            // §6.2: "For all other requests, the request is signed using an
-            // existing account, and there MUST be a `kid` field." Only
-            // newAccount, where no account exists yet, and revokeCert, which
-            // §7.6 also lets a certificate's own key sign, may carry a `jwk`.
-            // Everywhere else an embedded key would have the server find the
-            // account by public key — the same account a `kid` names, reached
-            // by a path the RFC does not define.
-            // The two unauthenticated resources a client may also POST-as-GET
-            // (§7.1, §7.2) are here too: neither names an account, and
-            // requiring one to read the directory would leave a client unable
-            // to find `newAccount` without already having an account.
-            if !matches!(
-                request_path.as_str(),
-                acme_proxy_core::routes::NEW_ACCOUNT
-                    | acme_proxy_core::routes::REVOKE_CERT
-                    | acme_proxy_core::routes::DIRECTORY
-                    | acme_proxy_core::routes::NEW_NONCE
-            ) {
-                warn!(event = "jws_jwk_not_allowed_here", outcome = "failure", url = %header.url, path = %request_path);
-                return Err(Problem::malformed(
-                    "This request must be signed with kid, not an embedded jwk",
-                ));
-            }
-            debug!(event = "jws_jwk_verification_started", outcome = "progress", algorithm = %header.alg, url = %header.url);
-            verify_signature_and_get_der(&header, &signing_input, &jws.signature)
-                .map_err(map_signature_error)?
-        }
-        (None, Some(kid)) => {
-            debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
-            // The account URL is the one *this* endpoint minted, prefix and
-            // all: a `kid` naming another profile does not match here, and the
-            // lookup below is scoped to this profile besides.
-            let base = &app.profile.base_url;
-            let id = kid
-                .strip_prefix(&format!("{base}/acct/"))
-                .ok_or_else(|| {
-                    warn!(event = "jws_kid_prefix_mismatch", outcome = "failure", kid = %kid, expected_prefix = %format!("{base}/acct/"));
-                    Problem::malformed("kid invalid")
-                })?;
-
-            Span::current().record("account_id", id);
-
-            let account = Account::find_by_id(&app.profile.name, id, &app.database)
-                .await
-                .map_err(|error| {
-                    error!(event = "jws_kid_account_lookup_failed", outcome = "failure", account_id = %id, error = %error);
-                    Problem::server_internal("Account lookup failed")
-                })?
-                .ok_or_else(|| Problem::account_does_not_exist("Unknown account"))?;
-
-            verify_signature_with_spki(
-                &header.alg,
-                &account.pubkey,
-                &signing_input,
-                &jws.signature,
-            )
-            .map_err(map_signature_error)?;
-
-            let pubkey = account.pubkey.clone();
-            signer_account = Some(account);
-            pubkey
-        }
-        (None, None) => {
-            warn!(event = "jws_jwk_and_kid_missing", outcome = "failure", url = %header.url, algorithm = %header.alg);
-            return Err(Problem::malformed("missing jwk or kid"));
-        }
-    };
-
-    let ttl = Duration::from_secs(app.config.nonce.ttl_seconds);
-    match Nonce::verify(&header.nonce, &app.database, ttl).await {
-        Ok(true) => {}
-        Ok(false) => {
-            // Unknown, already consumed or past `nonce.ttl_seconds` — the three
-            // are indistinguishable by design, since a consumed nonce is
-            // deleted. This is the anti-replay refusal, so it is worth a line:
-            // a client stuck replaying is a client that will never issue.
-            warn!(
-                event = "nonce_replayed",
-                outcome = "failure",
-                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
-                path = %request_path
-            );
-            return Err(Problem::bad_nonce("Nonce invalid"));
-        }
-        Err(error) => {
-            // The nonce itself never reaches a log: until it is consumed it is
-            // a bearer credential, and this arm is the one where it was *not*
-            // consumed. See `Nonce::fingerprint`.
-            error!(
-                event = "nonce_verification_failed",
-                outcome = "failure",
-                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
-                error = %error
-            );
-            return Err(Problem::server_internal("Nonce verification failed"));
-        }
-    }
+    let (pubkey, mut signer_account) =
+        resolve_signing_key(&app, &header, &request_path, &signing_input, &jws.signature).await?;
+    consume_nonce(&app, &header, &request_path).await?;
 
     // The account's `last_seen_*` stamp, here rather than in a handler because
     // this is the one place every `kid`-authenticated request funnels through —
@@ -311,6 +210,130 @@ where
     );
 
     Ok((header, pubkey, signer_account, jws.payload))
+}
+
+/// The key the JWS was signed with, verified: an embedded `jwk` where §6.2
+/// allows one, otherwise the key of the account `kid` names — and that account.
+///
+/// Called by [`verify_jws`] after the header checks and before the nonce, so a
+/// request refused here never spends one. Inside its span: the `account_id`
+/// field is recorded here.
+async fn resolve_signing_key(
+    app: &AppState,
+    header: &ProtectedHeader,
+    request_path: &str,
+    signing_input: &str,
+    signature: &str,
+) -> Result<(Vec<u8>, Option<Account>), Problem> {
+    let mut signer_account: Option<Account> = None;
+    let pubkey = match (&header.jwk, &header.kid) {
+        (Some(_), Some(_)) => {
+            warn!(event = "jws_jwk_and_kid_both_present", outcome = "failure", url = %header.url, algorithm = %header.alg);
+            return Err(Problem::malformed("jwk and kid are mutually exclusive"));
+        }
+        (Some(_), None) => {
+            // §6.2: "For all other requests, the request is signed using an
+            // existing account, and there MUST be a `kid` field." Only
+            // newAccount, where no account exists yet, and revokeCert, which
+            // §7.6 also lets a certificate's own key sign, may carry a `jwk`.
+            // Everywhere else an embedded key would have the server find the
+            // account by public key — the same account a `kid` names, reached
+            // by a path the RFC does not define.
+            // The two unauthenticated resources a client may also POST-as-GET
+            // (§7.1, §7.2) are here too: neither names an account, and
+            // requiring one to read the directory would leave a client unable
+            // to find `newAccount` without already having an account.
+            if !matches!(
+                request_path,
+                acme_proxy_core::routes::NEW_ACCOUNT
+                    | acme_proxy_core::routes::REVOKE_CERT
+                    | acme_proxy_core::routes::DIRECTORY
+                    | acme_proxy_core::routes::NEW_NONCE
+            ) {
+                warn!(event = "jws_jwk_not_allowed_here", outcome = "failure", url = %header.url, path = %request_path);
+                return Err(Problem::malformed(
+                    "This request must be signed with kid, not an embedded jwk",
+                ));
+            }
+            debug!(event = "jws_jwk_verification_started", outcome = "progress", algorithm = %header.alg, url = %header.url);
+            verify_signature_and_get_der(header, signing_input, signature)
+                .map_err(map_signature_error)?
+        }
+        (None, Some(kid)) => {
+            debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
+            // The account URL is the one *this* endpoint minted, prefix and
+            // all: a `kid` naming another profile does not match here, and the
+            // lookup below is scoped to this profile besides.
+            let base = &app.profile.base_url;
+            let id = kid
+                .strip_prefix(&format!("{base}/acct/"))
+                .ok_or_else(|| {
+                    warn!(event = "jws_kid_prefix_mismatch", outcome = "failure", kid = %kid, expected_prefix = %format!("{base}/acct/"));
+                    Problem::malformed("kid invalid")
+                })?;
+
+            Span::current().record("account_id", id);
+
+            let account = Account::find_by_id(&app.profile.name, id, &app.database)
+                .await
+                .map_err(|error| {
+                    error!(event = "jws_kid_account_lookup_failed", outcome = "failure", account_id = %id, error = %error);
+                    Problem::server_internal("Account lookup failed")
+                })?
+                .ok_or_else(|| Problem::account_does_not_exist("Unknown account"))?;
+
+            verify_signature_with_spki(&header.alg, &account.pubkey, signing_input, signature)
+                .map_err(map_signature_error)?;
+
+            let pubkey = account.pubkey.clone();
+            signer_account = Some(account);
+            pubkey
+        }
+        (None, None) => {
+            warn!(event = "jws_jwk_and_kid_missing", outcome = "failure", url = %header.url, algorithm = %header.alg);
+            return Err(Problem::malformed("missing jwk or kid"));
+        }
+    };
+    Ok((pubkey, signer_account))
+}
+
+/// Consumes the request's nonce (§6.5): one atomic delete, so a replay finds
+/// nothing. After the signature, so an unauthenticated request never spends a
+/// nonce it did not own.
+async fn consume_nonce(
+    app: &AppState,
+    header: &ProtectedHeader,
+    request_path: &str,
+) -> Result<(), Problem> {
+    let ttl = Duration::from_secs(app.config.nonce.ttl_seconds);
+    match Nonce::verify(&header.nonce, &app.database, ttl).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            // Unknown, already consumed or past `nonce.ttl_seconds` — the three
+            // are indistinguishable by design, since a consumed nonce is
+            // deleted. This is the anti-replay refusal, so it is worth a line:
+            // a client stuck replaying is a client that will never issue.
+            warn!(
+                event = "nonce_replayed",
+                outcome = "failure",
+                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
+                path = %request_path
+            );
+            Err(Problem::bad_nonce("Nonce invalid"))
+        }
+        Err(error) => {
+            // The nonce itself never reaches a log: until it is consumed it is
+            // a bearer credential, and this arm is the one where it was *not*
+            // consumed. See `Nonce::fingerprint`.
+            error!(
+                event = "nonce_verification_failed",
+                outcome = "failure",
+                nonce_fp = %acme_proxy_store::nonce::fingerprint(&header.nonce),
+                error = %error
+            );
+            Err(Problem::server_internal("Nonce verification failed"))
+        }
+    }
 }
 
 /// Advances `account.last_seen_*`, if the throttle says it is worth a write.

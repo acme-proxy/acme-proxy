@@ -12,7 +12,7 @@ use std::sync::Arc;
 use acme_proxy::cli::account::{AccountCommand, run_account_command};
 use acme_proxy::cli::eab::{EabCommand, run_eab_command};
 use acme_proxy::cli::nonce::{NonceCommand, run_nonce_command};
-use acme_proxy::cli::order::{OrderCommand, run_order_command};
+use acme_proxy::cli::order::{OrderCommand, OrderListArgs, run_order_command};
 use acme_proxy::cli::window::DEFAULT_LIMIT;
 use acme_proxy_core::audit::ClientContext;
 use acme_proxy_core::config::Config;
@@ -223,7 +223,7 @@ async fn order_cli_list_show_delete() {
 
     let mut reader: &[u8] = &[];
     run_order_command(
-        OrderCommand::List {
+        OrderCommand::List(OrderListArgs {
             profile: None,
             account_id: Some(account.id.to_string()),
             status: Some("pending".to_string()),
@@ -235,7 +235,7 @@ async fn order_cli_list_show_delete() {
             limit: DEFAULT_LIMIT,
             offset: 0,
             json: false,
-        },
+        }),
         false,
         Palette::plain(),
         &mut reader,
@@ -246,7 +246,7 @@ async fn order_cli_list_show_delete() {
     .unwrap();
 
     run_order_command(
-        OrderCommand::List {
+        OrderCommand::List(OrderListArgs {
             profile: None,
             account_id: None,
             status: None,
@@ -258,7 +258,7 @@ async fn order_cli_list_show_delete() {
             limit: DEFAULT_LIMIT,
             offset: 0,
             json: true,
-        },
+        }),
         false,
         Palette::plain(),
         &mut reader,
@@ -569,7 +569,7 @@ async fn order_cli_lists_what_is_expiring() {
     let mut reader: &[u8] = &[];
     for (hide_superseded, json) in [(false, false), (false, true), (true, false), (true, true)] {
         run_order_command(
-            OrderCommand::List {
+            OrderCommand::List(OrderListArgs {
                 profile: None,
                 account_id: None,
                 status: None,
@@ -581,7 +581,7 @@ async fn order_cli_lists_what_is_expiring() {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json,
-            },
+            }),
             false,
             Palette::plain(),
             &mut reader,
@@ -594,7 +594,7 @@ async fn order_cli_lists_what_is_expiring() {
 
     // The window is a filter, and an empty one is not an error.
     run_order_command(
-        OrderCommand::List {
+        OrderCommand::List(OrderListArgs {
             profile: Some("default".to_string()),
             account_id: None,
             status: None,
@@ -606,7 +606,7 @@ async fn order_cli_lists_what_is_expiring() {
             limit: DEFAULT_LIMIT,
             offset: 0,
             json: true,
-        },
+        }),
         false,
         Palette::plain(),
         &mut reader,

@@ -97,6 +97,88 @@ pub(crate) fn build_generation(
             }),
     };
 
+    let job_registry =
+        job_registry_for(config, resolved, assembly, parts, &profiles, admin_enabled)?;
+
+    // The CA's audit trail: one per process, shared by every profile's router
+    // and by the web admin listener, because `[audit]` is process-wide. Built
+    // here rather than in `server::profile::build_all` for exactly that reason — it is
+    // not a per-endpoint subsystem.
+    let auditor = Arc::new(
+        acme_proxy_jobs::auditor::Auditor::from_config(
+            &config.audit,
+            &config.dns,
+            database.clone(),
+            // The registry the certificate counters land in. Carried by
+            // `Assembly`, so it is the same one across every generation and the
+            // same one `metrics_app` serves from.
+            assembly.metrics.clone(),
+        )
+        .inspect_err(|error| {
+            error!(event = "audit_init_failed", outcome = "failure", error = %error);
+        })?,
+    );
+
+    // Built **before** `build_app`, which consumes `profiles`. The admin state
+    // needs the same profiles (revoking an order resolves that order's own
+    // signer), and `build_admin_app` takes a slice precisely so the ordering
+    // is a signature constraint rather than a borrow error to rediscover.
+    let (admin_app, logins) = match admin_enabled {
+        false => (None, None),
+        true => {
+            // Built again, although `check_config` already did: that call is
+            // the refusal, this one is the policy the router keeps.
+            let policy =
+                acme_proxy_admin::webadmin::filter::build(config).inspect_err(|error| {
+                    error!(event = "admin_filter_init_failed", outcome = "failure", error = %error);
+                })?;
+            let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
+                database.clone(),
+                config.clone(),
+                &profiles,
+                auditor.clone(),
+                assembly.notifiers.clone(),
+                assembly.jobs.clone(),
+                policy,
+                previous_logins,
+            );
+            (Some(router), Some(logins))
+        }
+    };
+    let acme_app = build_app(
+        database,
+        config.clone(),
+        profiles.clone(),
+        auditor,
+        assembly.metrics.clone(),
+        assembly.jobs.clone(),
+    );
+
+    Ok(Generation {
+        profiles,
+        acme_app,
+        admin_app,
+        job_registry,
+        tls,
+        admin_tls,
+        logins,
+    })
+}
+
+/// Every subsystem with background work, registered for one generation.
+///
+/// A sweep or handler that is never registered never runs, and nothing else
+/// notices: the table it should prune just grows. Which ones a configuration
+/// registers is pinned by `tests::a_generation_registers_the_sweeps_its_configuration_asks_for`.
+fn job_registry_for(
+    config: &Config,
+    resolved: &[acme_proxy_core::config::ProfileConfig],
+    assembly: &Assembly,
+    parts: &GenerationParts,
+    profiles: &[Arc<Profile>],
+    admin_enabled: bool,
+) -> anyhow::Result<acme_proxy_jobs::jobs::JobRegistry> {
+    let database = assembly.database.clone();
     // Every subsystem with background work, in one registry. **Nothing here
     // registers a handler per backend**: the registry refuses a second handler
     // for one kind outright, since two would each claim about half the rows, and
@@ -330,70 +412,7 @@ pub(crate) fn build_generation(
                 error!(event = "job_registry_init_failed", outcome = "failure", error = %error);
             })?;
     }
-
-    // The CA's audit trail: one per process, shared by every profile's router
-    // and by the web admin listener, because `[audit]` is process-wide. Built
-    // here rather than in `server::profile::build_all` for exactly that reason — it is
-    // not a per-endpoint subsystem.
-    let auditor = Arc::new(
-        acme_proxy_jobs::auditor::Auditor::from_config(
-            &config.audit,
-            &config.dns,
-            database.clone(),
-            // The registry the certificate counters land in. Carried by
-            // `Assembly`, so it is the same one across every generation and the
-            // same one `metrics_app` serves from.
-            assembly.metrics.clone(),
-        )
-        .inspect_err(|error| {
-            error!(event = "audit_init_failed", outcome = "failure", error = %error);
-        })?,
-    );
-
-    // Built **before** `build_app`, which consumes `profiles`. The admin state
-    // needs the same profiles (revoking an order resolves that order's own
-    // signer), and `build_admin_app` takes a slice precisely so the ordering
-    // is a signature constraint rather than a borrow error to rediscover.
-    let (admin_app, logins) = match admin_enabled {
-        false => (None, None),
-        true => {
-            // Built again, although `check_config` already did: that call is
-            // the refusal, this one is the policy the router keeps.
-            let policy =
-                acme_proxy_admin::webadmin::filter::build(config).inspect_err(|error| {
-                    error!(event = "admin_filter_init_failed", outcome = "failure", error = %error);
-                })?;
-            let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
-                database.clone(),
-                config.clone(),
-                &profiles,
-                auditor.clone(),
-                assembly.notifiers.clone(),
-                assembly.jobs.clone(),
-                policy,
-                previous_logins,
-            );
-            (Some(router), Some(logins))
-        }
-    };
-    let acme_app = build_app(
-        database,
-        config.clone(),
-        profiles.clone(),
-        auditor,
-        assembly.metrics.clone(),
-        assembly.jobs.clone(),
-    );
-
-    Ok(Generation {
-        profiles,
-        acme_app,
-        admin_app,
-        job_registry,
-        tls,
-        admin_tls,
-        logins,
-    })
+    Ok(job_registry)
 }
 
 /// What one successful reload hands back to the supervisor: the report to log,

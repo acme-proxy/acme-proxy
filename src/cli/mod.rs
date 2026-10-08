@@ -673,7 +673,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Order {
-                command: OrderCommand::List {
+                command: OrderCommand::List(crate::cli::order::OrderListArgs {
                     profile: None,
                     account_id: Some(a),
                     status: Some(s),
@@ -685,7 +685,7 @@ mod tests {
                     limit: window::DEFAULT_LIMIT,
                     offset: 0,
                     json: true
-                }
+                })
             }) if a == "acct-1" && s == "pending"
         ));
 
@@ -701,7 +701,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Order {
-                command: OrderCommand::List {
+                command: OrderCommand::List(crate::cli::order::OrderListArgs {
                     expiring_in: Some(30),
                     hide_superseded: true,
                     status: None,
@@ -713,7 +713,7 @@ mod tests {
                     limit: window::DEFAULT_LIMIT,
                     offset: 0,
                     json: false
-                }
+                })
             })
         ));
 
@@ -1185,7 +1185,7 @@ mod tests {
                 },
             },
             Command::Order {
-                command: OrderCommand::List {
+                command: OrderCommand::List(crate::cli::order::OrderListArgs {
                     profile: None,
                     account_id: None,
                     status: None,
@@ -1197,7 +1197,7 @@ mod tests {
                     limit: window::DEFAULT_LIMIT,
                     offset: 0,
                     json: false,
-                },
+                }),
             },
             Command::Nonce {
                 command: NonceCommand::Cleanup {

@@ -10,7 +10,7 @@
 use std::io::BufRead;
 use std::sync::Arc;
 
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 
 use crate::cli::CliError;
 use crate::cli::render;
@@ -25,43 +25,48 @@ use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;
 use acme_proxy_store::status::OrderStatus;
 
+/// `order list`'s flags, a struct of their own so the listing is one function
+/// rather than an arm of [`run_order_command`].
+#[derive(Args)]
+pub struct OrderListArgs {
+    /// Restrict the listing to one ACME endpoint.
+    #[arg(long)]
+    pub profile: Option<String>,
+    #[arg(long = "account-id")]
+    pub account_id: Option<String>,
+    #[arg(long)]
+    pub status: Option<String>,
+    /// Only orders naming this identifier exactly (case-insensitive).
+    #[arg(long)]
+    pub identifier: Option<String>,
+    /// Only orders naming an identifier that contains this substring
+    /// (case-insensitive). Mutually exclusive with `--identifier`.
+    #[arg(long = "identifier-contains", conflicts_with = "identifier")]
+    pub identifier_contains: Option<String>,
+    /// Only the order whose issued certificate has this serial (hex, no
+    /// separators) -- the value an abuse report hands you.
+    #[arg(long = "cert-serial")]
+    pub cert_serial: Option<String>,
+    /// Instead: the certificates lapsing within N days, soonest first,
+    /// each annotated with whatever has already replaced it.
+    #[arg(long = "expiring-in")]
+    pub expiring_in: Option<u64>,
+    /// Omit certificates something has already replaced. Needs
+    /// `--expiring-in`, which is where the annotation comes from.
+    #[arg(long = "hide-superseded")]
+    pub hide_superseded: bool,
+    #[arg(long, default_value_t = DEFAULT_LIMIT)]
+    pub limit: i64,
+    #[arg(long, default_value_t = 0)]
+    pub offset: i64,
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum OrderCommand {
     /// List orders, optionally filtered.
-    List {
-        /// Restrict the listing to one ACME endpoint.
-        #[arg(long)]
-        profile: Option<String>,
-        #[arg(long = "account-id")]
-        account_id: Option<String>,
-        #[arg(long)]
-        status: Option<String>,
-        /// Only orders naming this identifier exactly (case-insensitive).
-        #[arg(long)]
-        identifier: Option<String>,
-        /// Only orders naming an identifier that contains this substring
-        /// (case-insensitive). Mutually exclusive with `--identifier`.
-        #[arg(long = "identifier-contains", conflicts_with = "identifier")]
-        identifier_contains: Option<String>,
-        /// Only the order whose issued certificate has this serial (hex, no
-        /// separators) -- the value an abuse report hands you.
-        #[arg(long = "cert-serial")]
-        cert_serial: Option<String>,
-        /// Instead: the certificates lapsing within N days, soonest first,
-        /// each annotated with whatever has already replaced it.
-        #[arg(long = "expiring-in")]
-        expiring_in: Option<u64>,
-        /// Omit certificates something has already replaced. Needs
-        /// `--expiring-in`, which is where the annotation comes from.
-        #[arg(long = "hide-superseded")]
-        hide_superseded: bool,
-        #[arg(long, default_value_t = DEFAULT_LIMIT)]
-        limit: i64,
-        #[arg(long, default_value_t = 0)]
-        offset: i64,
-        #[arg(long)]
-        json: bool,
-    },
+    List(OrderListArgs),
     /// Show one order plus its authorizations and challenges.
     Show {
         id: String,
@@ -95,98 +100,7 @@ pub async fn run_order_command(
     database: Arc<Database>,
 ) -> Result<(), CliError> {
     match command {
-        OrderCommand::List {
-            profile,
-            account_id,
-            status,
-            identifier,
-            identifier_contains,
-            cert_serial,
-            expiring_in,
-            hide_superseded,
-            limit,
-            offset,
-            json,
-        } => {
-            let window = Window::resolve(limit, offset);
-
-            // `--expiring-in` is a different question over a different query,
-            // and the flags that do not compose with it are refused **by name**
-            // rather than ignored -- `--status`'s own rule, and for its reason:
-            // an argument silently dropped answers with rows that look like it
-            // was honoured. The window is not among them: it is the one flag
-            // that means the same thing on both queries, so it is passed
-            // straight through.
-            if let Some(days) = expiring_in {
-                refuse_plain_listing_filters(
-                    account_id.as_deref(),
-                    status.as_deref(),
-                    identifier.as_deref(),
-                    identifier_contains.as_deref(),
-                    cert_serial.as_deref(),
-                )?;
-                return run_expiring(
-                    days,
-                    profile,
-                    hide_superseded,
-                    window,
-                    json,
-                    palette,
-                    database,
-                )
-                .await;
-            }
-            if hide_superseded {
-                return Err(CliError::bad_request(
-                    "--hide-superseded needs --expiring-in: it filters on the supersession \
-                     annotation, which only the expiry listing carries"
-                        .to_string(),
-                ));
-            }
-
-            // Refused by name rather than passed through: an unknown status
-            // would match no rows, which reads exactly like "nothing is in
-            // that state". The same rule `audit list --event` follows.
-            let status = super::parse_flag::<OrderStatus>("--status", status)?;
-
-            // Filtered in SQL, by the same `Order::search` the web admin uses.
-            // It used to load every order in the database and filter the three
-            // fields in Rust, which is one policy written twice — and the two
-            // could drift into disagreeing about what `--status` means.
-            let query = OrderQuery {
-                profile,
-                account_id,
-                status,
-                identifier,
-                identifier_contains,
-                // Folded here rather than bound raw: an operator pastes a
-                // serial out of `openssl` or an abuse report, and the column
-                // only ever holds lowercase unseparated hex.
-                cert_serial: cert_serial
-                    .as_deref()
-                    .map(acme_proxy_core::cert::normalize_serial),
-                limit: window.limit,
-                offset: window.offset,
-            };
-            let (orders, total) = Order::search(&query, &database).await?;
-            // Not `render::print_page`, and this is the only listing that opts
-            // out: the `--json` rendering needs one batched authorization
-            // lookup for the whole page (`admin::orders_json`, which the web
-            // admin renders through too). Handing that to `print_page` would
-            // make the text path pay for a query it never reads, so the two
-            // halves are spelled out and the shared envelope and footer are
-            // called directly.
-            if json {
-                let rendered =
-                    admin::orders_json(&orders, &config.server.base_url, &database).await?;
-                println!("{}", render::json_page(rendered, total, window));
-            } else {
-                for order in &orders {
-                    println!("{}", render::render_order_line(order, palette));
-                }
-                render::print_footer(orders.len(), total);
-            }
-        }
+        OrderCommand::List(args) => run_list(args, palette, config, database).await?,
         OrderCommand::Show { id, json } => match admin::load_order_detail(&id, database).await? {
             None => return Err(not_found(&id)),
             Some(detail) if json => {
@@ -372,6 +286,106 @@ pub async fn run_order_command(
 
 /// How long `order revoke` waits for a queued revocation by default.
 const DEFAULT_REVOKE_WAIT_SECONDS: u64 = 30;
+
+/// `order list`: the paged listing, or with `--expiring-in` the expiry one.
+async fn run_list(
+    args: OrderListArgs,
+    palette: Palette,
+    config: &Config,
+    database: Arc<Database>,
+) -> Result<(), CliError> {
+    let OrderListArgs {
+        profile,
+        account_id,
+        status,
+        identifier,
+        identifier_contains,
+        cert_serial,
+        expiring_in,
+        hide_superseded,
+        limit,
+        offset,
+        json,
+    } = args;
+    let window = Window::resolve(limit, offset);
+
+    // `--expiring-in` is a different question over a different query,
+    // and the flags that do not compose with it are refused **by name**
+    // rather than ignored -- `--status`'s own rule, and for its reason:
+    // an argument silently dropped answers with rows that look like it
+    // was honoured. The window is not among them: it is the one flag
+    // that means the same thing on both queries, so it is passed
+    // straight through.
+    if let Some(days) = expiring_in {
+        refuse_plain_listing_filters(
+            account_id.as_deref(),
+            status.as_deref(),
+            identifier.as_deref(),
+            identifier_contains.as_deref(),
+            cert_serial.as_deref(),
+        )?;
+        return run_expiring(
+            days,
+            profile,
+            hide_superseded,
+            window,
+            json,
+            palette,
+            database,
+        )
+        .await;
+    }
+    if hide_superseded {
+        return Err(CliError::bad_request(
+            "--hide-superseded needs --expiring-in: it filters on the supersession \
+             annotation, which only the expiry listing carries"
+                .to_string(),
+        ));
+    }
+
+    // Refused by name rather than passed through: an unknown status
+    // would match no rows, which reads exactly like "nothing is in
+    // that state". The same rule `audit list --event` follows.
+    let status = super::parse_flag::<OrderStatus>("--status", status)?;
+
+    // Filtered in SQL, by the same `Order::search` the web admin uses.
+    // It used to load every order in the database and filter the three
+    // fields in Rust, which is one policy written twice — and the two
+    // could drift into disagreeing about what `--status` means.
+    let query = OrderQuery {
+        profile,
+        account_id,
+        status,
+        identifier,
+        identifier_contains,
+        // Folded here rather than bound raw: an operator pastes a
+        // serial out of `openssl` or an abuse report, and the column
+        // only ever holds lowercase unseparated hex.
+        cert_serial: cert_serial
+            .as_deref()
+            .map(acme_proxy_core::cert::normalize_serial),
+        limit: window.limit,
+        offset: window.offset,
+    };
+    let (orders, total) = Order::search(&query, &database).await?;
+    // Not `render::print_page`, and this is the only listing that opts
+    // out: the `--json` rendering needs one batched authorization
+    // lookup for the whole page (`admin::orders_json`, which the web
+    // admin renders through too). Handing that to `print_page` would
+    // make the text path pay for a query it never reads, so the two
+    // halves are spelled out and the shared envelope and footer are
+    // called directly.
+    if json {
+        let rendered = admin::orders_json(&orders, &config.server.base_url, &database).await?;
+        println!("{}", render::json_page(rendered, total, window));
+    } else {
+        for order in &orders {
+            println!("{}", render::render_order_line(order, palette));
+        }
+        render::print_footer(orders.len(), total);
+    }
+    Ok(())
+}
 
 /// `order list --expiring-in <days>`.
 ///
@@ -1160,7 +1174,7 @@ mod tests {
 
         let mut reader: &[u8] = &[];
         for command in [
-            OrderCommand::List {
+            OrderCommand::List(OrderListArgs {
                 profile: Some("default".to_string()),
                 account_id: None,
                 status: None,
@@ -1172,9 +1186,9 @@ mod tests {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: true,
-            },
+            }),
             // The identifier and serial filters walk the same render paths.
-            OrderCommand::List {
+            OrderCommand::List(OrderListArgs {
                 profile: None,
                 account_id: None,
                 status: None,
@@ -1186,8 +1200,8 @@ mod tests {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: true,
-            },
-            OrderCommand::List {
+            }),
+            OrderCommand::List(OrderListArgs {
                 profile: None,
                 account_id: None,
                 status: None,
@@ -1199,7 +1213,7 @@ mod tests {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: false,
-            },
+            }),
             OrderCommand::Show {
                 id: order.id.to_string(),
                 json: true,
@@ -1234,7 +1248,7 @@ mod tests {
 
         let mut reader: &[u8] = &[];
         let error = run_order_command(
-            OrderCommand::List {
+            OrderCommand::List(OrderListArgs {
                 profile: None,
                 account_id: None,
                 status: Some("readyy".to_string()),
@@ -1246,7 +1260,7 @@ mod tests {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json: false,
-            },
+            }),
             true,
             Palette::plain(),
             &mut reader,
@@ -1281,7 +1295,7 @@ mod tests {
         let mut reader: &[u8] = &[];
         for status in OrderStatus::ALL {
             run_order_command(
-                OrderCommand::List {
+                OrderCommand::List(OrderListArgs {
                     profile: None,
                     account_id: None,
                     status: Some(status.as_str().to_string()),
@@ -1293,7 +1307,7 @@ mod tests {
                     limit: DEFAULT_LIMIT,
                     offset: 0,
                     json: false,
-                },
+                }),
                 true,
                 Palette::plain(),
                 &mut reader,
@@ -1321,7 +1335,7 @@ mod tests {
     ) -> Result<(), CliError> {
         let mut reader: &[u8] = &[];
         run_order_command(
-            OrderCommand::List {
+            OrderCommand::List(OrderListArgs {
                 profile: None,
                 account_id: account_id.map(str::to_string),
                 status: status.map(str::to_string),
@@ -1333,7 +1347,7 @@ mod tests {
                 limit: DEFAULT_LIMIT,
                 offset: 0,
                 json,
-            },
+            }),
             true,
             Palette::plain(),
             &mut reader,
@@ -1410,7 +1424,7 @@ mod tests {
                 [(1, 0, false), (1, 1, false), (1, 0, true), (0, -5, false)]
             {
                 run_order_command(
-                    OrderCommand::List {
+                    OrderCommand::List(OrderListArgs {
                         profile: None,
                         account_id: None,
                         status: None,
@@ -1422,7 +1436,7 @@ mod tests {
                         limit,
                         offset,
                         json,
-                    },
+                    }),
                     true,
                     Palette::plain(),
                     &mut reader,

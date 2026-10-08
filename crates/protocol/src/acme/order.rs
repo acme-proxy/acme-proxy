@@ -255,6 +255,104 @@ pub struct OrderService<'a> {
     pub profile: &'a Profile,
 }
 
+/// The order's identifiers as it will store them — normalized, deduplicated,
+/// first-seen order kept — or every reason they cannot be.
+///
+/// Checked before the account is resolved, so a malformed order is refused as
+/// malformed whoever sent it.
+fn validated_identifiers(
+    mut identifiers: Vec<Identifier>,
+    profile: &Profile,
+) -> Result<Vec<Identifier>, Problem> {
+    let challenges = &profile.challenges;
+
+    if identifiers.is_empty() {
+        warn!(event = "order_no_identifiers", outcome = "failure");
+        return Err(Problem::malformed("No identifiers"));
+    }
+    // Before anything is normalized or looked at: the cost this refuses is the
+    // work below, and every bit of it scales with the count.
+    if identifiers.len() > profile.order.max_identifiers {
+        warn!(
+            event = "order_too_many_identifiers",
+            outcome = "failure",
+            identifiers_count = identifiers.len(),
+            limit = profile.order.max_identifiers
+        );
+        return Err(Problem::malformed(format!(
+            "An order may name at most {} identifiers; this one names {}",
+            profile.order.max_identifiers,
+            identifiers.len()
+        )));
+    }
+    if let Some(bad) = identifiers.iter().find(|id| id.typ != "dns") {
+        warn!(event = "order_identifier_type_unsupported", outcome = "failure", typ = %bad.typ);
+        return Err(Problem::unsupported_identifier(
+            "Only dns identifiers supported",
+        ));
+    }
+
+    for identifier in &mut identifiers {
+        identifier.value = normalize_dns_name(&identifier.value);
+    }
+
+    // Two spellings of one name are one identifier. `A.example.com` and
+    // `a.example.com.` normalize to the same value, and the order's
+    // `UNIQUE (order_id, identifier)` would answer the second one with a
+    // 500 on the write. Keeping first-seen order leaves the object the
+    // client reads back in the order it asked.
+    let mut seen = std::collections::HashSet::new();
+    identifiers.retain(|identifier| seen.insert(identifier.value.clone()));
+
+    // Every offending name at once, each attributed to itself (RFC 8555 §6.7.1).
+    // Reporting only the first would make a ten-name order a ten-round-trip
+    // guessing game — §6.7.1's own rationale: a client "may choose to submit
+    // another order containing only the eight identifiers not listed".
+    let rejections: Vec<Problem> = identifiers
+        .iter()
+        .filter_map(|identifier| {
+            if !well_formed_name(&identifier.value) {
+                warn!(event = "order_identifier_malformed", outcome = "failure", value = %identifier.value);
+                Some(
+                    Problem::malformed(format!(
+                        "Malformed identifier {}: not a DNS name (a `*` is only legal as a single leading `*.`)",
+                        identifier.value
+                    ))
+                    .with_identifier(identifier),
+                )
+            } else if names_an_ip_address(&identifier.value) {
+                warn!(event = "order_identifier_is_address", outcome = "failure", value = %identifier.value);
+                Some(
+                    Problem::rejected_identifier(format!(
+                        "Identifier {} is an IP address, which a dns identifier cannot name",
+                        identifier.value
+                    ))
+                    .with_identifier(identifier),
+                )
+            } else if challenges
+                .types_for(is_wildcard(&identifier.value))
+                .is_empty()
+            {
+                warn!(event = "order_identifier_wildcard_rejected", outcome = "failure", value = %identifier.value);
+                Some(
+                    Problem::rejected_identifier(format!(
+                        "Wildcard identifier {} requires the dns-01 challenge, which is not enabled",
+                        identifier.value
+                    ))
+                    .with_identifier(identifier),
+                )
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if !rejections.is_empty() {
+        return Err(compound_identifier_problem(rejections));
+    }
+    Ok(identifiers)
+}
+
 impl OrderService<'_> {
     /// Creates an order and its authorizations (RFC 8555 §7.4), for the account
     /// that signed the request.
@@ -273,92 +371,7 @@ impl OrderService<'_> {
         request: &RequestContext,
     ) -> Result<(Order, Vec<Uuid>), Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
-        let challenges = &profile.challenges;
-
-        if payload.identifiers.is_empty() {
-            warn!(event = "order_no_identifiers", outcome = "failure");
-            return Err(Problem::malformed("No identifiers").into());
-        }
-        // Before anything is normalized or looked at: the cost this refuses is the
-        // work below, and every bit of it scales with the count.
-        if payload.identifiers.len() > profile.order.max_identifiers {
-            warn!(
-                event = "order_too_many_identifiers",
-                outcome = "failure",
-                identifiers_count = payload.identifiers.len(),
-                limit = profile.order.max_identifiers
-            );
-            return Err(Problem::malformed(format!(
-                "An order may name at most {} identifiers; this one names {}",
-                profile.order.max_identifiers,
-                payload.identifiers.len()
-            ))
-            .into());
-        }
-        if let Some(bad) = payload.identifiers.iter().find(|id| id.typ != "dns") {
-            warn!(event = "order_identifier_type_unsupported", outcome = "failure", typ = %bad.typ);
-            return Err(Problem::unsupported_identifier("Only dns identifiers supported").into());
-        }
-
-        let mut identifiers = payload.identifiers;
-        for identifier in &mut identifiers {
-            identifier.value = normalize_dns_name(&identifier.value);
-        }
-
-        // Two spellings of one name are one identifier. `A.example.com` and
-        // `a.example.com.` normalize to the same value, and the order's
-        // `UNIQUE (order_id, identifier)` would answer the second one with a
-        // 500 on the write. Keeping first-seen order leaves the object the
-        // client reads back in the order it asked.
-        let mut seen = std::collections::HashSet::new();
-        identifiers.retain(|identifier| seen.insert(identifier.value.clone()));
-
-        // Every offending name at once, each attributed to itself (RFC 8555 §6.7.1).
-        // Reporting only the first would make a ten-name order a ten-round-trip
-        // guessing game — §6.7.1's own rationale: a client "may choose to submit
-        // another order containing only the eight identifiers not listed".
-        let rejections: Vec<Problem> = identifiers
-            .iter()
-            .filter_map(|identifier| {
-                if !well_formed_name(&identifier.value) {
-                    warn!(event = "order_identifier_malformed", outcome = "failure", value = %identifier.value);
-                    Some(
-                        Problem::malformed(format!(
-                            "Malformed identifier {}: not a DNS name (a `*` is only legal as a single leading `*.`)",
-                            identifier.value
-                        ))
-                        .with_identifier(identifier),
-                    )
-                } else if names_an_ip_address(&identifier.value) {
-                    warn!(event = "order_identifier_is_address", outcome = "failure", value = %identifier.value);
-                    Some(
-                        Problem::rejected_identifier(format!(
-                            "Identifier {} is an IP address, which a dns identifier cannot name",
-                            identifier.value
-                        ))
-                        .with_identifier(identifier),
-                    )
-                } else if challenges
-                    .types_for(is_wildcard(&identifier.value))
-                    .is_empty()
-                {
-                    warn!(event = "order_identifier_wildcard_rejected", outcome = "failure", value = %identifier.value);
-                    Some(
-                        Problem::rejected_identifier(format!(
-                            "Wildcard identifier {} requires the dns-01 challenge, which is not enabled",
-                            identifier.value
-                        ))
-                        .with_identifier(identifier),
-                    )
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        if !rejections.is_empty() {
-            return Err(compound_identifier_problem(rejections).into());
-        }
+        let identifiers = validated_identifiers(payload.identifiers, profile)?;
 
         let not_before = match payload.not_before {
             Some(ref s) => Some(parse_rfc3339("notBefore", s)?),
@@ -417,7 +430,7 @@ impl OrderService<'_> {
             for identifier in &order.identifiers {
                 let authz = Authorization::new(order.id, identifier.clone(), order.expires);
                 authz.insert(tx.conn()).await?;
-                for typ in challenges.types_for(is_wildcard(&identifier.value)) {
+                for typ in profile.challenges.types_for(is_wildcard(&identifier.value)) {
                     Challenge::new(authz.id, typ).insert(tx.conn()).await?;
                 }
                 authz_ids.push(authz.id);
