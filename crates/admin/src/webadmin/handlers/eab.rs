@@ -24,6 +24,7 @@ use acme_proxy_store::eab::DeletedEab;
 use acme_proxy_store::eab::Eab;
 use acme_proxy_store::eab::EabDeletion;
 
+/// The optional body of `POST /api/eab`. An empty string reads as absent.
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateEab {
     #[serde(default, deserialize_with = "empty_is_absent")]

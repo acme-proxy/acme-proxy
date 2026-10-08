@@ -120,6 +120,7 @@ impl ScriptHook {
         })
     }
 
+    /// The script's path, as configured.
     pub fn path(&self) -> &Path {
         &self.path
     }

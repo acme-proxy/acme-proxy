@@ -12,15 +12,22 @@
 //! (`/acct/{id}`, `/order/{id}/finalize`, …) are never advertised, so they have
 //! exactly one call site and gain nothing from a constant.
 
+/// The directory (RFC 8555 §7.1.1), the one URL a client is configured with.
 pub const DIRECTORY: &str = "/directory";
+/// `newNonce` (RFC 8555 §7.2).
 pub const NEW_NONCE: &str = "/newNonce";
+/// `newAccount` (RFC 8555 §7.3).
 pub const NEW_ACCOUNT: &str = "/newAccount";
+/// `newOrder` (RFC 8555 §7.4).
 pub const NEW_ORDER: &str = "/newOrder";
+/// `revokeCert` (RFC 8555 §7.6).
 pub const REVOKE_CERT: &str = "/revokeCert";
+/// `keyChange` (RFC 8555 §7.3.5).
 pub const KEY_CHANGE: &str = "/keyChange";
 /// RFC 9773 §4.1 has the client append the certID, so the directory
 /// advertises this bare while the router mounts `{id}` under it.
 pub const RENEWAL_INFO: &str = "/renewalInfo";
+/// The local CA's CRL, DER encoded. Not advertised in the directory.
 pub const CRL: &str = "/crl";
 /// The trust anchor a client installs to accept this profile's leaves.
 /// Routed beside [`CRL`] and, like it, deliberately not advertised in the

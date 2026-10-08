@@ -49,6 +49,8 @@ fn mints_nonce(method: &Method, path: &str) -> bool {
     method == Method::POST || path == acme_proxy_core::routes::NEW_NONCE
 }
 
+/// Mints and stores a nonce for the requests [`mints_nonce`] selects, and
+/// sets it as the response's `Replay-Nonce`.
 pub async fn add_nonce_middleware(
     State(database): State<Arc<Database>>,
     request: Request<Body>,

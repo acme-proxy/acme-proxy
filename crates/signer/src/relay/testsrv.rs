@@ -204,6 +204,7 @@ impl Upstream {
         self.counters.last_eab_payload.lock().unwrap().clone()
     }
 
+    /// The URL a `relay` backend under test is configured with.
     pub fn directory_url(&self) -> String {
         format!("{}/directory", self.base)
     }

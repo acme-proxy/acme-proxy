@@ -301,6 +301,7 @@ pub struct Outbound {
 }
 
 impl Outbound {
+    /// One generation's resolver and proxy policy, bundled.
     pub fn new(resolver: Arc<dyn Resolver>, proxies: Arc<OutboundProxies>) -> Self {
         Self { resolver, proxies }
     }

@@ -17,6 +17,7 @@ use crate::webadmin::handlers::Caller;
 use crate::webadmin::session::{Authenticated, AuthenticatedWrite};
 use acme_proxy_store::nonce::Nonce;
 
+/// The optional body of `POST /api/nonces/cleanup`.
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupRequest {
     /// Age past which a nonce is swept. Absent means `nonce.ttl_seconds`.

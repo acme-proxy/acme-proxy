@@ -117,18 +117,22 @@ impl JobSpec {
         }
     }
 
+    /// The handler's own arguments, stored as the row's `payload`.
     #[must_use]
     pub fn with_payload(mut self, payload: Value) -> Self {
         self.payload = payload;
         self
     }
 
+    /// The epoch second after which the job is retired unrun rather than
+    /// claimed (`job_deadline_passed`). `None` means no deadline.
     #[must_use]
     pub fn with_deadline(mut self, deadline: Option<i64>) -> Self {
         self.deadline = deadline;
         self
     }
 
+    /// Runs the job no sooner than `delay` from now.
     #[must_use]
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.run_at = now_secs().saturating_add(seconds(delay));
@@ -200,6 +204,9 @@ pub struct JobQueue {
 }
 
 impl JobQueue {
+    /// The enqueue side of the queue over `database`, starting from
+    /// `config.max_attempts`. Cheap to clone; every clone shares the wake-up
+    /// signal and the reloadable attempt budget.
     #[must_use]
     pub fn new(database: Arc<Database>, config: &JobsConfig) -> Self {
         Self {

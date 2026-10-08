@@ -43,6 +43,8 @@ pub struct Admission {
 }
 
 impl Admission {
+    /// `max_concurrent` slots (at least one), each waited for at most
+    /// `wait_ms`, and a `deadline_ms` on the whole request once admitted.
     #[must_use]
     pub fn new(max_concurrent: usize, wait_ms: u64, deadline_ms: u64) -> Self {
         // A limit of zero would refuse every request forever, which is never
@@ -68,6 +70,9 @@ impl Admission {
 /// deadline for no reason.
 const RETRY_AFTER_SECONDS: &str = "5";
 
+/// Admits a request into a free slot, or answers `503` with `Retry-After`
+/// once `wait` has passed without one. An admitted request still running at
+/// its deadline is cut off with a `500`.
 pub async fn admission_middleware(
     State(admission): State<Admission>,
     request: Request<Body>,

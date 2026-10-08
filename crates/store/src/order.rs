@@ -473,6 +473,8 @@ impl Order {
         Ok(order)
     }
 
+    /// Looks an order up by id, in any profile. An id that does not parse as
+    /// one is `None`, like an unknown one: it came from a URL or a command line.
     pub async fn find_by_id(id: &str, database: &Database) -> Result<Option<Order>, sqlx::Error> {
         debug!(event = "db_order_find_by_id_started", outcome = "progress", order_id = ?id);
         let Some(id) = crate::id::parse(id) else {

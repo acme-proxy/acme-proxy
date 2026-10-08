@@ -55,6 +55,8 @@ use acme_proxy_net::http_client::error_excerpt;
 /// send-message API, which is the reason this is configurable at all.
 const ALLOWED_METHODS: [&str; 3] = ["POST", "PUT", "PATCH"];
 
+/// One `[notify.webhook.<name>]` entry: an HTTP request per event, its body a
+/// rendered template, through this generation's egress.
 pub struct WebhookNotifier {
     /// The `notify.webhook.<name>` entry this was built from — the only part of
     /// the configuration safe to log, and what tells two entries apart.

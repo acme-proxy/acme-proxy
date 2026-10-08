@@ -90,6 +90,7 @@ fn process_wide(
 
 // --- accounts -------------------------------------------------------------
 
+/// `account_deactivated`, under the account's profile.
 #[must_use]
 pub fn account_deactivated(actor: Actor, client: ClientContext, account: &Account) -> AuditRecord {
     base(
@@ -101,6 +102,7 @@ pub fn account_deactivated(actor: Actor, client: ClientContext, account: &Accoun
     .with_account(account.id.to_string())
 }
 
+/// `account_contact_updated`, carrying the new list, or "contact cleared".
 #[must_use]
 pub fn account_contact_updated(
     actor: Actor,
@@ -123,6 +125,7 @@ pub fn account_contact_updated(
     .with_detail(detail)
 }
 
+/// `account_deleted`, carrying how many orders the delete cascaded to.
 #[must_use]
 pub fn account_deleted(
     actor: Actor,
@@ -137,6 +140,8 @@ pub fn account_deleted(
 
 // --- orders -------------------------------------------------------------
 
+/// `order_deleted`, naming the order's account and identifiers, and how many
+/// authorizations it cascaded to.
 #[must_use]
 pub fn order_deleted(
     actor: Actor,
@@ -151,6 +156,8 @@ pub fn order_deleted(
 
 // --- external account binding -----------------------------------------------
 
+/// `eab_created`, naming the `kid` and its label — never the secret. A
+/// credential scoped to no profile is written under the empty profile.
 #[must_use]
 pub fn eab_created(
     actor: Actor,
@@ -172,6 +179,7 @@ pub fn eab_created(
     .with_detail(detail)
 }
 
+/// `eab_revoked`, naming the `kid`.
 #[must_use]
 pub fn eab_revoked(
     actor: Actor,
@@ -247,6 +255,8 @@ pub fn eab_deleted_records(
 
 // --- operators ---------------------------------------------------------------
 
+/// `operator_created`, naming the operator and their role. Process-wide, like
+/// every operator row: an operator belongs to no profile.
 #[must_use]
 pub fn operator_created(
     actor: Actor,
@@ -262,6 +272,7 @@ pub fn operator_created(
     )
 }
 
+/// `operator_role_changed`, naming the operator and the role they now hold.
 #[must_use]
 pub fn operator_role_changed(
     actor: Actor,
@@ -277,6 +288,8 @@ pub fn operator_role_changed(
     )
 }
 
+/// `operator_contact_updated`: whether the notification address was `set` or
+/// cleared. The address itself is not written to the trail.
 #[must_use]
 pub fn operator_contact_updated(
     actor: Actor,
@@ -292,6 +305,8 @@ pub fn operator_contact_updated(
     )
 }
 
+/// `operator_password_changed`; `self_service` marks an operator changing
+/// their own.
 #[must_use]
 pub fn operator_password_changed(
     actor: Actor,
@@ -307,6 +322,7 @@ pub fn operator_password_changed(
     process_wide(AuditEvent::OperatorPasswordChanged, actor, client, detail)
 }
 
+/// `operator_enabled` or `operator_disabled`, as `enabled` says.
 #[must_use]
 pub fn operator_status_changed(
     actor: Actor,
@@ -322,6 +338,7 @@ pub fn operator_status_changed(
     process_wide(event, actor, client, username.to_string())
 }
 
+/// `operator_deleted`, naming the operator.
 #[must_use]
 pub fn operator_deleted(actor: Actor, client: ClientContext, username: &str) -> AuditRecord {
     process_wide(
@@ -332,6 +349,7 @@ pub fn operator_deleted(actor: Actor, client: ClientContext, username: &str) -> 
     )
 }
 
+/// `operator_totp_enrolled`: the operator confirmed a second factor.
 #[must_use]
 pub fn operator_totp_enrolled(actor: Actor, client: ClientContext, username: &str) -> AuditRecord {
     process_wide(
@@ -342,6 +360,8 @@ pub fn operator_totp_enrolled(actor: Actor, client: ClientContext, username: &st
     )
 }
 
+/// `operator_totp_disabled`; `by_admin` marks a reset by another operator
+/// (`admin user totp reset`, or the panel) rather than the owner's own removal.
 #[must_use]
 pub fn operator_totp_disabled(
     actor: Actor,
@@ -357,6 +377,7 @@ pub fn operator_totp_disabled(
     process_wide(AuditEvent::OperatorTotpDisabled, actor, client, detail)
 }
 
+/// `operator_recovery_codes_regenerated`: a fresh set replaced the old one.
 #[must_use]
 pub fn operator_recovery_codes_regenerated(
     actor: Actor,
@@ -418,6 +439,7 @@ pub fn session_revoked(
 
 // --- background queue and housekeeping ------------------------------------
 
+/// `job_cancelled`, naming the job's kind and id.
 #[must_use]
 pub fn job_cancelled(actor: Actor, client: ClientContext, kind: &str, id: &str) -> AuditRecord {
     process_wide(
@@ -428,6 +450,8 @@ pub fn job_cancelled(actor: Actor, client: ClientContext, kind: &str, id: &str) 
     )
 }
 
+/// `job_advanced`: a job made eligible to run now. `revived` marks a failed
+/// job given one more attempt, as against a waiting one nudged forward.
 #[must_use]
 pub fn job_advanced(actor: Actor, client: ClientContext, id: &str, revived: bool) -> AuditRecord {
     process_wide(
@@ -454,6 +478,8 @@ pub fn database_transferred(actor: Actor, client: ClientContext, rows: u64) -> A
     )
 }
 
+/// `nonce_cleanup_completed`, carrying how many nonces went. Both front ends
+/// write it only when the sweep removed something.
 #[must_use]
 pub fn nonce_cleanup_completed(actor: Actor, client: ClientContext, removed: u64) -> AuditRecord {
     process_wide(
@@ -464,6 +490,9 @@ pub fn nonce_cleanup_completed(actor: Actor, client: ClientContext, removed: u64
     )
 }
 
+/// `audit_pruned`, carrying how many rows went and the cutoff. Written after
+/// the prune, and only when it removed something, so a prune that did leaves
+/// the one row that says it happened.
 #[must_use]
 pub fn audit_pruned(
     actor: Actor,

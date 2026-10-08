@@ -40,6 +40,7 @@ pub struct AccountListParams {
     pub offset: Option<i64>,
 }
 
+/// The body of `PATCH /api/accounts/{id}`: the whole new contact list.
 #[derive(Debug, Deserialize)]
 pub struct UpdateAccount {
     pub contact: Vec<String>,

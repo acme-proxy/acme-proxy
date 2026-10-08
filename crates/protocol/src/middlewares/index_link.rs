@@ -28,6 +28,8 @@ use axum::{
 
 use acme_proxy_core::routes::DIRECTORY;
 
+/// Adds `Link: <directory>;rel="index"` to every response but the
+/// directory's own.
 pub async fn add_index_link_middleware(
     State(link_value): State<HeaderValue>,
     request: Request<Body>,

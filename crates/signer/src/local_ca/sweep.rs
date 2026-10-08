@@ -171,6 +171,7 @@ pub struct CrlRegenerateJob {
 }
 
 impl CrlRegenerateJob {
+    /// The handler over every local CA this generation built.
     #[must_use]
     pub fn new(refreshers: Vec<Arc<dyn CrlRefresher>>) -> Self {
         Self { refreshers }

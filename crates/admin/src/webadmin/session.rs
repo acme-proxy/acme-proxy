@@ -656,6 +656,8 @@ fn bucket_key(client: IpAddr) -> IpAddr {
 }
 
 impl LoginLimiter {
+    /// At most `max_attempts` failures per client address (an IPv6 address by
+    /// its /64) within `window_seconds`.
     #[must_use]
     pub fn new(max_attempts: u32, window_seconds: u64) -> Self {
         Self {

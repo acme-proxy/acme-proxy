@@ -176,6 +176,8 @@ impl std::fmt::Debug for Metrics {
 }
 
 impl Metrics {
+    /// Every family empty, with `database` read for the pool gauge at scrape
+    /// time rather than tracked.
     #[must_use]
     pub fn new(database: Arc<Database>) -> Self {
         Self {

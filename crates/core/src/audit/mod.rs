@@ -267,6 +267,7 @@ pub enum ActorKind {
 }
 
 impl ActorKind {
+    /// The spelling stored in `audit_log.actor_kind`.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -481,6 +482,8 @@ pub struct AuditRecord {
 }
 
 impl AuditRecord {
+    /// A record of `event` at `profile`, by `actor`, with every optional field
+    /// empty; the `with_*` builders fill them in.
     #[must_use]
     pub fn new(event: AuditEvent, profile: impl Into<String>, actor: Actor) -> Self {
         Self {
@@ -530,18 +533,22 @@ impl AuditRecord {
         self
     }
 
+    /// The account the row is about.
     #[must_use]
     pub fn with_account(mut self, account_id: impl Into<String>) -> Self {
         self.account_id = Some(account_id.into());
         self
     }
 
+    /// The certificate serial, lowercase unseparated hex.
     #[must_use]
     pub fn with_serial(mut self, serial: impl Into<String>) -> Self {
         self.cert_serial = Some(serial.into());
         self
     }
 
+    /// Where the request came from: address, reverse name, `User-Agent` and
+    /// request id.
     #[must_use]
     pub fn with_client(mut self, client: ClientContext) -> Self {
         self.client = client;
@@ -556,6 +563,7 @@ impl AuditRecord {
         self
     }
 
+    /// Free text for a human reading the trail. Never parsed.
     #[must_use]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());

@@ -305,6 +305,8 @@ pub struct HyperFetcher {
 }
 
 impl HyperFetcher {
+    /// A fetcher dialling through `outbound`. Fails only if the TLS client
+    /// configuration cannot be built.
     pub fn new(outbound: crate::http_client::Outbound) -> anyhow::Result<Self> {
         // No ALPN: this is an ordinary https request, not a challenge handshake.
         // The certificate is not validated — RFC 8555 §8.3 says so explicitly,

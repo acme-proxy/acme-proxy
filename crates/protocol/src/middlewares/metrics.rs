@@ -37,6 +37,7 @@ use axum::{
 use acme_proxy_jobs::metrics::Metrics;
 use acme_proxy_jobs::metrics::split_matched_path;
 
+/// Counts the request by route and status, and observes its duration.
 pub async fn record_request(
     State(metrics): State<Arc<Metrics>>,
     request: Request<Body>,

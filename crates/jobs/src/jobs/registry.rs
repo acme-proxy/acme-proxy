@@ -23,6 +23,7 @@ pub struct JobRegistry {
 }
 
 impl JobRegistry {
+    /// An empty registry; [`register`](Self::register) fills it.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -65,6 +66,7 @@ impl JobRegistry {
         self.handlers.get(kind)
     }
 
+    /// Whether no handler is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.handlers.is_empty()

@@ -23,6 +23,7 @@ use acme_proxy_store::order::Order;
 use acme_proxy_store::order::OrderQuery;
 use acme_proxy_store::status::JobStatus;
 
+/// The form of `POST /ui/nonces/cleanup`.
 #[derive(Debug, Deserialize, Default)]
 pub struct CleanupForm {
     /// Blank means `nonce.ttl_seconds`, matching the JSON API's absent member.

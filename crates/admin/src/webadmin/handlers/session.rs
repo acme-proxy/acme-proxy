@@ -28,12 +28,14 @@ use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_session::NewSession;
 use acme_proxy_store::admin_user::AdminUser;
 
+/// The credentials of `POST /api/session`, and of the sign-in page's form.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
 }
 
+/// The query of a sign-out, `DELETE /api/session` or its page twin.
 #[derive(Debug, Deserialize, Default)]
 pub struct LogoutQuery {
     /// Sign out of every browser, not just this one.

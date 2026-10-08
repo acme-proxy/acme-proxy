@@ -244,6 +244,9 @@ impl std::fmt::Debug for AcmeClient {
     }
 }
 
+/// A client of the upstream ACME CA the `relay` backend issues through: its
+/// directory, discovered once, and the egress every request dials through.
+/// Requests are signed by the caller's account key, not held here.
 pub struct AcmeClient {
     directory: Directory,
     tls: Arc<rustls::ClientConfig>,
@@ -279,6 +282,7 @@ impl AcmeClient {
         })
     }
 
+    /// The upstream's directory, as [`discover`](Self::discover) fetched it.
     pub fn directory(&self) -> &Directory {
         &self.directory
     }

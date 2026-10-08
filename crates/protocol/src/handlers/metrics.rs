@@ -19,6 +19,8 @@ use acme_proxy_jobs::metrics::Metrics;
 #[derive(Clone)]
 pub struct MetricsState(pub Arc<Metrics>);
 
+/// `GET /metrics`: the whole registry in the OpenMetrics text format, on the
+/// metrics listener alone.
 pub async fn get_metrics(State(MetricsState(metrics)): State<MetricsState>) -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, acme_proxy_jobs::metrics::CONTENT_TYPE)],

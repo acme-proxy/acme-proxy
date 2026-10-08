@@ -158,6 +158,8 @@ struct Inner {
     jobs: JobQueue,
 }
 
+/// The `relay` signer backend: obtains each certificate from an upstream ACME
+/// CA, as an ACME client of it, and settles the local order from a queued job.
 pub struct RelaySigner(Arc<Inner>);
 
 /// One relay backend, as the process-wide [`flow::RelayJob`] holds it.

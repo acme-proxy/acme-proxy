@@ -27,6 +27,8 @@ use crate::webadmin::pages::{chrome, flash, page_value, pager, respond, respond_
 use acme_proxy_store::account::Account;
 use acme_proxy_store::eab::Eab;
 
+/// The form of `POST /ui/eab`. A form has no absent field, so an empty string
+/// stands for one.
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateForm {
     /// A human label, free text. Rendered into the list and the detail, which

@@ -31,6 +31,8 @@ use crate::webadmin::session::{AdminClientIp, clearing_cookie};
 use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::AdminUser;
 
+/// The form of `POST /ui/account/mfa/totp/confirm`, the `/ui` twin of
+/// [`crate::webadmin::handlers::mfa::ConfirmRequest`].
 #[derive(Debug, Deserialize)]
 pub struct ConfirmForm {
     pub code: String,
@@ -294,6 +296,8 @@ pub async fn regenerate_recovery_codes(
     Ok(respond_fragment(&state, "account/_codes.html", context)?.into_response())
 }
 
+/// The form of `POST /ui/account/password`, the `/ui` twin of
+/// [`crate::webadmin::handlers::account::ChangePasswordRequest`].
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordForm {
     pub current_password: String,

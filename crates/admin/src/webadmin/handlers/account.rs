@@ -27,6 +27,8 @@ use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, Authenticated, SelfServiceWrite, clearing_cookie};
 use acme_proxy_store::admin_session::AdminSession;
 
+/// The body of `POST /api/account/password`. `current_password` is checked
+/// again here, whatever the session.
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordRequest {
     pub current_password: String,

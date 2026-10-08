@@ -49,6 +49,8 @@ use acme_proxy_policy::filter::ConnectionContext;
 use acme_proxy_policy::filter::FilterPolicy;
 use acme_proxy_policy::filter::Outcome;
 
+/// Runs the policy's connection stage, and answers the refusal itself when it
+/// denies.
 pub async fn add_filter_middleware(
     State(policy): State<Arc<FilterPolicy>>,
     mut request: Request<Body>,

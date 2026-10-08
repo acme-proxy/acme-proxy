@@ -47,6 +47,8 @@ use uuid::Uuid;
 
 use acme_proxy_core::client::RequestId;
 
+/// The correlation header: adopted from the caller when usable, minted
+/// otherwise, and echoed on the response.
 pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Returns true for the probe routes whose access line belongs at `debug`.
@@ -83,6 +85,7 @@ fn usable_request_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
+/// The layer itself: see the module doc.
 pub async fn add_access_middleware(mut request: Request<Body>, next: Next) -> impl IntoResponse {
     let id_str = match request.headers().get(&X_REQUEST_ID) {
         Some(value) => match value.to_str() {

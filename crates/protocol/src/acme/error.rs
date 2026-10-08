@@ -1,9 +1,8 @@
 //! Why an ACME operation did not happen.
 //!
-//! Mostly a [`Problem`](acme_proxy_core::error::Problem) carried as it is; the
-//! other variants exist only for the response headers a problem document
-//! cannot hold, and each still converts to the problem a client would have
-//! seen.
+//! Mostly a [`Problem`] carried as it is; the other variants exist only for
+//! the response headers a problem document cannot hold, and each still
+//! converts to the problem a client would have seen.
 
 use acme_proxy_core::error::Problem;
 

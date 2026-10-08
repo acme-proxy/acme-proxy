@@ -31,6 +31,7 @@ pub const NOTIFY_JOB_KIND: &str = "notify_deliver";
 pub struct NotifyJob(Notifiers);
 
 impl NotifyJob {
+    /// The `notify_deliver` handler over the current dispatcher map.
     #[must_use]
     pub fn new(dispatchers: impl Into<Notifiers>) -> Self {
         Self(dispatchers.into())

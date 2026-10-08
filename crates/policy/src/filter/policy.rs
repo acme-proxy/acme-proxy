@@ -104,6 +104,8 @@ impl StageSet {
         }
     }
 
+    /// A check that decides on the request as it arrives, and has nothing to
+    /// say once the identifiers are known.
     #[must_use]
     pub const fn connection_only() -> Self {
         Self {
@@ -112,6 +114,7 @@ impl StageSet {
         }
     }
 
+    /// A check that needs the names a request asks for.
     #[must_use]
     pub const fn identifiers_only() -> Self {
         Self {
@@ -129,6 +132,7 @@ impl StageSet {
         }
     }
 
+    /// Whether a check or rule in this set runs at `stage`.
     #[must_use]
     pub const fn contains(self, stage: Stage) -> bool {
         match stage {
@@ -137,6 +141,8 @@ impl StageSet {
         }
     }
 
+    /// The stages both sets run at: where a rule naming checks of both can be
+    /// evaluated.
     #[must_use]
     pub const fn intersect(self, other: Self) -> Self {
         Self {
@@ -145,6 +151,7 @@ impl StageSet {
         }
     }
 
+    /// Whether this set runs at no stage at all.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         !self.connection && !self.identifiers
@@ -231,6 +238,7 @@ pub enum Effect {
 }
 
 impl Effect {
+    /// The spelling `then` takes in configuration.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {

@@ -245,6 +245,7 @@ pub struct TlsSettings {
 }
 
 impl TlsSettings {
+    /// An acceptor, and how long a client may take to finish its handshake.
     #[must_use]
     pub fn new(acceptor: TlsAcceptor, handshake_timeout: Duration) -> Self {
         Self {

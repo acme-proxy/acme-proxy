@@ -91,6 +91,7 @@ fn bad_identifier_filters(message: &'static str) -> AdminError {
     )
 }
 
+/// The optional body of `POST /api/orders/{id}/revoke`.
 #[derive(Debug, Deserialize, Default)]
 pub struct RevokeRequest {
     /// RFC 5280 §5.3.1 reason code. Absent means "no reason recorded".

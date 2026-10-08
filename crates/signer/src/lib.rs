@@ -491,6 +491,7 @@ impl<T: ?Sized> SignerSet<T> {
         self.by_identity.len()
     }
 
+    /// Whether no backend was built.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_identity.is_empty()

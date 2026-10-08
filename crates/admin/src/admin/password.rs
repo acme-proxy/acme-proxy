@@ -485,6 +485,8 @@ pub fn needs_rehash(stored: &str) -> bool {
 static DUMMY_HASH: LazyLock<String> =
     LazyLock::new(|| encode(&[0u8; SALT_LEN], &[0u8; HASH_LEN], ITERATIONS));
 
+/// A well-formed hash of nothing, verified against when the username is
+/// unknown so a miss costs the same KDF time as a wrong password.
 #[must_use]
 pub fn dummy_hash() -> &'static str {
     &DUMMY_HASH

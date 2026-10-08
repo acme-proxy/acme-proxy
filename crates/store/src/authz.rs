@@ -172,6 +172,8 @@ impl Authorization {
         Ok(authz)
     }
 
+    /// Looks an authorization up by id. An id that does not parse as one is
+    /// `None`, like an unknown one: it came from a URL.
     pub async fn find_by_id(
         id: &str,
         database: &Database,
@@ -523,6 +525,8 @@ impl Challenge {
         Ok(challenge)
     }
 
+    /// Looks a challenge up by id. An id that does not parse as one is `None`,
+    /// like an unknown one: it came from a URL.
     pub async fn find_by_id(
         id: &str,
         database: &Database,

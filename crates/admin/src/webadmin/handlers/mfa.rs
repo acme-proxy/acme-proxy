@@ -22,6 +22,8 @@ use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::session::finish_enrolment;
 use crate::webadmin::session::{AdminClientIp, Authenticated, EnrolWrite, SelfServiceWrite};
 
+/// The body of `POST /api/mfa/totp/confirm`: a code from the authenticator
+/// being enrolled.
 #[derive(Debug, Deserialize)]
 pub struct ConfirmRequest {
     pub code: String,

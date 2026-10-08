@@ -28,6 +28,9 @@ use acme_proxy_core::identifier::Identifier;
 /// relay semaphore ever got a say in how fast they are worked through.
 pub const MAX_PROCESSING_BATCH: usize = 500;
 
+/// One `upstream_orders` row: the order the `relay` backend opened at its
+/// upstream for a local order, keyed by the local order's id, and the URLs and
+/// error text the relay needs to resume or explain it.
 #[derive(Debug, Clone)]
 pub struct UpstreamOrder {
     pub order_id: Uuid,
@@ -177,6 +180,8 @@ impl UpstreamOrder {
         Ok(Some(record))
     }
 
+    /// The upstream order behind the local order `order_id`, if this server
+    /// relayed it.
     pub async fn find_by_order_id(
         order_id: &str,
         database: &Database,
