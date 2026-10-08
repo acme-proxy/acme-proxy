@@ -10,10 +10,10 @@
 # Example: `ACME_PROXY_SERVER__BASE_URL=https://acme.example.com`
 # To specify a custom config file path, use `ACME_PROXY_CONFIG=/path/to/config`.
 #
-# List-valued keys (everything under [filter] that is an array, and the same
-# under [notify]) take a comma-separated value from the environment, e.g.
-# `ACME_PROXY_FILTER__ENABLED=allowed_ip,identifiers`. A regex containing a
-# literal comma — a quantifier such as `{2,3}` — can only be written in this file.
+# Every list-valued key takes a comma-separated value from the environment,
+# e.g. `ACME_PROXY_CHALLENGE__ENABLED=http-01,dns-01`. Items are trimmed, and an
+# empty item is refused. A regex containing a literal comma — a quantifier such
+# as `{2,3}` — can only be written in this file.
 #
 # Profiles:
 # The server serves ACME only through the [profiles.<name>] tables at the bottom
@@ -31,6 +31,8 @@
 #   [server]                            listen socket, public URL, admission
 #   [server.tls]                        HTTPS on the ACME listener
 #   [admin]                             the web admin listener and its sessions
+#   [admin.notify]                      operator security notifications
+#   [admin.filter]                      who may reach the admin listener
 #   [admin.tls]                         HTTPS on the admin listener
 #   [nonce]                             replay-nonce freshness
 #   [audit]                             reverse lookups and trail retention
@@ -52,11 +54,9 @@
 #     [challenge.http_01]               (there is no [challenge.dns_01])
 #     [challenge.tls_alpn_01]
 #   [filter]                   [per-profile]  who may ask, and for what
-#     [filter.allowed_ip]
-#     [filter.reverse_dns]
-#     [filter.identifiers]
-#     [filter.custom.<name>]            one table per named script hook
-#   [ipam]                     [per-profile]  the inventory `ipam` consults
+#     [filter.check.<name>]             one named check, of one `type`
+#     [filter.rule.<name>]              a condition over checks, and its effect
+#   [ipam]                     [per-profile]  the inventory `ipam` checks read
 #     [ipam.netbox]
 #     [ipam.phpipam]
 #     [ipam.custom]
@@ -102,10 +102,12 @@ max_concurrent_requests = 100       # ACME_PROXY_SERVER__MAX_CONCURRENT_REQUESTS
 # How long to wait for a slot before refusing. Long enough to absorb a burst,
 # short enough that the queue can never be deeper than this in time.
 admission_wait_ms = 50              # ACME_PROXY_SERVER__ADMISSION_WAIT_MS
-# Whole-request deadline. This MUST exceed every hook that runs inside a request
-# — challenge.timeout_ms, and signer.custom.timeout_ms when that backend is in
-# use — or a validation that was going to succeed is cut off and reported to the
-# client as a server failure. Startup refuses a configuration where it does not.
+# Whole-request deadline. It must exceed every hook that still runs inside a
+# request, or work that was going to succeed is cut off and reported to the
+# client as a server failure. Challenge validation runs in the job queue, so
+# that is now only signer.custom.timeout_ms, and only while a custom signer
+# answers `GET /crl` (supports_crl) or renewal information
+# (supports_renewal_info); startup refuses a configuration where it does not.
 request_timeout_ms = 60000          # ACME_PROXY_SERVER__REQUEST_TIMEOUT_MS
 # Largest request body accepted, in bytes. An ACME body is a JWS carrying at
 # most a CSR; the default here replaces axum's implicit 2 MiB.
@@ -613,7 +615,7 @@ delay_secs = 30                     # ACME_PROXY_SIGNER__RELAY__DNS01__PROPAGATI
 # revocation to an external script — an HSM tool, an internal PKI CLI, a
 # cloud KMS wrapper, anything that can read a CSR and hand back a chain.
 #
-# An empty script_path is a startup error, the same as [filter.custom].
+# An empty script_path is a startup error, the same as a `custom` filter check.
 script_path = ""                    # ACME_PROXY_SIGNER__CUSTOM__SCRIPT_PATH
 timeout_ms = 5000                   # ACME_PROXY_SIGNER__CUSTOM__TIMEOUT_MS
 args = []                           # ACME_PROXY_SIGNER__CUSTOM__ARGS
@@ -688,9 +690,9 @@ supports_renewal_info = false        # ACME_PROXY_SIGNER__CUSTOM__SUPPORTS_RENEW
 # The script does NOT inherit the server's environment: it is started from an
 # empty one holding only the ACME_SIGNER_* variables above plus a minimal PATH
 # (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). This matters
-# even more here than for [filter.custom.*] — the RFC 2136 TSIG secret used by
-# signer.relay.dns01 lives inside this very [signer] section tree, and a
-# custom signer script has no business reading it.
+# even more here than for a `custom` filter check — the RFC 2136 TSIG secret
+# used by signer.relay.dns01 lives inside this very [signer] section tree, and
+# a custom signer script has no business reading it.
 #
 # One process is spawned per invocation. A script still running when
 # timeout_ms expires is killed, not left behind.
@@ -729,7 +731,7 @@ enabled = ["http-01"]               # ACME_PROXY_CHALLENGE__ENABLED
 #
 # This used to default to true — it was the behaviour predating real validation,
 # and the default was kept so an existing deployment survived that upgrade. It
-# now defaults to FALSE: combined with an empty filter.enabled and a default bind
+# now defaults to FALSE: combined with an empty filter.rules and a default bind
 # on every interface, the old default meant a server started with no
 # configuration at all was an open certificate authority. Turning validation off
 # is a legitimate thing to want (a private CA behind a filter that already knows
@@ -1003,22 +1005,23 @@ forwarded_header = "x-forwarded-for"  # ACME_PROXY_FILTER__FORWARDED_HEADER
 # not left behind.
 
 [ipam]   # [per-profile] — a [profiles.<name>] block may override these
-# The IP address management inventory the `ipam` filter consults.
+# The IP address management inventory an `ipam` filter check consults.
 #
-# Where [filter.identifiers] answers "may anyone here have this name?", the
-# `ipam` filter answers "may THIS address have THIS name?" — and reads the
+# Where an `identifiers` check answers "may anyone here have this name?", an
+# `ipam` check answers "may THIS address have THIS name?" — and reads the
 # answer from the inventory an estate already keeps instead of a list
-# maintained here. Nothing below is read unless "ipam" is in filter.enabled.
+# maintained here. Nothing below is read unless a [filter.check.<name>] with
+# type = "ipam" is named by a rule in filter.rules.
 #
 # Matching is EXACT, case-insensitively and ignoring a trailing dot. There is
 # no suffix rule and no wildcard expansion: an entry `example.com` does not
 # permit `a.example.com`, and a request for `*.example.com` needs that exact
-# string in the inventory. Same reasoning as the anchored patterns in
-# [filter.identifiers].
+# string in the inventory. Same reasoning as the anchored patterns of an
+# `identifiers` check.
 #
 # An `ip` identifier is permitted when it is the connecting address itself, or
-# when it is listed like any other name. A common name ("cn") is skipped, as in
-# [filter.identifiers]. Any other type is refused: an inventory has nothing to
+# when it is listed like any other name. A common name ("cn") is skipped, as by
+# an `identifiers` check. Any other type is refused: an inventory has nothing to
 # say about an email address or a URI, and this filter refuses what it cannot
 # confirm.
 #
@@ -1041,7 +1044,7 @@ timeout_ms = 5000                   # ACME_PROXY_IPAM__TIMEOUT_MS
 [ipam.netbox]
 # Where the names come from. Empty, or an unknown entry, is a startup error —
 # an inventory trusted for nothing can never permit a name. Order is
-# meaningless: the result is a union, unlike filter.enabled's evaluation order.
+# meaningless: the result is a union, unlike filter.rules' evaluation order.
 #
 #   dns_name      the address object's own dns_name
 #   custom_field  the custom field named below, on the address object
@@ -1183,8 +1186,8 @@ args = []                           # ACME_PROXY_IPAM__CUSTOM__ARGS
 #
 # OFF by default, like essentially every public ACME CA (Let's Encrypt itself
 # does not require it): this is a policy choice, not a "less secure than it
-# looks" default, so — unlike filter.enabled/challenge.bypass — it earns no
-# startup warning when left off.
+# looks" default, so — unlike an empty filter.rules or challenge.bypass — it
+# earns no startup warning when left off.
 #
 # Keys are managed with the `eab` admin subcommand (create/list/show/revoke),
 # never through this file: a credential must be revocable without a restart.
@@ -1232,7 +1235,7 @@ enabled = []                        # ACME_PROXY_NOTIFY__ENABLED
 # empty, or an entry named here that isn't defined below, is a startup error.
 webhook_enabled = []                # ACME_PROXY_NOTIFY__WEBHOOK_ENABLED
 # Which of [notify.custom]'s entries to run, when "custom" is listed above —
-# same shape as [filter.custom]/[filter]/custom_enabled: "custom" enabled with
+# same shape as webhook_enabled above: "custom" enabled with
 # this empty, or an entry named here that isn't defined below, is a startup
 # error.
 custom_enabled = []                 # ACME_PROXY_NOTIFY__CUSTOM_ENABLED
@@ -1326,10 +1329,10 @@ max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
 # [notify.webhook.matrix.headers]     # ACME_PROXY_NOTIFY__WEBHOOK__MATRIX__HEADERS__AUTHORIZATION
 # Authorization = "Bearer syt_xxxxx"
 
-# notify.custom holds NAMED external scripts, the
-# notify-side counterpart of filter.custom/signer.custom — the same shape,
-# same "shell out to a script" contract, same restriction on names
-# (^[a-z0-9-]+$, for the same ACME_PROXY_NOTIFY__CUSTOM__<NAME>__... reason).
+# notify.custom holds NAMED external scripts, the notify-side counterpart of a
+# `custom` filter check and signer.custom — the same "shell out to a script"
+# contract, and a restriction on names (^[a-z0-9-]+$, for the
+# ACME_PROXY_NOTIFY__CUSTOM__<NAME>__... reason).
 # This is what lets an operator wire up a channel that is not an HTTP request
 # at all (a paging daemon, a local socket, `wall`) — for anything that IS one,
 # [notify.webhook] above is the answer and needs no script.
@@ -1351,10 +1354,10 @@ max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
 # so any non-zero exit is uniformly "delivery failed" (the first non-empty
 # line of stdout, or stderr, becomes the logged detail).
 #
-# The script does NOT inherit the server's environment, for the same reason
-# [filter.custom]/[signer.custom] don't: this process's own environment may
-# hold secrets (e.g. notify.email.smtp_password), and a notify script has no
-# business reading them.
+# The script does NOT inherit the server's environment, for the same reason a
+# `custom` filter check and [signer.custom] don't: this process's own
+# environment may hold secrets (e.g. notify.email.smtp_password), and a notify
+# script has no business reading them.
 #
 # One process is spawned per enabled script per event. A script still
 # running when timeout_ms expires is killed, not left behind.
@@ -1383,9 +1386,9 @@ max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
 
 [proxy]
 # The forward proxy every outbound HTTP client dials through: the upstream CA
-# the `relay` signer talks to, the IPAM inventory, the Mattermost webhook, and
-# the http-01/tls-alpn-01 challenge validators (the latter through a CONNECT
-# tunnel, since it is TLS rather than HTTP).
+# the `relay` signer talks to, the IPAM inventory, the notification webhooks,
+# and the http-01/tls-alpn-01 challenge validators (the latter through a
+# CONNECT tunnel, since it is TLS rather than HTTP).
 #
 # Not everything outbound: SMTP (notify.email) and the RFC 2136 DNS updates
 # signer.relay.dns01 makes are not HTTP and keep dialling directly. An estate
@@ -1430,8 +1433,9 @@ max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
 # ---------------------------------------------------------------------------
 #
 # Everything above is the *base*. A profile is one ACME endpoint built from it:
-# it inherits every [signer] / [filter] / [challenge] / [eab] / [order] /
-# [notify] value above, key by key, and overrides only what it states. So the
+# it inherits every [signer] / [filter] / [ipam] / [challenge] / [eab] /
+# [order] / [meta] / [notify] value above, key by key, and overrides only what
+# it states. So the
 # empty table below is a complete endpoint, identical to the configuration
 # above.
 #
