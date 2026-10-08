@@ -443,6 +443,12 @@ fn refuse_removed_keys(cfg: &FilterConfig) -> anyhow::Result<()> {
         "[filter.custom.<name>] is no longer a section: each script is a \
          [filter.check.<name>] with type = \"custom\" and the same keys."
     );
+    anyhow::ensure!(
+        cfg.netbox.is_none(),
+        "[filter.netbox] is now [ipam.netbox], read by a check with type = \"ipam\": \
+         timeout_ms moves to ipam.timeout_ms, and use_dns_name / device_fallback become \
+         \"dns_name\" / \"device\" in ipam.netbox.sources."
+    );
     Ok(())
 }
 
@@ -1212,6 +1218,11 @@ mod tests {
                 |cfg| cfg.custom = Some(IgnoredAny),
                 "[filter.custom.<name>]",
                 "type = \"custom\"",
+            ),
+            (
+                |cfg| cfg.netbox = Some(IgnoredAny),
+                "[filter.netbox]",
+                "ipam.netbox.sources",
             ),
         ];
 

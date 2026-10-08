@@ -370,6 +370,9 @@ mod tests {
             [filter.custom.hook]
             command = "/bin/true"
 
+            [filter.netbox]
+            url = "https://netbox.example.com"
+
             [profiles.le]
             "#,
         );
@@ -378,6 +381,7 @@ mod tests {
         assert!(config.filter.reverse_dns.is_some());
         assert!(config.filter.identifiers.is_some());
         assert!(config.filter.custom.is_some());
+        assert!(config.filter.netbox.is_some());
     }
 
     #[test]
@@ -1017,6 +1021,7 @@ mod tests {
         assert!(config.filter.reverse_dns.is_none());
         assert!(config.filter.identifiers.is_none());
         assert!(config.filter.custom.is_none());
+        assert!(config.filter.netbox.is_none());
         assert!(!config.eab.enabled);
         assert!(config.notify.enabled.is_empty());
         assert!(config.notify.custom_enabled.is_empty());

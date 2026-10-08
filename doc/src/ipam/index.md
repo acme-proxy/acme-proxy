@@ -43,7 +43,7 @@ whatever it reads, so there is nothing to declare and no key to set.
 Two things the list does **not** say, and both matter:
 
 - **Order is meaningless.** The result is a union of sets, unlike
-  `filter.enabled` (evaluation order) or `challenge.enabled` (offer order).
+  `filter.rules` (evaluation order) or `challenge.enabled` (offer order).
 - **`device` is a fallback, not a union.** It is read only when the address
   object itself carried no value for the custom field. A value set on the
   address is the more specific statement, and an operator narrowing one address
@@ -104,7 +104,9 @@ request — and it must stay below `server.request_timeout_ms`.
 
 ## Migrating from `filter.netbox`
 
-Three changes, and the server states all three if it finds the old spelling:
+Three changes, and the server refuses the old spelling of each by name: a check
+still declared `type = "netbox"` names the first, a `[filter.netbox]` section
+the other two:
 
 1. A check declared with `type = "netbox"` becomes `type = "ipam"`, plus
    `ipam.backend = "netbox"`.

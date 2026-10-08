@@ -36,11 +36,13 @@ migrated configuration before restarting.
 
 - **`admin session list --username` is now `--user`**, the spelling `admin
   session revoke` already used for the same operator.
-- **`[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]` and
-  `[filter.custom.<name>]` are refused by name at startup.** They were replaced
+- **`[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]`,
+  `[filter.custom.<name>]` and `[filter.netbox]` are refused by name at
+  startup.** They were replaced
   by `[filter.check.<name>]` entries when `[filter]` became a policy, but a
   configuration still carrying them was silently ignored rather than refused as
-  the book said. Move each table's keys onto a check of that `type`.
+  the book said. Move each table's keys onto a check of that `type`, and
+  `[filter.netbox]` to `[ipam.netbox]`.
 - **Every request but `newAccount` and `revokeCert` must be signed with `kid`**
   (RFC 8555 §6.2), plus the two resources a client may POST-as-GET before it
   has an account, `directory` and `newNonce`. An embedded `jwk` elsewhere —

@@ -84,6 +84,9 @@ pub struct FilterConfig {
     /// Removed: each `[filter.custom.<name>]` is a `type = "custom"` check.
     /// See `allowed_ip`.
     pub custom: Option<IgnoredAny>,
+    /// Removed: NetBox moved into its own subsystem, `[ipam.netbox]`. See
+    /// `allowed_ip`.
+    pub netbox: Option<IgnoredAny>,
 }
 
 impl Default for FilterConfig {
@@ -105,6 +108,7 @@ impl Default for FilterConfig {
             reverse_dns: None,
             identifiers: None,
             custom: None,
+            netbox: None,
         }
     }
 }

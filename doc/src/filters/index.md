@@ -161,3 +161,4 @@ change listed in the
 | `filter.exempt_paths` | A [`path`](path.md) check plus a rule — which can also combine the path with an address, and can glob. |
 | `filter.custom_enabled` | `custom` is an ordinary check type; `filter.rules` already says which run and in what order. |
 | `[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]`, `[filter.custom.<name>]` | The type's keys move onto its `[filter.check.<name>]` entry. |
+| `[filter.netbox]` | `[ipam.netbox]`, read by a `type = "ipam"` check — see [IPAM](../ipam/index.md#migrating-from-filternetbox). |
