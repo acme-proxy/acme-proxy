@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An **ACME (RFC 8555) server** in Rust/[axum](https://docs.rs/axum), serving certificate clients (certbot, acme.sh, lego) over the full account → order → authorization → challenge → finalize → certificate flow, plus revocation. **One binary over a Cargo workspace**: the `acme-proxy` package at the root (`src/cli/`, `main.rs`, every suite in `tests/`) over nine library crates in `crates/`, bottom-up `core`, `store`, `net`, `policy`, `jobs`, `signer`, `protocol`, `admin`, `server` ([ADR 0002](doc/src/dev/adr/0002-workspace-layering.md)). At **0.5.0**.
+An **ACME (RFC 8555) server** in Rust/[axum](https://docs.rs/axum), serving certificate clients (certbot, acme.sh, lego) over the full account → order → authorization → challenge → finalize → certificate flow, plus revocation. **One binary over a Cargo workspace**: the `acme-proxy` package at the root (`src/cli/`, `main.rs`, every suite in `tests/`) over nine library crates in `crates/`, bottom-up `core`, `store`, `net`, `policy`, `jobs`, `signer`, `protocol`, `admin`, `server` ([ADR 0002](doc/src/dev/adr/0002-workspace-layering.md)). At **0.6.0**.
 
 An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<name>/…`); at least one is required, and each has its own signer, filters, challenge validators and EAB requirement over one listener and one database. The process runs as up to three **roles** — `acme`, `admin`, `worker` — all three by default, and only the worker holds a signing key ([ADR 0007](doc/src/dev/adr/0007-role-processes.md)).
 
@@ -65,7 +65,7 @@ The same binary carries every admin subcommand (`account`, `order`, `jobs`, `aud
 - **Every listing is paged** (`--limit`/`--offset`, `src/cli/window.rs`), prints `N of M row(s)`, and answers `{items, total, limit, offset}` under `--json` — member for member the admin API's envelope.
 - **An unknown value for a closed vocabulary is refused by name** (`--status`, `--event`, `--outcome`, `--role`); passing it to SQL would answer "no rows", which reads like "nothing is in that state". `--kind` is the exception: job kinds are an open set.
 - **No secret in argv.** There is no `--password` flag (a test asserts clap rejects one); secrets arrive on stdin or from a file.
-- **`completions` and `man` are answered before `Config::load` and `Database::connect`** in `main.rs`, because `connect` creates its file. Keep them there.
+- **`completions` and `man` are answered before `Config::load` and `Database::open`** in `main.rs`, because `open` creates its file. Keep them there.
 - **`clap_complete` stays at `~4.5`**: 4.6's bash backend breaks completion for a binary named with a `-`. `the_bash_script_is_internally_consistent` is the guard.
 - **Colour is semantic and never reaches `--json`**; `Palette::plain()` returns its argument unchanged; colour wraps a field after it is padded.
 - **A subcommand other than `serve` installs no subscriber** unless `--log-level` or a non-empty `RUST_LOG` asks, and then logs to stderr — stdout is what a script parses.

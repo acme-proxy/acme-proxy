@@ -665,7 +665,7 @@ impl AdminUser {
     }
 
     /// Removes the operator. Their sessions go with them via the schema's
-    /// `ON DELETE CASCADE`, which needs `foreign_keys` on -- `Database::connect`
+    /// `ON DELETE CASCADE`, which needs `foreign_keys` on -- `Database::open`
     /// and `connect_in_memory` both pin it. Returns whether a row existed.
     pub async fn delete(id: Uuid, database: &Database) -> Result<bool, sqlx::Error> {
         debug!(event = "db_admin_user_delete_started", outcome = "progress", id = ?id);

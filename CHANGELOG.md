@@ -32,6 +32,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-08
+
 ### Breaking
 
 - **`admin session list --username` is now `--user`**, the spelling `admin
@@ -199,9 +201,8 @@ migrated configuration before restarting.
   deployment needs — SQLite across processes is safe on one local disk and not
   across hosts, so the three roles ([ADR 0007]) could only ever be three
   processes on one filesystem. Nothing else changes: the same binary, the same
-  container image, the same configuration and the same ACME behaviour. There is
-  no migration path for existing *data*; a database is one backend or the
-  other.
+  container image, the same configuration and the same ACME behaviour. An
+  existing deployment moves its data across with `acme-proxy transfer`, below.
 
   The SQL is written once. `crates/store/src/sql.rs` is the only module that
   names either driver, statements keep their `?` markers and are renumbered to
@@ -330,6 +331,9 @@ migrated configuration before restarting.
   An alias outside `rfc2136.zone`, a wildcard, or a value already starting with
   `_acme-challenge.` is refused at startup. Empty by default, which keeps
   today's behaviour.
+- **Every CLI flag and argument has help text**, in `--help` and the man page,
+  and a closed vocabulary lists its values; about thirty printed a blank
+  description. The man page gains EXIT STATUS and EXAMPLES sections.
 
 ### Changed
 
@@ -521,21 +525,18 @@ migrated configuration before restarting.
   comma-separated string, so every list at every depth reads the same way. The
   syntax is unchanged. A file may now also give a one-element list as a bare
   string (`deny = "example.com"`).
-- **A local CA's revocation recorded beside a running server could fail with
-  `database is locked`.** The ledger write read the CA's stored CRL and then
-  wrote, and a CRL the server stored in between made SQLite refuse the upgrade
-  outright (`SQLITE_BUSY_SNAPSHOT`) rather than wait. It now takes the write
-  lock first.
 - **A certificate revoked with `acme-proxy order revoke` while the server was
   running silently left the CRL** at the server's next revocation or daily
   prune, though the order still read as revoked. Each process rewrote
-  `ca.json` and `ca.crl` from its own in-memory ledger. Every write now re-reads
-  the sidecar and merges it under a lock on a new file beside it,
-  `ca.json.lock`. With the revocations since moved into the database (see
-  Changed), the server's next `GET /crl` lists the CLI's revocation at once.
+  `ca.json` and `ca.crl` from its own in-memory ledger. The revocations now
+  live in the database (see Changed), so the server's next `GET /crl` lists
+  the CLI's revocation. Writing `ca.crl` is serialised across processes by a
+  lock on `ca.json.lock` beside it, a file that is only ever locked and never
+  written.
 - **The same interleaving published a lower `crlNumber`** than the CLI had just
-  written, and a client holding the newer CRL keeps it over a lower number. The
-  number is now the larger of the two sides plus one.
+  written, and a client holding the newer CRL keeps it over a lower number. A
+  CRL is now stored only over the one it was numbered after, so the number
+  stays monotonic however many processes sign.
 - A `local_ca` revocation whose write failed was remembered in memory, so the
   retry answered success without writing it.
 - **Paging an account's orders replaced the orders table with a copy of the
@@ -557,6 +558,18 @@ migrated configuration before restarting.
 - **A refused RFC 2136 update names the server's TSIG error**: `BADKEY` points
   at `tsig_key_name`/`tsig_algorithm`, `BADSIG` at `tsig_key_secret`, `BADTIME`
   at the clock.
+- **A shutdown waits for the job runner to release its leases.** The runner
+  took the same signal as the listeners, but nothing waited for its stop, so it
+  was aborted mid-drain — immediately, in a worker-only process — and every job
+  in flight waited out its whole lease before another process could claim it.
+  `job_runner_stopped` was never logged either.
+- **A reload no longer validates the web admin in a process that does not run
+  it.** Startup checks `[admin]` only where it binds that socket, so an
+  acme-only or worker-only process could start beside a setting the check
+  refuses and then reject every `SIGHUP` over it. Such a process now builds no
+  admin router either.
+- **A `SIGHUP` that reaches no reload supervisor is logged**
+  (`server_reload_supervisor_gone`) instead of being dropped silently.
 
 ### Security
 
@@ -597,27 +610,10 @@ migrated configuration before restarting.
   `/api` and `/ui` already did. Such a credential is accepted and then never
   usable, and the refusal now comes while the operator is still looking at what
   they typed.
-- **A shutdown waits for the job runner to release its leases.** The runner
-  took the same signal as the listeners, but nothing waited for its stop, so it
-  was aborted mid-drain — immediately, in a worker-only process — and every job
-  in flight waited out its whole lease before another process could claim it.
-  `job_runner_stopped` was never logged either.
-- **A reload no longer validates the web admin in a process that does not run
-  it.** Startup checks `[admin]` only where it binds that socket, so an
-  acme-only or worker-only process could start beside a setting the check
-  refuses and then reject every `SIGHUP` over it. Such a process now builds no
-  admin router either.
-- **A `SIGHUP` that reaches no reload supervisor is logged**
-  (`server_reload_supervisor_gone`) instead of being dropped silently.
 - **The `custom` signer's read hooks no longer spawn a process per request.**
   `GET /crl` and `GET /renewalInfo/{certID}` are unauthenticated, and each one
   ran the operator's script: the CRL answer is now cached for a minute, and at
   most four read hooks run at a time.
-- **A revocation recorded while its CA's CRL was being signed no longer waits
-  for the daily refresh.** The queue's identity index covers `running` as well
-  as `ready`, so the request to sign it in was deduplicated against the pass
-  that had already taken its snapshot. That row now keeps signing until the CRL
-  lists everything recorded.
 - **A relay `issue` retried after a failed enqueue no longer opens a second
   upstream order.** It answered `processing` with nothing queued, leaving the
   order to the next startup's recovery pass and abandoning one upstream order
@@ -684,7 +680,6 @@ migrated configuration before restarting.
 - **CI pins the versions of the tools it downloads and runs**
   (`cargo-llvm-cov`, `cargo-nextest`), as it already pinned every action by
   SHA, and no checkout leaves a token behind in `.git/config`.
-
 - **A container image is published on every release**, as
   `ghcr.io/acme-proxy/acme-proxy:<version>`, the floating `:X.Y` of its line,
   and `:latest` when it is the highest release, for `linux/amd64` and
@@ -2699,7 +2694,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/acme-proxy/acme-proxy/compare/0.2.0...0.3.0

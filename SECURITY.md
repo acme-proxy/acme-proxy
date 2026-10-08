@@ -8,11 +8,12 @@ a name they do not control. Reports are taken seriously.
 
 | Version | Supported |
 | --- | --- |
-| 0.5.x | yes |
-| 0.4.x | no |
+| 0.6.x | yes |
+| 0.5.x | no |
 
-Before 1.0.0 there is no long-term support branch: fixes land on `main` and in
-the next release. The database schema is frozen and append-only, so upgrading is
+Before 1.0.0 only the newest release line is maintained: a fix lands on `main`
+and is backported to that line's `release/X.Y` branch as a patch release
+([ADR 0013](doc/src/dev/adr/0013-trunk-and-release-branches.md)). The database schema is frozen and append-only, so upgrading is
 starting the new binary against the existing database — but that schema is the
 only compatibility guarantee before 1.0.0, so a security release may also move a
 configuration key. See [Compatibility](CHANGELOG.md#compatibility).

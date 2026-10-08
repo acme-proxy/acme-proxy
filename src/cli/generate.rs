@@ -10,7 +10,7 @@
 //!
 //! **Neither reads the configuration or the database**, which is why
 //! `src/main.rs` answers them *before* it calls `Config::load` and
-//! `Database::connect` — see the note there. Everything below is therefore a
+//! `Database::open` — see the note there. Everything below is therefore a
 //! plain function over an injectable writer, so the tests assert on the bytes
 //! instead of on a process's stdout.
 

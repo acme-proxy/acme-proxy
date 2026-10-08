@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acme-proxy"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-admin",
  "acme-proxy-core",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-admin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-jobs",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-jobs"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-net",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-net"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "anyhow",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-policy"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-net",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-jobs",
@@ -220,7 +220,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-admin",
  "acme-proxy-core",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-signer"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "acme-proxy-jobs",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "acme-proxy-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "acme-proxy-core",
  "base64 0.23.1",

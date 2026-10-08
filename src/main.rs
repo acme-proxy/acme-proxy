@@ -46,7 +46,7 @@ async fn main() -> ExitCode {
     );
 
     // Answered here, *before* the configuration and the database: neither
-    // command reads either, and `Database::connect` creates its file, so
+    // command reads either, and `Database::open` creates its file, so
     // `acme-proxy completions bash` would otherwise drop a `sqlite.db` into
     // whatever directory a shell startup file or a packaging script happened to
     // run it from — as root, in the usual case. The generation itself lives in
