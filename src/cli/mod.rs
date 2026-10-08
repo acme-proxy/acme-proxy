@@ -842,7 +842,7 @@ mod tests {
             Some(Command::Admin {
                 command: AdminCommand::Session {
                     command: crate::cli::webadmin::AdminSessionCommand::List {
-                        username: None,
+                        user: None,
                         limit: window::DEFAULT_LIMIT,
                         offset: 5,
                         json: false
@@ -1051,7 +1051,7 @@ mod tests {
             Some(Command::Admin {
                 command: AdminCommand::Session {
                     command: crate::cli::webadmin::AdminSessionCommand::List {
-                        username: None,
+                        user: None,
                         limit: 50,
                         offset: 0,
                         json: true

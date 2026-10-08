@@ -34,6 +34,8 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **`admin session list --username` is now `--user`**, the spelling `admin
+  session revoke` already used for the same operator.
 - **`[filter.allowed_ip]`, `[filter.reverse_dns]`, `[filter.identifiers]` and
   `[filter.custom.<name>]` are refused by name at startup.** They were replaced
   by `[filter.check.<name>]` entries when `[filter]` became a policy, but a

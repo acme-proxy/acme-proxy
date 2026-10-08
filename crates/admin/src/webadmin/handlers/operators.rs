@@ -82,7 +82,7 @@ pub async fn get_operator(
 }
 
 /// `GET /api/operators/{username}/sessions?limit=&offset=` — one operator's
-/// live sessions, `admin session list --username`'s shape. No `current`
+/// live sessions, `admin session list --user`'s shape. No `current`
 /// marker: the caller viewing another operator's sessions has none of their
 /// own in this list, unlike `GET /api/account/sessions`.
 pub async fn list_operator_sessions(

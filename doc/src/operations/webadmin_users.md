@@ -507,7 +507,7 @@ $ acme-proxy admin session list
 01234567  bac6a47e-…  active  2026-08-08T15:07:17Z  expires=2026-08-09T03:07:17Z  192.0.2.1
 1 of 1 row(s).
 
-$ acme-proxy admin session list --username alice --json
+$ acme-proxy admin session list --user alice --json
 
 $ acme-proxy admin session revoke --user alice
 Revoked 2 session(s) for alice.

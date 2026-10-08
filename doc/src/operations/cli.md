@@ -727,7 +727,7 @@ is running.
 | `admin user totp status <username>` | `--json` |
 | `admin user totp reset <username>` | confirm-gated; `-y` skips |
 | `admin user totp recovery-codes <username>` | prints them once |
-| `admin session list` | `--username <u>`, `--limit <n>`, `--offset <n>`, `--json` |
+| `admin session list` | `--user <u>`, `--limit <n>`, `--offset <n>`, `--json` |
 | `admin session revoke` | `--user <u>` (optionally `--session <id>`) **or** `--all` |
 
 ```console

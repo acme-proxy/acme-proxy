@@ -154,7 +154,7 @@ pub enum AdminSessionCommand {
     List {
         /// Only this operator's sessions.
         #[arg(long)]
-        username: Option<String>,
+        user: Option<String>,
         #[arg(long, default_value_t = DEFAULT_LIMIT)]
         limit: i64,
         #[arg(long, default_value_t = 0)]
@@ -539,7 +539,7 @@ async fn run_session_command(
 ) -> Result<(), CliError> {
     match command {
         AdminSessionCommand::List {
-            username,
+            user,
             limit,
             offset,
             json,
@@ -547,7 +547,7 @@ async fn run_session_command(
             // Resolved to an id first: `admin_sessions` carries the user id,
             // and an unknown name must say so rather than quietly listing
             // every session on the server.
-            let user_id = match username.as_deref() {
+            let user_id = match user.as_deref() {
                 None => None,
                 Some(name) => match AdminUser::find_by_username(name, &database).await? {
                     None => return Err(not_found(name)),
@@ -1617,7 +1617,7 @@ mod tests {
             run(
                 AdminCommand::Session {
                     command: AdminSessionCommand::List {
-                        username,
+                        user: username,
                         limit: DEFAULT_LIMIT,
                         offset: 0,
                         json,
@@ -1634,7 +1634,7 @@ mod tests {
             run(
                 AdminCommand::Session {
                     command: AdminSessionCommand::List {
-                        username: Some("nobody".to_string()),
+                        user: Some("nobody".to_string()),
                         limit: DEFAULT_LIMIT,
                         offset: 0,
                         json: false,
