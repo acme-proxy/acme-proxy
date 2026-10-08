@@ -1,4 +1,9 @@
 //! `/api/eab` — External Account Binding credentials.
+//!
+//! Each handler is extractor, an `admin` operation shared with the CLI and the
+//! `/ui` pages, and `admin::render`'s JSON, so the three cannot describe one
+//! row differently. The secret appears once, in the answer to the create
+//! request, and never in a listing or a show.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

@@ -1,4 +1,10 @@
 //! The outbound plumbing every subsystem that reaches the network dials through.
+//!
+//! [`Egress`] is the `[dns]` resolver and the `[proxy]` policy of one
+//! configuration generation. Both reload, so nothing may build its own: a
+//! subsystem that kept a resolver from startup would ignore every later edit
+//! to `[dns]`, and a signer backend that cached one is rebuilt when the
+//! generation's identity moves.
 
 use std::sync::Arc;
 

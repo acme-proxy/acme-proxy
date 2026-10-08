@@ -1,4 +1,9 @@
 //! `/api/orders` — the orders across every mounted endpoint, and revocation.
+//!
+//! Each handler is extractor, an `admin` operation shared with the CLI and the
+//! `/ui` pages, and `admin::render`'s JSON, so the three cannot describe one
+//! row differently. Revocation goes through the same queue and ledger
+//! `POST /revokeCert` does; this process holds no signing backend.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

@@ -1,4 +1,10 @@
 //! The `email` notify backend: SMTP via `lettre`.
+//!
+//! `smtp_security` is `starttls`, `tls` or `none`, and anything else is a
+//! startup error. A failed delivery is classified for the queue: a message that
+//! cannot be built (a bad address, a header the builder refuses) is permanent
+//! and abandoned, while a relay that is down, refusing or greylisting is
+//! retried.
 
 use std::sync::Arc;
 use std::time::Duration;

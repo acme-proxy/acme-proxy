@@ -1,4 +1,9 @@
 //! The one task that serves reload requests for the life of the process.
+//!
+//! Reloads are serialized through it, and a generation is published into the
+//! `watch` cells with no `.await` between the sends, so no request ever sees
+//! half of one generation and half of the next. A reload that fails to build
+//! publishes nothing.
 
 use std::sync::Arc;
 

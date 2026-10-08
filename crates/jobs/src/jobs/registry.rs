@@ -1,4 +1,9 @@
 //! Which handler answers for which `jobs.kind`.
+//!
+//! [`JobRegistry`] is built once per configuration generation and read-only
+//! after. The runner claims only the kinds registered in it, so an older binary
+//! leaves a newer kind's rows alone instead of failing them, and registering a
+//! kind twice is a startup error rather than a silent replacement.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

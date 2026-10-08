@@ -1,4 +1,26 @@
-//! ACME Proxy Configuration Management
+//! The configuration: one [`Config`], loaded once by [`Config::load`] and
+//! rebuilt on every reload.
+//!
+//! Three layers, lowest first: the compiled defaults (each section's
+//! `Default`), an optional TOML file (`config.toml`, or `ACME_PROXY_CONFIG`),
+//! and `ACME_PROXY_*` environment variables with `__` between nested keys.
+//! [`Config::resolve_profiles`] then builds each `[profiles.<name>]` endpoint
+//! by overlaying it on the global sections in `PROFILE_SECTIONS`, **key by
+//! key**: a profile changing one knob keeps the rest of the section, while an
+//! array is replaced whole, never extended.
+//!
+//! The traps, each guarded by a test here:
+//!
+//! - **Every list field carries `deserialize_with = "string_list"`**, which
+//!   splits a comma-separated environment value at any depth. There is no
+//!   registry of list keys; `every_list_field_reads_a_comma_separated_string`
+//!   refuses a field without it.
+//! - **The environment source pins `prefix_separator("_")`**; without it the
+//!   `config` crate ignores every `ACME_PROXY_*` variable.
+//! - **A removed key stays a field** so it still parses and can be refused by
+//!   name — an unknown key is otherwise dropped silently.
+//! - **A test that calls `Config::load` holds [`ENV_LOCK`]**: the environment
+//!   is process-wide.
 
 use std::collections::BTreeMap;
 

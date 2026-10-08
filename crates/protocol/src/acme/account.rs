@@ -1,4 +1,10 @@
 //! Accounts (RFC 8555 §7.3): creation, update, deactivation and key rollover.
+//!
+//! [`AccountService`] holds the operations of one endpoint, as `OrderService`
+//! does for orders; the handlers are its HTTP edge. [`deactivate`] and
+//! [`update_contact`] are free functions because the operator front ends call
+//! them too, so a contact one surface would refuse cannot be stored through
+//! another.
 
 use std::net::IpAddr;
 use std::sync::Arc;

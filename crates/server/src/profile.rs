@@ -1,4 +1,10 @@
 //! How a configuration generation builds every [`Profile`] it mounts.
+//!
+//! [`build_all`] resolves the profiles, gives each its filter policy, challenge
+//! registry and signer handle, and fails as a whole: a configuration with one
+//! broken endpoint mounts none, at startup and on a reload alike. The startup
+//! checks that span sections — `server.request_timeout_ms` against a custom
+//! signer's timeout — live here too.
 
 use std::sync::Arc;
 

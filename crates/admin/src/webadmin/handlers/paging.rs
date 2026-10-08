@@ -1,4 +1,9 @@
 //! The shared `?limit=&offset=` window and the envelope every list returns.
+//!
+//! A window is clamped rather than refused: `limit` to `1..=admin.page_size_max`
+//! and `offset` to `0..=MAX_OFFSET`, which keeps `offset + limit` from
+//! overflowing. The envelope, `{items, total, limit, offset}`, is the shape the
+//! CLI's `--json` answers too.
 
 use serde::Deserialize;
 use serde_json::{Value, json};

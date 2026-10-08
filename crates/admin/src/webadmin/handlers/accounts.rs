@@ -1,4 +1,9 @@
 //! `/api/accounts` — the ACME accounts across every mounted endpoint.
+//!
+//! Each handler is extractor, an `admin` operation shared with the CLI and the
+//! `/ui` pages, and `admin::render`'s JSON, so the three cannot describe one
+//! row differently. A delete that would remove an order holding a live
+//! certificate is refused with `409 live_certificates`.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

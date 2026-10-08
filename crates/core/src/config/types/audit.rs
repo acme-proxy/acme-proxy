@@ -1,4 +1,8 @@
 //! `[audit]` — the CA's traceability settings.
+//!
+//! Process-wide: no profile can override it. Each key, its default and its
+//! environment variable are documented once, in the book's
+//! `configuration/reference.md` under `[audit]`.
 
 use serde::Deserialize;
 

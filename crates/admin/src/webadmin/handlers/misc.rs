@@ -1,4 +1,8 @@
 //! `/api/nonces` and `/api/profiles` — the two small read surfaces.
+//!
+//! Nonce values are bearer credentials, so `/api/nonces` answers a count and
+//! never a value. The profile list is what is *mounted*, which between an edit
+//! and its `SIGHUP` may differ from what the file says.
 
 use axum::Json;
 use axum::extract::State;

@@ -1,4 +1,9 @@
 //! `POST`/`GET`/`DELETE /api/session` — sign in, whoami, sign out.
+//!
+//! Every failed sign-in answers one `invalid_credentials`, whatever the cause;
+//! the reason (`wrong_password`, `unknown_user`, `account_disabled`) is only in
+//! the `admin_login_failed` log line. An operator with a second factor gets a
+//! `pending_mfa` session first, which can do nothing but finish the login.
 
 use axum::Json;
 use axum::extract::{Query, State};
