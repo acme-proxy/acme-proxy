@@ -56,6 +56,8 @@ pub async fn post_new_account(
         profile: &profile,
     };
 
+    let binding = payload.external_account_binding.clone();
+
     let (account, created) = match accounts
         .new_account(payload, &header, &pubkey, client_ip, &request_context)
         .await
@@ -90,12 +92,16 @@ pub async fn post_new_account(
         StatusCode::OK
     };
     let location = format!("{base}/acct/{}", account.id);
-    Ok((
-        status,
-        [(header::LOCATION, location)],
-        Json(account.to_json(base)),
-    )
-        .into_response())
+
+    let mut body = account.to_json(base);
+    if let Some(binding) = binding.filter(|_| created && profile.eab.enabled) {
+        // RFC 8555 §7.3.4: the account object "MUST include an
+        // `externalAccountBinding` field with the same value as the field in the
+        // request". Only a binding this request just verified is reflected.
+        body["externalAccountBinding"] = json!(binding);
+    }
+
+    Ok((status, [(header::LOCATION, location)], Json(body)).into_response())
 }
 
 /// Reads the account (POST-as-GET, RFC 8555 §6.3) or updates it (§7.3.2) or

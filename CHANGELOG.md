@@ -32,6 +32,12 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`newAccount` now returns the verified `externalAccountBinding`** in the
+  account object it creates, as RFC 8555 §7.3.4 requires. It is reflected only
+  for an account this request created at an endpoint that enforces EAB.
+
 ### Security
 
 - **rustls-webpki 0.103.16 and webpki-roots 1.0.10, for RUSTSEC-2026-0382 and
