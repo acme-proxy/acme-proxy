@@ -60,6 +60,7 @@ cargo deny check               # supply-chain audit, against deny.toml
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
   cargo doc --workspace --no-deps --all-features   # every intra-doc link
 mdbook build doc/ && python3 doc/lint.py           # this book
+python3 doc/build_versions.py                      # the published site
 ```
 
 `cargo test --doc` compiles the doc examples but not the intra-doc links, of
@@ -72,6 +73,13 @@ naming the private thing it delegates to is the good outcome.
 numbered headings, every fence tagged, every relative link and anchor
 resolving, every ADR listed, and **no configuration key documented in two
 files** — two copies of a default drift silently.
+
+The published site holds one copy of the book per minor release line, built
+from its highest `X.Y.Z` tag, with the latest at the root and `main` under
+`dev/`. `doc/build_versions.py` builds it into `doc/site/`, and
+`doc/versions.js` adds the version selector and the banner on every version
+but the latest. Serve `doc/site/` with `python3 -m http.server` to preview it.
+A tag's book is never linted or edited: what it says is what that release did.
 
 Four more jobs check what the ones above cannot:
 
@@ -311,6 +319,10 @@ their own, and exist on crates.io only so `cargo install acme-proxy` can build.
 
    To rehearse the workflow without publishing, run it from a branch under
    "Run workflow". It builds both architectures and pushes nothing.
+
+   The tag also redeploys the book, through `.github/workflows/mdbook.yml`,
+   so the new line appears in the version selector and the site's root moves
+   to it.
 
    The first time the package is published, it is private, even though the
    repository is public. In the package's settings, make it inherit access from

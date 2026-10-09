@@ -3,6 +3,7 @@
 /tests/e2e/phpipam-mock/target
 /data/
 /doc/book/
+/doc/site/
 /lcov.info
 /config.toml
 /prompt.md

@@ -7,6 +7,11 @@ on:
     paths:
       - 'doc/**'
       - '.github/workflows/mdbook.yml'
+    # A release tag adds or moves a version of the book, and the latest one is
+    # what the site's root serves. The tag run deploys nothing itself: see
+    # `redeploy`.
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
 
 # Every action is pinned to a commit SHA rather than a tag, the same rule
@@ -14,19 +19,39 @@ on:
 # holds a token that can write to GitHub Pages. The trailing comment is the tag
 # the SHA stood for when it was pinned; update both together.
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# The site is every minor release line plus `main`, built by
+# `doc/build_versions.py`; its docstring has the layout.
+
+# Least privilege: each job below widens only what it needs.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-# Allow one concurrent deployment
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
+  # The `github-pages` environment accepts a deployment from `main` only, so a
+  # tag run asks for a run on `main` instead of deploying from the tag. A
+  # `workflow_dispatch` is the one event a GITHUB_TOKEN may start a run with.
+  redeploy:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch a deployment from main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run mdbook.yml --repo "$GITHUB_REPOSITORY" --ref main
+
   deploy:
+    if: github.ref_type != 'tag'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # One deployment at a time. On the job, not the workflow, so the run a tag
+    # dispatches does not cancel that tag's own run while it is finishing.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: true
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -35,6 +60,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Always `main`, whatever started the run: the site is built by
+          # main's `doc/build_versions.py`, and `dev/` is main's book.
+          ref: main
+          # Every release tag, which is how the script finds the versions.
+          fetch-depth: 0
           # The deployment authenticates through the Pages OIDC token, not
           # through git, so the checkout needs no credentials left behind.
           persist-credentials: false
@@ -48,11 +78,13 @@ jobs:
         with:
           tool: mdbook@0.5.4,mdbook-mermaid@0.17.0
 
+      # Main's book only: a tag's book is frozen, held to the rules of its
+      # own time.
       - name: Style and link check
         run: python3 doc/lint.py
 
-      - name: Build mdBook
-        run: mdbook build doc/
+      - name: Build every version
+        run: python3 doc/build_versions.py doc/site
 
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
@@ -60,7 +92,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: './doc/book'
+          path: './doc/site'
 
       - name: Deploy to GitHub Pages
         id: deployment

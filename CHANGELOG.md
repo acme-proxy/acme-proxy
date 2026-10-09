@@ -54,6 +54,10 @@ migrated configuration before restarting.
   only `init` and `worker` mount, and the move from a single SQLite container.
   The Deployment page is split into an overview and one page each for systemd,
   containers, separate role processes and upgrading.
+- **The published book keeps every release.** The site's root now serves the
+  latest release instead of `main`; each minor line stays under `/X.Y/`, and
+  `main` moves to `/dev/`. A selector in the menu bar switches version on the
+  same page, and a banner marks every version but the latest.
 
 ## [0.6.1] — 2026-10-09
 

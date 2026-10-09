@@ -296,8 +296,8 @@ jobs:
         env:
           ACME_PROXY_REQUIRE_SOFTHSM: "1"
 
-  # The book is deployed by `mdbook.yml`, which runs only on a push to `main`,
-  # so it documents the trunk, not the last release.
+  # The book is deployed by `mdbook.yml`: every minor release line, with the
+  # latest at the site's root, and `main` under `dev/`.
   # Until this job existed, nothing built `doc/` on a pull request — and
   # `create-missing = false` makes a `SUMMARY.md` entry with no file a *build
   # failure*, so the first sign of a broken chapter was a failed deployment
@@ -315,6 +315,8 @@ jobs:
           # Nothing here pushes, so the token has no business sitting in
           # `.git/config` where any build script could read it.
           persist-credentials: false
+          # The release tags, which the versioned build below reads.
+          fetch-depth: 0
 
       # Pinned, and installed as prebuilt binaries rather than `cargo install`
       # from source: an upstream release should not be able to break the build
@@ -326,9 +328,11 @@ jobs:
           tool: mdbook@0.5.4,mdbook-mermaid@0.17.0
 
       # `create-missing = false` turns a SUMMARY entry with no file into an
-      # error here rather than a stub nobody notices.
-      - name: Build the book
-        run: mdbook build doc/
+      # error here rather than a stub nobody notices. The whole site, not just
+      # this book: a change to `doc/build_versions.py` or `doc/versions.js`
+      # should fail here, not in the deployment after merge.
+      - name: Build every version of the book
+        run: python3 doc/build_versions.py doc/site
 
       # The mechanical half of the house style: 80-column prose, no numbered
       # headings, tagged code fences, links and anchors that resolve, and no
