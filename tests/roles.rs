@@ -35,6 +35,9 @@
 //! 7. **Every worker issues from the one CA.** A worker whose CA is not the one
 //!    the database records for its profile refuses to start, and one with no
 //!    CA refuses rather than generating a second.
+//! 8. **Several workers share one queue.** Each job runs once however many
+//!    workers poll, and a job a dead worker held is reclaimed and run by
+//!    another once its lease runs out.
 //!
 //! Every test that starts a process runs `acme-proxy init` first, which is the
 //! documented topology: the schema and the first-run material belong to one
@@ -812,5 +815,122 @@ async fn a_second_worker_with_another_ca_refuses_to_start() {
         !worker.handle.is_finished(),
         "the recorded CA's worker runs"
     );
+    worker.stop().await;
+}
+
+/// The issuance job queued for `order_id`, once it has settled.
+async fn issue_job(database: &Database, order_id: &str) -> acme_proxy_store::job::Job {
+    acme_proxy_store::job::Job::find_latest_by_dedup(
+        acme_proxy_protocol::acme::issue::SIGNER_ISSUE_KIND,
+        order_id,
+        database,
+    )
+    .await
+    .unwrap()
+    .expect("finalize queued a job")
+}
+
+/// **Two workers drain one queue, and each job runs once.** The claim is one
+/// conditional `UPDATE`, so two runners over one database never both take a
+/// row: every order is signed, each by a single attempt, and the audit trail
+/// holds one issuance per order rather than one per worker.
+#[tokio::test]
+async fn two_workers_share_one_queue() {
+    let dir = TempDir::shared("roles-two-workers").await;
+    write_config(&dir);
+    let config = load_from(&dir);
+    initialise(&config).await;
+
+    let first = start(&config, RoleSet::parse(Some("worker")).unwrap()).await;
+    let second = start(&config, RoleSet::parse(Some("worker")).unwrap()).await;
+
+    let database = Arc::new(Database::open(&config.database.url).await.unwrap());
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let mut orders = Vec::new();
+    for _ in 0..8 {
+        orders.push(claimed_order(&database, &queue).await);
+    }
+
+    for order_id in &orders {
+        let order = settled(&database, order_id).await;
+        assert!(order.certificate.is_some(), "order {order_id} was signed");
+        let job = issue_job(&database, order_id).await;
+        assert_eq!(job.attempts, 1, "order {order_id} was attempted once");
+    }
+    // The audit row is written a moment after the order settles, so the count
+    // is polled up to the number of orders; a ninth row would mean a job ran
+    // twice, and the pause after gives one the time to land.
+    let issued = async || {
+        let (trail, _) = acme_proxy_store::audit::AuditEntry::search(
+            &acme_proxy_store::audit::AuditQuery {
+                limit: 100,
+                ..Default::default()
+            },
+            &database,
+        )
+        .await
+        .unwrap();
+        trail
+            .iter()
+            .filter(|row| row.event == "certificate_issued")
+            .count()
+    };
+    for _ in 0..250 {
+        if issued().await >= orders.len() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let issued = issued().await;
+    assert_eq!(
+        issued,
+        orders.len(),
+        "one issuance per order, not per worker"
+    );
+
+    second.stop().await;
+    first.stop().await;
+}
+
+/// **A job held by a worker that died is taken over.** Its lease expires and
+/// another worker's next pass returns the row to the queue and runs it — the
+/// failover a second worker exists for. The attempt the dead worker spent
+/// stays counted.
+#[tokio::test]
+async fn a_job_held_by_a_dead_worker_is_reclaimed() {
+    let dir = TempDir::shared("roles-reclaim").await;
+    write_config(&dir);
+    let config = load_from(&dir);
+    initialise(&config).await;
+
+    let database = Arc::new(Database::open(&config.database.url).await.unwrap());
+    let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
+    let order_id = claimed_order(&database, &queue).await;
+
+    // A worker claims the job and dies holding it: a lease that has already
+    // run out, as `jobs.lease_seconds` later would leave it.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let held = acme_proxy_store::job::Job::claim_next(
+        "a-worker-that-died",
+        &[acme_proxy_protocol::acme::issue::SIGNER_ISSUE_KIND],
+        now - 1,
+        now,
+        &database,
+    )
+    .await
+    .unwrap()
+    .expect("the job is there to claim");
+    assert_eq!(held.status, "running");
+
+    let worker = start(&config, RoleSet::parse(Some("worker")).unwrap()).await;
+    let order = settled(&database, &order_id).await;
+    assert!(order.certificate.is_some(), "the live worker signed it");
+    let job = issue_job(&database, &order_id).await;
+    assert_eq!(job.attempts, 2, "the dead worker's attempt stays spent");
+
     worker.stop().await;
 }
