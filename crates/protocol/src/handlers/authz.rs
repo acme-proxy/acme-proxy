@@ -1,9 +1,12 @@
 //! Authorizations (RFC 8555 §7.5) and challenges (§7.5.1).
 //!
-//! `POST` to a challenge does not validate it: it claims the challenge and
-//! queues the validation for the worker (ADR 0006), answering `processing`. The
-//! client learns the verdict by polling, which is why a `pending` or
-//! `processing` answer carries `Retry-After`.
+//! A challenge URL, like an authorization's, serves two operations told apart
+//! by whether a payload arrived. A POST-as-GET (§6.3) reads the challenge and
+//! never claims it or queues work. A payload (the client's `{}`) does not
+//! validate it either: it claims the challenge and queues the validation for
+//! the worker (ADR 0006), answering `processing`. The client learns the verdict
+//! by polling, which is why a `pending` or `processing` answer carries
+//! `Retry-After` — but never a `pending` one no trigger could start any more.
 
 use axum::{
     Extension, Json,
@@ -13,16 +16,22 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use std::net::IpAddr;
 use tracing::{error, info, instrument, warn};
 
 use crate::acme::access::{load_owned_authz, load_owned_challenge, signer_account};
-use crate::acme::order::OrderService;
+use crate::acme::order::{OrderService, challenge_can_be_triggered};
 use crate::extractors::acme::AcmeOptionalPayload;
 use crate::router::AppState;
 use acme_proxy_core::client::ClientIp;
 use acme_proxy_core::error::Problem;
+use acme_proxy_jobs::jobs::JobQueue;
+use acme_proxy_store::authz::Authorization;
 use acme_proxy_store::authz::Challenge;
 use acme_proxy_store::authz::ValidationClaim;
+use acme_proxy_store::nonce::now_secs;
+use acme_proxy_store::order::Order;
+use acme_proxy_store::status::ChallengeStatus;
 
 /// The one payload RFC 8555 §7.5.2 defines for the authorization resource:
 /// "sending POST requests with the static object `{"status": "deactivated"}`".
@@ -143,7 +152,8 @@ pub async fn post_challenge(
     info!(
         event = "challenge_trigger_requested",
         outcome = "progress",
-        challenge_id = %id
+        challenge_id = %id,
+        triggering = payload.is_some(),
     );
     let AppState {
         database,
@@ -163,57 +173,19 @@ pub async fn post_challenge(
     let (mut challenge, authz, order) = load_owned_challenge(&id, &account, &database).await?;
 
     // An empty payload only reads the owned challenge; it never starts work.
-    if payload.is_some() {
-        // Claimed, then queued — never awaited. The check reaches an address the
-        // client named, so awaiting it here held an admission permit for the length
-        // of `challenge.timeout_ms`. The challenge now answers `processing`, which
-        // §7.1.6 defines for exactly this ("transitions to the `processing` state
-        // when the client responds to the challenge") and §8.2 pairs with the
-        // `Retry-After` below.
-        let claim = orders
-            .claim_challenge(&mut challenge, &authz, &order)
-            .await?;
-        if claim == ValidationClaim::Limited {
-            // §6.6's answer, with the header §6.6 recommends: the limit is on work
-            // in flight, so waiting is exactly what clears it. The challenge is
-            // untouched and still `pending`, so the retry is a plain re-trigger.
-            let mut response = Problem::rate_limited(
-                "Too many validations are already running for this account; retry shortly",
-            )
-            .into_response();
-            response.headers_mut().insert(
-                header::RETRY_AFTER,
-                HeaderValue::from_static(super::POLL_RETRY_AFTER),
-            );
-            return Ok(response);
-        }
-        if claim == ValidationClaim::Claimed {
-            let queued = jobs
-                .enqueue(crate::acme::validate::challenge_validate_spec(
-                    &id,
-                    client_ip,
-                    authz.expires,
-                ))
-                .await;
-
-            // The claim is on the row and the work is not queued, so nothing is
-            // coming for it: give the claim back rather than leave the client
-            // polling a `processing` challenge until its authorization expires.
-            // `Ok(false)` needs no release — a live job already holds this
-            // challenge's identity, which is the same fact the claim asserts.
-            if let Err(error) = queued {
-                error!(
-                    event = "challenge_validation_enqueue_failed",
-                    outcome = "failure",
-                    challenge_id = %id,
-                    error = %error
-                );
-                let _ = challenge.release_validation_claim(&database).await;
-                return Err(Problem::server_internal(
-                    "Challenge validation could not be queued",
-                ));
-            }
-        }
+    if payload.is_some()
+        && let Some(early) = trigger_validation(
+            &orders,
+            &jobs,
+            &mut challenge,
+            &authz,
+            &order,
+            &id,
+            client_ip,
+        )
+        .await?
+    {
+        return Ok(early);
     }
 
     info!(
@@ -231,6 +203,79 @@ pub async fn post_challenge(
         Json(challenge.to_json(base)),
     )
         .into_response();
-    add_pending_retry_after(&mut response, challenge.status.as_str());
+    // A `pending` challenge no trigger could start any more — its authorization
+    // expired, was deactivated or failed, or a sibling already decided it — is
+    // read without a refusal, but must not invite the client to poll an object
+    // that can never move. A `processing` one has a job that owes it a verdict.
+    if challenge.status != ChallengeStatus::Pending
+        || challenge_can_be_triggered(&authz, &order, now_secs())
+    {
+        add_pending_retry_after(&mut response, challenge.status.as_str());
+    }
     Ok(response)
+}
+
+/// Claims `challenge` and queues its validation — the trigger half of
+/// [`post_challenge`].
+///
+/// `Some` is an answer that replaces the challenge object (the §6.6 rate
+/// limit); `None` means answer with the challenge as it now stands.
+async fn trigger_validation(
+    orders: &OrderService<'_>,
+    jobs: &JobQueue,
+    challenge: &mut Challenge,
+    authz: &Authorization,
+    order: &Order,
+    id: &str,
+    client_ip: Option<IpAddr>,
+) -> Result<Option<Response>, Problem> {
+    // Claimed, then queued — never awaited. The check reaches an address the
+    // client named, so awaiting it here held an admission permit for the length
+    // of `challenge.timeout_ms`. The challenge now answers `processing`, which
+    // §7.1.6 defines for exactly this ("transitions to the `processing` state
+    // when the client responds to the challenge") and §8.2 pairs with the
+    // `Retry-After` below.
+    let claim = orders.claim_challenge(challenge, authz, order).await?;
+    if claim == ValidationClaim::Limited {
+        // §6.6's answer, with the header §6.6 recommends: the limit is on work
+        // in flight, so waiting is exactly what clears it. The challenge is
+        // untouched and still `pending`, so the retry is a plain re-trigger.
+        let mut response = Problem::rate_limited(
+            "Too many validations are already running for this account; retry shortly",
+        )
+        .into_response();
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            HeaderValue::from_static(super::POLL_RETRY_AFTER),
+        );
+        return Ok(Some(response));
+    }
+    if claim == ValidationClaim::Claimed {
+        let queued = jobs
+            .enqueue(crate::acme::validate::challenge_validate_spec(
+                id,
+                client_ip,
+                authz.expires,
+            ))
+            .await;
+
+        // The claim is on the row and the work is not queued, so nothing is
+        // coming for it: give the claim back rather than leave the client
+        // polling a `processing` challenge until its authorization expires.
+        // `Ok(false)` needs no release — a live job already holds this
+        // challenge's identity, which is the same fact the claim asserts.
+        if let Err(error) = queued {
+            error!(
+                event = "challenge_validation_enqueue_failed",
+                outcome = "failure",
+                challenge_id = %id,
+                error = %error
+            );
+            let _ = challenge.release_validation_claim(orders.database).await;
+            return Err(Problem::server_internal(
+                "Challenge validation could not be queued",
+            ));
+        }
+    }
+    Ok(None)
 }

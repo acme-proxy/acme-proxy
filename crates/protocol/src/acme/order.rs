@@ -353,6 +353,17 @@ fn validated_identifiers(
     Ok(identifiers)
 }
 
+/// Whether a trigger on a `pending` challenge under `authz` and `order` could
+/// still start a validation — [`OrderService::claim_challenge`]'s refusals
+/// (expired, deactivated, invalid) and its "decided by a sibling" read as a
+/// predicate, for a POST-as-GET that must not refuse but must not invite a
+/// poll either. A change to one belongs in the other.
+pub fn challenge_can_be_triggered(authz: &Authorization, order: &Order, now: i64) -> bool {
+    authz.status == AuthzStatus::Pending
+        && authz.expires > now
+        && order.status != OrderStatus::Invalid
+}
+
 impl OrderService<'_> {
     /// Creates an order and its authorizations (RFC 8555 §7.4), for the account
     /// that signed the request.
@@ -576,6 +587,9 @@ impl OrderService<'_> {
     /// [`run_validation`](Self::run_validation), and
     /// [`ValidationClaim::Limited`] is `429 rateLimited`: the account has
     /// `challenge.max_in_flight_per_account` validations running already.
+    ///
+    /// [`challenge_can_be_triggered`] is the read side of the same checks and
+    /// changes with them.
     pub async fn claim_challenge(
         &self,
         challenge: &mut Challenge,
@@ -1977,5 +1991,51 @@ pub(crate) mod tests {
             "Order finalize failed"
         );
         assert_eq!(reload(&database, &before).await.status, OrderStatus::Ready);
+    }
+
+    /// [`challenge_can_be_triggered`] against the claim it mirrors: true
+    /// exactly where a trigger would claim the challenge, for every state the
+    /// claim refuses or reads as decided.
+    #[tokio::test]
+    async fn the_trigger_predicate_agrees_with_the_claim() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        let profile = profile(&database, ChallengeRegistry::default());
+        let audit = Auditor::offline(database.clone());
+        let orders = OrderService {
+            database: &database,
+            audit: &audit,
+            profile: &profile,
+        };
+        let account = account(&database).await;
+        type Mutation = fn(&mut Authorization, &mut Order);
+        let cases: [(&str, Mutation); 6] = [
+            ("pending", |_, _| {}),
+            ("expired", |authz, _| authz.expires = now_secs() - 1),
+            ("deactivated", |authz, _| {
+                authz.status = AuthzStatus::Deactivated
+            }),
+            ("invalid authorization", |authz, _| {
+                authz.status = AuthzStatus::Invalid
+            }),
+            ("invalid order", |_, order| {
+                order.status = OrderStatus::Invalid
+            }),
+            ("valid authorization", |authz, _| {
+                authz.status = AuthzStatus::Valid
+            }),
+        ];
+        for (case, mutate) in cases {
+            let (mut order, mut authzs) =
+                pending_order(&database, &account, &["example.com"]).await;
+            let (mut authz, mut challenge) = authzs.remove(0);
+            mutate(&mut authz, &mut order);
+            let predicted = challenge_can_be_triggered(&authz, &order, now_secs());
+            let claimed = matches!(
+                orders.claim_challenge(&mut challenge, &authz, &order).await,
+                Ok(ValidationClaim::Claimed)
+            );
+            assert_eq!(predicted, claimed, "{case}");
+            assert_eq!(predicted, case == "pending", "{case}");
+        }
     }
 }

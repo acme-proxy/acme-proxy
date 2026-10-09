@@ -99,6 +99,19 @@ async fn read(app: &Router, signer: &impl TestSigner, account_url: &str, url: &s
     body_json(res).await
 }
 
+/// A POST-as-GET of `url`, returning the raw response so a test can read its
+/// headers as well as the body.
+async fn read_response(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    url: &str,
+) -> Response {
+    let nonce = fetch_nonce(app).await;
+    let path = url.strip_prefix(common::HOST).unwrap();
+    post(app, path, signer.sign_kid_empty(account_url, url, &nonce)).await
+}
+
 /// Triggers a challenge, returning the raw response so a test can read the
 /// `Link` header as well as the body.
 async fn trigger(app: &Router, signer: &impl TestSigner, account_url: &str, url: &str) -> Response {
@@ -540,8 +553,17 @@ async fn a_sibling_challenge_is_not_run_once_the_authorization_is_valid() {
 
     // Then trigger the dns-01 sibling, whose validator would fail.
     let dns_url = challenge_url_of_type(&authz, "dns-01");
-    let challenge = body_json(trigger(&app, &signer, &account_url, &dns_url).await).await;
+    let res = trigger(&app, &signer, &account_url, &dns_url).await;
+    assert!(
+        !res.headers().contains_key("retry-after"),
+        "nothing can move the sibling, so nothing invites a poll"
+    );
+    let challenge = body_json(res).await;
     assert_eq!(challenge["status"], "pending", "the sibling is left alone");
+    let res = read_response(&app, &signer, &account_url, &dns_url).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!res.headers().contains_key("retry-after"));
+    assert_eq!(body_json(res).await, challenge);
     assert_eq!(dns_calls.load(Ordering::SeqCst), 0);
 
     // The authorization is still proved.
@@ -1020,7 +1042,7 @@ async fn two_overlapping_triggers_validate_once() {
 #[tokio::test]
 async fn a_trigger_over_the_accounts_validation_cap_is_rate_limited() {
     let validator = BlockingValidator::gating_the_first("http-01");
-    let (_calls, gate, entered) = validator.handles();
+    let (calls, gate, entered) = validator.handles();
     let (app, _db) = test_app_with_challenges(
         Config::default(),
         Arc::new(
@@ -1069,6 +1091,14 @@ async fn a_trigger_over_the_accounts_validation_cap_is_rate_limited() {
         body_json(res).await["type"],
         "urn:ietf:params:acme:error:rateLimited"
     );
+
+    // A POST-as-GET of the same challenge is a read, not a trigger: the cap on
+    // validations in flight does not apply, and nothing is claimed or run.
+    let res = read_response(&app, &signer, &account_url, &second_url).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["retry-after"], "5");
+    assert_eq!(body_json(res).await["status"], "pending");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     gate.add_permits(1);
     assert_eq!(first.await.unwrap().status(), StatusCode::OK);
@@ -1239,4 +1269,99 @@ async fn challenge_invalid_json_is_not_post_as_get() {
         read(&app, &signer, &account_url, &url).await,
         authz["challenges"][0]
     );
+}
+
+/// A sibling's failure makes the authorization `invalid` (§7.1.6), which no
+/// trigger of the challenge left `pending` can undo. Reading it is still a
+/// `200` — a POST-as-GET answers with the object — but without the
+/// `Retry-After` that would have the client poll it until it gave up.
+#[tokio::test]
+async fn a_challenge_under_a_failed_authorization_reads_without_a_retry_after() {
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        challenges_with(
+            &["http-01", "dns-01"],
+            vec![
+                Arc::new(StubValidator::failing("http-01", "wrong body")),
+                Arc::new(StubValidator::passing("dns-01")),
+            ],
+        ),
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let order = body_json(new_order(&app, &signer, &account_url, &["example.com"]).await).await;
+    let authz_url = order["authorizations"][0].as_str().unwrap();
+    let authz = read(&app, &signer, &account_url, authz_url).await;
+
+    let http_url = challenge_url_of_type(&authz, "http-01");
+    assert_eq!(
+        settle(&app, &signer, &account_url, &http_url).await["status"],
+        "invalid"
+    );
+
+    let dns_url = challenge_url_of_type(&authz, "dns-01");
+    let res = read_response(&app, &signer, &account_url, &dns_url).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!res.headers().contains_key("retry-after"));
+    assert_eq!(body_json(res).await["status"], "pending");
+
+    // The trigger still refuses, as it did before a read could reach it.
+    common::acme::assert_problem_detail(
+        trigger(&app, &signer, &account_url, &dns_url).await,
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:malformed",
+        "The authorization or its order is already invalid; create a new order",
+    )
+    .await;
+}
+
+/// The other two states `challenge_can_be_triggered` reads, which no client
+/// request reaches in a test's lifetime: an authorization past its `expires`,
+/// and an order made `invalid` by another of its authorizations. Each is set on
+/// the row, and each read answers `200` without a `Retry-After`.
+#[tokio::test]
+async fn a_challenge_under_an_expired_authorization_or_invalid_order_reads_without_a_retry_after() {
+    let (app, db) =
+        test_app_with_challenges(Config::default(), bypassing_challenges(&["http-01"])).await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    for (name, statement, detail) in [
+        (
+            "expired.example.com",
+            "UPDATE authorizations SET expires = 1 WHERE id = ?",
+            "Authorization has expired",
+        ),
+        (
+            "invalid.example.com",
+            "UPDATE orders SET status = 'invalid' WHERE id = \
+             (SELECT order_id FROM authorizations WHERE id = ?)",
+            "The authorization or its order is already invalid; create a new order",
+        ),
+    ] {
+        let order = body_json(new_order(&app, &signer, &account_url, &[name]).await).await;
+        let authz_url = order["authorizations"][0].as_str().unwrap();
+        let authz = read(&app, &signer, &account_url, authz_url).await;
+        let url = challenge_url_of_type(&authz, "http-01");
+        let authz_id = authz_url.rsplit('/').next().unwrap();
+        sqlx::query(statement)
+            .bind(authz_id.parse::<uuid::Uuid>().unwrap())
+            .execute(db.raw_pool())
+            .await
+            .unwrap();
+
+        let res = read_response(&app, &signer, &account_url, &url).await;
+        assert_eq!(res.status(), StatusCode::OK, "{name}");
+        assert!(!res.headers().contains_key("retry-after"), "{name}");
+        assert_eq!(body_json(res).await["status"], "pending", "{name}");
+
+        common::acme::assert_problem_detail(
+            trigger(&app, &signer, &account_url, &url).await,
+            StatusCode::BAD_REQUEST,
+            "urn:ietf:params:acme:error:malformed",
+            detail,
+        )
+        .await;
+    }
 }
