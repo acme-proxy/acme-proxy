@@ -137,6 +137,15 @@ RFC 8555 has the states for exactly this. §7.1.6: challenges "transition to the
 with a `Retry-After` on the challenge resource, which is what the client polls
 against. certbot, acme.sh and lego all poll.
 
+A client polls either way RFC 8555 allows. Re-sending `{}` is a retry, which
+§7.5.1 says is "not a state change". A POST-as-GET (an empty payload, §6.3)
+only reads the challenge: it never claims it or queues a job, so it is not
+subject to `challenge.max_in_flight_per_account`. win-acme polls this way. A
+`pending` challenge that no trigger can start any more, because its
+authorization expired, was deactivated, failed or was proved by a sibling, or
+its order is `invalid`, is answered **without** a `Retry-After`, so a client
+does not poll an object that can never move.
+
 ```mermaid
 sequenceDiagram
     participant C as ACME client
@@ -157,7 +166,7 @@ sequenceDiagram
     end
     W->>D: one transaction:<br/>challenge + authorization + order
     Note over D: "is every authorization valid?"<br/>is read INSIDE this transaction
-    C->>P: POST /chall/{id} (retry — not a state change)
+    C->>P: POST-as-GET /chall/{id}, or {} again (not a state change)
     P-->>C: 200 + challenge object — valid or invalid
 ```
 
