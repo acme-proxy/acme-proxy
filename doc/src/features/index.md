@@ -25,7 +25,7 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/order/{id}` | `POST` | §7.1.3 | — | POST-as-GET. |
 | `/order/{id}/finalize` | `POST` | §7.4 | — | Takes the CSR; hands it to the configured [signer](../signers/index.md). |
 | `/authz/{id}` | `POST` | §7.5, §7.5.2 | — | One URL serves both the read and the deactivation, told apart by whether a payload arrived. |
-| `/chall/{id}` | `POST` | §7.5.1 | — | Triggers [validation](../challenges/index.md). Both outcomes are `200`. |
+| `/chall/{id}` | `POST` | §6.3, §7.5.1 | — | One URL serves both the read and the trigger, told apart by whether a payload arrived. Any payload (`{}`) triggers [validation](../challenges/index.md); both outcomes are `200`. |
 | `/certificate/{id}` | `POST` | §7.4.2 | — | POST-as-GET; PEM chain. |
 | `/revokeCert` | `POST` | §7.6 | yes | [Revocation & CRL](../operations/revocation.md). |
 | `/renewalInfo/{certID}` | `GET` | RFC 9773 §4.1 | yes | Unauthenticated. Advertised **without** the id — §4.1 has the client append it. |
