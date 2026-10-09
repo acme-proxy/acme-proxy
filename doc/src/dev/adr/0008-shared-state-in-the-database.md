@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted. Its one exception, the web admin's login limiter, was closed in 0.7:
-the counter is the `admin_login_buckets` table, so several admin processes are
-a supported topology.
+Accepted. Its one exception, the web admin's login limiter, was closed by [ADR
+0016](0016-multi-instance-deployment.md): the counter is the
+`admin_login_buckets` table, so several admin processes are a supported
+topology.
 
 ## Context
 

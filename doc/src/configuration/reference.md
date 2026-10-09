@@ -94,7 +94,9 @@ is refused by name at startup:
 
 PostgreSQL is what a **multi-node** deployment needs. SQLite across processes
 is fine on one local disk, and not safe on NFS or across hosts — see
-[Separate Role Processes](../getting_started/roles.md#the-database). Nothing
+[Separate Role Processes](../getting_started/roles.md#the-database), and
+[High Availability](../getting_started/high_availability.md#the-database) for
+PostgreSQL behind a failover endpoint. Nothing
 else changes with the backend: the same binary, the same configuration and the
 same ACME behaviour.
 

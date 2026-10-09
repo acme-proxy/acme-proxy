@@ -90,8 +90,10 @@ already issued impossible to revoke, so this is not an optional step.
 
 ## Operating a split deployment
 
-Run one admin process either way; its login rate limiter is in memory, so two
-would each get their own budget.
+Any role may run as several processes, on several hosts, over one PostgreSQL
+database: the sign-in limiter, sessions, the job queue and the CRL are all
+rows. [High Availability](high_availability.md) is that topology, with what
+each host must hold and what the load balancer checks.
 
 Each process reloads independently on `SIGHUP`, so a configuration change means
 reloading all three.

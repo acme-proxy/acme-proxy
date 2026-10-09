@@ -10,7 +10,8 @@ there are.
   deployments. [Separate role processes](roles.md) put the ACME listener, the
   web admin and the job worker in processes of their own, so only the worker
   holds the CA key. [Docker Compose, Roles Split](compose_roles.md) is a
-  complete recipe for that shape, on PostgreSQL.
+  complete recipe for that shape, on PostgreSQL. [High
+  Availability](high_availability.md) runs several of each, on several hosts.
 
 Whatever the shape, the rest of this page applies: which socket goes where, how
 to sit behind a reverse proxy, and how to reach the web admin. Moving to a new

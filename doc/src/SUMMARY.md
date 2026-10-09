@@ -12,6 +12,7 @@
   - [Containers](getting_started/containers.md)
   - [Separate Role Processes](getting_started/roles.md)
     - [Docker Compose, Roles Split](getting_started/compose_roles.md)
+    - [High Availability](getting_started/high_availability.md)
   - [Upgrading](getting_started/upgrading.md)
   - [TLS Termination](features/tls_termination.md)
 
@@ -92,6 +93,7 @@
   - [ADR 0013: `main` is the trunk, and a patch line is a release branch cut when a fix needs one](dev/adr/0013-trunk-and-release-branches.md)
   - [ADR 0014: PostgreSQL is chosen by the URL's scheme, over one set of queries](dev/adr/0014-postgresql-beside-sqlite.md)
   - [ADR 0015: The web admin trusts OpenID Connect and LDAP providers, hand-rolling OIDC and taking `ldap3`](dev/adr/0015-external-identity-providers.md)
+  - [ADR 0016: Several instances of every role over one PostgreSQL is a supported topology](dev/adr/0016-multi-instance-deployment.md)
 - [Database Schema](dev/database.md)
 - [Custom Plugins Examples](dev/custom_plugins.md)
 - [Testing & Coverage](dev/testing.md)

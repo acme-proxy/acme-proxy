@@ -34,6 +34,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 | The SQLite/PostgreSQL seam | `crates/store/src/sql.rs` | `dev/database.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
 | Moving between backends | `crates/store/src/transfer.rs`, `src/cli/transfer.rs` | `operations/cli.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
 | Role processes | `crates/server/src/roles.rs` | `getting_started/roles.md`, `getting_started/compose_roles.md` | [ADR 0007](doc/src/dev/adr/0007-role-processes.md) |
+| Several instances per role (HA) | `crates/signer/src/local_ca/identity.rs`, `crates/store/src/admin_login_bucket.rs` | `getting_started/high_availability.md` | [ADR 0016](doc/src/dev/adr/0016-multi-instance-deployment.md) |
 | Web admin (`/ui`, `/api`) | `crates/admin/src/webadmin/` | `operations/webadmin.md`, `operations/webadmin_users.md` | `webadmin/session.rs` `//!` |
 | Web admin single sign-on (OIDC, LDAP) | `crates/admin/src/identity/`, `crates/core/src/jws/jwt.rs` | `operations/webadmin_sso.md` | [ADR 0015](doc/src/dev/adr/0015-external-identity-providers.md) |
 | Admin CLI | `src/cli/`, `crates/admin/src/admin/` | `operations/cli.md` | — |

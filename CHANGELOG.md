@@ -80,6 +80,12 @@ migrated configuration before restarting.
   `main` moves to `/dev/`. A selector in the menu bar switches version on the
   same page, and a banner marks every version but the latest.
 
+- **High availability on one site is a supported topology** (#12, ADR 0016):
+  any number of `acme`, `admin` and `worker` processes, on any number of
+  hosts, over one PostgreSQL endpoint. The book's new Deployment → High
+  Availability page covers what each host must hold, what the load balancer
+  checks, failover timings and the database side. The `roles` and `reload`
+  suites now really run against PostgreSQL in CI.
 - **`GET /ready`**, a readiness check on both listeners (#12): `200` while the
   database answers a `SELECT 1` within two seconds, `503` otherwise. `/health`
   stays a liveness check that touches nothing.
