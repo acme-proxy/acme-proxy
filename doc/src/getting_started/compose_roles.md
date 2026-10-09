@@ -2,7 +2,7 @@
 
 A complete [separate-role](roles.md) deployment in one Compose file: the
 `acme`, `admin` and `worker` roles each in a container of their own, over
-PostgreSQL, from the published image. What it buys over the
+PostgreSQL, from the published image, 0.6.1 or later. What it buys over the
 [single container](containers.md) is the point of the split: the container
 parsing untrusted JWS and CSRs from the network never mounts the CA key, and
 neither does the one holding operator sessions.
@@ -33,12 +33,21 @@ Four named volumes hold the state outside the database:
   `admin` container on its first start.
 - **`postgres`** — the database files.
 
-The paths are moved off the image's `/data` working directory with the
+Each volume is mounted on a directory the image provides for it — `/data/ca`,
+`/data/ca-key` and `/data/admin-tls` — and the
 [`signer.local_ca`](../signers/local_ca.md) and
 [`admin.tls`](../configuration/reference.md#admintls) path keys, set as
-environment variables, so that each volume holds exactly one kind of thing.
-Nothing in `acme` writes to disk, which is why its root filesystem can be
-`read_only`.
+environment variables, point the server there, so that each volume holds exactly
+one kind of thing. Nothing in `acme` writes to disk, which is why its root
+filesystem can be `read_only`.
+
+Those directories are what make the volumes writable. The server runs as the
+image's user, uid `1000`, and a new named volume takes the owner of the image
+directory it is mounted on: the image ships the three owned by that user
+(`ca-key` with mode `0700`), so no ownership step is needed, unlike a bind mount
+in [Containers](containers.md). Mounted anywhere else, Docker creates the volume
+owned by root and `init` fails with `Permission denied`; images before 0.6.1 do
+not have the directories.
 
 ## The configuration
 
@@ -77,13 +86,13 @@ never logs in clear.
 
 ```yaml
 x-acme-proxy: &acme-proxy
-  image: ghcr.io/acme-proxy/acme-proxy:0.6.0
+  image: ghcr.io/acme-proxy/acme-proxy:0.6.1
   restart: unless-stopped
   environment: &environment
     ACME_PROXY_CONFIG: /etc/acme-proxy/config.toml
     ACME_PROXY_DATABASE__URL: postgres://acme:${POSTGRES_PASSWORD}@postgres/acme
-    ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH: /ca/ca.pem
-    ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH: /ca/ca.crl
+    ACME_PROXY_SIGNER__LOCAL_CA__CERT_PATH: /data/ca/ca.pem
+    ACME_PROXY_SIGNER__LOCAL_CA__CRL_PATH: /data/ca/ca.crl
     RUST_LOG: acme_proxy=info
 
 services:
@@ -109,11 +118,11 @@ services:
     command: ["init"]
     environment:
       <<: *environment
-      ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH: /ca-key/ca.key
+      ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH: /data/ca-key/ca.key
     volumes:
       - ./config.toml:/etc/acme-proxy/config.toml:ro
-      - ca:/ca
-      - ca-key:/ca-key
+      - ca:/data/ca
+      - ca-key:/data/ca-key
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,11 +132,11 @@ services:
     command: ["serve", "--role", "worker"]
     environment:
       <<: *environment
-      ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH: /ca-key/ca.key
+      ACME_PROXY_SIGNER__LOCAL_CA__KEY_PATH: /data/ca-key/ca.key
     volumes:
       - ./config.toml:/etc/acme-proxy/config.toml:ro
-      - ca:/ca
-      - ca-key:/ca-key
+      - ca:/data/ca
+      - ca-key:/data/ca-key
     depends_on:
       init:
         condition: service_completed_successfully
@@ -140,7 +149,7 @@ services:
       - "3000:3000"
     volumes:
       - ./config.toml:/etc/acme-proxy/config.toml:ro
-      - ca:/ca:ro
+      - ca:/data/ca:ro
     depends_on:
       init:
         condition: service_completed_successfully
@@ -154,14 +163,14 @@ services:
       ACME_PROXY_ADMIN__BIND_ADDRESS: 0.0.0.0:3001
       ACME_PROXY_ADMIN__BASE_URL: https://localhost:3001
       ACME_PROXY_ADMIN__TLS__ENABLED: "true"
-      ACME_PROXY_ADMIN__TLS__CERT_PATH: /admin-tls/admin.pem
-      ACME_PROXY_ADMIN__TLS__KEY_PATH: /admin-tls/admin.key
+      ACME_PROXY_ADMIN__TLS__CERT_PATH: /data/admin-tls/admin.pem
+      ACME_PROXY_ADMIN__TLS__KEY_PATH: /data/admin-tls/admin.key
     ports:
       - "127.0.0.1:3001:3001"
     volumes:
       - ./config.toml:/etc/acme-proxy/config.toml:ro
-      - ca:/ca:ro
-      - admin-tls:/admin-tls
+      - ca:/data/ca:ro
+      - admin-tls:/data/admin-tls
     depends_on:
       init:
         condition: service_completed_successfully
@@ -193,9 +202,6 @@ The image carries no HTTP client, so the `acme-proxy` services have no
 `healthcheck`; `postgres` has one because `init` must not start before the
 server accepts connections.
 
-Named volumes are created by Compose and owned by the image's user, uid `1000`,
-so none of the ownership steps of [Containers](containers.md) is needed here.
-
 ## First start
 
 ```bash
@@ -214,7 +220,7 @@ The CA certificate to distribute to clients is served at
 `https://acme.example.com/profile/default/ca.pem`, or copied out of the volume:
 
 ```bash
-docker compose cp worker:/ca/ca.pem ./ca.pem
+docker compose cp worker:/data/ca/ca.pem ./ca.pem
 ```
 
 [Trusting the CA](trusting_the_ca.md) covers what to do with it.
@@ -295,8 +301,8 @@ With the old container stopped and its `/data` in a volume named `old-data`:
 docker compose up -d postgres
 docker compose run --rm init migrate
 docker compose run --rm -T -v old-data:/old --entrypoint sh init -c '
-  cp /old/ca.pem /ca/ca.pem &&
-  cp /old/ca.key /ca-key/ca.key && chmod 600 /ca-key/ca.key &&
+  cp /old/ca.pem /data/ca/ca.pem &&
+  cp /old/ca.key /data/ca-key/ca.key && chmod 600 /data/ca-key/ca.key &&
   target="$ACME_PROXY_DATABASE__URL" &&
   ACME_PROXY_DATABASE__URL=sqlite:///old/acme.db \
     acme-proxy transfer --yes --to "$target"'
