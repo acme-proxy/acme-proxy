@@ -73,8 +73,9 @@ route cannot forget them, and no handler repeats a four-line preamble.
 
 Three extractors build on that core: `AcmeRequest<T>` (decode and deserialize
 the payload), `AcmePostAsGet` (require an empty payload, else `malformed`), and
-`AcmeOptionalPayload<T>` — the last exists for the authorization resource, where
-one URL serves both a POST-as-GET read and a §7.5.2 deactivation.
+`AcmeOptionalPayload<T>` — the last exists for the two resources where one URL
+serves both a POST-as-GET read and a payload-carrying POST: the authorization
+(§7.5.2 deactivation) and the challenge (the §7.5.1 trigger).
 
 ### Two security properties worth not breaking
 
@@ -197,7 +198,7 @@ sequenceDiagram
     Challenge Validator-->>Job Queue: Pass/Fail
     Job Queue->>Order Manager: Commit challenge + authz + order
     Note over Order Manager: Order -> "ready" once every<br/>authorization is valid
-    Client->>Axum Router: POST /chall/{id} (poll)
+    Client->>Axum Router: POST-as-GET /chall/{id} (poll, queues nothing)
     Axum Router-->>Client: 200 OK + challenge object (either way)
     Note over Client,Challenge Validator: This exchange in detail:<br/>Challenge Validation
 

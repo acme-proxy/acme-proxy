@@ -288,6 +288,21 @@ async fn a_deactivated_authorization_cannot_be_validated() {
         "urn:ietf:params:acme:error:malformed"
     );
 
+    // A POST-as-GET of that challenge is still a read, but it must not invite
+    // a poll: nothing can move a challenge under a deactivated authorization.
+    let authz = read(&app, &signer, &account_url, &authz_url).await;
+    let url = authz["challenges"][0]["url"].as_str().unwrap();
+    let nonce = fetch_nonce(&app).await;
+    let res = post(
+        &app,
+        url.strip_prefix(common::HOST).unwrap(),
+        signer.sign_kid_empty(&account_url, url, &nonce),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(!res.headers().contains_key("retry-after"));
+    assert_eq!(body_json(res).await["status"], "pending");
+
     // The order therefore never becomes ready, and finalize refuses it.
     let order = read(&app, &signer, &account_url, &order_url).await;
     assert_eq!(order["status"], "pending");
