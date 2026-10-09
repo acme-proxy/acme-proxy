@@ -318,3 +318,80 @@ async fn neither_jwk_nor_kid_is_malformed() {
         "detail should name both fields, got {detail:?}"
     );
 }
+
+/// A POST-as-GET to an account URL (RFC 8555 §6.3): a signed request with an
+/// empty payload.
+async fn read_account(app: &Router, signer: &EcSigner, account_url: &str) -> Response {
+    let nonce = fetch_nonce(app).await;
+    let path = account_url.strip_prefix(common::HOST).unwrap();
+
+    post(
+        app,
+        path,
+        signer.sign_kid_empty(account_url, account_url, &nonce),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_empty_payload_reads_the_account_without_changing_it() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    let first = read_account(&app, &signer, &account_url).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let account = body_json(first).await;
+    assert_eq!(account["status"], "valid");
+    assert_eq!(account["contact"], json!(["mailto:old@example.com"]));
+
+    let second = read_account(&app, &signer, &account_url).await;
+    assert_eq!(body_json(second).await, account);
+}
+
+#[tokio::test]
+async fn an_empty_payload_from_another_accounts_key_is_unauthorized() {
+    let app = test_app().await;
+    let owner = EcSigner::new();
+    let owner_url = register(&app, &owner).await;
+    let stranger = EcSigner::new();
+    let stranger_url = register(&app, &stranger).await;
+
+    let nonce = fetch_nonce(&app).await;
+    let body = stranger.sign_kid_empty(&stranger_url, &owner_url, &nonce);
+    let path = owner_url.strip_prefix(common::HOST).unwrap();
+    let res = post(&app, path, body).await;
+
+    common::acme::assert_problem(
+        res,
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_empty_payload_from_a_deactivated_account_is_unauthorized() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    let nonce = fetch_nonce(&app).await;
+    let path = account_url.strip_prefix(common::HOST).unwrap();
+    let deactivate = signer.sign_kid(
+        &account_url,
+        &account_url,
+        &nonce,
+        &json!({ "status": "deactivated" }),
+    );
+    assert_eq!(post(&app, path, deactivate).await.status(), StatusCode::OK);
+
+    let res = read_account(&app, &signer, &account_url).await;
+
+    common::acme::assert_problem(
+        res,
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
+}
