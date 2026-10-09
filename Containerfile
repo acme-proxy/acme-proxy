@@ -124,11 +124,19 @@ COPY --from=builder /app/acme-proxy /usr/local/bin/acme-proxy
 # uid/gid is fixed at 1000 (unused in debian:trixie-slim) so a bind-mounted host
 # directory can be chowned to a predictable owner — see
 # doc/src/getting_started/deployment.md.
+#
+# The three empty directories under /data are mount points for the named
+# volumes of a split deployment (the book's role-split Compose recipe): the
+# CA certificate and CRL, the CA key alone, and the admin listener's TLS pair.
+# A new named volume takes the owner of the image directory it is mounted on;
+# with nothing there, Docker creates it owned by root, and this user could not
+# write to it. ca-key is 0700 because nothing but the key lives in it.
 RUN groupadd --gid 1000 acme-proxy \
     && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /data \
        --shell /usr/sbin/nologin acme-proxy \
-    && mkdir -p /data \
-    && chown acme-proxy:acme-proxy /data
+    && mkdir -p /data/ca /data/ca-key /data/admin-tls \
+    && chown acme-proxy:acme-proxy /data /data/ca /data/ca-key /data/admin-tls \
+    && chmod 0700 /data/ca-key
 WORKDIR /data
 USER acme-proxy
 ENTRYPOINT ["acme-proxy"]
