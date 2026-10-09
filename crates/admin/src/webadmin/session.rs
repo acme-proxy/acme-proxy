@@ -150,13 +150,20 @@ pub fn clearing_cookie() -> String {
 /// session-fixation vector.
 #[must_use]
 pub fn cookie_value(headers: &HeaderMap) -> Option<String> {
+    named_cookie_value(headers, COOKIE_NAME)
+}
+
+/// [`cookie_value`] for any cookie of this listener, first match winning for
+/// the same reason.
+#[must_use]
+pub fn named_cookie_value(headers: &HeaderMap, cookie: &str) -> Option<String> {
     for header in headers.get_all(header::COOKIE) {
         let Ok(raw) = header.to_str() else { continue };
         for pair in raw.split(';') {
             let Some((name, value)) = pair.split_once('=') else {
                 continue;
             };
-            if name.trim() == COOKIE_NAME {
+            if name.trim() == cookie {
                 // A cookie value may be quoted (RFC 6265 §4.1.1).
                 let value = value.trim();
                 let value = value
@@ -806,16 +813,24 @@ impl Drop for LoginAttempt<'_> {
 }
 
 /// Logs a completed login attempt. One place, so the events cannot drift.
-pub fn log_login(succeeded: bool, username: &str, client: Option<IpAddr>, reason: &'static str) {
+pub fn log_login(
+    succeeded: bool,
+    username: &str,
+    realm: &str,
+    client: Option<IpAddr>,
+    reason: &'static str,
+) {
     if succeeded {
         info!(event = "admin_login_succeeded",
               outcome = "success",
               username = %username,
+              realm = %realm,
               client_ip = ?client);
     } else {
         warn!(event = "admin_login_failed",
               outcome = "failure",
               username = %username,
+              realm = %realm,
               client_ip = ?client,
               reason = reason);
     }
@@ -1206,8 +1221,8 @@ mod tests {
         // The `tracing` field expressions only execute when something is
         // subscribed; `tests/common` installs a sink, and here the call is
         // simply exercised for its branches.
-        log_login(true, "alice", ip(1), "");
-        log_login(false, "alice", ip(1), "wrong_password");
-        log_login(false, "alice", None, "unknown_user");
+        log_login(true, "alice", "local", ip(1), "");
+        log_login(false, "alice", "local", ip(1), "wrong_password");
+        log_login(false, "alice", "ldap:ad", None, "unknown_user");
     }
 }

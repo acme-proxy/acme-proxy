@@ -49,9 +49,10 @@ pub async fn post_login(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
     headers: HeaderMap,
+    request_context: acme_proxy_core::audit::RequestContext,
     Form(credentials): Form<LoginRequest>,
 ) -> Result<Response, PageError> {
-    match sign_in(&state, client, &headers, &credentials).await {
+    match sign_in(&state, client, &headers, &request_context, &credentials).await {
         // A pending sign-in goes to the challenge page instead of the panel;
         // everything else about the answer, cookie included, is the same.
         Ok(signed_in) => Ok((
@@ -79,7 +80,12 @@ pub async fn post_login(
             let flash = super::flash_error(error.code, error.message);
             Ok((
                 status,
-                page(&state, Some(flash), Some(&credentials.username))?,
+                page_in_realm(
+                    &state,
+                    Some(flash),
+                    Some(&credentials.username),
+                    credentials.provider.as_deref(),
+                )?,
             )
                 .into_response())
         }
@@ -257,12 +263,51 @@ pub async fn post_logout(
 }
 
 /// Renders the sign-in page, optionally with a banner and a username to keep.
-fn page(
+///
+/// The realms come from `[admin.auth]`: the password form offers the local
+/// realm (unless `admin.auth.local` is off) and every LDAP directory, and each
+/// OpenID Connect provider is a button. With no password realm at all, the
+/// form is not drawn.
+pub(crate) fn page(
     state: &AdminState,
     flash: Option<Value>,
     username: Option<&str>,
 ) -> Result<axum::response::Html<String>, PageError> {
+    page_in_realm(state, flash, username, None)
+}
+
+fn page_in_realm(
+    state: &AdminState,
+    flash: Option<Value>,
+    username: Option<&str>,
+    realm: Option<&str>,
+) -> Result<axum::response::Html<String>, PageError> {
+    let providers = &state.providers;
+    let mut realms = Vec::new();
+    if providers.local {
+        realms.push(serde_json::json!({"name": "", "display_name": "this server"}));
+    }
+    for (name, directory) in &providers.ldap {
+        realms.push(serde_json::json!({"name": name, "display_name": directory.display_name}));
+    }
+    let oidc: Vec<Value> = providers
+        .oidc
+        .iter()
+        .map(|(name, provider)| {
+            serde_json::json!({"name": name, "display_name": provider.display_name})
+        })
+        .collect();
+
     let mut context = Map::new();
+    context.insert("password_form".to_string(), Value::Bool(!realms.is_empty()));
+    context.insert("realms".to_string(), Value::Array(realms));
+    context.insert("oidc_providers".to_string(), Value::Array(oidc));
+    if let Some(realm) = realm {
+        context.insert(
+            "selected_realm".to_string(),
+            Value::String(realm.to_string()),
+        );
+    }
     if let Some(flash) = flash {
         context.insert("flash".to_string(), flash);
     }

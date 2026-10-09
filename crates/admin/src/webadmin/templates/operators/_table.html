@@ -28,6 +28,7 @@
               {% else %}
                 <a href="/ui/operators/{{ operator.username }}"><code>{{ operator.username }}</code></a>
               {% endif %}
+              {% if operator.authProvider %}<span class="badge">{{ operator.authProvider }}</span>{% endif %}
             </td>
             {#- The most important fact about an operator on this page: what
                 their session is allowed to do. -#}

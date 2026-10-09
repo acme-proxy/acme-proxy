@@ -192,6 +192,21 @@ pub const TABLES: &[TableSpec] = &[
             ("role", Text),
             ("contact_email", Text),
             ("known_login_ips", Text),
+            ("auth_provider", Text),
+            ("external_id", Text),
+        ],
+    },
+    TableSpec {
+        name: "admin_oidc_logins",
+        key: &["state_hash"],
+        columns: &[
+            ("state_hash", Text),
+            ("provider", Text),
+            ("binding_hash", Text),
+            ("nonce", Text),
+            ("pkce_verifier", Text),
+            ("created_at", I64),
+            ("expires_at", I64),
         ],
     },
     // --- children ---------------------------------------------------------
@@ -801,9 +816,9 @@ mod tests {
     ///
     /// The whole transfer is one transaction on the target, which is what lets
     /// an operator retry after fixing the cause instead of hunting for how far
-    /// it got. `admin_users` is the eighth of fifteen tables and its username
+    /// it got. `admin_users` is the eighth of sixteen tables and its username
     /// is `UNIQUE`, so a target that already holds the seed's operator fails
-    /// there — after seven tables have been written and before the seven that
+    /// there — after seven tables have been written and before the eight that
     /// follow, `accounts` and `orders` among them.
     #[tokio::test]
     async fn a_failed_copy_leaves_the_target_as_it_was() {

@@ -23,6 +23,7 @@
 //! [`acme_proxy_core::error::Problem`] to their caller.
 
 pub mod account;
+pub mod admin_oidc_login;
 pub mod admin_recovery_code;
 pub mod admin_session;
 pub mod admin_user;

@@ -13,7 +13,7 @@ use tokio::process::Command as TokioCommand;
 /// image in the build cache instead of podman's store. The lab then fails to
 /// pull `bind-e2e` from Docker Hub, or worse, runs stale images left over from
 /// an earlier build.
-fn container_runtime() -> &'static str {
+pub fn container_runtime() -> &'static str {
     static RUNTIME: OnceLock<&'static str> = OnceLock::new();
     RUNTIME.get_or_init(detect_container_runtime)
 }
@@ -109,6 +109,8 @@ pub fn ensure_images_built() {
             {runtime} build -t certbot-e2e -f tests/e2e/certbot.Containerfile tests/e2e &&
             {runtime} build -t acmesh-e2e -f tests/e2e/acmesh.Containerfile tests/e2e &&
             {runtime} build -t lego-e2e -f tests/e2e/lego.Containerfile tests/e2e &&
+            {runtime} build -t openldap-e2e -f tests/e2e/openldap.Containerfile tests/e2e &&
+            {runtime} build -t dex-e2e -f tests/e2e/dex.Containerfile tests/e2e &&
             touch "{flag_file}"
             "#,
             flag_file = flag_file.display(),

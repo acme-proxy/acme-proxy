@@ -35,6 +35,7 @@ An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<nam
 | Moving between backends | `crates/store/src/transfer.rs`, `src/cli/transfer.rs` | `operations/cli.md` | [ADR 0014](doc/src/dev/adr/0014-postgresql-beside-sqlite.md) |
 | Role processes | `crates/server/src/roles.rs` | `getting_started/roles.md`, `getting_started/compose_roles.md` | [ADR 0007](doc/src/dev/adr/0007-role-processes.md) |
 | Web admin (`/ui`, `/api`) | `crates/admin/src/webadmin/` | `operations/webadmin.md`, `operations/webadmin_users.md` | `webadmin/session.rs` `//!` |
+| Web admin single sign-on (OIDC, LDAP) | `crates/admin/src/identity/`, `crates/core/src/jws/jwt.rs` | `operations/webadmin_sso.md` | [ADR 0015](doc/src/dev/adr/0015-external-identity-providers.md) |
 | Admin CLI | `src/cli/`, `crates/admin/src/admin/` | `operations/cli.md` | — |
 | EAB, key rollover, ARI, TLS termination | `crates/core/src/eab.rs`, `key_change.rs`, `crates/net/src/tls.rs` | `features/` | — |
 

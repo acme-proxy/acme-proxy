@@ -8,6 +8,7 @@
 //! [`crate::key_change`]) and the relay's upstream client verify and sign with it
 //! too.
 
+pub mod jwt;
 pub mod signature;
 
 use serde::{Deserialize, Serialize};

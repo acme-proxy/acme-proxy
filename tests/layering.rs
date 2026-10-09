@@ -343,6 +343,7 @@ const CRATE_DEPS: &[(&str, &[&str])] = &[
         &[
             "acme-proxy-core",
             "acme-proxy-jobs",
+            "acme-proxy-net",
             "acme-proxy-policy",
             "acme-proxy-protocol",
             "acme-proxy-signer",

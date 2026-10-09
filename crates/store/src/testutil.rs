@@ -290,6 +290,8 @@ pub fn admin_user_fixture() -> crate::admin_user::AdminUser {
         last_login_at: None,
         contact_email: None,
         known_login_ips: Vec::new(),
+        auth_provider: None,
+        external_id: None,
     }
 }
 
@@ -431,7 +433,7 @@ async fn sweep_stale_schemas(admin: &crate::db::Database) {
     }
 }
 
-/// One row in every one of the fifteen tables [`crate::transfer::TABLES`]
+/// One row in every one of the sixteen tables [`crate::transfer::TABLES`]
 /// names, seeded through the real model APIs rather than hand-written SQL —
 /// so the rows are shaped the way the server actually writes them, `CHECK`
 /// constraints and foreign keys included.
@@ -551,6 +553,29 @@ pub async fn seed_every_table(db: &std::sync::Arc<crate::db::Database>) {
     let user = AdminUser::create("alice", "hash", None, db)
         .await
         .expect("an operator");
+    // An operator a provider vouches for, so `auth_provider` and
+    // `external_id` carry a value rather than `NULL` through the copy.
+    AdminUser::create_external(
+        "bob@example.com",
+        crate::admin_user::AdminRole::Viewer,
+        "oidc:corp",
+        "https://idp.example bob",
+        db,
+    )
+    .await
+    .expect("an external operator");
+    crate::admin_oidc_login::AdminOidcLogin {
+        state_hash: "state".to_string(),
+        provider: "corp".to_string(),
+        binding_hash: "binding".to_string(),
+        nonce: "nonce".to_string(),
+        pkce_verifier: "verifier".to_string(),
+        created_at: 1,
+        expires_at: 4_102_444_800,
+    }
+    .create(db)
+    .await
+    .expect("an OpenID Connect sign-in");
     AdminSession::create(
         NewSession {
             user_id: user.id,

@@ -5,6 +5,7 @@
 //! better grouped by the section an operator is actually editing. Everything is
 //! re-exported flat, so no import anywhere outside this directory changes.
 
+pub mod admin_auth;
 pub mod audit;
 pub mod challenge;
 pub mod filter;
@@ -17,6 +18,7 @@ pub mod proxy;
 pub mod server;
 pub mod signer;
 
+pub use admin_auth::*;
 pub use audit::*;
 pub use challenge::*;
 pub use filter::*;

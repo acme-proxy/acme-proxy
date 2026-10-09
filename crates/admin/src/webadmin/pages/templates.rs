@@ -38,6 +38,7 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
     HashMap::from([
         embed!("layout.html"),
         embed!("login.html"),
+        embed!("login_complete.html"),
         embed!("mfa/challenge.html"),
         embed!("index.html"),
         embed!("expiring/list.html"),

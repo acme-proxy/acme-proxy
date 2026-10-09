@@ -22,7 +22,7 @@ use crate::admin::users::{self, UserError};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::Caller;
-use crate::webadmin::handlers::mfa::verify_current_password;
+use crate::webadmin::handlers::mfa::{reprove, verify_current_password};
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, Authenticated, SelfServiceWrite, clearing_cookie};
 use acme_proxy_store::admin_session::AdminSession;
@@ -63,7 +63,14 @@ pub async fn change_contact(
 ) -> Result<Response, AdminError> {
     let body = body.unwrap_or_default();
     let caller = auth.user;
-    verify_current_password(&caller, &body.current_password, client, &state.logins).await?;
+    reprove(
+        &state,
+        &caller,
+        Some(auth.session.created_at),
+        &body.current_password,
+        client,
+    )
+    .await?;
 
     let mut target = caller.clone();
     super::operators::apply_contact_change(
@@ -125,6 +132,10 @@ pub(crate) async fn change_own_password_for(
     keep: &str,
     client: Option<std::net::IpAddr>,
 ) -> Result<(), AdminError> {
+    // Refused before the password is asked about: an external operator has
+    // none here, and the answer should say whose it is.
+    UserError::refuse_external(user, "password")
+        .map_err(|error| AdminError::conflict("managed_externally", error.to_string()))?;
     verify_current_password(user, current_password, client, &state.logins).await?;
 
     let context = PasswordContext::from_config(&state.config, &user.username);
@@ -138,6 +149,9 @@ pub(crate) async fn change_own_password_for(
                 AdminError::bad_request(message)
             }
             UserError::Database(_) | UserError::DuplicateUsername(_) => AdminError::internal(),
+            error @ UserError::ManagedExternally { .. } => {
+                AdminError::conflict("managed_externally", error.to_string())
+            }
         })?;
 
     state

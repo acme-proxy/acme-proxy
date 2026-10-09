@@ -44,6 +44,7 @@ pub mod expiring;
 pub mod filter;
 pub mod jobs;
 pub mod misc;
+pub mod oidc;
 pub mod operators;
 pub mod orders;
 pub mod session;
@@ -85,6 +86,12 @@ pub(crate) fn pages_router() -> Router<AdminState> {
             "/ui/login/mfa",
             get(session::get_login_mfa).post(session::post_login_mfa),
         )
+        // Signing in through an OpenID Connect provider: the start, and the
+        // callback the provider sends the browser back to. Both reachable with
+        // no session and no same-origin header -- see `oidc`'s module doc for
+        // what protects them instead.
+        .route("/ui/login/oidc/{provider}", get(oidc::start))
+        .route("/ui/login/oidc/{provider}/callback", get(oidc::callback))
         .route("/ui/static/{file}", get(assets::get_asset))
         // Everything below needs one.
         .route("/ui/", get(misc::get_index))

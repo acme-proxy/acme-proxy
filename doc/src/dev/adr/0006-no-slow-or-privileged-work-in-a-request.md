@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Accepted. Narrowed by [ADR 0015](0015-external-identity-providers.md): a web
+admin sign-in through an OpenID Connect provider or an LDAP directory makes its
+round trip inline, to a host the operator chose, bounded and rate-limited.
 
 ## Context
 

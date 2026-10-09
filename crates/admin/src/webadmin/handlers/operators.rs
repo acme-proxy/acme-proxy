@@ -5,12 +5,12 @@
 //! Distinct from `/api/account` (`handlers::account`), which is the same
 //! operator managing themselves. That split is the trust boundary this module
 //! exists to enforce: every mutating route here runs
-//! [`crate::webadmin::handlers::mfa::verify_current_password`], and every one
+//! [`crate::webadmin::handlers::mfa::reprove`], and every one
 //! refuses a `username` that resolves to the caller — self-management stays on
 //! `/api/account`, which already owns it, and never needs a password re-typed
 //! to reach it.
 //!
-//! **`verify_current_password`, not `check_step_up`.** The latter passes
+//! **`reprove`, not `check_step_up`.** The latter passes
 //! unconditionally for an operator with no second factor, which is right where
 //! it was written — a first enrolment protects nothing, and a password there
 //! would stand in front of the `require_mfa` bootstrap. It is wrong here: this
@@ -43,7 +43,7 @@ use crate::admin;
 use crate::admin::users::UserError;
 use crate::admin::{changes, mfa, users};
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::mfa::{StepUpRequest, verify_current_password};
+use crate::webadmin::handlers::mfa::{StepUpRequest, reprove};
 use crate::webadmin::handlers::paging::{PageParams, page_envelope};
 use crate::webadmin::session::{AdminClientIp, AdminRead, AdminWrite};
 use crate::webadmin::{AdminState, WebTrail};
@@ -114,6 +114,7 @@ pub async fn disable_operator(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.unwrap_or_default().password,
         client,
@@ -136,6 +137,7 @@ pub async fn enable_operator(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.unwrap_or_default().password,
         client,
@@ -160,6 +162,7 @@ pub async fn reset_operator_totp(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.unwrap_or_default().password,
         client,
@@ -182,6 +185,7 @@ pub async fn revoke_operator_session(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.unwrap_or_default().password,
         client,
@@ -225,6 +229,7 @@ pub async fn set_operator_contact(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.password,
         client,
@@ -258,6 +263,7 @@ pub async fn set_operator_role(
     act(
         &state,
         &auth.user,
+        auth.session.created_at,
         &username,
         &body.password,
         client,
@@ -275,9 +281,11 @@ pub async fn set_operator_role(
 /// The `/ui` twin runs the same four steps but renders the password refusal as
 /// the operator card's own banner, so it calls the pieces itself rather than
 /// this wrapper.
+#[allow(clippy::too_many_arguments)]
 async fn act(
     state: &AdminState,
     caller: &AdminUser,
+    session_created_at: i64,
     username: &str,
     password: &str,
     client: Option<std::net::IpAddr>,
@@ -286,7 +294,7 @@ async fn act(
 ) -> Result<(), AdminError> {
     let mut target = find(username, state).await?;
     refuse_self_target(caller, &target)?;
-    verify_current_password(caller, password, client, &state.logins).await?;
+    reprove(state, caller, Some(session_created_at), password, client).await?;
     apply_operator_action(
         state,
         caller,
@@ -500,12 +508,17 @@ pub(crate) fn user_error(error: UserError) -> AdminError {
         }
         UserError::Database(error) => error.into(),
         UserError::DuplicateUsername(_) => AdminError::internal(),
+        // A role the operator's provider sets at every sign-in: the state of
+        // that operator, not a malformed request.
+        error @ UserError::ManagedExternally { .. } => {
+            AdminError::conflict("managed_externally", error.to_string())
+        }
     }
 }
 
 /// Refuses a route on this surface when its target is the caller.
 ///
-/// Checked before [`verify_current_password`] runs, so a self-target is refused
+/// Checked before [`reprove`] runs, so a self-target is refused
 /// without making the caller type their password to be told no — every one of
 /// these actions already has a self-service home on `/api/account` or
 /// `/ui/account`.

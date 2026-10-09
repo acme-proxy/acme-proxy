@@ -34,6 +34,20 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Single sign-on for the web admin: OpenID Connect and LDAP / Active
+  Directory** (#14). `[admin.auth.oidc.<name>]` adds a *Sign in with …* button
+  (authorization code flow with PKCE); `[admin.auth.ldap.<name>]` adds a realm
+  to the password form. Operators are created at their first sign-in and their
+  role follows their groups at every sign-in, through `roles.admin`,
+  `roles.operator` and `roles.viewer`; a person in no mapped group is refused,
+  and a username an existing operator holds is refused rather than linked.
+  Local operators keep working beside them, and `admin.auth.local = false`
+  closes the local realm. `admin user list`/`show` and the Operators page show
+  where each operator signs in through, and `admin_login_*` lines carry a
+  `realm` field. See the book's Web Admin → Single Sign-On page, and ADR 0015.
+- **An operator name may contain `@`**, so a UPN or an address from a provider
+  is usable as one.
+
 - **A Docker Compose recipe for the role split**, in the book under Deployment
   → Separate Role Processes → Docker Compose, Roles Split: `init`, `worker`,
   `acme` and `admin` as services over PostgreSQL, with the CA key on a volume

@@ -31,6 +31,9 @@ suite could not without root or extra tooling:
 - **Key rollover**: needs a client that will actually perform RFC 8555
   §7.3.5's nested-JWS dance — see "key_change.rs: the one client left that
   still does this" below.
+- **Web admin single sign-on**: a real OpenID Connect provider's discovery,
+  keys and token endpoint, and a real directory's StartTLS and `ldaps` — see
+  "admin_sso.rs: Dex over OpenLDAP" below.
 
 > An earlier version of this suite was shell scripts driving
 > `podman-compose` (`tests/e2e/all`, per-script paths under
@@ -48,13 +51,13 @@ cargo test --test e2e -- --ignored                      # or plain cargo test
 Every test in this suite is `#[ignore]`d, so a plain `cargo nextest run`/
 `cargo test` skips all of them — `-E 'binary(e2e)' --run-ignored all` (or
 `--test e2e -- --ignored` with plain `cargo test`) is required to actually
-run them. CI runs only the three challenge scenarios, and only nightly (the
-`e2e` job in `.github/workflows/ci.yml`, `if: github.event_name == 'schedule'`);
-everything else here is a manual check.
+run them. CI runs a subset, and only nightly (the `e2e` job in
+`.github/workflows/ci.yml`, `if: github.event_name == 'schedule'`, whose
+comment lists which); everything else here is a manual check.
 
-The first run of any test builds seven images (`bind-e2e`, `acme-proxy-e2e`,
+The first run of any test builds nine images (`bind-e2e`, `acme-proxy-e2e`,
 `netbox-mock-e2e`, `phpipam-mock-e2e`, `certbot-e2e`, `acmesh-e2e`,
-`lego-e2e`), guarded by a
+`lego-e2e`, `openldap-e2e`, `dex-e2e`), guarded by a
 cross-process `flock` so nextest's one-process-per-test model doesn't race
 the same `podman build`/`docker build` from multiple tests at once; every
 later test in the same run reuses those images. Each test then gets its own
@@ -62,7 +65,7 @@ dedicated network and set of containers (`Lab::new` in `common.rs`), torn
 down when the test's `Lab` is dropped.
 
 Because `ensure_images_built`'s skip guard is keyed on `NEXTEST_RUN_ID` (a
-fresh id every run — see its comment), the seven `build` commands are reissued
+fresh id every run — see its comment), the nine `build` commands are reissued
 on *every* invocation, not just the first ever; whether anything actually
 recompiles is entirely down to the container engine's own layer cache. Three
 of the images compile Rust, and they do it two different ways.
@@ -108,19 +111,21 @@ sleep below were dealt with.
 They are two-file crates whose sources change about once a quarter, so the
 inner-loop problem does not apply; what did apply to them was the build
 context, and `tests/e2e/.dockerignore` now keeps `netbox-mock/target`
-(128 MB, and `COPY`ed into the image twice) out of a context that six of the
-seven builds ship. Every stage in every Containerfile under this
+(128 MB, and `COPY`ed into the image twice) out of a context that eight of the
+nine builds ship. Every stage in every Containerfile under this
 directory (and the root one) is `FROM debian:trixie-slim` on purpose, with no
 upstream language images and no third-party images — keep it that way rather
 than reaching for `rust:*`/`golang:*`/`alpine:*`/`lukemathwalker/cargo-chef:*`
-in a future edit. Three of the seven install their tool from source/tarball
-instead of `apt` because trixie's packaged version isn't new enough:
+in a future edit. Four of the nine install their tool from source/tarball
+instead of `apt` because trixie has no usable package:
 `rustc`/`cargo` (1.85 main / 1.94 backports, below this crate's
 `rust-version = "1.97"` MSRV) come from `rustup`; Go (trixie's `golang-go` is
 1.24, below `lego`'s `go 1.25.0` requirement) comes from the pinned, checksum-
 verified tarball at `go.dev/dl`; `acme.sh` has no Debian package at all, so
 it's a pinned upstream release tarball, the same reasoning `lego.Containerfile`
-already uses for `lego` itself (see "key_change.rs" below).
+already uses for `lego` itself (see "key_change.rs" below); Dex publishes images
+but no binaries, so `dex.Containerfile` clones a pinned tag and builds it with
+the same Go tarball.
 
 ## Design
 
@@ -130,7 +135,7 @@ already uses for `lego` itself (see "key_change.rs" below).
   (`docker` if present, else `podman`; overridable via `CONTAINER_RUNTIME`),
   points `DOCKER_HOST` at the rootless-Podman socket if it isn't already
   set — failing with a clear message if `podman.socket` isn't already
-  active rather than starting it itself — and builds all seven images once
+  active rather than starting it itself — and builds all nine images once
   per run behind the flock described above.
 - **`Lab::new(env)`** starts a dedicated bridge network plus `dns`,
   `acme-proxy`, `certbot`, `acme-sh` and `lego` containers, and — only when
@@ -269,6 +274,43 @@ already uses for `lego` itself (see "key_change.rs" below).
 - **`ari.rs`** — `GET /renewalInfo/{certID}` (RFC 9773): a real certificate
   is issued, its serial extracted with `openssl`, and the resulting ARI URL
   is checked for a `suggestedWindow`.
+
+## admin_sso.rs: Dex over OpenLDAP
+
+The web admin's [single sign-on](../../doc/src/operations/webadmin_sso.md)
+against real providers, in a lab of its own (`SsoLab`) rather than `Lab`: it
+needs none of the ACME clients, and it needs the admin listener on TLS and a
+configuration *file* — an LDAP group's DN holds commas, and a list read from
+the environment is split on them.
+
+- **`openldap-e2e`** is `slapd` on Alpine with a fixed seed: `alice` and `bob`
+  in `acme-admins`, `carol` in `staff`, `dave` in no group, as
+  `groupOfNames` entries (the realms read groups with a search, so no
+  `memberof` overlay is needed). It serves `ldap://` with StartTLS and
+  `ldaps://` under a certificate the lab generates per run for the
+  container's name, signed by a lab CA only `ca_cert_path` trusts.
+- **`dex-e2e`** is Dex, built from a pinned tag (`dex.Containerfile`), with
+  that same directory as its LDAP connector, so the OpenID Connect groups come
+  from the same seed. Dex rather
+  than Keycloak: it starts in about a second against Keycloak's thirty, and
+  its LDAP connector lets one directory feed both realms. The price is that
+  Keycloak's and Entra ID's own claim shapes (`roles`, group overage) are
+  covered only by `tests/admin_oidc.rs`'s provider on loopback and the book.
+- **The browser** is `curl`, run in an `acmesh-e2e` container on the lab
+  network, with a cookie jar: it follows the start route's redirect to Dex, posts Dex's login form
+  (whose action URL it reads off the page), and follows the redirects back to
+  the callback. Hosts resolve the same way for it and for `acme-proxy`, which
+  the token's `iss` check requires.
+
+The scenarios: an OpenID Connect sign-in provisions and maps roles, and a
+person in no mapped group is refused; a group change made with `ldapmodify`
+re-syncs the role at the next sign-in; StartTLS and `ldaps` realms map groups,
+and the same person through a second realm is refused rather than linked; a
+realm without `ca_cert_path` refuses the directory's certificate
+(`provider_unavailable`); and `admin user list --json` shows each operator's
+source. Active Directory's own behaviour — `objectGUID`, the in-chain matching
+rule of `nested_groups` — has no container counterpart and is covered by unit
+tests only.
 
 ## Why `eab.rs` isn't a hardcoded credential
 

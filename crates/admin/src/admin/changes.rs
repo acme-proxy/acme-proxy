@@ -91,6 +91,25 @@ pub async fn change_role(
     Ok(Some((user, revoked)))
 }
 
+/// Brings an external operator's tier in line with what their provider says,
+/// at sign-in -- [`change_role`]'s record, through `users::sync_role` rather
+/// than the refusal [`users::set_role`] gives an external operator.
+pub(crate) async fn sync_role(
+    user: AdminUser,
+    role: AdminRole,
+    database: Arc<Database>,
+    trail: &impl OperatorTrail,
+) -> Result<(AdminUser, u64), UserError> {
+    let (user, revoked) = users::sync_role(user, role, database).await?;
+    trail
+        .record(|actor, client| {
+            audit::operator_role_changed(actor, client, &user.username, role.as_str())
+        })
+        .await;
+    record_revoked(&user, revoked, trail).await;
+    Ok((user, revoked))
+}
+
 /// Sets or clears `username`'s notification address.
 ///
 /// An address set to what it already was writes no row and sends no message:

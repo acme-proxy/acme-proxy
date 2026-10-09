@@ -221,36 +221,9 @@ pub(crate) fn tls_config(
         return acme_proxy_net::challenge::tls_alpn_01::accept_any_client_config(&[]);
     }
 
-    let mut roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-
-    if !ca_cert_path.trim().is_empty() {
-        let path = std::path::Path::new(ca_cert_path.trim());
-        let extra = acme_proxy_core::pemfile::read_certificates(path)
-            .map_err(|error| anyhow::anyhow!("{setting}: {error}"))?;
-        for certificate in extra {
-            roots.add(certificate).map_err(|error| {
-                anyhow::anyhow!(
-                    "{setting}: {} is not a usable CA certificate: {error}",
-                    path.display()
-                )
-            })?;
-        }
-    }
-
-    // Provider passed explicitly rather than installed as the process default:
-    // `install_default` panics on a second call, which would make `cargo test`
-    // depend on which tests happen to run together.
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+    Ok(Arc::new(
+        acme_proxy_net::http_client::webpki_tls_config_with_ca(ca_cert_path, setting)?,
     ))
-    .with_safe_default_protocol_versions()
-    .map_err(|error| anyhow::anyhow!("building the TLS client configuration: {error}"))?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-
-    Ok(Arc::new(config))
 }
 
 /// Loopback servers both backends' client tests drive the real transport

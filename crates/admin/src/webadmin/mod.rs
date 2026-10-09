@@ -76,6 +76,10 @@ pub struct AdminState {
     /// The durable queue: a revocation for a backend only the `worker` role
     /// holds is queued here, and a local CA's CRL regeneration after one.
     pub jobs: acme_proxy_jobs::jobs::JobQueue,
+    /// The sign-in realms `[admin.auth]` configures: whether the local one is
+    /// open, and the OpenID Connect and LDAP providers. Per generation, so a
+    /// reload rebuilds them (and drops their discovery and key caches).
+    pub providers: Arc<crate::identity::Providers>,
 }
 
 impl AdminState {
@@ -92,8 +96,11 @@ impl AdminState {
         audit: Arc<acme_proxy_jobs::auditor::Auditor>,
         notifiers: acme_proxy_jobs::notify::Notifiers,
         jobs: acme_proxy_jobs::jobs::JobQueue,
+        providers: Arc<crate::identity::Providers>,
     ) -> Self {
-        Self::with_logins(database, config, profiles, audit, notifiers, jobs, None)
+        Self::with_logins(
+            database, config, profiles, audit, notifiers, jobs, providers, None,
+        )
     }
 
     /// [`new`](Self::new), carrying the previous generation's login counters.
@@ -102,6 +109,7 @@ impl AdminState {
     /// the first generation, where there is nothing to carry. See
     /// [`LoginLimiter::rebuilt`] for why the counters move but the limits do not.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn with_logins(
         database: Arc<Database>,
         config: Arc<Config>,
@@ -109,6 +117,7 @@ impl AdminState {
         audit: Arc<acme_proxy_jobs::auditor::Auditor>,
         notifiers: acme_proxy_jobs::notify::Notifiers,
         jobs: acme_proxy_jobs::jobs::JobQueue,
+        providers: Arc<crate::identity::Providers>,
         previous_logins: Option<&LoginLimiter>,
     ) -> Self {
         let by_name = profiles
@@ -131,6 +140,7 @@ impl AdminState {
             audit,
             notifiers,
             jobs,
+            providers,
         }
     }
 
@@ -357,6 +367,54 @@ impl crate::admin::changes::OperatorTrail for WebTrail<'_> {
     }
 }
 
+/// The [`OperatorTrail`](crate::admin::changes::OperatorTrail) of a sign-in
+/// through an external provider: the operator it created or re-roled is
+/// recorded as the **provider's** doing (`actor_kind = system`, `actor_id =
+/// oidc:<name>`), since nobody signed in made the change -- the provider's
+/// groups did.
+pub(crate) struct ProviderTrail<'a> {
+    pub(crate) state: &'a AdminState,
+    pub(crate) request_context: &'a acme_proxy_core::audit::RequestContext,
+    /// `oidc:<name>` or `ldap:<name>`.
+    pub(crate) provider: &'a str,
+}
+
+impl crate::admin::changes::OperatorTrail for ProviderTrail<'_> {
+    async fn record(
+        &self,
+        build: impl FnOnce(
+            acme_proxy_core::audit::Actor,
+            acme_proxy_core::audit::ClientContext,
+        ) -> acme_proxy_core::audit::AuditRecord
+        + Send,
+    ) {
+        let actor = acme_proxy_core::audit::Actor {
+            kind: acme_proxy_core::audit::ActorKind::System,
+            id: Some(self.provider.to_string()),
+        };
+        let client = self.state.audit.client(self.request_context).await;
+        self.state.audit.record(build(actor, client)).await;
+    }
+
+    async fn notify(
+        &self,
+        user: &acme_proxy_store::admin_user::AdminUser,
+        change: acme_proxy_jobs::notify::AdminCredentialChange,
+        previous_recipient: Option<String>,
+    ) {
+        self.state
+            .notify_credential_change(
+                user,
+                change,
+                false,
+                self.request_context.ip,
+                self.request_context.user_agent.clone(),
+                previous_recipient,
+            )
+            .await;
+    }
+}
+
 /// The `User-Agent` header as an owned string, capped at
 /// [`USER_AGENT_MAX`](acme_proxy_core::audit::USER_AGENT_MAX), for the sign-in
 /// notification. Every other credential change reads it from the request's
@@ -399,9 +457,10 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 ///
 /// # Panics
 ///
-/// On an `admin.filter` that [`check_config`] would have refused. The server
-/// builds the policy itself and calls [`build_admin_app_with_logins`]; this is
-/// the convenience form tests and fixtures use.
+/// On an `admin.filter` that [`check_config`] would have refused, or an
+/// `[admin.auth]` whose providers cannot be built. The server builds both
+/// itself and calls [`build_admin_app_with_logins`]; this is the convenience
+/// form tests and fixtures use.
 pub fn build_admin_app(
     database: Arc<Database>,
     config: Arc<Config>,
@@ -411,8 +470,14 @@ pub fn build_admin_app(
     jobs: acme_proxy_jobs::jobs::JobQueue,
 ) -> Router {
     let policy = filter::build(&config).expect("admin.filter must be valid");
+    let egress = acme_proxy_net::egress::Egress::from_config(&config)
+        .expect("[dns] and [proxy] must be valid");
+    let providers = Arc::new(
+        crate::identity::Providers::from_config(&config, &egress.outbound())
+            .expect("admin.auth must be valid"),
+    );
     build_admin_app_with_logins(
-        database, config, profiles, audit, notifiers, jobs, policy, None,
+        database, config, profiles, audit, notifiers, jobs, policy, providers, None,
     )
     .0
 }
@@ -431,6 +496,7 @@ pub fn build_admin_app_with_logins(
     notifiers: acme_proxy_jobs::notify::Notifiers,
     jobs: acme_proxy_jobs::jobs::JobQueue,
     policy: Arc<acme_proxy_policy::filter::FilterPolicy>,
+    providers: Arc<crate::identity::Providers>,
     previous_logins: Option<&LoginLimiter>,
 ) -> (Router, Arc<LoginLimiter>) {
     let state = AdminState::with_logins(
@@ -440,6 +506,7 @@ pub fn build_admin_app_with_logins(
         audit,
         notifiers,
         jobs,
+        providers,
         previous_logins,
     );
     let logins = state.logins.clone();
@@ -784,7 +851,86 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
 
     check_templates(&admin.template_dir)?;
     filter::build(config)?;
+    check_auth(&admin.auth)?;
 
+    Ok(())
+}
+
+/// Refuses an `[admin.auth]` nobody could sign in through, or one that would
+/// send a credential somewhere it should not go. Checks shape only: secrets
+/// and CA files are read, and nothing is contacted, when the providers are
+/// built.
+fn check_auth(auth: &acme_proxy_core::config::AdminAuthConfig) -> anyhow::Result<()> {
+    use crate::identity::is_loopback;
+
+    acme_proxy_core::config::validate_key_names("admin.auth.oidc", auth.oidc.keys())?;
+    acme_proxy_core::config::validate_key_names("admin.auth.ldap", auth.ldap.keys())?;
+    if !auth.local && auth.oidc.is_empty() && auth.ldap.is_empty() {
+        bail!(
+            "admin.auth.local is false and no [admin.auth.oidc.*] or [admin.auth.ldap.*] \
+             provider is configured: nobody could sign in to the panel"
+        );
+    }
+
+    for (name, provider) in &auth.oidc {
+        let key = format!("admin.auth.oidc.{name}");
+        let issuer = url::Url::parse(&provider.issuer)
+            .map_err(|error| anyhow::anyhow!("{key}.issuer `{}`: {error}", provider.issuer))?;
+        if issuer.scheme() != "https" && !(issuer.scheme() == "http" && is_loopback(&issuer)) {
+            bail!(
+                "{key}.issuer `{}` must be https: the client secret and every ID token's \
+                 keys are fetched from it",
+                provider.issuer
+            );
+        }
+        if provider.client_id.trim().is_empty() {
+            bail!("{key}.client_id is empty");
+        }
+        if provider.roles.is_empty() {
+            bail!("{key}.roles grants no role to any group: nobody could sign in through it");
+        }
+    }
+
+    for (name, provider) in &auth.ldap {
+        let key = format!("admin.auth.ldap.{name}");
+        let url = url::Url::parse(&provider.url)
+            .map_err(|error| anyhow::anyhow!("{key}.url `{}`: {error}", provider.url))?;
+        match (url.scheme(), provider.start_tls) {
+            ("ldaps", true) => bail!(
+                "{key}: start_tls is set on an ldaps:// URL, which is already TLS; use one or \
+                 the other"
+            ),
+            ("ldaps", false) | ("ldap", true) => {}
+            ("ldap", false) if is_loopback(&url) => {}
+            ("ldap", false) => bail!(
+                "{key}.url `{}` is plain ldap:// without start_tls: every operator's password \
+                 would cross the network in the clear. Use ldaps://, or set start_tls = true",
+                provider.url
+            ),
+            (other, _) => bail!(
+                "{key}.url `{}`: scheme `{other}` (expected ldaps or ldap)",
+                provider.url
+            ),
+        }
+        if provider.user_base_dn.trim().is_empty() {
+            bail!("{key}.user_base_dn is empty");
+        }
+        if !provider.user_filter.contains("{username}") {
+            bail!(
+                "{key}.user_filter `{}` does not mention {{username}}: it would match the same \
+                 entries whoever signs in",
+                provider.user_filter
+            );
+        }
+        if provider.nested_groups && provider.group_search_base.trim().is_empty() {
+            bail!(
+                "{key}.nested_groups needs group_search_base: nested membership is a group search"
+            );
+        }
+        if provider.roles.is_empty() {
+            bail!("{key}.roles grants no role to any group: nobody could sign in through it");
+        }
+    }
     Ok(())
 }
 

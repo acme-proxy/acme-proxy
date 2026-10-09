@@ -17,7 +17,7 @@ use crate::admin;
 use crate::admin::{mfa, users};
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
-use crate::webadmin::handlers::mfa::verify_current_password;
+use crate::webadmin::handlers::mfa::reprove;
 use crate::webadmin::handlers::operators::{
     OperatorAction, apply_operator_action, find, refuse_self_target,
 };
@@ -337,7 +337,8 @@ async fn act(
 /// own banner — the `account::refuse_without_password` shape: the session is
 /// live and the page is the right page, only this one action was refused.
 ///
-/// `verify_current_password`, not `check_step_up`: see
+/// [`reprove`] (the realm-aware `verify_current_password`), not
+/// `check_step_up`: see
 /// [`crate::webadmin::handlers::operators`]'s module doc for why this surface
 /// asks even of a caller who has enrolled no second factor.
 async fn refuse_without_password(
@@ -347,8 +348,14 @@ async fn refuse_without_password(
     password: &str,
     client: Option<std::net::IpAddr>,
 ) -> Result<Option<Response>, PageError> {
-    let Err(error) =
-        verify_current_password(&session.auth.user, password, client, &state.logins).await
+    let Err(error) = reprove(
+        state,
+        &session.auth.user,
+        Some(session.auth.session.created_at),
+        password,
+        client,
+    )
+    .await
     else {
         return Ok(None);
     };

@@ -33,7 +33,26 @@ use acme_proxy_store::admin_user::AdminUser;
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    /// The realm the password is for: absent or empty is the local one,
+    /// otherwise the name of an `[admin.auth.ldap.<name>]` directory. Chosen
+    /// by the person signing in, never guessed -- a password only ever goes to
+    /// the realm it was typed for.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
+
+impl LoginRequest {
+    /// The directory named, or `None` for the local realm.
+    fn directory(&self) -> Option<&str> {
+        self.provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+}
+
+/// The realm a sign-in went through, as `admin_login_*` lines name it.
+pub(crate) const LOCAL_REALM: &str = "local";
 
 /// The query of a sign-out, `DELETE /api/session` or its page twin.
 #[derive(Debug, Deserialize, Default)]
@@ -67,47 +86,64 @@ pub(crate) struct SignedIn {
 /// Called by [`post_session`] with a JSON body and by
 /// [`crate::webadmin::pages::session::post_login`] with a form body. The two
 /// front ends must not drift on any of this: the origin gate, the limiter
-/// running *before* the 600 000-iteration hash, the indistinguishable failures,
-/// or the session-fixation delete.
+/// running *before* the 600 000-iteration hash (or the directory round trip),
+/// the indistinguishable failures, or the session-fixation delete.
 pub(crate) async fn sign_in(
     state: &AdminState,
     client: Option<std::net::IpAddr>,
     headers: &axum::http::HeaderMap,
+    request_context: &acme_proxy_core::audit::RequestContext,
     credentials: &LoginRequest,
 ) -> Result<SignedIn, AdminError> {
     let body = credentials;
+    let realm = body
+        .directory()
+        .map_or_else(|| LOCAL_REALM.to_string(), |name| format!("ldap:{name}"));
     check_origin(headers, &state.config.admin.base_url)?;
 
     let attempt = match state.logins.begin(client) {
         Ok(attempt) => attempt,
         Err(retry_after) => {
-            log_login(false, &body.username, client, "rate_limited");
+            log_login(false, &body.username, &realm, client, "rate_limited");
             return Err(AdminError::rate_limited(retry_after));
         }
     };
 
-    let outcome =
-        users::authenticate(&body.username, &body.password, state.database.clone()).await?;
-
-    // Every failure answers identically; only the log says which.
-    let refused = match outcome {
-        AuthOutcome::Authenticated(user) => Ok(*user),
-        AuthOutcome::UnknownUser => Err("unknown_user"),
-        AuthOutcome::WrongPassword(_) => Err("wrong_password"),
-        AuthOutcome::Disabled(_) => Err("account_disabled"),
+    let refused = match body.directory() {
+        None => local_operator(state, body).await?,
+        Some(name) => directory_operator(state, name, body, request_context).await?,
     };
-    let mut user = match refused {
+    let user = match refused {
         Ok(user) => user,
-        Err(reason) => {
+        // A provider that could not be asked is this server's failure: the
+        // attempt is given back uncounted and the answer says so, rather than
+        // telling the person their password is wrong.
+        Err(Refusal::Unreachable(detail)) => {
+            warn!(event = "admin_login_provider_failed",
+                  outcome = "failure",
+                  realm = %realm,
+                  error = %detail);
+            log_login(
+                false,
+                &body.username,
+                &realm,
+                client,
+                "provider_unreachable",
+            );
+            return Err(AdminError::provider_unavailable());
+        }
+        // Every other failure answers identically; only the log says which.
+        Err(Refusal::Refused(reason)) => {
             attempt.failed();
-            log_login(false, &body.username, client, reason);
+            log_login(false, &body.username, &realm, client, reason);
             return Err(AdminError::invalid_credentials());
         }
     };
 
     // What still stands between this password and a usable session. An
     // operator who *has* a factor is challenged whether `require_mfa` is set or
-    // not: the flag governs only the operator who has none.
+    // not: the flag governs only the operator who has none. A directory
+    // password is a password, so an LDAP operator owes the same.
     let step = if user.has_totp() {
         Some(MfaStep::Verify)
     } else if state.config.admin.require_mfa {
@@ -115,7 +151,94 @@ pub(crate) async fn sign_in(
     } else {
         None
     };
+    start_session(state, client, headers, user, &realm, step).await
+}
 
+/// Why [`sign_in`] refused before a session existed.
+pub(crate) enum Refusal {
+    /// The `reason` of `admin_login_failed`; answered `invalid_credentials`.
+    Refused(&'static str),
+    /// The provider could not be asked; answered `provider_unavailable`.
+    Unreachable(String),
+}
+
+/// The local realm: a password checked against this table.
+async fn local_operator(
+    state: &AdminState,
+    body: &LoginRequest,
+) -> Result<Result<AdminUser, Refusal>, AdminError> {
+    if !state.providers.local {
+        // `admin.auth.local = false`: refused before any row is read, so the
+        // answer is uniform and costs nothing.
+        return Ok(Err(Refusal::Refused("local_realm_disabled")));
+    }
+    let outcome =
+        users::authenticate(&body.username, &body.password, state.database.clone()).await?;
+    Ok(match outcome {
+        AuthOutcome::Authenticated(user) => Ok(*user),
+        AuthOutcome::UnknownUser => Err(Refusal::Refused("unknown_user")),
+        AuthOutcome::WrongPassword(_) => Err(Refusal::Refused("wrong_password")),
+        AuthOutcome::Disabled(_) => Err(Refusal::Refused("account_disabled")),
+        AuthOutcome::External(_) => Err(Refusal::Refused("external_user")),
+    })
+}
+
+/// An LDAP realm: the directory checks the password and names the groups,
+/// then [`crate::identity::provision`] finds or creates the operator.
+async fn directory_operator(
+    state: &AdminState,
+    name: &str,
+    body: &LoginRequest,
+    request_context: &acme_proxy_core::audit::RequestContext,
+) -> Result<Result<AdminUser, Refusal>, AdminError> {
+    let Some(directory) = state.providers.ldap.get(name) else {
+        return Ok(Err(Refusal::Refused("provider_not_configured")));
+    };
+    let identity = match directory.authenticate(&body.username, &body.password).await {
+        Ok(identity) => identity,
+        Err(error) => return Ok(Err(refusal(error))),
+    };
+    let trail = crate::webadmin::ProviderTrail {
+        state,
+        request_context,
+        provider: &identity.provider,
+    };
+    Ok(
+        crate::identity::provision(&identity, &directory.roles, state.database.clone(), &trail)
+            .await
+            .map_err(refusal),
+    )
+}
+
+/// A provider's refusal in [`sign_in`]'s terms, logging the detail the
+/// answer will not carry.
+pub(crate) fn refusal(error: crate::identity::SignInError) -> Refusal {
+    use crate::identity::SignInError;
+    match error {
+        SignInError::Unreachable(detail) => Refusal::Unreachable(detail),
+        SignInError::Database(error) => Refusal::Unreachable(format!("database error: {error}")),
+        other => {
+            tracing::debug!(event = "admin_login_refusal_explained",
+                            outcome = "failure",
+                            reason = other.reason(),
+                            detail = %other);
+            Refusal::Refused(other.reason())
+        }
+    }
+}
+
+/// The half of a sign-in after the person is known: the session-fixation
+/// delete, then either an `active` session or -- while `step` is owed -- a
+/// `pending_mfa` one. Shared by [`sign_in`] and the OpenID Connect callback
+/// (`pages::oidc`), which always passes `None`.
+pub(crate) async fn start_session(
+    state: &AdminState,
+    client: Option<std::net::IpAddr>,
+    headers: &axum::http::HeaderMap,
+    mut user: AdminUser,
+    realm: &str,
+    step: Option<MfaStep>,
+) -> Result<SignedIn, AdminError> {
     // Session fixation: whatever session this request already carried is gone,
     // whether or not it was valid. A login must never keep an attacker-planted
     // cookie alive.
@@ -149,7 +272,7 @@ pub(crate) async fn sign_in(
         user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
             .await?;
         state.logins.record_success(client);
-        log_login(true, &user.username, client, "");
+        log_login(true, &user.username, realm, client, "");
         notify_sign_in_from_new_address(state, &user, &known_before, client, user_agent).await;
 
         return Ok(SignedIn {
@@ -219,7 +342,13 @@ pub(crate) async fn finish_mfa(
     let attempt = match state.logins.begin(client) {
         Ok(attempt) => attempt,
         Err(retry_after) => {
-            log_login(false, &pending.user.username, client, "rate_limited");
+            log_login(
+                false,
+                &pending.user.username,
+                realm_of(&pending.user),
+                client,
+                "rate_limited",
+            );
             return Err(AdminError::rate_limited(retry_after));
         }
     };
@@ -303,7 +432,7 @@ pub(crate) async fn finish_mfa(
           outcome = "success",
           username = %user.username,
           method = via.as_str());
-    log_login(true, &user.username, client, "");
+    log_login(true, &user.username, realm_of(&user), client, "");
     notify_sign_in_from_new_address(
         state,
         &user,
@@ -383,9 +512,14 @@ pub(crate) async fn finish_enrolment(
         .await?;
     state.logins.record_success(client);
     info!(event = "admin_mfa_enrolled", outcome = "success", username = %user.username);
-    log_login(true, &user.username, client, "");
+    log_login(true, &user.username, realm_of(user), client, "");
     notify_sign_in_from_new_address(state, user, &known_before, client, user_agent).await;
     Ok((session, cookie))
+}
+
+/// The realm an operator signs in through: their provider, or the local one.
+fn realm_of(user: &AdminUser) -> &str {
+    user.auth_provider.as_deref().unwrap_or(LOCAL_REALM)
 }
 
 /// `Option<IpAddr>` -> the string form `known_login_ips` / the payloads carry.
@@ -455,9 +589,10 @@ pub async fn post_session(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
     headers: axum::http::HeaderMap,
+    request_context: acme_proxy_core::audit::RequestContext,
     Json(body): Json<LoginRequest>,
 ) -> Result<Response, AdminError> {
-    let signed_in = sign_in(&state, client, &headers, &body).await?;
+    let signed_in = sign_in(&state, client, &headers, &request_context, &body).await?;
     Ok(signed_in_response(&signed_in))
 }
 

@@ -469,8 +469,10 @@ jobs:
   # was lifted and stayed green, because nothing ran it.
   # So the filter now also carries the scenarios that assert behaviour the unit
   # suite structurally cannot reach — SIGHUP against a live process
-  # (`reload`), a real upstream ACME CA (`relay_signer`), and the filter chain
-  # against real NetBox and phpIPAM containers (`filters`).
+  # (`reload`), a real upstream ACME CA (`relay_signer`), the filter chain
+  # against real NetBox and phpIPAM containers (`filters`), and the web admin's
+  # single sign-on against a real Dex and a real OpenLDAP (`admin_sso`: one
+  # OpenID Connect and one LDAP scenario of its five).
   #
   # Still a filter rather than `binary(e2e)` only because the runtime of the
   # remaining scenarios (six `certbot`/`acme_sh` client scenarios, `eab`,
@@ -507,7 +509,7 @@ jobs:
       - name: Run the challenge scenarios
         run: >
           cargo nextest run --locked
-          -E 'binary(e2e) and test(/^(http_01|dns_01|tls_alpn_01|reload|relay_signer|filters)::/)'
+          -E 'binary(e2e) and (test(/^(http_01|dns_01|tls_alpn_01|reload|relay_signer|filters)::/) or test(/^admin_sso::(oidc_login_provisions_and_maps_roles|ldap_starttls_and_ldaps_logins_map_groups)$/))'
           --run-ignored all
 
   # Publishes `edge` once every job above has passed on a push to `main`, by

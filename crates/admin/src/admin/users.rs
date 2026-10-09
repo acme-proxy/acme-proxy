@@ -36,6 +36,31 @@ pub enum UserError {
     /// A contact address that does not parse as a mailbox.
     #[error("{0}")]
     InvalidContact(String),
+    /// The change is the operator's identity provider's to make, not this
+    /// server's: an external operator has no password here, and their role is
+    /// recomputed from their groups at every sign-in -- set here, it would
+    /// silently revert at the next one.
+    #[error("`{username}` signs in through `{provider}`, which owns their {what}: change it there")]
+    ManagedExternally {
+        username: String,
+        provider: String,
+        what: &'static str,
+    },
+}
+
+impl UserError {
+    /// [`UserError::ManagedExternally`] for `user`, when an external provider
+    /// vouches for them.
+    pub(crate) fn refuse_external(user: &AdminUser, what: &'static str) -> Result<(), Self> {
+        match &user.auth_provider {
+            Some(provider) => Err(Self::ManagedExternally {
+                username: user.username.clone(),
+                provider: provider.clone(),
+                what,
+            }),
+            None => Ok(()),
+        }
+    }
 }
 
 impl From<sqlx::Error> for UserError {
@@ -61,6 +86,9 @@ pub enum AuthOutcome {
     WrongPassword(Box<AdminUser>),
     /// The password was right, but the account is `disabled`.
     Disabled(Box<AdminUser>),
+    /// The username belongs to an operator an external provider vouches for,
+    /// who has no password here. The KDF ran anyway, against the dummy hash.
+    External(Box<AdminUser>),
 }
 
 /// Whether a normalized username is one the web admin can address.
@@ -75,7 +103,9 @@ pub enum AuthOutcome {
 /// path or an environment segment (`valid_profile_name`,
 /// `valid_config_key_name`), widened by `_` and `.` because an operator name is
 /// a person's, not a slug — `a.smith` and `a_smith` are ordinary and neither
-/// means anything to a URL.
+/// means anything to a URL — and by `@`, because an identity provider's
+/// username is often a UPN or an address (`a.smith@example.com`), and `@` is a
+/// legal path-segment character (RFC 3986 §3.3).
 ///
 /// Checked at creation only. An existing row is left alone: refusing to *load*
 /// a username would lock somebody out of a panel they are already using, which
@@ -83,9 +113,9 @@ pub enum AuthOutcome {
 #[must_use]
 pub fn valid_username(username: &str) -> bool {
     !username.is_empty()
-        && username
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+        && username.chars().all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.' | '@')
+        })
 }
 
 /// Creates an operator at `role`, or at [`AdminRole::Admin`] when none is
@@ -116,7 +146,7 @@ pub async fn create_user(
     }
     if !valid_username(&normalized) {
         return Err(UserError::Policy(format!(
-            "invalid username `{normalized}`: use lowercase letters, digits, `-`, `_` and `.` \
+            "invalid username `{normalized}`: use lowercase letters, digits, `-`, `_`, `.` and `@` \
              (the name is a URL segment on the web admin)"
         )));
     }
@@ -146,15 +176,39 @@ pub async fn create_user(
 /// from the panel at all. Recoverable from this host — which is why it is a
 /// refusal here rather than a `CHECK` — but the operator should hear about it
 /// before it happens rather than after.
+///
+/// An operator an external provider vouches for is refused
+/// ([`UserError::ManagedExternally`]): their groups set the role at every
+/// sign-in, which is [`sync_role`]'s path.
 pub async fn set_role(
     username: &str,
     role: AdminRole,
     database: Arc<Database>,
 ) -> Result<Option<(AdminUser, u64)>, UserError> {
-    let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
+    let Some(user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(None);
     };
+    UserError::refuse_external(&user, "role")?;
+    apply_role(user, role, database).await.map(Some)
+}
 
+/// [`set_role`] for the one caller allowed to set an external operator's
+/// tier: their provider, at sign-in (`crate::identity`). The last-admin guard
+/// still applies -- a provider demoting the only admin is refused like anybody
+/// else, and the sign-in with it.
+pub(crate) async fn sync_role(
+    user: AdminUser,
+    role: AdminRole,
+    database: Arc<Database>,
+) -> Result<(AdminUser, u64), UserError> {
+    apply_role(user, role, database).await
+}
+
+async fn apply_role(
+    mut user: AdminUser,
+    role: AdminRole,
+    database: Arc<Database>,
+) -> Result<(AdminUser, u64), UserError> {
     if user.role() == AdminRole::Admin && role != AdminRole::Admin {
         let admins = AdminUser::list_all(&database)
             .await?
@@ -172,7 +226,7 @@ pub async fn set_role(
 
     user.set_role(role, &database).await?;
     let revoked = AdminSession::delete_for_user(user.id, &database).await?;
-    Ok(Some((user, revoked)))
+    Ok((user, revoked))
 }
 
 /// Sets (`Some`) or clears (`None` / empty / whitespace) the address an
@@ -234,6 +288,7 @@ pub async fn set_password(
     let Some(mut user) = AdminUser::find_by_username(username, &database).await? else {
         return Ok(None);
     };
+    UserError::refuse_external(&user, "password")?;
 
     let hash = password::hash_password(plaintext);
     user.set_password_hash(&hash, &database).await?;
@@ -262,6 +317,7 @@ pub async fn change_own_password(
     keep_session: &str,
     database: Arc<Database>,
 ) -> Result<(), UserError> {
+    UserError::refuse_external(user, "password")?;
     password::check_password_policy(new_password, context).map_err(UserError::Policy)?;
 
     let hash = password::hash_password(new_password);
@@ -406,6 +462,14 @@ pub async fn authenticate(
         let _ = password::verify_password_off_runtime(password::dummy_hash(), plaintext).await;
         return Ok(AuthOutcome::UnknownUser);
     };
+
+    // An external operator has no password here; their row holds a sentinel
+    // that is not a hash. Refused before it is read, and after the same KDF an
+    // unknown user pays, so the answer's timing says nothing either.
+    if user.is_external() {
+        let _ = password::verify_password_off_runtime(password::dummy_hash(), plaintext).await;
+        return Ok(AuthOutcome::External(Box::new(user)));
+    }
 
     let verified = match password::verify_password_off_runtime(&user.password_hash, plaintext).await
     {

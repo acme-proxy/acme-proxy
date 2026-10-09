@@ -1,0 +1,30 @@
+{#-
+  The end of an OpenID Connect sign-in: the callback's answer.
+
+  A page rather than a `303` to the panel, and the reason is the session
+  cookie. It is `SameSite=Strict`, and the callback is reached by a redirect
+  that started on the provider's site; a browser does not send a Strict cookie
+  on any request of that cross-site chain -- including a redirect from here to
+  `/ui/`, which would then render the sign-in page as if nothing had happened.
+  A navigation this page starts is same-site, so the cookie set with it rides
+  along. `http-equiv="refresh"` needs no script, which `script-src 'self'`
+  would otherwise have to allow.
+-#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="0;url=/ui/">
+    <title>Signed in — acme-proxy admin</title>
+    <link rel="stylesheet" href="/ui/static/admin.css">
+  </head>
+  <body class="signin">
+    <main>
+      <div class="brand">acme-proxy</div>
+      <div class="panel">
+        <p>Signed in. <a href="/ui/">Continue to the panel</a>.</p>
+      </div>
+    </main>
+  </body>
+</html>

@@ -20,7 +20,34 @@
       <div class="brand">acme-proxy</div>
       <div class="panel">
         {% include "partials/_flash.html" %}
+        {#-
+          One button per OpenID Connect provider: a link, not a form, so the
+          navigation to the provider is a top-level GET that `form-action
+          'self'` has no say over.
+        -#}
+        {% for provider in oidc_providers | default([]) %}
+        <p class="actions">
+          <a class="button primary" href="/ui/login/oidc/{{ provider.name }}">Sign in with {{ provider.display_name }}</a>
+        </p>
+        {% endfor %}
+        {% if password_form | default(true) %}
         <form method="post" action="/ui/login">
+          {#-
+            The realm is chosen, never guessed: a password typed for the
+            directory is never tried locally, nor the other way round.
+          -#}
+          {% if realms | default([]) | length > 1 %}
+          <div class="field">
+            <label for="provider">Sign in with</label>
+            <select id="provider" name="provider">
+              {% for realm in realms %}
+              <option value="{{ realm.name }}"{% if realm.name == selected_realm | default('') %} selected{% endif %}>{{ realm.display_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% elif realms | default([]) | length == 1 %}
+          <input type="hidden" name="provider" value="{{ realms[0].name }}">
+          {% endif %}
           <div class="field">
             <label for="username">Username</label>
             <input type="text" id="username" name="username" autocomplete="username"
@@ -35,6 +62,7 @@
             <button type="submit" class="primary">Sign in</button>
           </div>
         </form>
+        {% endif %}
       </div>
       {#-
         There is no sign-up page and never will be: the first operator is

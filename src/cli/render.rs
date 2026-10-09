@@ -596,7 +596,7 @@ pub fn render_eab_created_text(eab: &Eab, palette: Palette) -> String {
 #[must_use]
 pub fn render_admin_user_line(user: &AdminUser, palette: Palette) -> String {
     format!(
-        "{:<20}  {}  {:<8}  totp={}  {}  {}",
+        "{:<20}  {}  {:<8}  totp={}  {}  {}  source={}",
         user.username,
         palette.status(&format!("{:<8}", user.status)),
         user.role().as_str(),
@@ -606,7 +606,15 @@ pub fn render_admin_user_line(user: &AdminUser, palette: Palette) -> String {
         )),
         rfc3339(user.created_at),
         user.last_login_at.map_or("never".to_string(), rfc3339),
+        source(user),
     )
+}
+
+/// Who vouches for an operator: `local`, or the `oidc:<name>` / `ldap:<name>`
+/// provider -- last on the line, so a column an existing script cuts by
+/// position does not move.
+fn source(user: &AdminUser) -> &str {
+    user.auth_provider.as_deref().unwrap_or("local")
 }
 
 /// `admin user totp status`, in words.
@@ -654,10 +662,12 @@ pub fn render_admin_user_detail_text(
     palette: Palette,
 ) -> String {
     let mut out = format!(
-        "id             {}\nusername       {}\nstatus         {}\nrole           {}\n\
-         totp           {}\nrecovery_codes {}\ncreated        {}\nupdated        {}\n",
+        "id             {}\nusername       {}\nsource         {}\nstatus         {}\n\
+         role           {}\ntotp           {}\nrecovery_codes {}\ncreated        {}\n\
+         updated        {}\n",
         user.id,
         user.username,
+        source(user),
         palette.status(&user.status),
         user.role().as_str(),
         totp_state(user, palette),
@@ -1586,9 +1596,24 @@ mod tests {
         assert!(line.contains("active"));
         assert!(line.contains("totp=off"));
         assert!(line.contains("never"));
+        assert!(line.ends_with("source=local"), "{line}");
         assert!(
             !line.contains("pbkdf2"),
             "the stored hash must never reach a terminal: {line}"
+        );
+    }
+
+    #[test]
+    fn an_external_operator_names_their_provider() {
+        let mut user = admin_user_fixture();
+        user.auth_provider = Some("oidc:corp".to_string());
+        user.external_id = Some("https://idp.example sub".to_string());
+        assert!(render_admin_user_line(&user, Palette::plain()).ends_with("source=oidc:corp"));
+        let detail = render_admin_user_detail_text(&user, 0, Palette::plain());
+        assert!(detail.contains("source         oidc:corp\n"), "{detail}");
+        assert!(
+            !detail.contains("idp.example"),
+            "the provider's subject is matched on, never shown"
         );
     }
 

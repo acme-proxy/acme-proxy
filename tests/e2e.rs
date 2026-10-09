@@ -42,3 +42,6 @@ mod key_change;
 
 #[path = "e2e/reload.rs"]
 mod reload;
+
+#[path = "e2e/admin_sso.rs"]
+mod admin_sso;

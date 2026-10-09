@@ -9,4 +9,5 @@
 //! published in lockstep with it and with no semver promise of its own.
 
 pub mod admin;
+pub mod identity;
 pub mod webadmin;

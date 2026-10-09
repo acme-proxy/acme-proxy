@@ -34,6 +34,7 @@
 #   [admin.notify]                      operator security notifications
 #   [admin.filter]                      who may reach the admin listener
 #   [admin.tls]                         HTTPS on the admin listener
+#   [admin.auth]                        single sign-on: OpenID Connect, LDAP
 #   [nonce]                             replay-nonce freshness
 #   [audit]                             reverse lookups and trail retention
 #   [jobs]                              the durable background-work queue
@@ -251,6 +252,57 @@ cert_path = "admin.pem"             # ACME_PROXY_ADMIN__TLS__CERT_PATH
 key_path  = "admin.key"             # ACME_PROXY_ADMIN__TLS__KEY_PATH
 # Budget for one TLS handshake, as [server.tls].
 handshake_timeout_ms = 10000        # ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS
+
+[admin.auth]
+# Who may sign in to the panel, and who vouches for them. Operators signing in
+# through a provider are created at their first sign-in, and their role follows
+# their groups at every sign-in. The book's Web Admin -> Single Sign-On page
+# documents every key.
+#
+# The password form's local realm: operators made with `admin user create`.
+# Keep one local admin as the way in when a provider is down.
+local = true                        # ACME_PROXY_ADMIN__AUTH__LOCAL
+#
+# An OpenID Connect provider: a "Sign in with ..." button. Register the
+# redirect URI <admin.base_url>/ui/login/oidc/<name>/callback with it.
+#   [admin.auth.oidc.corp]
+#   display_name = "Corporate SSO"
+#   issuer = "https://sso.example.com/realms/acme"  # ..._OIDC__CORP__ISSUER
+#   client_id = "acme-proxy"
+#   client_secret_file = "/run/secrets/acme-proxy-oidc"
+#   scopes = ["openid", "profile", "email"]
+#   username_claim = "preferred_username"
+#   groups_claim = "groups"                     # "roles" for Entra app roles
+#   userinfo_groups = false
+#   required_acr = []
+#   required_amr = []                           # ["mfa"] to insist on one
+#   ca_cert_path = ""
+#   timeout_ms = 10000
+#   [admin.auth.oidc.corp.roles]
+#   admin = ["acme-admins"]
+#   operator = ["acme-operators"]
+#   viewer = ["staff"]
+#
+# An LDAP / Active Directory realm on the password form. ldaps://, or ldap://
+# with start_tls; plain ldap:// is refused off loopback.
+#   [admin.auth.ldap.ad]
+#   display_name = "Active Directory"
+#   url = "ldaps://dc1.example.com"             # ..._LDAP__AD__URL
+#   start_tls = false
+#   ca_cert_path = "/etc/acme-proxy/ad-ca.pem"
+#   bind_dn = "CN=svc-acme-proxy,OU=Service Accounts,DC=example,DC=com"
+#   bind_password_file = "/run/secrets/acme-proxy-ad"
+#   user_base_dn = "OU=Staff,DC=example,DC=com"
+#   user_filter = "(&(objectClass=user)(sAMAccountName={username}))"
+#   username_attribute = "sAMAccountName"       # default "uid"
+#   id_attribute = "objectGUID"                 # default "entryUUID"
+#   group_attribute = "memberOf"
+#   group_search_base = ""                      # set for nested_groups
+#   group_filter = "(member={dn})"
+#   nested_groups = false
+#   timeout_ms = 5000
+#   [admin.auth.ldap.ad.roles]
+#   admin = ["CN=ACME Admins,OU=Groups,DC=example,DC=com"]
 
 [nonce]
 # Lifetime of nonces in seconds. Shorter TTLs improve security against replay

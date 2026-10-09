@@ -22,7 +22,7 @@ use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
 use crate::webadmin::handlers::Caller;
 use crate::webadmin::handlers::account::apply_revoke_own_session;
-use crate::webadmin::handlers::mfa::verify_current_password;
+use crate::webadmin::handlers::mfa::reprove;
 use crate::webadmin::handlers::paging::PageParams;
 use crate::webadmin::pages::auth::{PageEnrolWrite, PageSelfServiceWrite, PageSession};
 use crate::webadmin::pages::error::PageError;
@@ -356,8 +356,14 @@ pub async fn change_contact(
     let caller = session.auth.user.clone();
     let csrf_token = session.auth.session.csrf_token.clone();
 
-    if let Err(error) =
-        verify_current_password(&caller, &form.current_password, client, &state.logins).await
+    if let Err(error) = reprove(
+        &state,
+        &caller,
+        Some(session.auth.session.created_at),
+        &form.current_password,
+        client,
+    )
+    .await
     {
         return super::refuse_with_card(
             &state,

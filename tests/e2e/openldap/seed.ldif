@@ -1,0 +1,57 @@
+# alice and bob are admins, carol is staff, dave is in no mapped group.
+dn: dc=example,dc=com
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: Example
+
+dn: ou=people,dc=example,dc=com
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=com
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice
+sn: Admin
+mail: alice@example.com
+userPassword: alice-password
+
+dn: uid=bob,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob
+sn: Builder
+mail: bob@example.com
+userPassword: bob-password
+
+dn: uid=carol,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol
+sn: Staff
+mail: carol@example.com
+userPassword: carol-password
+
+dn: uid=dave,ou=people,dc=example,dc=com
+objectClass: inetOrgPerson
+uid: dave
+cn: Dave
+sn: Nobody
+mail: dave@example.com
+userPassword: dave-password
+
+dn: cn=acme-admins,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: acme-admins
+member: uid=alice,ou=people,dc=example,dc=com
+member: uid=bob,ou=people,dc=example,dc=com
+
+dn: cn=staff,ou=groups,dc=example,dc=com
+objectClass: groupOfNames
+cn: staff
+member: uid=carol,ou=people,dc=example,dc=com

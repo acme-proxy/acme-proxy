@@ -132,6 +132,15 @@ pub(crate) fn build_generation(
                 acme_proxy_admin::webadmin::filter::build(config).inspect_err(|error| {
                     error!(event = "admin_filter_init_failed", outcome = "failure", error = %error);
                 })?;
+            // The sign-in realms, over this generation's egress: a reload that
+            // moved `[dns]` or `[proxy]` moves the identity providers with it.
+            let providers = acme_proxy_admin::identity::Providers::from_config(
+                config,
+                &parts.egress.outbound(),
+            )
+            .inspect_err(|error| {
+                error!(event = "admin_auth_init_failed", outcome = "failure", error = %error);
+            })?;
             let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
                 database.clone(),
                 config.clone(),
@@ -140,6 +149,7 @@ pub(crate) fn build_generation(
                 assembly.notifiers.clone(),
                 assembly.jobs.clone(),
                 policy,
+                Arc::new(providers),
                 previous_logins,
             );
             (Some(router), Some(logins))

@@ -163,6 +163,46 @@ pub fn webpki_tls_config() -> rustls::ClientConfig {
         .with_no_client_auth()
 }
 
+/// [`webpki_tls_config`] plus the PEM certificates in `ca_cert_path`, for a
+/// service behind an operator's internal PKI -- an inventory, an identity
+/// provider, a directory. An empty path is the public roots alone.
+///
+/// `setting` names the configuration key the path came from, so an unusable
+/// file is reported against the key that has to change.
+pub fn webpki_tls_config_with_ca(
+    ca_cert_path: &str,
+    setting: &str,
+) -> anyhow::Result<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+
+    if !ca_cert_path.trim().is_empty() {
+        let path = std::path::Path::new(ca_cert_path.trim());
+        let extra = acme_proxy_core::pemfile::read_certificates(path)
+            .map_err(|error| anyhow::anyhow!("{setting}: {error}"))?;
+        for certificate in extra {
+            roots.add(certificate).map_err(|error| {
+                anyhow::anyhow!(
+                    "{setting}: {} is not a usable CA certificate: {error}",
+                    path.display()
+                )
+            })?;
+        }
+    }
+
+    // Provider passed explicitly rather than installed as the process default:
+    // `install_default` panics on a second call, which would make `cargo test`
+    // depend on which tests happen to run together.
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|error| anyhow::anyhow!("building the TLS client configuration: {error}"))?
+    .with_root_certificates(roots)
+    .with_no_client_auth())
+}
+
 /// The transport under an outbound connection: a direct socket, or one
 /// tunnelled through a forward proxy's `CONNECT`.
 ///

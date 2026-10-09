@@ -128,6 +128,8 @@ erDiagram
         blob totp_secret
         text status "CHECK active|disabled"
         text role "no CHECK - NULL reads as admin"
+        text auth_provider "NULL is local"
+        text external_id "the provider's id for the person"
     }
     admin_sessions {
         text token_hash PK "SHA-256 of the token"
@@ -159,6 +161,13 @@ erDiagram
         text key_authorization
         integer expires_at "a backstop, swept hourly"
     }
+    admin_oidc_logins {
+        text state_hash PK "SHA-256 of the state"
+        text binding_hash "SHA-256 of the browser's cookie"
+        text nonce
+        text pkce_verifier
+        integer expires_at "consumed by the callback"
+    }
 ```
 
 The diagram has three clusters, and **the two things worth noticing are the
@@ -176,7 +185,19 @@ edges that are not drawn**:
 - The admin island — `admin_users` and its two children — which never joins to
   `accounts`. An `admin_users` row is an operator of this server; an `accounts`
   row is a client key that asks it for certificates. They are different
-  populations and the schema says so.
+  populations and the schema says so. `admin_oidc_logins` sits beside it, joined
+  to nothing: an OpenID Connect sign-in in flight belongs to no operator yet.
+
+An operator a provider vouches for ([Single
+Sign-On](../operations/webadmin_sso.md)) is an `admin_users` row with
+`auth_provider` (`oidc:<name>`, `ldap:<name>`) and `external_id` set, under a
+partial unique index on the pair — one provider vouches for one person once,
+and local operators, both `NULL`, never collide. Their `password_hash` holds a
+sentinel that no encoding produces rather than `NULL`: dropping the `NOT NULL`
+would have been a rebuild of a table with two cascading children, for a column
+nothing reads for them. An `admin_oidc_logins` row is consumed by a single
+`DELETE … RETURNING`, which is what makes a `state` value good for one
+callback.
 
 ## Profiles are a database boundary
 
@@ -352,6 +373,7 @@ follows from what the server has to do with the value later.
 | `eab_keys.secret` | Raw bytes, retrievable | HMAC verification needs the *same* secret back on every request. A lost one is replaced, never recovered — `eab create` prints it once. |
 | `admin_users.password_hash` | One-way KDF (PBKDF2-HMAC-SHA256), unreadable | A password is only ever compared. No code path can read it out. |
 | `admin_sessions.token_hash` | `hex(SHA-256(token))`, no KDF | A 256-bit CSPRNG token has no dictionary to slow down. The hash exists solely so a database read yields nothing replayable. |
+| `admin_oidc_logins.state_hash`, `binding_hash` | `hex(SHA-256(…))`, no KDF | The session token's case: random values, hashed so a database read yields no `state` or cookie a callback would accept. `nonce` and `pkce_verifier` are kept in clear, and are worth nothing without the authorization code only the browser holds. |
 
 `admin_recovery_codes.code_hash` follows the password shape — a recovery code is
 only ever compared. It is a table rather than a JSON column so that consuming

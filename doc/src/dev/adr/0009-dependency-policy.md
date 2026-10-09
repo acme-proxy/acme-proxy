@@ -7,7 +7,9 @@ Accepted. The metrics clause is superseded by
 case where a metrics library would earn its place, and they arrived. The crypto
 clause is narrowed by [ADR 0014](0014-postgresql-beside-sqlite.md): it governs
 the crypto this project *calls*, not what a driver carries for a wire protocol
-of its own.
+of its own. The hand-rolling clause is narrowed for LDAP by
+[ADR 0015](0015-external-identity-providers.md): `ldap3` is taken rather than a
+BER codec written, on this server's own `ring` TLS.
 
 ## Context
 

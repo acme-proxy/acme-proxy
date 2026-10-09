@@ -419,6 +419,68 @@ async fn one_key_registering_twice_is_one_account_on_both_backends() {
 /// the backend where a wrong width is a rejected write: `nonces.value` was
 /// `VARCHAR(36)` long after the nonce became a 43-character token, and on
 /// PostgreSQL that would have refused every nonce the server mints.
+/// The partial unique index on `(auth_provider, external_id)`: one provider
+/// vouches for one person once, two local operators (both `NULL`) never
+/// collide, and a single `DELETE ... RETURNING` consumes a sign-in exactly once.
+#[tokio::test]
+async fn one_external_identity_is_one_operator_on_both_backends() {
+    use acme_proxy_store::admin_oidc_login::AdminOidcLogin;
+    use acme_proxy_store::admin_user::{AdminRole, AdminUser};
+
+    each_backend!(|database| {
+        AdminUser::create_external("bob", AdminRole::Viewer, "oidc:corp", "iss sub", &database)
+            .await
+            .unwrap();
+        let error = AdminUser::create_external(
+            "robert",
+            AdminRole::Viewer,
+            "oidc:corp",
+            "iss sub",
+            &database,
+        )
+        .await
+        .expect_err("one subject, one operator");
+        assert!(
+            acme_proxy_store::sql::is_unique_violation(&error),
+            "{error}"
+        );
+        AdminUser::create_external("bob2", AdminRole::Viewer, "ldap:ad", "iss sub", &database)
+            .await
+            .expect("another provider's subject is another person");
+        AdminUser::create("alice", "h", None, &database)
+            .await
+            .unwrap();
+        AdminUser::create("carol", "h", None, &database)
+            .await
+            .unwrap();
+
+        AdminOidcLogin {
+            state_hash: "state".to_string(),
+            provider: "corp".to_string(),
+            binding_hash: "binding".to_string(),
+            nonce: "nonce".to_string(),
+            pkce_verifier: "verifier".to_string(),
+            created_at: 0,
+            expires_at: 100,
+        }
+        .create(&database)
+        .await
+        .unwrap();
+        assert!(
+            AdminOidcLogin::take("state", 1, &database)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            AdminOidcLogin::take("state", 1, &database)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    });
+}
+
 #[tokio::test]
 async fn the_declared_widths_are_enforced_on_postgres() {
     use acme_proxy_core::random::random_token;

@@ -89,7 +89,8 @@ percent-encoding = "2"
 # trust no root store: RFC 8555 §8.3 and RFC 8737 §3 make the certificate the proof.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
-# ...but the relay is a client of a real CA, so that one path needs roots.
+# ...but the relay, the inventories and the identity providers are real
+# services, so those paths need roots.
 webpki-roots = "1"
 # Constant-time comparison, which `ring` no longer offers. Already in the tree via rustls.
 subtle = { version = "2", default-features = false }
@@ -107,6 +108,10 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 # Notification and page templates. `json` is the `tojson` filter a `.j2` webhook
 # body needs, auto-escaping being off there (crates/core/src/templating.rs).
 minijinja = { version = "2", features = ["json"] }
+# The web admin's LDAP / Active Directory realms. TLS on our own `ring`
+# rustls config via `set_config`, never its default builder, and no default
+# features (they are native-tls) -- see doc/src/dev/adr/0015-external-identity-providers.md.
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
 # PKCS#11 for the `hsm` feature: safe session types, tracked against the OASIS spec.
 cryptoki = "0.12"
 # The e2e lab's container driver (`tests/e2e/`); a dev-dependency wherever it
@@ -183,6 +188,7 @@ hex.workspace = true
 http-body-util.workspace = true
 rcgen.workspace = true
 ring.workspace = true
+rustls.workspace = true
 rustls-pki-types.workspace = true
 simple_asn1.workspace = true
 testcontainers.workspace = true
@@ -192,6 +198,7 @@ tokio-rustls.workspace = true
 tower = { workspace = true, features = ["util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 x509-parser.workspace = true
 
 [profile.release]

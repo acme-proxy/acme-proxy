@@ -9,6 +9,14 @@
     <dl class="fields">
       <dt>Username</dt><dd><code>{{ operator.username }}</code></dd>
       <dt>Role</dt><dd><span class="badge role">{{ operator.role }}</span></dd>
+      <dt>Signs in through</dt>
+      <dd>
+        {%- if operator.authProvider -%}
+          <code>{{ operator.authProvider }}</code>
+        {%- else -%}
+          this server (local password)
+        {%- endif -%}
+      </dd>
       <dt>Status</dt><dd><span class="badge {{ operator.status }}">{{ operator.status }}</span></dd>
       {#- Where `admin_sign_in`/`admin_credential_changed` are delivered. Absent
           is worth saying out loud: it is the `admin_notify_contact_missing`
@@ -95,7 +103,13 @@
     {#- Two forms rather than buttons, since each carries a value, and both
         pull in the same step-up field through `hx-include`. `roles` comes from
         `AdminRole::ALL`, so the select cannot offer what the handler refuses. -#}
-    <form class="row" hx-post="/ui/operators/{{ operator.username }}/role"
+{#- An external operator's role is their provider's groups', recomputed at
+        every sign-in: a form here would be refused, and a change would not
+        survive their next sign-in anyway. -#}
+    {% if operator.authProvider %}
+    <p class="muted small">Role is set from <code>{{ operator.authProvider }}</code> groups at every sign-in.</p>
+    {% else %}
+        <form class="row" hx-post="/ui/operators/{{ operator.username }}/role"
           hx-target="#operator-detail"
           hx-include="#operator-step-up-password"
           hx-confirm="Change {{ operator.username }}'s role? Their sessions are revoked immediately.">
@@ -111,6 +125,7 @@
         <button type="submit">Change role</button>
       </div>
     </form>
+    {% endif %}
     <form class="row" hx-post="/ui/operators/{{ operator.username }}/contact"
           hx-target="#operator-detail"
           hx-include="#operator-step-up-password">

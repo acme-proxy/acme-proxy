@@ -149,6 +149,17 @@ impl AdminError {
     }
 
     /// `500` — anything the operator can only find in the log.
+    /// `503` — the sign-in's identity provider could not be asked. Not
+    /// `invalid_credentials`: the person may have typed everything right, and
+    /// telling them otherwise sends them to reset a password that works.
+    pub fn provider_unavailable() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "provider_unavailable",
+            "the sign-in provider could not be reached; try again shortly",
+        )
+    }
+
     pub fn internal() -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,

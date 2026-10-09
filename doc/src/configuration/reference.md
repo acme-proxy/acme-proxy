@@ -49,6 +49,7 @@ endpoints it mounts.
 | `[admin.filter]` | Who may reach the admin listener | no | [below](#adminfilter) |
 | `[admin.notify]` | Operator security notifications | no | [below](#adminnotify) |
 | `[admin.tls]` | HTTPS on the admin listener | no | [below](#admintls) |
+| `[admin.auth]` | Single sign-on: OpenID Connect and LDAP realms | no | [Single Sign-On](../operations/webadmin_sso.md#reference) |
 | `[nonce]` | Replay-nonce freshness | no | [below](#nonce) |
 | `[audit]` | Reverse lookups and retention for the trail | no | [below](#audit) |
 | `[jobs]` | The durable background-work queue | no | [below](#jobs) |
@@ -338,6 +339,14 @@ should not share a certificate by accident.
 **`handshake_timeout_ms`** (`Integer`) — *Default: `10000` | Env: `ACME_PROXY_ADMIN__TLS__HANDSHAKE_TIMEOUT_MS`*
 
 As `[server.tls]`.
+
+### `[admin.auth]`
+
+Who may sign in, and who vouches for them: the local realm
+(`admin.auth.local`), OpenID Connect providers
+(`[admin.auth.oidc.<name>]`) and LDAP directories (`[admin.auth.ldap.<name>]`),
+with operators created at first sign-in and roles following their groups. Every
+key is documented in [Single Sign-On](../operations/webadmin_sso.md#reference).
 
 ---
 

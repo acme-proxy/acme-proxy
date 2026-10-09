@@ -3,6 +3,12 @@
 The web admin has no sign-up page. Operators are created from a shell on the
 host, with `acme-proxy admin`.
 
+This page is about those **local** operators. People can also sign in through
+an OpenID Connect provider or an LDAP directory, and are then created at their
+first sign-in with a role their groups decide: see
+[Single Sign-On](webadmin_sso.md). A local `admin` is still worth keeping, as
+the way in when a provider is down.
+
 ## Bootstrapping the first operator
 
 ```console
@@ -582,11 +588,11 @@ A failed sign-in returns one `invalid_credentials` whatever went wrong, so the
 endpoint cannot be used to enumerate operators. The log keeps the distinction:
 
 ```text
-WARN event="admin_login_failed" username="alice" client_ip=… reason="wrong_password"
-WARN event="admin_login_failed" username="ghost" client_ip=… reason="unknown_user"
-WARN event="admin_login_failed" username="bob"   client_ip=… reason="account_disabled"
-WARN event="admin_login_failed" username="alice" client_ip=… reason="rate_limited"
-INFO event="admin_login_succeeded" username="alice" client_ip=…
+WARN event="admin_login_failed" username="alice" realm="local" client_ip=… reason="wrong_password"
+WARN event="admin_login_failed" username="ghost" realm="local" client_ip=… reason="unknown_user"
+WARN event="admin_login_failed" username="bob"   realm="local" client_ip=… reason="account_disabled"
+WARN event="admin_login_failed" username="alice" realm="local" client_ip=… reason="rate_limited"
+INFO event="admin_login_succeeded" username="alice" realm="local" client_ip=…
 ```
 
 The second step keeps the same shape — one refusal to the client, the reason in

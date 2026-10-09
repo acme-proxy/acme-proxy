@@ -176,7 +176,9 @@ outside needs a `type = "path"` check for `/health` and a rule allowing it.
 
 ## Authentication
 
-Sign-in exchanges a username and password for an opaque session token:
+Sign-in exchanges a username and password for an opaque session token — or,
+through an OpenID Connect provider, a provider's sign-in for one; see
+[Single Sign-On](webadmin_sso.md) for the external realms:
 
 - The token is 256 random bits, and only its **SHA-256** is stored. A database
   read — a backup, a `.dump`, an injection — yields nothing replayable.
@@ -545,11 +547,12 @@ and may change. The codes:
   `conflicting_identifier_filter`, `not_found`, `method_not_allowed`.
 - **Session and access:** `session_invalid`, `session_expired`, `session_idle`,
   `invalid_credentials`, `csrf_failed`, `rate_limited`, `access_denied`,
-  `insufficient_role`, `mfa_required`, `mfa_not_enabled`.
+  `insufficient_role`, `mfa_required`, `mfa_not_enabled`,
+  `reauthentication_required`.
 - **The row's state:** `order_not_issued`, `already_revoked`,
   `live_certificates`, `last_admin`, `job_not_cancellable`, `job_not_runnable`,
-  `profile_not_mounted`.
-- **Server:** `signer_failed`, `internal`.
+  `profile_not_mounted`, `managed_externally`.
+- **Server:** `signer_failed`, `provider_unavailable`, `internal`.
 
 The pages answer the same failures as HTML carrying the same code, with one
 deliberate split: a refusal that is about **the row's state** — `409
@@ -618,7 +621,8 @@ $ curl -sb jar -X POST http://127.0.0.1:3001/api/eab \
 ## Configuration
 
 See the [Configuration Reference](../configuration/reference.md) for every
-`[admin]`, `[admin.filter]` and `[admin.tls]` key, and [Customizing the
+`[admin]`, `[admin.filter]` and `[admin.tls]` key, [Single
+Sign-On](webadmin_sso.md#reference) for `[admin.auth]`, and [Customizing the
 Panel](webadmin_templates.md) for `admin.template_dir`.
 
 [htmx]: https://htmx.org [minijinja]: https://docs.rs/minijinja

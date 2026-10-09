@@ -16,8 +16,20 @@
     their role and their sessions, can be managed from the
     <a href="/ui/operators">Operators</a> page.
   </p>
-  {% include "account/_password.html" %}
+  {#- An operator a provider vouches for has no password here, and one from
+      an OpenID Connect provider no local second factor: both are the
+      provider's, and the cards would only offer what the handlers refuse. -#}
+  {% if user.authProvider %}
+    <p class="muted small">
+      You sign in through <code>{{ user.authProvider }}</code>, which owns your
+      password and your role.
+    </p>
+  {% else %}
+    {% include "account/_password.html" %}
+  {% endif %}
   {% include "account/_contact.html" %}
-  {% include "account/_mfa.html" %}
+  {% if not user.authProvider or user.authProvider[:5] != "oidc:" %}
+    {% include "account/_mfa.html" %}
+  {% endif %}
   {% include "account/_sessions.html" %}
 {% endblock %}

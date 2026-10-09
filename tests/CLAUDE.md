@@ -29,11 +29,13 @@ before adding a case, and put a new case in the suite whose header claims it.
   tables.
 - The admin harness mounts an **inactive** filter policy; a test about the
   policy itself uses `test_admin_app_logged_in_with_filter`.
-- **Nothing reaches a real network.** Five suites touch the disk or a
+- **Nothing reaches a real network.** Seven suites touch the disk or a
   loopback socket, each for a stated reason: `roles.rs` (a file-backed database
   and several processes), `reload.rs` (a real `config.toml` and real ports),
   `filters.rs` (the IPAM mocks on loopback, and scripts), `custom_signer.rs`
-  (scripts) and `revoke_cert.rs` (a CA on disk shared by two processes).
+  (scripts), `revoke_cert.rs` (a CA on disk shared by two processes),
+  `admin_oidc.rs` (an OpenID Connect provider on loopback) and `admin_ldap.rs`
+  (an LDAP directory on loopback, plain and `ldaps`).
   `postgres.rs` reaches a PostgreSQL server, and only when `TEST_POSTGRES_URL`
   names one.
 - **A `crates/store/` test calls `Database::connect_for_test()`**, which is

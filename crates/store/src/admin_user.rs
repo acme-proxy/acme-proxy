@@ -200,7 +200,25 @@ pub struct AdminUser {
     /// **only** to decide whether to notify -- never to authorise. Persisted as
     /// a JSON array (the `accounts.contact` convention).
     pub known_login_ips: Vec<String>,
+    /// Who vouches for this operator: `None` for a local one (a password and
+    /// maybe a TOTP factor, held here), otherwise `oidc:<name>` or
+    /// `ldap:<name>` -- see [`AdminUser::is_external`].
+    pub auth_provider: Option<String>,
+    /// The provider's rename-proof name for the person (an OpenID Connect
+    /// `iss` and `sub`, a directory's `objectGUID`). `None` exactly when
+    /// [`AdminUser::auth_provider`] is.
+    pub external_id: Option<String>,
 }
+
+/// The `password_hash` of an operator an external provider vouches for.
+///
+/// The column is `NOT NULL` and an external operator has no password, so it
+/// holds this: a value no encoding `admin::password` writes can equal, which
+/// therefore never parses as a hash. Not what keeps them out of the password
+/// form -- `admin::users::authenticate` refuses them by
+/// [`AdminUser::is_external`] before the hash is read -- but a second wall if a
+/// path ever forgot to ask.
+pub const EXTERNAL_PASSWORD_SENTINEL: &str = "!external";
 
 /// Every column of `admin_users`, in one place: each read must select the same set
 /// or `from_row` fails on whichever forgot one.
@@ -210,7 +228,8 @@ pub struct AdminUser {
 macro_rules! columns {
     () => {
         "id, username, password_hash, status, role, totp_secret, totp_pending_secret, \
-         totp_last_step, created_at, updated_at, last_login_at, contact_email, known_login_ips"
+         totp_last_step, created_at, updated_at, last_login_at, contact_email, known_login_ips, \
+         auth_provider, external_id"
     };
 }
 
@@ -242,6 +261,8 @@ impl AdminUser {
                 let raw: String = row.try_get("known_login_ips")?;
                 serde_json::from_str(&raw).map_err(|e| sqlx::Error::Decode(Box::new(e)))?
             },
+            auth_provider: row.try_get("auth_provider")?,
+            external_id: row.try_get("external_id")?,
         })
     }
 
@@ -283,6 +304,8 @@ impl AdminUser {
             last_login_at: None,
             contact_email: None,
             known_login_ips: Vec::new(),
+            auth_provider: None,
+            external_id: None,
         };
 
         debug!(event = "db_admin_user_create_started", outcome = "progress", username = %user.username);
@@ -303,6 +326,102 @@ impl AdminUser {
 
         info!(event = "db_admin_user_created", outcome = "success", user_id = %user.id, username = %user.username);
         Ok(user)
+    }
+
+    /// Persists a new operator an external provider vouches for, `active`, at
+    /// `role` -- the provisioning half of an OpenID Connect or LDAP sign-in.
+    ///
+    /// The password column holds [`EXTERNAL_PASSWORD_SENTINEL`]. A second
+    /// sign-in racing this one for the same person meets the partial unique
+    /// index on `(auth_provider, external_id)`, and a username another operator
+    /// already holds meets `username`'s: both surface as the UNIQUE violations
+    /// they are, for `admin::identity` to word.
+    pub async fn create_external(
+        username: &str,
+        role: AdminRole,
+        auth_provider: &str,
+        external_id: &str,
+        database: &Database,
+    ) -> Result<AdminUser, sqlx::Error> {
+        let now = now_secs();
+        let user = AdminUser {
+            id: crate::id::mint(),
+            username: username.trim().to_lowercase(),
+            password_hash: EXTERNAL_PASSWORD_SENTINEL.to_string(),
+            status: "active".to_string(),
+            role: Some(role.as_str().to_string()),
+            totp_secret: None,
+            totp_pending_secret: None,
+            totp_last_step: None,
+            created_at: now,
+            updated_at: now,
+            last_login_at: None,
+            contact_email: None,
+            known_login_ips: Vec::new(),
+            auth_provider: Some(auth_provider.to_string()),
+            external_id: Some(external_id.to_string()),
+        };
+
+        crate::sql::query(
+            "INSERT INTO admin_users \
+             (id, username, password_hash, status, role, created_at, updated_at, \
+             auth_provider, external_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+        )
+        .bind(user.id)
+        .bind(&user.username)
+        .bind(&user.password_hash)
+        .bind(&user.status)
+        .bind(user.role.clone())
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .bind(auth_provider)
+        .bind(external_id)
+        .execute(database)
+        .await?;
+
+        info!(event = "db_admin_user_created", outcome = "success", user_id = %user.id, username = %user.username, auth_provider = %auth_provider);
+        Ok(user)
+    }
+
+    /// The operator `auth_provider` knows as `external_id` -- the sign-in path
+    /// of an external operator, which matches on the provider's stable name
+    /// for the person rather than on a username that provider may rename.
+    pub async fn find_by_external(
+        auth_provider: &str,
+        external_id: &str,
+        database: &Database,
+    ) -> Result<Option<AdminUser>, sqlx::Error> {
+        let row = crate::sql::query(concat!(
+            "SELECT ",
+            columns!(),
+            " FROM admin_users WHERE auth_provider = ? AND external_id = ?;"
+        ))
+        .bind(auth_provider)
+        .bind(external_id)
+        .fetch_optional(database)
+        .await?;
+
+        row.map(AdminUser::from_row).transpose()
+    }
+
+    /// Renames the operator -- an external one whose provider now calls them
+    /// something else. Lowercased as [`AdminUser::create`] does. A name already
+    /// held surfaces as `username`'s UNIQUE violation.
+    pub async fn rename(&mut self, username: &str, database: &Database) -> Result<(), sqlx::Error> {
+        let username = username.trim().to_lowercase();
+        let now = now_secs();
+        crate::sql::query("UPDATE admin_users SET username = ?, updated_at = ? WHERE id = ?;")
+            .bind(&username)
+            .bind(now)
+            .bind(self.id)
+            .execute(database)
+            .await?;
+
+        info!(event = "db_admin_user_renamed", outcome = "success", user_id = %self.id, from = %self.username, to = %username);
+        self.username = username;
+        self.updated_at = now;
+        Ok(())
     }
 
     /// Looks an operator up by id: the session path, which carries the id.
@@ -681,6 +800,14 @@ impl AdminUser {
         Ok(deleted)
     }
 
+    /// Whether an external provider vouches for this operator, rather than a
+    /// password held here. Such an operator never signs in with the password
+    /// form's local realm, and their role is the provider's to set.
+    #[must_use]
+    pub fn is_external(&self) -> bool {
+        self.auth_provider.is_some()
+    }
+
     /// Whether this operator may log in and hold a session.
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -728,6 +855,7 @@ impl AdminUser {
             "lastLoginAt": self.last_login_at.map(rfc3339),
             "contactEmail": self.contact_email,
             "knownLoginIps": self.known_login_ips,
+            "authProvider": self.auth_provider,
         })
     }
 }
@@ -1161,5 +1289,87 @@ mod tests {
         assert_eq!(json["lastLoginAt"], Value::Null);
         assert_eq!(json["contactEmail"], Value::Null);
         assert_eq!(json["knownLoginIps"], serde_json::json!([]));
+    }
+
+    /// An external operator is found by the provider's name for them, holds
+    /// the sentinel rather than a hash, and renders its provider.
+    #[tokio::test]
+    async fn an_external_operator_round_trips_by_provider_and_subject() {
+        let db = db().await;
+        let created = AdminUser::create_external(
+            "Bob@Example.com",
+            AdminRole::Operator,
+            "oidc:corp",
+            "iss sub",
+            &db,
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.username, "bob@example.com");
+        assert_eq!(created.password_hash, EXTERNAL_PASSWORD_SENTINEL);
+        assert!(created.is_external());
+        assert_eq!(created.role(), AdminRole::Operator);
+
+        let found = AdminUser::find_by_external("oidc:corp", "iss sub", &db)
+            .await
+            .unwrap()
+            .expect("found by subject");
+        assert_eq!(found.id, created.id);
+        assert_eq!(found.auth_provider.as_deref(), Some("oidc:corp"));
+        assert_eq!(found.to_json()["authProvider"], "oidc:corp");
+        assert!(
+            AdminUser::find_by_external("ldap:corp", "iss sub", &db)
+                .await
+                .unwrap()
+                .is_none(),
+            "the same subject at another provider is another person"
+        );
+
+        let local = AdminUser::create("alice", "h", None, &db).await.unwrap();
+        assert!(!local.is_external());
+        assert_eq!(local.to_json()["authProvider"], Value::Null);
+    }
+
+    /// One provider cannot vouch for one person twice: the partial unique
+    /// index refuses the second row, and leaves local operators alone.
+    #[tokio::test]
+    async fn the_same_subject_cannot_be_provisioned_twice() {
+        let db = db().await;
+        AdminUser::create_external("bob", AdminRole::Viewer, "oidc:corp", "sub", &db)
+            .await
+            .unwrap();
+        let error =
+            AdminUser::create_external("robert", AdminRole::Viewer, "oidc:corp", "sub", &db)
+                .await
+                .expect_err("a second row for one subject");
+        assert!(crate::sql::is_unique_violation(&error), "{error}");
+
+        // Two local operators are both NULL/NULL and the index ignores them.
+        AdminUser::create("alice", "h", None, &db).await.unwrap();
+        AdminUser::create("carol", "h", None, &db).await.unwrap();
+    }
+
+    /// A rename lowercases, and a name another operator holds is refused by
+    /// `username`'s UNIQUE.
+    #[tokio::test]
+    async fn rename_lowercases_and_refuses_a_taken_name() {
+        let db = db().await;
+        AdminUser::create("alice", "h", None, &db).await.unwrap();
+        let mut bob = AdminUser::create_external("bob", AdminRole::Viewer, "ldap:ad", "guid", &db)
+            .await
+            .unwrap();
+
+        bob.rename("  Robert ", &db).await.unwrap();
+        assert_eq!(bob.username, "robert");
+        assert!(
+            AdminUser::find_by_username("robert", &db)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let error = bob.rename("alice", &db).await.expect_err("alice is taken");
+        assert!(crate::sql::is_unique_violation(&error), "{error}");
+        assert_eq!(bob.username, "robert", "a refused rename changes nothing");
     }
 }

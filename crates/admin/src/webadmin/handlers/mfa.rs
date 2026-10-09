@@ -83,6 +83,12 @@ pub(crate) async fn verify_current_password(
     client: Option<std::net::IpAddr>,
     logins: &crate::webadmin::session::LoginLimiter,
 ) -> Result<(), AdminError> {
+    // An external operator holds a sentinel, not a hash; [`reprove`] is their
+    // path. Refused here too, so a caller that forgot to ask is not answered
+    // with an `admin_password_hash_unreadable` alarm.
+    if user.is_external() {
+        return Err(AdminError::invalid_credentials());
+    }
     // Checked **before** the KDF, which is `sign_in`'s reasoning verbatim: 600 000
     // PBKDF2 iterations is a denial-of-service lever, and until this ran here an
     // authenticated caller could pull it as fast as it could send requests.
@@ -152,6 +158,103 @@ pub(crate) async fn verify_current_password(
     }
 }
 
+/// How recent an OpenID Connect operator's sign-in must be to stand in for
+/// re-proving a password. Such an operator has no password here to re-prove,
+/// and the provider's own authentication is the credential: five minutes is a
+/// fresh one, past it they sign in again.
+pub const STEP_UP_FRESHNESS_SECONDS: i64 = 300;
+
+/// Re-proves the caller before a sensitive change, in whatever way their realm
+/// allows -- the realm-aware form of [`verify_current_password`].
+///
+/// - **Local**: the account password, [`verify_current_password`] itself.
+/// - **LDAP**: the directory password, by a bind as the operator, behind the
+///   same limiter bucket. The bind must land on the person this operator
+///   *is* (`external_id`), not merely on somebody with their name.
+/// - **OpenID Connect**: nothing to type; `session_created_at` within
+///   [`STEP_UP_FRESHNESS_SECONDS`] stands in, and `None` (a caller with no
+///   session at hand) never does. Otherwise `reauthentication_required`.
+pub(crate) async fn reprove(
+    state: &AdminState,
+    user: &acme_proxy_store::admin_user::AdminUser,
+    session_created_at: Option<i64>,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+) -> Result<(), AdminError> {
+    let Some(provider) = user.auth_provider.as_deref() else {
+        return verify_current_password(user, password, client, &state.logins).await;
+    };
+
+    if provider.starts_with("oidc:") {
+        let now = acme_proxy_store::nonce::now_secs();
+        if session_created_at.is_some_and(|created| now - created <= STEP_UP_FRESHNESS_SECONDS) {
+            return Ok(());
+        }
+        warn!(event = "admin_mfa_step_up_refused",
+              outcome = "failure",
+              username = %user.username,
+              reason = "stale_external_session");
+        return Err(AdminError::with_code(
+            StatusCode::FORBIDDEN,
+            "reauthentication_required",
+            format!(
+                "this change needs a recent sign-in: sign out, sign in again through \
+                 `{provider}`, and retry within {} minutes",
+                STEP_UP_FRESHNESS_SECONDS / 60
+            ),
+        ));
+    }
+
+    let directory = provider
+        .strip_prefix("ldap:")
+        .and_then(|name| state.providers.ldap.get(name))
+        .ok_or_else(|| {
+            AdminError::conflict(
+                "managed_externally",
+                format!("`{provider}` is not configured on this server any more"),
+            )
+        })?;
+    let attempt = match state.logins.begin(client) {
+        Ok(attempt) => attempt,
+        Err(retry_after) => {
+            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "rate_limited");
+            return Err(AdminError::rate_limited(retry_after));
+        }
+    };
+    match directory.authenticate(&user.username, password).await {
+        Ok(identity) if user.external_id.as_deref() == Some(identity.external_id.as_str()) => {
+            Ok(())
+        }
+        Err(crate::identity::SignInError::Unreachable(detail)) => {
+            warn!(event = "admin_login_provider_failed", outcome = "failure", realm = %provider, error = %detail);
+            Err(AdminError::provider_unavailable())
+        }
+        _ => {
+            attempt.failed();
+            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "wrong_password");
+            Err(AdminError::invalid_credentials())
+        }
+    }
+}
+
+/// [`check_step_up`], realm-aware: only once a factor exists, then
+/// [`reprove`]. The second-factor routes never have a fresh-session stand-in to
+/// offer, and need none -- an OpenID Connect operator holds no local factor.
+async fn step_up(
+    state: &AdminState,
+    user: &acme_proxy_store::admin_user::AdminUser,
+    password: &str,
+    client: Option<std::net::IpAddr>,
+) -> Result<(), AdminError> {
+    if !user.is_external() {
+        return check_step_up(user, password, client, &state.logins).await;
+    }
+    if !user.has_totp() {
+        return Ok(());
+    }
+    reprove(state, user, None, password, client).await
+}
+
 /// The four second-factor writes, each one function both front ends call.
 ///
 /// What is shared is every decision: the step-up password, the refusals, the
@@ -162,7 +265,7 @@ pub(crate) async fn verify_current_password(
 /// who had scanned a secret got a different one back depending on which surface
 /// asked.
 mod actions {
-    use super::{AdminError, AdminState, check_step_up, mfa};
+    use super::{AdminError, AdminState, mfa, step_up};
     use crate::webadmin::CredentialChange;
     use acme_proxy_core::audit::RequestContext;
     use acme_proxy_store::admin_user::AdminUser;
@@ -193,7 +296,20 @@ mod actions {
         password: &str,
         origin: Origin,
     ) -> Result<crate::admin::totp::Enrolment, AdminError> {
-        check_step_up(user, password, origin.client, &state.logins).await?;
+        // An OpenID Connect operator's second factor is the provider's
+        // (`required_amr` is how to insist on one): a local one would never be
+        // asked for at sign-in, so it would protect nothing.
+        if let Some(provider) = user
+            .auth_provider
+            .as_deref()
+            .filter(|provider| provider.starts_with("oidc:"))
+        {
+            return Err(AdminError::conflict(
+                "managed_externally",
+                format!("`{provider}` owns this operator's second factor"),
+            ));
+        }
+        step_up(state, user, password, origin.client).await?;
         Ok(mfa::resume_or_begin_totp_enrolment(
             user,
             &state.config.admin.base_url,
@@ -243,7 +359,7 @@ mod actions {
                 "admin.require_mfa is on: this server requires a second factor of every operator",
             ));
         }
-        check_step_up(user, password, origin.client, &state.logins).await?;
+        step_up(state, user, password, origin.client).await?;
         mfa::disable_totp(user, Some(keep), state.database.clone()).await?;
         record(
             state,
@@ -270,7 +386,7 @@ mod actions {
                 "there is no second factor for these codes to recover access to",
             ));
         }
-        check_step_up(user, password, origin.client, &state.logins).await?;
+        step_up(state, user, password, origin.client).await?;
         let codes = mfa::regenerate_recovery_codes(user, state.database.clone()).await?;
         record(
             state,
@@ -535,6 +651,8 @@ mod tests {
             last_login_at: None,
             contact_email: None,
             known_login_ips: Vec::new(),
+            auth_provider: None,
+            external_id: None,
         }
     }
 

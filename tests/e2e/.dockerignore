@@ -1,4 +1,4 @@
-# Build context for the six Containerfiles in this directory, all of which are
+# Build context for the Containerfiles in this directory, all of which are
 # built with `tests/e2e` as their context (see `ensure_images_built` in common.rs).
 #
 # Without this, that context is 128 MB — `netbox-mock/target`, a host-side build

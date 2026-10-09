@@ -28,7 +28,7 @@ editing, as one line each. The reasoning is elsewhere, in exactly one place:
 | `acme-proxy-jobs` (`jobs`) | `auditor`, `jobs`, `metrics`, `notify` | core, net, store |
 | `acme-proxy-signer` (`signer`) | `local_ca`, `relay`, `custom`, `info`, `issuance`, **at the crate root**; owns the `hsm` feature | core, jobs, net, store |
 | `acme-proxy-protocol` (`protocol`) | `acme` (the services), `extractors`, `handlers`, `middlewares`, `profile`, `router` | everything above |
-| `acme-proxy-admin` (`admin`) | `admin` (the operation layer), `webadmin` | protocol and below, not net |
+| `acme-proxy-admin` (`admin`) | `admin` (the operation layer), `identity` (OIDC, LDAP, provisioning), `webadmin` | protocol and below, and net for the identity providers |
 | `acme-proxy-server` (`server`) | the runtime, **at the crate root** (`acme_proxy_server::serve_on`): roles, assembly, generations, sockets, `reload`, `logging` | all of the above |
 | `acme-proxy` (repository root) | `src/cli/`, `main.rs`, every suite in `tests/` | all of the above |
 
@@ -143,6 +143,13 @@ call too; a handler keeps only what is HTTP.
 - An operator changed by another — status, role, contact, TOTP reset — goes
   through `admin::changes` with the surface's `OperatorTrail`; a front end keeps
   only its output and its log line.
+- **An external operator (`auth_provider` set) is never linked by name** and
+  has no password: re-prove one with `handlers::mfa::reprove`, never
+  `verify_current_password` alone. Their role is set only by
+  `identity::provision` (`changes::sync_role`); `users::set_role` refuses them.
+  See `crates/admin/src/identity/mod.rs` and ADR 0015.
+- `ldap3` is always given our `ClientConfig` (`set_config`): its fallback
+  installs a process-wide crypto provider.
 - **No `#[instrument]` in `webadmin/` or `jobs/runner.rs`.**
 - CLI command bodies return `CliError` and never print or exit; only
   `src/main.rs` does. `Palette::plain()` is the identity, `--json` never sees a

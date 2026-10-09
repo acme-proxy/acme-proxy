@@ -249,6 +249,24 @@ impl SweepJob {
                         error!(event = "admin_session_reaper_failed", outcome = "failure", error = %error);
                     }
                 }
+                // The sign-ins abandoned at an OpenID Connect provider: the
+                // same sessions' prelude, swept on the same beat.
+                let now = acme_proxy_store::nonce::now_secs();
+                match acme_proxy_store::admin_oidc_login::AdminOidcLogin::cleanup(
+                    now,
+                    &self.database,
+                )
+                .await
+                {
+                    Ok(removed) => debug!(
+                        event = "admin_oidc_login_reaper_swept",
+                        outcome = "success",
+                        rows_removed = removed
+                    ),
+                    Err(error) => {
+                        error!(event = "admin_oidc_login_reaper_failed", outcome = "failure", error = %error);
+                    }
+                }
             }
             SweepTarget::Jobs { retention_days } => {
                 let cutoff = acme_proxy_store::audit::audit_cutoff(*retention_days);

@@ -769,11 +769,13 @@ fn read_password(
 fn user_error(error: UserError) -> CliError {
     match error {
         UserError::Database(error) => CliError::from(error),
-        // A duplicate username, a policy rejection or a malformed contact
-        // address is the operator's to fix.
-        UserError::DuplicateUsername(_) | UserError::Policy(_) | UserError::InvalidContact(_) => {
-            CliError::bad_request(error.to_string())
-        }
+        // A duplicate username, a policy rejection, a malformed contact
+        // address or a change the operator's provider owns is the operator's
+        // to fix.
+        UserError::DuplicateUsername(_)
+        | UserError::Policy(_)
+        | UserError::InvalidContact(_)
+        | UserError::ManagedExternally { .. } => CliError::bad_request(error.to_string()),
     }
 }
 

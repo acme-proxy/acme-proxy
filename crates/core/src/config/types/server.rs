@@ -162,6 +162,9 @@ pub struct AdminConfig {
     /// `webadmin::check_config` refuses a rule that cannot decide at the
     /// connection stage, since no identifier is ever asked about here.
     pub filter: super::FilterConfig,
+    /// Who may sign in, and who vouches for them: the local password realm,
+    /// OpenID Connect providers, LDAP directories. See [`super::AdminAuthConfig`].
+    pub auth: super::AdminAuthConfig,
 }
 
 impl Default for AdminConfig {
@@ -181,6 +184,7 @@ impl Default for AdminConfig {
             tls: AdminTlsConfig::default(),
             notify: super::NotifyConfig::default(),
             filter: super::FilterConfig::default(),
+            auth: super::AdminAuthConfig::default(),
         }
     }
 }
