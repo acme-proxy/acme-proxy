@@ -241,7 +241,7 @@ Add `ExecReload` to the unit so `systemctl reload` works:
 ExecReload=/bin/kill -HUP $MAINPID
 ```
 
-See [Deployment](../getting_started/deployment.md) for the rest of the unit.
+See [systemd](../getting_started/systemd.md) for the rest of the unit.
 
 ## Two things to expect
 

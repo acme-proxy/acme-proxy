@@ -147,7 +147,7 @@ binary, so mount a volume there for the SQLite database, the configuration and
 the CA key material — all of which default to paths relative to the working
 directory. The image runs as a non-root user, so the mounted directory must be
 writable by it — the `:U` flag below is the rootless-Podman way; see
-[Deployment](deployment.md#container-deployments-docker--podman) for Docker.
+[Containers](containers.md) for Docker.
 
 ```bash
 podman run -d \

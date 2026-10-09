@@ -1,6 +1,6 @@
 # Builds the acme-proxy server image, used two ways: by the e2e lab (tests/e2e/)
 # and as the published deployment image (.github/workflows/release.yml, pushed to
-# ghcr.io on a release tag; see doc/src/getting_started/deployment.md). Not used
+# ghcr.io on a release tag; see doc/src/getting_started/containers.md). Not used
 # by CI's `test` job — the lab is a manual check, plus the nightly `e2e` job in
 # .github/workflows/ci.yml.
 #
@@ -123,7 +123,7 @@ COPY --from=builder /app/acme-proxy /usr/local/bin/acme-proxy
 # config.toml — lands in WORKDIR, so that is the one path this user needs. The
 # uid/gid is fixed at 1000 (unused in debian:trixie-slim) so a bind-mounted host
 # directory can be chowned to a predictable owner — see
-# doc/src/getting_started/deployment.md.
+# doc/src/getting_started/containers.md.
 RUN groupadd --gid 1000 acme-proxy \
     && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /data \
        --shell /usr/sbin/nologin acme-proxy \

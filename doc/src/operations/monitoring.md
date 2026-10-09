@@ -101,7 +101,7 @@ Six things are worth knowing about the numbers.
 **`role` names the roles that process runs**, comma-separated —
 `acme,admin,worker` for an all-in-one deployment, which is the default. The
 counters are per-process memory by design, so a
-[split deployment](../getting_started/deployment.md#running-the-roles-as-separate-processes)
+[split deployment](../getting_started/roles.md)
 is several scrape targets reporting the same family names, and this is what
 tells them apart. Each process also needs its own `metrics.bind_address`.
 

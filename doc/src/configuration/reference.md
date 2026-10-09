@@ -93,8 +93,9 @@ is refused by name at startup:
 
 PostgreSQL is what a **multi-node** deployment needs. SQLite across processes
 is fine on one local disk, and not safe on NFS or across hosts — see
-[Deployment](../getting_started/deployment.md). Nothing else changes with the
-backend: the same binary, the same configuration and the same ACME behaviour.
+[Separate Role Processes](../getting_started/roles.md#the-database). Nothing
+else changes with the backend: the same binary, the same configuration and the
+same ACME behaviour.
 
 A PostgreSQL URL usually carries `user:password@`. The password is **never
 logged**: the startup line and the `SIGHUP` refusal both print it as

@@ -400,7 +400,7 @@ async fn the_three_roles_start_concurrently_over_one_database() {
 
     // Initialised first, so the other two are given a schema that is already
     // current and a CA that already exists, which is the topology
-    // `deployment.md` documents.
+    // `roles.md` documents.
     initialise(&config).await;
 
     let (worker, acme, admin) = tokio::join!(

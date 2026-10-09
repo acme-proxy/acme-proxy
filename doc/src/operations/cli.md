@@ -110,7 +110,7 @@ default and what every deployment before the flag existed did.
 Splitting them puts the process that parses untrusted JWS and CSRs, the process
 that holds operator sessions, and the process that reaches out to client-chosen
 hosts in three different places, each able to run under its own uid. See
-[Deployment](../getting_started/deployment.md#running-the-roles-as-separate-processes).
+[Separate Role Processes](../getting_started/roles.md).
 
 An unknown role is refused with usage before anything is read:
 

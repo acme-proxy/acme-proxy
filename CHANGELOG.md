@@ -32,6 +32,15 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Added
+
+- **A Docker Compose recipe for the role split**, in the book under Deployment
+  → Separate Role Processes → Docker Compose, Roles Split: `init`, `worker`,
+  `acme` and `admin` as services over PostgreSQL, with the CA key on a volume
+  only `init` and `worker` mount, and the move from a single SQLite container.
+  The Deployment page is split into an overview and one page each for systemd,
+  containers, separate role processes and upgrading.
+
 ### Fixed
 
 - **A challenge URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)

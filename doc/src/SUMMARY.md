@@ -8,6 +8,11 @@
 - [Installation](getting_started/installation.md)
 - [Trusting the CA](getting_started/trusting_the_ca.md)
 - [Deployment](getting_started/deployment.md)
+  - [systemd](getting_started/systemd.md)
+  - [Containers](getting_started/containers.md)
+  - [Separate Role Processes](getting_started/roles.md)
+    - [Docker Compose, Roles Split](getting_started/compose_roles.md)
+  - [Upgrading](getting_started/upgrading.md)
   - [TLS Termination](features/tls_termination.md)
 
 # Core Components

@@ -74,7 +74,7 @@ the binaries, where one database and one job queue already do the job.
   them owns ([ADR 0008](0008-shared-state-in-the-database.md)).
 
 The supported topologies are in
-[Deployment](../../getting_started/deployment.md#running-the-roles-as-separate-processes).
+[Separate Role Processes](../../getting_started/roles.md).
 
 ## Enforced by
 
