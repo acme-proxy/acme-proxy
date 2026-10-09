@@ -18,7 +18,7 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/directory` | `GET`, `POST` | §7.1.1 | — | It is the entry point; §6.3 requires POST-as-GET to work too. |
 | `/newNonce` | `HEAD`, `GET`, `POST` | §7.2 | yes | All three forms. |
 | `/newAccount` | `POST` | §7.3 | yes | Find-or-create by public key: `201` for a new account, `200` for an existing one, `Location` either way. |
-| `/acct/{id}` | `POST` | §7.3.2, §7.3.6 | — | Contact update and deactivation. `kid`-authenticated. There is deliberately no unauthenticated `GET`. |
+| `/acct/{id}` | `POST` | §7.3.2, §7.3.6 | — | One URL, told apart by whether a payload arrived: an empty one (POST-as-GET) reads the account, a payload updates the contact or deactivates. `kid`-authenticated. There is deliberately no unauthenticated `GET`. |
 | `/acct/{id}/orders` | `POST` | §7.1.2.1 | — | The account's order list, filtered as §7.1.2.1 requires. |
 | `/keyChange` | `POST` | §7.3.5 | yes | [Key Rollover](key_change.md). |
 | `/newOrder` | `POST` | §7.4 | yes | Accepts `notBefore`/`notAfter` and RFC 9773's `replaces`. |
