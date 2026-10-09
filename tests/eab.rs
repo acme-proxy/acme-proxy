@@ -357,3 +357,59 @@ async fn eab_field_is_ignored_when_disabled() {
     let res = post_new_account(&app, body).await;
     assert_eq!(res.status(), StatusCode::CREATED);
 }
+
+/// RFC 8555 §7.3.4: the account object a CA returns for a verified binding
+/// "MUST include an `externalAccountBinding` field with the same value as the
+/// field in the request".
+#[tokio::test]
+async fn a_created_account_echoes_the_binding_it_verified() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert_eq!(body_json(res).await["externalAccountBinding"], binding);
+}
+
+/// A binding sent to an endpoint that does not enforce EAB is never checked, so
+/// it is not vouched for in the answer either.
+#[tokio::test]
+async fn a_binding_that_was_not_verified_is_not_echoed() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+
+    let nonce = fetch_nonce(&app).await;
+    let binding = build_eab(
+        "unchecked-key-id",
+        b"unchecked secret",
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}

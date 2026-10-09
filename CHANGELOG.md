@@ -156,6 +156,9 @@ migrated configuration before restarting.
 - **An issuance failure is recorded in the audit trail only for an order it
   actually retired.** A redelivered job, or one cancelled after its order was
   already decided, wrote a second `certificate_issue_failed` row.
+- **`newAccount` now returns the verified `externalAccountBinding`** in the
+  account object it creates, as RFC 8555 §7.3.4 requires. It is reflected only
+  for an account this request created at an endpoint that enforces EAB.
 
 ## [0.6.2] — 2026-10-16
 
