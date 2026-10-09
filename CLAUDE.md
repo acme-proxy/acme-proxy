@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An **ACME (RFC 8555) server** in Rust/[axum](https://docs.rs/axum), serving certificate clients (certbot, acme.sh, lego) over the full account → order → authorization → challenge → finalize → certificate flow, plus revocation. **One binary over a Cargo workspace**: the `acme-proxy` package at the root (`src/cli/`, `main.rs`, every suite in `tests/`) over nine library crates in `crates/`, bottom-up `core`, `store`, `net`, `policy`, `jobs`, `signer`, `protocol`, `admin`, `server` ([ADR 0002](doc/src/dev/adr/0002-workspace-layering.md)). At **0.6.0**.
+An **ACME (RFC 8555) server** in Rust/[axum](https://docs.rs/axum), serving certificate clients (certbot, acme.sh, lego) over the full account → order → authorization → challenge → finalize → certificate flow, plus revocation. **One binary over a Cargo workspace**: the `acme-proxy` package at the root (`src/cli/`, `main.rs`, every suite in `tests/`) over nine library crates in `crates/`, bottom-up `core`, `store`, `net`, `policy`, `jobs`, `signer`, `protocol`, `admin`, `server` ([ADR 0002](doc/src/dev/adr/0002-workspace-layering.md)). At **0.6.1**.
 
 An ACME endpoint is a **profile** (`[profiles.<name>]`, served at `/profile/<name>/…`); at least one is required, and each has its own signer, filters, challenge validators and EAB requirement over one listener and one database. The process runs as up to three **roles** — `acme`, `admin`, `worker` — all three by default, and only the worker holds a signing key ([ADR 0007](doc/src/dev/adr/0007-role-processes.md)).
 

@@ -8,7 +8,7 @@ exclude = ["tests/e2e/netbox-mock", "tests/e2e/phpipam-mock"]
 resolver = "3"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 # CI's `msrv` job checks the workspace on exactly this toolchain.
 rust-version = "1.97"
@@ -22,15 +22,15 @@ homepage = "https://acme-proxy.github.io/acme-proxy/"
 # between crates.
 [workspace.dependencies]
 # The workspace's own crates, pinned exactly: they are released together.
-acme-proxy-core = { path = "crates/core", version = "=0.6.0" }
-acme-proxy-store = { path = "crates/store", version = "=0.6.0" }
-acme-proxy-net = { path = "crates/net", version = "=0.6.0" }
-acme-proxy-policy = { path = "crates/policy", version = "=0.6.0" }
-acme-proxy-jobs = { path = "crates/jobs", version = "=0.6.0" }
-acme-proxy-signer = { path = "crates/signer", version = "=0.6.0" }
-acme-proxy-protocol = { path = "crates/protocol", version = "=0.6.0" }
-acme-proxy-admin = { path = "crates/admin", version = "=0.6.0" }
-acme-proxy-server = { path = "crates/server", version = "=0.6.0" }
+acme-proxy-core = { path = "crates/core", version = "=0.6.1" }
+acme-proxy-store = { path = "crates/store", version = "=0.6.1" }
+acme-proxy-net = { path = "crates/net", version = "=0.6.1" }
+acme-proxy-policy = { path = "crates/policy", version = "=0.6.1" }
+acme-proxy-jobs = { path = "crates/jobs", version = "=0.6.1" }
+acme-proxy-signer = { path = "crates/signer", version = "=0.6.1" }
+acme-proxy-protocol = { path = "crates/protocol", version = "=0.6.1" }
+acme-proxy-admin = { path = "crates/admin", version = "=0.6.1" }
+acme-proxy-server = { path = "crates/server", version = "=0.6.1" }
 
 axum = "0.8"
 # Multi-threaded runtime for the concurrent axum server, plus what's actually
