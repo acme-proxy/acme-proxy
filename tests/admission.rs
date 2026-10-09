@@ -140,6 +140,7 @@ async fn health_answers_while_the_acme_endpoints_are_saturated() {
     );
     // …and the health probe is unaffected.
     assert_eq!(get(&app, "/health").await.status(), StatusCode::OK);
+    assert_eq!(get(&app, "/ready").await.status(), StatusCode::OK);
 
     gate.add_permits(1);
     held.await.unwrap();

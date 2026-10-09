@@ -148,6 +148,17 @@ impl Database {
         })
     }
 
+    /// One round trip to the database: `SELECT 1` on a pooled connection.
+    ///
+    /// What a readiness probe asks. It proves a connection can be had and the
+    /// server answers, which is the failure a load balancer can act on —
+    /// nothing about the schema or any table. Bounded by the pool's own
+    /// acquire timeout; a caller that needs a tighter bound wraps it.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        crate::sql::query("SELECT 1;").execute(self).await?;
+        Ok(())
+    }
+
     /// The pool's size and idle count, read now rather than tracked.
     #[must_use]
     pub fn pool_stats(&self) -> PoolStats {

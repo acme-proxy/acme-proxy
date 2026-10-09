@@ -69,6 +69,10 @@ migrated configuration before restarting.
   `main` moves to `/dev/`. A selector in the menu bar switches version on the
   same page, and a banner marks every version but the latest.
 
+- **`GET /ready`**, a readiness check on both listeners (#12): `200` while the
+  database answers a `SELECT 1` within two seconds, `503` otherwise. `/health`
+  stays a liveness check that touches nothing.
+
 ### Changed
 
 - **The web admin's login limiter is counted in the database** (#12), in a new

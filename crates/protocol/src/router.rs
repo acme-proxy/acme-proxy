@@ -170,7 +170,14 @@ pub fn build_app(
     // where the probe itself could no longer get a slot.
     let mut root = Router::new()
         .route("/", get(|| async { Redirect::temporary("/health") }))
-        .route("/health", get(handlers::get_health_check));
+        .route("/health", get(handlers::get_health_check))
+        // Readiness beside liveness, on the same footing: outside admission,
+        // every filter chain and the nonce middleware.
+        .merge(
+            Router::new()
+                .route("/ready", get(handlers::get_readiness))
+                .with_state(database.clone()),
+        );
 
     // The `http-01` responder for the *upstream's* challenge, mounted only when
     // a signer backend has tokens to serve — which today means `relay`

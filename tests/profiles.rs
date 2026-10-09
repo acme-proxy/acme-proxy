@@ -613,6 +613,12 @@ async fn routing_separates_server_routes_from_acme_routes() {
         StatusCode::NOT_FOUND,
         "/health is a server route, not part of an endpoint"
     );
+    assert_eq!(get(&app, "/ready").await.status(), StatusCode::OK);
+    assert_eq!(
+        get(&app, &path("a", "/ready")).await.status(),
+        StatusCode::NOT_FOUND,
+        "/ready is a server route, not part of an endpoint"
+    );
     assert_eq!(
         get(&app, "/directory").await.status(),
         StatusCode::NOT_FOUND,

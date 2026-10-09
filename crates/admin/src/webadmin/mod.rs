@@ -628,6 +628,16 @@ pub fn build_admin_app_from_parts(
             "/health",
             get(acme_proxy_protocol::handlers::get_health_check),
         )
+        // Readiness: the same answer the ACME listener gives, over the same
+        // database. Unauthenticated for `/health`'s reason.
+        .route(
+            "/ready",
+            get(
+                |axum::extract::State(state): axum::extract::State<AdminState>| async move {
+                    acme_proxy_protocol::handlers::readiness(&state.database).await
+                },
+            ),
+        )
         // The panel is what somebody opening this port in a browser wants.
         .route("/", get(|| async { Redirect::to("/ui/") }))
         .merge(api_with_fallbacks(api))

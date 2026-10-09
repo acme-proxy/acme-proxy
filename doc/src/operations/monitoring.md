@@ -29,6 +29,19 @@ root router, not inside a profile, which means it is deliberately outside:
 
 `GET /` redirects to `/health`.
 
+### Readiness
+
+- **Endpoint**: `GET /ready`, on both listeners
+- **Response**: `200 OK` with `{"ready": true}` when the database answers a
+  `SELECT 1` within two seconds, `503 Service Unavailable` with
+  `{"ready": false}` otherwise (logged as `server_readiness_failed`)
+
+Point a load balancer's health check here, and an orchestrator's liveness
+probe at `/health`. A process whose database is gone should leave the
+rotation, not be restarted: restarting every instance during a database
+switchover turns a blip into an outage. `/ready` sits where `/health` does,
+outside admission control, the filter chains and the nonce middleware.
+
 ## Metrics
 
 `GET /metrics` serves the OpenMetrics text format

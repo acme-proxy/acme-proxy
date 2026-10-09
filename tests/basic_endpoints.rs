@@ -6,7 +6,10 @@ use serde_json::json;
 use tower::ServiceExt;
 
 mod common;
-use common::{BASE, EcSigner, TestSigner, body_json, fetch_nonce, flattened_jws, p, test_app};
+use common::{
+    BASE, EcSigner, TestSigner, body_json, fetch_nonce, flattened_jws, p, test_app,
+    test_app_with_db,
+};
 
 /// POSTs a signed body to a profile path.
 async fn post(app: &axum::Router, path: &str, body: String) -> Response {
@@ -49,6 +52,37 @@ async fn health_returns_ok_json() {
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(body_json(res).await["healthy"], true);
+}
+
+/// Readiness asks the database; liveness does not. With the pool closed the
+/// first answers `503` and the second still `200` — a load balancer takes the
+/// node out of rotation, an orchestrator does not restart it.
+#[tokio::test]
+async fn ready_follows_the_database_and_health_does_not() {
+    let (app, database) = test_app_with_db().await;
+
+    let res = app
+        .clone()
+        .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_json(res).await["ready"], true);
+
+    database.close().await;
+    let res = app
+        .clone()
+        .oneshot(Request::get("/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body_json(res).await["ready"], false);
+
+    let res = app
+        .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
 }
 
 #[tokio::test]

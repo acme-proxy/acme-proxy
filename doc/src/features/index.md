@@ -36,6 +36,7 @@ Two paths sit outside every profile, on the root router:
 
 | Path | Purpose |
 | --- | --- |
+| `/ready` | Readiness: `503` while the database does not answer. See [Monitoring](../operations/monitoring.md#readiness). |
 | `/health` | Liveness. Outside the filter chain, the admission limiter and the nonce middleware — see [Monitoring](../operations/monitoring.md). |
 | `/.well-known/acme-challenge/{token}` | Mounted **only** when a signer backend has an http-01 token store to publish, i.e. `signer.relay.challenge_strategy = "http01"`. See [Relay](../signers/relay.md). |
 

@@ -3483,6 +3483,11 @@ async fn health_is_served_unauthenticated() {
     let response = admin_request(&app, Method::GET, "/health", None, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_body(response).await["healthy"], true);
+
+    // Readiness too, and it asks the database.
+    let response = admin_request(&app, Method::GET, "/ready", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["ready"], true);
 }
 
 /// This listener serves no ACME. A client that pointed certbot at it must get
