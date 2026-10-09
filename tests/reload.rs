@@ -7,6 +7,10 @@
 //! them as one thing: a running server whose answers change — and, when the file
 //! says so, whose ports change — without the process restarting.
 //!
+//! **Every process shares [`TempDir::shared`]'s database**: a file-backed
+//! `SQLite`, or a PostgreSQL schema when `TEST_POSTGRES_URL` is set, which is
+//! how CI's `postgres` job runs this suite against that backend.
+//!
 //! **Its own binary on purpose.** Every test here writes a `config.toml` and
 //! points `ACME_PROXY_CONFIG` at it, and that variable is process state.
 //! `cargo nextest` runs each test as its own process, which is what makes that
@@ -123,7 +127,7 @@ fn write_config_on(dir: &TempDir, sockets: Sockets<'_>, tls: bool, website: &str
     let body = format!(
         r#"
         [database]
-        url = "sqlite://{dir}/reload.db"
+        url = "{url}"
 
         [server]
         bind_address = "{server}"
@@ -150,6 +154,7 @@ fn write_config_on(dir: &TempDir, sockets: Sockets<'_>, tls: bool, website: &str
         {extra}
         "#,
         dir = dir.path().display(),
+        url = dir.database_url(),
         ca = ca.display(),
     );
     std::fs::write(dir.join("config.toml"), body).unwrap();
@@ -293,7 +298,7 @@ async fn get(addr: std::net::SocketAddr, path: &str) -> String {
 /// answering differently — without the port moving or the process restarting.
 #[tokio::test]
 async fn a_reload_changes_what_the_running_socket_answers() {
-    let dir = TempDir::new("reload-live");
+    let dir = TempDir::shared("reload-live").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -339,7 +344,7 @@ async fn a_reload_changes_what_the_running_socket_answers() {
 /// `crates/jobs/src/jobs/runner.rs` covers them reaching the loop.
 #[tokio::test]
 async fn a_jobs_change_reloads_and_rebuilds_the_registry() {
-    let dir = TempDir::new("reload-jobs");
+    let dir = TempDir::shared("reload-jobs").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -419,7 +424,7 @@ async fn a_logging_change_reloads_and_moves_the_level() {
     // every assertion below pass for the wrong reason.
     unsafe { std::env::remove_var("RUST_LOG") };
 
-    let dir = TempDir::new("reload-logging");
+    let dir = TempDir::shared("reload-logging").await;
     write_config(
         &dir,
         false,
@@ -474,15 +479,19 @@ async fn a_logging_change_reloads_and_moves_the_level() {
 /// file describes.
 #[tokio::test]
 async fn a_frozen_key_is_refused_and_the_old_configuration_keeps_serving() {
-    let dir = TempDir::new("reload-frozen");
+    let dir = TempDir::shared("reload-frozen").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
     // `database.url` moves, and `meta.website` moves with it — so if the
     // refusal were not atomic, the directory below would show the new site.
+    // The moved URL is never opened: a frozen key is refused before anything
+    // is built.
+    let url = dir.database_url().to_string();
+    let moved = format!("{url}-elsewhere");
     let body = std::fs::read_to_string(dir.join("config.toml"))
         .unwrap()
-        .replace("reload.db", "somewhere-else.db")
+        .replace(&url, &moved)
         .replace("https://before.example", "https://after.example");
     std::fs::write(dir.join("config.toml"), body).unwrap();
 
@@ -507,7 +516,7 @@ async fn a_frozen_key_is_refused_and_the_old_configuration_keeps_serving() {
     // terminal state, it is an operator being told to fix the file.
     let body = std::fs::read_to_string(dir.join("config.toml"))
         .unwrap()
-        .replace("somewhere-else.db", "reload.db");
+        .replace(&moved, &url);
     std::fs::write(dir.join("config.toml"), body).unwrap();
     let report = server
         .reload
@@ -525,7 +534,7 @@ async fn a_frozen_key_is_refused_and_the_old_configuration_keeps_serving() {
 /// it could not construct what was asked for, not that the ask was disallowed.
 #[tokio::test]
 async fn a_configuration_that_does_not_build_leaves_the_old_one_running() {
-    let dir = TempDir::new("reload-unbuildable");
+    let dir = TempDir::shared("reload-unbuildable").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -587,7 +596,7 @@ async fn a_reloaded_certificate_reaches_the_next_connection() {
             .to_vec()
     }
 
-    let dir = TempDir::new("reload-tls");
+    let dir = TempDir::shared("reload-tls").await;
     write_config(&dir, true, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
     let port = server.acme.port();
@@ -626,7 +635,7 @@ async fn a_reloaded_certificate_reaches_the_next_connection() {
 /// they are being flooded.
 #[tokio::test]
 async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
-    let dir = TempDir::new("reload-admin");
+    let dir = TempDir::shared("reload-admin").await;
     write_config_with_admin(&dir, false, true, "https://before.example", "");
     let server = boot(load_from(&dir), true).await;
     let admin = server.admin.expect("the admin listener is enabled");
@@ -680,7 +689,7 @@ async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
 /// without dropping the policy already serving.
 #[tokio::test]
 async fn the_admin_filter_reloads_and_a_broken_one_is_refused() {
-    let dir = TempDir::new("reload-admin-filter");
+    let dir = TempDir::shared("reload-admin-filter").await;
     write_config_with_admin(&dir, false, true, "https://before.example", "");
     let server = boot(load_from(&dir), true).await;
     let admin = server.admin.expect("the admin listener is enabled");
@@ -744,7 +753,7 @@ async fn the_admin_filter_reloads_and_a_broken_one_is_refused() {
 /// (certbot's session, a monitoring poller) most likely to notice.
 #[tokio::test]
 async fn a_keep_alive_connection_sees_the_new_router_on_its_next_request() {
-    let dir = TempDir::new("reload-keepalive");
+    let dir = TempDir::shared("reload-keepalive").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -825,7 +834,7 @@ async fn read_one_response(stream: &mut TcpStream, path: &str) -> String {
 /// same profiles, same everything else.
 #[tokio::test]
 async fn a_moved_bind_address_rebinds_the_socket() {
-    let dir = TempDir::new("reload-rebind");
+    let dir = TempDir::shared("reload-rebind").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
     let old_port = server.acme.port();
@@ -879,7 +888,7 @@ async fn a_moved_bind_address_rebinds_the_socket() {
 /// is listening on nothing, which is the failure a reload exists to avoid.
 #[tokio::test]
 async fn an_unbindable_address_refuses_the_reload_and_the_socket_keeps_serving() {
-    let dir = TempDir::new("reload-rebind-refused");
+    let dir = TempDir::shared("reload-rebind-refused").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -929,7 +938,7 @@ async fn an_unbindable_address_refuses_the_reload_and_the_socket_keeps_serving()
 /// advertised.
 #[tokio::test]
 async fn the_panel_can_be_switched_on_and_off_by_a_reload() {
-    let dir = TempDir::new("reload-panel");
+    let dir = TempDir::shared("reload-panel").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
     assert!(server.admin.is_none(), "the panel starts switched off");
@@ -996,7 +1005,7 @@ async fn tls_can_be_switched_on_without_the_socket_moving() {
     use tokio_rustls::TlsConnector;
     use tokio_rustls::rustls::pki_types::ServerName;
 
-    let dir = TempDir::new("reload-tls-flip");
+    let dir = TempDir::shared("reload-tls-flip").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -1043,7 +1052,7 @@ async fn tls_can_be_switched_on_without_the_socket_moving() {
 /// coming or going must be invisible to its neighbours.
 #[tokio::test]
 async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
-    let dir = TempDir::new("reload-profiles");
+    let dir = TempDir::shared("reload-profiles").await;
     let staging = format!(
         r#"
         [profiles.staging]
@@ -1116,7 +1125,7 @@ async fn a_profile_can_be_mounted_and_unmounted_by_a_reload() {
 /// `SIGHUP`.
 #[tokio::test]
 async fn a_signer_edit_reloads_without_losing_a_revocation() {
-    let dir = TempDir::new("reload-signer");
+    let dir = TempDir::shared("reload-signer").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -1180,7 +1189,7 @@ async fn a_signer_edit_reloads_without_losing_a_revocation() {
 /// a `SIGHUP` actually takes.
 #[tokio::test]
 async fn the_egress_sections_reload_where_they_used_to_be_refused() {
-    let dir = TempDir::new("reload-egress");
+    let dir = TempDir::shared("reload-egress").await;
     write_config(&dir, false, "https://before.example", "");
     let server = boot(load_from(&dir), false).await;
 
@@ -1221,7 +1230,7 @@ async fn the_egress_sections_reload_where_they_used_to_be_refused() {
 /// fail on one host of a split deployment and not another.
 #[tokio::test]
 async fn a_process_without_the_admin_role_reloads_over_an_admin_section() {
-    let dir = TempDir::new("reload-roles");
+    let dir = TempDir::shared("reload-roles").await;
     write_config(&dir, false, "https://before.example", "");
     // Every role but `admin`: the worker is what generates this CA, and what
     // this is about is the panel's configuration, not the key.

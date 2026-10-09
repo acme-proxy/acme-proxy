@@ -8,8 +8,11 @@
 //!
 //! What only this suite can show is that the three really are one system: the
 //! inline tests prove `RoleSet` parses and `plan_schema` decides, but nothing
-//! there starts three processes against one **file-backed** `SQLite` and watches
-//! work cross between them. The five claims here are the ones a split
+//! there starts three processes against one shared database and watches work
+//! cross between them. That database is a **file-backed** `SQLite`, or a
+//! PostgreSQL schema when `TEST_POSTGRES_URL` is set ([`TempDir::shared`]) —
+//! CI's `postgres` job runs this suite there, since several processes over one
+//! server is the deployment that backend exists for. The five claims here are the ones a split
 //! deployment rests on:
 //!
 //! 1. An `acme` process serves ACME and an `admin` process serves the panel,
@@ -32,9 +35,9 @@
 //! documented topology: the schema and the first-run material belong to one
 //! step, before anything serves.
 //!
-//! **Its own binary, and it touches the disk**, for `reload.rs`'s reasons: the
-//! database has to be a file for several processes to share it, and each test
-//! writes a `config.toml`. `cargo nextest` gives each test its own process,
+//! **Its own binary, and it touches the disk**, for `reload.rs`'s reasons: on
+//! `SQLite` the database has to be a file for several processes to share it,
+//! and each test writes a `config.toml`. `cargo nextest` gives each test its own process,
 //! which is what makes that safe.
 
 mod common;
@@ -70,8 +73,8 @@ impl Process {
 
 /// A single-profile configuration over a database file in `dir`.
 ///
-/// Deliberately one file for every process in the test: sharing the database is
-/// what makes them one deployment rather than three unrelated servers.
+/// Deliberately one database for every process in the test: sharing it is what
+/// makes them one deployment rather than three unrelated servers.
 fn write_config(dir: &TempDir) {
     let ca = dir.join("ca");
     write_config_at(dir, dir, &format!("{}.key", ca.display()));
@@ -85,7 +88,7 @@ fn write_config_at(dir: &TempDir, into: &TempDir, key_path: &str) {
     let body = format!(
         r#"
         [database]
-        url = "sqlite://{dir}/roles.db"
+        url = "{url}"
 
         [server]
         base_url = "http://localhost:3000"
@@ -98,7 +101,7 @@ fn write_config_at(dir: &TempDir, into: &TempDir, key_path: &str) {
         signer.local_ca.key_path = "{key_path}"
         signer.local_ca.crl_path = "{ca}.crl"
         "#,
-        dir = dir.path().display(),
+        url = dir.database_url(),
         ca = ca.display(),
     );
     std::fs::write(into.join("config.toml"), body).unwrap();
@@ -211,7 +214,7 @@ async fn status_of(addr: std::net::SocketAddr, path: &str) -> u16 {
 /// which process answers — a claim no in-process router test can make.
 #[tokio::test]
 async fn each_role_serves_only_its_own_surface() {
-    let dir = TempDir::new("roles-surfaces");
+    let dir = TempDir::shared("roles-surfaces").await;
     write_config(&dir);
     let config = load_from(&dir);
 
@@ -265,7 +268,7 @@ async fn each_role_serves_only_its_own_surface() {
 /// process* moved the row.
 #[tokio::test]
 async fn an_acme_process_queues_work_a_worker_performs() {
-    let dir = TempDir::new("roles-queue");
+    let dir = TempDir::shared("roles-queue").await;
     write_config(&dir);
     let config = load_from(&dir);
 
@@ -346,7 +349,7 @@ async fn an_acme_process_queues_work_a_worker_performs() {
 /// one step away from the fix.
 #[tokio::test]
 async fn a_process_without_the_worker_role_refuses_an_unmigrated_database() {
-    let dir = TempDir::new("roles-schema");
+    let dir = TempDir::shared("roles-schema").await;
     write_config(&dir);
     let config = load_from(&dir);
 
@@ -394,7 +397,7 @@ async fn a_process_without_the_worker_role_refuses_an_unmigrated_database() {
 /// hidden requirement of the happy path.
 #[tokio::test]
 async fn the_three_roles_start_concurrently_over_one_database() {
-    let dir = TempDir::new("roles-concurrent");
+    let dir = TempDir::shared("roles-concurrent").await;
     write_config(&dir);
     let config = load_from(&dir);
 
@@ -460,7 +463,7 @@ async fn fetch(addr: std::net::SocketAddr, path: &str) -> (u16, Vec<u8>) {
 /// nothing but the worker ever touched signing material.
 #[tokio::test]
 async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
-    let dir = TempDir::new("roles-keyless");
+    let dir = TempDir::shared("roles-keyless").await;
     write_config(&dir);
     let config = load_from(&dir);
     initialise(&config).await;
@@ -563,7 +566,7 @@ async fn the_acme_and_admin_processes_never_touch_the_ca_key() {
 /// refuses to start, naming the two ways to make one, and makes none itself.
 #[tokio::test]
 async fn a_process_without_the_worker_role_refuses_a_missing_ca() {
-    let dir = TempDir::new("roles-no-ca");
+    let dir = TempDir::shared("roles-no-ca").await;
     write_config(&dir);
     let config = load_from(&dir);
     // The schema, but no CA: `migrate` rather than `init`.

@@ -576,7 +576,9 @@ jobs:
       # The store's whole suite, plus the dialect-sensitive cases and the two
       # suites that run several processes over one database -- which is the
       # multi-node deployment this backend exists for, and the thing a
-      # single-process SQLite run cannot cover.
+      # single-process SQLite run cannot cover. Those two reach the server
+      # through `TempDir::shared` (tests/common); a suite that wrote a
+      # `sqlite://` URL of its own would run here on SQLite and pass.
       #
       # `package(acme-proxy-store)` is the one that matters: every test in that
       # crate calls `Database::connect_for_test()`, so the variable below

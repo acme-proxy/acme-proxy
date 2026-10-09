@@ -328,6 +328,29 @@ pub const REQUIRE_POSTGRES: &str = "ACME_PROXY_REQUIRE_POSTGRES";
 
 /// A PostgreSQL database with the schema applied, or `None` to skip.
 ///
+/// [`postgres_url`], opened and migrated.
+///
+/// # Panics
+///
+/// When [`REQUIRE_POSTGRES`] is set and there is no server to talk to.
+pub async fn postgres_database() -> Option<crate::db::Database> {
+    let url = postgres_url().await?;
+    let database = crate::db::Database::open(&url)
+        .await
+        .expect("the schema-scoped pool should open");
+    database
+        .migrate()
+        .await
+        .expect("the PostgreSQL migration set should apply");
+    Some(database)
+}
+
+/// The URL of a fresh, **empty** PostgreSQL schema, or `None` to skip.
+///
+/// What a suite that starts several processes needs rather than a pool: each
+/// process opens the URL itself, as `serve` does, and whichever owns the schema
+/// migrates it.
+///
 /// Each call gets a **schema of its own**, named from a UUID v7 so the tests
 /// can run concurrently in one database without a `DROP` in one emptying
 /// another. The pool pins `search_path` to it, so every unqualified name in the
@@ -341,7 +364,7 @@ pub const REQUIRE_POSTGRES: &str = "ACME_PROXY_REQUIRE_POSTGRES";
 /// # Panics
 ///
 /// When [`REQUIRE_POSTGRES`] is set and there is no server to talk to.
-pub async fn postgres_database() -> Option<crate::db::Database> {
+pub async fn postgres_url() -> Option<String> {
     let base = match std::env::var(TEST_POSTGRES_URL) {
         Ok(url) if !url.is_empty() => url,
         _ => {
@@ -372,16 +395,9 @@ pub async fn postgres_database() -> Option<crate::db::Database> {
     admin.close().await;
 
     let separator = if base.contains('?') { '&' } else { '?' };
-    let database = crate::db::Database::open(&format!(
+    Some(format!(
         "{base}{separator}options=-c%20search_path%3D{schema}"
     ))
-    .await
-    .expect("the schema-scoped pool should open");
-    database
-        .migrate()
-        .await
-        .expect("the PostgreSQL migration set should apply");
-    Some(database)
 }
 
 /// Drops test schemas from earlier runs, by the timestamp in their own name.

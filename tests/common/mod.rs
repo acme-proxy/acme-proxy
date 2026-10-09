@@ -2877,28 +2877,54 @@ impl TestSigner for RsaSigner {
 /// cannot see a `#[cfg(test)]` item of the crate it links against, and making
 /// that one a real `pub mod` would ship test scaffolding to every consumer.
 /// Two copies, deliberately — down from seven.
-pub struct TempDir(std::path::PathBuf);
+pub struct TempDir {
+    path: std::path::PathBuf,
+    database_url: String,
+}
 
 impl TempDir {
     pub fn new(label: &str) -> Self {
         let path =
             std::env::temp_dir().join(format!("acme-proxy-{label}-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let database_url = format!("sqlite://{}/acme.db", path.display());
+        Self { path, database_url }
+    }
+
+    /// A directory whose [`database_url`](Self::database_url) is a fresh
+    /// PostgreSQL schema when `TEST_POSTGRES_URL` names a server, and a SQLite
+    /// file inside the directory otherwise.
+    ///
+    /// For the suites that start several processes over one database
+    /// (`roles.rs`, `reload.rs`): that is the multi-node deployment PostgreSQL
+    /// exists for, so CI's `postgres` job must actually run them there. The
+    /// schema is left empty, because which process migrates it is what some of
+    /// those tests are about.
+    pub async fn shared(label: &str) -> Self {
+        let mut dir = Self::new(label);
+        if let Some(url) = acme_proxy_store::testutil::postgres_url().await {
+            dir.database_url = url;
+        }
+        dir
     }
 
     pub fn path(&self) -> &std::path::Path {
-        &self.0
+        &self.path
     }
 
     pub fn join(&self, name: &str) -> std::path::PathBuf {
-        self.0.join(name)
+        self.path.join(name)
+    }
+
+    /// The database every process started over this directory shares.
+    pub fn database_url(&self) -> &str {
+        &self.database_url
     }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.path);
     }
 }
 

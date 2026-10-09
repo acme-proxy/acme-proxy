@@ -48,6 +48,10 @@ before adding a case, and put a new case in the suite whose header claims it.
   correctness belongs to the engine — a nonce race, a partial unique index, a
   typed null, `uuid` ordering. A new fork owes it a case. CI sets
   `ACME_PROXY_REQUIRE_POSTGRES`, which turns every skip into a failure.
+- **A suite that starts several processes over one database takes it from
+  `TempDir::shared`** (`roles.rs`, `reload.rs`): a SQLite file, or a fresh
+  PostgreSQL schema under `TEST_POSTGRES_URL`. A hand-written `sqlite://` URL
+  silently keeps it off PostgreSQL in CI.
 - Two suites read the repository's own source rather than running it:
   `layering.rs` (crate edges, the raw pool, signers on the request path, the
   schema owners) and `logging_convention.rs` (the nine logging rules). Read the
