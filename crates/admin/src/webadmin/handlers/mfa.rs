@@ -173,7 +173,10 @@ pub const STEP_UP_FRESHNESS_SECONDS: i64 = 300;
 ///   *is* (`external_id`), not merely on somebody with their name.
 /// - **OpenID Connect**: nothing to type; `session_created_at` within
 ///   [`STEP_UP_FRESHNESS_SECONDS`] stands in, and `None` (a caller with no
-///   session at hand) never does. Otherwise `reauthentication_required`.
+///   session at hand) never does. Otherwise `reauthentication_required`,
+///   pointing at the `?reauth=1` start: a sign-in the provider may not answer
+///   from its own session (`prompt=login`, `max_age`, `auth_time` checked),
+///   so the fresh session is a fresh authentication, not a silent round trip.
 pub(crate) async fn reprove(
     state: &AdminState,
     user: &acme_proxy_store::admin_user::AdminUser,
@@ -198,8 +201,11 @@ pub(crate) async fn reprove(
             StatusCode::FORBIDDEN,
             "reauthentication_required",
             format!(
-                "this change needs a recent sign-in: sign out, sign in again through \
-                 `{provider}`, and retry within {} minutes",
+                "this change needs a recent sign-in: sign in again through `{provider}` at \
+                 {}/ui/login/oidc/{}?reauth=1, which asks it to authenticate you afresh, and \
+                 retry within {} minutes",
+                state.config.admin.base_url.trim_end_matches('/'),
+                provider.trim_start_matches("oidc:"),
                 STEP_UP_FRESHNESS_SECONDS / 60
             ),
         ));

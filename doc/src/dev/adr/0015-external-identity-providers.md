@@ -60,7 +60,10 @@ Three things in the tree pushed against doing that naively:
 - **An external operator has no password here.** Their row holds a sentinel
   that is not a hash, refused before it is read. Step-up re-proves them through
   their realm: a directory bind for LDAP, and for OpenID Connect a sign-in less
-  than five minutes old. An OpenID Connect operator's second factor is the
+  than five minutes old, begun with `?reauth=1` so the provider is asked to
+  authenticate the person again (`prompt=login`, `max_age`) and the token's
+  `auth_time` is checked — a provider's silent single sign-on is not a
+  re-authentication. An OpenID Connect operator's second factor is the
   provider's (`required_amr`); an LDAP operator's is local, as a password is.
 - **Local operators stay**, as the break-glass realm. `admin.auth.local = false`
   closes the password form's local realm without deleting anybody.
@@ -104,4 +107,10 @@ Three things in the tree pushed against doing that naively:
 - `one_external_identity_is_one_operator_on_both_backends` in
   `tests/postgres.rs`.
 - `webadmin::check_config`'s refusals: plain `ldap://` off loopback, a non-https
-  issuer, an empty role map, no realm at all.
+  issuer, an empty role map, no realm at all, and an OpenID Connect provider
+  asserting no second factor while `admin.require_mfa` is on.
+- `a_reauth_sign_in_demands_a_fresh_authentication`,
+  `a_cross_site_start_is_refused_and_writes_nothing` and
+  `abandoned_starts_are_bounded_and_a_sign_in_clears_them` in
+  `tests/admin_oidc.rs`; `losing_every_group_ends_the_operators_sessions` in
+  `crates/admin/src/identity/mod.rs`.

@@ -162,7 +162,7 @@ pub async fn reset_totp(
     Ok(())
 }
 
-async fn record_revoked(user: &AdminUser, revoked: u64, trail: &impl OperatorTrail) {
+pub(crate) async fn record_revoked(user: &AdminUser, revoked: u64, trail: &impl OperatorTrail) {
     if revoked > 0 {
         trail
             .record(|actor, client| {

@@ -59,6 +59,13 @@ pub struct AdminState {
     /// Keyed by profile name — the lookup `orders.profile` needs.
     pub profiles: Arc<HashMap<String, Arc<Profile>>>,
     pub logins: Arc<LoginLimiter>,
+    /// Starts of an OpenID Connect sign-in, per address, under the same limits
+    /// as [`AdminState::logins`] but a bucket of their own: every start writes
+    /// an `admin_oidc_logins` row, so each one counts until a completed
+    /// sign-in clears the address. Kept apart so a start never spends the
+    /// budget its own callback needs. Not carried across a reload: it bounds
+    /// row writes, not guesses at a credential.
+    pub oidc_starts: Arc<LoginLimiter>,
     /// The `/ui` templates, embedded defaults overlaid by
     /// `admin.template_dir`. Built once: the loader reads a file per template
     /// on first use, and rebuilding it per request would mean a disk read per
@@ -136,6 +143,7 @@ impl AdminState {
             config,
             profiles: Arc::new(by_name),
             logins: Arc::new(logins),
+            oidc_starts: Arc::new(LoginLimiter::new(max_attempts, window)),
             templates: Arc::new(templates),
             audit,
             notifiers,
@@ -851,7 +859,7 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
 
     check_templates(&admin.template_dir)?;
     filter::build(config)?;
-    check_auth(&admin.auth)?;
+    check_auth(&admin.auth, admin.require_mfa)?;
 
     Ok(())
 }
@@ -860,7 +868,15 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
 /// send a credential somewhere it should not go. Checks shape only: secrets
 /// and CA files are read, and nothing is contacted, when the providers are
 /// built.
-fn check_auth(auth: &acme_proxy_core::config::AdminAuthConfig) -> anyhow::Result<()> {
+///
+/// With `require_mfa` on, an OpenID Connect realm must assert a second factor
+/// (`required_amr` or `required_acr`): its operators never meet the local one,
+/// so a realm that asserts nothing would admit them single-factor while the
+/// configuration reads as MFA-only.
+fn check_auth(
+    auth: &acme_proxy_core::config::AdminAuthConfig,
+    require_mfa: bool,
+) -> anyhow::Result<()> {
     use crate::identity::is_loopback;
 
     acme_proxy_core::config::validate_key_names("admin.auth.oidc", auth.oidc.keys())?;
@@ -888,6 +904,13 @@ fn check_auth(auth: &acme_proxy_core::config::AdminAuthConfig) -> anyhow::Result
         }
         if provider.roles.is_empty() {
             bail!("{key}.roles grants no role to any group: nobody could sign in through it");
+        }
+        if require_mfa && provider.required_amr.is_empty() && provider.required_acr.is_empty() {
+            bail!(
+                "admin.require_mfa is on but {key} asserts no second factor: its operators \
+                 sign in through the provider alone. Set {key}.required_amr (e.g. [\"mfa\"]) \
+                 or {key}.required_acr"
+            );
         }
     }
 
@@ -1116,6 +1139,42 @@ mod tests {
         config.admin.filter.trusted_proxies = vec!["not-a-network".to_string()];
         let error = check_config(&config).unwrap_err().to_string();
         assert!(error.starts_with("admin.filter: "), "{error}");
+    }
+
+    /// `require_mfa` is a promise about every operator, and an OpenID Connect
+    /// realm keeps it only by asserting the provider's second factor.
+    #[test]
+    fn require_mfa_refuses_an_oidc_realm_that_asserts_no_second_factor() {
+        let mut config = enabled();
+        config.admin.require_mfa = true;
+        let mut provider = acme_proxy_core::config::OidcProviderConfig {
+            issuer: "https://idp.example".to_string(),
+            client_id: "acme-proxy".to_string(),
+            ..Default::default()
+        };
+        provider.roles.admin = vec!["admins".to_string()];
+        config
+            .admin
+            .auth
+            .oidc
+            .insert("corp".to_string(), provider.clone());
+        let error = check_config(&config).unwrap_err().to_string();
+        assert!(
+            error.contains("admin.auth.oidc.corp asserts no second factor"),
+            "{error}"
+        );
+
+        for (amr, acr) in [(vec!["mfa"], vec![]), (vec![], vec!["gold"])] {
+            let mut asserting = provider.clone();
+            asserting.required_amr = amr.into_iter().map(String::from).collect();
+            asserting.required_acr = acr.into_iter().map(String::from).collect();
+            config.admin.auth.oidc.insert("corp".to_string(), asserting);
+            check_config(&config).expect("a realm asserting a factor starts");
+        }
+
+        config.admin.require_mfa = false;
+        config.admin.auth.oidc.insert("corp".to_string(), provider);
+        check_config(&config).expect("without require_mfa nothing is asserted");
     }
 
     #[test]

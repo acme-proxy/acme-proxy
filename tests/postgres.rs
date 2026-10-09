@@ -462,15 +462,18 @@ async fn one_external_identity_is_one_operator_on_both_backends() {
             pkce_verifier: "verifier".to_string(),
             created_at: 0,
             expires_at: 100,
+            // An ordinary sign-in: a typed null into a `bigint` column.
+            max_age: None,
         }
         .create(&database)
         .await
         .unwrap();
-        assert!(
+        assert_eq!(
             AdminOidcLogin::take("state", 1, &database)
                 .await
                 .unwrap()
-                .is_some()
+                .map(|login| login.max_age),
+            Some(None)
         );
         assert!(
             AdminOidcLogin::take("state", 1, &database)

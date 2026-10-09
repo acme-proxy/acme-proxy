@@ -572,6 +572,8 @@ pub async fn seed_every_table(db: &std::sync::Arc<crate::db::Database>) {
         pkce_verifier: "verifier".to_string(),
         created_at: 1,
         expires_at: 4_102_444_800,
+        // A value, so the transfer copies the column rather than a null.
+        max_age: Some(300),
     }
     .create(db)
     .await

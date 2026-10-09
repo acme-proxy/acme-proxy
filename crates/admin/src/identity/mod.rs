@@ -9,7 +9,9 @@
 //! - **The role is recomputed at every sign-in** from the groups
 //!   ([`RoleMap::role_for`]), the highest one any group grants. No match is a
 //!   refusal, not a viewer: a person the directory puts in no mapped group was
-//!   not meant to have a panel at all.
+//!   not meant to have a panel at all. A known operator refused that way also
+//!   loses every session they hold -- the sign-in is when this server learns
+//!   they were removed, and a tab left open must not outlive it.
 //! - **An identity is the provider's stable name for a person**
 //!   (`auth_provider`, `external_id`), never the username. A rename at the
 //!   provider renames the operator; a subject this server has never seen is a
@@ -39,6 +41,7 @@ use std::sync::Arc;
 
 use acme_proxy_core::config::{Config, RoleMapConfig};
 use acme_proxy_net::http_client::Outbound;
+use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::{AdminRole, AdminUser};
 use acme_proxy_store::db::Database;
 
@@ -249,17 +252,20 @@ pub async fn provision(
     database: Arc<Database>,
     trail: &impl OperatorTrail,
 ) -> Result<AdminUser, SignInError> {
-    let role = roles
-        .role_for(&identity.groups)
-        .ok_or(SignInError::NoMatchingGroup)?;
+    let existing =
+        AdminUser::find_by_external(&identity.provider, &identity.external_id, &database).await?;
+    let Some(role) = roles.role_for(&identity.groups) else {
+        if let Some(user) = &existing {
+            deprovision(user, &identity.provider, &database, trail).await?;
+        }
+        return Err(SignInError::NoMatchingGroup);
+    };
 
     let username = identity.username.trim().to_lowercase();
     if !users::valid_username(&username) {
         return Err(SignInError::InvalidUsername(username));
     }
 
-    let existing =
-        AdminUser::find_by_external(&identity.provider, &identity.external_id, &database).await?;
     let Some(mut user) = existing else {
         return create(identity, &username, role, database, trail).await;
     };
@@ -341,6 +347,27 @@ async fn create(
                    provider = %identity.provider,
                    role = %role);
     Ok(user)
+}
+
+/// Ends every session of an operator their provider no longer puts in any
+/// mapped group. Their role is only re-read at a sign-in, so this sign-in is
+/// the one moment this server learns they were removed: a tab still open from
+/// before must not outlive the news. The row stays (the panel's `delete` is
+/// the operator's to pull); the next sign-in is refused like this one.
+async fn deprovision(
+    user: &AdminUser,
+    provider: &str,
+    database: &Database,
+    trail: &impl OperatorTrail,
+) -> Result<(), SignInError> {
+    let revoked = AdminSession::delete_for_user(user.id, database).await?;
+    changes::record_revoked(user, revoked, trail).await;
+    tracing::warn!(event = "admin_user_deprovisioned",
+                   outcome = "success",
+                   username = %user.username,
+                   provider = %provider,
+                   rows_removed = revoked);
+    Ok(())
 }
 
 fn taken_or(error: sqlx::Error, username: &str) -> SignInError {
@@ -481,6 +508,66 @@ mod tests {
         )
         .await;
         assert!(matches!(refused, Err(SignInError::NoMatchingGroup)));
+    }
+
+    /// Removed from every mapped group: the sign-in is refused, and the
+    /// sessions they already held end with it.
+    #[tokio::test]
+    async fn losing_every_group_ends_the_operators_sessions() {
+        use acme_proxy_store::admin_session::NewSession;
+
+        let database = db().await;
+        let trail = Recording::default();
+        let user = provision(
+            &identity("bob", &["staff"]),
+            &roles(),
+            database.clone(),
+            &trail,
+        )
+        .await
+        .unwrap();
+        AdminSession::create(
+            NewSession {
+                user_id: user.id,
+                token_hash: "token",
+                csrf_token: "csrf",
+                created_ip: None,
+                user_agent: None,
+            },
+            std::time::Duration::from_secs(3600),
+            &database,
+        )
+        .await
+        .unwrap();
+
+        let refused = provision(
+            &identity("bob", &["contractors"]),
+            &roles(),
+            database.clone(),
+            &trail,
+        )
+        .await;
+        assert!(matches!(refused, Err(SignInError::NoMatchingGroup)));
+        assert_eq!(
+            AdminSession::delete_for_user(user.id, &database)
+                .await
+                .unwrap(),
+            0,
+            "the refusal already ended every session"
+        );
+        assert_eq!(
+            *trail.events.lock().unwrap(),
+            vec!["operator_created", "session_revoked"]
+        );
+
+        // A stranger in no group has nothing to revoke and records nothing.
+        let mut stranger = identity("carol", &["contractors"]);
+        stranger.external_id = "https://idp.example sub-9".to_string();
+        assert!(matches!(
+            provision(&stranger, &roles(), database, &trail).await,
+            Err(SignInError::NoMatchingGroup)
+        ));
+        assert_eq!(trail.events.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]

@@ -7,7 +7,9 @@ whose text is vendored under `rfc/asvs-5.0/` in this repository.
 - **Assessed at:** Level 2. Every L1 and L2 requirement in scope is given a
   status; L3 requirements are listed too, as information rather than as a bar
   being claimed.
-- **Assessed against:** the tree at release 0.6.0.
+- **Assessed against:** the tree at release 0.6.0, re-assessed after 0.6.1 for
+  the web admin's single sign-on (OpenID Connect and LDAP), which brought V10
+  into scope and moved rows in V1, V6, V7, V8, V12 and V13.
 - **Method:** source review. The evidence column names a file, not a promise —
   for a control requirement, the documentation on this site is context and the
   code is the evidence.
@@ -26,7 +28,7 @@ Three surfaces, kept apart because their controls genuinely differ:
 | Surface | What it is | Where |
 | --- | --- | --- |
 | ACME listener | Unauthenticated by design, authenticated per request by JWS. Carries the filter chain, admission control and the nonce middleware. | `crates/server/src/`, `crates/protocol/src/handlers/`, `crates/protocol/src/extractors/`, `crates/protocol/src/middlewares/` |
-| Web admin | The only session-based, browser-facing surface. Off by default, loopback by default. | `crates/admin/src/webadmin/`, `crates/admin/src/admin/` |
+| Web admin | The only session-based, browser-facing surface. Off by default, loopback by default. Signs operators in locally, through an LDAP directory, or through an OpenID Connect provider. | `crates/admin/src/webadmin/`, `crates/admin/src/admin/`, `crates/admin/src/identity/`, `crates/core/src/jws/jwt.rs` |
 | CLI and process | Answers to a shell on the host and holds no session. | `src/cli/`, `src/main.rs`, `crates/core/src/config/` |
 
 Most of V3, V6 and V7 apply only to the web admin. When it is disabled —
@@ -45,7 +47,7 @@ which is the default — those chapters have no surface to apply to at all.
 | V7 Session Management | yes | Web admin only |
 | V8 Authorization | yes | |
 | V9 Self-contained Tokens | yes | The self-contained token here is the ACME JWS, not a session JWT |
-| V10 OAuth and OIDC | **no** | No OAuth, no OIDC, no external identity provider, no token endpoint. Nothing in the chapter has a subject |
+| V10 OAuth and OIDC | partly | Web admin single sign-on: client and relying party only (V10.1, V10.2, V10.5). No resource server, authorization server, OpenID provider or consent screen, so V10.3, V10.4, V10.6 and V10.7 are n/a |
 | V11 Cryptography | yes | |
 | V12 Secure Communication | yes | |
 | V13 Configuration | yes | |
@@ -63,22 +65,23 @@ reported for information.
 
 | Chapter | L1+L2 met | partial | gap | n/a | L3 (met / short / n/a) |
 | --- | --- | --- | --- | --- | --- |
-| V1 Encoding and Sanitization | 17 | 1 | 0 | 9 | 2 / 0 / 1 |
+| V1 Encoding and Sanitization | 18 | 1 | 0 | 8 | 2 / 0 / 1 |
 | V2 Validation and Business Logic | 11 | 0 | 0 | 0 | 0 / 1 / 1 |
 | V3 Web Frontend Security | 16 | 1 | 0 | 2 | 6 / 4 / 2 |
 | V4 API and Web Service | 4 | 0 | 0 | 6 | 6 / 0 / 0 |
 | V5 File Handling | 4 | 0 | 0 | 5 | 0 / 0 / 4 |
-| V6 Authentication | 26 | 1 | 0 | 8 | 8 / 1 / 3 |
-| V7 Session Management | 15 | 1 | 0 | 2 | 0 / 1 / 0 |
-| V8 Authorization | 7 | 0 | 0 | 0 | 4 / 2 / 0 |
+| V6 Authentication | 29 | 1 | 0 | 5 | 7 / 2 / 3 |
+| V7 Session Management | 14 | 4 | 0 | 0 | 0 / 1 / 0 |
+| V8 Authorization | 7 | 0 | 0 | 0 | 3 / 3 / 0 |
 | V9 Self-contained Tokens | 7 | 0 | 0 | 0 | 0 / 0 / 0 |
+| V10 OAuth and OIDC | 8 | 0 | 0 | 21 | 1 / 0 / 6 |
 | V11 Cryptography | 11 | 2 | 0 | 1 | 5 / 2 / 3 |
 | V12 Secure Communication | 6 | 1 | 0 | 2 | 0 / 2 / 1 |
 | V13 Configuration | 9 | 4 | 0 | 0 | 5 / 3 / 0 |
 | V14 Data Protection | 9 | 0 | 0 | 0 | 2 / 1 / 1 |
 | V15 Secure Coding and Architecture | 11 | 1 | 0 | 1 | 8 / 0 / 0 |
 | V16 Security Logging and Error Handling | 15 | 1 | 0 | 0 | 1 / 0 / 0 |
-| **Total** | **168** | **13** | **0** | **36** | **47 / 17 / 16** |
+| **Total** | **179** | **16** | **0** | **51** | **46 / 19 / 22** |
 
 The short version. **There is no L1 or L2 gap.** The four password-policy
 requirements that used to sit here — V6.2.4 at L1, and V6.1.2 / V6.2.11 /
@@ -94,9 +97,23 @@ that exists but does not reach everywhere the requirement asks — or a
 **documented deviation**, where the project has knowingly chosen otherwise and
 argued the choice already. Both have their own sections below.
 
-Two chapters deserve a note on their shape. **V6 Authentication** carries the
-most n/a rows because the web admin has one authentication pathway and no
-out-of-band, biometric or federated factors — most of the chapter has no
+**Single sign-on moved four L1/L2 rows to partial, none to gap.** V7.1.3,
+V7.4.2 and V7.6.1 share one cause: groups and status are read from the
+provider at sign-in only, with no back-channel logout, so a person disabled at
+the provider keeps a live session until it expires or their next sign-in is
+refused (which ends every session they hold). `disable` on this side is the
+immediate lever, and [Single Sign-On](../operations/webadmin_sso.md) says so.
+The assessment of the sign-in also found and closed three things before this
+page was rewritten: `admin.require_mfa` was not enforced for OpenID Connect
+operators (now a startup refusal unless the provider asserts a factor), an
+OpenID Connect step-up could be satisfied by the provider's silent single
+sign-on (now `prompt=login`, `max_age` and a checked `auth_time`), and a
+sign-in could be started by another site (now origin-checked and counted).
+
+Two chapters deserve a note on their shape. **V6 Authentication** carries
+many n/a rows because the web admin has no out-of-band or biometric factors,
+and no SAML. **V10 OAuth and OIDC** is mostly n/a because this server is only
+ever the client: the authorization-server half of the chapter has no
 subject here. **V16 Security Logging** is the only chapter with no L1
 requirements at all and is met almost entirely, which is what you would hope
 for in a certificate authority: the audit trail is the product.
@@ -112,7 +129,7 @@ for in a certificate authority: the audit trail is the product.
 | 1.2.3 | Encode when building JavaScript or JSON | 1 | met | All JSON is produced by `serde_json`; no template writes into a `<script>` block |
 | 1.2.4 | Parameterized database queries | 1 | met | Every statement in `crates/store/src/` is a runtime `sqlx::query` with `.bind()`. No query is assembled with `format!` |
 | 1.2.5 | Protection against OS command injection | 1 | met | `ScriptHook::run` uses `Command::new(path)` with an argv vector and no shell (`crates/core/src/script_hook.rs`); payloads go to stdin as JSON |
-| 1.2.6 | LDAP injection | 2 | n/a | No LDAP client |
+| 1.2.6 | LDAP injection | 2 | met | The one LDAP client is the web admin's directory realm. The typed username and the person's DN are escaped with `ldap3::ldap_escape` (RFC 4515) before they are spliced into `user_filter` / `group_filter`, and the only placeholders a configured filter may hold are `{username}` and `{dn}` (`crates/admin/src/identity/ldap.rs`, `the_group_filter_escapes_the_dn`) |
 | 1.2.7 | XPath injection | 2 | n/a | No XPath |
 | 1.2.8 | LaTeX injection | 2 | n/a | No LaTeX |
 | 1.2.9 | Escape special characters in regular expressions | 2 | met | `compile_anchored` and the glob translation both run `regex::escape` over everything that is not the wildcard (`crates/policy/src/filter/mod.rs`) |
@@ -239,15 +256,15 @@ embedded static-asset allowlist and the certificate-chain download.
 
 ## V6 Authentication
 
-Applies to the web admin and to the CLI commands that mint and rotate operator
-credentials. The ACME listener authenticates *keys*, not people; that is
-assessed under V9.
+Applies to the web admin — its local, LDAP and OpenID Connect realms — and to
+the CLI commands that mint and rotate operator credentials. The ACME listener
+authenticates *keys*, not people; that is assessed under V9.
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 6.1.1 | Documented anti-automation and lockout behaviour | 1 | met | [Web Admin](../operations/webadmin.md#authentication) and the `login_max_attempts` / `login_window_seconds` entries in [Configuration Reference](../configuration/reference.md). The limiter is keyed on the peer **address**, never the username, so no attacker can lock an operator out by guessing at them |
+| 6.1.1 | Documented anti-automation and lockout behaviour | 1 | met | [Web Admin](../operations/webadmin.md#authentication) and the `login_max_attempts` / `login_window_seconds` entries in [Configuration Reference](../configuration/reference.md). The limiter is keyed on the peer **address**, never the username, so no attacker can lock an operator out by guessing at them. A directory realm's own lockout policy is a separate control the limiter does not replace, and [Single Sign-On](../operations/webadmin_sso.md#ldap-and-active-directory) says so: a guesser spread across addresses still reaches the directory |
 | 6.1.2 | Documented list of context-specific words barred from passwords | 2 | met | Derived and documented: [Password policy](../operations/webadmin_users.md#the-context-specific-word-list) |
-| 6.1.3 | Multiple authentication pathways documented together | 2 | met | There are two — a panel session and a shell on the host — and [Users & Sessions](../operations/webadmin_users.md) states which operations belong to which and why create and `passwd` stay on the host |
+| 6.1.3 | Multiple authentication pathways documented together | 2 | met | The pathways are a panel session — reached through the local realm, an LDAP realm or an OpenID Connect provider — and a shell on the host. [Users & Sessions](../operations/webadmin_users.md) states which operations belong to which and why create and `passwd` stay on the host; [Single Sign-On](../operations/webadmin_sso.md) states what each external realm can and cannot do, and every realm ends in the same `start_session` (`crates/admin/src/webadmin/handlers/session.rs`) |
 | 6.2.1 | Passwords at least 8 characters | 1 | met | `MIN_PASSWORD_LEN = 12`, counted in characters rather than bytes (`crates/admin/src/admin/password.rs`) |
 | 6.2.2 | Users can change their password | 1 | met | The panel's own account page carries a password card (`POST /ui/account/password`, `POST /api/account/password`) beside `acme-proxy admin user passwd`, so an operator with no shell can rotate their own → [Users & Sessions](../operations/webadmin_users.md#changing-your-own-password) |
 | 6.2.3 | Password change requires current and new password | 1 | met | `handlers::mfa::verify_current_password` (`crates/admin/src/webadmin/handlers/mfa.rs`) checks the current password before `admin::users::change_own_password` writes a new one — unconditionally, unlike the second-factor step-up it was split out of, since this requirement has no "nothing yet to protect" exemption. `admin user passwd` still takes only the new one, answering as it does to a process that can already rewrite the row |
@@ -262,12 +279,12 @@ assessed under V9.
 | 6.2.12 | Check against breached passwords | 2 | met | Same corpus: breach-derived (`xato-net`), filtered to the reachable length range |
 | 6.3.1 | Credential-stuffing and brute-force controls | 1 | met | `LoginLimiter` refuses over the limit **before** the 600 000-iteration KDF runs, which makes it an availability control as much as a credential one; an attempt counts from the moment it starts, so a parallel burst cannot outrun it (`crates/admin/src/webadmin/session.rs`) |
 | 6.3.2 | No default accounts | 1 | met | The `admin_users` migration seeds no rows and there is no sign-up page; the first operator is created by `admin user create` on the host |
-| 6.3.3 | MFA or a combination of single factors | 2 | partial | TOTP with recovery codes is implemented and `admin.require_mfa` enforces it for every operator — but it defaults to `false`, so a stock deployment is single-factor. [Hardening](hardening.md#the-web-admin) tells operators to turn it on. For L3 this would need a hardware factor; see [Documented deviations](#documented-deviations) |
-| 6.3.4 | No undocumented pathways; consistent strength | 2 | met | The panel and API share one session layer, and every mutating route passes through `AuthenticatedWrite`, `PageSessionWrite` or `EnrolWrite`. The host CLI is the second pathway and is documented as such |
+| 6.3.3 | MFA or a combination of single factors | 2 | partial | TOTP with recovery codes is implemented and `admin.require_mfa` enforces it for every local and LDAP operator — but it defaults to `false`, so a stock deployment is single-factor. An OpenID Connect operator's factor is the provider's: with `require_mfa` on, startup **refuses** a provider that asserts none (`required_amr` / `required_acr`, `webadmin::check_auth`), so the setting cannot be silently bypassed through a realm. [Hardening](hardening.md#the-web-admin) tells operators to turn it on. For L3 this would need a hardware factor; see [Documented deviations](#documented-deviations) |
+| 6.3.4 | No undocumented pathways; consistent strength | 2 | met | The panel and API share one session layer, and every mutating route passes through `AuthenticatedWrite`, `PageSessionWrite` or `EnrolWrite`. Every realm — local, LDAP, OpenID Connect — ends in the same session-fixation delete and the same `start_session`, and `require_mfa` holds across all three (the OpenID Connect form by the startup refusal in 6.3.3). The host CLI is the second pathway and is documented as such |
 | 6.3.5 | Notify users of suspicious authentication attempts | 3 | met | A completed sign-in from an address not among the operator's recent ones (`admin_users.known_login_ips`, last five), a correct password then a refused second factor, and a per-session second-factor lockout each send an `admin_sign_in` notification to the operator's own `contact_email`, through `[admin.notify]` (`crates/admin/src/webadmin/handlers/session.rs`, `crates/jobs/src/notify/`) |
 | 6.3.6 | Email not used as an authentication factor | 3 | met | It is not |
 | 6.3.7 | Notify after changes to authentication details | 3 | met | A password change, a second-factor enrol/disable, a recovery-code regeneration, a notification-address change and a colleague-admin second-factor reset send an `admin_credential_changed` notification — from the panel and from the **host CLI** alike (`admin user passwd`, `contact`, `totp reset`, `totp recovery-codes`), the CLI queuing the delivery for the running server's worker |
-| 6.3.8 | Valid users not deducible from failed challenges | 3 | met | An unknown username still pays the KDF, against `password::dummy_hash()`, and every failure returns one `invalid_credentials` whatever the real cause (`crates/admin/src/admin/users.rs`) |
+| 6.3.8 | Valid users not deducible from failed challenges | 3 | partial | Local realm: an unknown username still pays the KDF, against `password::dummy_hash()`, and every failure returns one `invalid_credentials` whatever the real cause (`crates/admin/src/admin/users.rs`). An LDAP realm answers identically but not in identical time: an unknown name ends after the service account's search, without the bind a wrong password costs — documented in [Single Sign-On](../operations/webadmin_sso.md#ldap-and-active-directory) |
 | 6.4.1 | Initial passwords and activation codes are random, policy-compliant and short-lived | 1 | n/a | Nothing generates an initial password; the operator supplies one on stdin or in `--password-file` |
 | 6.4.2 | No password hints or secret questions | 1 | met | Neither exists |
 | 6.4.3 | Secure forgotten-password reset that does not bypass MFA | 2 | met | Reset is `admin user passwd` on the host. It revokes every session the operator held and leaves the enrolled factor untouched, so the next sign-in still needs it |
@@ -288,10 +305,10 @@ assessed under V9.
 | 6.6.4 | Rate-limit push notifications | 3 | n/a | No push factor |
 | 6.7.1 | Certificates verifying authentication assertions protected from modification | 3 | met | Account public keys live in `accounts` under the database's file mode; a modified key is a key that no longer verifies its own account's requests |
 | 6.7.2 | Challenge nonce at least 64 bits and unique | 3 | met | 256 bits from `ring::rand::SystemRandom`, unique by primary key and single-use by `rows_affected` (`crates/store/src/nonce.rs`) |
-| 6.8.1 | Identity cannot be spoofed across identity providers | 2 | n/a | No identity provider |
-| 6.8.2 | Signatures on authentication assertions validated | 2 | n/a | No external assertions. The equivalent for ACME JWS is V9.1.1 |
+| 6.8.1 | Identity cannot be spoofed across identity providers | 2 | met | An external operator is the pair *(provider, the provider's stable id)* — `oidc:<name>` with `iss` and `sub`, or `ldap:<name>` with `entryUUID`/`objectGUID` — under a partial unique index, and is **never** linked to an existing operator by username: a provisioned name already held, locally or by another provider, refuses the sign-in (`crates/admin/src/identity/mod.rs`, `a_taken_username_is_refused_never_linked`) |
+| 6.8.2 | Signatures on authentication assertions validated | 2 | met | Every ID token is verified before a claim is read: `RS256`/`ES256` only, `none` and `HS*` refused, the key type pinned to the algorithm, a `crit` header refused, keys taken only from the issuer's own `jwks_uri` over verified TLS (`crates/core/src/jws/jwt.rs`). An LDAP sign-in has no assertion: the proof is a bind as the person |
 | 6.8.3 | SAML assertions processed once | 2 | n/a | No SAML |
-| 6.8.4 | Authentication strength verified from the IdP | 2 | n/a | No identity provider |
+| 6.8.4 | Authentication strength verified from the IdP | 2 | met | `required_acr` and `required_amr` are checked against the ID token's claims, and a step-up sign-in (`?reauth=1`) sends `prompt=login` and `max_age` and refuses a token whose `auth_time` is missing or older than the step-up window (`IdTokenExpectations::max_age`, `crates/core/src/jws/jwt.rs`). With `require_mfa` on, a provider that asserts no factor is refused at startup |
 
 ## V7 Session Management
 
@@ -302,7 +319,7 @@ carries its own signature and its own nonce.
 | --- | --- | --- | --- | --- |
 | 7.1.1 | Documented inactivity timeout and absolute lifetime | 2 | met | `session_ttl_seconds` (12 h, never extended by activity) and `session_idle_timeout_seconds` (1 h) in [Configuration Reference](../configuration/reference.md), restated in [Web Admin](../operations/webadmin.md#authentication) |
 | 7.1.2 | Documented concurrent-session policy | 2 | partial | The behaviour is definite — sessions are unlimited per operator, and `admin session revoke` (`--all`, one operator's, or one session with `--session <id>`) is the lever — but no page states the limit as a policy |
-| 7.1.3 | Federated session coordination documented | 2 | n/a | No federation |
+| 7.1.3 | Federated session coordination documented | 2 | partial | [Single Sign-On](../operations/webadmin_sso.md#how-a-sign-in-becomes-an-operator) documents the coordination that exists: groups are read at sign-in only, there is no back-channel or RP-initiated logout, a session lives its own `session_ttl_seconds` whatever the provider's session does, a refused re-sign-in ends every session the operator holds, and `disable` here ends them at once. What it cannot document is coordination it does not have — see 7.4.2 |
 | 7.2.1 | Session verification at a trusted backend | 1 | met | Every request resolves `hex(SHA-256(token))` against `admin_sessions` and re-checks state, expiry, idleness and the owner's status (`crates/admin/src/webadmin/session.rs`) |
 | 7.2.2 | Dynamically generated tokens, not static secrets | 1 | met | `mint_token` per sign-in; there are no API keys on this listener |
 | 7.2.3 | Reference tokens unique, CSPRNG, ≥ 128 bits | 1 | met | 256 bits from `ring::rand::SystemRandom`, base64url-encoded |
@@ -310,15 +327,15 @@ carries its own signature and its own nonce.
 | 7.3.1 | Inactivity timeout | 2 | met | `session_idle_timeout_seconds`, checked per request and swept by the reaper |
 | 7.3.2 | Absolute maximum session lifetime | 2 | met | `expires_at` is set at creation and never advanced |
 | 7.4.1 | Terminated sessions cannot be reused | 1 | met | Sessions are reference tokens in a table; sign-out deletes the row |
-| 7.4.2 | All sessions terminated when an account is disabled or deleted | 1 | met | `set_status("disabled")` and `set_password` both call `AdminSession::delete_for_user`; the liveness check also refuses a session whose owner is no longer active |
+| 7.4.2 | All sessions terminated when an account is disabled or deleted | 1 | partial | Local: `set_status("disabled")` and `set_password` both call `AdminSession::delete_for_user`, and the liveness check also refuses a session whose owner is no longer active. **External operators**: a person disabled or removed from their groups *at the provider* keeps a live session until it expires or their next sign-in is refused (which ends them all) — there is no back-channel logout. The documented lever is `disable` on this side, which ends them at once |
 | 7.4.3 | Option to terminate other sessions after a factor changes | 2 | met | `confirm_totp_enrolment` and `disable_totp` both call `revoke_other_sessions`; a password change revokes every session unconditionally |
 | 7.4.4 | Visible logout on every authenticated page | 2 | met | A "Sign out" control in `templates/layout.html`, which every page extends |
-| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke` on the host terminates globally (`--all`), one operator's (`--user <u>`), or one session (`--user <u> --session <id>`, the id being the fingerprint the listing prints); the panel's [Operators](../operations/webadmin_users.md#managing-operators) page does the individual form over HTTP — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one, gated by `verify_current_password` |
-| 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`crates/admin/src/webadmin/handlers/mfa.rs`) |
+| 7.4.5 | Administrators can terminate sessions individually or globally | 2 | met | `admin session list`/`revoke` on the host terminates globally (`--all`), one operator's (`--user <u>`), or one session (`--user <u> --session <id>`, the id being the fingerprint the listing prints); the panel's [Operators](../operations/webadmin_users.md#managing-operators) page does the individual form over HTTP — `GET /ui/operators/{username}` lists another operator's sessions and `POST /ui/operators/{username}/sessions/{id}/revoke` ends one, gated by `reprove` (the caller's password, directory password, or a fresh provider re-authentication) |
+| 7.5.1 | Full re-authentication before changing authentication attributes | 2 | met | `check_step_up` demands the password again before any change to an existing second factor, and the module doc explains the blast radius that makes it necessary (`crates/admin/src/webadmin/handlers/mfa.rs`). For an external operator `reprove` asks their realm: a bind as them for LDAP, pinned to their stable id; for OpenID Connect a sign-in under five minutes old that went through `?reauth=1` — `prompt=login`, `max_age`, `auth_time` checked — so a provider answering from its own session does not count |
 | 7.5.2 | Users can view and terminate their own sessions | 2 | met | The account page's Sessions card (`GET /api/account/sessions`, `/ui/account`) lists every one of the caller's own live sessions and terminates one individually (`POST /api/account/sessions/{id}/revoke`) or all at once ("Sign out everywhere") — closing the gap between nothing and everything the panel used to leave → [Sessions](../operations/webadmin_users.md#sessions) |
-| 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`, and the whole `/operators` colleague-management surface by `verify_current_password`, which re-prompts even for an operator with no factor. Certificate revocation and account deletion require at least the `operator` role (`admin_users.role`), but for an operator holding it a live session is still sufficient authority — no password re-prompt on the CA mutations |
-| 7.6.1 | Federated re-authentication behaviour | 2 | n/a | No federation |
-| 7.6.2 | Session creation requires explicit user action | 2 | met | A session exists only after a submitted sign-in form |
+| 7.5.3 | Further authentication before highly sensitive operations | 3 | partial | Second-factor changes are gated by `check_step_up`, and the whole `/operators` colleague-management surface by `reprove`, which re-prompts even for an operator with no factor (or demands a fresh provider re-authentication). Certificate revocation and account deletion require at least the `operator` role (`admin_users.role`), but for an operator holding it a live session is still sufficient authority — no re-prompt on the CA mutations |
+| 7.6.1 | Federated re-authentication behaviour | 2 | partial | A panel session's lifetime is its own (`session_ttl_seconds`, `session_idle_timeout_seconds`), not the provider's, and is documented as such in [Single Sign-On](../operations/webadmin_sso.md#how-a-sign-in-becomes-an-operator). Re-authentication at the provider is demanded where this server needs it — every step-up (`prompt=login`, `max_age`, `auth_time`) — but there is no maximum time between provider authentication events for an ordinary session beyond the session's own 12 h |
+| 7.6.2 | Session creation requires explicit user action | 2 | met | A session exists only after a submitted sign-in form, or an OpenID Connect sign-in begun from the panel's own link: the start passes `check_origin`, so another site cannot navigate a browser into a sign-in its provider would complete silently (`crates/admin/src/webadmin/pages/oidc.rs`, `a_cross_site_start_is_refused_and_writes_nothing`) |
 
 ## V8 Authorization
 
@@ -333,7 +350,7 @@ carries its own signature and its own nonce.
 | 8.2.3 | Field-level access restricted (BOPLA) | 2 | met | Responses are built from explicit serializer functions, never by serializing a row |
 | 8.2.4 | Adaptive controls from contextual attributes | 3 | met | The filter chain evaluates per request, not per session, so a change of address is re-evaluated on the next call |
 | 8.3.1 | Authorization enforced at a trusted service layer | 1 | met | Extractors and middleware, server-side. No decision depends on anything the client sends unsigned |
-| 8.3.2 | Authorization changes applied immediately | 3 | met | Sessions are reference tokens read from the database each request, so a disabled operator or a revoked session stops working on the next call. `filter reload` applies policy without a restart |
+| 8.3.2 | Authorization changes applied immediately | 3 | partial | Sessions are reference tokens read from the database each request, so a disabled operator or a revoked session stops working on the next call, and `filter reload` applies policy without a restart. An **external** operator's role follows their provider's groups only at their next sign-in — the change lands then, and revokes their sessions when it does |
 | 8.3.3 | Access based on the originating subject | 3 | partial | With the `relay` signer, one upstream account is deliberately multiplexed across every local client — that is the feature. The local gates decide, and the upstream sees only this server. See [Documented deviations](#documented-deviations) |
 | 8.4.1 | Cross-tenant controls | 2 | met | Profiles are the tenancy boundary: accounts, orders, nonces and EAB credentials are scoped to one, and a `kid` from another profile fails the prefix check |
 | 8.4.2 | Administrative access uses more than network location | 3 | partial | Password plus optional TOTP plus a session, with the bind address and TLS as further layers, and a per-operator role (`admin`/`operator`/`viewer`) scoping what a session may do. There is no device posture assessment and no contextual risk analysis |
@@ -353,6 +370,56 @@ is a reference token and is assessed under V7.
 | 9.2.2 | Token type checked against the intended purpose | 2 | met | The protected header must carry exactly the fields RFC 8555 §6.2 defines for the request kind; `newAccount` requires a `jwk`, `revokeCert` takes either, and everything else a `kid` — an embedded `jwk` elsewhere is `400 malformed` |
 | 9.2.3 | Audience restriction | 2 | met | The JWS `url` must equal `profile.base_url` plus the request path, byte for byte (RFC 8555 §6.4). A signature captured from one profile does not verify against another |
 | 9.2.4 | Same key across audiences carries an audience restriction | 2 | met | Same mechanism: the audience is in the signed `url`, and the `kid` prefix pins the profile |
+
+## V10 OAuth and OIDC
+
+Applies to the web admin's OpenID Connect sign-in ([Single
+Sign-On](../operations/webadmin_sso.md)), where this server is a
+**confidential client and relying party** and nothing else: the authorization
+code flow with PKCE, an ID token, and at most one userinfo call. It is no
+resource server (no access token is ever accepted), no authorization server and
+no OpenID provider, so those sections have no subject. The relying party is
+hand-rolled on the tree's own JWS code; [ADR
+0015](../dev/adr/0015-external-identity-providers.md) argues why.
+
+| # | Requirement | L | Status | Evidence |
+| --- | --- | --- | --- | --- |
+| 10.1.1 | Tokens sent only to components that need them | 2 | met | Every token stays server-side: the code is redeemed by the admin process, the ID token is verified and discarded, and the access token is used only for the userinfo call (`userinfo_groups`) and never stored or returned. The browser receives only this server's own session cookie (`crates/admin/src/identity/oidc.rs`) |
+| 10.1.2 | Values accepted only from a flow this user agent began | 2 | met | `state`, `nonce` and the PKCE verifier are 256-bit CSPRNG values; the `state` row is consumed by one `DELETE … RETURNING`, the callback must carry the `__Host-` binding cookie its start set (compared in constant time), and the ID token's `nonce` must be the row's (`crates/admin/src/webadmin/pages/oidc.rs`, `a_callback_without_its_browser_cookie_is_refused`, `a_state_answers_one_callback`) |
+| 10.2.1 | CSRF protection for the code flow | 2 | met | Both PKCE `S256` and a single-use, browser-bound `state` |
+| 10.2.2 | Mix-up defence with several authorization servers | 2 | met | Each provider has its own redirect URI (`/ui/login/oidc/<name>/callback`, RFC 9700 §4.4.2's distinct-redirect-URI defence), the `state` row records which provider it was sent to and must match the callback's, and the code is redeemed only at that provider's token endpoint. RFC 9207's `iss` response parameter is not checked |
+| 10.2.3 | Only the required scopes requested | 3 | met | `openid` plus the configured `scopes` (default `profile` and `email`, which carry the default username claim); nothing else is asked for |
+| 10.3.1 | Resource server: audience-restricted access tokens | 2 | n/a | No resource server: no endpoint accepts an access token |
+| 10.3.2 | Resource server: decisions from delegated-authorization claims | 2 | n/a | No resource server: no endpoint accepts an access token |
+| 10.3.3 | Resource server: user identified by non-reassignable claims | 2 | n/a | No resource server: no endpoint accepts an access token |
+| 10.3.4 | Resource server: authentication strength checked from the access token | 2 | n/a | No resource server: no endpoint accepts an access token |
+| 10.3.5 | Resource server: sender-constrained access tokens | 3 | n/a | No resource server: no endpoint accepts an access token |
+| 10.4.1 | Authorization server: redirect URIs matched exactly against an allowlist | 1 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.2 | Authorization server: authorization codes single-use | 1 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.3 | Authorization server: authorization codes short-lived | 1 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.4 | Authorization server: only the grants a client needs | 1 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.5 | Authorization server: refresh-token replay mitigated | 1 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.6 | Authorization server: PKCE required, `plain` refused | 2 | n/a | No authorization server: the panel is a client of one, never one itself. As a client it always sends `S256` |
+| 10.4.7 | Authorization server: dynamic client registration controlled | 2 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.8 | Authorization server: refresh tokens expire absolutely | 2 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.9 | Authorization server: tokens revocable by the user | 2 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.10 | Authorization server: confidential clients authenticated on back-channel requests | 2 | n/a | No authorization server: the panel is a client of one, never one itself. As a client it does authenticate: every token request carries `client_secret_basic`, each half form-encoded per RFC 6749 §2.3.1 |
+| 10.4.11 | Authorization server: only required scopes assigned | 2 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.12 | Authorization server: `response_mode` restricted | 3 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.13 | Authorization server: PAR with the code grant | 3 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.14 | Authorization server: sender-constrained access tokens issued | 3 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.15 | Authorization server: `authorization_details` protected | 3 | n/a | No authorization server: the panel is a client of one, never one itself. |
+| 10.4.16 | Authorization server: strong client authentication required | 3 | n/a | No authorization server: the panel is a client of one, never one itself. As a client it uses `client_secret_basic`; `private_key_jwt` and mTLS are not implemented |
+| 10.5.1 | ID-token replay mitigated | 2 | met | The token's `nonce` must equal the one stored with this sign-in's `state` row, which is consumed by the callback (`crates/core/src/jws/jwt.rs`, `each_claim_is_checked`) |
+| 10.5.2 | User identified by a non-reassignable claim | 2 | met | The operator is keyed on `iss` and `sub`, never on `preferred_username` or `email`, which only name them (`crates/admin/src/identity/mod.rs`) |
+| 10.5.3 | Issuer in metadata matches the configured issuer exactly | 2 | met | The discovery document's `issuer` must equal the configured one byte for byte, every endpoint it names must be `https` (loopback excepted), and every token's `iss` is checked again (`crates/admin/src/identity/oidc.rs`) |
+| 10.5.4 | ID token audience is this client | 2 | met | `aud` must contain `client_id`, and with several audiences `azp` must be present and equal it (`crates/core/src/jws/jwt.rs`) |
+| 10.5.5 | Back-channel logout tokens validated | 2 | n/a | Back-channel logout is not implemented; see 7.1.3 / 7.4.2 for what that costs |
+| 10.6.1 | OpenID provider restricts response types | 2 | n/a | No OpenID provider here. As a client it asks only for `response_type=code` |
+| 10.6.2 | OpenID provider mitigates forced logout | 2 | n/a | No OpenID provider here |
+| 10.7.1 | User consents to each authorization request | 2 | n/a | Consent is the authorization server's to collect |
+| 10.7.2 | Consent prompts are clear | 2 | n/a | Same |
+| 10.7.3 | Consents reviewable and revocable | 2 | n/a | Same |
 
 ## V11 Cryptography
 
@@ -394,24 +461,24 @@ is a reference token and is assessed under V7.
 | 12.1.5 | Encrypted Client Hello | 3 | gap | Not offered by `rustls` in a form this could adopt today |
 | 12.2.1 | TLS for all client connectivity, no fallback | 1 | met | With `server.tls.enabled` the socket speaks TLS instead of cleartext; there is no downgrade path. HTTPS is on the [hardening checklist](hardening.md#before-it-serves-anything) for deployments that terminate elsewhere |
 | 12.2.2 | Publicly trusted certificates on external services | 1 | n/a | This is an internal service by design; its clients trust the CA the operator installed |
-| 12.3.1 | Encrypted protocols for all inbound and outbound connections | 2 | partial | The relay upstream, webhooks and IPAM are HTTPS. `http-01` validation is HTTP **because RFC 8555 §8.3 defines it that way**, SQLite is a local file, not a connection, and a PostgreSQL connection is TLS only when `database.url` asks for it with `sslmode` — the server does not enforce it |
-| 12.3.2 | TLS clients validate certificates | 2 | met | The relay client validates against `webpki-roots` — there, the certificate is the only thing identifying the CA being handed your CSRs. The IPAM clients validate too; `insecure_skip_verify` exists, defaults off, and warns on **every** startup while on |
+| 12.3.1 | Encrypted protocols for all inbound and outbound connections | 2 | partial | The relay upstream, webhooks, IPAM and the OpenID Connect providers are HTTPS, and an LDAP realm is `ldaps://` or StartTLS — a plain `http://` issuer or `ldap://` URL is refused at startup off loopback. `http-01` validation is HTTP **because RFC 8555 §8.3 defines it that way**, SQLite is a local file, not a connection, and a PostgreSQL connection is TLS only when `database.url` asks for it with `sslmode` — the server does not enforce it |
+| 12.3.2 | TLS clients validate certificates | 2 | met | The relay client validates against `webpki-roots` — there, the certificate is the only thing identifying the CA being handed your CSRs. The IPAM clients validate too; `insecure_skip_verify` exists, defaults off, and warns on **every** startup while on. The identity providers and directories validate against `webpki-roots` plus `ca_cert_path`, with no skip-verify option at all |
 | 12.3.3 | TLS between internal HTTP services | 2 | met | Same set. The `http-01` exception above is the protocol's |
-| 12.3.4 | Internal TLS uses trusted certificates | 2 | met | The IPAM clients take a `ca_bundle` so a NetBox behind an internal PKI is trusted specifically rather than by disabling verification (`crates/core/src/config/types/ipam.rs`) |
+| 12.3.4 | Internal TLS uses trusted certificates | 2 | met | The IPAM clients take a `ca_bundle` so a NetBox behind an internal PKI is trusted specifically rather than by disabling verification (`crates/core/src/config/types/ipam.rs`); the identity providers and directories take `ca_cert_path` the same way (`acme_proxy_net::http_client::webpki_tls_config_with_ca`) |
 | 12.3.5 | Strong mutual authentication between internal services | 3 | n/a | Single process; there are no intra-service hops |
 
 ## V13 Configuration
 
 | # | Requirement | L | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| 13.1.1 | All communication needs documented, including user-supplied destinations | 2 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names all three outbound surfaces and says which of them a client can steer |
+| 13.1.1 | All communication needs documented, including user-supplied destinations | 2 | met | [Security Model](index.md#where-this-server-can-be-made-to-talk-to-something-else) names every outbound surface and says which of them a client can steer — the identity providers included, which no client can |
 | 13.1.2 | Documented connection limits and behaviour at the limit | 3 | met | The database pool size, the admission limiter's slots, its queue budget and its deadline are all in [Configuration Reference](../configuration/reference.md), and shedding at the limit is a `503` problem document |
 | 13.1.3 | Documented resource-management strategy per external system | 3 | partial | Timeouts are documented per subsystem and every outbound call has one. **Retry policy** is documented for the job runner but not stated as a policy for the IPAM and webhook clients |
-| 13.1.4 | Documented critical secrets and a rotation schedule | 3 | met | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); [Secret Rotation](rotation.md) gives a recommended interval and the early-rotation triggers for each, with the CA key called out as structural rather than scheduled |
-| 13.2.1 | Authenticated backend communication with non-shared credentials | 2 | partial | The relay upstream authenticates by account key and the IPAM clients by API token, both per-deployment, and PostgreSQL by the role and password in `database.url`. SQLite is a local file governed by file mode, not by a credential |
-| 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`crates/core/src/script_hook.rs`); the systemd unit in [systemd](../getting_started/systemd.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only |
+| 13.1.4 | Documented critical secrets and a rotation schedule | 3 | met | The secrets are named and classified in [Security Model](index.md#what-each-secret-protects); [Secret Rotation](rotation.md) gives a recommended interval and the early-rotation triggers for each, with the CA key called out as structural rather than scheduled — the OpenID Connect client secrets and LDAP service-account passwords included |
+| 13.2.1 | Authenticated backend communication with non-shared credentials | 2 | partial | The relay upstream authenticates by account key and the IPAM clients by API token, both per-deployment, PostgreSQL by the role and password in `database.url`, an OpenID Connect token endpoint by the client's own secret (`client_secret_basic`), and an LDAP realm by a dedicated service account. SQLite is a local file governed by file mode, not by a credential |
+| 13.2.2 | Least privilege for backend accounts | 2 | met | `custom` hooks run with `env_clear()`, a minimal `PATH`, a timeout and `kill_on_drop` (`crates/core/src/script_hook.rs`); the systemd unit in [systemd](../getting_started/systemd.md) runs as a dedicated `acme-proxy` user and the repository `Containerfile` runs as a non-root `acme-proxy` user (uid 1000) owning only `/data`; the IPAM token needs read access only; an LDAP realm's service account needs read access only, and [Security Model](index.md#what-each-secret-protects) says to give it no more |
 | 13.2.3 | No default service credentials | 2 | met | Nothing ships with a credential. Every secret is either operator-supplied or generated on first start |
-| 13.2.4 | Allowlist of external systems the application may contact | 2 | partial | The relay upstream, the IPAM host and the webhook URL are each a single configured destination — an allowlist of one. The `http-01` validator is the exception, and deliberately so |
+| 13.2.4 | Allowlist of external systems the application may contact | 2 | partial | The relay upstream, the IPAM host, the webhook URL, each OpenID Connect issuer and each LDAP URL are a single configured destination — an allowlist of one, though a provider's discovery document names its own endpoints (`https` required). The `http-01` validator is the exception, and deliberately so |
 | 13.2.5 | Server-level allowlist of destinations | 2 | partial | Same. The containment for `http-01` is scheme, port and hop count rather than destination |
 | 13.2.6 | Documented per-connection configuration followed | 3 | met | Each client is built from its own configuration block at startup, so a broken setting stops the server rather than failing every later call |
 | 13.3.1 | A secrets management solution; no secrets in source or artifacts | 2 | partial | No secret is in the source tree or the image. Every secret can come from the environment rather than the file, and the CA key can live in a **PKCS#11 token** — which is the L3 hardware-backed form. There is no vault integration, and the database necessarily holds EAB and TOTP secrets in retrievable form |
@@ -564,9 +631,19 @@ non-feature. It is stated as such in the
 
 ## Gaps
 
-Open shortfalls, worst first. What remains is all L3, recorded only here.
+Open shortfalls, worst first. None is an L1 or L2 gap; the single sign-on
+partials are listed first, then the L3 items, recorded only here.
 
-**Lower-priority L3 items**, recorded here only and with no issue open: no CSP
+**Single sign-on, L1/L2 partials** — V7.1.3, V7.4.2, V7.6.1: no back-channel
+or RP-initiated logout, so the provider's view of a person reaches this server
+only at their next sign-in. Closing it means back-channel logout for OpenID
+Connect and a periodic directory re-check for LDAP; until then the lever is
+`disable`, which is immediate.
+
+**Lower-priority L3 items**, recorded here only and with no issue open: an LDAP
+realm answering an unknown name faster than a wrong password (V6.3.8), an
+external operator's role landing at their next sign-in rather than at once
+(V8.3.2), no CSP
 violation-report endpoint (V3.4.7), no `Cross-Origin-Opener-Policy` (V3.4.8),
 no documented behaviour for browsers lacking security features (V3.1.1,
 V3.7.5), no OCSP stapling as a TLS server (V12.1.4), no Encrypted Client Hello
