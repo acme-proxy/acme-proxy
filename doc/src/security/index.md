@@ -44,6 +44,8 @@ order and putting it in the CSR. See
 | A web admin password | Nothing on its own once a second factor is enrolled. Otherwise: an operator session. | One-way KDF, unreadable. |
 | A web admin session cookie | An operator session until it expires — but **not** the ability to change the second factor, which takes the password again. | Only `hex(SHA-256(token))` is stored. |
 | A NetBox API token | Read access to your IPAM. | Configuration; belongs in the environment variable. |
+| An OpenID Connect client secret (`admin.auth.oidc.<name>.client_secret`) | The ability to redeem an authorization code issued to this panel — which still needs a code the provider issued for a real person's sign-in and that person's browser (PKCE, the bound `state`), so on its own it signs nobody in. | Configuration, the environment, or `client_secret_file`. See [Single Sign-On](../operations/webadmin_sso.md). |
+| An LDAP service-account password (`admin.auth.ldap.<name>.bind_password`) | Whatever that account may read in the directory — usually every person's entry and group. It proves nobody's identity here: every sign-in ends in a bind **as the person**. | Configuration, the environment, or `bind_password_file`. Give the account read access only. |
 
 The CA key is the one whose loss is not recoverable by rotation: every
 certificate it signed stays trusted until the CA itself is distrusted
@@ -118,7 +120,9 @@ See [Audit Trail](../operations/audit.md).
 ## Where this server can be made to talk to something else
 
 Three subsystems make outbound connections on behalf of a client's request,
-which makes each one a request-forgery surface worth knowing about:
+which makes each one a request-forgery surface worth knowing about. A fourth,
+the web admin's [identity providers](../operations/webadmin_sso.md), is listed
+after them because no client can steer it:
 
 - **`http-01` validation follows redirects**, because RFC 8555 requires it.
   Boulder's mitigation — blocking RFC 1918 targets — does not apply here, since
@@ -135,6 +139,12 @@ which makes each one a request-forgery surface worth knowing about:
   writes DNS records. Unlike `http-01` validation, it **validates** the
   upstream's TLS certificate against `webpki-roots`: there, the certificate is
   the only thing identifying the CA being handed your CSRs.
+- **The web admin's identity providers.** An OpenID Connect issuer and an LDAP
+  URL are operator configuration; a person signing in chooses only which one.
+  Every connection is TLS verified against the public roots plus `ca_cert_path`
+  (plain `http://` and `ldap://` are refused off loopback), a discovery
+  document's endpoints must be `https`, no redirect is followed, and each call
+  has the provider's `timeout_ms`.
 
 ## What is out of scope
 

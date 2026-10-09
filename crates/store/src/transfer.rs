@@ -207,6 +207,7 @@ pub const TABLES: &[TableSpec] = &[
             ("pkce_verifier", Text),
             ("created_at", I64),
             ("expires_at", I64),
+            ("max_age", I64),
         ],
     },
     // --- children ---------------------------------------------------------

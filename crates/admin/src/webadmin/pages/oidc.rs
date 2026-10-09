@@ -1,10 +1,13 @@
 //! `/ui/login/oidc/{provider}` and its `/callback` -- signing in through an
 //! OpenID Connect provider (authorization code flow, PKCE `S256`).
 //!
-//! Two unauthenticated `GET`s, and deliberately **without** `check_origin`:
-//! the start is a link on the sign-in page, and the callback is a navigation
-//! the *provider's* site begins, which a browser reports as `cross-site` on
-//! every hop. What stands in for the origin gate:
+//! Two unauthenticated `GET`s. The start passes `check_origin` -- it is a link
+//! on our own sign-in page, and a start another site triggers could be
+//! completed silently by the provider's own session -- and counts against a
+//! per-address bucket of its own (`AdminState::oidc_starts`), since each one
+//! writes a row. The callback deliberately does **not** pass `check_origin`:
+//! it is a navigation the *provider's* site begins, which a browser reports as
+//! `cross-site` on every hop. What stands in for the origin gate there:
 //!
 //! - **`state` is single-use and server-side.** The start writes an
 //!   `admin_oidc_logins` row keyed by `hex(SHA-256(state))`; the callback
@@ -17,6 +20,8 @@
 //!   session -- has a `state` that browser never received the cookie for.
 //! - **The `nonce` binds the ID token to the row**, and the PKCE verifier the
 //!   code to the browser that started it.
+//! - **A step-up's `max_age` is the row's**, not the callback query's, so the
+//!   `auth_time` check cannot be talked out of by the browser.
 //!
 //! The callback answers `200` with a page that refreshes to the panel, not a
 //! `303` -- see `login_complete.html` for the `SameSite=Strict` reason.
@@ -35,7 +40,7 @@ use crate::webadmin::pages::error::PageError;
 use crate::webadmin::pages::session::page;
 use crate::webadmin::pages::templates;
 use crate::webadmin::session::{
-    AdminClientIp, hash_token, log_login, mint_token, named_cookie_value,
+    AdminClientIp, check_origin, hash_token, log_login, mint_token, named_cookie_value,
 };
 use acme_proxy_store::admin_oidc_login::AdminOidcLogin;
 
@@ -46,6 +51,27 @@ pub const FLOW_COOKIE: &str = "__Host-acme_admin_oidc";
 /// complete a second factor there; short enough that an abandoned row is
 /// swept within the hour.
 pub const FLOW_TTL_SECONDS: i64 = 600;
+
+/// The query of a start: `?reauth=1` makes the sign-in a step-up.
+#[derive(Debug, Deserialize, Default)]
+pub struct StartQuery {
+    #[serde(
+        default,
+        deserialize_with = "crate::webadmin::handlers::params::empty_is_absent"
+    )]
+    pub reauth: Option<String>,
+}
+
+impl StartQuery {
+    /// The `max_age` this start asks the provider for: the step-up window when
+    /// `reauth` is set to anything but `0`/`false`, otherwise none.
+    fn max_age(&self) -> Option<i64> {
+        self.reauth
+            .as_deref()
+            .filter(|value| !matches!(*value, "0" | "false"))
+            .map(|_| crate::webadmin::handlers::mfa::STEP_UP_FRESHNESS_SECONDS)
+    }
+}
 
 /// The query a provider calls back with (RFC 6749 §4.1.2, §4.1.2.1).
 #[derive(Debug, Deserialize)]
@@ -60,31 +86,55 @@ pub struct CallbackQuery {
 }
 
 /// `GET /ui/login/oidc/{provider}` -- send the browser to the provider.
+///
+/// `?reauth=1` is the step-up a `reauthentication_required` refusal links to:
+/// the provider is asked to authenticate the person again (`prompt=login`,
+/// `max_age`), and the callback holds the token's `auth_time` to it.
 pub async fn start(
     State(state): State<AdminState>,
     AdminClientIp(client): AdminClientIp,
     Path(name): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<StartQuery>,
 ) -> Result<Response, PageError> {
     let Some(provider) = state.providers.oidc.get(&name) else {
         return Err(PageError::not_found("no such sign-in provider"));
     };
     let realm = provider.key();
 
-    // Not a credential, but each start writes a row: the limiter bounds that
-    // the way it bounds password attempts. The slot is given back uncounted.
+    // The start is a link on our own sign-in page, so a browser reports it
+    // `same-origin` (or `none`, typed in). Another site navigating a browser
+    // here would start a sign-in its provider may complete silently, from its
+    // own session: a panel session nobody asked for.
+    if let Err(error) = check_origin(&headers, &state.config.admin.base_url) {
+        log_login(false, "", &realm, client, "cross_site_start");
+        return refused(&state, &error);
+    }
+
+    // A budget spent by guesses is spent for starts too.
     if let Err(retry_after) = state.logins.begin(client) {
         log_login(false, "", &realm, client, "rate_limited");
         return refused(&state, &AdminError::rate_limited(retry_after));
     }
+    // Not a credential, but each start writes a row, so each start counts
+    // against its own bucket until a completed sign-in clears the address.
+    let started = match state.oidc_starts.begin(client) {
+        Ok(started) => started,
+        Err(retry_after) => {
+            log_login(false, "", &realm, client, "rate_limited");
+            return refused(&state, &AdminError::rate_limited(retry_after));
+        }
+    };
 
     let flow_state = mint_token();
     let binding = mint_token();
     let nonce = mint_token().token;
     let verifier = mint_token().token;
     let redirect_uri = redirect_uri(&state, &name);
+    let max_age = query.max_age();
 
     let authorize = match provider
-        .authorization_url(&redirect_uri, &flow_state.token, &nonce, &verifier)
+        .authorization_url(&redirect_uri, &flow_state.token, &nonce, &verifier, max_age)
         .await
     {
         Ok(url) => url,
@@ -109,10 +159,12 @@ pub async fn start(
         pkce_verifier: verifier,
         created_at: now,
         expires_at: now + FLOW_TTL_SECONDS,
+        max_age,
     }
     .create(&state.database)
     .await
     .map_err(AdminError::from)?;
+    started.failed();
 
     Ok((
         StatusCode::SEE_OTHER,
@@ -186,6 +238,7 @@ pub async fn callback(
             nonce: &login.nonce,
             redirect_uri: &redirect_uri(&state, &name),
             now: acme_proxy_store::nonce::now_secs(),
+            max_age: login.max_age,
         })
         .await;
     let provisioned = match completed {
@@ -222,6 +275,7 @@ pub async fn callback(
     // The provider owns this person's authentication, second factor included
     // (`required_amr` is how an operator insists on one): no local step.
     let signed_in = start_session(&state, client, &headers, user, &realm, None).await?;
+    state.oidc_starts.record_success(client);
     let body = templates::render(
         &state.templates,
         "login_complete.html",

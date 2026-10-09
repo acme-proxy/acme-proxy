@@ -137,6 +137,8 @@ pub struct Callback<'a> {
     /// Exactly the `redirect_uri` the authorization request carried.
     pub redirect_uri: &'a str,
     pub now: i64,
+    /// The `max_age` the authorization request carried: a step-up's.
+    pub max_age: Option<i64>,
 }
 
 impl OidcProvider {
@@ -184,12 +186,19 @@ impl OidcProvider {
 
     /// The URL to send the browser to: the provider's authorization endpoint
     /// with this sign-in's `state`, `nonce` and PKCE challenge.
+    ///
+    /// `max_age` makes it a step-up: `prompt=login` asks the provider to
+    /// authenticate the person again rather than answer from its own session,
+    /// and `max_age` makes the token say when it did (`auth_time`), which
+    /// [`OidcProvider::complete`] then holds it to -- `prompt` alone is a
+    /// request a provider may ignore.
     pub async fn authorization_url(
         &self,
         redirect_uri: &str,
         state: &str,
         nonce: &str,
         pkce_verifier: &str,
+        max_age: Option<i64>,
     ) -> Result<Url, SignInError> {
         let discovery = self.discovery().await?;
         let mut scopes: Vec<&str> = self.config.scopes.iter().map(String::as_str).collect();
@@ -206,6 +215,11 @@ impl OidcProvider {
             .append_pair("nonce", nonce)
             .append_pair("code_challenge", &pkce_challenge(pkce_verifier))
             .append_pair("code_challenge_method", "S256");
+        if let Some(max_age) = max_age {
+            url.query_pairs_mut()
+                .append_pair("prompt", "login")
+                .append_pair("max_age", &max_age.to_string());
+        }
         Ok(url)
     }
 
@@ -238,6 +252,7 @@ impl OidcProvider {
             nonce: callback.nonce,
             now: callback.now,
             leeway_seconds: LEEWAY_SECONDS,
+            max_age: callback.max_age,
         };
         let claims = self.verify(id_token, &discovery, &expected).await?;
         self.check_assurance(&claims)?;
@@ -276,6 +291,15 @@ impl OidcProvider {
                     ),
                 )
             })?;
+        // An address the provider has not verified is whatever the person typed
+        // into their profile: never a name to hand out here (OpenID Connect
+        // Core §5.1, `email_verified`).
+        if self.config.username_claim == "email" && !email_verified(&claims) {
+            return Err(SignInError::rejected(
+                "id_token_invalid",
+                "the username is the `email` claim and `email_verified` is not true",
+            ));
+        }
 
         Ok(ExternalIdentity {
             provider: self.key(),
@@ -460,6 +484,16 @@ pub fn pkce_challenge(verifier: &str) -> String {
     ))
 }
 
+/// Whether `email_verified` is true -- as the boolean §5.1 specifies, or as
+/// the string `"true"` a few providers send instead.
+fn email_verified(claims: &Map<String, Value>) -> bool {
+    match claims.get("email_verified") {
+        Some(Value::Bool(verified)) => *verified,
+        Some(Value::String(verified)) => verified == "true",
+        _ => false,
+    }
+}
+
 /// The strings in a claim that is an array of strings, or a single string.
 /// Anything else -- absent, a number, an object -- is no groups at all.
 fn groups_of(claims: &Map<String, Value>, claim: &str) -> Vec<String> {
@@ -540,6 +574,21 @@ mod tests {
         assert!(!format!("{provider:?}").contains("hunter2"));
         assert_eq!(provider.key(), "oidc:corp");
         assert_eq!(provider.display_name, "corp");
+    }
+
+    #[test]
+    fn email_verified_is_true_only_when_said_so() {
+        let verified = |value: Value| {
+            let claims: Map<String, Value> =
+                serde_json::from_value(serde_json::json!({ "email_verified": value })).unwrap();
+            email_verified(&claims)
+        };
+        assert!(verified(Value::Bool(true)));
+        assert!(verified(Value::String("true".to_string())));
+        assert!(!verified(Value::Bool(false)));
+        assert!(!verified(Value::String("yes".to_string())));
+        assert!(!verified(Value::Null));
+        assert!(!email_verified(&Map::new()));
     }
 
     #[test]

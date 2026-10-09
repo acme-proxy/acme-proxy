@@ -167,6 +167,7 @@ erDiagram
         text nonce
         text pkce_verifier
         integer expires_at "consumed by the callback"
+        integer max_age "a step-up's auth_time bound"
     }
 ```
 
@@ -197,7 +198,9 @@ sentinel that no encoding produces rather than `NULL`: dropping the `NOT NULL`
 would have been a rebuild of a table with two cascading children, for a column
 nothing reads for them. An `admin_oidc_logins` row is consumed by a single
 `DELETE … RETURNING`, which is what makes a `state` value good for one
-callback.
+callback. Its `max_age` is set only for a step-up sign-in, and holds the
+callback to the re-authentication the request asked for: it is in the row, not
+the callback's query, because the query is the browser's to write.
 
 ## Profiles are a database boundary
 

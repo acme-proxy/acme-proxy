@@ -45,6 +45,16 @@ migrated configuration before restarting.
   closes the local realm. `admin user list`/`show` and the Operators page show
   where each operator signs in through, and `admin_login_*` lines carry a
   `realm` field. See the book's Web Admin → Single Sign-On page, and ADR 0015.
+  Hardened before release by a security review against ASVS 5.0 (the book's
+  ASVS page now assesses V10): with `admin.require_mfa` on, startup refuses an
+  OpenID Connect provider that sets neither `required_amr` nor
+  `required_acr`; a step-up for an OpenID Connect operator goes through
+  `/ui/login/oidc/<name>?reauth=1`, which sends `prompt=login` and `max_age`
+  and refuses a token with a stale or missing `auth_time`; a sign-in start
+  another site triggers is refused, and starts are counted per address; an
+  operator their provider now puts in no mapped group loses every session at
+  the refused sign-in; and `username_claim = "email"` requires
+  `email_verified`.
 - **An operator name may contain `@`**, so a UPN or an address from a provider
   is usable as one.
 

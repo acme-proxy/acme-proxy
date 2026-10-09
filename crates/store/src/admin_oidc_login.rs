@@ -33,6 +33,9 @@ pub struct AdminOidcLogin {
     pub created_at: i64,
     /// Epoch seconds; [`AdminOidcLogin::take`] refuses a row at or past it.
     pub expires_at: i64,
+    /// A step-up's demand on the provider: the ID token's `auth_time` may be
+    /// at most this many seconds old. `None` is an ordinary sign-in.
+    pub max_age: Option<i64>,
 }
 
 impl AdminOidcLogin {
@@ -45,6 +48,7 @@ impl AdminOidcLogin {
             pkce_verifier: row.try_get("pkce_verifier")?,
             created_at: row.try_get("created_at")?,
             expires_at: row.try_get("expires_at")?,
+            max_age: row.try_get("max_age")?,
         })
     }
 
@@ -53,8 +57,9 @@ impl AdminOidcLogin {
     pub async fn create(&self, database: &Database) -> Result<(), sqlx::Error> {
         crate::sql::query(
             "INSERT INTO admin_oidc_logins \
-             (state_hash, provider, binding_hash, nonce, pkce_verifier, created_at, expires_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?);",
+             (state_hash, provider, binding_hash, nonce, pkce_verifier, created_at, expires_at, \
+             max_age) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
         )
         .bind(&self.state_hash)
         .bind(&self.provider)
@@ -63,6 +68,7 @@ impl AdminOidcLogin {
         .bind(&self.pkce_verifier)
         .bind(self.created_at)
         .bind(self.expires_at)
+        .bind(self.max_age)
         .execute(database)
         .await?;
         debug!(event = "db_admin_oidc_login_created", outcome = "success", provider = %self.provider, expires_at = self.expires_at);
@@ -83,7 +89,7 @@ impl AdminOidcLogin {
         let row = crate::sql::query(
             "DELETE FROM admin_oidc_logins WHERE state_hash = ? \
              RETURNING state_hash, provider, binding_hash, nonce, pkce_verifier, \
-             created_at, expires_at;",
+             created_at, expires_at, max_age;",
         )
         .bind(state_hash)
         .fetch_optional(database)
@@ -124,6 +130,7 @@ mod tests {
             pkce_verifier: "verifier".to_string(),
             created_at: 0,
             expires_at,
+            max_age: None,
         }
     }
 
@@ -142,6 +149,30 @@ mod tests {
             AdminOidcLogin::take("state", 10, &database).await.unwrap(),
             None
         );
+    }
+
+    /// A step-up's `max_age` comes back with the row; an ordinary sign-in's
+    /// typed null does too.
+    #[tokio::test]
+    async fn a_step_up_keeps_its_max_age() {
+        let database = Database::connect_for_test().await.unwrap();
+        let step_up = AdminOidcLogin {
+            max_age: Some(300),
+            ..login("step-up", 100)
+        };
+        step_up.create(&database).await.unwrap();
+        login("plain", 100).create(&database).await.unwrap();
+
+        let taken = AdminOidcLogin::take("step-up", 10, &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(taken.max_age, Some(300));
+        let plain = AdminOidcLogin::take("plain", 10, &database)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain.max_age, None);
     }
 
     /// An expired sign-in is refused, and deleted all the same.

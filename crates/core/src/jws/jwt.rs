@@ -139,8 +139,13 @@ pub struct IdTokenExpectations<'a> {
     pub nonce: &'a str,
     /// Epoch seconds.
     pub now: i64,
-    /// Clock skew tolerated on `exp`, `iat` and `nbf`, in seconds.
+    /// Clock skew tolerated on `exp`, `iat`, `nbf` and `auth_time`, in seconds.
     pub leeway_seconds: i64,
+    /// The `max_age` the authorization request carried, if any. When set,
+    /// `auth_time` is required and may be at most this many seconds old
+    /// (§3.1.2.1 `max_age`, §3.1.3.7 13) -- what makes a step-up a fresh
+    /// authentication rather than a provider session reused.
+    pub max_age: Option<i64>,
 }
 
 /// Verifies `token` against `keys` and `expected`, answering its claims.
@@ -196,7 +201,7 @@ pub fn verify_id_token(
     Ok(claims)
 }
 
-/// OpenID Connect Core §3.1.3.7, steps 2–5, 9–11, after the signature.
+/// OpenID Connect Core §3.1.3.7, steps 2–5, 9–11 and 13, after the signature.
 fn check_claims(
     claims: &Map<String, Value>,
     expected: &IdTokenExpectations<'_>,
@@ -245,6 +250,14 @@ fn check_claims(
     }
     if time("nbf").is_some_and(|nbf| nbf - expected.leeway_seconds > expected.now) {
         return refuse("nbf", "not yet valid");
+    }
+
+    if let Some(max_age) = expected.max_age {
+        match time("auth_time") {
+            Some(auth_time) if auth_time + max_age + expected.leeway_seconds >= expected.now => {}
+            Some(_) => return refuse("auth_time", "older than the requested max_age"),
+            None => return refuse("auth_time", "missing while max_age was requested"),
+        }
     }
 
     // Not secret -- it travelled through the browser -- so a plain comparison.
@@ -359,6 +372,7 @@ mod tests {
             nonce: "n-0",
             now: NOW,
             leeway_seconds: 60,
+            max_age: None,
         }
     }
 
@@ -587,6 +601,45 @@ mod tests {
             }),
             "nonce"
         );
+    }
+
+    /// With `max_age` requested, `auth_time` must be present and recent
+    /// enough; without it, `auth_time` is not looked at.
+    #[test]
+    fn a_requested_max_age_demands_a_recent_auth_time() {
+        let key = ec_key();
+        let keys = set(&[ec_public(&key, "ec")]);
+        let step_up = IdTokenExpectations {
+            max_age: Some(300),
+            ..expected()
+        };
+        let with_auth_time = |auth_time: Option<i64>| {
+            let mut edited = claims();
+            if let Some(auth_time) = auth_time {
+                edited["auth_time"] = json!(auth_time);
+            }
+            es256(&key, &edited)
+        };
+
+        assert!(verify_id_token(&with_auth_time(Some(NOW - 10)), &keys, &step_up).is_ok());
+        // The leeway forgives a clock a little behind, and no more.
+        assert!(verify_id_token(&with_auth_time(Some(NOW - 359)), &keys, &step_up).is_ok());
+        assert_eq!(
+            claim_error(verify_id_token(
+                &with_auth_time(Some(NOW - 361)),
+                &keys,
+                &step_up
+            )),
+            "auth_time"
+        );
+        assert_eq!(
+            claim_error(verify_id_token(&with_auth_time(None), &keys, &step_up)),
+            "auth_time"
+        );
+
+        // An ordinary sign-in neither needs nor checks it.
+        assert!(verify_id_token(&with_auth_time(None), &keys, &expected()).is_ok());
+        assert!(verify_id_token(&with_auth_time(Some(0)), &keys, &expected()).is_ok());
     }
 
     /// Several audiences are fine when we are the authorized party, and the

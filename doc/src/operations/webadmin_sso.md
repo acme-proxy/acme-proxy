@@ -26,7 +26,8 @@ are they in*. Then, in order:
 
 - **No mapped group, no sign-in.** The groups are compared, case-insensitively,
   with the provider's `roles` table; the highest role any of them grants wins.
-  A person in none is refused, not made a viewer.
+  A person in none is refused, not made a viewer — and if they are already an
+  operator here, every session they hold ends with that refusal.
 - **The stable id is the identity, never the name.** An operator is the pair
   *(provider, the provider's id for the person)*: the OpenID Connect `iss` and
   `sub`, or a directory's `entryUUID` / `objectGUID`. A person renamed at the
@@ -41,6 +42,13 @@ are they in*. Then, in order:
 - **The last admin is protected.** A sign-in whose groups would demote the only
   `admin` is refused (`last_admin`) rather than letting them in with a role the
   provider no longer grants. Promote somebody else first.
+
+**Groups are read at sign-in, and only then.** There is no back-channel
+logout and no periodic re-check, so a person removed from their groups, or
+disabled at the provider, keeps a session they already hold until it expires
+(`admin.session_ttl_seconds`, `admin.session_idle_timeout_seconds`) or until
+their next sign-in is refused. To cut somebody off now, **disable** them on the
+Operators page or with `admin user disable`, which ends their sessions at once.
 
 A role change and a creation are recorded in the [audit trail](audit.md) as
 `operator_role_changed` / `operator_created`, with `actor_kind = system` and
@@ -62,14 +70,21 @@ operator, with these differences:
   operator enrols and uses a local TOTP factor exactly as a local operator does,
   and `admin.require_mfa` applies to them. An OpenID Connect operator's second
   factor is the provider's: they cannot enrol a local one, and you insist on one
-  with [`required_amr`](#reference-openid-connect).
+  with [`required_amr`](#reference-openid-connect). With `admin.require_mfa`
+  on, startup refuses an OpenID Connect provider that sets neither
+  `required_amr` nor `required_acr`, since its operators would sign in
+  single-factor.
 - **Re-proving themselves** for a sensitive change (managing a colleague,
   changing their notification address, their second factor):
   - an LDAP operator types their **directory** password, which is checked by a
     bind as them;
   - an OpenID Connect operator has nothing to type: a sign-in **less than five
     minutes old** stands in. Past that, the change is refused with
-    `reauthentication_required`; sign out and back in through the provider.
+    `reauthentication_required`, naming `/ui/login/oidc/<name>?reauth=1`. That
+    sign-in asks the provider to authenticate the person again
+    (`prompt=login`, `max_age=300`) and refuses a token whose `auth_time` is
+    older than five minutes or absent, so a provider answering silently from
+    its own session does not count as re-proving anybody.
 
 Disabling, deleting, setting the contact address and revoking sessions work as
 usual. The **Operators** page and `admin user list` show where each operator
@@ -153,6 +168,14 @@ The directory is asked in this order:
   `group_search_base` — a search for the groups that list them.
 - Last, a **bind as the person** with the typed password. Only this step proves
   anything.
+
+The sign-in limiter (`admin.login_max_attempts`) counts by client address, so
+it does not stand in for the **directory's own lockout policy**: a guesser
+spread across many addresses still reaches the directory, and a directory that
+locks accounts after a few failures can be made to lock an operator out. Keep
+that policy, and alert on `admin_login_failed` with `realm = "ldap:<name>"`.
+An unknown name is answered without a bind, slightly faster than a wrong
+password; both answer the client identically.
 
 The connection must be encrypted: `ldaps://`, or `ldap://` with `start_tls`.
 Plain `ldap://` is refused at startup unless the host is the loopback address,
@@ -277,7 +300,11 @@ only for an extra scope (`groups`).
 **`username_claim`** (`String`) — *Default: `"preferred_username"` | Env: `ACME_PROXY_ADMIN__AUTH__OIDC__<NAME>__USERNAME_CLAIM`*
 
 The ID-token claim the operator's name comes from. Lowercased; it may hold
-letters, digits, `-`, `_`, `.` and `@`. A token without it is refused.
+letters, digits, `-`, `_`, `.` and `@`. A token without it is refused. Pick a
+claim the provider **assigns**, not one its users can edit in their own
+profile: names are first come, first served across every realm, so a
+self-chosen name can take one a real operator would have needed. `email` is
+accepted only with `email_verified` true.
 
 **`groups_claim`** (`String`) — *Default: `"groups"` | Env: `ACME_PROXY_ADMIN__AUTH__OIDC__<NAME>__GROUPS_CLAIM`*
 

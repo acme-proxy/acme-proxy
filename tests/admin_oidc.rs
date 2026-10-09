@@ -275,6 +275,8 @@ struct Flow {
     redirect_uri: String,
     /// The `__Host-acme_admin_oidc` value the start set.
     binding: String,
+    /// The whole authorization request, for what the fields above leave out.
+    query: HashMap<String, String>,
 }
 
 async fn app_with(
@@ -322,7 +324,12 @@ fn cookie_named(response: &Response, name: &str) -> Option<String> {
 
 /// `GET /ui/login/oidc/corp`, read the way a browser would follow it.
 async fn start(app: &Router) -> Flow {
-    let response = get(app, "/ui/login/oidc/corp", &[]).await;
+    start_at(app, "/ui/login/oidc/corp").await
+}
+
+/// [`start`] at `path` -- the step-up's `?reauth=1`, for one.
+async fn start_at(app: &Router, path: &str) -> Flow {
+    let response = get(app, path, &[]).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let flow_cookie = set_cookies(&response)
         .into_iter()
@@ -344,6 +351,7 @@ async fn start(app: &Router) -> Flow {
         challenge: query["code_challenge"].clone(),
         redirect_uri: query["redirect_uri"].clone(),
         binding: cookie_named(&response, "__Host-acme_admin_oidc").unwrap(),
+        query,
     }
 }
 
@@ -870,6 +878,174 @@ async fn a_token_response_without_an_id_token_is_refused() {
         sign_in(&app, &idp, "bob", &["staff"]).await.status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// The `reauthentication_required` step-up: `?reauth=1` asks the provider to
+/// authenticate the person afresh, and the callback holds the token's
+/// `auth_time` to the `max_age` it asked for -- a provider answering from its
+/// own session, with an old `auth_time` or none, does not make a step-up.
+#[tokio::test]
+async fn a_reauth_sign_in_demands_a_fresh_authentication() {
+    let idp = MockIdp::start().await;
+    let (app, _database) = app_with(&idp, |_| {}).await;
+
+    let ordinary = start(&app).await;
+    assert!(!ordinary.query.contains_key("prompt"));
+    assert!(!ordinary.query.contains_key("max_age"));
+    assert!(
+        !start_at(&app, "/ui/login/oidc/corp?reauth=")
+            .await
+            .query
+            .contains_key("max_age"),
+        "a blank reauth is absent"
+    );
+
+    let now = acme_proxy_store::nonce::now_secs();
+    for (code, auth_time, accepted) in [
+        ("fresh", Some(now - 5), true),
+        ("stale", Some(now - 3_600), false),
+        ("missing", None, false),
+    ] {
+        let flow = start_at(&app, "/ui/login/oidc/corp?reauth=1").await;
+        assert_eq!(flow.query["prompt"], "login");
+        assert_eq!(flow.query["max_age"], "300");
+        let mut claims = claims(&idp, &flow, "bob", &["acme-admins"]);
+        if let Some(auth_time) = auth_time {
+            claims["auth_time"] = json!(auth_time);
+        }
+        idp.authorize(code, &flow, claims);
+        let status = callback(&app, &flow, code).await.status();
+        if accepted {
+            assert_eq!(status, StatusCode::OK, "{code}");
+        } else {
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{code}");
+        }
+    }
+}
+
+/// The step-up refusal tells an OpenID Connect operator where to go.
+#[tokio::test]
+async fn a_stale_step_up_points_at_the_reauth_start() {
+    let idp = MockIdp::start().await;
+    let (app, database) = app_with(&idp, |_| {}).await;
+    let admin = session_of(&app, &sign_in(&app, &idp, "boss", &["acme-admins"]).await).await;
+    AdminUser::create("dave", "unused", Some(AdminRole::Viewer), &database)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE admin_sessions SET created_at = created_at - 600;")
+        .execute(database.raw_pool())
+        .await
+        .unwrap();
+    let stale = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/dave/disable",
+        Some(&admin),
+        Some(json!({"password": ""})),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::FORBIDDEN);
+    let body = json_body(stale).await;
+    assert_eq!(body["error"], "reauthentication_required");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("/ui/login/oidc/corp?reauth=1"),
+        "{body}"
+    );
+}
+
+/// Another site cannot start a sign-in for a browser: its provider could
+/// finish it silently, from its own session.
+#[tokio::test]
+async fn a_cross_site_start_is_refused_and_writes_nothing() {
+    let idp = MockIdp::start().await;
+    let (app, database) = app_with(&idp, |_| {}).await;
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/ui/login/oidc/corp")
+        .header("sec-fetch-site", "cross-site")
+        .body(Body::empty())
+        .unwrap();
+    let refused = send_from(&app, request, "127.0.0.1:40000").await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert!(refused.headers().get(header::LOCATION).is_none());
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_oidc_logins;")
+        .fetch_one(database.raw_pool())
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    // Its own link, and a typed-in address, still start.
+    for site in ["same-origin", "none"] {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/ui/login/oidc/corp")
+            .header("sec-fetch-site", site)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            send_from(&app, request, "127.0.0.1:40000").await.status(),
+            StatusCode::SEE_OTHER,
+            "{site}"
+        );
+    }
+}
+
+/// Every start writes a row, so starts that never finish are bounded per
+/// address; a completed sign-in clears the count.
+#[tokio::test]
+async fn abandoned_starts_are_bounded_and_a_sign_in_clears_them() {
+    let idp = MockIdp::start().await;
+    let mut config = admin_config();
+    config.admin.login_max_attempts = 3;
+    config
+        .admin
+        .auth
+        .oidc
+        .insert("corp".to_string(), idp.config());
+    let (app, _database) = test_admin_app(config).await;
+
+    start(&app).await;
+    start(&app).await;
+    let flow = start(&app).await;
+    assert_eq!(
+        get(&app, "/ui/login/oidc/corp", &[]).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // The third start's own callback still completes, and frees the address.
+    idp.authorize("code-1", &flow, claims(&idp, &flow, "bob", &["staff"]));
+    assert_eq!(
+        callback(&app, &flow, "code-1").await.status(),
+        StatusCode::OK
+    );
+    start(&app).await;
+}
+
+/// A username taken from `email` must be an address the provider verified.
+#[tokio::test]
+async fn an_unverified_email_is_not_a_username() {
+    let idp = MockIdp::start().await;
+    let (app, _database) = app_with(&idp, |provider| {
+        provider.username_claim = "email".to_string();
+    })
+    .await;
+    for (code, verified, status) in [
+        ("unverified", json!(false), StatusCode::UNAUTHORIZED),
+        ("absent", Value::Null, StatusCode::UNAUTHORIZED),
+        ("verified", json!(true), StatusCode::OK),
+    ] {
+        let flow = start(&app).await;
+        let mut claims = claims(&idp, &flow, "bob", &["staff"]);
+        claims["email"] = json!("bob@example.com");
+        if !verified.is_null() {
+            claims["email_verified"] = verified;
+        }
+        idp.authorize(code, &flow, claims);
+        assert_eq!(callback(&app, &flow, code).await.status(), status, "{code}");
+    }
 }
 
 /// The OpenID Connect routes share the sign-in limiter: refused callbacks

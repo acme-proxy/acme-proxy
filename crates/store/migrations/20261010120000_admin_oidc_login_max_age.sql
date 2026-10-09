@@ -1,0 +1,18 @@
+-- The re-authentication an OpenID Connect sign-in in flight asked its provider
+-- for. NULL is an ordinary sign-in, which the provider may answer from its own
+-- single sign-on session without asking the person anything.
+--
+-- Set (in seconds) when the sign-in is a step-up -- the operator was refused
+-- `reauthentication_required` and came back through `?reauth=1`. The request
+-- then carried `prompt=login` and `max_age`, and the callback refuses an ID
+-- token whose `auth_time` is older than this many seconds (OpenID Connect Core
+-- §3.1.3.7, step 13): without it, a step-up was satisfied by a silent
+-- round trip through the provider, with no factor presented (ASVS 5.0 V6.8.4,
+-- V7.5.3).
+--
+-- In the row rather than in the browser for the reason the nonce is: the
+-- callback must hold the browser to what *this server* asked for, and the
+-- query string of the callback is the browser's to write.
+--
+-- A plain ADD COLUMN, no constraint, so no rebuild.
+ALTER TABLE admin_oidc_logins ADD COLUMN max_age INTEGER;
