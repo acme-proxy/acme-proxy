@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. One exception stands, the web admin's login limiter, for as long as
-one admin process is the supported topology.
+Accepted. Its one exception, the web admin's login limiter, was closed in 0.7:
+the counter is the `admin_login_buckets` table, so several admin processes are
+a supported topology.
 
 ## Context
 
@@ -66,9 +67,11 @@ a latent bug into a routine one.
 - `crl_number` never goes backwards (RFC 5280 §5.2.3). A client that meets a
   lower number than it has cached keeps the cached CRL, which means it keeps
   trusting what was revoked.
-- `admin.login_max_attempts` is still counted in memory, per process. A second
-  admin process would get its own brute-force budget, which is why one admin
-  process is the supported topology.
+- `admin.login_max_attempts` is counted in `admin_login_buckets`, one row per
+  scope and client address. Reserving an attempt is one conditional `UPDATE`,
+  so a burst spread over several admin processes gets no more guesses than one
+  process would give it. It was the last thing counted in memory, and the
+  reason one admin process used to be the supported topology.
 
 The CRL store's concurrency rules are in `crates/signer/src/local_ca/crl.rs`.
 
@@ -79,5 +82,9 @@ The CRL store's concurrency rules are in `crates/signer/src/local_ca/crl.rs`.
   (`crates/signer/src/local_ca/mod.rs`).
 - `tests/crl.rs` and `tests/roles.rs`.
 - `tests/http01_responder.rs`.
+- `a_concurrent_burst_gets_exactly_the_limit`
+  (`crates/store/src/admin_login_bucket.rs`) and
+  `two_limiters_over_one_database_share_one_budget`
+  (`crates/admin/src/webadmin/session.rs`).
 - `an_unknown_profile_or_backend_is_retried_within_its_budget`
   (`crates/jobs/src/notify/job.rs`).

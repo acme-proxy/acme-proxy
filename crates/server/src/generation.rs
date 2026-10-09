@@ -32,8 +32,6 @@ pub(crate) struct Generation {
     pub(super) job_registry: acme_proxy_jobs::jobs::JobRegistry,
     pub(super) tls: Option<tls::TlsSettings>,
     pub(super) admin_tls: Option<tls::TlsSettings>,
-    /// The limiter this generation ended up with, for the next one to carry.
-    pub(super) logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
 }
 
 /// Builds one generation: profiles, both routers, the job registry, the audit
@@ -52,8 +50,8 @@ pub(crate) struct Generation {
 /// Whether the panel is part of this generation is read from `admin.enabled`
 /// rather than from whether a socket exists. It used to be the latter, which
 /// was the same answer while the key was frozen and is the wrong one now that a
-/// reload can turn the panel on: the app, its TLS, its session sweep and its
-/// login limiter all have to appear in the generation *before* there is a
+/// reload can turn the panel on: the app, its TLS and its session sweep all
+/// have to appear in the generation *before* there is a
 /// listener to serve them.
 pub(crate) fn build_generation(
     roles: crate::RoleSet,
@@ -61,11 +59,10 @@ pub(crate) fn build_generation(
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
     parts: &GenerationParts,
-    previous_logins: Option<&acme_proxy_admin::webadmin::LoginLimiter>,
 ) -> anyhow::Result<Generation> {
     // A process that does not run the `admin` role binds no admin socket
-    // (`sockets::bind_admin`), so building its router, its TLS and its login
-    // limiter would be work for a listener that will never exist — and it would
+    // (`sockets::bind_admin`), so building its router and its TLS would be
+    // work for a listener that will never exist — and it would
     // make `[admin]` settings this process never serves able to fail its
     // reloads.
     let admin_enabled = config.admin.enabled && roles.has(crate::ProcessRole::Admin);
@@ -123,8 +120,8 @@ pub(crate) fn build_generation(
     // needs the same profiles (revoking an order resolves that order's own
     // signer), and `build_admin_app` takes a slice precisely so the ordering
     // is a signature constraint rather than a borrow error to rediscover.
-    let (admin_app, logins) = match admin_enabled {
-        false => (None, None),
+    let admin_app = match admin_enabled {
+        false => None,
         true => {
             // Built again, although `check_config` already did: that call is
             // the refusal, this one is the policy the router keeps.
@@ -141,7 +138,7 @@ pub(crate) fn build_generation(
             .inspect_err(|error| {
                 error!(event = "admin_auth_init_failed", outcome = "failure", error = %error);
             })?;
-            let (router, logins) = acme_proxy_admin::webadmin::build_admin_app_with_logins(
+            let router = acme_proxy_admin::webadmin::build_admin_app_from_parts(
                 database.clone(),
                 config.clone(),
                 &profiles,
@@ -150,9 +147,8 @@ pub(crate) fn build_generation(
                 assembly.jobs.clone(),
                 policy,
                 Arc::new(providers),
-                previous_logins,
             );
-            (Some(router), Some(logins))
+            Some(router)
         }
     };
     let acme_app = build_app(
@@ -171,7 +167,6 @@ pub(crate) fn build_generation(
         job_registry,
         tls,
         admin_tls,
-        logins,
     })
 }
 
@@ -413,6 +408,7 @@ fn job_registry_for(
             database.clone(),
             Duration::from_secs(config.admin.session_idle_timeout_seconds),
             config.admin.session_ttl_seconds,
+            Duration::from_secs(config.admin.login_window_seconds),
         ));
     }
     for sweep in sweeps {
@@ -436,7 +432,6 @@ pub(super) struct Reloaded {
     pub(super) report: crate::reload::ReloadReport,
     pub(super) config: Arc<Config>,
     pub(super) resolved: Vec<acme_proxy_core::config::ProfileConfig>,
-    pub(super) logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
     /// Each socket this reload bound, with the address it landed on. Announced
     /// by the supervisor rather than here, because saying a listener is up
     /// reaches the database (the panel's "nobody can sign in yet" warning) and
@@ -500,7 +495,6 @@ pub(super) fn prepare_reload(
     config: &Arc<Config>,
     resolved: &[acme_proxy_core::config::ProfileConfig],
     assembly: &Assembly,
-    logins: Option<&acme_proxy_admin::webadmin::LoginLimiter>,
 ) -> Result<Prepared, crate::reload::ReloadError> {
     use crate::reload::{Applied, ReloadError, check_frozen};
 
@@ -565,7 +559,7 @@ pub(super) fn prepare_reload(
     let parts = assembly
         .build_parts(&next_resolved, &next)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
-    let generation = build_generation(roles, &next, &next_resolved, assembly, &parts, logins)
+    let generation = build_generation(roles, &next, &next_resolved, assembly, &parts)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
 
     // Compared by name against what is running, not against what is written
@@ -659,7 +653,6 @@ pub(super) fn publish_reload(
         logging_reloaded,
         duration: started.elapsed(),
     };
-    let next_logins = built.logins.clone();
 
     assembly.publish_notifiers(parts.dispatchers);
     // The set the *next* reload compares against, and the point at which the
@@ -730,7 +723,6 @@ pub(super) fn publish_reload(
         report,
         config: next,
         resolved: next_resolved,
-        logins: next_logins,
         opened,
         mounted,
     }

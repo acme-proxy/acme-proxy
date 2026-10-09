@@ -52,7 +52,6 @@ pub(super) async fn supervise_reloads(
     mut resolved: Vec<acme_proxy_core::config::ProfileConfig>,
     assembly: Arc<Assembly>,
     cells: Cells,
-    mut logins: Option<Arc<acme_proxy_admin::webadmin::LoginLimiter>>,
 ) {
     let mut generation: u64 = 1;
 
@@ -77,9 +76,8 @@ pub(super) async fn supervise_reloads(
             let config = config.clone();
             let resolved = resolved.clone();
             let assembly = assembly.clone();
-            let logins = logins.clone();
             tokio::task::spawn_blocking(move || {
-                prepare_reload(roles, &config, &resolved, &assembly, logins.as_deref())
+                prepare_reload(roles, &config, &resolved, &assembly)
             })
             .await
             .unwrap_or_else(|error| {
@@ -114,7 +112,6 @@ pub(super) async fn supervise_reloads(
                 let report = reloaded.report;
                 config = reloaded.config;
                 resolved = reloaded.resolved;
-                logins = reloaded.logins;
                 generation = report.generation;
                 info!(
                     event = "server_config_reloaded",

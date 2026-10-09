@@ -243,6 +243,11 @@ peer listed in [`admin.filter.trusted_proxies`](#adminfilter) — never from
 `filter.trusted_proxies`, which governs the ACME listener. With no trusted
 proxy listed, the limiter behind a reverse proxy counts the proxy.
 
+Counted in the database (`admin_login_buckets`), so every admin process over
+one database shares one budget per address, and neither a restart nor a
+reload resets it. If that table cannot be read, a sign-in is refused (`500`)
+rather than let through uncounted.
+
 **`require_mfa`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_ADMIN__REQUIRE_MFA`*
 
 Require a second factor (TOTP) of every operator. What this changes is the

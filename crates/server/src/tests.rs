@@ -775,7 +775,6 @@ async fn a_generation_registers_the_sweeps_its_configuration_asks_for() {
             &resolved,
             &assembly,
             &parts,
-            None,
         )
         .unwrap();
         let kinds = generation.job_registry.kinds();

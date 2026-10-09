@@ -169,6 +169,13 @@ erDiagram
         integer expires_at "consumed by the callback"
         integer max_age "a step-up's auth_time bound"
     }
+    admin_login_buckets {
+        text scope PK "password or oidc_start"
+        text bucket PK "an IPv4 address or an IPv6 /64"
+        integer failures
+        integer in_flight "attempts begun, not yet settled"
+        integer window_started "swept once the window runs out"
+    }
 ```
 
 The diagram has three clusters, and **the two things worth noticing are the
@@ -188,6 +195,9 @@ edges that are not drawn**:
   row is a client key that asks it for certificates. They are different
   populations and the schema says so. `admin_oidc_logins` sits beside it, joined
   to nothing: an OpenID Connect sign-in in flight belongs to no operator yet.
+  So does `admin_login_buckets`, the sign-in limiter's counters, keyed by a
+  client address rather than by anybody's account, and in the database so
+  that every admin process spends one budget.
 
 An operator a provider vouches for ([Single
 Sign-On](../operations/webadmin_sso.md)) is an `admin_users` row with

@@ -112,17 +112,17 @@ pub async fn start(
     }
 
     // A budget spent by guesses is spent for starts too.
-    if let Err(retry_after) = state.logins.begin(client) {
-        log_login(false, "", &realm, client, "rate_limited");
-        return refused(&state, &AdminError::rate_limited(retry_after));
+    if let Err(refusal) = state.logins.begin(client).await {
+        log_login(false, "", &realm, client, refusal.reason());
+        return refused(&state, &AdminError::from(refusal));
     }
     // Not a credential, but each start writes a row, so each start counts
     // against its own bucket until a completed sign-in clears the address.
-    let started = match state.oidc_starts.begin(client) {
+    let started = match state.oidc_starts.begin(client).await {
         Ok(started) => started,
-        Err(retry_after) => {
-            log_login(false, "", &realm, client, "rate_limited");
-            return refused(&state, &AdminError::rate_limited(retry_after));
+        Err(refusal) => {
+            log_login(false, "", &realm, client, refusal.reason());
+            return refused(&state, &AdminError::from(refusal));
         }
     };
 
@@ -164,7 +164,7 @@ pub async fn start(
     .create(&state.database)
     .await
     .map_err(AdminError::from)?;
-    started.failed();
+    started.failed().await;
 
     Ok((
         StatusCode::SEE_OTHER,
@@ -190,11 +190,11 @@ pub async fn callback(
     };
     let realm = provider.key();
 
-    let attempt = match state.logins.begin(client) {
+    let attempt = match state.logins.begin(client).await {
         Ok(attempt) => attempt,
-        Err(retry_after) => {
-            log_login(false, "", &realm, client, "rate_limited");
-            return refused(&state, &AdminError::rate_limited(retry_after));
+        Err(refusal) => {
+            log_login(false, "", &realm, client, refusal.reason());
+            return refused(&state, &AdminError::from(refusal));
         }
     };
 
@@ -221,7 +221,7 @@ pub async fn callback(
             })
     });
     let (Some(login), true, Some(code), None) = (login, bound, &query.code, &query.error) else {
-        attempt.failed();
+        attempt.failed().await;
         let reason = if query.error.is_some() {
             "provider_refused"
         } else {
@@ -266,7 +266,7 @@ pub async fn callback(
             return refused(&state, &AdminError::provider_unavailable());
         }
         Err((username, Refusal::Refused(reason))) => {
-            attempt.failed();
+            attempt.failed().await;
             log_login(false, &username, &realm, client, reason);
             return refused(&state, &AdminError::invalid_credentials());
         }
@@ -275,7 +275,7 @@ pub async fn callback(
     // The provider owns this person's authentication, second factor included
     // (`required_amr` is how an operator insists on one): no local step.
     let signed_in = start_session(&state, client, &headers, user, &realm, None).await?;
-    state.oidc_starts.record_success(client);
+    state.oidc_starts.record_success(client).await;
     let body = templates::render(
         &state.templates,
         "login_complete.html",

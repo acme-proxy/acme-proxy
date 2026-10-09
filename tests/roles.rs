@@ -12,8 +12,8 @@
 //! cross between them. That database is a **file-backed** `SQLite`, or a
 //! PostgreSQL schema when `TEST_POSTGRES_URL` is set ([`TempDir::shared`]) —
 //! CI's `postgres` job runs this suite there, since several processes over one
-//! server is the deployment that backend exists for. The five claims here are the ones a split
-//! deployment rests on:
+//! server is the deployment that backend exists for. The claims here are the
+//! ones a split, or replicated, deployment rests on:
 //!
 //! 1. An `acme` process serves ACME and an `admin` process serves the panel,
 //!    each answering `404` on the other's routes — the split is real, not a
@@ -30,6 +30,8 @@
 //!    start, serve the CA's certificate and its CRL, and record revocations,
 //!    with no key file to read — and one that finds no CA at all refuses,
 //!    naming `acme-proxy init`. The worker signs what they queue.
+//! 6. **Several admin processes share one login budget**: the brute-force
+//!    counter is a database row, not process memory.
 //!
 //! Every test that starts a process runs `acme-proxy init` first, which is the
 //! documented topology: the schema and the first-run material belong to one
@@ -95,6 +97,7 @@ fn write_config_at(dir: &TempDir, into: &TempDir, key_path: &str) {
 
         [admin]
         enabled = true
+        login_max_attempts = 2
 
         [profiles.default]
         signer.local_ca.cert_path = "{ca}.pem"
@@ -197,6 +200,26 @@ async fn status_of(addr: std::net::SocketAddr, path: &str) -> u16 {
         .await
         .expect("the port must accept");
     let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let head = String::from_utf8_lossy(&response);
+    head.split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status line in: {head}"))
+}
+
+/// A raw `POST` of a JSON body, returning the status line's code.
+async fn post_json(addr: std::net::SocketAddr, path: &str, body: &str) -> u16 {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("the port must accept");
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
@@ -671,4 +694,33 @@ async fn settled(database: &Database, id: &str) -> acme_proxy_store::order::Orde
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("order {id} never left `processing`");
+}
+
+/// **Several admin processes share one brute-force budget.** The login counter
+/// is a database row, so guesses spread over two admin processes behind one
+/// load balancer spend `admin.login_max_attempts` once, not once each — the
+/// property that used to make one admin process the only supported topology.
+#[tokio::test]
+async fn two_admin_processes_share_one_login_budget() {
+    let dir = TempDir::shared("roles-admin-budget").await;
+    write_config(&dir);
+    let config = load_from(&dir);
+    initialise(&config).await;
+
+    let first = start(&config, RoleSet::parse(Some("admin")).unwrap()).await;
+    let second = start(&config, RoleSet::parse(Some("admin")).unwrap()).await;
+    let (first_addr, second_addr) = (first.admin.unwrap(), second.admin.unwrap());
+
+    // An unknown operator is a failure like a wrong password, and both
+    // processes see the same client address: loopback.
+    let guess = r#"{"username":"mallory","password":"guess"}"#;
+    assert_eq!(post_json(first_addr, "/api/session", guess).await, 401);
+    assert_eq!(post_json(second_addr, "/api/session", guess).await, 401);
+
+    // The budget of two is spent, on both processes.
+    assert_eq!(post_json(first_addr, "/api/session", guess).await, 429);
+    assert_eq!(post_json(second_addr, "/api/session", guess).await, 429);
+
+    second.stop().await;
+    first.stop().await;
 }

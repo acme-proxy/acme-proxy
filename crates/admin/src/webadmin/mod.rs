@@ -58,13 +58,14 @@ pub struct AdminState {
     pub config: Arc<Config>,
     /// Keyed by profile name — the lookup `orders.profile` needs.
     pub profiles: Arc<HashMap<String, Arc<Profile>>>,
+    /// Failed sign-ins per client address, counted in the database so every
+    /// admin process shares one budget.
     pub logins: Arc<LoginLimiter>,
     /// Starts of an OpenID Connect sign-in, per address, under the same limits
     /// as [`AdminState::logins`] but a bucket of their own: every start writes
     /// an `admin_oidc_logins` row, so each one counts until a completed
     /// sign-in clears the address. Kept apart so a start never spends the
-    /// budget its own callback needs. Not carried across a reload: it bounds
-    /// row writes, not guesses at a credential.
+    /// budget its own callback needs.
     pub oidc_starts: Arc<LoginLimiter>,
     /// The `/ui` templates, embedded defaults overlaid by
     /// `admin.template_dir`. Built once: the loader reads a file per template
@@ -105,45 +106,26 @@ impl AdminState {
         jobs: acme_proxy_jobs::jobs::JobQueue,
         providers: Arc<crate::identity::Providers>,
     ) -> Self {
-        Self::with_logins(
-            database, config, profiles, audit, notifiers, jobs, providers, None,
-        )
-    }
-
-    /// [`new`](Self::new), carrying the previous generation's login counters.
-    ///
-    /// Only a configuration reload passes `Some`: every other caller is building
-    /// the first generation, where there is nothing to carry. See
-    /// [`LoginLimiter::rebuilt`] for why the counters move but the limits do not.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_logins(
-        database: Arc<Database>,
-        config: Arc<Config>,
-        profiles: &[Arc<Profile>],
-        audit: Arc<acme_proxy_jobs::auditor::Auditor>,
-        notifiers: acme_proxy_jobs::notify::Notifiers,
-        jobs: acme_proxy_jobs::jobs::JobQueue,
-        providers: Arc<crate::identity::Providers>,
-        previous_logins: Option<&LoginLimiter>,
-    ) -> Self {
         let by_name = profiles
             .iter()
             .map(|profile| (profile.name.clone(), profile.clone()))
             .collect();
         let max_attempts = config.admin.login_max_attempts;
         let window = config.admin.login_window_seconds;
-        let logins = match previous_logins {
-            Some(previous) => previous.rebuilt(max_attempts, window),
-            None => LoginLimiter::new(max_attempts, window),
-        };
+        let logins = LoginLimiter::new(database.clone(), max_attempts, window);
+        let oidc_starts = LoginLimiter::scoped(
+            session::OIDC_START_SCOPE,
+            database.clone(),
+            max_attempts,
+            window,
+        );
         let templates = pages::templates::build_environment(&config.admin.template_dir);
         Self {
             database,
             config,
             profiles: Arc::new(by_name),
             logins: Arc::new(logins),
-            oidc_starts: Arc::new(LoginLimiter::new(max_attempts, window)),
+            oidc_starts: Arc::new(oidc_starts),
             templates: Arc::new(templates),
             audit,
             notifiers,
@@ -467,7 +449,7 @@ pub(crate) fn user_agent_of(headers: &axum::http::HeaderMap) -> Option<String> {
 ///
 /// On an `admin.filter` that [`check_config`] would have refused, or an
 /// `[admin.auth]` whose providers cannot be built. The server builds both
-/// itself and calls [`build_admin_app_with_logins`]; this is the convenience
+/// itself and calls [`build_admin_app_from_parts`]; this is the convenience
 /// form tests and fixtures use.
 pub fn build_admin_app(
     database: Arc<Database>,
@@ -484,19 +466,16 @@ pub fn build_admin_app(
         crate::identity::Providers::from_config(&config, &egress.outbound())
             .expect("admin.auth must be valid"),
     );
-    build_admin_app_with_logins(
-        database, config, profiles, audit, notifiers, jobs, policy, providers, None,
+    build_admin_app_from_parts(
+        database, config, profiles, audit, notifiers, jobs, policy, providers,
     )
-    .0
 }
 
-/// [`build_admin_app`], carrying login counters across a configuration reload.
-///
-/// Returns the limiter it ended up with as well as the router, because the
-/// generation after this one has to carry it in turn — an `Arc<LoginLimiter>`
-/// that only ever moved forward is the whole point.
+/// [`build_admin_app`], over a filter policy and providers the caller has
+/// already built — the server's form, which refuses a bad `[admin]` as an
+/// error rather than a panic.
 #[allow(clippy::too_many_arguments)]
-pub fn build_admin_app_with_logins(
+pub fn build_admin_app_from_parts(
     database: Arc<Database>,
     config: Arc<Config>,
     profiles: &[Arc<Profile>],
@@ -505,9 +484,8 @@ pub fn build_admin_app_with_logins(
     jobs: acme_proxy_jobs::jobs::JobQueue,
     policy: Arc<acme_proxy_policy::filter::FilterPolicy>,
     providers: Arc<crate::identity::Providers>,
-    previous_logins: Option<&LoginLimiter>,
-) -> (Router, Arc<LoginLimiter>) {
-    let state = AdminState::with_logins(
+) -> Router {
+    let state = AdminState::new(
         database,
         config.clone(),
         profiles,
@@ -515,9 +493,7 @@ pub fn build_admin_app_with_logins(
         notifiers,
         jobs,
         providers,
-        previous_logins,
     );
-    let logins = state.logins.clone();
 
     let api = Router::new()
         .route(
@@ -645,7 +621,7 @@ pub fn build_admin_app_with_logins(
         // inputs, and has no web surface at all.
         .route("/profiles/{name}/filter", get(handlers::get_profile_filter));
 
-    let router = Router::new()
+    Router::new()
         // Unauthenticated and touching no database: an orchestrator probing
         // this port should not need a session to learn the process is alive.
         .route(
@@ -714,9 +690,7 @@ pub fn build_admin_app_with_logins(
         // absent, which is correct — an admin request belongs to no profile.
         .layer(middleware::from_fn(
             middlewares::access::add_access_middleware,
-        ));
-
-    (router, logins)
+        ))
 }
 
 /// Mounts the API at `/api` with fallbacks that answer in the admin error

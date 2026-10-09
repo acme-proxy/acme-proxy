@@ -309,8 +309,8 @@ pub async fn serve_on_with_reloads(
         store_first_crls(&parts.signers).await;
     }
 
-    let generation = build_generation(roles, &config, &resolved, &assembly, &parts, None)
-        .inspect_err(|error| {
+    let generation =
+        build_generation(roles, &config, &resolved, &assembly, &parts).inspect_err(|error| {
             error!(event = "profile_init_failed", outcome = "failure", error = %error);
         })?;
 
@@ -328,7 +328,6 @@ pub async fn serve_on_with_reloads(
         job_registry,
         tls,
         admin_tls,
-        logins,
     } = generation;
 
     // The one task that drains the queue. Held under `AbortOnDrop` for the same
@@ -463,7 +462,6 @@ pub async fn serve_on_with_reloads(
             admin: admin_handle,
             metrics: metrics_handle,
         },
-        logins,
     )));
 
     // Nothing is drained here any more. A notification in flight at shutdown is

@@ -65,7 +65,7 @@ pub struct TableSpec {
     /// The table's name, which is also its name in both dialects.
     pub name: &'static str,
     /// The column(s) a batch is ordered and resumed by. Every table has a
-    /// primary key; `revocations` is the only composite one.
+    /// primary key; `revocations` and `admin_login_buckets` are composite.
     pub key: &'static [&'static str],
     /// Every column, in the order the schema declares them.
     pub columns: &'static [(&'static str, ColumnKind)],
@@ -173,6 +173,17 @@ pub const TABLES: &[TableSpec] = &[
             ("key_authorization", Text),
             ("created_at", I64),
             ("expires_at", I64),
+        ],
+    },
+    TableSpec {
+        name: "admin_login_buckets",
+        key: &["scope", "bucket"],
+        columns: &[
+            ("scope", Text),
+            ("bucket", Text),
+            ("failures", I64),
+            ("in_flight", I64),
+            ("window_started", I64),
         ],
     },
     TableSpec {
@@ -766,8 +777,8 @@ mod tests {
     /// the seam — and either failure looks like a successful copy.
     ///
     /// Two tables, because `read_batch` builds a different `WHERE` for each:
-    /// `nonces` resumes from one column, and `revocations` — the manifest's
-    /// only composite key — from the `(a, b) > (?, ?)` row comparison that is
+    /// `nonces` resumes from one column, and `revocations` — standing for every
+    /// composite key — from the `(a, b) > (?, ?)` row comparison that is
     /// the one spelling both dialects accept. Neither is reached at all by a
     /// table that fits in a single batch.
     #[tokio::test]

@@ -101,11 +101,11 @@ pub(crate) async fn sign_in(
         .map_or_else(|| LOCAL_REALM.to_string(), |name| format!("ldap:{name}"));
     check_origin(headers, &state.config.admin.base_url)?;
 
-    let attempt = match state.logins.begin(client) {
+    let attempt = match state.logins.begin(client).await {
         Ok(attempt) => attempt,
-        Err(retry_after) => {
-            log_login(false, &body.username, &realm, client, "rate_limited");
-            return Err(AdminError::rate_limited(retry_after));
+        Err(refusal) => {
+            log_login(false, &body.username, &realm, client, refusal.reason());
+            return Err(AdminError::from(refusal));
         }
     };
 
@@ -134,7 +134,7 @@ pub(crate) async fn sign_in(
         }
         // Every other failure answers identically; only the log says which.
         Err(Refusal::Refused(reason)) => {
-            attempt.failed();
+            attempt.failed().await;
             log_login(false, &body.username, &realm, client, reason);
             return Err(AdminError::invalid_credentials());
         }
@@ -271,7 +271,7 @@ pub(crate) async fn start_session(
         let known_before = user.known_login_ips.clone();
         user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
             .await?;
-        state.logins.record_success(client);
+        state.logins.record_success(client).await;
         log_login(true, &user.username, realm, client, "");
         notify_sign_in_from_new_address(state, &user, &known_before, client, user_agent).await;
 
@@ -339,17 +339,17 @@ pub(crate) async fn finish_mfa(
 ) -> Result<SignedIn, AdminError> {
     // The origin gate already ran, in `PendingMfaSubmit`'s extractor -- it is
     // what stands in for the CSRF token this route cannot have.
-    let attempt = match state.logins.begin(client) {
+    let attempt = match state.logins.begin(client).await {
         Ok(attempt) => attempt,
-        Err(retry_after) => {
+        Err(refusal) => {
             log_login(
                 false,
                 &pending.user.username,
                 realm_of(&pending.user),
                 client,
-                "rate_limited",
+                refusal.reason(),
             );
-            return Err(AdminError::rate_limited(retry_after));
+            return Err(AdminError::from(refusal));
         }
     };
 
@@ -359,7 +359,7 @@ pub(crate) async fn finish_mfa(
             .await?;
 
     let MfaOutcome::Accepted { via, .. } = outcome else {
-        attempt.failed();
+        attempt.failed().await;
 
         // The bound the address-keyed limiter cannot provide. A `pending_mfa`
         // cookie is valid from any address on purpose, so without this an
@@ -427,7 +427,7 @@ pub(crate) async fn finish_mfa(
     let known_before = user.known_login_ips.clone();
     user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
         .await?;
-    state.logins.record_success(client);
+    state.logins.record_success(client).await;
     info!(event = "admin_mfa_verified",
           outcome = "success",
           username = %user.username,
@@ -510,7 +510,7 @@ pub(crate) async fn finish_enrolment(
     let known_before = user.known_login_ips.clone();
     user.mark_logged_in(client_ip_str(client).as_deref(), &state.database)
         .await?;
-    state.logins.record_success(client);
+    state.logins.record_success(client).await;
     info!(event = "admin_mfa_enrolled", outcome = "success", username = %user.username);
     log_login(true, &user.username, realm_of(user), client, "");
     notify_sign_in_from_new_address(state, user, &known_before, client, user_agent).await;

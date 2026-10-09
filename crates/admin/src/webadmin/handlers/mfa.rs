@@ -111,16 +111,16 @@ pub(crate) async fn verify_current_password(
     // `admin_sessions` — deliberately not done, because unlike a six-digit code
     // a password behind 85 ms of PBKDF2 per guess is not reachable that way, and
     // the address bucket already removes the DoS lever.
-    let attempt = match logins.begin(client) {
+    let attempt = match logins.begin(client).await {
         Ok(attempt) => attempt,
-        Err(retry_after) => {
+        Err(refusal) => {
             warn!(
                 event = "admin_mfa_step_up_refused",
                 outcome = "failure",
                 username = %user.username,
-                reason = "rate_limited"
+                reason = refusal.reason()
             );
-            return Err(AdminError::rate_limited(retry_after));
+            return Err(AdminError::from(refusal));
         }
     };
 
@@ -134,7 +134,7 @@ pub(crate) async fn verify_current_password(
             Ok(())
         }
         Ok(false) => {
-            attempt.failed();
+            attempt.failed().await;
             warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "wrong_password");
             Err(AdminError::invalid_credentials())
         }
@@ -220,11 +220,11 @@ pub(crate) async fn reprove(
                 format!("`{provider}` is not configured on this server any more"),
             )
         })?;
-    let attempt = match state.logins.begin(client) {
+    let attempt = match state.logins.begin(client).await {
         Ok(attempt) => attempt,
-        Err(retry_after) => {
-            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "rate_limited");
-            return Err(AdminError::rate_limited(retry_after));
+        Err(refusal) => {
+            warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = refusal.reason());
+            return Err(AdminError::from(refusal));
         }
     };
     match directory.authenticate(&user.username, password).await {
@@ -236,7 +236,7 @@ pub(crate) async fn reprove(
             Err(AdminError::provider_unavailable())
         }
         _ => {
-            attempt.failed();
+            attempt.failed().await;
             warn!(event = "admin_mfa_step_up_refused", outcome = "failure", username = %user.username, reason = "wrong_password");
             Err(AdminError::invalid_credentials())
         }
@@ -667,8 +667,11 @@ mod tests {
 
     const MAX_ATTEMPTS: u32 = 5;
 
-    fn limiter() -> LoginLimiter {
-        LoginLimiter::new(MAX_ATTEMPTS, 300)
+    async fn limiter() -> LoginLimiter {
+        let database = acme_proxy_store::db::Database::connect_for_test()
+            .await
+            .expect("a test database");
+        LoginLimiter::new(std::sync::Arc::new(database), MAX_ATTEMPTS, 300)
     }
 
     fn client() -> Option<IpAddr> {
@@ -686,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn a_factorless_operator_passes_without_a_password() {
         let user = user_with("not-even-a-valid-hash", None);
-        let logins = limiter();
+        let logins = limiter().await;
         assert!(check_step_up(&user, "", client(), &logins).await.is_ok());
         assert!(
             check_step_up(&user, "anything", client(), &logins)
@@ -702,7 +705,7 @@ mod tests {
     async fn verify_current_password_runs_even_for_a_factorless_operator() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, None);
-        let logins = limiter();
+        let logins = limiter().await;
 
         assert!(
             verify_current_password(&user, "correct horse battery staple", client(), &logins)
@@ -719,7 +722,7 @@ mod tests {
     async fn a_live_factor_needs_the_right_password() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
-        let logins = limiter();
+        let logins = limiter().await;
 
         assert!(
             check_step_up(&user, "correct horse battery staple", client(), &logins)
@@ -742,7 +745,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_stored_hash_refuses_rather_than_admits() {
         let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
-        let logins = limiter();
+        let logins = limiter().await;
         let error = check_step_up(&user, "anything", client(), &logins)
             .await
             .expect_err("a corrupt hash must refuse");
@@ -761,7 +764,7 @@ mod tests {
     async fn a_wrong_password_counts_against_the_login_limiter() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
-        let logins = limiter();
+        let logins = limiter().await;
 
         for _ in 0..MAX_ATTEMPTS {
             let error = check_step_up(&user, "wrong", client(), &logins)
@@ -787,7 +790,7 @@ mod tests {
     async fn a_correct_password_does_not_clear_the_bucket() {
         let hash = cheap_hash("correct horse battery staple");
         let user = user_with(&hash, Some(b"secret"));
-        let logins = limiter();
+        let logins = limiter().await;
 
         for _ in 0..MAX_ATTEMPTS - 1 {
             assert!(
@@ -820,7 +823,7 @@ mod tests {
     #[tokio::test]
     async fn a_factorless_operator_never_touches_the_limiter() {
         let user = user_with("not-even-a-valid-hash", None);
-        let logins = limiter();
+        let logins = limiter().await;
 
         for _ in 0..MAX_ATTEMPTS + 1 {
             assert!(
@@ -829,7 +832,7 @@ mod tests {
                     .is_ok()
             );
         }
-        assert!(logins.begin(client()).is_ok());
+        assert!(logins.begin(client()).await.is_ok());
     }
 
     /// A corrupt row refuses, but must not lock its own owner out of sign-in:
@@ -838,7 +841,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_stored_hash_does_not_lock_the_address_out() {
         let user = user_with("pbkdf2-sha256$not-a-number$salt$digest", Some(b"secret"));
-        let logins = limiter();
+        let logins = limiter().await;
 
         for _ in 0..MAX_ATTEMPTS + 1 {
             assert!(
@@ -847,6 +850,6 @@ mod tests {
                     .is_err()
             );
         }
-        assert!(logins.begin(client()).is_ok());
+        assert!(logins.begin(client()).await.is_ok());
     }
 }

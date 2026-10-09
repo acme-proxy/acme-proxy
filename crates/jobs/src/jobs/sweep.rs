@@ -86,8 +86,12 @@ enum SweepTarget {
     Nonces { ttl: Duration },
     /// Audit rows past `audit.retention_days`.
     AuditLog { retention_days: u64 },
-    /// Admin sessions past their absolute or idle deadline.
-    AdminSessions { idle_timeout: Duration },
+    /// Admin sessions past their absolute or idle deadline, and the login
+    /// counters whose window has run out.
+    AdminSessions {
+        idle_timeout: Duration,
+        login_window: Duration,
+    },
     /// Settled job rows past `jobs.retention_days`.
     Jobs { retention_days: u64 },
     /// Expired, non-`valid` orders past each profile's `order.retention_days`,
@@ -137,15 +141,21 @@ impl SweepJob {
     /// The admin-session sweep, registered only when the admin listener exists.
     ///
     /// Often enough that a revoked session's row does not linger for hours,
-    /// rarely enough to be invisible.
+    /// rarely enough to be invisible. It also prunes the login counters
+    /// (`admin_login_buckets`) whose `login_window` has run out: the same
+    /// listener's state, on the same beat.
     #[must_use]
     pub fn admin_sessions(
         database: Arc<Database>,
         idle_timeout: Duration,
         ttl_seconds: u64,
+        login_window: Duration,
     ) -> Self {
         Self {
-            target: SweepTarget::AdminSessions { idle_timeout },
+            target: SweepTarget::AdminSessions {
+                idle_timeout,
+                login_window,
+            },
             interval: Duration::from_secs((ttl_seconds / 4).max(60)),
             database,
         }
@@ -233,7 +243,10 @@ impl SweepJob {
                     }
                 }
             }
-            SweepTarget::AdminSessions { idle_timeout } => {
+            SweepTarget::AdminSessions {
+                idle_timeout,
+                login_window,
+            } => {
                 match acme_proxy_store::admin_session::AdminSession::cleanup(
                     *idle_timeout,
                     &self.database,
@@ -265,6 +278,24 @@ impl SweepJob {
                     ),
                     Err(error) => {
                         error!(event = "admin_oidc_login_reaper_failed", outcome = "failure", error = %error);
+                    }
+                }
+                // A counter whose window has run out starts over on its next
+                // attempt anyway, so removing it forgets nothing.
+                let window = i64::try_from(login_window.as_secs()).unwrap_or(i64::MAX);
+                match acme_proxy_store::admin_login_bucket::AdminLoginBucket::cleanup(
+                    now.saturating_sub(window),
+                    &self.database,
+                )
+                .await
+                {
+                    Ok(removed) => debug!(
+                        event = "admin_login_bucket_reaper_swept",
+                        outcome = "success",
+                        rows_removed = removed
+                    ),
+                    Err(error) => {
+                        error!(event = "admin_login_bucket_reaper_failed", outcome = "failure", error = %error);
                     }
                 }
             }
@@ -392,7 +423,13 @@ mod tests {
         let kinds = [
             SweepJob::nonces(database.clone(), Duration::from_secs(300)).kind(),
             SweepJob::audit(database.clone(), 7).kind(),
-            SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200).kind(),
+            SweepJob::admin_sessions(
+                database.clone(),
+                Duration::from_secs(3600),
+                43200,
+                Duration::from_secs(300),
+            )
+            .kind(),
             SweepJob::jobs(database.clone(), 7).kind(),
             SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]).kind(),
             SweepJob::http01_tokens(database).kind(),
@@ -420,11 +457,23 @@ mod tests {
 
         // A quarter of the session TTL, floored at 60s.
         assert_eq!(
-            SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200).interval(),
+            SweepJob::admin_sessions(
+                database.clone(),
+                Duration::from_secs(3600),
+                43200,
+                Duration::from_secs(300)
+            )
+            .interval(),
             Duration::from_secs(10800)
         );
         assert_eq!(
-            SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 4).interval(),
+            SweepJob::admin_sessions(
+                database.clone(),
+                Duration::from_secs(3600),
+                4,
+                Duration::from_secs(300)
+            )
+            .interval(),
             Duration::from_secs(60)
         );
 
@@ -559,8 +608,21 @@ mod tests {
             .execute(database.raw_pool())
             .await
             .unwrap();
+        // Two login counters: one whose five-minute window ran out ten minutes
+        // ago, one still counting.
+        use acme_proxy_store::admin_login_bucket::AdminLoginBucket;
+        for (bucket, started) in [("192.0.2.1", now_secs() - 600), ("192.0.2.2", now_secs())] {
+            AdminLoginBucket::begin("password", bucket, 5, 300, started, &database)
+                .await
+                .unwrap();
+        }
 
-        let handler = SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200);
+        let handler = SweepJob::admin_sessions(
+            database.clone(),
+            Duration::from_secs(3600),
+            43200,
+            Duration::from_secs(300),
+        );
         assert!(matches!(
             handler.run(&row(ADMIN_SESSION_SWEEP_KIND)).await,
             JobOutcome::Reschedule(_)
@@ -571,6 +633,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining, 0);
+        let buckets: Vec<(String,)> = sqlx::query_as("SELECT bucket FROM admin_login_buckets;")
+            .fetch_all(database.raw_pool())
+            .await
+            .unwrap();
+        assert_eq!(buckets, vec![("192.0.2.2".to_string(),)]);
     }
 
     #[tokio::test]
@@ -636,7 +703,12 @@ mod tests {
         for handler in [
             SweepJob::nonces(database.clone(), Duration::from_secs(300)),
             SweepJob::audit(database.clone(), 7),
-            SweepJob::admin_sessions(database.clone(), Duration::from_secs(3600), 43200),
+            SweepJob::admin_sessions(
+                database.clone(),
+                Duration::from_secs(3600),
+                43200,
+                Duration::from_secs(300),
+            ),
             SweepJob::jobs(database.clone(), 7),
             SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]),
             SweepJob::http01_tokens(database.clone()),

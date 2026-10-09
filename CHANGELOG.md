@@ -69,6 +69,15 @@ migrated configuration before restarting.
   `main` moves to `/dev/`. A selector in the menu bar switches version on the
   same page, and a banner marks every version but the latest.
 
+### Changed
+
+- **The web admin's login limiter is counted in the database** (#12), in a new
+  `admin_login_buckets` table, so several admin processes over one database
+  share one `admin.login_max_attempts` budget per address, and a restart no
+  longer resets it. One admin process is no longer the only supported
+  topology. If the counter cannot be read, a sign-in is refused (`500`, logged
+  as `admin_login_limiter_failed`) rather than let through uncounted.
+
 ## [0.6.1] — 2026-10-09
 
 ### Fixed

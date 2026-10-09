@@ -564,6 +564,9 @@ pub async fn seed_every_table(db: &std::sync::Arc<crate::db::Database>) {
     Http01Token::publish("tok", "tok.thumb", 1, 4_102_444_800, db)
         .await
         .expect("an http-01 token");
+    crate::admin_login_bucket::AdminLoginBucket::begin("password", "192.0.2.1", 5, 300, 1, db)
+        .await
+        .expect("a login bucket");
 
     // The admin island.
     let user = AdminUser::create("alice", "hash", None, db)

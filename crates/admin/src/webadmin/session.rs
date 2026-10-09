@@ -31,9 +31,8 @@
 //! media-type/`crit`/`url`/nonce checks into `AcmeRequest` — a new endpoint
 //! cannot forget what it cannot express.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::FromRequestParts;
@@ -47,9 +46,11 @@ use tracing::{info, warn};
 
 use crate::webadmin::AdminState;
 use crate::webadmin::error::AdminError;
+use acme_proxy_store::admin_login_bucket::{AdminLoginBucket, Reservation};
 use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::AdminRole;
 use acme_proxy_store::admin_user::AdminUser;
+use acme_proxy_store::db::Database;
 use acme_proxy_store::nonce::fingerprint;
 use acme_proxy_store::nonce::now_secs;
 
@@ -615,36 +616,78 @@ pub fn check_origin(headers: &HeaderMap, base_url: &str) -> Result<(), AdminErro
     Ok(())
 }
 
-/// Fixed-window failed-login counter, keyed by client address.
+/// Fixed-window failed-login counter, keyed by client address, **in the
+/// database** (`acme_proxy_store::admin_login_bucket`).
 ///
-/// In-process on purpose: it protects a listener that defaults to loopback and
-/// holds a handful of accounts, and a database-backed counter would add a
-/// write to the very path being flooded.
+/// It was in process memory, and correct only while exactly one admin process
+/// existed: two behind one load balancer gave an attacker two budgets, and a
+/// restart a fresh one. In the table every admin process shares one budget per
+/// address, and a configuration reload has nothing to carry — the counters
+/// were never the generation's. The price is a write on the path being
+/// flooded, one indexed `UPDATE` per attempt: still a small fraction of the
+/// 600 000 KDF iterations a refusal saves.
 ///
 /// **An attempt is counted when it starts, not when it fails.** [`begin`]
-/// reserves a slot under the lock and refuses once failures *plus attempts
-/// still in flight* reach the limit. Counting only finished failures was a
-/// check-then-act race: a burst of parallel requests from one address all
-/// passed the check before the first of them had paid its 600 000 iterations
-/// and recorded anything, so the burst bought as many guesses — and as much
-/// KDF time — as it had requests. The slot is a [`LoginAttempt`] guard, so
-/// every early return (a database error included) gives it back.
+/// reserves a slot and refuses once failures *plus attempts still in flight*
+/// reach the limit, in one conditional statement. Counting only finished
+/// failures was a check-then-act race: a burst of parallel requests from one
+/// address all passed the check before the first of them had paid its KDF and
+/// recorded anything, so the burst bought as many guesses — and as much KDF
+/// time — as it had requests. The slot is a [`LoginAttempt`] guard, so every
+/// early return (a database error included) gives it back.
+///
+/// Two instances share the table under different scopes: `password` for
+/// credentials and `oidc_start` for the OpenID Connect starts that each write a
+/// row (`AdminState::oidc_starts`).
 ///
 /// [`begin`]: LoginLimiter::begin
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct LoginLimiter {
+    scope: &'static str,
     max_attempts: u32,
-    window: Duration,
-    buckets: Mutex<HashMap<IpAddr, Bucket>>,
+    window_seconds: u64,
+    database: Arc<Database>,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Bucket {
-    failures: u32,
-    /// Attempts begun and not yet settled. Never carried across a reload: see
-    /// [`LoginLimiter::rebuilt`].
-    in_flight: u32,
-    window_started: i64,
+impl std::fmt::Debug for LoginLimiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginLimiter")
+            .field("scope", &self.scope)
+            .field("max_attempts", &self.max_attempts)
+            .field("window_seconds", &self.window_seconds)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why [`LoginLimiter::begin`] refused an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginRefusal {
+    /// The address has spent its budget: retry after this many seconds.
+    RateLimited(u64),
+    /// The counter could not be read. Fails **closed**: a limiter that waved
+    /// attempts through whenever its table was unreachable would be a bypass
+    /// for anyone able to make it so.
+    Unavailable,
+}
+
+impl LoginRefusal {
+    /// The `reason` a refused sign-in is logged with.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::RateLimited(_) => "rate_limited",
+            Self::Unavailable => "limiter_unavailable",
+        }
+    }
+}
+
+impl From<LoginRefusal> for AdminError {
+    fn from(refusal: LoginRefusal) -> Self {
+        match refusal {
+            LoginRefusal::RateLimited(retry_after) => AdminError::rate_limited(retry_after),
+            LoginRefusal::Unavailable => AdminError::internal(),
+        }
+    }
 }
 
 /// The bucket an address counts against.
@@ -663,151 +706,157 @@ fn bucket_key(client: IpAddr) -> IpAddr {
 }
 
 impl LoginLimiter {
-    /// At most `max_attempts` failures per client address (an IPv6 address by
-    /// its /64) within `window_seconds`.
+    /// The credential limiter: at most `max_attempts` failures per client
+    /// address (an IPv6 address by its /64) within `window_seconds`.
     #[must_use]
-    pub fn new(max_attempts: u32, window_seconds: u64) -> Self {
+    pub fn new(database: Arc<Database>, max_attempts: u32, window_seconds: u64) -> Self {
+        Self::scoped(PASSWORD_SCOPE, database, max_attempts, window_seconds)
+    }
+
+    /// The same limits over a budget of its own, named by `scope`.
+    #[must_use]
+    pub fn scoped(
+        scope: &'static str,
+        database: Arc<Database>,
+        max_attempts: u32,
+        window_seconds: u64,
+    ) -> Self {
         Self {
+            scope,
             max_attempts,
-            window: Duration::from_secs(window_seconds),
-            buckets: Mutex::new(HashMap::new()),
+            window_seconds,
+            database,
         }
     }
 
-    /// The same counters under new limits.
-    ///
-    /// A configuration reload rebuilds the admin router, and with it every value
-    /// `AdminState` derives from `[admin]` — which for this type would mean
-    /// starting from an empty map. That is a security regression, not a cosmetic
-    /// one: a reload in the middle of a brute-force attempt would clear the
-    /// attacker's backoff, and `admin.login_*` is exactly the sort of key an
-    /// operator edits *because* they are being flooded.
-    ///
-    /// Carrying the whole limiter across instead would be the other error,
-    /// leaving `login_max_attempts` and `login_window_seconds` silently stale.
-    /// So the counters move and the limits do not.
-    ///
-    /// The in-flight counts do **not** move: their guards hold the old limiter
-    /// and settle against it, so a count copied here would never be released.
-    /// The cost is that an attempt straddling a reload is not counted, once.
-    #[must_use]
-    pub fn rebuilt(&self, max_attempts: u32, window_seconds: u64) -> Self {
-        let mut buckets =
-            std::mem::take(&mut *self.buckets.lock().unwrap_or_else(|e| e.into_inner()));
-        for bucket in buckets.values_mut() {
-            bucket.in_flight = 0;
-        }
-        Self {
-            max_attempts,
-            window: Duration::from_secs(window_seconds),
-            buckets: Mutex::new(buckets),
-        }
-    }
-
-    /// Starts a login attempt from this address, or refuses it. `Err` carries
-    /// the seconds left in the window.
+    /// Starts a login attempt from this address, or refuses it.
     ///
     /// Called **before** the password hash runs: 600 000 iterations is a
     /// denial-of-service lever, so a limited caller must not pay it — nor make
     /// the server pay it. The returned guard holds the slot until it is
-    /// [`failed`](LoginAttempt::failed) or dropped.
-    pub fn begin(&self, client: Option<IpAddr>) -> Result<LoginAttempt<'_>, u64> {
+    /// [`failed`](LoginAttempt::failed), [`released`](LoginAttempt::release)
+    /// or dropped.
+    pub async fn begin(&self, client: Option<IpAddr>) -> Result<LoginAttempt<'_>, LoginRefusal> {
         // No address means no key. This is not a bypass: the limiter is a
         // convenience over the bind address and the session, and an admin
         // listener always has a peer address in practice (`TapIo` carries it
         // through TLS). Failing closed here would lock out every request
         // rather than every attacker.
-        let Some(key) = client.map(bucket_key) else {
+        let Some(key) = client.map(|client| bucket_key(client).to_string()) else {
             return Ok(LoginAttempt {
                 limiter: self,
                 key: None,
             });
         };
-        let now = now_secs();
-        let window = self.window.as_secs() as i64;
-
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        // Pruned under the same lock, so the map cannot grow without bound. A
-        // bucket with an attempt in flight is kept, its failures forgotten.
-        buckets.retain(|_, bucket| now - bucket.window_started < window || bucket.in_flight > 0);
-
-        let bucket = buckets.entry(key).or_insert(Bucket {
-            failures: 0,
-            in_flight: 0,
-            window_started: now,
-        });
-        if now - bucket.window_started >= window {
-            bucket.failures = 0;
-            bucket.window_started = now;
+        let reservation = AdminLoginBucket::begin(
+            self.scope,
+            &key,
+            self.max_attempts,
+            self.window_seconds,
+            now_secs(),
+            &self.database,
+        )
+        .await
+        .map_err(|error| {
+            warn!(event = "admin_login_limiter_failed",
+                  outcome = "failure",
+                  scope = self.scope,
+                  error = %error);
+            LoginRefusal::Unavailable
+        })?;
+        match reservation {
+            Reservation::Reserved => Ok(LoginAttempt {
+                limiter: self,
+                key: Some(key),
+            }),
+            Reservation::Refused { retry_after } => Err(LoginRefusal::RateLimited(retry_after)),
         }
-        if bucket.failures.saturating_add(bucket.in_flight) >= self.max_attempts {
-            return Err((window - (now - bucket.window_started)).max(1) as u64);
-        }
-        bucket.in_flight += 1;
-        Ok(LoginAttempt {
-            limiter: self,
-            key: Some(key),
-        })
     }
 
-    /// Clears an address's counter after a completed login, so one operator
+    /// Clears an address's failures after a completed login, so one operator
     /// fumbling their password does not spend the window for the next.
-    pub fn record_success(&self, client: Option<IpAddr>) {
-        let Some(key) = client.map(bucket_key) else {
+    ///
+    /// Best effort: the sign-in has already succeeded, and failing it because
+    /// the counter could not be cleared would punish the one request that
+    /// proved itself.
+    pub async fn record_success(&self, client: Option<IpAddr>) {
+        let Some(client) = client else {
             return;
         };
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(bucket) = buckets.get_mut(&key) {
-            // Another attempt may still be in flight; its guard needs the
-            // bucket to settle against.
-            bucket.failures = 0;
-            if bucket.in_flight == 0 {
-                buckets.remove(&key);
-            }
+        let key = bucket_key(client).to_string();
+        if let Err(error) = AdminLoginBucket::clear_failures(self.scope, &key, &self.database).await
+        {
+            warn!(event = "admin_login_limiter_failed",
+                  outcome = "failure",
+                  scope = self.scope,
+                  error = %error);
         }
     }
 
     /// Gives back an in-flight slot, and turns it into a failure if `failed`.
-    fn settle(&self, key: IpAddr, failed: bool) {
-        let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
-        // Absent when `rebuilt` emptied this limiter mid-attempt.
-        let Some(bucket) = buckets.get_mut(&key) else {
-            return;
-        };
-        bucket.in_flight = bucket.in_flight.saturating_sub(1);
-        if failed {
-            bucket.failures += 1;
-        } else if bucket.failures == 0 && bucket.in_flight == 0 {
-            buckets.remove(&key);
+    async fn settle(scope: &str, key: &str, failed: bool, database: &Database) {
+        if let Err(error) = AdminLoginBucket::settle(scope, key, failed, database).await {
+            // A slot not given back is spent until the window runs out, which
+            // is the bound the table documents; a failure not counted is one
+            // guess more. Neither is worth failing the request over.
+            warn!(event = "admin_login_limiter_failed",
+                  outcome = "failure",
+                  scope = scope,
+                  error = %error);
         }
     }
 }
+
+/// The scope [`LoginLimiter::new`] counts credentials under.
+pub const PASSWORD_SCOPE: &str = "password";
+
+/// The scope `AdminState::oidc_starts` counts OpenID Connect starts under.
+pub const OIDC_START_SCOPE: &str = "oidc_start";
 
 /// One login attempt's slot in the [`LoginLimiter`].
 ///
 /// Dropping it releases the slot without counting anything: a correct password
 /// waiting on its second factor, a refused origin, a database error. Only
 /// [`failed`](Self::failed) spends the budget.
+///
+/// A drop cannot await, so the release it triggers is spawned and lands a
+/// moment later; [`release`](Self::release) is the same, awaited.
 #[derive(Debug)]
-#[must_use = "dropping the attempt releases its slot at once"]
+#[must_use = "dropping the attempt releases its slot"]
 pub struct LoginAttempt<'a> {
     limiter: &'a LoginLimiter,
-    key: Option<IpAddr>,
+    key: Option<String>,
 }
 
 impl LoginAttempt<'_> {
     /// Counts this attempt as a failure against its address.
-    pub fn failed(mut self) {
+    pub async fn failed(mut self) {
         if let Some(key) = self.key.take() {
-            self.limiter.settle(key, true);
+            LoginLimiter::settle(self.limiter.scope, &key, true, &self.limiter.database).await;
+        }
+    }
+
+    /// Gives the slot back uncounted, and waits until it is.
+    pub async fn release(mut self) {
+        if let Some(key) = self.key.take() {
+            LoginLimiter::settle(self.limiter.scope, &key, false, &self.limiter.database).await;
         }
     }
 }
 
 impl Drop for LoginAttempt<'_> {
     fn drop(&mut self) {
-        if let Some(key) = self.key.take() {
-            self.limiter.settle(key, false);
+        let Some(key) = self.key.take() else {
+            return;
+        };
+        // Outside a runtime there is nothing to spawn on; the window running
+        // out gives the slot back instead.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let scope = self.limiter.scope;
+            let database = self.limiter.database.clone();
+            runtime.spawn(async move {
+                LoginLimiter::settle(scope, &key, false, &database).await;
+            });
         }
     }
 }
@@ -1088,132 +1137,183 @@ mod tests {
         Some(IpAddr::from([192, 0, 2, last]))
     }
 
-    /// One failed attempt, start to finish.
-    fn fail(limiter: &LoginLimiter, client: Option<IpAddr>) {
-        limiter.begin(client).unwrap().failed();
+    async fn limiter(max_attempts: u32, window_seconds: u64) -> LoginLimiter {
+        let database = Database::connect_for_test().await.expect("a test database");
+        LoginLimiter::new(Arc::new(database), max_attempts, window_seconds)
     }
 
-    #[test]
-    fn the_limiter_permits_up_to_the_limit_then_refuses() {
-        let limiter = LoginLimiter::new(3, 300);
+    /// One failed attempt, start to finish.
+    async fn fail(limiter: &LoginLimiter, client: Option<IpAddr>) {
+        limiter.begin(client).await.unwrap().failed().await;
+    }
+
+    #[tokio::test]
+    async fn the_limiter_permits_up_to_the_limit_then_refuses() {
+        let limiter = limiter(3, 300).await;
 
         for attempt in 0..3 {
-            let slot = limiter.begin(ip(1));
+            let slot = limiter.begin(ip(1)).await;
             assert!(slot.is_ok(), "attempt {attempt} must pass");
-            slot.unwrap().failed();
+            slot.unwrap().failed().await;
         }
 
-        let retry_after = limiter.begin(ip(1)).unwrap_err();
+        let Err(LoginRefusal::RateLimited(retry_after)) = limiter.begin(ip(1)).await else {
+            panic!("the fourth attempt must be rate limited");
+        };
         assert!(retry_after > 0 && retry_after <= 300, "got {retry_after}");
 
         // Scoped to the address that failed.
-        assert!(limiter.begin(ip(2)).is_ok());
+        assert!(limiter.begin(ip(2)).await.is_ok());
     }
 
     /// The race this type exists to close: a burst whose attempts are all in
     /// flight at once must not each find the budget untouched.
-    #[test]
-    fn attempts_in_flight_count_against_the_limit() {
-        let limiter = LoginLimiter::new(3, 300);
-        let held: Vec<_> = (0..3).map(|_| limiter.begin(ip(1)).unwrap()).collect();
+    #[tokio::test]
+    async fn attempts_in_flight_count_against_the_limit() {
+        let limiter = limiter(3, 300).await;
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(limiter.begin(ip(1)).await.unwrap());
+        }
         assert!(
-            limiter.begin(ip(1)).is_err(),
+            limiter.begin(ip(1)).await.is_err(),
             "a fourth concurrent attempt must be refused before any has failed"
         );
 
         // Settled without failing — a right password awaiting its second
         // factor — the slots come back.
-        drop(held);
-        assert!(limiter.begin(ip(1)).is_ok());
-        assert!(
-            limiter.buckets.lock().unwrap().is_empty(),
-            "a bucket with nothing to remember must not linger"
-        );
+        for attempt in held {
+            attempt.release().await;
+        }
+        assert!(limiter.begin(ip(1)).await.is_ok());
     }
 
-    #[test]
-    fn a_success_clears_the_counter() {
-        let limiter = LoginLimiter::new(2, 300);
-        fail(&limiter, ip(1));
-        limiter.record_success(ip(1));
-        fail(&limiter, ip(1));
+    /// A dropped guard cannot await, so its release is spawned: the slot comes
+    /// back a moment later rather than at the drop.
+    #[tokio::test]
+    async fn a_dropped_attempt_gives_its_slot_back() {
+        let limiter = limiter(1, 300).await;
+        drop(limiter.begin(ip(1)).await.unwrap());
+
+        let mut freed = false;
+        for _ in 0..100 {
+            if let Ok(attempt) = limiter.begin(ip(1)).await {
+                attempt.release().await;
+                freed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(freed, "the spawned release must land");
+    }
+
+    #[tokio::test]
+    async fn a_success_clears_the_counter() {
+        let limiter = limiter(2, 300).await;
+        fail(&limiter, ip(1)).await;
+        limiter.record_success(ip(1)).await;
+        fail(&limiter, ip(1)).await;
         assert!(
-            limiter.begin(ip(1)).is_ok(),
+            limiter.begin(ip(1)).await.is_ok(),
             "the pre-success failure must not still count"
         );
     }
 
-    /// A success while another attempt is in flight keeps the bucket that
-    /// attempt will settle against, so its slot is still released.
-    #[test]
-    fn a_success_beside_an_attempt_in_flight_keeps_its_slot() {
-        let limiter = LoginLimiter::new(1, 300);
-        let other = limiter.begin(ip(1)).unwrap();
-        limiter.record_success(ip(1));
-        assert!(limiter.begin(ip(1)).is_err(), "the slot is still taken");
-        drop(other);
-        assert!(limiter.begin(ip(1)).is_ok());
+    /// A success while another attempt is in flight keeps that attempt's slot,
+    /// so it is still released when it settles.
+    #[tokio::test]
+    async fn a_success_beside_an_attempt_in_flight_keeps_its_slot() {
+        let limiter = limiter(1, 300).await;
+        let other = limiter.begin(ip(1)).await.unwrap();
+        limiter.record_success(ip(1)).await;
+        assert!(
+            limiter.begin(ip(1)).await.is_err(),
+            "the slot is still taken"
+        );
+        other.release().await;
+        assert!(limiter.begin(ip(1)).await.is_ok());
     }
 
-    #[test]
-    fn the_window_rolls_over_and_prunes() {
-        // A one-second window, so the rollover is observable without sleeping
-        // on a wall clock the test does not control.
-        let limiter = LoginLimiter::new(1, 1);
-        fail(&limiter, ip(1));
-        assert!(limiter.begin(ip(1)).is_err());
+    #[tokio::test]
+    async fn the_window_rolls_over() {
+        // A one-second window, so the rollover is observable after a short
+        // sleep rather than by reaching into the table.
+        let limiter = limiter(1, 1).await;
+        fail(&limiter, ip(1)).await;
+        assert!(limiter.begin(ip(1)).await.is_err());
 
-        // Backdate the bucket past the window.
-        {
-            let mut buckets = limiter.buckets.lock().unwrap();
-            buckets.get_mut(&ip(1).unwrap()).unwrap().window_started -= 5;
-        }
-        assert!(limiter.begin(ip(1)).is_ok(), "the window must roll over");
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
         assert!(
-            limiter.buckets.lock().unwrap().is_empty(),
-            "a stale bucket must be pruned, or the map grows without bound"
+            limiter.begin(ip(1)).await.is_ok(),
+            "the window must roll over"
         );
     }
 
-    #[test]
-    fn a_missing_client_address_is_not_limited() {
-        let limiter = LoginLimiter::new(1, 300);
-        fail(&limiter, None);
-        limiter.record_success(None);
+    #[tokio::test]
+    async fn a_missing_client_address_is_not_limited() {
+        let limiter = limiter(1, 300).await;
+        fail(&limiter, None).await;
+        limiter.record_success(None).await;
         assert!(
-            limiter.begin(None).is_ok(),
+            limiter.begin(None).await.is_ok(),
             "failing closed here would lock out every request, not every attacker"
         );
     }
 
     /// Rotating through one /64 is one budget; a different /64 is another, and
     /// an IPv4-mapped address is its IPv4 self.
-    #[test]
-    fn an_ipv6_client_is_limited_by_its_slash_64() {
-        let limiter = LoginLimiter::new(1, 300);
+    #[tokio::test]
+    async fn an_ipv6_client_is_limited_by_its_slash_64() {
+        let limiter = limiter(1, 300).await;
         let v6 = |s: &str| Some(s.parse::<IpAddr>().unwrap());
 
-        fail(&limiter, v6("2001:db8:1:2::1"));
-        assert!(limiter.begin(v6("2001:db8:1:2:ffff::9")).is_err());
-        assert!(limiter.begin(v6("2001:db8:1:3::1")).is_ok());
+        fail(&limiter, v6("2001:db8:1:2::1")).await;
+        assert!(limiter.begin(v6("2001:db8:1:2:ffff::9")).await.is_err());
+        assert!(limiter.begin(v6("2001:db8:1:3::1")).await.is_ok());
 
-        fail(&limiter, ip(7));
-        assert!(limiter.begin(v6("::ffff:192.0.2.7")).is_err());
+        fail(&limiter, ip(7)).await;
+        assert!(limiter.begin(v6("::ffff:192.0.2.7")).await.is_err());
     }
 
-    /// The failures cross a reload; the in-flight counts must not, or a slot
-    /// held across it would never come back.
-    #[test]
-    fn a_rebuilt_limiter_keeps_failures_and_drops_slots_in_flight() {
-        let old = LoginLimiter::new(2, 300);
-        fail(&old, ip(1));
-        let straddling = old.begin(ip(1)).unwrap();
+    /// The property moving the counter into the database bought: two limiters
+    /// over one database — two admin processes, or two configuration
+    /// generations — spend one budget.
+    #[tokio::test]
+    async fn two_limiters_over_one_database_share_one_budget() {
+        let database = Arc::new(Database::connect_for_test().await.unwrap());
+        let first = LoginLimiter::new(database.clone(), 2, 300);
+        let second = LoginLimiter::new(database.clone(), 2, 300);
 
-        let new = old.rebuilt(2, 300);
-        drop(straddling);
-        assert!(new.begin(ip(1)).is_ok(), "one failure of two is spent");
-        fail(&new, ip(1));
-        assert!(new.begin(ip(1)).is_err());
+        fail(&first, ip(1)).await;
+        fail(&second, ip(1)).await;
+        assert!(first.begin(ip(1)).await.is_err());
+        assert!(second.begin(ip(1)).await.is_err());
+
+        // A scope of its own is a budget of its own.
+        let starts = LoginLimiter::scoped(OIDC_START_SCOPE, database, 2, 300);
+        assert!(starts.begin(ip(1)).await.is_ok());
+    }
+
+    /// An unreachable table refuses rather than waving the attempt through.
+    #[tokio::test]
+    async fn a_failing_counter_fails_closed() {
+        let database = Arc::new(Database::connect_in_memory().await.unwrap());
+        crate::webadmin::session::tests::drop_buckets(&database).await;
+        let limiter = LoginLimiter::new(database, 2, 300);
+
+        let refusal = limiter.begin(ip(1)).await.unwrap_err();
+        assert_eq!(refusal, LoginRefusal::Unavailable);
+        assert_eq!(refusal.reason(), "limiter_unavailable");
+        assert_eq!(AdminError::from(refusal).code, "internal");
+        // Clearing is best effort, and does not fail the sign-in it follows.
+        limiter.record_success(ip(1)).await;
+    }
+
+    async fn drop_buckets(database: &Database) {
+        acme_proxy_store::sql::query("DROP TABLE admin_login_buckets;")
+            .execute(database)
+            .await
+            .expect("the table drops");
     }
 
     #[test]

@@ -628,11 +628,11 @@ async fn a_reloaded_certificate_reaches_the_next_connection() {
 /// The admin listener rebuilds with everything else — and the login lockout
 /// survives it.
 ///
-/// The regression test for `LoginLimiter::rebuilt`. Rebuilding `AdminState`
-/// naively would start from an empty bucket map, so a reload during a
-/// brute-force attempt would clear the attacker's backoff — and
-/// `admin.login_max_attempts` is exactly the key an operator edits *because*
-/// they are being flooded.
+/// The counters live in the database (`admin_login_buckets`), not in the
+/// `AdminState` a reload rebuilds; this is the guard against that regressing.
+/// A limiter that started from nothing on a reload would clear a brute-force
+/// attempt's backoff — and `admin.login_max_attempts` is exactly the key an
+/// operator edits *because* they are being flooded.
 #[tokio::test]
 async fn the_admin_listener_reloads_and_keeps_its_login_lockout() {
     let dir = TempDir::shared("reload-admin").await;
