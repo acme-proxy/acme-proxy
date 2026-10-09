@@ -32,6 +32,17 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Breaking
+
+- **A worker refuses to start on a CA that is not its profile's** (#12). The
+  database now records the CA each `local_ca` profile issues from
+  (`profile_issuers`); a worker, `init` or a reload whose CA differs refuses,
+  and so does one with no CA once one is recorded, instead of generating a
+  second CA. An existing deployment records its current CA the first time a
+  worker starts. To change a profile's CA on purpose, replace its files and run
+  the new `acme-proxy profile issuer accept <name>` (audited as
+  `profile_issuer_accepted`).
+
 ### Added
 
 - **Single sign-on for the web admin: OpenID Connect and LDAP / Active

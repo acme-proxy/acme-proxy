@@ -32,6 +32,9 @@
 //!    naming `acme-proxy init`. The worker signs what they queue.
 //! 6. **Several admin processes share one login budget**: the brute-force
 //!    counter is a database row, not process memory.
+//! 7. **Every worker issues from the one CA.** A worker whose CA is not the one
+//!    the database records for its profile refuses to start, and one with no
+//!    CA refuses rather than generating a second.
 //!
 //! Every test that starts a process runs `acme-proxy init` first, which is the
 //! documented topology: the schema and the first-run material belong to one
@@ -87,6 +90,14 @@ fn write_config(dir: &TempDir) {
 /// cannot read the worker's key sees.
 fn write_config_at(dir: &TempDir, into: &TempDir, key_path: &str) {
     let ca = dir.join("ca");
+    write_config_with_ca(dir, into, &format!("{}.pem", ca.display()), key_path);
+}
+
+/// [`write_config`] into `into`, over `dir`'s database but with the CA's
+/// certificate and key wherever the caller says — what a second worker host
+/// sees, holding its own copy of the CA or none at all.
+fn write_config_with_ca(dir: &TempDir, into: &TempDir, cert_path: &str, key_path: &str) {
+    let ca = dir.join("ca");
     let body = format!(
         r#"
         [database]
@@ -100,7 +111,7 @@ fn write_config_at(dir: &TempDir, into: &TempDir, key_path: &str) {
         login_max_attempts = 2
 
         [profiles.default]
-        signer.local_ca.cert_path = "{ca}.pem"
+        signer.local_ca.cert_path = "{cert_path}"
         signer.local_ca.key_path = "{key_path}"
         signer.local_ca.crl_path = "{ca}.crl"
         "#,
@@ -723,4 +734,83 @@ async fn two_admin_processes_share_one_login_budget() {
 
     second.stop().await;
     first.stop().await;
+}
+
+/// Starts a worker over `config` and returns its startup refusal.
+async fn worker_refusal(config: &Config) -> String {
+    let database = Arc::new(Database::open(&config.database.url).await.unwrap());
+    serve_on_with_reloads(
+        RoleSet::parse(Some("worker")).unwrap(),
+        Arc::new(config.clone()),
+        database,
+        ServerSockets {
+            acme: None,
+            admin: None,
+            metrics: None,
+        },
+        std::future::pending(),
+        acme_proxy_server::reload::Reloads::none(),
+    )
+    .await
+    .expect_err("the worker must refuse to start")
+    .to_string()
+}
+
+/// **A second worker host with no key files refuses rather than minting a
+/// second CA.** The first run records the profile's issuer; a worker that then
+/// finds no CA certificate on its own host would otherwise generate one, and
+/// the profile would issue from two CAs over one database.
+#[tokio::test]
+async fn a_worker_without_key_files_refuses_rather_than_generating() {
+    let dir = TempDir::shared("roles-ca-missing").await;
+    write_config(&dir);
+    let config = load_from(&dir);
+    initialise(&config).await;
+
+    let host = TempDir::new("roles-ca-missing-host");
+    let (cert, key) = (host.join("ca.pem"), host.join("ca.key"));
+    write_config_with_ca(&dir, &host, cert.to_str().unwrap(), key.to_str().unwrap());
+    let message = worker_refusal(&load_from(&host)).await;
+
+    assert!(message.contains("rather than letting this"), "{message}");
+    assert!(!cert.exists() && !key.exists(), "no CA may be generated");
+}
+
+/// **A second worker host with another CA refuses**, naming the command that
+/// makes a change of CA deliberate; and once that has run, the new CA is the
+/// one every worker must hold.
+#[tokio::test]
+async fn a_second_worker_with_another_ca_refuses_to_start() {
+    let dir = TempDir::shared("roles-ca-other").await;
+    write_config(&dir);
+    let config = load_from(&dir);
+    initialise(&config).await;
+
+    // Another host's own CA: what running `init` there would have made.
+    let host = TempDir::new("roles-ca-other-host");
+    let (cert, key) = (host.join("ca.pem"), host.join("ca.key"));
+    let other = acme_proxy_core::config::LocalCaConfig {
+        cert_path: cert.to_str().unwrap().to_string(),
+        key_path: key.to_str().unwrap().to_string(),
+        crl_path: host.join("ca.crl").to_str().unwrap().to_string(),
+        ..Default::default()
+    };
+    let scratch = Arc::new(Database::connect_in_memory().await.unwrap());
+    acme_proxy_signer::local_ca::LocalCa::load_or_generate(&other, scratch).unwrap();
+
+    write_config_with_ca(&dir, &host, cert.to_str().unwrap(), key.to_str().unwrap());
+    let message = worker_refusal(&load_from(&host)).await;
+    assert!(
+        message.contains("acme-proxy profile issuer accept default"),
+        "{message}"
+    );
+
+    // The original worker still starts: its CA is the recorded one.
+    let worker = start(&load_from(&dir), RoleSet::parse(Some("worker")).unwrap()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !worker.handle.is_finished(),
+        "the recorded CA's worker runs"
+    );
+    worker.stop().await;
 }

@@ -636,6 +636,7 @@ until it is consumed, so a listing would put live ones on a screen.
 | Command | Flags |
 | --- | --- |
 | `profile list` | `--json` |
+| `profile issuer accept <name>` | — |
 
 The ACME endpoints this configuration mounts, name-sorted, each with the two
 facts that decide whether it is safe to expose and then its directory URL —
@@ -660,6 +661,23 @@ too — which makes it a pre-restart check as well as a listing. The panel's
 *mounted* profiles instead, so between an edit and its `SIGHUP` the two
 legitimately disagree, and only this one can be pointed at a configuration the
 server would not start on.
+
+`profile issuer accept <name>` is the **deliberate change of a `local_ca`
+profile's CA**. The database records which CA each profile issues from, and a
+worker whose CA is not that one refuses to start, as does one with no CA at all
+once one is recorded (see [Local CA → One CA per
+profile](../signers/local_ca.md#one-ca-per-profile)). After replacing `ca.pem`
+and `ca.key` on purpose, run this once: it reads the configured certificate,
+shows the issuer recorded before and the one it will record, and asks. It
+writes a `profile_issuer_accepted` row to the [audit trail](audit.md). It reads
+the certificate only, never the key, so any uid that can read `ca.pem` may run
+it.
+
+```console
+$ acme-proxy profile issuer accept default
+Profile `default`: record CA 3f1c… (from `/var/lib/acme-proxy/ca.pem`) in place of 9a07…? Every worker will then refuse the old CA. [y/N] y
+Profile `default` now issues from CA 3f1c….
+```
 
 ## Upstream account management
 

@@ -69,6 +69,7 @@ pub enum AuditEvent {
     NonceCleanupCompleted,
     AuditPruned,
     DatabaseTransferred,
+    ProfileIssuerAccepted,
 }
 
 impl AuditEvent {
@@ -107,6 +108,7 @@ impl AuditEvent {
             Self::NonceCleanupCompleted => "nonce_cleanup_completed",
             Self::AuditPruned => "audit_pruned",
             Self::DatabaseTransferred => "database_transferred",
+            Self::ProfileIssuerAccepted => "profile_issuer_accepted",
         }
     }
 
@@ -146,7 +148,8 @@ impl AuditEvent {
             | Self::JobAdvanced
             | Self::NonceCleanupCompleted
             | Self::AuditPruned
-            | Self::DatabaseTransferred => "success",
+            | Self::DatabaseTransferred
+            | Self::ProfileIssuerAccepted => "success",
         }
     }
 
@@ -201,11 +204,12 @@ pub const ALL_AUDIT_EVENTS: &[AuditEvent] = &[
     AuditEvent::NonceCleanupCompleted,
     AuditEvent::AuditPruned,
     AuditEvent::DatabaseTransferred,
+    AuditEvent::ProfileIssuerAccepted,
 ];
 
 /// How many variants [`AuditEvent`] has, asserted against
 /// [`ALL_AUDIT_EVENTS`] at compile time.
-const EVENT_COUNT: usize = 27;
+const EVENT_COUNT: usize = 28;
 
 const _: () = assert!(
     ALL_AUDIT_EVENTS.len() == EVENT_COUNT,
@@ -247,7 +251,8 @@ const fn event_count_is_exhaustive(event: AuditEvent) -> usize {
         AuditEvent::JobAdvanced => 24,
         AuditEvent::NonceCleanupCompleted => 25,
         AuditEvent::AuditPruned => 26,
-        AuditEvent::DatabaseTransferred => EVENT_COUNT,
+        AuditEvent::DatabaseTransferred => 27,
+        AuditEvent::ProfileIssuerAccepted => EVENT_COUNT,
     }
 }
 

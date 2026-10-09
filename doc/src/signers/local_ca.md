@@ -188,6 +188,28 @@ organization = "Example Corp"
 country      = "US"
 ```
 
+## One CA per profile
+
+The database records the CA each `local_ca` profile issues from, by the
+SHA-256 of its public key (the `issuer` id the CRL uses), and **a worker checks
+its CA against that record before it signs anything**:
+
+- **The first run records it.** `acme-proxy init`, or the first worker, records
+  whatever CA it loads or generates. A deployment upgraded from an earlier
+  release records its existing CA the first time a worker starts.
+- **A worker with another CA refuses to start**, naming the profile, both
+  issuer ids and the command below. Two hosts that each ran `init` would
+  otherwise issue for one profile from two CAs, each trusted only by the
+  clients that installed it.
+- **A worker with no CA refuses rather than generating one**, once an issuer is
+  recorded. Copy `ca.pem` and `ca.key` from an existing worker (or attach the
+  same token) instead.
+
+To change a profile's CA on purpose, replace its files, then run
+[`acme-proxy profile issuer accept <name>`](../operations/cli.md#profiles)
+before restarting the workers. A reload that would load another CA is refused
+the same way, with the running configuration left serving.
+
 ## Hardware-backed keys
 
 The CA key described above is a file, and a file can be copied. If the CA is one

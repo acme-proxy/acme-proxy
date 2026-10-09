@@ -169,6 +169,11 @@ erDiagram
         integer expires_at "consumed by the callback"
         integer max_age "a step-up's auth_time bound"
     }
+    profile_issuers {
+        text profile PK
+        text issuer "SHA-256 of the CA's SPKI"
+        integer recorded_at "changed only by profile issuer accept"
+    }
     admin_login_buckets {
         text scope PK "password or oidc_start"
         text bucket PK "an IPv4 address or an IPv6 /64"
@@ -185,7 +190,8 @@ edges that are not drawn**:
   `upstream_orders` hanging off an order and `eab_keys` and `nonces` standing
   alone.
 - `audit_log`, `jobs` and a local CA's `revocations`, `crls`, plus the relay's
-  `http01_tokens`, all connected to nothing. That is policy in each case, not an
+  `http01_tokens` and each profile's recorded CA in `profile_issuers`, all
+  connected to nothing. That is policy in each case, not an
   omission. The audit trail and the revocation ledger must outlive what they
   describe, the job queue is generic (both below), and the last three are state
   every role process shares ([ADR

@@ -579,7 +579,11 @@ mod tests {
             acme_proxy_core::cert::issuer_id(b"any key").len()
         );
 
-        for (table, column) in [("revocations", "issuer"), ("crls", "issuer")] {
+        for (table, column) in [
+            ("revocations", "issuer"),
+            ("crls", "issuer"),
+            ("profile_issuers", "issuer"),
+        ] {
             assert_eq!(
                 declared_type(&database, table, column).await,
                 expected,

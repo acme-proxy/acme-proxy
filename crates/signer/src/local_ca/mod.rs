@@ -23,6 +23,7 @@
 
 mod ca;
 mod crl;
+pub mod identity;
 mod info;
 pub mod key;
 mod policy;

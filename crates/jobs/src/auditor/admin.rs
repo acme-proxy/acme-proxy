@@ -478,6 +478,23 @@ pub fn database_transferred(actor: Actor, client: ClientContext, rows: u64) -> A
     )
 }
 
+/// `profile_issuer_accepted`, under the profile whose CA changed, naming the
+/// issuer recorded before (if any) and the one recorded now.
+#[must_use]
+pub fn profile_issuer_accepted(
+    actor: Actor,
+    client: ClientContext,
+    profile: &str,
+    previous: Option<&str>,
+    issuer: &str,
+) -> AuditRecord {
+    let detail = match previous {
+        Some(previous) => format!("issuer {previous} replaced by {issuer}"),
+        None => format!("issuer {issuer} recorded"),
+    };
+    base(AuditEvent::ProfileIssuerAccepted, profile, actor, client).with_detail(detail)
+}
+
 /// `nonce_cleanup_completed`, carrying how many nonces went. Both front ends
 /// write it only when the sweep removed something.
 #[must_use]

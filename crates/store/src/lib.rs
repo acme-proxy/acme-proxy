@@ -39,6 +39,7 @@ pub mod id;
 pub mod job;
 pub mod nonce;
 pub mod order;
+pub mod profile_issuer;
 pub mod query;
 pub mod revocation;
 pub mod sql;

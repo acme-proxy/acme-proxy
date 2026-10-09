@@ -176,6 +176,11 @@ pub const TABLES: &[TableSpec] = &[
         ],
     },
     TableSpec {
+        name: "profile_issuers",
+        key: &["profile"],
+        columns: &[("profile", Text), ("issuer", Text), ("recorded_at", I64)],
+    },
+    TableSpec {
         name: "admin_login_buckets",
         key: &["scope", "bucket"],
         columns: &[

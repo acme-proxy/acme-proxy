@@ -556,9 +556,29 @@ pub(super) fn prepare_reload(
     // is left out, and an edited `[signer]` is rebuilt over the live instance's
     // in-memory state — see `signer::build_backends`. It is also the one step
     // that can make a network call, hence this whole function's blocking thread.
+    //
+    // A worker checks each `local_ca` profile's CA against the issuer the
+    // database records for it, before (so a missing CA is refused rather than
+    // generated) and after (so one just generated is recorded) — startup's
+    // two passes, `local_ca::identity`. On this blocking thread, so the async
+    // check is driven with `block_on` rather than awaited.
+    let worker = roles.has(crate::ProcessRole::Worker);
+    let check_issuers = || {
+        if !worker {
+            return Ok(());
+        }
+        tokio::runtime::Handle::current()
+            .block_on(acme_proxy_signer::local_ca::identity::check_issuers(
+                &next_resolved,
+                &assembly.database,
+            ))
+            .map_err(|error| ReloadError::Build(error.to_string()))
+    };
+    check_issuers()?;
     let parts = assembly
         .build_parts(&next_resolved, &next)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
+    check_issuers()?;
     let generation = build_generation(roles, &next, &next_resolved, assembly, &parts)
         .map_err(|error| ReloadError::Build(error.to_string()))?;
 

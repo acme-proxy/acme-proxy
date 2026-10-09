@@ -291,6 +291,13 @@ pub async fn serve_on_with_reloads(
     let resolved = config.resolve_profiles().inspect_err(|error| {
         error!(event = "profile_init_failed", outcome = "failure", error = %error);
     })?;
+    // A worker's CA must be the one this deployment issues from: checked
+    // before the backends are built, so a worker with no key files refuses
+    // rather than generating a second CA, and again after, so a CA a first run
+    // just generated is recorded. See `local_ca::identity`.
+    if roles.has(ProcessRole::Worker) {
+        acme_proxy_signer::local_ca::identity::check_issuers(&resolved, &database).await?;
+    }
     // Everything that outlives a configuration generation — the signer backends
     // above all, which are carried rather than rebuilt. See
     // `crate::Assembly`.
@@ -306,6 +313,7 @@ pub async fn serve_on_with_reloads(
     })?;
     let assembly = Arc::new(assembly);
     if roles.has(ProcessRole::Worker) {
+        acme_proxy_signer::local_ca::identity::check_issuers(&resolved, &database).await?;
         store_first_crls(&parts.signers).await;
     }
 

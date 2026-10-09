@@ -438,7 +438,7 @@ pub async fn dispatch(
             nonce::run_nonce_command(command, yes, reader, config, database).await
         }
         Command::Profile { command } => {
-            profile::run_profile_command(command, palette, config).await
+            profile::run_profile_command(command, yes, palette, reader, config, database).await
         }
         Command::Eab { command } => {
             eab::run_eab_command(command, yes, palette, reader, config, database).await
@@ -513,9 +513,23 @@ pub async fn init(
 ) -> Result<(), CliError> {
     migrate(palette, database.clone()).await?;
 
+    // `serve`'s two passes around building the backends: an `init` on a host
+    // without the deployment's CA refuses rather than minting a second one,
+    // and the CA a first `init` generates is recorded. See
+    // `acme_proxy_signer::local_ca::identity`.
+    let resolved = config
+        .resolve_profiles()
+        .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
+    let check = async || {
+        acme_proxy_signer::local_ca::identity::check_issuers(&resolved, &database)
+            .await
+            .map_err(|error| CliError::failed(error.to_string()))
+    };
+    check().await?;
     let queue = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let profiles = acme_proxy_server::profile::build_all(config, database, &queue)
+    let profiles = acme_proxy_server::profile::build_all(config, database.clone(), &queue)
         .map_err(|error| CliError::failed(error.to_string()))?;
+    check().await?;
 
     for profile in &profiles {
         println!("Profile `{}` is ready.", profile.name);
