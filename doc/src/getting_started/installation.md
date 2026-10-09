@@ -55,7 +55,7 @@ The per-shell paths are in the
 To pin a version, or to move to a specific one later, name it:
 
 ```bash
-cargo install acme-proxy --version 0.6.0
+cargo install acme-proxy --version 0.6.1
 ```
 
 Upgrading is `cargo install acme-proxy --force`. Before doing so across a minor
@@ -110,12 +110,12 @@ Every release is published to the GitHub Container Registry as a
 multi-architecture image, for `linux/amd64` and `linux/arm64`:
 
 ```bash
-podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.1
 ```
 
 | Tag      | Points at                                                   |
 |----------|-------------------------------------------------------------|
-| `0.6.0`  | That release. It never moves.                               |
+| `0.6.1`  | That release. It never moves.                               |
 | `0.6`    | The newest `0.6.x` release: its fixes, never a new minor.   |
 | `latest` | The highest release, whatever its minor.                    |
 | `edge`   | The head of `main`, rebuilt on every merge. Not a release.  |
@@ -153,7 +153,7 @@ writable by it — the `:U` flag below is the rootless-Podman way; see
 podman run -d \
   -p 3000:3000 \
   -v ./data:/data:U \
-  ghcr.io/acme-proxy/acme-proxy:0.6.0
+  ghcr.io/acme-proxy/acme-proxy:0.6.1
 ```
 
 Drop a `config.toml` into `./data` (it must define at least one profile — see
@@ -166,7 +166,7 @@ podman run -d \
   -v ./data:/data:U \
   -e ACME_PROXY_PROFILES__DEFAULT__ENABLED=true \
   -e ACME_PROXY_SERVER__BASE_URL=https://acme.example.com \
-  ghcr.io/acme-proxy/acme-proxy:0.6.0
+  ghcr.io/acme-proxy/acme-proxy:0.6.1
 ```
 
 ### Verifying the image
@@ -176,7 +176,7 @@ the repository, the commit and the workflow run that built the image. Check it
 with the [GitHub CLI](https://cli.github.com/) before you run the image:
 
 ```bash
-gh attestation verify oci://ghcr.io/acme-proxy/acme-proxy:0.6.0 \
+gh attestation verify oci://ghcr.io/acme-proxy/acme-proxy:0.6.1 \
   --repo acme-proxy/acme-proxy
 ```
 

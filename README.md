@@ -16,7 +16,7 @@ an upstream public CA, or a legacy PKI reached through a script.
 📖 **[Full documentation](https://acme-proxy.github.io/acme-proxy/)** — start with the
 [Quick Start](https://acme-proxy.github.io/acme-proxy/getting_started/quick_start.html).
 
-> **Current release: 0.6.0.** Before 1.0.0 the database schema is the *only*
+> **Current release: 0.6.1.** Before 1.0.0 the database schema is the *only*
 > compatibility guarantee: `crates/store/migrations/` is append-only, so upgrading is a
 > matter of starting the new binary against the existing database. Everything
 > else — configuration keys, profile names, the JSON admin API, log event names,
@@ -161,8 +161,8 @@ Or pull the container image, published for `linux/amd64` and `linux/arm64` on
 every release:
 
 ```bash
-podman pull ghcr.io/acme-proxy/acme-proxy:0.6.0   # or: docker pull
-podman run --rm -p 3000:3000 -v ./data:/data:U ghcr.io/acme-proxy/acme-proxy:0.6.0   # runs as non-root
+podman pull ghcr.io/acme-proxy/acme-proxy:0.6.1   # or: docker pull
+podman run --rm -p 3000:3000 -v ./data:/data:U ghcr.io/acme-proxy/acme-proxy:0.6.1   # runs as non-root
 ```
 
 The repository's `Containerfile` builds the same image yourself (a release build,

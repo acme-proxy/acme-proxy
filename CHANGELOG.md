@@ -32,6 +32,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-10-09
+
 ### Fixed
 
 - **A challenge URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)
@@ -2714,7 +2716,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...HEAD
+[0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/acme-proxy/acme-proxy/compare/0.3.0...0.4.0
