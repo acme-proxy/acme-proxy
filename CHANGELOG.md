@@ -32,6 +32,15 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Packaging
+
+- **The image provides `/data/ca`, `/data/ca-key` and `/data/admin-tls`,
+  owned by its user** (`ca-key` mode `0700`). They are the mount points of the
+  role-split Compose recipe's named volumes. Docker gives a new named volume the
+  owner of the image directory it is mounted on, and creates it owned by root
+  when there is none, so on 0.6.0 a volume mounted elsewhere left `init`
+  failing with `Permission denied` (os error 13) as the image's non-root user.
+
 ## [0.6.0] — 2026-10-08
 
 ### Breaking
