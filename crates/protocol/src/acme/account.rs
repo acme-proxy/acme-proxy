@@ -142,6 +142,21 @@ impl AccountService<'_> {
             });
         }
 
+        // RFC 8555 §7.3.1: a key that already holds an account gets it back with
+        // a 200. The conditions below (terms, binding, contact format) are for
+        // creating an account, so they are asked only when none exists yet.
+        let existing = Account::find_by_pubkey(&profile.name, pubkey, database)
+            .await
+            .map_err(|error| {
+                error!(event = "account_existing_lookup_failed", outcome = "failure", error = %error);
+                Problem::server_internal("Account lookup failed")
+            })?;
+        if let Some(account) = existing {
+            refuse_deactivated(&account, false)?;
+            info!(event = "account_found", outcome = "success", account_id = %account.id, status = %StatusCode::OK);
+            return Ok((account, false));
+        }
+
         // Checked before the EAB, so a client with a typo'd address hears about
         // the typo rather than having its credential refused for a reason that
         // is not the credential's.
