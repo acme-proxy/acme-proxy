@@ -38,8 +38,15 @@ migrated configuration before restarting.
   account object it creates, as RFC 8555 §7.3.4 requires, exactly as the
   request sent it. It is reflected only in the `201` for an account this
   request created at an endpoint that enforces EAB: a `200` for a key that
-  already has an account verifies the binding but does not echo it, and an
-  endpoint without EAB never checks one, so never vouches for it.
+  already has an account does not read the binding, and an endpoint without
+  EAB never checks one, so neither vouches for it.
+- **`newAccount` for a key that already holds an account now answers `200` with
+  that account**, as RFC 8555 §7.3.1 requires, instead of asking again for the
+  terms of service or the external account binding. Those remain conditions for
+  creating an account. A binding is not read at all for such a key, so an
+  account whose EAB credential was since revoked or deleted gets its account
+  back too, as revoking never disturbed existing accounts; `account deactivate`
+  or `eab delete --deactivate-accounts` is what shuts one out.
 
 ### Security
 
