@@ -32,6 +32,14 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`newAccount` signed with a `kid` is now refused as `malformed`.** RFC 8555
+  §6.2 requires the public key in a `jwk` field on every `newAccount` request,
+  and a `kid` on every other one; the server enforced the second half only. The
+  refusal also covers `onlyReturnExisting`, and comes before the nonce is
+  spent or the account's `last_seen_*` moves. Clients send a `jwk` here already.
+
 ## [0.6.1] — 2026-10-09
 
 ### Fixed

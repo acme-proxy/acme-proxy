@@ -83,6 +83,17 @@ impl AccountService<'_> {
     ) -> Result<(Account, bool), Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
 
+        // RFC 8555 §6.2: "For newAccount requests ... there MUST be a `jwk`
+        // field". A request that names an account by `kid` instead is refused,
+        // `onlyReturnExisting` included.
+        if header.jwk.is_none() {
+            warn!(event = "account_creation_without_jwk", outcome = "failure");
+            return Err(Problem::malformed(
+                "newAccount requires the public key in a jwk field, not a kid",
+            )
+            .into());
+        }
+
         if payload.only_return_existing {
             let account = Account::find_by_pubkey(&profile.name, pubkey, database)
                 .await
