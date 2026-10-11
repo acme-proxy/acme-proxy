@@ -44,6 +44,12 @@ migrated configuration before restarting.
   with the account object, instead of `malformed`. Clients that look up their
   account this way could not. Nothing is changed by a read, and a deactivated
   account or another account's key is still refused as `unauthorized`.
+- **A challenge response that is not a JSON object is now refused as
+  `malformed`**, and starts no validation. RFC 8555 §7.5.1 has the client send
+  `{}` and requires an error for an invalid response; the server used to start
+  validating on any JSON value, `[]` included. An object with members is still
+  accepted and its members ignored. `null` is accepted too, though the RFC does
+  not allow it: Pebble accepts it and step-ca does not read the body.
 
 ## [0.6.1] — 2026-10-09
 
