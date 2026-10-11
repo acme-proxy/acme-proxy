@@ -99,6 +99,13 @@ migrated configuration before restarting.
   topology. If the counter cannot be read, a sign-in is refused (`500`, logged
   as `admin_login_limiter_failed`) rather than let through uncounted.
 
+### Fixed
+
+- **`newAccount` signed with a `kid` is now refused as `malformed`.** RFC 8555
+  §6.2 requires the public key in a `jwk` field on every `newAccount` request,
+  and a `kid` on every other one; the server enforced the second half only. The
+  refusal also covers `onlyReturnExisting`. Clients send a `jwk` here already.
+
 ## [0.6.1] — 2026-10-09
 
 ### Fixed
