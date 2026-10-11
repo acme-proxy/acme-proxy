@@ -115,12 +115,25 @@ async fn read_response(
 /// Triggers a challenge, returning the raw response so a test can read the
 /// `Link` header as well as the body.
 async fn trigger(app: &Router, signer: &impl TestSigner, account_url: &str, url: &str) -> Response {
+    respond_with(app, signer, account_url, url, &json!({})).await
+}
+
+/// Answers a challenge with `payload`, the way a client says it is ready.
+/// [`trigger`] is the usual answer, `{}`.
+async fn respond_with(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    url: &str,
+    payload: &Value,
+) -> Response {
     let nonce = fetch_nonce(app).await;
     let path = url.strip_prefix(common::HOST).unwrap();
+
     post(
         app,
         path,
-        signer.sign_kid(account_url, url, &nonce, &json!({})),
+        signer.sign_kid(account_url, url, &nonce, payload),
     )
     .await
 }
@@ -1363,5 +1376,80 @@ async fn a_challenge_under_an_expired_authorization_or_invalid_order_reads_witho
             detail,
         )
         .await;
+    }
+}
+
+/// The URL of a `pending` http-01 challenge under a new order for `name`.
+async fn pending_challenge(
+    app: &Router,
+    signer: &impl TestSigner,
+    account_url: &str,
+    name: &str,
+) -> String {
+    let order = body_json(new_order(app, signer, account_url, &[name]).await).await;
+    let authz_url = order["authorizations"][0].as_str().unwrap();
+    let authz = read(app, signer, account_url, authz_url).await;
+
+    challenge_url_of_type(&authz, "http-01")
+}
+
+/// RFC 8555 §7.5.1: the client answers with a JSON object, and "if the client's
+/// response is invalid for any reason ... the server MUST return an HTTP
+/// error". Something that is not an object starts nothing.
+#[tokio::test]
+async fn a_response_that_is_not_an_object_is_refused_and_starts_nothing() {
+    let validator = BlockingValidator::gating_the_first("http-01");
+    let (calls, _gate, _entered) = validator.handles();
+    let (app, _db) = test_app_with_challenges(
+        Config::default(),
+        challenges_with(&["http-01"], vec![Arc::new(validator)]),
+    )
+    .await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    let payloads = [json!([]), json!("text"), json!(1), json!(true)];
+    for (index, payload) in payloads.iter().enumerate() {
+        let name = format!("site-{index}.example.com");
+        let url = pending_challenge(&app, &signer, &account_url, &name).await;
+
+        let response = respond_with(&app, &signer, &account_url, &url, payload).await;
+
+        common::acme::assert_problem(
+            response,
+            StatusCode::BAD_REQUEST,
+            "urn:ietf:params:acme:error:malformed",
+        )
+        .await;
+        assert_eq!(
+            read(&app, &signer, &account_url, &url).await["status"],
+            "pending"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+/// An object is a response whatever its members, which the server ignores
+/// (§7.5.1). `null` is not an object, but it is accepted on purpose: Pebble
+/// accepts it and step-ca never reads the body.
+#[tokio::test]
+async fn an_object_or_null_response_starts_validation() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+
+    let payloads = [
+        json!({}),
+        json!({ "keyAuthorization": "ignored" }),
+        json!(null),
+    ];
+    for (index, payload) in payloads.iter().enumerate() {
+        let name = format!("site-{index}.example.com");
+        let url = pending_challenge(&app, &signer, &account_url, &name).await;
+
+        let response = respond_with(&app, &signer, &account_url, &url, payload).await;
+
+        assert_eq!(response.status(), StatusCode::OK, "{payload}");
+        assert_ne!(body_json(response).await["status"], "pending", "{payload}");
     }
 }
