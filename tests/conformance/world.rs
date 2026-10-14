@@ -3,8 +3,11 @@
 //! target, and the ways a request can be shaped or deliberately broken.
 
 use axum::Router;
+use axum::body::Body;
+use axum::http::Request;
 use axum::response::Response;
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 use crate::common::acme::{self, path_of, post, url};
 use crate::common::raw::RawJws;
@@ -299,4 +302,69 @@ pub async fn send_well_formed(world: &World, target: Target) -> Response {
     }
 
     post(&world.app, &path_of(&target.url(world)), request.signed()).await
+}
+
+/// A well-formed request sent with a different `Content-Type` than the one
+/// RFC 8555 §6.2 requires.
+pub async fn send_with_content_type(world: &World, target: Target, content_type: &str) -> Response {
+    let nonce = fetch_nonce(&world.app).await;
+    let body = target.request(world, &nonce).signed();
+
+    world
+        .app
+        .clone()
+        .oneshot(
+            Request::post(path_of(&target.url(world)))
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// An unsigned GET of a target's URL.
+pub async fn get(world: &World, target: Target) -> Response {
+    world
+        .app
+        .clone()
+        .oneshot(
+            Request::get(path_of(&target.url(world)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// A correctly signed body in the *general* JWS serialization, with a
+/// `signatures` array instead of the flattened `protected`/`signature` pair.
+pub async fn send_general_serialization(world: &World, target: Target) -> Response {
+    let nonce = fetch_nonce(&world.app).await;
+    let flattened: Value = serde_json::from_str(&target.request(world, &nonce).signed()).unwrap();
+    let body = json!({
+        "payload": flattened["payload"],
+        "signatures": [{
+            "protected": flattened["protected"],
+            "signature": flattened["signature"],
+        }],
+    });
+
+    post(&world.app, &path_of(&target.url(world)), body.to_string()).await
+}
+
+/// An unsigned request with the given method to a target's URL.
+pub async fn send_with_method(world: &World, target: Target, method: &str) -> Response {
+    world
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path_of(&target.url(world)))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
