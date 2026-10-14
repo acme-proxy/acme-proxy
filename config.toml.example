@@ -330,6 +330,12 @@ reverse_dns_timeout_ms = 2000       # ACME_PROXY_AUDIT__REVERSE_DNS_TIMEOUT_MS
 # set it where a retention policy says otherwise. `acme-proxy audit cleanup
 # --older-than <days>` is the same sweep run by hand.
 retention_days = 0                  # ACME_PROXY_AUDIT__RETENTION_DAYS
+# Also write one `acme_request_refused` row for every refused ACME request
+# (a 4xx or 5xx answer on a profile), including those refused before an
+# account or order exists. Off by default: anyone who can reach the server can
+# then add rows as fast as they send requests. Turn it on only where the
+# network is restricted and retention_days is set.
+record_refusals = false             # ACME_PROXY_AUDIT__RECORD_REFUSALS
 
 [jobs]
 # The durable background-work queue: the `jobs` table plus the one runner that
