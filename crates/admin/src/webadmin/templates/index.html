@@ -24,9 +24,9 @@
     </a>
     {#- The count is the last day; the list it opens is every refusal, newest
         first, which puts that day at the top. -#}
-    <a class="stat{% if stats.refusals > 0 %} danger{% endif %}" href="/ui/audit?outcome=failure">
+    <a class="stat{% if stats.refusals > 0 %} danger{% endif %}" href="/ui/audit?{% if refusal_audit_enabled %}event=acme_request_refused{% else %}outcome=failure{% endif %}">
       <div class="value">{{ stats.refusals }}</div>
-      <div class="label">Refusals in the last 24 h</div>
+      <div class="label">{% if refusal_audit_enabled %}Refused ACME requests{% else %}Recorded CA failures{% endif %} in the last 24 h</div>
     </a>
   </div>
 

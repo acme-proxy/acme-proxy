@@ -7,9 +7,8 @@ table and surfaces it in three places — the CLI, the JSON API and the panel.
 
 There is deliberately **no `audit.enabled`**. Recording who asked the CA to sign
 something, and who changed its stored state, is not a feature of this server, it
-is what a CA does. The only thing an operator can switch off is the reverse-DNS
-lookup, because that one costs a network round trip and there are estates where
-it can never succeed.
+is what a CA does. Reverse-DNS lookup can be turned off. Recording each refused
+ACME HTTP response can be turned on for private deployments.
 
 ## What gets recorded
 
@@ -22,8 +21,9 @@ Two different things, in two different places.
 | `accounts` | `created_ip` / `created_ptr` — where `newAccount` was called from, frozen at creation; `last_seen_at` / `last_seen_ip` / `last_seen_ptr` — where the key last authenticated a request |
 | `orders` | `created_ip` / `created_ptr` — where the order was opened from |
 
-**The audit log**, one row per CA action *and per refusal*, plus one per
-successful administrative action:
+**The audit log**, one row per CA action and its operation failure, plus one
+per successful administrative action. With `audit.record_refusals = true`, it
+also records one row per refused ACME HTTP response:
 
 | Event | Written when |
 |---|---|
@@ -31,6 +31,7 @@ successful administrative action:
 | `certificate_issue_failed` | finalize was refused after the order was ready — a bad CSR, a CSR/order mismatch, a filter denial, or the backend's own failure |
 | `certificate_revoked` | a revocation succeeded, whether through ACME, the CLI or the panel |
 | `certificate_revoke_failed` | a revocation was refused — including `alreadyRevoked`, an unauthorized caller, and an unknown certificate |
+| `acme_request_refused` | opt-in: a mounted profile answered 4xx or 5xx, even before an account or order exists |
 
 The refusals are the point. A stream of `certificate_revoke_failed` rows naming
 certificates that do not exist is somebody enumerating serials, which is exactly
@@ -203,6 +204,6 @@ setter and no `UPDATE` anywhere in the crate — and the primary key is
 
 ## Configuration
 
-See [`[audit]`](../configuration/reference.md#audit) for the three keys. The
+See [`[audit]`](../configuration/reference.md#audit) for the four keys. The
 section is process-wide rather than per-profile: the trail describes the CA, not
 one of its endpoints.

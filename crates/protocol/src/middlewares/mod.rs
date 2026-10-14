@@ -27,3 +27,4 @@ pub mod filter;
 pub mod index_link;
 pub mod metrics;
 pub mod nonce;
+pub mod refusal_audit;
