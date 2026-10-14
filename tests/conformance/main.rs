@@ -20,4 +20,5 @@
 mod common;
 
 mod invariants;
+mod post_as_get;
 mod world;
