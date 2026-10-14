@@ -131,6 +131,11 @@ pub(crate) async fn verify_current_password(
             // bucket on a correct password would let whoever holds one reset it
             // at will and brute-force the six digits behind it. A step-up caller
             // is in that position by definition.
+            //
+            // The slot goes back awaited, not by drop: a dropped attempt's
+            // release is spawned, and a request arriving before it lands would
+            // still see this one in flight.
+            attempt.release().await;
             Ok(())
         }
         Ok(false) => {
@@ -229,6 +234,8 @@ pub(crate) async fn reprove(
     };
     match directory.authenticate(&user.username, password).await {
         Ok(identity) if user.external_id.as_deref() == Some(identity.external_id.as_str()) => {
+            // Awaited, as in `verify_current_password`.
+            attempt.release().await;
             Ok(())
         }
         Err(crate::identity::SignInError::Unreachable(detail)) => {
