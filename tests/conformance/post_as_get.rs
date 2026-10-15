@@ -11,7 +11,10 @@ use tower::ServiceExt;
 use crate::common::acme::{self, post};
 use crate::common::raw::RawJws;
 use crate::common::{EcSigner, body_json, fetch_nonce, p};
+use crate::invariants::assert_invariants;
 use crate::world::{Payload, READABLE, Target, World, send, send_well_formed};
+
+const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
 
 /// §6.3 and §7.4.2 make these reads a POST-as-GET, and a read must not
 /// change what it reads.
@@ -45,8 +48,7 @@ async fn finalize_refuses_an_empty_payload_and_leaves_the_order_ready() {
     let request = RawJws::with_kid(&signer, &account, finalize_url, &nonce);
     let response = post(&app, &acme::path_of(finalize_url), request.signed()).await;
 
-    assert!(response.status().is_client_error(), "{}", response.status());
-
+    acme::assert_problem(response, StatusCode::BAD_REQUEST, MALFORMED).await;
     let order = acme::post_as_get(&app, &signer, &account, &order_url).await;
     assert_eq!(order["status"], "ready");
 }
@@ -58,7 +60,7 @@ async fn revoke_cert_refuses_an_empty_payload() {
 
     let response = send(&world, Target::RevokeCert, Payload::Empty, None).await;
 
-    assert!(response.status().is_client_error(), "{}", response.status());
+    acme::assert_problem(response, StatusCode::BAD_REQUEST, MALFORMED).await;
 }
 
 /// §6.3 defines a POST-as-GET only with a zero-length payload, so a
@@ -69,13 +71,13 @@ async fn a_read_only_resource_refuses_a_payload() {
     let read_only = [Target::Order, Target::Certificate, Target::OrdersList];
 
     for target in read_only {
-        let response = send(&world, target, Payload::EmptyObject, None).await;
+        let label = format!("{target:?} with {{}}");
 
-        assert!(
-            response.status().is_client_error(),
-            "{target:?} answered {}",
-            response.status()
-        );
+        let response = send(&world, target, Payload::EmptyObject, None).await;
+        let answer = assert_invariants(&label, response).await;
+
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{label}");
+        assert_eq!(answer.problem_type(), MALFORMED, "{label}");
     }
 }
 
@@ -94,18 +96,30 @@ async fn pre_authorization_is_neither_advertised_nor_served() {
     assert!(body_json(directory).await.get("newAuthz").is_none());
 
     let response = post_to(&world, "/newAuthz").await;
-    assert!(response.status().is_client_error(), "{}", response.status());
+    acme::assert_problem(response, StatusCode::NOT_FOUND, MALFORMED).await;
 }
 
 /// RFC 9773 §4.1 defines renewal information as an unauthenticated GET.
-/// There is no POST form, so a signed POST is refused.
+/// There is no POST form, so a signed POST is refused with `405`.
+///
+/// The certificate is real, and a GET of the same URL succeeds, so the method
+/// is the only reason left for the refusal.
 #[tokio::test]
 async fn renewal_information_cannot_be_posted() {
     let world = World::new().await;
+    let id = acme_proxy_core::cert::ari_cert_id(&world.certificate_der).unwrap();
+    let path = format!("/renewalInfo/{id}");
 
-    let response = post_to(&world, "/renewalInfo/not-a-real-certificate-id").await;
+    let read = world
+        .app
+        .clone()
+        .oneshot(Request::get(p(&path)).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK, "GET {path}");
 
-    assert!(response.status().is_client_error(), "{}", response.status());
+    let response = post_to(&world, &path).await;
+    acme::assert_problem(response, StatusCode::METHOD_NOT_ALLOWED, MALFORMED).await;
 }
 
 /// A correctly signed POST-as-GET to a path under the test profile.

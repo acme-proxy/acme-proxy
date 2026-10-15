@@ -3,14 +3,35 @@
 
 use axum::http::StatusCode;
 use axum::response::Response;
+use serde_json::Value;
 
+use crate::common::acme::url;
 use crate::common::body_json;
 use crate::world::{
-    FLAWS, PAYLOADS, Payload, READABLE, TARGETS, Target, World, send, send_well_formed,
+    FLAWS, PAYLOADS, READABLE, TARGETS, Target, World, send, send_flawed, send_well_formed,
 };
 
-/// Checks what must hold for every response, and returns its status.
-async fn assert_invariants(label: &str, response: Response) -> StatusCode {
+const BAD_ALGORITHM: &str = "urn:ietf:params:acme:error:badSignatureAlgorithm";
+
+/// What a response said, once [`assert_invariants`] has checked it.
+pub struct Answer {
+    pub status: StatusCode,
+    /// The problem document, for a refusal.
+    pub problem: Option<Value>,
+}
+
+impl Answer {
+    pub fn problem_type(&self) -> &str {
+        self.problem
+            .as_ref()
+            .and_then(|problem| problem["type"].as_str())
+            .unwrap_or_default()
+    }
+}
+
+/// Checks what must hold for every response to a POST, and returns what the
+/// response said.
+pub async fn assert_invariants(label: &str, response: Response) -> Answer {
     let status = response.status();
 
     assert!(!status.is_server_error(), "{label}: answered {status}");
@@ -18,15 +39,37 @@ async fn assert_invariants(label: &str, response: Response) -> StatusCode {
         response.headers().contains_key("replay-nonce"),
         "{label}: no Replay-Nonce on a {status} response"
     );
+    assert_links_to_the_directory(label, &response);
 
-    if status.is_client_error() {
-        assert_is_problem_document(label, response).await;
-    }
+    let problem = if status.is_client_error() {
+        Some(assert_is_problem_document(label, response).await)
+    } else {
+        None
+    };
 
-    status
+    Answer { status, problem }
 }
 
-async fn assert_is_problem_document(label: &str, response: Response) {
+/// §7.1: "The 'index' link relation is present on all resources other than
+/// the directory and indicates the URL of the directory." None of these
+/// routes is the directory, so every answer, a refusal included, links to this
+/// profile's directory.
+fn assert_links_to_the_directory(label: &str, response: &Response) {
+    let expected = format!("<{}>;rel=\"index\"", url("/directory"));
+    let links: Vec<&str> = response
+        .headers()
+        .get_all("link")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+
+    assert!(
+        links.contains(&expected.as_str()),
+        "{label}: no {expected} among the Link headers {links:?}"
+    );
+}
+
+async fn assert_is_problem_document(label: &str, response: Response) -> Value {
     let content_type = response
         .headers()
         .get("content-type")
@@ -44,39 +87,57 @@ async fn assert_is_problem_document(label: &str, response: Response) {
         kind.starts_with("urn:ietf:params:acme:error:"),
         "{label}: problem type {kind:?} is not an ACME error"
     );
+
+    problem
 }
 
-/// The control that proves the requests built here can succeed at all.
+/// The control that proves the requests built here can succeed at all. Its
+/// answers go through the same checks as every other answer.
 #[tokio::test]
 async fn a_well_formed_request_is_accepted() {
     let world = World::new().await;
 
     for target in READABLE {
         let response = send_well_formed(&world, target).await;
-        let status = assert_invariants(&format!("{target:?}"), response).await;
-        assert_eq!(status, StatusCode::OK, "{target:?} read");
+        let answer = assert_invariants(&format!("{target:?}"), response).await;
+        assert_eq!(answer.status, StatusCode::OK, "{target:?} read");
     }
 
     let response = send_well_formed(&world, Target::NewAccount).await;
-    assert_eq!(response.status(), StatusCode::OK, "existing account");
+    let answer = assert_invariants("existing account", response).await;
+    assert_eq!(answer.status, StatusCode::OK, "existing account");
 
     let response = send_well_formed(&world, Target::NewOrder).await;
-    assert_eq!(response.status(), StatusCode::CREATED, "new order");
+    let answer = assert_invariants("new order", response).await;
+    assert_eq!(answer.status, StatusCode::CREATED, "new order");
 }
 
+/// Answering a challenge can start its validation, which in tests passes at
+/// once. So every challenge request gets a challenge nobody has answered yet,
+/// and no request decides what the next one meets.
 #[tokio::test]
 async fn every_payload_gets_a_well_formed_answer() {
-    let world = World::new().await;
+    let mut world = World::new().await;
 
     for target in TARGETS {
         for payload in PAYLOADS {
+            if matches!(target, Target::Challenge) {
+                world.replace_the_challenge().await;
+            }
             let label = format!("{target:?} with {payload:?}");
+
             let response = send(&world, target, payload, None).await;
+
             assert_invariants(&label, response).await;
         }
     }
 }
 
+/// Each flaw is answered with its own status and problem type on every route
+/// (see [`Flaw::accepted_answers`], which also marks the two answers that still
+/// need fixing). The request carries a payload the route would act on, so a
+/// route that stopped checking the flaw would answer something else and fail
+/// here.
 #[tokio::test]
 async fn every_flaw_is_refused_with_a_well_formed_problem() {
     let world = World::new().await;
@@ -84,10 +145,35 @@ async fn every_flaw_is_refused_with_a_well_formed_problem() {
     for target in TARGETS {
         for flaw in FLAWS.into_iter().filter(|flaw| flaw.applies_to(target)) {
             let label = format!("{target:?} with {flaw:?}");
-            let response = send(&world, target, Payload::Empty, Some(flaw)).await;
-            let status = assert_invariants(&label, response).await;
 
-            assert!(status.is_client_error(), "{label}: answered {status}");
+            let response = send_flawed(&world, target, flaw).await;
+            let answer = assert_invariants(&label, response).await;
+
+            let accepted = flaw.accepted_answers();
+            assert!(
+                accepted.contains(&(answer.status, answer.problem_type())),
+                "{label}: answered {} {}, expected one of {accepted:?}",
+                answer.status,
+                answer.problem_type()
+            );
+
+            if answer.problem_type() == BAD_ALGORITHM {
+                assert_lists_the_algorithms(&label, &answer);
+            }
         }
     }
+}
+
+/// §6.2: the `badSignatureAlgorithm` problem document "MUST include an
+/// 'algorithms' field with an array of supported 'alg' values".
+fn assert_lists_the_algorithms(label: &str, answer: &Answer) {
+    let algorithms = answer
+        .problem
+        .as_ref()
+        .and_then(|problem| problem["algorithms"].as_array());
+
+    assert!(
+        algorithms.is_some_and(|list| !list.is_empty()),
+        "{label}: no algorithms listed"
+    );
 }

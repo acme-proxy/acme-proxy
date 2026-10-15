@@ -12,7 +12,7 @@
 use base64::prelude::*;
 use serde_json::{Map, Value, json};
 
-use super::{TestSigner, flattened_jws};
+use super::{TestSigner, build_jws_parts};
 
 pub struct RawJws<'a> {
     signer: &'a dyn TestSigner,
@@ -90,22 +90,20 @@ impl<'a> RawJws<'a> {
 
     /// The request, signed by a different key than the one it names.
     pub fn signed_by(&self, signer: &dyn TestSigner) -> String {
-        let protected = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(&self.header).unwrap());
-        let input = format!("{protected}.{}", self.payload_segment);
-
-        flattened_jws(
-            &protected,
-            &self.payload_segment,
-            &signer.sign_input(input.as_bytes()),
-        )
+        build_jws_parts(self.protected(), &self.payload_segment, |input| {
+            signer.sign_input(input)
+        })
     }
 
     /// A signature that is well formed and made by the right key, but over a
     /// different message, so it cannot verify.
     pub fn with_bad_signature(&self) -> String {
-        let protected = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(&self.header).unwrap());
-        let other_message = self.signer.sign_input(b"a different message");
+        build_jws_parts(self.protected(), &self.payload_segment, |_| {
+            self.signer.sign_input(b"a different message")
+        })
+    }
 
-        flattened_jws(&protected, &self.payload_segment, &other_message)
+    fn protected(&self) -> Value {
+        Value::Object(self.header.clone())
     }
 }

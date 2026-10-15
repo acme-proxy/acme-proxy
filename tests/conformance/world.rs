@@ -1,25 +1,32 @@
 //! The server under test and the requests sent to it: one account holding an
-//! issued certificate and a pending order, the routes a signed request can
+//! issued certificate and two pending orders, the routes a signed request can
 //! target, and the ways a request can be shaped or deliberately broken.
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use axum::response::Response;
+use base64::prelude::*;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::acme::{self, path_of, post, url};
 use crate::common::raw::RawJws;
-use crate::common::{EcSigner, TestSigner, fetch_nonce, test_app};
+use crate::common::{EcSigner, TestSigner, fetch_nonce, first_certificate, make_csr, test_app};
 
-/// An account with an issued certificate and a second, still pending, order,
-/// so every kind of resource has a real URL to be requested.
+/// An account with an issued certificate and two pending orders, so every
+/// kind of resource has a real URL to be requested.
+///
+/// The challenge belongs to an order of its own. Answering it can start its
+/// validation and make that order `ready`, and the order, authorization and
+/// finalize targets must not change state under a test because of it.
 pub struct World {
     pub app: Router,
     pub signer: EcSigner,
     pub account: String,
     pub resources: Resources,
+    /// The issued certificate, DER-encoded.
+    pub certificate_der: Vec<u8>,
 }
 
 pub struct Resources {
@@ -36,30 +43,42 @@ impl World {
         let app = test_app().await;
         let signer = EcSigner::new();
 
-        let (account, issued_order_url, _) =
+        let (account, issued_order_url, chain) =
             acme::issue_certificate(&app, &signer, &["issued.example.com"]).await;
         let issued = acme::post_as_get(&app, &signer, &account, &issued_order_url).await;
 
         let (order_url, pending) =
             acme::new_order(&app, &signer, &account, &["pending.example.com"]).await;
-        let authorization = text(&pending["authorizations"][0]);
-        let authz = acme::post_as_get(&app, &signer, &account, &authorization).await;
 
         let resources = Resources {
             order: order_url,
-            authorization,
-            challenge: text(&authz["challenges"][0]["url"]),
+            authorization: text(&pending["authorizations"][0]),
+            challenge: String::new(),
             finalize: text(&pending["finalize"]),
             certificate: text(&issued["certificate"]),
             orders_list: format!("{account}/orders"),
         };
-
-        Self {
+        let mut world = Self {
             app,
             signer,
             account,
             resources,
-        }
+            certificate_der: first_certificate(&chain),
+        };
+        world.replace_the_challenge().await;
+
+        world
+    }
+
+    /// Points the challenge target at a new challenge, under a new pending
+    /// order, that nobody has answered yet.
+    pub async fn replace_the_challenge(&mut self) {
+        let name = format!("{}.example.com", uuid::Uuid::now_v7().simple());
+        let (_, order) = acme::new_order(&self.app, &self.signer, &self.account, &[&name]).await;
+        let authorization = text(&order["authorizations"][0]);
+        let authz = acme::post_as_get(&self.app, &self.signer, &self.account, &authorization).await;
+
+        self.resources.challenge = text(&authz["challenges"][0]["url"]);
     }
 }
 
@@ -152,6 +171,34 @@ impl Target {
             _ => None,
         }
     }
+
+    /// The payload a request with a flaw carries: one this route would act
+    /// on, so the flaw is the only reason left to refuse the request. An
+    /// empty payload would not do — several routes refuse it on its own, and
+    /// would still answer with an error if they stopped checking the flaw.
+    ///
+    /// The reads have none: an empty payload is what a read sends.
+    pub fn payload_for_a_flaw(self, world: &World) -> Option<Value> {
+        match self {
+            Target::NewAccount | Target::NewOrder => self.valid_payload(),
+            Target::RevokeCert => Some(json!({
+                "certificate": BASE64_URL_SAFE_NO_PAD.encode(&world.certificate_der),
+            })),
+            Target::KeyChange => {
+                let inner = json!({ "account": world.account, "oldKey": world.signer.jwk() });
+                let signed = EcSigner::new().sign_inner(&url("/keyChange"), &inner);
+
+                Some(serde_json::from_str(&signed).unwrap())
+            }
+            Target::Account | Target::Challenge => Some(json!({})),
+            // The order is still pending, so without the flaw this is
+            // `orderNotReady`, never the `malformed` several flaws answer.
+            Target::Finalize => Some(json!({ "csr": make_csr("pending.example.com") })),
+            Target::Order | Target::Authorization | Target::Certificate | Target::OrdersList => {
+                None
+            }
+        }
+    }
 }
 
 /// What the request carries as its payload.
@@ -228,6 +275,58 @@ impl Flaw {
         !(target.carries_its_key() && matches!(self, Flaw::UnknownAccount))
     }
 
+    /// The status and problem type this flaw may be answered with, on every
+    /// route. Every flaw has one answer, except the two the server answers
+    /// differently from the RFC: those accept the RFC's answer as well, so a
+    /// fix passes here unchanged, and nothing else.
+    pub fn accepted_answers(self) -> &'static [(StatusCode, &'static str)] {
+        const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
+        const UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
+        const BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
+
+        match self {
+            // §6.2 requires the JWS to be verified and names no error type.
+            Flaw::BadSignature | Flaw::SignedByAnotherKey => {
+                &[(StatusCode::UNAUTHORIZED, UNAUTHORIZED)]
+            }
+            // §6.5: a nonce the server did not issue, or has seen, is
+            // `badNonce`.
+            Flaw::ReplayedNonce | Flaw::UnknownNonce => &[(StatusCode::BAD_REQUEST, BAD_NONCE)],
+            // NEEDS FIXING (or an agreed exception): §6.5 says a nonce that is
+            // "not present" is `badNonce` too. The server answers `malformed`
+            // on purpose, as `jws_rejections` explains: `badNonce` asks the
+            // client to retry with a fresh nonce, and a client that sent none
+            // will send none again. Both answers are accepted until that is
+            // settled.
+            Flaw::MissingNonce => &[
+                (StatusCode::BAD_REQUEST, MALFORMED),
+                (StatusCode::BAD_REQUEST, BAD_NONCE),
+            ],
+            // NEEDS FIXING: §6.4 says a `url` that does not match the request
+            // is rejected "as unauthorized", with no status named. The server
+            // answers `malformed`. Both are accepted until it is fixed.
+            Flaw::WrongUrl => &[
+                (StatusCode::BAD_REQUEST, MALFORMED),
+                (StatusCode::UNAUTHORIZED, UNAUTHORIZED),
+                (StatusCode::FORBIDDEN, UNAUTHORIZED),
+            ],
+            // §6.4: the `url` member is mandatory. No error type is named.
+            Flaw::MissingUrl => &[(StatusCode::BAD_REQUEST, MALFORMED)],
+            Flaw::UnknownAccount => &[(
+                StatusCode::BAD_REQUEST,
+                "urn:ietf:params:acme:error:accountDoesNotExist",
+            )],
+            // §6.2: `none` and MAC algorithms are refused with
+            // `badSignatureAlgorithm`.
+            Flaw::AlgorithmNone | Flaw::MacAlgorithm => &[(
+                StatusCode::BAD_REQUEST,
+                "urn:ietf:params:acme:error:badSignatureAlgorithm",
+            )],
+            // §6.2: exactly one of `jwk` and `kid`. No error type is named.
+            Flaw::BothKeyForms | Flaw::NoKeyForm => &[(StatusCode::BAD_REQUEST, MALFORMED)],
+        }
+    }
+
     /// The nonce the flawed request sends.
     pub async fn nonce(self, world: &World) -> String {
         match self {
@@ -260,12 +359,21 @@ impl Flaw {
     }
 }
 
-/// Uses up a nonce in a harmless request and returns it, so the caller can
-/// send it a second time.
+/// Uses up a nonce in a read that succeeds, and returns it, so the caller can
+/// send it a second time. The read must succeed: a refused request may be
+/// refused before its nonce is consumed, and the nonce would then still be
+/// fresh.
 pub async fn spend_a_nonce(world: &World) -> String {
     let nonce = fetch_nonce(&world.app).await;
-    let request = RawJws::with_kid(&world.signer, &world.account, &world.account, &nonce);
-    post(&world.app, &path_of(&world.account), request.signed()).await;
+    let order = &world.resources.order;
+    let request = RawJws::with_kid(&world.signer, &world.account, order, &nonce);
+
+    let response = post(&world.app, &path_of(order), request.signed()).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the read that spends a nonce"
+    );
 
     nonce
 }
@@ -289,6 +397,24 @@ pub async fn send(world: &World, target: Target, payload: Payload, flaw: Option<
     };
 
     post(&world.app, &path_of(&target.url(world)), body).await
+}
+
+/// Sends a request with one flaw and the payload [`Target::payload_for_a_flaw`]
+/// gives the route.
+pub async fn send_flawed(world: &World, target: Target, flaw: Flaw) -> Response {
+    let nonce = flaw.nonce(world).await;
+    let mut request = target.request(world, &nonce);
+
+    if let Some(payload) = target.payload_for_a_flaw(world) {
+        request = request.json_payload(&payload);
+    }
+
+    post(
+        &world.app,
+        &path_of(&target.url(world)),
+        flaw.body(request, world),
+    )
+    .await
 }
 
 /// Sends a request with a payload the route accepts (or an empty one where
