@@ -116,9 +116,9 @@ pub const TARGETS: [Target; 11] = [
     Target::OrdersList,
 ];
 
-/// Resources the well-formed control reads with a POST-as-GET. The account read
-/// joins once its handler accepts an empty payload.
-pub const READABLE: [Target; 5] = [
+/// Resources the well-formed control reads with a POST-as-GET.
+pub const READABLE: [Target; 6] = [
+    Target::Account,
     Target::Order,
     Target::Authorization,
     Target::Challenge,

@@ -1,8 +1,5 @@
 //! Reading resources with an empty payload (RFC 8555 §6.3), and the routes that
 //! must refuse one. Each test names the RFC section it checks.
-//!
-//! The read of the account URL is not here yet. It arrives with the fix for
-//! that route.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
