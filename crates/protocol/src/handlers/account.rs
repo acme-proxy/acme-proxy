@@ -109,7 +109,7 @@ pub async fn post_account(
         header,
         payload,
         pubkey,
-        ..
+        account,
     }: AcmeOptionalPayload<UpdateAccountPayload>,
 ) -> Result<Json<Value>, Problem> {
     info!(
@@ -132,8 +132,12 @@ pub async fn post_account(
     };
 
     let account = match payload {
-        Some(update) => accounts.update(&id, update, &pubkey, client_ip).await?,
-        None => accounts.read(&id, &pubkey).await?,
+        Some(update) => {
+            accounts
+                .update(account, &id, update, &pubkey, client_ip)
+                .await?
+        }
+        None => accounts.read(account, &id, &pubkey).await?,
     };
     Ok(Json(account.to_json(&profile.base_url)))
 }

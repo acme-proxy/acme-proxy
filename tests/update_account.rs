@@ -246,14 +246,15 @@ async fn update_with_kid_for_unknown_account_is_account_does_not_exist() {
     );
 }
 
+/// A real account signing for an account URL that names nobody. The
+/// extractor's `kid` lookup succeeds, and the URL is not the signer's: the same
+/// `unauthorized` another account's URL gets, so a client cannot probe which
+/// account ids exist.
 #[tokio::test]
-async fn an_update_to_an_unknown_account_is_account_does_not_exist() {
+async fn an_update_to_an_unknown_account_url_is_unauthorized() {
     let app = test_app().await;
     let signer = EcSigner::new();
 
-    // A real account signing for an account URL that names nobody: the
-    // extractor's `kid` lookup succeeds, so it is the handler's own
-    // `find_by_id` that returns the problem.
     let account_url = register(&app, &signer).await;
     let fake_path = &p("/acct/00000000-0000-0000-0000-000000000000");
     // From the host, not from BASE: `fake_path` already carries the profile's
@@ -264,12 +265,12 @@ async fn an_update_to_an_unknown_account_is_account_does_not_exist() {
     let body = signer.sign_kid(&account_url, &fake_url, &nonce, &json!({ "contact": [] }));
 
     let res = post(&app, fake_path, body).await;
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    let problem = body_json(res).await;
-    assert_eq!(
-        problem["type"],
-        "urn:ietf:params:acme:error:accountDoesNotExist"
-    );
+    common::acme::assert_problem(
+        res,
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -397,10 +398,10 @@ async fn an_empty_payload_from_a_deactivated_account_is_unauthorized() {
     .await;
 }
 
-/// The read starts from the same lookup as an update, so an account URL that
-/// names nobody is `accountDoesNotExist` here too.
+/// The read starts from the same check as an update, so an account URL that
+/// names nobody is `unauthorized` here too.
 #[tokio::test]
-async fn an_empty_payload_to_an_unknown_account_is_account_does_not_exist() {
+async fn an_empty_payload_to_an_unknown_account_url_is_unauthorized() {
     let app = test_app().await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
@@ -413,8 +414,8 @@ async fn an_empty_payload_to_an_unknown_account_is_account_does_not_exist() {
 
     common::acme::assert_problem(
         res,
-        StatusCode::BAD_REQUEST,
-        "urn:ietf:params:acme:error:accountDoesNotExist",
+        StatusCode::UNAUTHORIZED,
+        "urn:ietf:params:acme:error:unauthorized",
     )
     .await;
 }

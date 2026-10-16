@@ -30,7 +30,6 @@ use acme_proxy_jobs::notify::AccountDeactivatedData;
 use acme_proxy_jobs::notify::NotifyDispatcher;
 use acme_proxy_jobs::notify::NotifyEvent;
 use acme_proxy_store::account::Account;
-use acme_proxy_store::account::pubkey_fingerprint;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::eab::Eab;
 use acme_proxy_store::order::Order;
@@ -200,21 +199,27 @@ impl AccountService<'_> {
 
     /// `POST /acct/{id}` with an empty payload (RFC 8555 §6.3): the account as
     /// it stands, for a request signed by its own key. Nothing is changed.
-    pub async fn read(&self, id: &str, pubkey: &[u8]) -> Result<Account, Error> {
-        self.owned_active(id, pubkey).await
+    pub async fn read(
+        &self,
+        cached: Option<Account>,
+        id: &str,
+        pubkey: &[u8],
+    ) -> Result<Account, Error> {
+        self.owned_active(cached, id, pubkey).await
     }
 
     /// `POST /acct/{id}` (RFC 8555 §7.3.2, §7.3.6): replaces the contact list, or
     /// deactivates the account, for a request signed by the account's own key.
     pub async fn update(
         &self,
+        cached: Option<Account>,
         id: &str,
         payload: UpdateAccountPayload,
         pubkey: &[u8],
         client_ip: Option<IpAddr>,
     ) -> Result<Account, Error> {
         let (database, profile) = (self.database, self.profile);
-        let mut account = self.owned_active(id, pubkey).await?;
+        let mut account = self.owned_active(cached, id, pubkey).await?;
 
         if let Some(status) = payload.status {
             if status != acme_proxy_store::account::DEACTIVATED {
@@ -272,49 +277,30 @@ impl AccountService<'_> {
         Ok(account)
     }
 
-    /// The account `id`, once the request is known to be signed by its own key
-    /// and the account is still active. Both reading and changing an account
-    /// start here.
-    async fn owned_active(&self, id: &str, pubkey: &[u8]) -> Result<Account, Error> {
+    /// The signer's own account, still active, provided it is the account `id`
+    /// names. Reading, changing and listing an account's orders all start here.
+    ///
+    /// The extractor has already verified the signature against the `kid`
+    /// account's stored key, so the key check is the id comparison. A URL naming
+    /// another account and one naming nobody get the same answer, so a client
+    /// cannot learn which account ids exist (see `access`'s module doc).
+    async fn owned_active(
+        &self,
+        cached: Option<Account>,
+        id: &str,
+        pubkey: &[u8],
+    ) -> Result<Account, Error> {
         let (database, profile) = (self.database, self.profile);
-
-        let account = match Account::find_by_id(&profile.name, id, database).await {
-            Ok(Some(account)) => account,
-            Ok(None) => {
-                warn!(event = "account_not_found", outcome = "failure", account_id = %id);
-                return Err(Problem::account_does_not_exist("Unknown account").into());
-            }
-            Err(error) => {
-                error!(
-                    event = "account_id_lookup_failed",
-                    outcome = "failure",
-                    account_id = %id,
-                    error = %error
-                );
-                return Err(Problem::server_internal("Account lookup failed").into());
-            }
-        };
-
-        if account.pubkey != pubkey {
+        let account = signer_account(cached, &profile.name, pubkey, database).await?;
+        if account.id.to_string() != id {
             warn!(
-                event = "account_key_mismatch",
+                event = "account_ownership_mismatch",
                 outcome = "failure",
-                account_id = %id,
-                expected_pubkey_fp = %pubkey_fingerprint(&account.pubkey),
-                actual_pubkey_fp = %pubkey_fingerprint(pubkey)
+                requested = %id,
+                signer = %account.id
             );
-            return Err(Problem::unauthorized("Signed by a different account key").into());
+            return Err(Problem::unauthorized("Not your account").into());
         }
-
-        if account.is_deactivated() {
-            warn!(
-                event = "account_deactivated_request_refused",
-                outcome = "failure",
-                account_id = %id
-            );
-            return Err(Problem::unauthorized("Account deactivated").into());
-        }
-
         Ok(account)
     }
 
@@ -395,17 +381,8 @@ impl AccountService<'_> {
         pubkey: &[u8],
         id: &str,
     ) -> Result<Vec<Order>, Error> {
-        let (database, profile) = (self.database, self.profile);
-        let account = signer_account(cached, &profile.name, pubkey, database).await?;
-        if account.id.to_string() != id {
-            warn!(
-                event = "account_orders_ownership_mismatch",
-                outcome = "failure",
-                requested = %id,
-                signer = %account.id
-            );
-            return Err(Problem::unauthorized("Not your account").into());
-        }
+        let database = self.database;
+        let account = self.owned_active(cached, id, pubkey).await?;
 
         // RFC 8555 §7.1.2.1's filtered view — expired and `invalid` orders are not
         // URLs worth handing back (see `find_active_by_account`).
