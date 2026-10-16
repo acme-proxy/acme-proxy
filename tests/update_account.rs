@@ -1,9 +1,10 @@
 //! Covers `POST /acct/{id}` account update (RFC 8555 §7.3.2 / §7.3.6). A request
 //! to an existing account URL authenticates with the `kid` (account URL) form of
 //! JWS; the server verifies the signature against the account's stored key, then
-//! updates its `contact` or deactivates it. Also exercises the extractor's `kid`
-//! branches (unknown account, jwk+kid, neither) and the handler's authorization
-//! and error paths.
+//! updates its `contact` or deactivates it — or, for an empty payload (a
+//! POST-as-GET, §6.3), answers the account unchanged. Also exercises the
+//! extractor's `kid` branches (unknown account, jwk+kid, neither) and the
+//! handler's authorization and error paths.
 
 use axum::Router;
 use axum::body::Body;
@@ -394,4 +395,76 @@ async fn an_empty_payload_from_a_deactivated_account_is_unauthorized() {
         "urn:ietf:params:acme:error:unauthorized",
     )
     .await;
+}
+
+/// The read starts from the same lookup as an update, so an account URL that
+/// names nobody is `accountDoesNotExist` here too.
+#[tokio::test]
+async fn an_empty_payload_to_an_unknown_account_is_account_does_not_exist() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let fake_path = &p("/acct/00000000-0000-0000-0000-000000000000");
+    let fake_url = format!("{}{fake_path}", common::HOST);
+
+    let nonce = fetch_nonce(&app).await;
+    let body = signer.sign_kid_empty(&account_url, &fake_url, &nonce);
+    let res = post(&app, fake_path, body).await;
+
+    common::acme::assert_problem(
+        res,
+        StatusCode::BAD_REQUEST,
+        "urn:ietf:params:acme:error:accountDoesNotExist",
+    )
+    .await;
+}
+
+/// Only an empty payload is a read. One that arrived but does not decode is
+/// `malformed` — never silently answered as a read — and changes nothing.
+#[tokio::test]
+async fn an_unreadable_payload_on_the_account_url_is_malformed() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = register(&app, &signer).await;
+    let path = account_url.strip_prefix(common::HOST).unwrap().to_string();
+
+    // Not base64url at all, then valid base64url over bytes that are not JSON.
+    // The signature covers the literal payload field, so verification passes
+    // and the request reaches the decode step.
+    let cases = [
+        ("!!!not-base64!!!".to_string(), "Base64"),
+        (
+            BASE64_URL_SAFE_NO_PAD.encode(b"this is not JSON"),
+            "Payload",
+        ),
+    ];
+    for (payload_b64, detail) in cases {
+        let nonce = fetch_nonce(&app).await;
+        let protected = json!({
+            "alg": "ES256",
+            "kid": account_url,
+            "nonce": nonce,
+            "url": account_url,
+        });
+        let protected_b64 = BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(&protected).unwrap());
+        let sig = signer.sign_input(format!("{protected_b64}.{payload_b64}").as_bytes());
+        let res = post(
+            &app,
+            &path,
+            flattened_jws(&protected_b64, &payload_b64, &sig),
+        )
+        .await;
+
+        let problem = assert_malformed(res).await;
+        assert!(
+            problem["detail"].as_str().unwrap().contains(detail),
+            "{problem}"
+        );
+    }
+
+    let res = read_account(&app, &signer, &account_url).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let account = body_json(res).await;
+    assert_eq!(account["status"], "valid");
+    assert_eq!(account["contact"], json!(["mailto:old@example.com"]));
 }
