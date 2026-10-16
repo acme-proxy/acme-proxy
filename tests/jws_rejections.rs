@@ -420,6 +420,55 @@ async fn a_jwk_is_refused_where_the_rfc_requires_a_kid() {
     );
 }
 
+/// The mirror of the test above: §6.2 requires a `jwk` on `newAccount`, so a
+/// request signed by an existing account's `kid` is refused even though the
+/// server could answer it — `onlyReturnExisting` included (§7.3.1).
+///
+/// The refusal has to come before the nonce is consumed, and so before the
+/// account's `last_seen_*` moves: the last step replays the same nonce, signed
+/// with the `jwk`, and it must still be accepted.
+#[tokio::test]
+async fn a_kid_is_refused_on_new_account() {
+    let app = test_app().await;
+    let signer = EcSigner::new();
+    let account_url = common::acme::register(&app, &signer).await;
+
+    let nonce = fetch_nonce(&app).await;
+    for payload in [
+        json!({ "termsOfServiceAgreed": true }),
+        json!({ "onlyReturnExisting": true }),
+    ] {
+        let res = post(
+            &app,
+            signer.sign_kid(&account_url, NEW_ACCOUNT_URL, &nonce, &payload),
+        )
+        .await;
+        let problem = assert_malformed(res).await;
+        assert!(
+            problem["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("jwk"),
+            "the refusal must say what to sign with: {problem}"
+        );
+    }
+
+    let res = post(
+        &app,
+        signer.sign(
+            NEW_ACCOUNT_URL,
+            &nonce,
+            &json!({ "onlyReturnExisting": true }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "the nonce must have survived both refusals above"
+    );
+}
+
 /// §6.4's `url` check runs before the account lookup, so a JWS addressed to
 /// another endpoint is refused without ever reading the database.
 ///

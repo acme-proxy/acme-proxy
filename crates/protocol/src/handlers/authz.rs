@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::net::IpAddr;
 use tracing::{error, info, instrument, warn};
 
@@ -131,12 +131,22 @@ fn add_pending_retry_after(response: &mut Response, status: &str) {
     }
 }
 
+/// What a client sends to say a challenge is ready (RFC 8555 §7.5.1): a JSON
+/// object, `{}` in practice. The server ignores its members, as §7.5.1 requires,
+/// so older clients that still send a leftover object keep working.
+///
+/// `null` is accepted as well. The RFC does not allow it, but Pebble accepts it
+/// and step-ca never reads the body. Boulder decodes the body into an empty
+/// struct, which takes an object or `null` and refuses anything else, exactly
+/// as here. Anything that is not an object or `null` is refused as `malformed`.
+type TriggerPayload = Option<Map<String, Value>>;
+
 /// Reads a challenge via POST-as-GET (RFC 8555 §6.3), or triggers its
 /// validation (§7.5.1) — one URL, two operations, told apart by whether a
 /// payload arrived, as on the authorization.
 ///
 /// A zero-byte payload only reads the owned challenge; it never claims it or
-/// queues work. Any nonempty payload (the client's `{}`) is the acknowledgement.
+/// queues work. A [`TriggerPayload`] is the acknowledgement.
 #[instrument(name = "post_challenge", skip_all, fields(challenge_id = %id))]
 pub async fn post_challenge(
     State(state): State<AppState>,
@@ -147,7 +157,7 @@ pub async fn post_challenge(
         pubkey,
         account,
         ..
-    }: AcmeOptionalPayload<Value>,
+    }: AcmeOptionalPayload<TriggerPayload>,
 ) -> Result<Response, Problem> {
     info!(
         event = "challenge_trigger_requested",
