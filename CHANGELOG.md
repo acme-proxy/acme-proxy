@@ -50,6 +50,16 @@ migrated configuration before restarting.
   accepted and its members ignored. `null` is accepted too, though the RFC does
   not allow it: Pebble accepts it and step-ca does not read the body.
 
+### Security
+
+- **rustls 0.23.46, for RUSTSEC-2026-0349.** The TLS client recorded the key
+  exchange group a server picked before that server was authenticated, and
+  predicted later key shares for the name from it. One forged ServerHello could
+  pin a name to X25519, so later resumed handshakes from the server's TLS
+  clients (relay upstream, IPAM, SMTP, PostgreSQL) completed without
+  post-quantum key exchange. No key or authentication was exposed. A lockfile
+  bump; nothing in the server changed.
+
 ## [0.6.1] — 2026-10-09
 
 ### Fixed
