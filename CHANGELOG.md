@@ -42,6 +42,15 @@ migrated configuration before restarting.
   worker starts. To change a profile's CA on purpose, replace its files and run
   the new `acme-proxy profile issuer accept <name>` (audited as
   `profile_issuer_accepted`).
+- **The account URL's log events changed**, because `/acct/{id}` now checks
+  the account the request's `kid` resolved instead of looking the URL's id up
+  again. A deactivated account is logged as
+  `account_deactivated_request_refused`, the name the order-side routes already
+  use (was `account_deactivated_modify_refused`). A URL that is not the
+  signer's account is logged as `account_ownership_mismatch`; this replaces
+  `account_not_found` and `account_key_mismatch` here, and
+  `account_orders_ownership_mismatch` on `/acct/{id}/orders`.
+  `account_update_lookup_failed` is gone: there is no second lookup to fail.
 
 ### Added
 
@@ -92,12 +101,35 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **An account URL that is not the signer's is `unauthorized` even when it
+  names no account** (was `accountDoesNotExist`), as `/acct/{id}/orders`
+  already answered, so a client cannot probe which account ids exist. The
+  handler now uses the account the `kid` already resolved, one database lookup
+  fewer per request. An unknown `kid` is still `accountDoesNotExist`.
 - **The web admin's login limiter is counted in the database** (#12), in a new
   `admin_login_buckets` table, so several admin processes over one database
   share one `admin.login_max_attempts` budget per address, and a restart no
   longer resets it. One admin process is no longer the only supported
   topology. If the counter cannot be read, a sign-in is refused (`500`, logged
   as `admin_login_limiter_failed`) rather than let through uncounted.
+
+### Fixed
+
+- **`newAccount` signed with a `kid` is now refused as `malformed`.** RFC 8555
+  §6.2 requires the public key in a `jwk` field on every `newAccount` request,
+  and a `kid` on every other one; the server enforced the second half only. The
+  refusal also covers `onlyReturnExisting`, and comes before the nonce is
+  spent or the account's `last_seen_*` moves. Clients send a `jwk` here already.
+- **An account URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)
+  with the account object, instead of `malformed`. Clients that look up their
+  account this way could not. Nothing is changed by a read, and a deactivated
+  account or another account's key is still refused as `unauthorized`.
+- **A challenge response that is not a JSON object is now refused as
+  `malformed`**, and starts no validation. RFC 8555 §7.5.1 has the client send
+  `{}` and requires an error for an invalid response; the server used to start
+  validating on any JSON value, `[]` included. An object with members is still
+  accepted and its members ignored. `null` is accepted too, though the RFC does
+  not allow it: Pebble accepts it and step-ca does not read the body.
 
 ## [0.6.1] — 2026-10-09
 

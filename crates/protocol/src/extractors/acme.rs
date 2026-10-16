@@ -12,6 +12,8 @@
 //! 4. Exactly one of **`jwk`** or **`kid`** (§6.2; both or neither is
 //!    `malformed`), and a `jwk` only on `newAccount` and `revokeCert` — §6.2
 //!    requires every other request to name an existing account with `kid`.
+//!    `newAccount` in turn requires the `jwk`, `onlyReturnExisting` included,
+//!    and refuses a `kid` before the account is looked up.
 //!    A `kid` is verified against the account's **stored** SPKI,
 //!    after that SPKI's own algorithm OID is checked against the claimed `alg`,
 //!    so verification never rests on `alg` alone. An unknown `kid` is
@@ -260,6 +262,15 @@ async fn resolve_signing_key(
                 .map_err(map_signature_error)?
         }
         (None, Some(kid)) => {
+            // §6.2: "For newAccount requests ... there MUST be a `jwk` field" —
+            // the mirror of the refusal above. `onlyReturnExisting` included:
+            // it is a newAccount request (§7.3.1).
+            if request_path == acme_proxy_core::routes::NEW_ACCOUNT {
+                warn!(event = "jws_kid_not_allowed_here", outcome = "failure", url = %header.url, path = %request_path);
+                return Err(Problem::malformed(
+                    "newAccount requires the public key in a jwk field, not a kid",
+                ));
+            }
             debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
             // The account URL is the one *this* endpoint minted, prefix and
             // all: a `kid` naming another profile does not match here, and the
@@ -458,14 +469,15 @@ where
 
 /// A verified ACME POST whose payload may be **either** a document or empty.
 ///
-/// The shape RFC 8555 forces on two resources, where one URL answers both a
+/// The shape RFC 8555 forces on three resources, where one URL answers both a
 /// POST-as-GET (§6.3, read the object) and a payload-carrying POST: the
-/// authorization's `{"status": "deactivated"}` (§7.5.2, relinquish it) and the
-/// challenge's `{}` (§7.5.1, trigger its validation). [`AcmeRequest<T>`] cannot
-/// serve either — an empty payload is not valid JSON for any `T` — and
+/// authorization's `{"status": "deactivated"}` (§7.5.2, relinquish it), the
+/// challenge's `{}` (§7.5.1, trigger its validation) and the account's contact
+/// update or deactivation (§7.3.2, §7.3.6). [`AcmeRequest<T>`] cannot serve
+/// any of them — an empty payload is not valid JSON for any `T` — and
 /// [`AcmePostAsGet`] rejects the payload outright, so the handler needs to see
-/// which of the two arrived. Both handlers read `None` as "do nothing but
-/// answer"; a change to how a payload is told apart changes both.
+/// which of the two arrived. All three handlers read `None` as "do nothing but
+/// answer"; a change to how a payload is told apart changes all three.
 pub struct AcmeOptionalPayload<T> {
     pub header: ProtectedHeader,
     /// `None` for a POST-as-GET, `Some` for a payload-carrying POST.

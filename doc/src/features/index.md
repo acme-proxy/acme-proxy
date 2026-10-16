@@ -18,14 +18,14 @@ advertised resources by reading the directory rather than by constructing paths.
 | `/directory` | `GET`, `POST` | §7.1.1 | — | It is the entry point; §6.3 requires POST-as-GET to work too. |
 | `/newNonce` | `HEAD`, `GET`, `POST` | §7.2 | yes | All three forms. |
 | `/newAccount` | `POST` | §7.3 | yes | Find-or-create by public key: `201` for a new account, `200` for an existing one, `Location` either way. |
-| `/acct/{id}` | `POST` | §7.3.2, §7.3.6 | — | Contact update and deactivation. `kid`-authenticated. There is deliberately no unauthenticated `GET`. |
+| `/acct/{id}` | `POST` | §7.3.2, §7.3.6 | — | One URL, told apart by whether a payload arrived: an empty one (POST-as-GET) reads the account, a payload updates the contact or deactivates. `kid`-authenticated; a URL other than the signer's own account is `unauthorized`, whether or not it names one. There is deliberately no unauthenticated `GET`. |
 | `/acct/{id}/orders` | `POST` | §7.1.2.1 | — | The account's order list, filtered as §7.1.2.1 requires. |
 | `/keyChange` | `POST` | §7.3.5 | yes | [Key Rollover](key_change.md). |
 | `/newOrder` | `POST` | §7.4 | yes | Accepts `notBefore`/`notAfter` and RFC 9773's `replaces`. |
 | `/order/{id}` | `POST` | §7.1.3 | — | POST-as-GET. |
 | `/order/{id}/finalize` | `POST` | §7.4 | — | Takes the CSR; hands it to the configured [signer](../signers/index.md). |
 | `/authz/{id}` | `POST` | §7.5, §7.5.2 | — | One URL serves both the read and the deactivation, told apart by whether a payload arrived. |
-| `/chall/{id}` | `POST` | §6.3, §7.5.1 | — | One URL serves both the read and the trigger, told apart by whether a payload arrived. Any payload (`{}`) triggers [validation](../challenges/index.md); both outcomes are `200`. |
+| `/chall/{id}` | `POST` | §6.3, §7.5.1 | — | One URL serves both the read and the trigger, told apart by whether a payload arrived. A JSON object (`{}`, its members ignored) or `null` triggers [validation](../challenges/index.md); any other payload is `malformed`. A read and a trigger both answer `200`. |
 | `/certificate/{id}` | `POST` | §7.4.2 | — | POST-as-GET; PEM chain. |
 | `/revokeCert` | `POST` | §7.6 | yes | [Revocation & CRL](../operations/revocation.md). |
 | `/renewalInfo/{certID}` | `GET` | RFC 9773 §4.1 | yes | Unauthenticated. Advertised **without** the id — §4.1 has the client append it. |

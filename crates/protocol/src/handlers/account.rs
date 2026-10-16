@@ -17,7 +17,7 @@ use tracing::{info, instrument};
 use uuid::Uuid;
 
 use crate::acme::{AccountService, Error};
-use crate::extractors::acme::{AcmePostAsGet, AcmeRequest};
+use crate::extractors::acme::{AcmeOptionalPayload, AcmePostAsGet, AcmeRequest};
 use crate::router::AppState;
 use acme_proxy_core::client::ClientIp;
 use acme_proxy_core::error::Problem;
@@ -98,24 +98,26 @@ pub async fn post_new_account(
         .into_response())
 }
 
-/// Handles ACME account update requests (RFC 8555 §7.3.2 / §7.3.6).
+/// Reads the account (POST-as-GET, RFC 8555 §6.3) or updates it (§7.3.2) or
+/// deactivates it (§7.3.6): one URL, told apart by whether a payload arrived.
 #[instrument(name = "post_account", skip_all, fields(account_id = %id))]
 pub async fn post_account(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Extension(ClientIp(client_ip)): Extension<ClientIp>,
-    AcmeRequest {
+    AcmeOptionalPayload {
         header,
         payload,
         pubkey,
-        ..
-    }: AcmeRequest<UpdateAccountPayload>,
+        account,
+    }: AcmeOptionalPayload<UpdateAccountPayload>,
 ) -> Result<Json<Value>, Problem> {
     info!(
         event = "account_update_requested",
         outcome = "progress",
         account_id = %id,
-        algorithm = %header.alg
+        algorithm = %header.alg,
+        updating = payload.is_some(),
     );
     let AppState {
         database,
@@ -129,7 +131,14 @@ pub async fn post_account(
         profile: &profile,
     };
 
-    let account = accounts.update(&id, payload, &pubkey, client_ip).await?;
+    let account = match payload {
+        Some(update) => {
+            accounts
+                .update(account, &id, update, &pubkey, client_ip)
+                .await?
+        }
+        None => accounts.read(account, &id, &pubkey).await?,
+    };
     Ok(Json(account.to_json(&profile.base_url)))
 }
 
