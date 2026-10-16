@@ -42,11 +42,15 @@ migrated configuration before restarting.
   worker starts. To change a profile's CA on purpose, replace its files and run
   the new `acme-proxy profile issuer accept <name>` (audited as
   `profile_issuer_accepted`).
-- **Two account log events are renamed**, because a POST-as-GET read of the
-  account URL now passes the same checks as an update:
-  `account_deactivated_modify_refused` is now
-  `account_deactivated_request_refused` (the name the order-side routes already
-  use), and `account_update_lookup_failed` is now `account_id_lookup_failed`.
+- **The account URL's log events changed**, because `/acct/{id}` now checks
+  the account the request's `kid` resolved instead of looking the URL's id up
+  again. A deactivated account is logged as
+  `account_deactivated_request_refused`, the name the order-side routes already
+  use (was `account_deactivated_modify_refused`). A URL that is not the
+  signer's account is logged as `account_ownership_mismatch`; this replaces
+  `account_not_found` and `account_key_mismatch` here, and
+  `account_orders_ownership_mismatch` on `/acct/{id}/orders`.
+  `account_update_lookup_failed` is gone: there is no second lookup to fail.
 
 ### Added
 
@@ -97,6 +101,11 @@ migrated configuration before restarting.
 
 ### Changed
 
+- **An account URL that is not the signer's is `unauthorized` even when it
+  names no account** (was `accountDoesNotExist`), as `/acct/{id}/orders`
+  already answered, so a client cannot probe which account ids exist. The
+  handler now uses the account the `kid` already resolved, one database lookup
+  fewer per request. An unknown `kid` is still `accountDoesNotExist`.
 - **The web admin's login limiter is counted in the database** (#12), in a new
   `admin_login_buckets` table, so several admin processes over one database
   share one `admin.login_max_attempts` budget per address, and a restart no
