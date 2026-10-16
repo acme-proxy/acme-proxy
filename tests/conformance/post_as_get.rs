@@ -5,13 +5,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-use crate::common::acme::{self, post};
-use crate::common::raw::RawJws;
-use crate::common::{EcSigner, body_json, fetch_nonce, p};
+use crate::common::acme::{self, url};
+use crate::common::{EcSigner, body_json, p};
 use crate::invariants::assert_invariants;
+use crate::world::problem::MALFORMED;
 use crate::world::{Payload, READABLE, Target, World, send, send_well_formed};
-
-const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
 
 /// §6.3 and §7.4.2 make these reads a POST-as-GET, and a read must not
 /// change what it reads.
@@ -41,9 +39,7 @@ async fn finalize_refuses_an_empty_payload_and_leaves_the_order_ready() {
         acme::ready_order(&app, &signer, &["ready.example.com"]).await;
     let finalize_url = order["finalize"].as_str().unwrap();
 
-    let nonce = fetch_nonce(&app).await;
-    let request = RawJws::with_kid(&signer, &account, finalize_url, &nonce);
-    let response = post(&app, &acme::path_of(finalize_url), request.signed()).await;
+    let response = acme::post_as_get_raw(&app, &signer, &account, finalize_url).await;
 
     acme::assert_problem(response, StatusCode::BAD_REQUEST, MALFORMED).await;
     let order = acme::post_as_get(&app, &signer, &account, &order_url).await;
@@ -55,7 +51,7 @@ async fn finalize_refuses_an_empty_payload_and_leaves_the_order_ready() {
 async fn revoke_cert_refuses_an_empty_payload() {
     let world = World::new().await;
 
-    let response = send(&world, Target::RevokeCert, Payload::Empty, None).await;
+    let response = send(&world, Target::RevokeCert, Payload::Empty).await;
 
     acme::assert_problem(response, StatusCode::BAD_REQUEST, MALFORMED).await;
 }
@@ -70,7 +66,7 @@ async fn a_read_only_resource_refuses_a_payload() {
     for target in read_only {
         let label = format!("{target:?} with {{}}");
 
-        let response = send(&world, target, Payload::EmptyObject, None).await;
+        let response = send(&world, target, Payload::EmptyObject).await;
         let answer = assert_invariants(&world, &label, response).await;
 
         assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{label}");
@@ -92,7 +88,7 @@ async fn pre_authorization_is_neither_advertised_nor_served() {
         .unwrap();
     assert!(body_json(directory).await.get("newAuthz").is_none());
 
-    let response = post_to(&world, "/newAuthz").await;
+    let response = post_as_get_raw(&world, "/newAuthz").await;
     let answer = assert_invariants(&world, "POST /newAuthz", response).await;
 
     assert_eq!(answer.status, StatusCode::NOT_FOUND);
@@ -118,7 +114,7 @@ async fn renewal_information_cannot_be_posted() {
         .unwrap();
     assert_eq!(read.status(), StatusCode::OK, "GET {path}");
 
-    let response = post_to(&world, &path).await;
+    let response = post_as_get_raw(&world, &path).await;
     let answer = assert_invariants(&world, &format!("POST {path}"), response).await;
 
     assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED);
@@ -126,10 +122,6 @@ async fn renewal_information_cannot_be_posted() {
 }
 
 /// A correctly signed POST-as-GET to a path under the test profile.
-async fn post_to(world: &World, path: &str) -> axum::response::Response {
-    let nonce = world.nonce().await;
-    let url = acme::url(path);
-    let request = RawJws::with_kid(&world.signer, &world.account, &url, &nonce);
-
-    post(&world.app, &p(path), request.signed()).await
+async fn post_as_get_raw(world: &World, path: &str) -> axum::response::Response {
+    acme::post_as_get_raw(&world.app, &world.signer, &world.account, &url(path)).await
 }

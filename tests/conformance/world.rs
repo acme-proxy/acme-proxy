@@ -17,12 +17,26 @@ use crate::common::acme::{self, path_of, post, url};
 use crate::common::raw::RawJws;
 use crate::common::{EcSigner, TestSigner, fetch_nonce, first_certificate, make_csr, test_app};
 
+/// The ACME error types the suite expects (RFC 8555 §6.7), each written once
+/// so that a check comparing against one cannot drift from the answer table.
+pub mod problem {
+    pub const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
+    pub const UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
+    pub const BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
+    pub const BAD_SIGNATURE_ALGORITHM: &str = "urn:ietf:params:acme:error:badSignatureAlgorithm";
+    pub const ACCOUNT_DOES_NOT_EXIST: &str = "urn:ietf:params:acme:error:accountDoesNotExist";
+}
+
 /// An account with an issued certificate and two pending orders, so every
 /// kind of resource has a real URL to be requested.
 ///
 /// The challenge belongs to an order of its own. Answering it can start its
 /// validation and make that order `ready`, and the order, authorization and
 /// finalize targets must not change state under a test because of it.
+///
+/// Each test builds its own, a full issuance included, so that no test meets
+/// another's state. The read-only tests could share one if the suite grows
+/// slow.
 pub struct World {
     pub app: Router,
     pub signer: EcSigner,
@@ -302,9 +316,7 @@ impl Flaw {
     /// differently from the RFC: those accept the RFC's answer as well, so a
     /// fix passes here unchanged, and nothing else.
     pub fn accepted_answers(self) -> &'static [(StatusCode, &'static str)] {
-        const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
-        const UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
-        const BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
+        use problem::*;
 
         match self {
             // §6.2 requires the JWS to be verified and names no error type.
@@ -334,16 +346,12 @@ impl Flaw {
             ],
             // §6.4: the `url` member is mandatory. No error type is named.
             Flaw::MissingUrl => &[(StatusCode::BAD_REQUEST, MALFORMED)],
-            Flaw::UnknownAccount => &[(
-                StatusCode::BAD_REQUEST,
-                "urn:ietf:params:acme:error:accountDoesNotExist",
-            )],
+            Flaw::UnknownAccount => &[(StatusCode::BAD_REQUEST, ACCOUNT_DOES_NOT_EXIST)],
             // §6.2: `none` and MAC algorithms are refused with
             // `badSignatureAlgorithm`.
-            Flaw::AlgorithmNone | Flaw::MacAlgorithm => &[(
-                StatusCode::BAD_REQUEST,
-                "urn:ietf:params:acme:error:badSignatureAlgorithm",
-            )],
+            Flaw::AlgorithmNone | Flaw::MacAlgorithm => {
+                &[(StatusCode::BAD_REQUEST, BAD_SIGNATURE_ALGORITHM)]
+            }
             // §6.2: exactly one of `jwk` and `kid`. No error type is named.
             Flaw::BothKeyForms | Flaw::NoKeyForm => &[(StatusCode::BAD_REQUEST, MALFORMED)],
         }
@@ -354,6 +362,8 @@ impl Flaw {
         match self {
             Flaw::ReplayedNonce => spend_a_nonce(world).await,
             Flaw::UnknownNonce => "a-nonce-the-server-never-issued".to_string(),
+            // [`Flaw::body`] removes it, so none is asked of the server.
+            Flaw::MissingNonce => String::new(),
             _ => world.nonce().await,
         }
     }
@@ -388,9 +398,9 @@ impl Flaw {
 pub async fn spend_a_nonce(world: &World) -> String {
     let nonce = world.nonce().await;
     let order = &world.resources.order;
-    let request = RawJws::with_kid(&world.signer, &world.account, order, &nonce);
+    let body = world.signer.sign_kid_empty(&world.account, order, &nonce);
 
-    let response = post(&world.app, &path_of(order), request.signed()).await;
+    let response = post(&world.app, &path_of(order), body).await;
     assert_eq!(
         response.status(),
         StatusCode::OK,
@@ -407,18 +417,14 @@ pub fn unknown_account(world: &World) -> String {
     format!("{prefix}/{}", uuid::Uuid::nil())
 }
 
-pub async fn send(world: &World, target: Target, payload: Payload, flaw: Option<Flaw>) -> Response {
-    let nonce = match flaw {
-        Some(flaw) => flaw.nonce(world).await,
-        None => world.nonce().await,
-    };
+/// Sends a correctly signed request carrying `payload`. A request with a flaw
+/// goes through [`send_flawed`] instead, which picks a payload the route would
+/// act on.
+pub async fn send(world: &World, target: Target, payload: Payload) -> Response {
+    let nonce = world.nonce().await;
     let request = payload.apply(target.request(world, &nonce));
-    let body = match flaw {
-        Some(flaw) => flaw.body(request, world),
-        None => request.signed(),
-    };
 
-    post(&world.app, &path_of(&target.url(world)), body).await
+    post(&world.app, &path_of(&target.url(world)), request.signed()).await
 }
 
 /// Sends a request with one flaw and the payload [`Target::payload_for_a_flaw`]

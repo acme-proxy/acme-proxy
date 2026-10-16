@@ -8,10 +8,8 @@ use serde_json::Value;
 use crate::common::acme::url;
 use crate::common::body_json;
 use crate::world::{
-    FLAWS, PAYLOADS, READABLE, TARGETS, Target, World, send, send_flawed, send_well_formed,
+    FLAWS, PAYLOADS, READABLE, TARGETS, Target, World, problem, send, send_flawed, send_well_formed,
 };
-
-const BAD_ALGORITHM: &str = "urn:ietf:params:acme:error:badSignatureAlgorithm";
 
 /// What a response said, once [`assert_invariants`] has checked it.
 pub struct Answer {
@@ -157,7 +155,7 @@ async fn every_payload_gets_a_well_formed_answer() {
             }
             let label = format!("{target:?} with {payload:?}");
 
-            let response = send(&world, target, payload, None).await;
+            let response = send(&world, target, payload).await;
 
             assert_invariants(&world, &label, response).await;
         }
@@ -188,7 +186,7 @@ async fn every_flaw_is_refused_with_a_well_formed_problem() {
                 answer.problem_type()
             );
 
-            if answer.problem_type() == BAD_ALGORITHM {
+            if answer.problem_type() == problem::BAD_SIGNATURE_ALGORITHM {
                 assert_lists_the_algorithms(&label, &answer);
             }
         }

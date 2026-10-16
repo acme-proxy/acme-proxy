@@ -11,11 +11,10 @@
 use axum::http::StatusCode;
 
 use crate::invariants::{assert_invariants, assert_links_to_the_directory, assert_well_formed};
+use crate::world::problem::MALFORMED;
 use crate::world::{
     TARGETS, World, get, send_general_serialization, send_with_content_type, send_with_method,
 };
-
-const MALFORMED: &str = "urn:ietf:params:acme:error:malformed";
 
 /// §6.2: a POST must be `application/jose+json`; anything else is a 415.
 #[tokio::test]
