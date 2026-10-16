@@ -32,6 +32,8 @@ migrated configuration before restarting.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-10-16
+
 ### Fixed
 
 - **`newAccount` signed with a `kid` is now refused as `malformed`.** RFC 8555
@@ -2744,7 +2746,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...HEAD
+[0.6.2]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...0.6.2
 [0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...0.5.0
