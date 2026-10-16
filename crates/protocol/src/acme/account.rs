@@ -198,6 +198,12 @@ impl AccountService<'_> {
         Ok((account, created))
     }
 
+    /// `POST /acct/{id}` with an empty payload (RFC 8555 §6.3): the account as
+    /// it stands, for a request signed by its own key. Nothing is changed.
+    pub async fn read(&self, id: &str, pubkey: &[u8]) -> Result<Account, Error> {
+        self.owned_active(id, pubkey).await
+    }
+
     /// `POST /acct/{id}` (RFC 8555 §7.3.2, §7.3.6): replaces the contact list, or
     /// deactivates the account, for a request signed by the account's own key.
     pub async fn update(
@@ -208,43 +214,7 @@ impl AccountService<'_> {
         client_ip: Option<IpAddr>,
     ) -> Result<Account, Error> {
         let (database, profile) = (self.database, self.profile);
-
-        let mut account = match Account::find_by_id(&profile.name, id, database).await {
-            Ok(Some(account)) => account,
-            Ok(None) => {
-                warn!(event = "account_not_found", outcome = "failure", account_id = %id);
-                return Err(Problem::account_does_not_exist("Unknown account").into());
-            }
-            Err(error) => {
-                error!(
-                    event = "account_update_lookup_failed",
-                    outcome = "failure",
-                    account_id = %id,
-                    error = %error
-                );
-                return Err(Problem::server_internal("Account lookup failed").into());
-            }
-        };
-
-        if account.pubkey != pubkey {
-            warn!(
-                event = "account_key_mismatch",
-                outcome = "failure",
-                account_id = %id,
-                expected_pubkey_fp = %pubkey_fingerprint(&account.pubkey),
-                actual_pubkey_fp = %pubkey_fingerprint(pubkey)
-            );
-            return Err(Problem::unauthorized("Signed by a different account key").into());
-        }
-
-        if account.is_deactivated() {
-            warn!(
-                event = "account_deactivated_modify_refused",
-                outcome = "failure",
-                account_id = %id
-            );
-            return Err(Problem::unauthorized("Account deactivated").into());
-        }
+        let mut account = self.owned_active(id, pubkey).await?;
 
         if let Some(status) = payload.status {
             if status != acme_proxy_store::account::DEACTIVATED {
@@ -299,6 +269,52 @@ impl AccountService<'_> {
             outcome = "success",
             account_id = %id
         );
+        Ok(account)
+    }
+
+    /// The account `id`, once the request is known to be signed by its own key
+    /// and the account is still active. Both reading and changing an account
+    /// start here.
+    async fn owned_active(&self, id: &str, pubkey: &[u8]) -> Result<Account, Error> {
+        let (database, profile) = (self.database, self.profile);
+
+        let account = match Account::find_by_id(&profile.name, id, database).await {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                warn!(event = "account_not_found", outcome = "failure", account_id = %id);
+                return Err(Problem::account_does_not_exist("Unknown account").into());
+            }
+            Err(error) => {
+                error!(
+                    event = "account_id_lookup_failed",
+                    outcome = "failure",
+                    account_id = %id,
+                    error = %error
+                );
+                return Err(Problem::server_internal("Account lookup failed").into());
+            }
+        };
+
+        if account.pubkey != pubkey {
+            warn!(
+                event = "account_key_mismatch",
+                outcome = "failure",
+                account_id = %id,
+                expected_pubkey_fp = %pubkey_fingerprint(&account.pubkey),
+                actual_pubkey_fp = %pubkey_fingerprint(pubkey)
+            );
+            return Err(Problem::unauthorized("Signed by a different account key").into());
+        }
+
+        if account.is_deactivated() {
+            warn!(
+                event = "account_deactivated_request_refused",
+                outcome = "failure",
+                account_id = %id
+            );
+            return Err(Problem::unauthorized("Account deactivated").into());
+        }
+
         Ok(account)
     }
 

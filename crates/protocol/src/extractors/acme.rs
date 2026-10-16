@@ -469,14 +469,15 @@ where
 
 /// A verified ACME POST whose payload may be **either** a document or empty.
 ///
-/// The shape RFC 8555 forces on two resources, where one URL answers both a
+/// The shape RFC 8555 forces on three resources, where one URL answers both a
 /// POST-as-GET (§6.3, read the object) and a payload-carrying POST: the
-/// authorization's `{"status": "deactivated"}` (§7.5.2, relinquish it) and the
-/// challenge's `{}` (§7.5.1, trigger its validation). [`AcmeRequest<T>`] cannot
-/// serve either — an empty payload is not valid JSON for any `T` — and
+/// authorization's `{"status": "deactivated"}` (§7.5.2, relinquish it), the
+/// challenge's `{}` (§7.5.1, trigger its validation) and the account's contact
+/// update or deactivation (§7.3.2, §7.3.6). [`AcmeRequest<T>`] cannot serve
+/// any of them — an empty payload is not valid JSON for any `T` — and
 /// [`AcmePostAsGet`] rejects the payload outright, so the handler needs to see
-/// which of the two arrived. Both handlers read `None` as "do nothing but
-/// answer"; a change to how a payload is told apart changes both.
+/// which of the two arrived. All three handlers read `None` as "do nothing but
+/// answer"; a change to how a payload is told apart changes all three.
 pub struct AcmeOptionalPayload<T> {
     pub header: ProtectedHeader,
     /// `None` for a POST-as-GET, `Some` for a payload-carrying POST.
