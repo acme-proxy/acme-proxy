@@ -286,7 +286,7 @@ impl AccountService<'_> {
             }
             Err(error) => {
                 error!(
-                    event = "account_update_lookup_failed",
+                    event = "account_id_lookup_failed",
                     outcome = "failure",
                     account_id = %id,
                     error = %error
@@ -308,7 +308,7 @@ impl AccountService<'_> {
 
         if account.is_deactivated() {
             warn!(
-                event = "account_deactivated_modify_refused",
+                event = "account_deactivated_request_refused",
                 outcome = "failure",
                 account_id = %id
             );

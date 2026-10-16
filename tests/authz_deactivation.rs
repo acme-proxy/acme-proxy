@@ -547,11 +547,11 @@ async fn deactivating_twice_is_idempotent() {
     }
 }
 
-/// The authorization URL is the one place `AcmeOptionalPayload` is used, so it
-/// is the only route where "a payload arrived, but it is unreadable" is
-/// reachable at all. An empty payload means a POST-as-GET read; anything else
+/// Only a URL served by `AcmeOptionalPayload` can reach "a payload arrived, but
+/// it is unreadable". An empty payload means a POST-as-GET read; anything else
 /// has to decode, or the request is `malformed` — never silently treated as a
-/// read.
+/// read. The account URL has its own case in
+/// `tests/update_account.rs`.
 #[tokio::test]
 async fn an_unreadable_payload_on_the_authorization_url_is_malformed() {
     use base64::prelude::*;

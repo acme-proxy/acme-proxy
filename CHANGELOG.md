@@ -42,6 +42,11 @@ migrated configuration before restarting.
   worker starts. To change a profile's CA on purpose, replace its files and run
   the new `acme-proxy profile issuer accept <name>` (audited as
   `profile_issuer_accepted`).
+- **Two account log events are renamed**, because a POST-as-GET read of the
+  account URL now passes the same checks as an update:
+  `account_deactivated_modify_refused` is now
+  `account_deactivated_request_refused` (the name the order-side routes already
+  use), and `account_update_lookup_failed` is now `account_id_lookup_failed`.
 
 ### Added
 
@@ -106,7 +111,6 @@ migrated configuration before restarting.
   and a `kid` on every other one; the server enforced the second half only. The
   refusal also covers `onlyReturnExisting`, and comes before the nonce is
   spent or the account's `last_seen_*` moves. Clients send a `jwk` here already.
-
 - **An account URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)
   with the account object, instead of `malformed`. Clients that look up their
   account this way could not. Nothing is changed by a read, and a deactivated
