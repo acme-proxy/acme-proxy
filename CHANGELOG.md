@@ -113,6 +113,8 @@ migrated configuration before restarting.
   topology. If the counter cannot be read, a sign-in is refused (`500`, logged
   as `admin_login_limiter_failed`) rather than let through uncounted.
 
+## [0.6.2] — 2026-10-16
+
 ### Fixed
 
 - **`newAccount` signed with a `kid` is now refused as `malformed`.** RFC 8555
@@ -130,6 +132,16 @@ migrated configuration before restarting.
   validating on any JSON value, `[]` included. An object with members is still
   accepted and its members ignored. `null` is accepted too, though the RFC does
   not allow it: Pebble accepts it and step-ca does not read the body.
+
+### Security
+
+- **rustls 0.23.46, for RUSTSEC-2026-0349.** The TLS client recorded the key
+  exchange group a server picked before that server was authenticated, and
+  predicted later key shares for the name from it. One forged ServerHello could
+  pin a name to X25519, so later resumed handshakes from the server's TLS
+  clients (relay upstream, IPAM, SMTP, PostgreSQL) completed without
+  post-quantum key exchange. No key or authentication was exposed. A lockfile
+  bump; nothing in the server changed.
 
 ## [0.6.1] — 2026-10-09
 
@@ -2815,7 +2827,8 @@ does *not* cover.
 - Admission control, request timeouts and body limits on the ACME routes.
 - Graceful shutdown on SIGTERM.
 
-[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...HEAD
+[Unreleased]: https://github.com/acme-proxy/acme-proxy/compare/0.6.2...HEAD
+[0.6.2]: https://github.com/acme-proxy/acme-proxy/compare/0.6.1...0.6.2
 [0.6.1]: https://github.com/acme-proxy/acme-proxy/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/acme-proxy/acme-proxy/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/acme-proxy/acme-proxy/compare/0.4.0...0.5.0
