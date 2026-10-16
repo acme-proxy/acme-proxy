@@ -129,7 +129,6 @@ async fn respond_with(
 ) -> Response {
     let nonce = fetch_nonce(app).await;
     let path = url.strip_prefix(common::HOST).unwrap();
-
     post(
         app,
         path,
