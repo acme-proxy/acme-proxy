@@ -10,7 +10,14 @@
 //! `ConnectInfo<SocketAddr>` extension by hand — `oneshot` has no socket, so
 //! without it there is no client address for any of this to record and the
 //! suite would pass while asserting nothing.
+//!
+//! The last tests cover `audit.record_refusals`: that the setting alone decides
+//! whether a refused ACME request writes a row, including a refusal that comes
+//! before any account is known. What that row holds is pinned by the unit test
+//! beside the refusal layer.
 
+use acme_proxy_core::config::Config;
+use acme_proxy_policy::filter::FilterPolicy;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -26,7 +33,8 @@ use acme_proxy_store::audit::AuditEntry;
 use acme_proxy_store::audit::AuditQuery;
 use acme_proxy_store::db::Database;
 use common::{
-    EcSigner, TestSigner, body_json, fetch_nonce_from, first_certificate, make_csr, p, post_from,
+    EcSigner, TestSigner, body_json, default_challenges, fetch_nonce_from, first_certificate,
+    make_csr, memory_ca, no_notifications, p, post_from, send_from, test_app_full,
     test_app_with_db,
 };
 
@@ -628,5 +636,76 @@ async fn the_unauthenticated_surfaces_write_no_audit_rows() {
             .unwrap();
         assert!(res.status().is_success(), "{path}: {}", res.status());
     }
+    assert!(rows(&database).await.is_empty());
+}
+
+/// The default app, with `audit.record_refusals` set as asked.
+async fn app_recording_refusals(record_refusals: bool) -> (Router, Arc<Database>) {
+    let mut config = Config::default();
+    config.audit.record_refusals = record_refusals;
+
+    test_app_full(
+        config,
+        Arc::new(memory_ca().await),
+        Arc::new(FilterPolicy::default()),
+        default_challenges(),
+        no_notifications().await,
+    )
+    .await
+}
+
+/// A `newOrder` sent as `text/plain`. It is refused with `415` before its
+/// signature is read, so no account is known when the refusal happens.
+async fn send_new_order_as_plain_text(app: &Router) -> Response {
+    let request = Request::post(p("/newOrder"))
+        .header("content-type", "text/plain")
+        .body(Body::from("{}"))
+        .unwrap();
+
+    send_from(app, request, CLIENT).await
+}
+
+/// By default a refusal before any account is known is only logged.
+#[tokio::test]
+async fn a_refused_request_writes_no_row_by_default() {
+    let (app, database) = app_recording_refusals(false).await;
+
+    let res = send_new_order_as_plain_text(&app).await;
+
+    assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(rows(&database).await.is_empty());
+}
+
+/// With the setting on, the same refusal writes exactly one row, naming the
+/// profile, the client and the request.
+#[tokio::test]
+async fn with_record_refusals_a_refused_request_writes_one_row() {
+    let (app, database) = app_recording_refusals(true).await;
+
+    let res = send_new_order_as_plain_text(&app).await;
+    assert_eq!(res.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let row = one_row(&database).await;
+    assert_eq!(row.event, "acme_request_refused");
+    assert_eq!(row.outcome, "failure");
+    assert_eq!(row.profile, "default");
+    assert_eq!(row.client_ip.as_deref(), Some("203.0.113.7"));
+    assert!(row.request_id.is_some(), "{row:?}");
+
+    let detail = row.detail.unwrap_or_default();
+    let expected = format!("POST {}: HTTP 415", p("/newOrder"));
+    assert!(detail.starts_with(&expected), "{detail}");
+}
+
+/// The setting records refusals only: requests that succeed still write
+/// nothing.
+#[tokio::test]
+async fn with_record_refusals_an_accepted_request_writes_no_row() {
+    let (app, database) = app_recording_refusals(true).await;
+    let signer = EcSigner::new();
+
+    register(&app, &signer, CLIENT).await;
+    fetch_nonce_from(&app, CLIENT).await;
+
     assert!(rows(&database).await.is_empty());
 }

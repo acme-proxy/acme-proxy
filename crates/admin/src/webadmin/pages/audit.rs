@@ -56,6 +56,10 @@ pub async fn list_audit(
 
     let items: Vec<Value> = entries.iter().map(AuditEntry::to_json).collect();
     let mut context = chrome(&session, "audit", "Audit");
+    context.insert(
+        "refusal_audit_enabled".to_string(),
+        Value::Bool(state.config.audit.record_refusals),
+    );
     context.insert("page".to_string(), page_value(items, total));
     context.insert(
         "pager".to_string(),
