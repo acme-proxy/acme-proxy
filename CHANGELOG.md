@@ -39,7 +39,6 @@ migrated configuration before restarting.
   and a `kid` on every other one; the server enforced the second half only. The
   refusal also covers `onlyReturnExisting`, and comes before the nonce is
   spent or the account's `last_seen_*` moves. Clients send a `jwk` here already.
-
 - **An account URL now answers an empty-payload POST-as-GET** (RFC 8555 §6.3)
   with the account object, instead of `malformed`. Clients that look up their
   account this way could not. Nothing is changed by a read, and a deactivated
