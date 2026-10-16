@@ -30,15 +30,21 @@ impl Answer {
 }
 
 /// Checks what must hold for every response to a POST, and returns what the
-/// response said.
-pub async fn assert_invariants(label: &str, response: Response) -> Answer {
+/// response said: a fresh nonce (§6.5), and everything
+/// [`assert_well_formed`] checks.
+pub async fn assert_invariants(world: &World, label: &str, response: Response) -> Answer {
+    assert_carries_a_fresh_nonce(world, label, &response);
+
+    assert_well_formed(label, response).await
+}
+
+/// Checks what must hold for every response, whatever its method: no 5xx, the
+/// `index` link, and a problem document for a refusal. A request that is not a
+/// POST is owed no nonce, so this leaves the nonce alone.
+pub async fn assert_well_formed(label: &str, response: Response) -> Answer {
     let status = response.status();
 
     assert!(!status.is_server_error(), "{label}: answered {status}");
-    assert!(
-        response.headers().contains_key("replay-nonce"),
-        "{label}: no Replay-Nonce on a {status} response"
-    );
     assert_links_to_the_directory(label, &response);
 
     let problem = if status.is_client_error() {
@@ -50,11 +56,36 @@ pub async fn assert_invariants(label: &str, response: Response) -> Answer {
     Answer { status, problem }
 }
 
+/// §6.5: "The server MUST include a Replay-Nonce header field in every
+/// successful response to a POST request and SHOULD provide it in error
+/// responses as well." The server provides it on both, and each one must be
+/// usable: a nonce no request was sent with and no earlier answer carried. A
+/// server that echoed the request's nonce, or handed out the same one twice,
+/// would give clients a nonce that is refused as `badNonce`.
+fn assert_carries_a_fresh_nonce(world: &World, label: &str, response: &Response) {
+    let status = response.status();
+    let nonce = response
+        .headers()
+        .get("replay-nonce")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_else(|| panic!("{label}: no Replay-Nonce on a {status} response"));
+
+    let base64url = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    assert!(
+        !nonce.is_empty() && nonce.chars().all(base64url),
+        "{label}: Replay-Nonce {nonce:?} is not base64url"
+    );
+    assert!(
+        world.is_fresh(nonce),
+        "{label}: Replay-Nonce {nonce:?} was handed out before"
+    );
+}
+
 /// §7.1: "The 'index' link relation is present on all resources other than
 /// the directory and indicates the URL of the directory." None of these
 /// routes is the directory, so every answer, a refusal included, links to this
 /// profile's directory.
-fn assert_links_to_the_directory(label: &str, response: &Response) {
+pub fn assert_links_to_the_directory(label: &str, response: &Response) {
     let expected = format!("<{}>;rel=\"index\"", url("/directory"));
     let links: Vec<&str> = response
         .headers()
@@ -99,16 +130,16 @@ async fn a_well_formed_request_is_accepted() {
 
     for target in READABLE {
         let response = send_well_formed(&world, target).await;
-        let answer = assert_invariants(&format!("{target:?}"), response).await;
+        let answer = assert_invariants(&world, &format!("{target:?}"), response).await;
         assert_eq!(answer.status, StatusCode::OK, "{target:?} read");
     }
 
     let response = send_well_formed(&world, Target::NewAccount).await;
-    let answer = assert_invariants("existing account", response).await;
+    let answer = assert_invariants(&world, "existing account", response).await;
     assert_eq!(answer.status, StatusCode::OK, "existing account");
 
     let response = send_well_formed(&world, Target::NewOrder).await;
-    let answer = assert_invariants("new order", response).await;
+    let answer = assert_invariants(&world, "new order", response).await;
     assert_eq!(answer.status, StatusCode::CREATED, "new order");
 }
 
@@ -128,7 +159,7 @@ async fn every_payload_gets_a_well_formed_answer() {
 
             let response = send(&world, target, payload, None).await;
 
-            assert_invariants(&label, response).await;
+            assert_invariants(&world, &label, response).await;
         }
     }
 }
@@ -147,7 +178,7 @@ async fn every_flaw_is_refused_with_a_well_formed_problem() {
             let label = format!("{target:?} with {flaw:?}");
 
             let response = send_flawed(&world, target, flaw).await;
-            let answer = assert_invariants(&label, response).await;
+            let answer = assert_invariants(&world, &label, response).await;
 
             let accepted = flaw.accepted_answers();
             assert!(

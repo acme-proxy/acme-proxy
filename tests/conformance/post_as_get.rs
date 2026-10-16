@@ -71,7 +71,7 @@ async fn a_read_only_resource_refuses_a_payload() {
         let label = format!("{target:?} with {{}}");
 
         let response = send(&world, target, Payload::EmptyObject, None).await;
-        let answer = assert_invariants(&label, response).await;
+        let answer = assert_invariants(&world, &label, response).await;
 
         assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{label}");
         assert_eq!(answer.problem_type(), MALFORMED, "{label}");
@@ -93,7 +93,10 @@ async fn pre_authorization_is_neither_advertised_nor_served() {
     assert!(body_json(directory).await.get("newAuthz").is_none());
 
     let response = post_to(&world, "/newAuthz").await;
-    acme::assert_problem(response, StatusCode::NOT_FOUND, MALFORMED).await;
+    let answer = assert_invariants(&world, "POST /newAuthz", response).await;
+
+    assert_eq!(answer.status, StatusCode::NOT_FOUND);
+    assert_eq!(answer.problem_type(), MALFORMED);
 }
 
 /// RFC 9773 §4.1 defines renewal information as an unauthenticated GET.
@@ -116,12 +119,15 @@ async fn renewal_information_cannot_be_posted() {
     assert_eq!(read.status(), StatusCode::OK, "GET {path}");
 
     let response = post_to(&world, &path).await;
-    acme::assert_problem(response, StatusCode::METHOD_NOT_ALLOWED, MALFORMED).await;
+    let answer = assert_invariants(&world, &format!("POST {path}"), response).await;
+
+    assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(answer.problem_type(), MALFORMED);
 }
 
 /// A correctly signed POST-as-GET to a path under the test profile.
 async fn post_to(world: &World, path: &str) -> axum::response::Response {
-    let nonce = fetch_nonce(&world.app).await;
+    let nonce = world.nonce().await;
     let url = acme::url(path);
     let request = RawJws::with_kid(&world.signer, &world.account, &url, &nonce);
 

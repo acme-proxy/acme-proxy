@@ -10,8 +10,7 @@
 
 use axum::http::StatusCode;
 
-use crate::common::body_json;
-use crate::invariants::assert_invariants;
+use crate::invariants::{assert_invariants, assert_links_to_the_directory, assert_well_formed};
 use crate::world::{
     TARGETS, World, get, send_general_serialization, send_with_content_type, send_with_method,
 };
@@ -28,7 +27,7 @@ async fn another_media_type_is_unsupported_on_every_route() {
             let label = format!("{target:?} as {content_type}");
 
             let response = send_with_content_type(&world, target, content_type).await;
-            let answer = assert_invariants(&label, response).await;
+            let answer = assert_invariants(&world, &label, response).await;
 
             assert_eq!(answer.status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{label}");
             assert_eq!(answer.problem_type(), MALFORMED, "{label}");
@@ -47,9 +46,10 @@ async fn a_get_of_a_post_only_route_is_method_not_allowed() {
         let label = format!("GET {target:?}");
 
         let response = get(&world, target).await;
+        let answer = assert_well_formed(&label, response).await;
 
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{label}");
-        assert_eq!(body_json(response).await["type"], MALFORMED, "{label}");
+        assert_eq!(answer.status, StatusCode::METHOD_NOT_ALLOWED, "{label}");
+        assert_eq!(answer.problem_type(), MALFORMED, "{label}");
     }
 }
 
@@ -63,7 +63,7 @@ async fn the_general_jws_serialization_is_refused_on_every_route() {
         let label = format!("{target:?}");
 
         let response = send_general_serialization(&world, target).await;
-        let answer = assert_invariants(&label, response).await;
+        let answer = assert_invariants(&world, &label, response).await;
 
         assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{label}");
         assert_eq!(answer.problem_type(), MALFORMED, "{label}");
@@ -73,7 +73,8 @@ async fn the_general_jws_serialization_is_refused_on_every_route() {
 /// Only GET is answered with a definite status by the RFC. Every other method
 /// is refused with `405 Method Not Allowed`, whose `Allow` header names the
 /// one method these routes take, so the method is shown to be the reason. A
-/// `HEAD` answer has no body; the others carry a problem document.
+/// `HEAD` answer has no body, so only its headers are checked; the others
+/// carry a problem document.
 #[tokio::test]
 async fn other_methods_are_refused_on_every_route() {
     let world = World::new().await;
@@ -86,8 +87,11 @@ async fn other_methods_are_refused_on_every_route() {
 
             assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{label}");
             assert_eq!(response.headers()["allow"], "POST", "{label}");
-            if method != "HEAD" {
-                assert_eq!(body_json(response).await["type"], MALFORMED, "{label}");
+            if method == "HEAD" {
+                assert_links_to_the_directory(&label, &response);
+            } else {
+                let answer = assert_well_formed(&label, response).await;
+                assert_eq!(answer.problem_type(), MALFORMED, "{label}");
             }
         }
     }

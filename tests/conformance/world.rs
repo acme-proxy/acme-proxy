@@ -2,6 +2,9 @@
 //! issued certificate and two pending orders, the routes a signed request can
 //! target, and the ways a request can be shaped or deliberately broken.
 
+use std::collections::HashSet;
+use std::sync::Mutex;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -27,6 +30,10 @@ pub struct World {
     pub resources: Resources,
     /// The issued certificate, DER-encoded.
     pub certificate_der: Vec<u8>,
+    /// Every nonce a request was sent with or an answer carried, so
+    /// [`crate::invariants::assert_invariants`] can tell a fresh one from one
+    /// handed out before.
+    nonces: Mutex<HashSet<String>>,
 }
 
 pub struct Resources {
@@ -64,10 +71,25 @@ impl World {
             account,
             resources,
             certificate_der: first_certificate(&chain),
+            nonces: Mutex::new(HashSet::new()),
         };
         world.replace_the_challenge().await;
 
         world
+    }
+
+    /// A nonce from `newNonce`, recorded as seen.
+    pub async fn nonce(&self) -> String {
+        let nonce = fetch_nonce(&self.app).await;
+        self.nonces.lock().unwrap().insert(nonce.clone());
+
+        nonce
+    }
+
+    /// Records a nonce an answer carried, and says whether it was new: never
+    /// sent with a request and never carried by an earlier answer.
+    pub fn is_fresh(&self, nonce: &str) -> bool {
+        self.nonces.lock().unwrap().insert(nonce.to_string())
     }
 
     /// Points the challenge target at a new challenge, under a new pending
@@ -332,7 +354,7 @@ impl Flaw {
         match self {
             Flaw::ReplayedNonce => spend_a_nonce(world).await,
             Flaw::UnknownNonce => "a-nonce-the-server-never-issued".to_string(),
-            _ => fetch_nonce(&world.app).await,
+            _ => world.nonce().await,
         }
     }
 
@@ -364,7 +386,7 @@ impl Flaw {
 /// refused before its nonce is consumed, and the nonce would then still be
 /// fresh.
 pub async fn spend_a_nonce(world: &World) -> String {
-    let nonce = fetch_nonce(&world.app).await;
+    let nonce = world.nonce().await;
     let order = &world.resources.order;
     let request = RawJws::with_kid(&world.signer, &world.account, order, &nonce);
 
@@ -388,7 +410,7 @@ pub fn unknown_account(world: &World) -> String {
 pub async fn send(world: &World, target: Target, payload: Payload, flaw: Option<Flaw>) -> Response {
     let nonce = match flaw {
         Some(flaw) => flaw.nonce(world).await,
-        None => fetch_nonce(&world.app).await,
+        None => world.nonce().await,
     };
     let request = payload.apply(target.request(world, &nonce));
     let body = match flaw {
@@ -420,7 +442,7 @@ pub async fn send_flawed(world: &World, target: Target, flaw: Flaw) -> Response 
 /// Sends a request with a payload the route accepts (or an empty one where
 /// there is no easy valid payload) and no flaw.
 pub async fn send_well_formed(world: &World, target: Target) -> Response {
-    let nonce = fetch_nonce(&world.app).await;
+    let nonce = world.nonce().await;
     let mut request = target.request(world, &nonce);
 
     if let Some(payload) = target.valid_payload() {
@@ -433,7 +455,7 @@ pub async fn send_well_formed(world: &World, target: Target) -> Response {
 /// A well-formed request sent with a different `Content-Type` than the one
 /// RFC 8555 §6.2 requires.
 pub async fn send_with_content_type(world: &World, target: Target, content_type: &str) -> Response {
-    let nonce = fetch_nonce(&world.app).await;
+    let nonce = world.nonce().await;
     let body = target.request(world, &nonce).signed();
 
     world
@@ -466,7 +488,7 @@ pub async fn get(world: &World, target: Target) -> Response {
 /// A correctly signed body in the *general* JWS serialization, with a
 /// `signatures` array instead of the flattened `protected`/`signature` pair.
 pub async fn send_general_serialization(world: &World, target: Target) -> Response {
-    let nonce = fetch_nonce(&world.app).await;
+    let nonce = world.nonce().await;
     let flattened: Value = serde_json::from_str(&target.request(world, &nonce).signed()).unwrap();
     let body = json!({
         "payload": flattened["payload"],
