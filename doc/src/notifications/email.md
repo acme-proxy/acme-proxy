@@ -93,6 +93,9 @@ backend. Under `[admin.notify]` it is the **fallback**: the web-admin security
 events (`admin_sign_in`, `admin_credential_changed`) are delivered to the
 affected operator's own contact address, and `to` is used only when that
 operator has none — so `[admin.notify.email].to` may be left empty.
+The per-account expiry digest (`account_certificates_expiring`) goes to the
+account's own contacts and **never** to `to`, even when it has none left to
+send to — see [Addressed to the account](index.md#addressed-to-the-account).
 
 **`events`** (`Array`) — *Default: every event | Env: `ACME_PROXY_NOTIFY__EMAIL__EVENTS`*
 

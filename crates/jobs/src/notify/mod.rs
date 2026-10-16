@@ -47,6 +47,25 @@
 //! code. Filtering *there* rather than in a wrapper around `send` is what stops
 //! a job being queued for a delivery that would immediately do nothing.
 //!
+//! ## Addressed to an account, and only by email
+//!
+//! Every event goes to the addresses its backend was configured with, save
+//! two families. The web-admin security events name one operator, and go to
+//! that operator's own `contact_email` when one is on file. The per-account
+//! expiry digest ([`NotifyEvent::AccountCertificatesExpiring`]) names one ACME
+//! account, and goes to the `mailto:` addresses in its `contact` —
+//! [`NotifyEvent::recipients`] is the one place that says which.
+//!
+//! The account digest differs twice over, and both differences are refusals
+//! to fall back. It **never** falls back to `notify.email.to`: a list that
+//! came out empty is a message for nobody, where the fallback would mail the
+//! customer's digest to the operator, who already has the per-profile one.
+//! And it reaches **only the `email` backend** ([`BackendSlot`]'s
+//! `delivers_to_contacts`): a webhook or a script has no addressee, so it
+//! could only repeat the customer's mail into the operator's own channel, one
+//! post per account per pass — and every backend's `events` defaults to all
+//! of them.
+//!
 //! ## Per-profile, like every other subsystem
 //!
 //! [`build_registry`] builds one [`NotifyDispatcher`] per resolved profile
@@ -278,6 +297,31 @@ pub struct CertificatesExpiringData {
     pub certificates: Vec<ExpiringCertificate>,
 }
 
+/// Payload of [`NotifyEvent::AccountCertificatesExpiring`]: one account's cut
+/// of the expiry digest, addressed to that account's own `contact`.
+///
+/// The same members as [`CertificatesExpiringData`], plus who it is about and
+/// who it goes to. `certificates` and `total` are this account's alone, so the
+/// message never names another account's certificates.
+///
+/// `recipients` are bare addresses — `mailto:` already stripped, the
+/// operator's `notify.expiry.contact_domains` already applied — and never
+/// empty when built by [`crate::notify::expiry`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AccountCertificatesExpiringData {
+    pub profile: String,
+    pub account_id: String,
+    pub recipients: Vec<String>,
+    /// When the sweep ran, epoch seconds.
+    pub generated_at: i64,
+    /// The window this digest covers, `notify.expiry.lead_days`.
+    pub lead_days: u64,
+    /// How many of this account's certificates matched, before
+    /// `max_entries` truncated the list.
+    pub total: i64,
+    pub certificates: Vec<ExpiringCertificate>,
+}
+
 /// Which of the three notifiable web-admin sign-in situations
 /// [`NotifyEvent::AdminSignIn`] carries — most of the "what counts as
 /// suspicious" decision, kept deliberately small (ASVS V6.3.5).
@@ -300,9 +344,9 @@ pub enum AdminSignInOutcome {
 /// Payload of [`NotifyEvent::AdminSignIn`]: something happened at the web
 /// admin's sign-in that the operator it happened to should hear about.
 ///
-/// The one email-bound event whose recipient comes out of the data
+/// One of the email-bound events whose recipient comes out of the data
 /// (`recipient` = the operator's `admin_users.contact_email`) rather than the
-/// backend configuration — see [`NotifyEvent::recipient`].
+/// backend configuration — see [`NotifyEvent::recipients`].
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AdminSignInData {
     /// Always [`ADMIN_DISPATCHER_KEY`]. Carried as a field like every other
@@ -409,8 +453,19 @@ pub enum NotifyEvent {
     CertificateRevoked(CertificateRevokedData),
     ChallengeFailed(ChallengeFailedData),
     CertificatesExpiring(CertificatesExpiringData),
+    AccountCertificatesExpiring(AccountCertificatesExpiringData),
     AdminSignIn(AdminSignInData),
     AdminCredentialChanged(AdminCredentialChangeData),
+}
+
+/// Where an `email` delivery goes — [`NotifyEvent::recipients`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Recipients<'a> {
+    /// The backend's own configured `to`.
+    Configured,
+    /// These addresses and no others. Empty is nobody: there is deliberately
+    /// no fallback from here to [`Recipients::Configured`].
+    Named(Vec<&'a str>),
 }
 
 impl NotifyEvent {
@@ -425,6 +480,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(_) => "certificate_revoked",
             Self::ChallengeFailed(_) => "challenge_failed",
             Self::CertificatesExpiring(_) => "certificates_expiring",
+            Self::AccountCertificatesExpiring(_) => "account_certificates_expiring",
             Self::AdminSignIn(_) => "admin_sign_in",
             Self::AdminCredentialChanged(_) => "admin_credential_changed",
         }
@@ -440,6 +496,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => &data.profile,
             Self::ChallengeFailed(data) => &data.profile,
             Self::CertificatesExpiring(data) => &data.profile,
+            Self::AccountCertificatesExpiring(data) => &data.profile,
             Self::AdminSignIn(data) => &data.profile,
             Self::AdminCredentialChanged(data) => &data.profile,
         }
@@ -455,6 +512,7 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => minijinja::Value::from_serialize(data),
             Self::ChallengeFailed(data) => minijinja::Value::from_serialize(data),
             Self::CertificatesExpiring(data) => minijinja::Value::from_serialize(data),
+            Self::AccountCertificatesExpiring(data) => minijinja::Value::from_serialize(data),
             Self::AdminSignIn(data) => minijinja::Value::from_serialize(data),
             Self::AdminCredentialChanged(data) => minijinja::Value::from_serialize(data),
         }
@@ -483,18 +541,26 @@ impl NotifyEvent {
             Self::CertificateRevoked(data) => data.client_ip.as_deref(),
             Self::ChallengeFailed(data) => data.client_ip.as_deref(),
             // Generated by a sweep, with no request anywhere in scope.
-            Self::CertificatesExpiring(_) => None,
+            Self::CertificatesExpiring(_) | Self::AccountCertificatesExpiring(_) => None,
             Self::AdminSignIn(data) => data.client_ip.as_deref(),
             Self::AdminCredentialChanged(data) => data.client_ip.as_deref(),
         }
     }
 
-    /// This event's delivery address, when it comes out of the *data* rather
-    /// than the backend configuration — the web-admin operator's own
-    /// `contact_email`. `None` for every other event and when the operator has
-    /// no address on file. Read only by the `email` backend, which sends there
-    /// instead of its configured `to`.
-    fn recipient(&self) -> Option<&str> {
+    /// Where an `email` delivery of this event goes, when that comes out of
+    /// the *data* rather than the backend configuration. Read only by the
+    /// `email` backend.
+    ///
+    /// A web-admin security event goes to its operator's own `contact_email`,
+    /// and to the configured `to` when the operator has none on file. The
+    /// per-account digest goes to the account's contacts and **never** to
+    /// `to` — see the module docs. Everything else goes to `to`.
+    pub(crate) fn recipients(&self) -> Recipients<'_> {
+        fn operator(address: Option<&String>) -> Recipients<'_> {
+            address.map_or(Recipients::Configured, |address| {
+                Recipients::Named(vec![address.as_str()])
+            })
+        }
         match self {
             Self::ProfileMounted(_)
             | Self::AccountCreated(_)
@@ -502,17 +568,28 @@ impl NotifyEvent {
             | Self::CertificateIssued(_)
             | Self::CertificateRevoked(_)
             | Self::ChallengeFailed(_)
-            | Self::CertificatesExpiring(_) => None,
-            Self::AdminSignIn(data) => data.recipient.as_deref(),
+            | Self::CertificatesExpiring(_) => Recipients::Configured,
+            Self::AccountCertificatesExpiring(data) => {
+                Recipients::Named(data.recipients.iter().map(String::as_str).collect())
+            }
+            Self::AdminSignIn(data) => operator(data.recipient.as_ref()),
             // A changed address is reported to the one it replaced — see
             // `AdminCredentialChange::ContactAddress`.
             Self::AdminCredentialChanged(data)
                 if data.change == AdminCredentialChange::ContactAddress =>
             {
-                data.previous_recipient.as_deref()
+                operator(data.previous_recipient.as_ref())
             }
-            Self::AdminCredentialChanged(data) => data.recipient.as_deref(),
+            Self::AdminCredentialChanged(data) => operator(data.recipient.as_ref()),
         }
+    }
+
+    /// Whether this event is addressed to an ACME account's own `contact`,
+    /// which only a backend that can address a message may deliver — see the
+    /// module docs.
+    #[must_use]
+    pub fn is_contact_addressed(&self) -> bool {
+        matches!(self, Self::AccountCertificatesExpiring(_))
     }
 
     /// This event's account id, when it has one. Used by the `custom` backend
@@ -528,6 +605,7 @@ impl NotifyEvent {
             // A digest spans however many accounts hold the expiring
             // certificates; the per-entry `account_id` is in the payload.
             Self::CertificatesExpiring(_) => None,
+            Self::AccountCertificatesExpiring(data) => Some(&data.account_id),
             // An operator is not an ACME account.
             Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
@@ -547,7 +625,7 @@ impl NotifyEvent {
             Self::CertificateIssued(data) => Some(&data.order_id),
             Self::CertificateRevoked(data) => Some(&data.order_id),
             Self::ChallengeFailed(data) => Some(&data.order_id),
-            Self::CertificatesExpiring(_) => None,
+            Self::CertificatesExpiring(_) | Self::AccountCertificatesExpiring(_) => None,
             Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
     }
@@ -562,7 +640,7 @@ impl NotifyEvent {
             Self::CertificateIssued(data) => Some(&data.cert_serial),
             Self::CertificateRevoked(data) => Some(&data.cert_serial),
             Self::ChallengeFailed(_) => None,
-            Self::CertificatesExpiring(_) => None,
+            Self::CertificatesExpiring(_) | Self::AccountCertificatesExpiring(_) => None,
             Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => None,
         }
     }
@@ -577,7 +655,7 @@ impl NotifyEvent {
             Self::CertificateIssued(data) => data.identifiers.join(","),
             Self::CertificateRevoked(_) => String::new(),
             Self::ChallengeFailed(_) => String::new(),
-            Self::CertificatesExpiring(_) => String::new(),
+            Self::CertificatesExpiring(_) | Self::AccountCertificatesExpiring(_) => String::new(),
             Self::AdminSignIn(_) | Self::AdminCredentialChanged(_) => String::new(),
         }
     }
@@ -598,6 +676,10 @@ pub struct BackendSlot {
     /// queued for a delivery that would immediately no-op.
     events: HashSet<String>,
     backend: Arc<dyn NotifyBackend>,
+    /// Whether this backend may deliver an event addressed to an account's own
+    /// `contact` ([`NotifyEvent::is_contact_addressed`]). Only `email` can
+    /// address a message, so [`from_config`] sets it there and nowhere else.
+    delivers_to_contacts: bool,
 }
 
 impl BackendSlot {
@@ -610,7 +692,8 @@ impl BackendSlot {
     /// Whether this backend's `events` list admits `event`.
     #[must_use]
     pub fn wants(&self, event: &NotifyEvent) -> bool {
-        self.events.contains(event.kind())
+        (self.delivers_to_contacts || !event.is_contact_addressed())
+            && self.events.contains(event.kind())
     }
 
     /// Builds a slot directly.
@@ -625,7 +708,15 @@ impl BackendSlot {
             id: id.into(),
             events: events.iter().cloned().collect(),
             backend,
+            delivers_to_contacts: false,
         }
+    }
+
+    /// Lets this slot deliver events addressed to an account's own `contact`.
+    #[must_use]
+    pub fn delivering_to_contacts(mut self) -> Self {
+        self.delivers_to_contacts = true;
+        self
     }
 }
 
@@ -759,6 +850,29 @@ fn validate_events(field: &str, events: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `notify.expiry.contact` with nothing able to deliver it, or a
+/// `contact_domains` entry that is not a domain, is a startup error — the
+/// first would come up looking configured and mail nobody, and an address in
+/// the second would match nothing, so the allowlist would quietly let no
+/// contact through.
+fn validate_expiry_contact(cfg: &NotifyConfig) -> anyhow::Result<()> {
+    if cfg.expiry.contact {
+        anyhow::ensure!(
+            cfg.enabled.iter().any(|name| name == "email"),
+            "notify.expiry.contact is set but `email` is not in notify.enabled; \
+             only the email backend can address an account's contact"
+        );
+    }
+    for domain in &cfg.expiry.contact_domains {
+        let trimmed = domain.trim();
+        anyhow::ensure!(
+            !trimmed.is_empty() && !trimmed.contains('@') && !trimmed.contains(char::is_whitespace),
+            "notify.expiry.contact_domains: `{domain}` is not a domain"
+        );
+    }
+    Ok(())
+}
+
 /// Builds the configured notify dispatcher. Called once per profile at
 /// startup (via [`build_registry`]), so it may fail fast.
 ///
@@ -777,26 +891,31 @@ pub fn from_config(
 
     // The process-wide admin dispatcher delivers `admin_sign_in` /
     // `admin_credential_changed`, whose payloads name their own recipient
-    // (`NotifyEvent::recipient`), so its `notify.email.to` may legitimately be
+    // (`NotifyEvent::recipients`), so its `notify.email.to` may legitimately be
     // empty -- an operator with a `contact_email` is still reached. Every
     // per-profile dispatcher keeps the "notify.email.to is empty" startup
     // error, since its events carry no recipient.
     let allow_empty_email_to = profile == ADMIN_DISPATCHER_KEY;
+
+    validate_expiry_contact(cfg)?;
 
     let mut slots: Vec<BackendSlot> = Vec::with_capacity(cfg.enabled.len());
     for name in &cfg.enabled {
         let built: Vec<BackendSlot> = match name.as_str() {
             "email" => {
                 validate_events("notify.email.events", &cfg.email.events)?;
-                vec![BackendSlot::new(
-                    "email",
-                    Arc::new(email::EmailNotifier::from_config(
-                        &cfg.email,
-                        env.clone(),
-                        allow_empty_email_to,
-                    )?),
-                    &cfg.email.events,
-                )]
+                vec![
+                    BackendSlot::new(
+                        "email",
+                        Arc::new(email::EmailNotifier::from_config(
+                            &cfg.email,
+                            env.clone(),
+                            allow_empty_email_to,
+                        )?),
+                        &cfg.email.events,
+                    )
+                    .delivering_to_contacts(),
+                ]
             }
             "webhook" => build_webhook_slots(cfg, &env, outbound.clone())?,
             "custom" => build_custom_slots(cfg)?,
@@ -1021,6 +1140,8 @@ static EMBEDDED_TEMPLATES: LazyLock<HashMap<&'static str, &'static str>> = LazyL
         embed!("email/challenge_failed.body.j2"),
         embed!("email/certificates_expiring.subject.j2"),
         embed!("email/certificates_expiring.body.j2"),
+        embed!("email/account_certificates_expiring.subject.j2"),
+        embed!("email/account_certificates_expiring.body.j2"),
         embed!("email/admin_sign_in.subject.j2"),
         embed!("email/admin_sign_in.body.j2"),
         embed!("email/admin_credential_changed.subject.j2"),
@@ -1215,6 +1336,7 @@ pub(crate) mod tests {
                     superseded_by: None,
                 }],
             }),
+            account_digest(&["alice@example.com", "ops@example.com"]),
             NotifyEvent::AdminSignIn(AdminSignInData {
                 profile: "p".to_string(),
                 username: "alice".to_string(),
@@ -1236,6 +1358,27 @@ pub(crate) mod tests {
                 at: 1_700_000_000,
             }),
         ]
+    }
+
+    /// A per-account expiry digest on profile `p`, addressed to `recipients`.
+    fn account_digest(recipients: &[&str]) -> NotifyEvent {
+        NotifyEvent::AccountCertificatesExpiring(AccountCertificatesExpiringData {
+            profile: "p".to_string(),
+            account_id: "acct-1".to_string(),
+            recipients: recipients.iter().map(|r| (*r).to_string()).collect(),
+            generated_at: 1_700_000_000,
+            lead_days: 14,
+            total: 1,
+            certificates: vec![ExpiringCertificate {
+                order_id: "ord-1".to_string(),
+                account_id: "acct-1".to_string(),
+                cert_serial: "0a0b".to_string(),
+                identifiers: vec!["a.example.com".to_string()],
+                not_after: 1_700_600_000,
+                days_remaining: 6,
+                superseded_by: None,
+            }],
+        })
     }
 
     /// A changed address is reported to the address it replaced, since whoever
@@ -1262,15 +1405,21 @@ pub(crate) mod tests {
             AdminCredentialChange::ContactAddress,
             Some("old@example.com"),
         );
-        assert_eq!(replaced.recipient(), Some("old@example.com"));
+        assert_eq!(
+            replaced.recipients(),
+            Recipients::Named(vec!["old@example.com"])
+        );
         assert_eq!(replaced.payload()["previous_recipient"], "old@example.com");
 
         // A first-ever address replaced nothing, so nobody is told.
         let first = data(AdminCredentialChange::ContactAddress, None);
-        assert_eq!(first.recipient(), None);
+        assert_eq!(first.recipients(), Recipients::Configured);
 
         let password = data(AdminCredentialChange::Password, None);
-        assert_eq!(password.recipient(), Some("new@example.com"));
+        assert_eq!(
+            password.recipients(),
+            Recipients::Named(vec!["new@example.com"])
+        );
         assert!(password.payload().get("previous_recipient").is_none());
 
         // A job queued before the member existed still parses.
@@ -1286,7 +1435,10 @@ pub(crate) mod tests {
             "at": 1
         }))
         .unwrap();
-        assert_eq!(old.recipient(), Some("alice@example.com"));
+        assert_eq!(
+            old.recipients(),
+            Recipients::Named(vec!["alice@example.com"])
+        );
     }
 
     /// Every variant answers every accessor. These are wide `match`es over an
@@ -1326,7 +1478,9 @@ pub(crate) mod tests {
         //   [0]      profile_mounted     — no subject at all (startup, no request)
         //   [1..=5]  the per-ACME-subject events (account/order/certificate)
         //   [6]      certificates_expiring — a list digest, no scalar subject
-        //   [7..]    the web-admin security events — an operator, not an
+        //   [7]      account_certificates_expiring — one account's digest,
+        //            addressed to its contacts and to nobody else
+        //   [8..]    the web-admin security events — an operator, not an
         //            ACME subject: no account/order/cert, but a real client_ip
         //            and a recipient.
         let admin_events_start = ALL_NOTIFY_EVENTS.len() - 2;
@@ -1338,13 +1492,23 @@ pub(crate) mod tests {
             assert_eq!(event.order_id(), None, "{}", event.kind());
             assert_eq!(event.cert_serial(), None, "{}", event.kind());
             assert_eq!(event.identifiers_joined(), "", "{}", event.kind());
-            assert_eq!(event.recipient(), None, "{}", event.kind());
+            assert_eq!(
+                event.recipients(),
+                Recipients::Configured,
+                "{}",
+                event.kind()
+            );
         }
 
         let per_subject = &events[1..=5];
         for event in per_subject {
             assert_eq!(event.account_id(), Some("acct-1"));
-            assert_eq!(event.recipient(), None, "{}", event.kind());
+            assert_eq!(
+                event.recipients(),
+                Recipients::Configured,
+                "{}",
+                event.kind()
+            );
         }
         // A revocation reached through the admin CLI has no client address.
         assert_eq!(events[4].client_ip(), None);
@@ -1376,12 +1540,35 @@ pub(crate) mod tests {
             assert_eq!(event.identifiers_joined(), "", "{}", event.kind());
             assert_eq!(event.client_ip(), Some("203.0.113.5"), "{}", event.kind());
             assert_eq!(
-                event.recipient(),
-                Some("alice@example.com"),
+                event.recipients(),
+                Recipients::Named(vec!["alice@example.com"]),
                 "{}",
                 event.kind()
             );
+            assert!(!event.is_contact_addressed(), "{}", event.kind());
         }
+
+        // The account digest: one account, no single order or certificate, and
+        // addressed to the account's contacts — the only event that is.
+        let account = &events[7];
+        assert_eq!(account.account_id(), Some("acct-1"));
+        assert_eq!(account.client_ip(), None);
+        assert_eq!(account.order_id(), None);
+        assert_eq!(account.cert_serial(), None);
+        assert_eq!(account.identifiers_joined(), "");
+        assert_eq!(
+            account.recipients(),
+            Recipients::Named(vec!["alice@example.com", "ops@example.com"])
+        );
+        assert!(account.is_contact_addressed());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.is_contact_addressed())
+                .count(),
+            1
+        );
+        assert_eq!(account.payload()["certificates"][0]["order_id"], "ord-1");
 
         // The digest is the one variant whose subject is a *list*, and the
         // accessors above can only say it has none of the scalars. This is
@@ -1880,6 +2067,135 @@ pub(crate) mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("notify.custom_enabled is empty"), "{error}");
+    }
+
+    /// The account digest reaches the slot that can address a message and no
+    /// other — even one whose `events` lists it, which every backend's default
+    /// does. The webhook and the script get no row at all.
+    #[tokio::test]
+    async fn an_account_digest_is_queued_for_email_alone() {
+        let queue = test_queue().await;
+        let dispatcher = NotifyDispatcher::new(
+            "le",
+            vec![
+                BackendSlot::new(
+                    "email",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &every_kind(),
+                )
+                .delivering_to_contacts(),
+                BackendSlot::new(
+                    "webhook:chat",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &every_kind(),
+                ),
+                BackendSlot::new(
+                    "custom:pager",
+                    Arc::new(RecordingNotifyBackend::default()),
+                    &every_kind(),
+                ),
+            ],
+            queue.clone(),
+        );
+        let event = account_digest(&["alice@example.com"]);
+        assert!(dispatcher.slot("email").unwrap().wants(&event));
+        assert!(!dispatcher.slot("webhook:chat").unwrap().wants(&event));
+        assert!(!dispatcher.slot("custom:pager").unwrap().wants(&event));
+
+        dispatcher.dispatch(event).await;
+
+        assert_eq!(
+            Job::count_live(NOTIFY_JOB_KIND, queue.database())
+                .await
+                .unwrap(),
+            1,
+            "one row, for email"
+        );
+        let now = acme_proxy_store::nonce::now_secs();
+        let row = Job::claim_next("t", &[NOTIFY_JOB_KIND], now + 60, now, queue.database())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.payload["backend"], "email");
+    }
+
+    /// `from_config` is what marks the email slot, and only it.
+    #[tokio::test]
+    async fn only_the_configured_email_slot_delivers_to_contacts() {
+        let cfg = NotifyConfig {
+            enabled: vec!["email".to_string(), "webhook".to_string()],
+            email: acme_proxy_core::config::EmailNotifyConfig {
+                smtp_host: "localhost".to_string(),
+                from: "acme-proxy@example.com".to_string(),
+                to: vec!["ops@example.com".to_string()],
+                ..acme_proxy_core::config::EmailNotifyConfig::default()
+            },
+            webhook_enabled: vec!["chat".to_string()],
+            webhook: BTreeMap::from([("chat".to_string(), webhook_entry())]),
+            ..NotifyConfig::default()
+        };
+        let dispatcher = from_config(
+            "le",
+            &cfg,
+            acme_proxy_net::testutil::outbound_with(test_resolver()),
+            &test_queue().await,
+        )
+        .unwrap();
+        let event = account_digest(&["alice@example.com"]);
+        assert!(dispatcher.slot("email").unwrap().wants(&event));
+        assert!(!dispatcher.slot("webhook:chat").unwrap().wants(&event));
+    }
+
+    /// `notify.expiry.contact` with no `email` backend would come up looking
+    /// configured and mail nobody, and an address in `contact_domains` would
+    /// match no domain at all. Both stop the server.
+    #[tokio::test]
+    async fn an_undeliverable_expiry_contact_setting_is_a_startup_error() {
+        let build = |cfg: NotifyConfig| async move {
+            from_config(
+                "le",
+                &cfg,
+                acme_proxy_net::testutil::outbound_with(test_resolver()),
+                &test_queue().await,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        };
+        let expiry = |domains: &[&str]| acme_proxy_core::config::ExpiryNotifyConfig {
+            lead_days: 14,
+            contact: true,
+            contact_domains: domains.iter().map(|d| (*d).to_string()).collect(),
+            ..acme_proxy_core::config::ExpiryNotifyConfig::default()
+        };
+
+        let error = build(NotifyConfig {
+            expiry: expiry(&[]),
+            ..NotifyConfig::default()
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error.contains("`email` is not in notify.enabled"),
+            "{error}"
+        );
+
+        let with_email = |domains: &[&str]| NotifyConfig {
+            enabled: vec!["email".to_string()],
+            email: acme_proxy_core::config::EmailNotifyConfig {
+                smtp_host: "localhost".to_string(),
+                from: "acme-proxy@example.com".to_string(),
+                to: vec!["ops@example.com".to_string()],
+                ..acme_proxy_core::config::EmailNotifyConfig::default()
+            },
+            expiry: expiry(domains),
+            ..NotifyConfig::default()
+        };
+        for bad in ["ops@example.com", " ", "exa mple.com"] {
+            let error = build(with_email(&[bad])).await.unwrap_err();
+            assert!(error.contains("is not a domain"), "{bad}: {error}");
+        }
+        build(with_email(&["example.com"])).await.unwrap();
+        build(with_email(&[])).await.unwrap();
     }
 
     #[tokio::test]

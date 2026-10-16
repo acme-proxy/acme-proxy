@@ -311,14 +311,24 @@ pub const UNPARSABLE_NOT_AFTER: i64 = -1;
 /// be, because `profile` became optional when the admin surfaces arrived and a
 /// `concat!` literal cannot carry a conditional clause. The three predicates
 /// after it are unconditional and each carries its reason on
-/// [`Order::find_expiring`].
-fn push_expiring_predicates(profile: Option<&str>, before: i64, builder: &mut crate::sql::Builder) {
+/// [`Order::find_expiring`]. `account` narrows to one account's rows — the
+/// digest addressed to an account's own `contact` lists only what it holds.
+fn push_expiring_predicates(
+    profile: Option<&str>,
+    account: Option<Uuid>,
+    before: i64,
+    builder: &mut crate::sql::Builder,
+) {
     builder.push(" FROM orders WHERE certificate IS NOT NULL AND revoked_at IS NULL");
     builder.push(" AND cert_not_after >= 0 AND cert_not_after <= ");
     builder.push_bind(before);
     if let Some(profile) = profile {
         builder.push(" AND profile = ");
         builder.push_bind(profile.to_string());
+    }
+    if let Some(account) = account {
+        builder.push(" AND account_id = ");
+        builder.push_bind(account);
     }
 }
 
@@ -799,6 +809,7 @@ impl Order {
     /// being dropped between the page and the count.
     pub async fn find_expiring(
         profile: Option<&str>,
+        account: Option<Uuid>,
         before: i64,
         limit: i64,
         offset: i64,
@@ -808,12 +819,13 @@ impl Order {
             event = "db_order_find_expiring_started",
             outcome = "progress",
             profile = ?profile,
+            account_id = ?account,
             before,
             limit,
             offset
         );
         let mut page = crate::sql::Builder::new(database.dialect(), concat!("SELECT ", columns!()));
-        push_expiring_predicates(profile, before, &mut page);
+        push_expiring_predicates(profile, account, before, &mut page);
         page.push(" ORDER BY cert_not_after ASC, id ASC LIMIT ");
         page.push_bind(limit);
         page.push(" OFFSET ");
@@ -826,10 +838,31 @@ impl Order {
             .collect::<Result<_, _>>()?;
 
         let mut count = crate::sql::Builder::new(database.dialect(), "SELECT COUNT(*)");
-        push_expiring_predicates(profile, before, &mut count);
+        push_expiring_predicates(profile, account, before, &mut count);
         let total: i64 = count.build().fetch_one(database).await?.try_get::<i64>(0)?;
 
         Ok((orders, total))
+    }
+
+    /// The accounts holding at least one certificate in [`Order::find_expiring`]'s
+    /// window on `profile`, each once, in id order.
+    ///
+    /// What the digest addressed to an account's own `contact` iterates: one
+    /// message per account, so it needs the accounts before the rows. The same
+    /// predicates as the listing, through the same function, so an account is
+    /// named here exactly when a scoped `find_expiring` would answer rows for it.
+    pub async fn expiring_accounts(
+        profile: &str,
+        before: i64,
+        database: &Database,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        let mut query = crate::sql::Builder::new(database.dialect(), "SELECT DISTINCT account_id");
+        push_expiring_predicates(Some(profile), None, before, &mut query);
+        query.push(" ORDER BY account_id ASC");
+        let rows = query.build().fetch_all(database).await?;
+        rows.into_iter()
+            .map(|row| row.try_get::<Uuid>("account_id"))
+            .collect()
     }
 
     /// The issued orders on `profile` whose `cert_not_after` has never been
@@ -2301,7 +2334,7 @@ mod tests {
         let soon = expiring_order(&db, acct, &["soon.example.com"], Some(now + 2 * DAY)).await;
         let mid = expiring_order(&db, acct, &["mid.example.com"], Some(now + 9 * DAY)).await;
 
-        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
+        let (page, total) = Order::find_expiring(Some("default"), None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
 
@@ -2337,7 +2370,7 @@ mod tests {
         let broken = expiring_order(&db, acct, &["broken.example.com"], None).await;
         Order::set_cert_not_after(broken.id, -1, &db).await.unwrap();
 
-        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 10, 0, &db)
+        let (page, total) = Order::find_expiring(Some("default"), None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
@@ -2358,7 +2391,7 @@ mod tests {
             expiring_order(&db, acct, &[name.as_str()], Some(now + DAY)).await;
         }
 
-        let (page, total) = Order::find_expiring(Some("default"), now + 14 * DAY, 2, 0, &db)
+        let (page, total) = Order::find_expiring(Some("default"), None, now + 14 * DAY, 2, 0, &db)
             .await
             .unwrap();
         assert_eq!(page.len(), 2);
@@ -2374,11 +2407,60 @@ mod tests {
         let now = now_secs();
         expiring_order(&db, acct, &["a.example.com"], Some(now + DAY)).await;
 
-        let (page, total) = Order::find_expiring(Some("other"), now + 14 * DAY, 10, 0, &db)
+        let (page, total) = Order::find_expiring(Some("other"), None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         assert!(page.is_empty());
         assert_eq!(total, 0);
+    }
+
+    /// The account-addressed digest's two reads: the accounts holding
+    /// something in the window, each once, and one account's rows alone.
+    #[tokio::test]
+    async fn expiring_accounts_names_each_holder_once_and_the_filter_narrows_to_it() {
+        let db = Arc::new(Database::connect_for_test().await.unwrap());
+        let first = account_id(&db).await;
+        let (second, _) = crate::account::Account::find_or_create(
+            "default",
+            &[9u8, 9, 9],
+            vec![],
+            &acme_proxy_core::audit::ClientContext::default(),
+            &db,
+        )
+        .await
+        .unwrap();
+        let (idle, _) = crate::account::Account::find_or_create(
+            "default",
+            &[7u8, 7, 7],
+            vec![],
+            &acme_proxy_core::audit::ClientContext::default(),
+            &db,
+        )
+        .await
+        .unwrap();
+        let now = now_secs();
+        expiring_order(&db, first, &["a.example.com"], Some(now + DAY)).await;
+        expiring_order(&db, first, &["b.example.com"], Some(now + 2 * DAY)).await;
+        let theirs = expiring_order(&db, second.id, &["c.example.com"], Some(now + DAY)).await;
+        // Outside the window, so `idle` holds nothing that is expiring.
+        expiring_order(&db, idle.id, &["d.example.com"], Some(now + 60 * DAY)).await;
+        // Another endpoint's holder is not this profile's.
+        expiring_order_on(&db, "other", idle.id, &["e.example.com"], Some(now + DAY)).await;
+
+        let mut expected = vec![first, second.id];
+        expected.sort();
+        let accounts = Order::expiring_accounts("default", now + 14 * DAY, &db)
+            .await
+            .unwrap();
+        assert_eq!(accounts, expected);
+
+        let (page, total) =
+            Order::find_expiring(Some("default"), Some(second.id), now + 14 * DAY, 10, 0, &db)
+                .await
+                .unwrap();
+        let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
+        assert_eq!(ids, vec![theirs.id.to_string()]);
+        assert_eq!(total, 1, "the count is narrowed by the same predicate");
     }
 
     /// The panel's default view: no profile, so every endpoint at once. The
@@ -2395,7 +2477,7 @@ mod tests {
         let there =
             expiring_order_on(&db, "other", acct, &["b.example.com"], Some(now + 2 * DAY)).await;
 
-        let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
+        let (page, total) = Order::find_expiring(None, None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         let ids: Vec<String> = page.iter().map(|order| order.id.to_string()).collect();
@@ -2407,7 +2489,7 @@ mod tests {
         let mut revoked =
             expiring_order_on(&db, "other", acct, &["c.example.com"], Some(now + DAY)).await;
         revoked.revoke(Some(1), &db).await.unwrap();
-        let (page, total) = Order::find_expiring(None, now + 14 * DAY, 10, 0, &db)
+        let (page, total) = Order::find_expiring(None, None, now + 14 * DAY, 10, 0, &db)
             .await
             .unwrap();
         assert_eq!(page.len(), 2);
@@ -2429,10 +2511,10 @@ mod tests {
             expiring_order(&db, acct, &[name.as_str()], Some(now + (index + 1) * DAY)).await;
         }
 
-        let (first, total) = Order::find_expiring(None, now + 14 * DAY, 2, 0, &db)
+        let (first, total) = Order::find_expiring(None, None, now + 14 * DAY, 2, 0, &db)
             .await
             .unwrap();
-        let (second, second_total) = Order::find_expiring(None, now + 14 * DAY, 2, 2, &db)
+        let (second, second_total) = Order::find_expiring(None, None, now + 14 * DAY, 2, 2, &db)
             .await
             .unwrap();
 
@@ -2449,7 +2531,7 @@ mod tests {
         }
 
         // Past the end is an empty page, not an error and not a wrapped one.
-        let (past, _) = Order::find_expiring(None, now + 14 * DAY, 2, 50, &db)
+        let (past, _) = Order::find_expiring(None, None, now + 14 * DAY, 2, 50, &db)
             .await
             .unwrap();
         assert!(past.is_empty());

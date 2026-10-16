@@ -56,6 +56,9 @@ pub struct ExpiringEntry {
 pub struct ExpiringQuery {
     /// `None` is every endpoint, the panel's default. The digest names one.
     pub profile: Option<String>,
+    /// `None` is every account. Only the digest addressed to an account's own
+    /// `contact` names one.
+    pub account: Option<Uuid>,
     /// The `cert_not_after` at or below which a row is expiring — build it with
     /// [`expiring_horizon`], or [`horizon_from`] where the caller has its own
     /// `now`, rather than computing it a second time.
@@ -241,6 +244,7 @@ pub async fn list_expiring(
 ) -> Result<(Vec<ExpiringEntry>, i64, i64), sqlx::Error> {
     let (orders, total) = Order::find_expiring(
         query.profile.as_deref(),
+        query.account,
         query.before,
         query.limit,
         query.offset,
@@ -474,7 +478,7 @@ mod tests {
         // the cached candidate list that contains this row.
         let renewal = issued(&db, acct, &["a.example.com"], 90).await;
 
-        let (orders, _total) = Order::find_expiring(None, expiring_horizon(30), 50, 0, &db)
+        let (orders, _total) = Order::find_expiring(None, None, expiring_horizon(30), 50, 0, &db)
             .await
             .unwrap();
         let entries = annotate_expiring(orders, &db).await.unwrap();
@@ -499,7 +503,7 @@ mod tests {
         Order::set_cert_not_after(a.id, now_secs() + 3 * DAY + DAY / 2, &db)
             .await
             .unwrap();
-        let (orders, _total) = Order::find_expiring(None, expiring_horizon(30), 50, 0, &db)
+        let (orders, _total) = Order::find_expiring(None, None, expiring_horizon(30), 50, 0, &db)
             .await
             .unwrap();
         let entries = annotate_expiring(orders, &db).await.unwrap();
@@ -520,6 +524,7 @@ mod tests {
 
         let query = |include: bool| ExpiringQuery {
             profile: None,
+            account: None,
             before: expiring_horizon(30),
             include_superseded: include,
             limit: 50,
@@ -554,6 +559,7 @@ mod tests {
 
         let scoped = ExpiringQuery {
             profile: Some("default".to_string()),
+            account: None,
             before: expiring_horizon(30),
             include_superseded: true,
             limit: 50,

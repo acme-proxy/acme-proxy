@@ -430,6 +430,7 @@ async fn run_expiring(
 ) -> Result<(), CliError> {
     let query = acme_proxy_store::expiring::ExpiringQuery {
         profile,
+        account: None,
         before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded: !hide_superseded,
         limit: window.limit,
