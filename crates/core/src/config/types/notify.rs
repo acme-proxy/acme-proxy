@@ -111,6 +111,18 @@ pub struct ExpiryNotifyConfig {
     /// not, and ten thousand expiring at once is an unreadable mail and a
     /// webhook body a provider refuses.
     pub max_entries: usize,
+    /// Also send **each account** its own digest, addressed to the `mailto:`
+    /// addresses in its `contact` and listing only the certificates it holds.
+    /// Off by default: a `contact` is text a client typed and nobody verified,
+    /// so turning this on is the operator agreeing to mail it. Delivered by the
+    /// `email` backend alone, which must therefore be enabled.
+    pub contact: bool,
+    /// The domains an account's contact may be at for [`contact`](Self::contact)
+    /// to mail it — an entry matches itself and every subdomain. Empty (the
+    /// default) is any domain; a list is how an operator stops a client
+    /// pointing this server's mail at an address outside the organisation.
+    #[serde(deserialize_with = "string_list")]
+    pub contact_domains: Vec<String>,
 }
 
 impl Default for ExpiryNotifyConfig {
@@ -119,6 +131,8 @@ impl Default for ExpiryNotifyConfig {
             lead_days: 0,
             interval_days: 7,
             max_entries: 50,
+            contact: false,
+            contact_domains: Vec::new(),
         }
     }
 }
@@ -206,11 +220,17 @@ impl Default for CustomNotifyConfig {
 /// `notify.expiry.lead_days` is non-zero, so listing it here does not start
 /// sending anything on its own.
 ///
+/// `account_certificates_expiring` is the same digest cut per account and
+/// addressed to that account's own `contact`. It fires only once
+/// `notify.expiry.contact` is also set, and reaches the `email` backend alone —
+/// a webhook or a script has no addressee to send it to — so listing it in
+/// another backend's `events` costs nothing either.
+///
 /// `admin_sign_in` and `admin_credential_changed` are the web-admin operator
 /// security events (ASVS V6.3.5 / V6.3.7). They fire only on the process-wide
 /// `[admin.notify]` dispatcher, never on a profile's, so listing either in a
 /// per-profile backend's `events` costs nothing.
-pub const ALL_NOTIFY_EVENTS: [&str; 9] = [
+pub const ALL_NOTIFY_EVENTS: [&str; 10] = [
     "profile_mounted",
     "account_created",
     "account_deactivated",
@@ -218,6 +238,7 @@ pub const ALL_NOTIFY_EVENTS: [&str; 9] = [
     "certificate_revoked",
     "challenge_failed",
     "certificates_expiring",
+    "account_certificates_expiring",
     "admin_sign_in",
     "admin_credential_changed",
 ];

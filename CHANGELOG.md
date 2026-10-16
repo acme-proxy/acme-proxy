@@ -54,6 +54,17 @@ migrated configuration before restarting.
 
 ### Added
 
+- **Expiry reminders addressed to the account's own contact** (#10). With
+  `notify.expiry.contact = true`, each expiry pass also mails every account
+  holding something in the window its own digest: one message per account,
+  listing only its certificates, sent to the `mailto:` addresses in its
+  `contact`. A new event, `account_certificates_expiring`, carries it; only the
+  `email` backend receives it, and it never falls back to `notify.email.to`.
+  An account whose every listed certificate is already renewed, a deactivated
+  one, and one with no admitted contact are skipped. `notify.expiry.contact_domains`
+  restricts delivery to the listed domains and their subdomains; empty is any
+  domain. Off by default, since a contact is unverified client input.
+
 - **Single sign-on for the web admin: OpenID Connect and LDAP / Active
   Directory** (#14). `[admin.auth.oidc.<name>]` adds a *Sign in with …* button
   (authorization code flow with PKCE); `[admin.auth.ldap.<name>]` adds a realm

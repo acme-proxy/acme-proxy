@@ -1,0 +1,16 @@
+{{ total }} certificate{{ "" if total == 1 else "s" }} issued to your ACME account on profile "{{ profile }}" expire{{ "s" if total == 1 else "" }} within the next {{ lead_days }} day{{ "" if lead_days == 1 else "s" }}.
+{% for cert in certificates %}
+{{ cert.identifiers | join(", ") }}
+  Expires in {{ cert.days_remaining }} day{{ "" if cert.days_remaining == 1 else "s" }}
+  Serial: {{ cert.cert_serial }}
+{%- if cert.superseded_by %}
+  Already replaced by serial {{ cert.superseded_by.cert_serial }}{{ ", which your client said itself" if cert.superseded_by.via == "replaces" else ", which covers the same names" }}
+{%- endif %}
+{% endfor %}
+{%- if total > certificates | length %}
+...and {{ total - certificates | length }} more, not listed.
+{% endif %}
+Entries with no "already replaced" line have not been renewed. If your ACME client renews automatically, check that it is still running.
+
+Account: {{ account_id }}
+You receive this because this address is a contact of that account.

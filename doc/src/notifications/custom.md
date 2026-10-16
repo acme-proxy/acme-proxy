@@ -101,6 +101,10 @@ are `ACME_NOTIFY_HOOK`, `ACME_NOTIFY_PROFILE` (`__admin__`) and
 `recipient`, `outcome` / `change`, `by_self` and `user_agent` are on the stdin
 JSON — an operator is not an ACME subject, so it has no account or order id.
 
+`account_certificates_expiring` never reaches a script, whatever its `events`
+says: it is addressed to an account's contacts, and only the
+[email](email.md) backend can address a message.
+
 > There is no `ACME_NOTIFY_EVENT`; the event name is `ACME_NOTIFY_HOOK`.
 
 ### JSON on stdin

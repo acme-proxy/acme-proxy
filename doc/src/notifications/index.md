@@ -14,10 +14,11 @@ server, and web-admin operators on security events on their own account.
 | `certificate_revoked` | A certificate is revoked, via the ACME API or the admin CLI. |
 | `challenge_failed` | A domain-control validation attempt fails. |
 | `certificates_expiring` | The periodic expiry digest, one per profile. |
+| `account_certificates_expiring` | The same digest cut per account, mailed to that account's own `contact`. Email only. |
 | `admin_sign_in` | A web-admin sign-in from an unfamiliar address, a refused second factor after a correct password, or a lockout. |
 | `admin_credential_changed` | A web-admin operator's password or second factor changed. |
 
-These nine names are the only valid values wherever a backend's `events` list
+These ten names are the only valid values wherever a backend's `events` list
 is configured. An unrecognised name is a **startup error**, not a silently
 ignored entry.
 
@@ -27,6 +28,13 @@ is a digest sent on a schedule, listing the certificates on one profile that
 expire inside a configured window. It sends nothing until
 [`notify.expiry.lead_days`](#expiry-digest) is set, so leaving it in an
 `events` list costs nothing.
+
+`account_certificates_expiring` is that digest addressed to an account rather
+than to the operator. It sends nothing until
+[`notify.expiry.contact`](#addressed-to-the-account) is also set, and only the
+[email](email.md) backend ever receives it: a webhook or a script has no
+addressee, so it could only repeat each customer's mail into the operator's own
+channel.
 
 `admin_sign_in` and `admin_credential_changed` are the [web-admin
 operator](../operations/webadmin.md#security-notifications) security events
@@ -137,6 +145,43 @@ whole regardless, so a truncated digest still says how many it did not name.
 The schedule is a row in the durable job queue rather than a timer, so it
 survives a restart: a server restarting more often than `interval_days` still
 sends its digest on time instead of resetting the clock each start.
+
+#### Addressed to the account
+
+The digest above goes to the operator. With `expiry.contact` set, the same pass
+also mails **each account** its own: one message per account, listing only the
+certificates that account holds, sent to the `mailto:` addresses in its
+`contact`. It follows the operator digest's window, interval and `max_entries`,
+with three differences:
+
+- **Silence when everything is renewed.** An account whose every listed
+  certificate has already been replaced gets no message, so a customer whose
+  automation works does not hear from you every week. A list that
+  `max_entries` truncated is sent anyway, since the entries it left out may not
+  be renewed.
+- **Nobody, never the operator.** An account with no contact, or none that
+  `expiry.contact_domains` admits, is skipped. Its mail never falls back to
+  `notify.email.to`.
+- **Live accounts only.** A deactivated account is not written to.
+
+**`expiry.contact`** (`Boolean`) — *Default: `false` | Env: `ACME_PROXY_NOTIFY__EXPIRY__CONTACT`*
+
+Mail each account its own digest. It needs `email` in `notify.enabled`. Setting
+it without `email` is a startup error, because nothing else can deliver the
+mail. It also does nothing while `expiry.lead_days` is `0`.
+
+**`expiry.contact_domains`** (`List of Strings`) — *Default: `[]` | Env: `ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS`*
+
+The domains an account's contact must be at to be mailed. Each entry matches
+itself and every subdomain, case-insensitively: `example.com` admits
+`ops@example.com` and `ops@mail.example.com`, but not `ops@badexample.com`.
+Empty means any domain.
+
+A `contact` is whatever the client sent, and nothing verifies it. With the list
+empty, any client that can register an account can make this server send mail
+to any address it likes. On a deployment whose clients are all your own, list
+your own domains. An entry that is not a domain, such as an address, is a
+startup error.
 
 ## Delivery semantics
 

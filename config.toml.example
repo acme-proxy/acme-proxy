@@ -1317,12 +1317,15 @@ to = []                             # ACME_PROXY_NOTIFY__EMAIL__TO
 # here would silently mean "no events" the moment this is set to [].
 # "certificates_expiring" is the periodic digest below, which sends nothing
 # until notify.expiry.lead_days is set, so leaving it listed costs nothing.
+# "account_certificates_expiring" is its per-account cut, sent only with
+# notify.expiry.contact set, and only ever by this email backend.
 # "admin_sign_in" / "admin_credential_changed" fire only on the process-wide
 # [admin.notify] dispatcher (see below), never on a profile's, so listing them
 # on a per-profile backend costs nothing either.
 events = ["profile_mounted", "account_created", "account_deactivated",
           "certificate_issued", "certificate_revoked", "challenge_failed",
-          "certificates_expiring", "admin_sign_in", "admin_credential_changed"]
+          "certificates_expiring", "account_certificates_expiring",
+          "admin_sign_in", "admin_credential_changed"]
                                      # ACME_PROXY_NOTIFY__EMAIL__EVENTS
 timeout_ms = 5000                   # ACME_PROXY_NOTIFY__EMAIL__TIMEOUT_MS
 
@@ -1346,6 +1349,16 @@ interval_days = 7                   # ACME_PROXY_NOTIFY__EXPIRY__INTERVAL_DAYS
 # The most certificates one message lists. The number that matched is carried
 # whole regardless, so a truncated digest still says how many it did not name.
 max_entries = 50                    # ACME_PROXY_NOTIFY__EXPIRY__MAX_ENTRIES
+# Also mail EACH ACCOUNT its own digest — only its certificates, sent to the
+# mailto: addresses in its contact, never to notify.email.to. An account whose
+# every listed certificate is already renewed hears nothing. Needs "email" in
+# notify.enabled. Off by default: a contact is text a client typed, and
+# nothing verified it.
+contact = false                     # ACME_PROXY_NOTIFY__EXPIRY__CONTACT
+# The domains a contact must be at to be mailed; each entry matches itself and
+# every subdomain. Empty is ANY domain — so any client able to register an
+# account can have this server mail any address. List your own domains.
+contact_domains = []                # ACME_PROXY_NOTIFY__EXPIRY__CONTACT_DOMAINS
 
 # notify.webhook holds NAMED HTTP targets: one request per event, with the
 # URL, the method, the headers and the body all stated here. That is the whole

@@ -75,6 +75,7 @@ pub async fn get_index(
     let (_, expiring_soon, _) = acme_proxy_store::expiring::list_expiring(
         &acme_proxy_store::expiring::ExpiringQuery {
             profile: None,
+            account: None,
             before: acme_proxy_store::expiring::expiring_horizon(ATTENTION_EXPIRY_DAYS),
             include_superseded: true,
             limit: 1,

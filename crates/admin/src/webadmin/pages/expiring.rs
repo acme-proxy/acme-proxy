@@ -31,6 +31,7 @@ pub async fn list_expiring(
 
     let query = acme_proxy_store::expiring::ExpiringQuery {
         profile: params.profile.clone(),
+        account: None,
         before: acme_proxy_store::expiring::expiring_horizon(days),
         include_superseded,
         limit: page.limit,

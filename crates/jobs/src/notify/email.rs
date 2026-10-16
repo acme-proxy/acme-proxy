@@ -15,7 +15,7 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::info;
 
-use super::{NotifyBackend, NotifyError, NotifyEvent, render};
+use super::{NotifyBackend, NotifyError, NotifyEvent, Recipients, render};
 use acme_proxy_core::config::EmailNotifyConfig;
 
 /// Delivers a subject + body per event over SMTP.
@@ -35,7 +35,7 @@ impl EmailNotifier {
     /// network condition.
     /// `allow_empty_to` is set only for the process-wide `[admin.notify]`
     /// dispatcher, whose events carry their own recipient
-    /// ([`NotifyEvent::recipient`]): there, an empty `to` is a valid "deliver
+    /// ([`NotifyEvent::recipients`]): there, an empty `to` is a valid "deliver
     /// to each operator's own `contact_email` and nowhere else". Every
     /// per-profile dispatcher passes `false` and keeps the startup error, since
     /// its events name no recipient and a `send` would have nowhere to go.
@@ -122,22 +122,29 @@ impl NotifyBackend for EmailNotifier {
         let subject = render(&self.env, &format!("email/{kind}.subject.j2"), event)?;
         let body = render(&self.env, &format!("email/{kind}.body.j2"), event)?;
 
-        // An event that names its own recipient (the web-admin security
-        // events, whose subject is one operator) goes there instead of the
-        // configured `to` -- the operator is the one who has to be told. A
-        // parse failure is permanent: the same string will not parse next
-        // time either.
-        let recipients: Vec<Mailbox> = match event.recipient() {
-            Some(address) => vec![address.parse().map_err(|error| {
-                NotifyError::permanent(format!(
-                    "recipient `{address}` is not a valid address: {error}"
-                ))
-            })?],
-            None => self.to.clone(),
+        // An event that names its own recipients (the web-admin security
+        // events, whose subject is one operator; the per-account expiry
+        // digest, whose subject is one account) goes there instead of the
+        // configured `to` -- they are the ones who have to be told. A parse
+        // failure is permanent: the same string will not parse next time
+        // either.
+        let recipients: Vec<Mailbox> = match event.recipients() {
+            Recipients::Named(addresses) => addresses
+                .into_iter()
+                .map(|address| {
+                    address.parse().map_err(|error| {
+                        NotifyError::permanent(format!(
+                            "recipient `{address}` is not a valid address: {error}"
+                        ))
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+            Recipients::Configured => self.to.clone(),
         };
         if recipients.is_empty() {
-            // No per-event recipient and no configured fallback: there is
-            // nobody to deliver to. Not a failure -- the event is still logged.
+            // No recipient, and either no configured fallback or an event that
+            // must never use one: there is nobody to deliver to. Not a failure
+            // -- the event is still logged.
             return Ok(());
         }
 
@@ -386,5 +393,100 @@ mod tests {
             error.to_string().contains("SMTP delivery failed"),
             "{error}"
         );
+    }
+
+    fn account_digest(recipients: &[&str]) -> NotifyEvent {
+        NotifyEvent::AccountCertificatesExpiring(crate::notify::AccountCertificatesExpiringData {
+            profile: "le".to_string(),
+            account_id: "acct-1".to_string(),
+            recipients: recipients.iter().map(|r| (*r).to_string()).collect(),
+            generated_at: 1_700_000_000,
+            lead_days: 14,
+            total: 3,
+            certificates: vec![
+                crate::notify::ExpiringCertificate {
+                    order_id: "ord-1".to_string(),
+                    account_id: "acct-1".to_string(),
+                    cert_serial: "0a0b".to_string(),
+                    identifiers: vec!["www.example.com".to_string()],
+                    not_after: 1_700_300_000,
+                    days_remaining: 1,
+                    superseded_by: Some(acme_proxy_store::expiring::SupersededBy {
+                        order_id: "ord-2".to_string(),
+                        cert_serial: "0c0d".to_string(),
+                        not_after: 1_707_000_000,
+                        via: "replaces".to_string(),
+                    }),
+                },
+                crate::notify::ExpiringCertificate {
+                    order_id: "ord-3".to_string(),
+                    account_id: "acct-1".to_string(),
+                    cert_serial: "0e0f".to_string(),
+                    identifiers: vec!["api.example.com".to_string()],
+                    not_after: 1_700_600_000,
+                    days_remaining: 6,
+                    superseded_by: None,
+                },
+            ],
+        })
+    }
+
+    /// The account digest goes to the account's contacts and **never** to the
+    /// configured `to`: with no contact left, nothing is sent. Against port 1
+    /// a fallback would fail delivery, so `Ok` is proof none happened.
+    #[tokio::test]
+    async fn an_account_digest_never_falls_back_to_the_configured_to() {
+        let cfg = EmailNotifyConfig {
+            smtp_host: "127.0.0.1".to_string(),
+            smtp_port: 1,
+            smtp_security: "none".to_string(),
+            timeout_ms: 2000,
+            ..cfg()
+        };
+        let notifier =
+            EmailNotifier::from_config(&cfg, Arc::new(build_environment("")), false).unwrap();
+        notifier
+            .send(&account_digest(&[]))
+            .await
+            .expect("no contact is nobody, not the operator");
+
+        // Every contact is parsed, and one that will not is permanent.
+        let error = notifier
+            .send(&account_digest(&["alice@example.com", "not an address"]))
+            .await
+            .expect_err("the second contact does not parse");
+        assert!(!error.retryable(), "a bad address is permanent");
+        assert!(error.to_string().contains("not an address"), "{error}");
+    }
+
+    /// The account digest's templates render against real data: the account's
+    /// names, the renewal annotation, and the count it did not list.
+    #[test]
+    fn renders_the_account_digest_templates() {
+        let notifier =
+            EmailNotifier::from_config(&cfg(), Arc::new(build_environment("")), false).unwrap();
+        let event = account_digest(&["alice@example.com"]);
+        let subject = render(
+            &notifier.env,
+            "email/account_certificates_expiring.subject.j2",
+            &event,
+        )
+        .unwrap();
+        let body = render(
+            &notifier.env,
+            "email/account_certificates_expiring.body.j2",
+            &event,
+        )
+        .unwrap();
+        assert!(subject.contains("3 of your certificates"), "{subject}");
+        assert!(body.contains("www.example.com"), "{body}");
+        assert!(body.contains("Expires in 1 day\n"), "{body}");
+        assert!(
+            body.contains("Already replaced by serial 0c0d, which your client said itself"),
+            "{body}"
+        );
+        assert!(body.contains("api.example.com"), "{body}");
+        assert!(body.contains("...and 1 more, not listed."), "{body}");
+        assert!(body.contains("Account: acct-1"), "{body}");
     }
 }

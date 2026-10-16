@@ -1052,6 +1052,8 @@ mod tests {
         assert_eq!(config.notify.expiry.lead_days, 0);
         assert_eq!(config.notify.expiry.interval_days, 7);
         assert_eq!(config.notify.expiry.max_entries, 50);
+        assert!(!config.notify.expiry.contact);
+        assert!(config.notify.expiry.contact_domains.is_empty());
         assert_eq!(config.notify.email.smtp_port, 587);
         assert_eq!(config.notify.email.smtp_security, "starttls");
         assert_eq!(
@@ -1064,6 +1066,7 @@ mod tests {
                 "certificate_revoked",
                 "challenge_failed",
                 "certificates_expiring",
+                "account_certificates_expiring",
                 "admin_sign_in",
                 "admin_credential_changed"
             ]
