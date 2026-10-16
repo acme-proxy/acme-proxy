@@ -12,6 +12,8 @@
 //! 4. Exactly one of **`jwk`** or **`kid`** (§6.2; both or neither is
 //!    `malformed`), and a `jwk` only on `newAccount` and `revokeCert` — §6.2
 //!    requires every other request to name an existing account with `kid`.
+//!    `newAccount` in turn requires the `jwk`, `onlyReturnExisting` included,
+//!    and refuses a `kid` before the account is looked up.
 //!    A `kid` is verified against the account's **stored** SPKI,
 //!    after that SPKI's own algorithm OID is checked against the claimed `alg`,
 //!    so verification never rests on `alg` alone. An unknown `kid` is
@@ -260,6 +262,15 @@ async fn resolve_signing_key(
                 .map_err(map_signature_error)?
         }
         (None, Some(kid)) => {
+            // §6.2: "For newAccount requests ... there MUST be a `jwk` field" —
+            // the mirror of the refusal above. `onlyReturnExisting` included:
+            // it is a newAccount request (§7.3.1).
+            if request_path == acme_proxy_core::routes::NEW_ACCOUNT {
+                warn!(event = "jws_kid_not_allowed_here", outcome = "failure", url = %header.url, path = %request_path);
+                return Err(Problem::malformed(
+                    "newAccount requires the public key in a jwk field, not a kid",
+                ));
+            }
             debug!(event = "jws_kid_verification_started", outcome = "progress", algorithm = %header.alg, kid = %kid);
             // The account URL is the one *this* endpoint minted, prefix and
             // all: a `kid` naming another profile does not match here, and the

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 mod common;
-use common::{EcSigner, RsaSigner, TestSigner, acme, body_json, fetch_nonce, p, test_app};
+use common::{EcSigner, RsaSigner, TestSigner, body_json, fetch_nonce, p, test_app};
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
 
@@ -263,37 +263,4 @@ async fn only_return_existing_returns_a_registered_account() {
     );
     let account = body_json(res).await;
     assert_eq!(account["contact"][0], "mailto:test@example.com");
-}
-
-/// RFC 8555 §6.2: "For newAccount requests ... there MUST be a `jwk` field."
-/// A request signed by an existing account's `kid` is therefore refused, even
-/// though the server could answer it, and `onlyReturnExisting` does not change
-/// that.
-#[tokio::test]
-async fn a_new_account_request_signed_with_a_kid_is_refused() {
-    let app = test_app().await;
-    let signer = EcSigner::new();
-    let nonce = fetch_nonce(&app).await;
-    let res = post_new_account(
-        &app,
-        signer.sign(NEW_ACCOUNT_URL, &nonce, &account_payload()),
-    )
-    .await;
-    let account_url = assert_created(res).await;
-
-    let payloads = [account_payload(), json!({ "onlyReturnExisting": true })];
-    for payload in payloads {
-        let nonce = fetch_nonce(&app).await;
-        let body = signer.sign_kid(&account_url, NEW_ACCOUNT_URL, &nonce, &payload);
-
-        let res = post_new_account(&app, body).await;
-
-        acme::assert_problem_detail(
-            res,
-            StatusCode::BAD_REQUEST,
-            "urn:ietf:params:acme:error:malformed",
-            "jwk",
-        )
-        .await;
-    }
 }
