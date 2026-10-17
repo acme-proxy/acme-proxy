@@ -1030,6 +1030,26 @@ impl Order {
         Ok(written == 1)
     }
 
+    /// Takes the order row's write lock inside the caller's transaction, changing
+    /// nothing.
+    ///
+    /// What makes a read-then-decide on the order's children safe under
+    /// PostgreSQL's READ COMMITTED: two transactions that each wrote a different
+    /// authorization of one order would otherwise each read the set without the
+    /// other's write, and neither would see it complete. Taken before that
+    /// read, the lock queues the second transaction until the first commits, and
+    /// its read then sees both. SQLite already serializes the writers.
+    pub async fn lock_on<'e>(
+        id: Uuid,
+        executor: impl Into<crate::sql::Exec<'e>>,
+    ) -> Result<(), sqlx::Error> {
+        crate::sql::query("UPDATE orders SET status = status WHERE id = ?;")
+            .bind(id)
+            .execute(executor)
+            .await?;
+        Ok(())
+    }
+
     /// The `ready` transition as a bare statement, guarded on `pending`; see
     /// [`Order::set_invalid`].
     pub async fn set_ready<'e>(

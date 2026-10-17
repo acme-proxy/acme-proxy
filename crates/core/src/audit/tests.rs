@@ -10,6 +10,15 @@ fn ip(value: &str) -> IpAddr {
     value.parse().unwrap()
 }
 
+/// The compile-time position check, run once more at runtime so the guard's
+/// own arms are exercised rather than only const-evaluated.
+#[test]
+fn every_listed_event_sits_at_the_position_its_arm_names() {
+    for (index, event) in ALL_AUDIT_EVENTS.iter().enumerate() {
+        assert_eq!(event_count_is_exhaustive(*event), index + 1, "{event:?}");
+    }
+}
+
 /// The stored strings are the `audit_log.event` vocabulary (no `CHECK` mirrors
 /// them any more — `AuditEvent` is the authority), and the success/failure
 /// split is what the `outcome` `CHECK` still guards.

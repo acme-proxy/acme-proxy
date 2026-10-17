@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty, Limited};
+use http_body_util::{BodyExt, Empty, LengthLimitError, Limited};
 use hyper::Request;
 use tracing::{debug, info, warn};
 use url::Url;
@@ -356,13 +356,21 @@ impl HyperFetcher {
             .map(str::to_string);
 
         // `Limited` errors once the cap is passed; that is the signal, not a
-        // failure — a body too large is refused without being read further.
+        // failure — a body too large is refused without being read further. Any
+        // other error is the body itself failing (a reset, a short read against
+        // `Content-Length`), which says nothing about what the server would have
+        // served: a connection failure, not a verdict on the content.
         let (body, truncated) = match Limited::new(response.into_body(), max_bytes)
             .collect()
             .await
         {
             Ok(collected) => (collected.to_bytes().to_vec(), false),
-            Err(_) => (Vec::new(), true),
+            Err(error) if error.is::<LengthLimitError>() => (Vec::new(), true),
+            Err(error) => {
+                return Err(FetchError::Connect(format!(
+                    "reading the body from {url} failed: {error}"
+                )));
+            }
         };
 
         Ok(HttpResponse {
@@ -840,6 +848,21 @@ mod tests {
 
             let response = fetcher().get(&url, 8).await.unwrap();
             assert!(response.truncated);
+        }
+
+        /// A body that dies short of its `Content-Length` is a connection
+        /// failure — retryable — and never "more than N bytes", which would be
+        /// a terminal verdict on content the server never finished sending.
+        #[tokio::test]
+        async fn a_body_cut_short_is_a_connect_error_not_a_truncation() {
+            let (port, _server) = serve_once(
+                "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\nshort",
+            )
+            .await;
+            let url = Url::parse(&format!("http://127.0.0.1:{port}/x")).unwrap();
+
+            let error = fetcher().get(&url, 4096).await.unwrap_err();
+            assert!(matches!(&error, FetchError::Connect(_)), "{error:?}");
         }
 
         #[tokio::test]
