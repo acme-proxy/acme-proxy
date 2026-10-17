@@ -3964,6 +3964,21 @@ async fn the_audit_api_lists_pages_and_refuses_every_way_of_writing_to_it() {
     assert_eq!(paged["items"].as_array().unwrap().len(), 2);
     assert_eq!(paged["limit"], 2);
 
+    // A filter outside its closed vocabulary is refused by name, not answered
+    // with an empty page that reads like "nothing happened".
+    for (path, named) in [
+        (
+            "/api/audit?event=certificate_renewed",
+            "certificate_renewed",
+        ),
+        ("/api/audit?outcome=maybe", "maybe"),
+    ] {
+        let response = admin_request(&app, Method::GET, path, Some(&session), None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        let body = json_body(response).await;
+        assert!(body.to_string().contains(named), "{path}: {body}");
+    }
+
     // One row by id, and an unknown one.
     let id = body["items"][0]["id"].as_i64().unwrap();
     let one = json_body(
@@ -4946,6 +4961,20 @@ async fn every_mutation_writes_one_audit_row_naming_the_operator_and_the_address
     .await
     .unwrap();
     let _carol = admin_login(&app, "carol", ADMIN_PASSWORD).await;
+    // A factor for the reset below to remove: a reset with nothing to remove
+    // writes nothing and is refused. Half-enrolled, because a confirmed
+    // enrolment ends bob's sessions and the disable case below counts one.
+    let mut bob_user = acme_proxy_store::admin_user::AdminUser::find_by_username("bob", &database)
+        .await
+        .unwrap()
+        .unwrap();
+    acme_proxy_admin::admin::mfa::begin_totp_enrolment(
+        &mut bob_user,
+        "http://localhost:3001",
+        database.clone(),
+    )
+    .await
+    .unwrap();
     let carol_session = json_body(
         admin_request(
             &app,
@@ -5200,6 +5229,18 @@ async fn resetting_an_operators_totp_clears_it_and_their_sessions() {
         json_body(admin_request(&app, Method::GET, "/api/operators/bob", Some(&alice), None).await)
             .await;
     assert_eq!(bob_detail_after["totpEnabled"], false);
+
+    // A second reset has nothing left to remove: refused, as the CLI refuses
+    // it, rather than recorded and announced to bob as though it did something.
+    let again = admin_request(
+        &app,
+        Method::POST,
+        "/api/operators/bob/totp/reset",
+        Some(&alice),
+        Some(json!({ "password": ADMIN_PASSWORD })),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::CONFLICT);
     assert_eq!(
         admin_request(&app, Method::GET, "/api/session", Some(&bob), None)
             .await

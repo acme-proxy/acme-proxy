@@ -2875,10 +2875,10 @@ impl TestSigner for RsaSigner {
 /// A scratch directory that removes itself on drop, so a failing assertion
 /// cannot leave files behind.
 ///
-/// The library has its own copy under `crates/signer/src/testutil.rs`; an integration test
-/// cannot see a `#[cfg(test)]` item of the crate it links against, and making
-/// that one a real `pub mod` would ship test scaffolding to every consumer.
-/// Two copies, deliberately — down from seven.
+/// `acme_proxy_core::testutil::TempDir` (behind `test-util`) is the plain
+/// directory; this one also names the database a multi-process suite shares —
+/// a SQLite file, or a fresh PostgreSQL schema under `TEST_POSTGRES_URL` — which
+/// is why it is not that one.
 pub struct TempDir {
     path: std::path::PathBuf,
     database_url: String,

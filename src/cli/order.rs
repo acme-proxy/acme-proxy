@@ -142,21 +142,15 @@ pub async fn run_order_command(
             // `GET /ui/orders/{id}/chain.pem` already keeps: an empty file named
             // `.pem` reads as a broken certificate rather than an absent one.
             let Some(pem) = order.certificate else {
-                return Err(CliError::bad_request(format!(
-                    "order {id} has no certificate: it has not been finalized"
-                )));
+                return Err(CliError::bad_request(admin::order_not_issued_refusal(&id)));
             };
             // `print!`: the stored chain already ends in a newline, and a second
             // one would make the output differ from the file the panel serves.
             print!("{pem}");
         }
         OrderCommand::Delete { id } => {
-            // Read the order first, for its profile and identifiers: the audit
-            // row names them and the row is gone once the delete returns. Both
-            // web front ends already wrote `order_deleted`; this one hard-
-            // deleted an order and left the trail silent.
-            let doomed = Order::find_by_id(&id, &database).await?;
-            match admin::confirm_delete_order(&id, yes, reader, database.clone()).await? {
+            let trail = admin::trail::CliActions::new(&database);
+            match admin::confirm_delete_order(&id, yes, reader, database.clone(), &trail).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
                 DeleteOutcome::LiveCertificates(live) => {
                     return Err(CliError::bad_request(admin::live_certificates_refusal(
@@ -166,20 +160,6 @@ pub async fn run_order_command(
                 }
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
-                    if let Some(order) = doomed {
-                        acme_proxy_jobs::auditor::admin::record_cli_action(
-                            &database,
-                            |actor, client| {
-                                acme_proxy_jobs::auditor::admin::order_deleted(
-                                    actor,
-                                    client,
-                                    &order,
-                                    deleted.cascaded,
-                                )
-                            },
-                        )
-                        .await;
-                    }
                     println!(
                         "Deleted order {id} ({} authorization(s) cascaded).",
                         deleted.cascaded
@@ -197,20 +177,16 @@ pub async fn run_order_command(
                 .resolve_profiles()
                 .map_err(|error| CliError::failed(format!("configuration error: {error}")))?;
             let Some(profile) = profiles.iter().find(|p| p.name == order.profile) else {
-                return Err(CliError::bad_request(format!(
-                    "order {id} was issued by profile `{}`, which this configuration does not \
-                     define — revoking it needs the endpoint that signed it",
-                    order.profile
-                )));
+                return Err(CliError::bad_request(
+                    admin::order_profile_unmounted_refusal(&id, &order.profile),
+                ));
             };
             // Before anything reads the signer's configuration: an order with
             // nothing to revoke is the operator's answer, whatever state the
             // CA's files are in. `admin::revoke_order` makes the same check
             // against the row it re-reads.
             if order.certificate.is_none() {
-                return Err(CliError::bad_request(format!(
-                    "order {id} has no issued certificate"
-                )));
+                return Err(CliError::bad_request(admin::order_not_issued_refusal(&id)));
             }
             // Queued, not sent: the running server's worker delivers the
             // `certificate_revoked` notification this revocation owes.
@@ -263,13 +239,11 @@ pub async fn run_order_command(
             })? {
                 admin::RevokeOutcome::NotFound => return Err(not_found(&id)),
                 admin::RevokeOutcome::NotIssued => {
-                    return Err(CliError::bad_request(format!(
-                        "order {id} has no issued certificate"
-                    )));
+                    return Err(CliError::bad_request(admin::order_not_issued_refusal(&id)));
                 }
                 admin::RevokeOutcome::AlreadyRevoked => {
-                    return Err(CliError::bad_request(format!(
-                        "order {id}'s certificate is already revoked"
+                    return Err(CliError::bad_request(admin::order_already_revoked_refusal(
+                        &id,
                     )));
                 }
                 // Running out of time is not a failure: the revocation is
@@ -753,10 +727,7 @@ mod tests {
         .expect_err("an order with no certificate has no chain to print");
         assert_eq!(
             error,
-            CliError::bad_request(format!(
-                "order {} has no certificate: it has not been finalized",
-                order.id
-            ))
+            CliError::bad_request(admin::order_not_issued_refusal(&order.id.to_string()))
         );
 
         issue_onto(&mut order, &config, database.clone()).await;

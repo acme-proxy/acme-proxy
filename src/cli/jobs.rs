@@ -139,10 +139,18 @@ pub async fn run_jobs_command(
                 Some(CancelJobOutcome::Cancelled(job)) => {
                     println!("Cancelled job {id} ({}).", job.kind);
                 }
-                Some(CancelJobOutcome::CancelledAndOrderAbandoned { order_id, .. }) => {
+                // Either an in-flight relay or an in-flight `signer_issue`; only
+                // the relay had an upstream mapping to abandon.
+                Some(CancelJobOutcome::CancelledAndOrderAbandoned { job, order_id }) => {
+                    let mapping = if job.kind == acme_proxy_signer::relay::RELAY_JOB_KIND {
+                        " and the upstream mapping abandoned"
+                    } else {
+                        ""
+                    };
                     println!(
-                        "Cancelled relay job {id}. Order {order_id} was marked invalid and the \
-                         upstream mapping abandoned; the client will stop polling."
+                        "Cancelled job {id} ({}). Order {order_id} was marked invalid{mapping}; \
+                         the client will stop polling.",
+                        job.kind
                     );
                 }
             }

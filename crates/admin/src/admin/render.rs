@@ -32,6 +32,34 @@ use acme_proxy_store::upstream_order::UpstreamOrderRow;
 
 use acme_proxy_core::routes::profile_base_url;
 
+/// The envelope every paged listing answers with, on both front ends:
+/// `{items, total, limit, offset}`, where `total` is the count the same filters
+/// match **unpaged**. One builder, so the CLI's `--json` and `/api` stay member
+/// for member the same shape — a script should not have to learn one for the
+/// shell and another for the API.
+#[must_use]
+pub fn render_page_json(items: Vec<Value>, total: i64, limit: i64, offset: i64) -> Value {
+    serde_json::json!({
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+}
+
+/// An operator's second-factor state: never the secret and never a code, only
+/// whether one exists and how many recovery codes are left. What `GET
+/// /api/mfa` answers, what the account page renders, and the body of `admin
+/// user totp status --json`.
+#[must_use]
+pub fn render_totp_status_json(user: &AdminUser, recovery_codes_remaining: i64) -> Value {
+    serde_json::json!({
+        "totpEnabled": user.has_totp(),
+        "enrolmentPending": user.has_pending_totp(),
+        "recoveryCodesRemaining": recovery_codes_remaining,
+    })
+}
+
 /// JSON representation for account admin display.
 ///
 /// The traceability members are admin-only: [`Account::to_json`] is the RFC 8555

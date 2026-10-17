@@ -64,7 +64,7 @@ mdbook build doc/ && python3 doc/lint.py            # the book, and its style ga
 
 The same binary carries every admin subcommand (`account`, `order`, `jobs`, `audit`, `nonce`, `profile`, `upstream`, `eab`, `filter`, `admin user|session`, `completions`, `man`); `doc/src/operations/cli.md` is their reference. Rules for changing them:
 
-- **Every listing is paged** (`--limit`/`--offset`, `src/cli/window.rs`), prints `N of M row(s)`, and answers `{items, total, limit, offset}` under `--json` — member for member the admin API's envelope.
+- **Every listing of table rows is paged** (`--limit`/`--offset`, `src/cli/window.rs`), prints `N of M row(s)`, and answers `{items, total, limit, offset}` under `--json` — member for member the admin API's envelope (`admin::render_page_json` builds both). `profile list` lists configuration, not rows, and is the one bare array.
 - **An unknown value for a closed vocabulary is refused by name** (`--status`, `--event`, `--outcome`, `--role`); passing it to SQL would answer "no rows", which reads like "nothing is in that state". `--kind` is the exception: job kinds are an open set.
 - **No secret in argv.** There is no `--password` flag (a test asserts clap rejects one); secrets arrive on stdin or from a file.
 - **`completions` and `man` are answered before `Config::load` and `Database::open`** in `main.rs`, because `open` creates its file. Keep them there.

@@ -14,7 +14,6 @@ use crate::cli::CliError;
 use crate::cli::render;
 use crate::cli::window::{DEFAULT_LIMIT, Window};
 use acme_proxy_admin::admin;
-use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
 use acme_proxy_core::palette::Palette;
 use acme_proxy_store::audit::AuditQuery;
 use acme_proxy_store::db::Database;
@@ -76,31 +75,6 @@ pub enum AuditCommand {
     },
 }
 
-/// Rejects an `--event`/`--outcome` this build does not know.
-///
-/// Refused here rather than passed through to SQL, where an unknown value is
-/// not an error but an empty result — and "no rows" for a typo'd filter is the
-/// single most misleading answer an audit tool can give.
-fn check_filters(event: Option<&str>, outcome: Option<&str>) -> Result<(), CliError> {
-    if let Some(event) = event
-        && acme_proxy_core::audit::AuditEvent::parse(event).is_none()
-    {
-        let known: Vec<&str> = ALL_AUDIT_EVENTS.iter().map(|e| e.as_str()).collect();
-        return Err(CliError::bad_request(format!(
-            "unknown --event `{event}`; known events are {}",
-            known.join(", ")
-        )));
-    }
-    if let Some(outcome) = outcome
-        && !matches!(outcome, "success" | "failure")
-    {
-        return Err(CliError::bad_request(format!(
-            "unknown --outcome `{outcome}`; expected `success` or `failure`"
-        )));
-    }
-    Ok(())
-}
-
 pub async fn run_audit_command(
     command: AuditCommand,
     yes: bool,
@@ -121,7 +95,6 @@ pub async fn run_audit_command(
             offset,
             json,
         } => {
-            check_filters(event.as_deref(), outcome.as_deref())?;
             let window = Window::resolve(limit, offset);
             let query = AuditQuery {
                 profile,
@@ -138,7 +111,13 @@ pub async fn run_audit_command(
                 limit: window.limit,
                 offset: window.offset,
             };
-            let (entries, total) = admin::list_audit(&query, database).await?;
+            let (entries, total) =
+                admin::list_audit(&query, database)
+                    .await
+                    .map_err(|error| match error {
+                        admin::AuditListError::Invalid(detail) => CliError::bad_request(detail),
+                        admin::AuditListError::Database(error) => CliError::from(error),
+                    })?;
             render::print_page(
                 &entries,
                 total,
@@ -189,6 +168,7 @@ pub async fn run_audit_command(
 mod tests {
     use super::*;
     use crate::cli::CliErrorKind;
+    use acme_proxy_core::audit::ALL_AUDIT_EVENTS;
     use acme_proxy_core::audit::{Actor, AuditRecord};
     use acme_proxy_store::audit::AuditEntry;
     use acme_proxy_store::db::Database;
@@ -210,23 +190,41 @@ mod tests {
 
     /// A typo'd filter must be an error, not an empty result. "No rows" for a
     /// misspelt `--event` is the most misleading answer an audit tool can give,
-    /// because it looks exactly like "nothing happened".
-    #[test]
-    fn an_unknown_event_or_outcome_is_refused_by_name() {
-        assert!(check_filters(None, None).is_ok());
-        assert!(check_filters(Some("certificate_issued"), Some("success")).is_ok());
+    /// because it looks exactly like "nothing happened". The check is the op
+    /// layer's; this proves the CLI reports it as the operator's mistake.
+    #[tokio::test]
+    async fn an_unknown_event_or_outcome_is_refused_by_name() {
+        let db = db_with_rows().await;
+        let refused = |event: Option<&str>, outcome: Option<&str>| {
+            let command = AuditCommand::List {
+                profile: None,
+                account_id: None,
+                order_id: None,
+                cert_serial: None,
+                event: event.map(str::to_string),
+                outcome: outcome.map(str::to_string),
+                since_days: None,
+                limit: DEFAULT_LIMIT,
+                offset: 0,
+                json: false,
+            };
+            let db = db.clone();
+            async move {
+                let mut stdin = std::io::Cursor::new(Vec::new());
+                run_audit_command(command, true, Palette::plain(), &mut stdin, db)
+                    .await
+                    .unwrap_err()
+            }
+        };
 
-        let error = check_filters(Some("certificate_renewed"), None).unwrap_err();
+        let error = refused(Some("certificate_renewed"), None).await;
         assert!(error.message.contains("certificate_renewed"), "{error}");
         // The message lists what *is* accepted, so the operator can fix it
         // without reaching for the docs.
         assert!(error.message.contains("certificate_issued"), "{error}");
-        assert!(
-            error.message.contains("certificate_revoke_failed"),
-            "{error}"
-        );
+        assert_eq!(error.kind(), CliErrorKind::BadRequest);
 
-        let error = check_filters(None, Some("maybe")).unwrap_err();
+        let error = refused(None, Some("maybe")).await;
         assert!(error.message.contains("maybe"), "{error}");
         assert!(error.message.contains("success"), "{error}");
         assert_eq!(error.kind(), CliErrorKind::BadRequest);
@@ -260,21 +258,6 @@ mod tests {
             since_days: None,
             limit,
             offset,
-            json: false,
-        }
-    }
-
-    fn list_event(event: &str) -> AuditCommand {
-        AuditCommand::List {
-            profile: None,
-            account_id: None,
-            order_id: None,
-            cert_serial: None,
-            event: Some(event.to_string()),
-            outcome: None,
-            since_days: None,
-            limit: DEFAULT_LIMIT,
-            offset: 0,
             json: false,
         }
     }
@@ -322,19 +305,6 @@ mod tests {
         run_audit_command(list_every_filter(), true, Palette::plain(), &mut reader, db)
             .await
             .unwrap();
-    }
-
-    /// The filter check runs before the query, so a bad `--event` fails without
-    /// touching the database.
-    #[tokio::test]
-    async fn list_refuses_an_unknown_event_before_querying() {
-        let db = Arc::new(Database::connect_in_memory().await.unwrap());
-        let mut reader: &[u8] = &[];
-        let error = run_audit_command(list_event("nope"), true, Palette::plain(), &mut reader, db)
-            .await
-            .unwrap_err();
-        assert!(error.message.contains("unknown --event"), "{error}");
-        assert_eq!(error.kind(), CliErrorKind::BadRequest);
     }
 
     #[tokio::test]

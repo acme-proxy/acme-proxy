@@ -549,11 +549,7 @@ async fn insert_own_sessions(
 /// What `GET /api/mfa` answers, for the template.
 async fn status(state: &AdminState, user: &AdminUser) -> Result<Value, PageError> {
     let remaining = mfa::recovery_codes_remaining(user.id, state.database.clone()).await?;
-    Ok(json!({
-        "totpEnabled": user.has_totp(),
-        "enrolmentPending": user.has_pending_totp(),
-        "recoveryCodesRemaining": remaining,
-    }))
+    Ok(crate::admin::render_totp_status_json(user, remaining))
 }
 
 /// Everything `account/_card.html` reads.

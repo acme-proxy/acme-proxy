@@ -21,14 +21,13 @@ use crate::webadmin::pages::{
 };
 use acme_proxy_store::job::Job;
 
-/// The kinds the filter `<select>` offers. A free-typed `?kind=` still filters
-/// — this is only the dropdown, and a job row's kind is a closed code set.
+/// The kinds the filter `<select>` offers besides the table sweeps, which come
+/// from `sweep::SWEEP_KINDS`. A free-typed `?kind=` still filters — this is
+/// only the dropdown, and a job row's kind is a closed code set.
 ///
 /// The **constants**, not their spellings: written out as literals this list
-/// agreed with `admin::ops::PERIODIC_JOB_KINDS` only until somebody renamed a
-/// kind, at which point the dropdown would silently stop matching anything
-/// while every test still passed. Nothing else in the crate spells a job kind
-/// twice.
+/// would stop matching anything the moment somebody renamed a kind, while every
+/// test still passed. Nothing else in the crate spells a job kind twice.
 const KNOWN_KINDS: &[&str] = &[
     acme_proxy_signer::relay::RELAY_JOB_KIND,
     acme_proxy_jobs::notify::job::NOTIFY_JOB_KIND,
@@ -38,11 +37,6 @@ const KNOWN_KINDS: &[&str] = &[
     acme_proxy_protocol::acme::issue::SIGNER_ISSUE_KIND,
     acme_proxy_protocol::acme::revoke::SIGNER_REVOKE_KIND,
     acme_proxy_protocol::acme::validate::CHALLENGE_VALIDATE_KIND,
-    acme_proxy_jobs::jobs::sweep::NONCE_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::AUDIT_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::ADMIN_SESSION_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::ORDER_SWEEP_KIND,
-    acme_proxy_jobs::jobs::sweep::RETENTION_JOB_KIND,
 ];
 
 /// `GET /ui/jobs?kind=&status=&limit=&offset=`
@@ -75,7 +69,13 @@ pub async fn list_jobs(
     );
     context.insert(
         "kinds".to_string(),
-        Value::Array(KNOWN_KINDS.iter().map(|k| Value::from(*k)).collect()),
+        Value::Array(
+            KNOWN_KINDS
+                .iter()
+                .chain(acme_proxy_jobs::jobs::sweep::SWEEP_KINDS)
+                .map(|k| Value::from(*k))
+                .collect(),
+        ),
     );
 
     respond(
