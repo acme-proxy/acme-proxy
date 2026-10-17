@@ -42,6 +42,19 @@ pub(crate) fn push_equalities(
 /// The separator a `WHERE` clause opens with.
 pub(crate) const WHERE: &str = " WHERE ";
 
+/// Opens one predicate of a model's own after [`push_equalities`]: pushes the
+/// current separator and advances it, in one step, so no predicate can forget
+/// to — the hazard this module exists to remove, which threading the separator
+/// by hand kept open for every predicate that is not an equality.
+pub(crate) fn next_predicate<'b>(
+    builder: &'b mut crate::sql::Builder,
+    separator: &mut &'static str,
+) -> &'b mut crate::sql::Builder {
+    builder.push(*separator);
+    *separator = " AND ";
+    builder
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +63,18 @@ mod tests {
         let mut builder = crate::sql::Builder::new(crate::sql::Dialect::Sqlite, "SELECT 1 FROM t");
         let next = push_equalities(&mut builder, WHERE, pairs);
         (builder.sql().to_string(), next)
+    }
+
+    #[test]
+    fn a_predicate_of_a_model_s_own_opens_or_extends_the_clause() {
+        let mut builder = crate::sql::Builder::new(crate::sql::Dialect::Sqlite, "SELECT 1 FROM t");
+        let mut separator = push_equalities(&mut builder, WHERE, &[("a = ", None)]);
+        next_predicate(&mut builder, &mut separator).push("b IS NULL");
+        next_predicate(&mut builder, &mut separator).push("c IS NULL");
+        assert_eq!(
+            builder.sql(),
+            "SELECT 1 FROM t WHERE b IS NULL AND c IS NULL"
+        );
     }
 
     #[test]

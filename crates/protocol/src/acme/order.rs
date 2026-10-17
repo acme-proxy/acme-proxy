@@ -217,30 +217,6 @@ fn is_replaces_conflict(error: &sqlx::Error) -> bool {
     )
 }
 
-/// Builds the `certificate_issue_failed` row shared by `finalize`'s four
-/// refusal arms.
-///
-/// A free function taking `&Order` rather than a closure capturing it, so the
-/// order stays free to be claimed after the refusals are behind it.
-fn issue_failed(
-    profile: &str,
-    account_id: Uuid,
-    order: &Order,
-    client: &acme_proxy_core::audit::ClientContext,
-    reason: &'static str,
-    detail: &str,
-) -> acme_proxy_core::audit::AuditRecord {
-    acme_proxy_core::audit::AuditRecord::new(
-        acme_proxy_core::audit::AuditEvent::CertificateIssueFailed,
-        profile,
-        acme_proxy_core::audit::Actor::acme(account_id),
-    )
-    .with_order(order.id, order.account_id, &order.identifiers)
-    .with_client(client.clone())
-    .with_reason(reason)
-    .with_detail(detail)
-}
-
 /// The order-side operations of one endpoint.
 ///
 /// A borrowed bundle rather than an owned service: every caller already holds
@@ -844,7 +820,13 @@ impl OrderService<'_> {
         // The reverse lookup runs once here and is reused by whichever arm answers.
         let client = audit.client(request).await;
         let failed = |order: &Order, reason: &'static str, detail: &str| {
-            issue_failed(&profile.name, account.id, order, &client, reason, detail)
+            acme_proxy_signer::issuance::issue_failed_record(
+                order,
+                acme_proxy_core::audit::Actor::acme(account.id),
+                client.clone(),
+                reason,
+                detail,
+            )
         };
 
         let csr_der = match BASE64_URL_SAFE_NO_PAD.decode(csr) {

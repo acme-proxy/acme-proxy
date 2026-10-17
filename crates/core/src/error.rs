@@ -467,6 +467,27 @@ impl Problem {
     }
 }
 
+impl Problem {
+    /// The response, with one header beside `Content-Type` — what a refusal
+    /// that names something carries: §6.7's terms-of-service `Link`, §7.3.5's
+    /// `Location` of the conflicting account, §6.6's `Retry-After`.
+    ///
+    /// A value that is not a valid header (a configured URL with a control
+    /// character in it) is left off rather than turning the refusal into a
+    /// `500`: the problem document is the answer, the header a pointer.
+    pub fn into_response_with(
+        self,
+        name: axum::http::HeaderName,
+        value: impl TryInto<axum::http::HeaderValue>,
+    ) -> Response {
+        let mut response = self.into_response();
+        if let Ok(value) = value.try_into() {
+            response.headers_mut().insert(name, value);
+        }
+        response
+    }
+}
+
 impl IntoResponse for Problem {
     fn into_response(self) -> Response {
         let body = Json(self.to_value());
@@ -664,6 +685,25 @@ mod tests {
             "urn:ietf:params:acme:error:badRevocationReason",
         )
         .await;
+    }
+
+    /// The header rides beside the problem's own status and media type; a value
+    /// that cannot be a header is left off rather than failing the refusal.
+    #[test]
+    fn a_problem_carries_one_extra_header_or_none_when_it_is_invalid() {
+        let response = Problem::rate_limited("slow down")
+            .into_response_with(header::RETRY_AFTER, header::HeaderValue::from_static("5"));
+        assert_eq!(response.status().as_u16(), 429);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "5");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+
+        let response = Problem::malformed("boom")
+            .into_response_with(header::LOCATION, "bad\nvalue".to_string());
+        assert_eq!(response.status().as_u16(), 400);
+        assert!(response.headers().get(header::LOCATION).is_none());
     }
 
     #[tokio::test]
