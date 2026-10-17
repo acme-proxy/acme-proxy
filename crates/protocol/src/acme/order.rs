@@ -415,7 +415,8 @@ impl OrderService<'_> {
             None => None,
         };
 
-        let expires = now_secs() + profile.order.validity_seconds as i64;
+        let expires = now_secs()
+            .saturating_add(i64::try_from(profile.order.validity_seconds).unwrap_or(i64::MAX));
 
         // The reverse lookup runs here rather than at the top of the handler: every
         // refusal above (malformed name, wildcard without dns-01, `alreadyReplaced`)
@@ -583,10 +584,14 @@ impl OrderService<'_> {
     /// the caller answers with the challenge as it stands. `challenge` is
     /// refreshed where the row moved under the read, so that answer is the
     /// current object rather than the one the caller loaded.
-    /// [`ValidationClaim::Claimed`] obliges the caller to follow with
-    /// [`run_validation`](Self::run_validation), and
-    /// [`ValidationClaim::Limited`] is `429 rateLimited`: the account has
-    /// `challenge.max_in_flight_per_account` validations running already.
+    /// [`ValidationClaim::Claimed`] means the claim committed **with** the
+    /// `challenge_validate` job that settles it, in one transaction, so no crash
+    /// or failed enqueue can leave a challenge `processing` with nothing coming
+    /// for it. [`ValidationClaim::Limited`] is `429 rateLimited`: the account
+    /// has `challenge.max_in_flight_per_account` validations running already.
+    ///
+    /// `client_ip` is the triggering client, carried to the job for its
+    /// notification.
     ///
     /// [`challenge_can_be_triggered`] is the read side of the same checks and
     /// changes with them.
@@ -595,6 +600,8 @@ impl OrderService<'_> {
         challenge: &mut Challenge,
         authz: &Authorization,
         order: &Order,
+        jobs: &JobQueue,
+        client_ip: Option<IpAddr>,
     ) -> Result<ValidationClaim, Error> {
         if authz.status != AuthzStatus::Valid && authz.expires <= now_secs() {
             warn!(event = "authz_expired", outcome = "failure", authz_id = %authz.id, expires = authz.expires);
@@ -664,13 +671,35 @@ impl OrderService<'_> {
         // The loser answers with the challenge as it now stands, which reports
         // `processing` — §8.2's answer for a challenge the server is still
         // working on.
-        let claimed = challenge
-            .claim_for_validation(self.profile.challenges.max_in_flight_per_account(), self.database)
-            .await
-            .map_err(|error| {
-                error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
-                Problem::server_internal("Challenge could not be claimed for validation")
-            })?;
+        let limit = self.profile.challenges.max_in_flight_per_account();
+        let spec = super::validate::challenge_validate_spec(
+            &challenge.id.to_string(),
+            client_ip,
+            authz.expires,
+        );
+        let before = challenge.status;
+        let outcome = async {
+            let mut tx = self.database.transaction().await?;
+            let claimed = challenge.claim_for_validation_on(limit, tx.conn()).await?;
+            if claimed == ValidationClaim::Claimed {
+                // `false` needs nothing: a live job already holds this
+                // challenge's identity, which is the same fact the claim asserts.
+                jobs.enqueue_in(&spec, tx.conn()).await?;
+            }
+            tx.commit().await?;
+            Ok::<_, sqlx::Error>(claimed)
+        }
+        .await;
+        let claimed = outcome.map_err(|error| {
+            // The claim rolled back with the enqueue; the object must not keep
+            // claiming a status the row never took.
+            challenge.status = before;
+            error!(event = "challenge_claim_failed", outcome = "failure", challenge_id = %challenge.id, error = %error);
+            Problem::server_internal("Challenge could not be claimed for validation")
+        })?;
+        if claimed == ValidationClaim::Claimed {
+            jobs.wake();
+        }
         if claimed == ValidationClaim::Limited {
             warn!(event = "challenge_trigger_rate_limited", outcome = "failure", account_id = %order.account_id, challenge_id = %challenge.id);
         }
@@ -950,10 +979,11 @@ impl OrderService<'_> {
 /// before the other's write landed: neither would see a complete set, and
 /// neither would promote. Reading inside the transaction that just wrote means
 /// SQLite serializes the two writers, and whichever commits second is the one
-/// that sees them all `valid`. **PostgreSQL does not**: under its default READ
+/// that sees them all `valid`. PostgreSQL does not: under its default READ
 /// COMMITTED isolation the two transactions lock different authorization rows,
-/// and each read sees only its own uncommitted write, so the race above is
-/// still open there.
+/// and each read would see only its own uncommitted write. So the order row is
+/// locked ([`Order::lock_on`]) before the read, which queues the second
+/// transaction behind the first on both backends.
 async fn commit_validation(
     challenge: &mut Challenge,
     authz: &mut Authorization,
@@ -976,9 +1006,11 @@ async fn commit_validation(
         // The guarded writes above have already taken the RESERVED lock by the
         // time this reads — `transaction()` issues a deferred BEGIN — so this
         // sees its own write and no other writer can interleave. Putting a read
-        // first here would break that. `set_ready` is guarded on `pending`, so
-        // the order's status as the job read it does not matter.
+        // first here would break that. The order lock does the same for
+        // PostgreSQL. `set_ready` is guarded on `pending`, so the order's status
+        // as the job read it does not matter.
         let promoted = authz_written && {
+            Order::lock_on(order.id, tx.conn()).await?;
             let authzs = Authorization::find_by_order_with(order.id, tx.conn()).await?;
             authzs.len() == order.identifiers.len()
                 && authzs
@@ -1183,6 +1215,12 @@ pub(crate) mod tests {
         (order, authzs)
     }
 
+    /// The queue a trigger's claim commits its validation job into. Nothing runs
+    /// it: these tests drive `run_validation` themselves.
+    fn queue(database: &Arc<Database>) -> JobQueue {
+        JobQueue::new(database.clone(), &Default::default())
+    }
+
     async fn reload(database: &Database, order: &Order) -> Order {
         Order::find_by_id(&order.id.to_string(), database)
             .await
@@ -1226,7 +1264,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge, authz, &order)
+                .claim_challenge(challenge, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1246,7 +1284,7 @@ pub(crate) mod tests {
 
         // And the challenge under it can no longer be triggered.
         let refused = orders
-            .claim_challenge(challenge, authz, &order)
+            .claim_challenge(challenge, authz, &order, &queue(&database), None)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1299,14 +1337,14 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge, authz, &order)
+                .claim_challenge(challenge, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
         );
         assert_eq!(
             orders
-                .claim_challenge(&mut twin, authz, &order)
+                .claim_challenge(&mut twin, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Decided
@@ -1339,7 +1377,13 @@ pub(crate) mod tests {
         let a = async {
             assert_eq!(
                 orders
-                    .claim_challenge(&mut challenge_a, &authz_a, &order_a)
+                    .claim_challenge(
+                        &mut challenge_a,
+                        &authz_a,
+                        &order_a,
+                        &queue(&database),
+                        None
+                    )
                     .await
                     .unwrap(),
                 ValidationClaim::Claimed
@@ -1352,7 +1396,13 @@ pub(crate) mod tests {
         let b = async {
             assert_eq!(
                 orders
-                    .claim_challenge(&mut challenge_b, &authz_b, &order_b)
+                    .claim_challenge(
+                        &mut challenge_b,
+                        &authz_b,
+                        &order_b,
+                        &queue(&database),
+                        None
+                    )
                     .await
                     .unwrap(),
                 ValidationClaim::Claimed
@@ -1391,7 +1441,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge, authz, &order)
+                .claim_challenge(challenge, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1500,14 +1550,14 @@ pub(crate) mod tests {
         };
         assert_eq!(
             on(&passing)
-                .claim_challenge(&mut dns, authz, &order)
+                .claim_challenge(&mut dns, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
         );
         assert_eq!(
             on(&passing)
-                .claim_challenge(http, authz, &order)
+                .claim_challenge(http, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1564,7 +1614,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge, authz, &order)
+                .claim_challenge(challenge, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1612,14 +1662,26 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(first_challenge, first_authz, &first_order)
+                .claim_challenge(
+                    first_challenge,
+                    first_authz,
+                    &first_order,
+                    &queue(&database),
+                    None
+                )
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
         );
         assert_eq!(
             orders
-                .claim_challenge(second_challenge, second_authz, &second_order)
+                .claim_challenge(
+                    second_challenge,
+                    second_authz,
+                    &second_order,
+                    &queue(&database),
+                    None
+                )
                 .await
                 .unwrap(),
             ValidationClaim::Limited
@@ -1634,7 +1696,13 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(
             orders
-                .claim_challenge(second_challenge, second_authz, &second_order)
+                .claim_challenge(
+                    second_challenge,
+                    second_authz,
+                    &second_order,
+                    &queue(&database),
+                    None
+                )
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1663,7 +1731,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge_a, authz_a, &order)
+                .claim_challenge(challenge_a, authz_a, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1675,7 +1743,7 @@ pub(crate) mod tests {
         assert_eq!(order.status, OrderStatus::Invalid);
 
         let refused = orders
-            .claim_challenge(challenge_b, authz_b, &order)
+            .claim_challenge(challenge_b, authz_b, &order, &queue(&database), None)
             .await
             .unwrap_err();
         assert_eq!(Problem::from(refused).status(), 400);
@@ -1717,7 +1785,7 @@ pub(crate) mod tests {
 
         assert_eq!(
             orders
-                .claim_challenge(challenge, authz, &order)
+                .claim_challenge(challenge, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Claimed
@@ -1742,7 +1810,7 @@ pub(crate) mod tests {
         // look at the challenge finds the verdict and returns it.
         assert_eq!(
             orders
-                .claim_challenge(&mut stale, authz, &order)
+                .claim_challenge(&mut stale, authz, &order, &queue(&database), None)
                 .await
                 .unwrap(),
             ValidationClaim::Decided
@@ -2031,7 +2099,9 @@ pub(crate) mod tests {
             mutate(&mut authz, &mut order);
             let predicted = challenge_can_be_triggered(&authz, &order, now_secs());
             let claimed = matches!(
-                orders.claim_challenge(&mut challenge, &authz, &order).await,
+                orders
+                    .claim_challenge(&mut challenge, &authz, &order, &queue(&database), None)
+                    .await,
                 Ok(ValidationClaim::Claimed)
             );
             assert_eq!(predicted, claimed, "{case}");
