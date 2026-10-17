@@ -492,12 +492,13 @@ async fn authorization_deactivation_db_error_returns_500() {
     .await;
 }
 
-/// The work a trigger claims and then fails to queue must be given back. The
-/// claim is on the row and nothing is coming for it, so without the release
-/// the client would poll a `processing` challenge until its authorization
-/// expired. After the 500, a retry once the queue works must validate.
+/// A trigger whose validation cannot be queued must not keep its claim. The
+/// claim and the job commit together, so a refused job rolls the claim back;
+/// without that the client would poll a `processing` challenge until its
+/// authorization expired. After the 500, a retry once the queue works must
+/// validate.
 #[tokio::test]
-async fn a_challenge_whose_validation_cannot_be_queued_is_released() {
+async fn a_challenge_whose_validation_cannot_be_queued_is_not_claimed() {
     let (app, db) = test_app_with_db().await;
     let signer = EcSigner::new();
     let account_url = register(&app, &signer).await;
@@ -520,7 +521,7 @@ async fn a_challenge_whose_validation_cannot_be_queued_is_released() {
         common::acme::trigger_and_settle(&app, &signer, &account_url, &challenge_url).await;
     assert_eq!(
         challenge["status"], "valid",
-        "the claim must have been released: {challenge}"
+        "the claim must have rolled back: {challenge}"
     );
 }
 
