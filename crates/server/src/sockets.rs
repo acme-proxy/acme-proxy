@@ -410,3 +410,33 @@ pub(super) fn bound_address(listener: Option<&TcpListener>, configured: &str) ->
         .and_then(|listener| listener.local_addr().ok())
         .map_or_else(|| configured.to_string(), |address| address.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn admin_config(bind_address: String) -> Arc<Config> {
+        let mut config = Config::default();
+        config.admin.enabled = true;
+        config.admin.bind_address = bind_address;
+        config.admin.base_url = "http://localhost:3001".to_string();
+        Arc::new(config)
+    }
+
+    /// No panel, no socket; a panel binds its own; and an address already in
+    /// use is a startup error naming the bind, not a panic or a silent skip.
+    #[tokio::test]
+    async fn the_admin_socket_is_bound_only_when_asked_and_a_taken_address_is_refused() {
+        let mut off = Config::default();
+        off.admin.enabled = false;
+        assert!(bind_admin(&Arc::new(off)).await.unwrap().is_none());
+
+        let bound = bind_admin(&admin_config("127.0.0.1:0".to_string()))
+            .await
+            .unwrap()
+            .expect("an enabled panel binds its socket");
+
+        let taken = bound.local_addr().unwrap().to_string();
+        assert!(bind_admin(&admin_config(taken)).await.is_err());
+    }
+}
