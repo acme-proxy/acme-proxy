@@ -184,18 +184,8 @@ pub(crate) async fn apply_create_eab(
 ) -> Result<Eab, AdminError> {
     require_mounted_profile(state, profile.as_deref(), hint)?;
 
-    let eab = Eab::create(label, profile, &state.database).await?;
-    state
-        .record_admin_action(caller.request, caller.username(), |actor, client| {
-            acme_proxy_jobs::auditor::admin::eab_created(
-                actor,
-                client,
-                &eab.kid.to_string(),
-                eab.profile.as_deref(),
-                eab.label.as_deref(),
-            )
-        })
-        .await;
+    let eab =
+        admin::create_eab(label, profile, state.database.clone(), &caller.trail(state)).await?;
     tracing::info!(event = "admin_eab_created",
                    outcome = "success",
                    surface = caller.surface,
@@ -213,21 +203,8 @@ pub(crate) async fn apply_revoke_eab(
     caller: &Caller<'_>,
     kid: &str,
 ) -> Result<(), AdminError> {
-    let subject = Eab::find_any_by_kid(kid, &state.database).await?;
-    if !Eab::revoke(kid, &state.database).await? {
+    if !admin::revoke_eab(kid, state.database.clone(), &caller.trail(state)).await? {
         return Err(not_found(kid));
-    }
-    if let Some(eab) = subject.as_ref().filter(|eab| eab.status == "active") {
-        state
-            .record_admin_action(caller.request, caller.username(), |actor, client| {
-                acme_proxy_jobs::auditor::admin::eab_revoked(
-                    actor,
-                    client,
-                    kid,
-                    eab.profile.as_deref(),
-                )
-            })
-            .await;
     }
     tracing::info!(event = "admin_eab_revoked",
                    outcome = "success",
@@ -248,14 +225,8 @@ pub(crate) async fn apply_delete_eab(
 ) -> Result<DeletedEab, AdminError> {
     let deleted = deleted_or_refused(
         kid,
-        admin::delete_eab(kid, accounts, state.database.clone()).await?,
+        admin::delete_eab(kid, accounts, state.database.clone(), &caller.trail(state)).await?,
     )?;
-
-    state
-        .record_admin_actions(caller.request, caller.username(), |actor, client| {
-            acme_proxy_jobs::auditor::admin::eab_deleted_records(actor, client, &deleted)
-        })
-        .await;
     tracing::info!(event = "admin_eab_deleted",
                    outcome = "success",
                    surface = caller.surface,

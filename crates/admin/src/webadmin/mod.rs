@@ -243,71 +243,18 @@ impl AdminState {
         by_self: bool,
         client: Option<std::net::IpAddr>,
     ) {
-        use CredentialChange as Change;
-
-        self.record_admin_action(request_context, actor, |audit_actor, ctx| match change {
-            Change::Password => acme_proxy_jobs::auditor::admin::operator_password_changed(
-                audit_actor,
-                ctx,
-                &user.username,
-                by_self,
-            ),
-            Change::SecondFactorEnabled => acme_proxy_jobs::auditor::admin::operator_totp_enrolled(
-                audit_actor,
-                ctx,
-                &user.username,
-            ),
-            Change::SecondFactorDisabled => {
-                acme_proxy_jobs::auditor::admin::operator_totp_disabled(
-                    audit_actor,
-                    ctx,
-                    &user.username,
-                    !by_self,
-                )
-            }
-            Change::RecoveryCodesRegenerated => {
-                acme_proxy_jobs::auditor::admin::operator_recovery_codes_regenerated(
-                    audit_actor,
-                    ctx,
-                    &user.username,
-                )
-            }
-        })
-        .await;
-
-        self.notify_credential_change(
-            user,
-            change.into(),
-            by_self,
+        let trail = WebTrail {
+            state: self,
+            request_context,
+            actor,
             client,
-            request_context.user_agent.clone(),
-            None,
-        )
-        .await;
+            by_self,
+        };
+        crate::admin::changes::record_credential_change(user, change, by_self, &trail).await;
     }
 }
 
-/// The credential changes [`AdminState::record_credential_change`] records:
-/// [`AdminCredentialChange`](acme_proxy_jobs::notify::AdminCredentialChange)
-/// less the contact address, which [`crate::admin::changes`] owns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CredentialChange {
-    Password,
-    SecondFactorEnabled,
-    SecondFactorDisabled,
-    RecoveryCodesRegenerated,
-}
-
-impl From<CredentialChange> for acme_proxy_jobs::notify::AdminCredentialChange {
-    fn from(change: CredentialChange) -> Self {
-        match change {
-            CredentialChange::Password => Self::Password,
-            CredentialChange::SecondFactorEnabled => Self::SecondFactorEnabled,
-            CredentialChange::SecondFactorDisabled => Self::SecondFactorDisabled,
-            CredentialChange::RecoveryCodesRegenerated => Self::RecoveryCodesRegenerated,
-        }
-    }
-}
+pub(crate) use crate::admin::changes::CredentialChange;
 
 /// The web admin's [`OperatorTrail`](crate::admin::changes::OperatorTrail):
 /// rows attributed to the signed-in operator through the process's auditor,
@@ -324,20 +271,22 @@ pub(crate) struct WebTrail<'a> {
     pub(crate) by_self: bool,
 }
 
-impl crate::admin::changes::OperatorTrail for WebTrail<'_> {
-    async fn record(
+impl crate::admin::trail::ActionTrail for WebTrail<'_> {
+    async fn record_all(
         &self,
         build: impl FnOnce(
             acme_proxy_core::audit::Actor,
             acme_proxy_core::audit::ClientContext,
-        ) -> acme_proxy_core::audit::AuditRecord
+        ) -> Vec<acme_proxy_core::audit::AuditRecord>
         + Send,
     ) {
         self.state
-            .record_admin_action(self.request_context, self.actor, build)
+            .record_admin_actions(self.request_context, self.actor, build)
             .await;
     }
+}
 
+impl crate::admin::changes::OperatorTrail for WebTrail<'_> {
     async fn notify(
         &self,
         user: &acme_proxy_store::admin_user::AdminUser,
@@ -369,13 +318,13 @@ pub(crate) struct ProviderTrail<'a> {
     pub(crate) provider: &'a str,
 }
 
-impl crate::admin::changes::OperatorTrail for ProviderTrail<'_> {
-    async fn record(
+impl crate::admin::trail::ActionTrail for ProviderTrail<'_> {
+    async fn record_all(
         &self,
         build: impl FnOnce(
             acme_proxy_core::audit::Actor,
             acme_proxy_core::audit::ClientContext,
-        ) -> acme_proxy_core::audit::AuditRecord
+        ) -> Vec<acme_proxy_core::audit::AuditRecord>
         + Send,
     ) {
         let actor = acme_proxy_core::audit::Actor {
@@ -383,9 +332,13 @@ impl crate::admin::changes::OperatorTrail for ProviderTrail<'_> {
             id: Some(self.provider.to_string()),
         };
         let client = self.state.audit.client(self.request_context).await;
-        self.state.audit.record(build(actor, client)).await;
+        for record in build(actor, client) {
+            self.state.audit.record(record).await;
+        }
     }
+}
 
+impl crate::admin::changes::OperatorTrail for ProviderTrail<'_> {
     async fn notify(
         &self,
         user: &acme_proxy_store::admin_user::AdminUser,

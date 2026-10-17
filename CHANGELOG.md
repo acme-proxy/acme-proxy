@@ -34,6 +34,17 @@ migrated configuration before restarting.
 
 ### Breaking
 
+- **`/api/audit` and `/ui/audit` refuse an unknown `event` or `outcome`**
+  with `400`, naming the known values, as `acme-proxy audit list` already did.
+  They answered an empty page before, which reads like "nothing happened".
+- **Resetting the second factor of an operator who has none is refused** with
+  `409 no_second_factor` on `/api/operators/{name}/totp/reset` and its page
+  twin, as the CLI already refused it. It answered `204` before, and wrote an
+  `operator_totp_disabled` row and a message to the operator for a reset that
+  removed nothing.
+- **`acme-proxy eab create --profile <unmounted>` exits `3`** (the operator's
+  mistake), not `1`, matching the API's `400`.
+
 - **A worker refuses to start on a CA that is not its profile's** (#12). The
   database now records the CA each `local_ca` profile issues from
   (`profile_issuers`); a worker, `init` or a reload whose CA differs refuses,
@@ -123,6 +134,17 @@ migrated configuration before restarting.
   longer resets it. One admin process is no longer the only supported
   topology. If the counter cannot be read, a sign-in is refused (`500`, logged
   as `admin_login_limiter_failed`) rather than let through uncounted.
+
+### Fixed
+
+- **Cancelling the hourly http-01 token sweep warns that it will not run again
+  until a restart**, as cancelling every other sweep does, and the jobs page
+  offers its kind in the filter. Both lists now come from the sweeps' own.
+- **`acme-proxy jobs cancel` no longer calls a cancelled `signer_issue` job a
+  relay job** with an upstream mapping it never had.
+- **One wording per refusal on every surface**: an order with no certificate,
+  one already revoked, one whose profile is not mounted, and a bad reason code
+  read the same from the CLI, the API and the page.
 
 ## [0.6.2] — 2026-10-16
 

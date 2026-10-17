@@ -23,7 +23,6 @@ use acme_proxy_admin::admin;
 use acme_proxy_admin::admin::EabDeleteOutcome;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
-use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::db::Database;
 use acme_proxy_store::eab::BoundAccounts;
 use acme_proxy_store::eab::DeletedEab;
@@ -118,21 +117,13 @@ pub async fn run_eab_command(
                     profile.as_deref(),
                     "omit --profile",
                 ) {
-                    return Err(CliError::failed(message));
+                    // The operator's to fix (exit 3), as the API's `400` says.
+                    return Err(CliError::bad_request(message));
                 }
             }
 
-            let eab = Eab::create(label, profile, &database).await?;
-            audit_admin::record_cli_action(&database, |actor, client| {
-                audit_admin::eab_created(
-                    actor,
-                    client,
-                    &eab.kid.to_string(),
-                    eab.profile.as_deref(),
-                    eab.label.as_deref(),
-                )
-            })
-            .await;
+            let trail = admin::trail::CliActions::new(&database);
+            let eab = admin::create_eab(label, profile, database.clone(), &trail).await?;
             if json {
                 println!("{}", admin::render_eab_created_json(&eab));
             } else {
@@ -156,18 +147,9 @@ pub async fn run_eab_command(
             Some(eab) => println!("{}", render::render_eab_line(&eab, palette)),
         },
         EabCommand::Revoke { kid } => {
-            let subject = Eab::find_any_by_kid(&kid, &database).await?;
-            if !Eab::revoke(&kid, &database).await? {
+            let trail = admin::trail::CliActions::new(&database);
+            if !admin::revoke_eab(&kid, database.clone(), &trail).await? {
                 return Err(not_found(&kid));
-            }
-            // A repeat revoke changes nothing, so it records nothing — the
-            // `RevokeOutcome::AlreadyRevoked` rule on the certificate side.
-            if subject.as_ref().is_some_and(|eab| eab.status == "active") {
-                let profile = subject.as_ref().and_then(|eab| eab.profile.as_deref());
-                audit_admin::record_cli_action(&database, |actor, client| {
-                    audit_admin::eab_revoked(actor, client, &kid, profile)
-                })
-                .await;
             }
             println!("Revoked EAB key {kid}.");
         }
@@ -183,7 +165,10 @@ pub async fn run_eab_command(
             } else {
                 BoundAccounts::Keep
             };
-            match admin::confirm_delete_eab(&kid, accounts, yes, reader, database.clone()).await? {
+            let trail = admin::trail::CliActions::new(&database);
+            match admin::confirm_delete_eab(&kid, accounts, yes, reader, database.clone(), &trail)
+                .await?
+            {
                 EabDeleteOutcome::NotFound => return Err(not_found(&kid)),
                 EabDeleteOutcome::LiveCertificates {
                     accounts,
@@ -197,10 +182,6 @@ pub async fn run_eab_command(
                 }
                 EabDeleteOutcome::Cancelled => println!("Cancelled."),
                 EabDeleteOutcome::Deleted(deleted) => {
-                    audit_admin::record_cli_actions(&database, |actor, client| {
-                        audit_admin::eab_deleted_records(actor, client, &deleted)
-                    })
-                    .await;
                     println!("{}", deleted_line(&kid, &deleted));
                 }
             }

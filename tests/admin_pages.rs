@@ -3575,6 +3575,20 @@ async fn the_expiring_page_annotates_rows_escapes_them_and_offers_nothing_to_wri
     }
 }
 
+/// The page refuses an audit filter it does not know, as the API and the CLI
+/// do: an empty table for a typo'd `event` reads like "nothing happened".
+#[tokio::test]
+async fn an_unknown_audit_filter_is_refused_not_answered_empty() {
+    let (app, _database, session) = test_admin_app_logged_in(admin_config()).await;
+    for path in [
+        "/ui/audit?event=certificate_renewed",
+        "/ui/audit?outcome=maybe",
+    ] {
+        let response = admin_page(&app, path, Some(&session), false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+}
+
 /// The same rule as `admin_api::a_blank_filter_is_absent_on_every_list`, on the
 /// front end that actually produces the shape.
 ///
