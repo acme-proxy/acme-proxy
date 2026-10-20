@@ -10,7 +10,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -46,7 +47,43 @@ pub struct NewAccountPayload {
     #[serde(alias = "onlyReturnExisting")]
     pub only_return_existing: bool,
     #[serde(alias = "externalAccountBinding")]
-    pub external_account_binding: Option<eab::EabJws>,
+    pub external_account_binding: Option<ExternalAccountBinding>,
+}
+
+/// A request's `externalAccountBinding`: the JWS it is checked as, and the
+/// value it arrived as.
+///
+/// Both are kept because RFC 8555 §7.3.4 has the account object echo "the same
+/// value as the field in the request", and re-serializing the parsed JWS would
+/// drop any member [`eab::EabJws`] does not name. A value that does not parse
+/// is refused with the payload, as it was before the raw value was kept.
+#[derive(Debug)]
+pub struct ExternalAccountBinding {
+    pub jws: eab::EabJws,
+    pub raw: Value,
+}
+
+impl<'de> Deserialize<'de> for ExternalAccountBinding {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        let jws = eab::EabJws::deserialize(&raw).map_err(serde::de::Error::custom)?;
+        Ok(Self { jws, raw })
+    }
+}
+
+/// What `newAccount` answered: the account, whether this request created it
+/// (`201` against `200` at the edge), and the binding to reflect in the account
+/// object.
+#[derive(Debug)]
+pub struct NewAccount {
+    pub account: Account,
+    pub created: bool,
+    /// The request's binding, exactly as it arrived, when this request both
+    /// verified it and created the account with it (RFC 8555 §7.3.4). `None` at
+    /// an endpoint that does not enforce EAB, where the binding is never
+    /// checked and so is not vouched for, and for an account that already
+    /// existed, which the binding did not create.
+    pub external_account_binding: Option<Value>,
 }
 
 /// Fields an account-update request may carry.
@@ -67,8 +104,8 @@ pub struct AccountService<'a> {
 
 impl AccountService<'_> {
     /// `newAccount` (RFC 8555 §7.3): finds the account `pubkey` holds at this
-    /// endpoint, or creates one. The `bool` is whether it was created — `201`
-    /// against `200` at the edge.
+    /// endpoint, or creates one. [`NewAccount`] says which, and carries the
+    /// binding this request verified when it created the account.
     ///
     /// `onlyReturnExisting` (§7.3.1) looks up and never creates. A refusal to
     /// agree to configured terms is [`Error::TermsNotAgreed`], since the
@@ -80,7 +117,7 @@ impl AccountService<'_> {
         pubkey: &[u8],
         client_ip: Option<IpAddr>,
         request: &RequestContext,
-    ) -> Result<(Account, bool), Error> {
+    ) -> Result<NewAccount, Error> {
         let (database, profile, audit) = (self.database, self.profile, self.audit);
 
         if payload.only_return_existing {
@@ -99,7 +136,11 @@ impl AccountService<'_> {
                 })?;
 
             refuse_deactivated(&account, true)?;
-            return Ok((account, false));
+            return Ok(NewAccount {
+                account,
+                created: false,
+                external_account_binding: None,
+            });
         }
 
         // Checked before the EAB, so a client with a typo'd address hears about
@@ -117,18 +158,20 @@ impl AccountService<'_> {
             return Err(Error::TermsNotAgreed);
         }
 
-        let eab_kid = if profile.eab.enabled {
-            Some(
-                verify_eab(
-                    payload.external_account_binding.as_ref(),
-                    header,
-                    &profile.name,
-                    database,
-                )
-                .await?,
+        // The binding is kept only once it is verified, so nothing downstream
+        // can reflect one this request did not check.
+        let (eab_kid, verified_binding) = if profile.eab.enabled {
+            let binding = payload.external_account_binding;
+            let kid = verify_eab(
+                binding.as_ref().map(|binding| &binding.jws),
+                header,
+                &profile.name,
+                database,
             )
+            .await?;
+            (Some(kid), binding.map(|binding| binding.raw))
         } else {
-            None
+            (None, None)
         };
 
         // Resolved before the write, and only on this path: `onlyReturnExisting`
@@ -195,7 +238,11 @@ impl AccountService<'_> {
         } else {
             info!(event = "account_found", outcome = "success", account_id = %account.id, status = %status);
         }
-        Ok((account, created))
+        Ok(NewAccount {
+            account,
+            created,
+            external_account_binding: verified_binding.filter(|_| created),
+        })
     }
 
     /// `POST /acct/{id}` with an empty payload (RFC 8555 §6.3): the account as
