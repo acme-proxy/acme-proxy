@@ -88,10 +88,10 @@ pub async fn run_profile_command(
                 .map(|profile| ProfileSummary::configured(&config.server.base_url, profile))
                 .collect();
 
-            // Not `print_page`: this is a list an operator writes by hand in one
-            // file, so it has no page and nothing to report a total against --
-            // the argument the three paged listings had outgrown and this one
-            // has not.
+            // Not `print_page`, and the one listing that is not paged: profiles
+            // are configuration an operator writes by hand in one file, not rows
+            // a table grows, so there is no page and no total to report.
+            // `/api/profiles` answers the same bare array.
             if json {
                 let rendered: Vec<_> = profiles.iter().map(admin::render_profile_json).collect();
                 println!("{}", serde_json::Value::Array(rendered));
@@ -131,7 +131,11 @@ async fn accept_issuer(
         acme_proxy_signer::revocation_route(signer)
             .map_err(|error| CliError::failed(error.to_string()))?
     else {
-        unreachable!("a local_ca profile always revokes into its own ledger");
+        // `revocation_route` answers `Ledger` for every `local_ca`; an error
+        // rather than a panic if that ever stops being true.
+        return Err(CliError::failed(format!(
+            "profile `{name}` has a local CA but no revocation ledger"
+        )));
     };
 
     let previous = ProfileIssuer::find(name, database).await?;

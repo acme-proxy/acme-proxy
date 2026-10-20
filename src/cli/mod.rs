@@ -233,19 +233,34 @@ pub(crate) fn offline_notifiers(
     let mut dispatchers =
         acme_proxy_jobs::notify::build_registry(&profiles, egress.outbound(), &jobs)
             .map_err(failed)?;
-    if config.admin.enabled {
+    if let Some(admin) = admin_dispatcher(config, &egress, &jobs).map_err(failed)? {
         dispatchers.insert(
             acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY.to_string(),
-            acme_proxy_jobs::notify::from_config(
-                acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
-                &config.admin.notify,
-                egress.outbound(),
-                &jobs,
-            )
-            .map_err(failed)?,
+            admin,
         );
     }
     Ok(dispatchers)
+}
+
+/// The web admin's own dispatcher — its operators' security messages — or
+/// `None` when `[admin]` is off. One builder for [`offline_notifiers`] and for
+/// the credential messages the `admin user` commands queue, which need no
+/// profile resolved to send one.
+pub(crate) fn admin_dispatcher(
+    config: &Config,
+    egress: &acme_proxy_net::egress::Egress,
+    jobs: &acme_proxy_jobs::jobs::JobQueue,
+) -> anyhow::Result<Option<Arc<acme_proxy_jobs::notify::NotifyDispatcher>>> {
+    if !config.admin.enabled {
+        return Ok(None);
+    }
+    acme_proxy_jobs::notify::from_config(
+        acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
+        &config.admin.notify,
+        egress.outbound(),
+        jobs,
+    )
+    .map(Some)
 }
 
 /// Picks the profile a command acts on.

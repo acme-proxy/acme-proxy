@@ -17,27 +17,23 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use acme_proxy_core::audit::{Actor, AuditRecord, ClientContext};
 use acme_proxy_jobs::auditor::admin as audit;
 use acme_proxy_jobs::auditor::admin::SessionScope;
 use acme_proxy_jobs::notify::AdminCredentialChange;
+use acme_proxy_store::admin_session::AdminSession;
 use acme_proxy_store::admin_user::{AdminRole, AdminStatus, AdminUser};
 use acme_proxy_store::db::Database;
 
 use crate::admin::mfa;
+pub use crate::admin::trail::ActionTrail;
 use crate::admin::users::{self, UserError};
 
-/// Where one surface's record of an operator change goes.
+/// Where one surface's record of an operator change goes: its rows, through
+/// the [`ActionTrail`] this extends, and the message to the operator changed.
 ///
 /// The futures are `Send` because the web admin awaits them inside an axum
 /// handler.
-pub trait OperatorTrail: Sync {
-    /// Writes one audit row, built from this surface's actor and client.
-    fn record(
-        &self,
-        build: impl FnOnce(Actor, ClientContext) -> AuditRecord + Send,
-    ) -> impl Future<Output = ()> + Send;
-
+pub trait OperatorTrail: ActionTrail {
     /// Queues the `admin_credential_changed` message to the operator `user`.
     /// `previous_recipient` is the address a contact change replaced.
     fn notify(
@@ -46,6 +42,105 @@ pub trait OperatorTrail: Sync {
         change: AdminCredentialChange,
         previous_recipient: Option<String>,
     ) -> impl Future<Output = ()> + Send;
+}
+
+/// A change to an operator's own credentials:
+/// [`AdminCredentialChange`] less the contact address, which
+/// [`change_contact`] owns because it knows the address it replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialChange {
+    Password,
+    SecondFactorEnabled,
+    SecondFactorDisabled,
+    RecoveryCodesRegenerated,
+}
+
+impl From<CredentialChange> for AdminCredentialChange {
+    fn from(change: CredentialChange) -> Self {
+        match change {
+            CredentialChange::Password => Self::Password,
+            CredentialChange::SecondFactorEnabled => Self::SecondFactorEnabled,
+            CredentialChange::SecondFactorDisabled => Self::SecondFactorDisabled,
+            CredentialChange::RecoveryCodesRegenerated => Self::RecoveryCodesRegenerated,
+        }
+    }
+}
+
+/// Records a credential change **both ways at once**: the audit row and the
+/// message to the operator it happened to.
+///
+/// The two are one event with two audiences — the trail says what the CA did,
+/// the message tells the person it was done to — and writing them as two
+/// adjacent calls meant one could be forgotten. One was: the `/ui` enrolment
+/// path notified and left no row. Taking a single [`CredentialChange`] and
+/// deriving the event from it makes that unrepresentable, on every surface.
+///
+/// `by_self` is `false` when another operator — or the host CLI — made the
+/// change.
+pub async fn record_credential_change(
+    user: &AdminUser,
+    change: CredentialChange,
+    by_self: bool,
+    trail: &impl OperatorTrail,
+) {
+    let username = user.username.as_str();
+    trail
+        .record(|actor, client| match change {
+            CredentialChange::Password => {
+                audit::operator_password_changed(actor, client, username, by_self)
+            }
+            CredentialChange::SecondFactorEnabled => {
+                audit::operator_totp_enrolled(actor, client, username)
+            }
+            CredentialChange::SecondFactorDisabled => {
+                audit::operator_totp_disabled(actor, client, username, !by_self)
+            }
+            CredentialChange::RecoveryCodesRegenerated => {
+                audit::operator_recovery_codes_regenerated(actor, client, username)
+            }
+        })
+        .await;
+    trail.notify(user, change.into(), None).await;
+}
+
+/// Sets `username`'s password on someone else's say-so, ending their sessions;
+/// recorded and announced as a [`CredentialChange::Password`], plus a
+/// `session_revoked` row when there was a session to end. `None` when there is
+/// no such operator.
+pub async fn set_password(
+    username: &str,
+    plaintext: &str,
+    context: &crate::admin::password::PasswordContext,
+    database: Arc<Database>,
+    trail: &impl OperatorTrail,
+) -> Result<Option<(AdminUser, u64)>, UserError> {
+    let Some((user, revoked)) = users::set_password(username, plaintext, context, database).await?
+    else {
+        return Ok(None);
+    };
+    record_credential_change(&user, CredentialChange::Password, false, trail).await;
+    record_revoked(&user, revoked, trail).await;
+    Ok(Some((user, revoked)))
+}
+
+/// Replaces `user`'s recovery codes on someone else's say-so, returning the new
+/// set to show once; recorded and announced as a
+/// [`CredentialChange::RecoveryCodesRegenerated`]. Whether `user` has a factor
+/// for the codes to recover is the caller's to check first.
+pub async fn regenerate_recovery_codes(
+    user: &AdminUser,
+    database: Arc<Database>,
+    trail: &impl OperatorTrail,
+) -> Result<Vec<String>, sqlx::Error> {
+    let codes = mfa::regenerate_recovery_codes(user, database).await?;
+    record_credential_change(
+        user,
+        CredentialChange::RecoveryCodesRegenerated,
+        false,
+        trail,
+    )
+    .await;
+    Ok(codes)
 }
 
 /// Enables or disables `username`. Disabling ends every session they held,
@@ -143,15 +238,31 @@ pub async fn change_contact(
     Ok(Some((user, true)))
 }
 
+/// Whether `user` has a second factor — confirmed or half-enrolled — for
+/// [`reset_totp`] to remove. A front end that asks before resetting checks
+/// this first, so it does not prompt for nothing.
+#[must_use]
+pub fn has_totp_to_reset(user: &AdminUser) -> bool {
+    user.has_totp() || user.has_pending_totp()
+}
+
 /// Removes `user`'s second factor and every recovery code on another
 /// operator's say-so, ending their sessions: there is no session of theirs to
 /// keep, the change being made from somewhere they are not signed in. They are
 /// told, since they did not do it.
+///
+/// `Ok(false)` when there was nothing to remove: no write, no audit row and no
+/// message, on every surface — a trail that recorded a reset which removed
+/// nothing would tell the operator their factor was taken away when it never
+/// existed.
 pub async fn reset_totp(
     user: &mut AdminUser,
     database: Arc<Database>,
     trail: &impl OperatorTrail,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
+    if !has_totp_to_reset(user) {
+        return Ok(false);
+    }
     mfa::disable_totp(user, None, database).await?;
     trail
         .record(|actor, client| audit::operator_totp_disabled(actor, client, &user.username, true))
@@ -159,7 +270,32 @@ pub async fn reset_totp(
     trail
         .notify(user, AdminCredentialChange::SecondFactorDisabled, None)
         .await;
-    Ok(())
+    Ok(true)
+}
+
+/// Ends one of `user`'s sessions, named by the fingerprint every listing
+/// shows, and records it. `Ok(false)` when `user` holds no such session.
+///
+/// No message: unlike the changes above, the operator loses a sign-in, not a
+/// credential, and the next request from it says so.
+pub async fn revoke_session(
+    user: &AdminUser,
+    fingerprint: &str,
+    database: Arc<Database>,
+    trail: &impl ActionTrail,
+) -> Result<bool, sqlx::Error> {
+    let Some(session) =
+        AdminSession::find_by_user_and_fingerprint(user.id, fingerprint, &database).await?
+    else {
+        return Ok(false);
+    };
+    AdminSession::delete(&session.token_hash, &database).await?;
+    trail
+        .record(|actor, client| {
+            audit::session_revoked(actor, client, SessionScope::OneOf(user.username.clone()), 1)
+        })
+        .await;
+    Ok(true)
 }
 
 pub(crate) async fn record_revoked(user: &AdminUser, revoked: u64, trail: &impl OperatorTrail) {
@@ -180,7 +316,8 @@ pub(crate) async fn record_revoked(user: &AdminUser, revoked: u64, trail: &impl 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acme_proxy_store::admin_session::{AdminSession, NewSession};
+    use acme_proxy_core::audit::{Actor, AuditRecord, ClientContext};
+    use acme_proxy_store::admin_session::NewSession;
     use std::sync::Mutex;
 
     /// A trail that keeps what it was given: the event of each row, and the
@@ -191,15 +328,21 @@ mod tests {
         messages: Mutex<Vec<(AdminCredentialChange, Option<String>)>>,
     }
 
-    impl OperatorTrail for Recording {
-        async fn record(&self, build: impl FnOnce(Actor, ClientContext) -> AuditRecord + Send) {
-            let record = build(Actor::cli(), ClientContext::default());
-            self.events
-                .lock()
-                .unwrap()
-                .push(record.event.as_str().to_string());
+    impl ActionTrail for Recording {
+        async fn record_all(
+            &self,
+            build: impl FnOnce(Actor, ClientContext) -> Vec<AuditRecord> + Send,
+        ) {
+            let records = build(Actor::cli(), ClientContext::default());
+            self.events.lock().unwrap().extend(
+                records
+                    .iter()
+                    .map(|record| record.event.as_str().to_string()),
+            );
         }
+    }
 
+    impl OperatorTrail for Recording {
         async fn notify(
             &self,
             _user: &AdminUser,
@@ -321,12 +464,103 @@ mod tests {
         let database = db().await;
         let mut alice = operator("alice", &database).await;
 
+        // Nothing to remove: no write, no row, no message.
         let trail = Recording::default();
-        reset_totp(&mut alice, database, &trail).await.unwrap();
+        assert!(
+            !reset_totp(&mut alice, database.clone(), &trail)
+                .await
+                .unwrap()
+        );
+        assert!(trail.events().is_empty());
+        assert!(trail.messages.lock().unwrap().is_empty());
+
+        alice.set_totp_pending(b"secret", &database).await.unwrap();
+        assert!(reset_totp(&mut alice, database, &trail).await.unwrap());
+        assert!(!alice.has_pending_totp());
         assert_eq!(trail.events(), ["operator_totp_disabled"]);
         assert_eq!(
             *trail.messages.lock().unwrap(),
             [(AdminCredentialChange::SecondFactorDisabled, None)]
         );
+    }
+
+    /// A password set from the host is recorded and announced as one
+    /// credential change, and its revoked sessions as a second row — the same
+    /// pair the panel writes.
+    #[tokio::test]
+    async fn a_password_set_for_someone_is_recorded_announced_and_ends_sessions() {
+        let database = db().await;
+        let alice = operator("alice", &database).await;
+        session_for(&alice, &database).await;
+
+        let trail = Recording::default();
+        let (_, revoked) = set_password(
+            "alice",
+            "a long and unusual passphrase",
+            &crate::admin::password::PasswordContext::empty(),
+            database.clone(),
+            &trail,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(revoked, 1);
+        assert_eq!(
+            trail.events(),
+            ["operator_password_changed", "session_revoked"]
+        );
+        assert_eq!(
+            *trail.messages.lock().unwrap(),
+            [(AdminCredentialChange::Password, None)]
+        );
+
+        assert!(
+            set_password(
+                "nobody",
+                "a long and unusual passphrase",
+                &crate::admin::password::PasswordContext::empty(),
+                database,
+                &trail,
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn regenerated_recovery_codes_are_recorded_and_announced() {
+        let database = db().await;
+        let alice = operator("alice", &database).await;
+
+        let trail = Recording::default();
+        let codes = regenerate_recovery_codes(&alice, database, &trail)
+            .await
+            .unwrap();
+        assert!(!codes.is_empty());
+        assert_eq!(trail.events(), ["operator_recovery_codes_regenerated"]);
+        assert_eq!(
+            *trail.messages.lock().unwrap(),
+            [(AdminCredentialChange::RecoveryCodesRegenerated, None)]
+        );
+    }
+
+    #[tokio::test]
+    async fn revoking_one_session_records_it_and_an_unknown_one_is_false() {
+        let database = db().await;
+        let alice = operator("alice", &database).await;
+        session_for(&alice, &database).await;
+        // `session_for` stores the token hash `hash`; listings show its
+        // fingerprint.
+        let fp = acme_proxy_store::nonce::fingerprint("hash");
+
+        let trail = Recording::default();
+        assert!(
+            !revoke_session(&alice, "no-such-fp", database.clone(), &trail)
+                .await
+                .unwrap()
+        );
+        assert!(revoke_session(&alice, fp, database, &trail).await.unwrap());
+        assert_eq!(trail.events(), ["session_revoked"]);
     }
 }

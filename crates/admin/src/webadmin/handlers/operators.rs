@@ -388,7 +388,12 @@ pub(crate) async fn apply_operator_action(
             // A *different* operator's factor (`refuse_self_target` ran), so
             // the trail's `by_self` is false — the same change `admin user
             // totp reset` makes.
-            changes::reset_totp(target, state.database.clone(), &trail).await?;
+            if !changes::reset_totp(target, state.database.clone(), &trail).await? {
+                return Err(AdminError::conflict(
+                    "no_second_factor",
+                    format!("{} has no second factor; nothing to reset", target.username),
+                ));
+            }
             tracing::info!(event = "admin_operator_totp_reset",
                            outcome = "success",
                            surface = surface,
@@ -396,23 +401,10 @@ pub(crate) async fn apply_operator_action(
                            target_username = %target.username);
         }
         OperatorAction::RevokeSession { fingerprint } => {
-            let session =
-                AdminSession::find_by_user_and_fingerprint(target.id, fingerprint, &state.database)
-                    .await?
-                    .ok_or_else(|| session_not_found(fingerprint))?;
-            AdminSession::delete(&session.token_hash, &state.database).await?;
-            state
-                .record_admin_action(request_context, &caller.username, |actor, ctx| {
-                    acme_proxy_jobs::auditor::admin::session_revoked(
-                        actor,
-                        ctx,
-                        acme_proxy_jobs::auditor::admin::SessionScope::OneOf(
-                            target.username.clone(),
-                        ),
-                        1,
-                    )
-                })
-                .await;
+            if !changes::revoke_session(target, fingerprint, state.database.clone(), &trail).await?
+            {
+                return Err(session_not_found(fingerprint));
+            }
             tracing::info!(event = "admin_operator_session_revoked",
                            outcome = "success",
                            surface = surface,

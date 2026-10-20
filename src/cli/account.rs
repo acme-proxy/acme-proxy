@@ -18,7 +18,6 @@ use acme_proxy_admin::admin;
 use acme_proxy_admin::admin::DeleteOutcome;
 use acme_proxy_core::config::Config;
 use acme_proxy_core::palette::Palette;
-use acme_proxy_jobs::auditor::admin as audit_admin;
 use acme_proxy_store::account::Account;
 use acme_proxy_store::db::Database;
 
@@ -116,7 +115,8 @@ pub async fn run_account_command(
             Some(account) => print!("{}", render::render_account_detail_text(&account, palette)),
         },
         AccountCommand::UpdateContact { id, contact } => {
-            match admin::update_account_contact(&id, contact, database.clone())
+            let trail = admin::trail::CliActions::new(&database);
+            match admin::update_account_contact(&id, contact, database.clone(), &trail)
                 .await
                 .map_err(|error| match error {
                     admin::ContactError::Invalid(detail) => CliError::bad_request(detail),
@@ -124,15 +124,6 @@ pub async fn run_account_command(
                 })? {
                 None => return Err(not_found(&id)),
                 Some(account) => {
-                    audit_admin::record_cli_action(&database, |actor, client| {
-                        audit_admin::account_contact_updated(
-                            actor,
-                            client,
-                            &account,
-                            &account.contact,
-                        )
-                    })
-                    .await;
                     println!("{}", render::render_account_line(&account, palette));
                 }
             }
@@ -147,28 +138,19 @@ pub async fn run_account_command(
                 database.clone(),
                 |profile| notifiers.get(profile).cloned(),
                 None,
+                &admin::trail::CliActions::new(&database),
             )
             .await?
             {
                 None => return Err(not_found(&id)),
                 Some(account) => {
-                    audit_admin::record_cli_action(&database, |actor, client| {
-                        audit_admin::account_deactivated(actor, client, &account)
-                    })
-                    .await;
                     println!("{}", render::render_account_line(&account, palette));
                 }
             }
         }
         AccountCommand::Delete { id } => {
-            // Read the account before the delete: the audit row names its
-            // profile, and the row is gone by the time the confirmation
-            // returns. The *count* comes back with the outcome for the same
-            // reason and a sharper one — counting afterwards counts the orders
-            // the `ON DELETE CASCADE` has already removed, which is zero every
-            // time.
-            let doomed = Account::find_any_by_id(&id, &database).await?;
-            match admin::confirm_delete_account(&id, yes, reader, database.clone()).await? {
+            let trail = admin::trail::CliActions::new(&database);
+            match admin::confirm_delete_account(&id, yes, reader, database.clone(), &trail).await? {
                 DeleteOutcome::NotFound => return Err(not_found(&id)),
                 DeleteOutcome::LiveCertificates(live) => {
                     return Err(CliError::bad_request(admin::live_certificates_refusal(
@@ -178,12 +160,6 @@ pub async fn run_account_command(
                 }
                 DeleteOutcome::Cancelled => println!("Cancelled."),
                 DeleteOutcome::Deleted(deleted) => {
-                    if let Some(account) = doomed {
-                        audit_admin::record_cli_action(&database, |actor, client| {
-                            audit_admin::account_deleted(actor, client, &account, deleted.cascaded)
-                        })
-                        .await;
-                    }
                     println!(
                         "Deleted account {id} ({} order(s) cascaded).",
                         deleted.cascaded

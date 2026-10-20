@@ -293,9 +293,8 @@ async fn run_user_command(
             }
         }
         AdminUserCommand::Role { username, role } => {
-            let role: AdminRole = role
-                .parse()
-                .map_err(|error| CliError::bad_request(format!("role: {error}")))?;
+            // A positional argument, so it is named as clap names it.
+            let role = super::parse_value::<AdminRole>("<ROLE>", &role)?;
             let trail = CliTrail::new(config, &database);
             match changes::change_role(&username, role, database.clone(), &trail)
                 .await
@@ -349,34 +348,13 @@ async fn run_user_command(
         } => {
             let password = read_password(password_file.as_deref(), reader)?;
             let context = PasswordContext::from_config(config, &username);
-            match users::set_password(&username, &password, &context, database.clone())
+            let trail = CliTrail::new(config, &database);
+            match changes::set_password(&username, &password, &context, database.clone(), &trail)
                 .await
                 .map_err(user_error)?
             {
                 None => return Err(not_found(&username)),
                 Some((user, revoked)) => {
-                    audit_admin::record_cli_action(&database, |actor, client| {
-                        audit_admin::operator_password_changed(actor, client, &user.username, false)
-                    })
-                    .await;
-                    notify_credential_change(
-                        config,
-                        &database,
-                        &user,
-                        acme_proxy_jobs::notify::AdminCredentialChange::Password,
-                        None,
-                    )
-                    .await;
-                    // Only when something was revoked, as `disable` and the
-                    // panel do: a row saying "0 sessions" records nothing.
-                    if revoked > 0 {
-                        revoked_sessions_row(
-                            SessionScope::AllOf(user.username.clone()),
-                            revoked,
-                            &database,
-                        )
-                        .await;
-                    }
                     println!(
                         "Password changed for {}. Every session they held was revoked ({revoked}).",
                         user.username
@@ -429,15 +407,9 @@ async fn run_totp_command(
             let remaining = mfa::recovery_codes_remaining(user.id, database).await?;
 
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "username": user.username,
-                        "totpEnabled": user.has_totp(),
-                        "enrolmentPending": user.has_pending_totp(),
-                        "recoveryCodesRemaining": remaining,
-                    })
-                );
+                let mut status = admin::render_totp_status_json(&user, remaining);
+                status["username"] = serde_json::Value::from(user.username.as_str());
+                println!("{status}");
             } else {
                 println!(
                     "{}",
@@ -447,7 +419,7 @@ async fn run_totp_command(
         }
         AdminUserTotpCommand::Reset { username } => {
             let mut user = find_user(&username, database.clone()).await?;
-            if !user.has_totp() && !user.has_pending_totp() {
+            if !changes::has_totp_to_reset(&user) {
                 println!("{} has no second factor; nothing to reset.", user.username);
                 return Ok(());
             }
@@ -482,19 +454,8 @@ async fn run_totp_command(
                 )));
             }
 
-            let codes = mfa::regenerate_recovery_codes(&user, database.clone()).await?;
-            audit_admin::record_cli_action(&database, |actor, client| {
-                audit_admin::operator_recovery_codes_regenerated(actor, client, &user.username)
-            })
-            .await;
-            notify_credential_change(
-                config,
-                &database,
-                &user,
-                acme_proxy_jobs::notify::AdminCredentialChange::RecoveryCodesRegenerated,
-                None,
-            )
-            .await;
+            let trail = CliTrail::new(config, &database);
+            let codes = changes::regenerate_recovery_codes(&user, database.clone(), &trail).await?;
             // The `eab create` treatment: printed once, stored one-way, and the
             // previous set is already dead by the time this prints.
             println!(
@@ -535,12 +496,7 @@ async fn notify_credential_change(
         return;
     };
     let jobs = acme_proxy_jobs::jobs::JobQueue::new(database.clone(), &config.jobs);
-    let Ok(dispatcher) = acme_proxy_jobs::notify::from_config(
-        acme_proxy_jobs::notify::ADMIN_DISPATCHER_KEY,
-        &config.admin.notify,
-        egress.outbound(),
-        &jobs,
-    ) else {
+    let Ok(Some(dispatcher)) = super::admin_dispatcher(config, &egress, &jobs) else {
         return;
     };
     dispatcher
@@ -605,19 +561,13 @@ async fn run_session_command(
                 let Some(user) = AdminUser::find_by_username(&username, &database).await? else {
                     return Err(not_found(&username));
                 };
-                match AdminSession::find_by_user_and_fingerprint(user.id, &fp, &database).await? {
-                    None => {
-                        return Err(CliError::bad_request(format!(
-                            "no such session for {username}: {fp}"
-                        )));
-                    }
-                    Some(target) => {
-                        AdminSession::delete(&target.token_hash, &database).await?;
-                        revoked_sessions_row(SessionScope::OneOf(username.clone()), 1, &database)
-                            .await;
-                        println!("Revoked session {fp} for {username}.");
-                    }
+                let trail = acme_proxy_admin::admin::trail::CliActions::new(&database);
+                if !changes::revoke_session(&user, &fp, database.clone(), &trail).await? {
+                    return Err(CliError::bad_request(format!(
+                        "no such session for {username}: {fp}"
+                    )));
                 }
+                println!("Revoked session {fp} for {username}.");
             }
             (Some(username), _, None) => {
                 match users::revoke_sessions(&username, database.clone()).await? {
@@ -692,18 +642,20 @@ impl<'a> CliTrail<'a> {
     }
 }
 
-impl OperatorTrail for CliTrail<'_> {
-    async fn record(
+impl acme_proxy_admin::admin::trail::ActionTrail for CliTrail<'_> {
+    async fn record_all(
         &self,
         build: impl FnOnce(
             acme_proxy_core::audit::Actor,
             acme_proxy_core::audit::ClientContext,
-        ) -> acme_proxy_core::audit::AuditRecord
+        ) -> Vec<acme_proxy_core::audit::AuditRecord>
         + Send,
     ) {
-        audit_admin::record_cli_action(self.database, build).await;
+        audit_admin::record_cli_actions(self.database, build).await;
     }
+}
 
+impl OperatorTrail for CliTrail<'_> {
     async fn notify(
         &self,
         user: &AdminUser,

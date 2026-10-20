@@ -246,11 +246,11 @@ pub(crate) async fn apply_revoke_order(
         RevokeOutcome::NotFound => Err(not_found(id)),
         RevokeOutcome::NotIssued => Err(AdminError::conflict(
             "order_not_issued",
-            format!("order {id} has no certificate to revoke"),
+            admin::order_not_issued_refusal(id),
         )),
         RevokeOutcome::AlreadyRevoked => Err(AdminError::conflict(
             "already_revoked",
-            format!("order {id} was already revoked"),
+            admin::order_already_revoked_refusal(id),
         )),
         RevokeOutcome::Revoked(order) => {
             tracing::info!(event = "admin_order_revoked",
@@ -310,30 +310,17 @@ pub(crate) async fn apply_delete_order(
     caller: &Caller<'_>,
     id: &str,
 ) -> Result<u64, AdminError> {
-    let subject = Order::find_by_id(id, &state.database).await?;
-    let deleted = match admin::delete_order(id, state.database.clone()).await? {
-        admin::Deletion::NotFound => return Err(not_found(id)),
-        admin::Deletion::LiveCertificates(live) => {
-            return Err(AdminError::conflict(
-                "live_certificates",
-                admin::live_certificates_refusal(&format!("order {id}"), live),
-            ));
-        }
-        admin::Deletion::Deleted(deleted) => deleted,
-    };
-
-    if let Some(order) = subject {
-        state
-            .record_admin_action(caller.request, caller.username(), |actor, client| {
-                acme_proxy_jobs::auditor::admin::order_deleted(
-                    actor,
-                    client,
-                    &order,
-                    deleted.cascaded,
-                )
-            })
-            .await;
-    }
+    let deleted =
+        match admin::delete_order(id, state.database.clone(), &caller.trail(state)).await? {
+            admin::Deletion::NotFound => return Err(not_found(id)),
+            admin::Deletion::LiveCertificates(live) => {
+                return Err(AdminError::conflict(
+                    "live_certificates",
+                    admin::live_certificates_refusal(&format!("order {id}"), live),
+                ));
+            }
+            admin::Deletion::Deleted(deleted) => deleted,
+        };
     tracing::info!(event = "admin_order_deleted",
                    outcome = "success",
                    surface = caller.surface,
@@ -371,9 +358,7 @@ async fn authz_ids(order_id: Uuid, state: &AdminState) -> Result<Vec<Uuid>, Admi
 /// retried.
 pub(crate) fn revoke_error(error: RevokeError) -> AdminError {
     match error {
-        RevokeError::BadReason(reason) => AdminError::bad_request(format!(
-            "unsupported revocation reason code {reason} (RFC 5280 §5.3.1)"
-        )),
+        RevokeError::BadReason(_) => AdminError::bad_request(error.to_string()),
         RevokeError::Signer(_) | RevokeError::Abandoned { .. } => {
             tracing::error!(event = "admin_revoke_signer_failed", outcome = "failure", error = %error);
             AdminError::signer_failed("the signer backend refused the revocation; retry")
@@ -407,10 +392,7 @@ pub(crate) async fn resolve_order_profile(
     let profile = state.profiles.get(&order.profile).ok_or_else(|| {
         AdminError::conflict(
             "profile_not_mounted",
-            format!(
-                "order {id} belongs to profile `{}`, which this configuration does not mount",
-                order.profile
-            ),
+            admin::order_profile_unmounted_refusal(id, &order.profile),
         )
     })?;
     Ok(profile.clone())

@@ -69,6 +69,19 @@ pub const ADMIN_SESSION_SWEEP_KIND: &str = "admin_session_sweep";
 /// The order-retention sweep's job kind.
 pub const ORDER_SWEEP_KIND: &str = "order_sweep";
 
+/// Every table sweep's kind — the one list the admin layer reads to know which
+/// jobs re-enqueue themselves, so a new sweep reaches its cancel warning and
+/// its filter dropdown by being added here.
+/// `each_target_answers_its_own_kind` holds it to the handlers.
+pub const SWEEP_KINDS: &[&str] = &[
+    RETENTION_JOB_KIND,
+    NONCE_SWEEP_KIND,
+    AUDIT_SWEEP_KIND,
+    HTTP01_TOKEN_SWEEP_KIND,
+    ADMIN_SESSION_SWEEP_KIND,
+    ORDER_SWEEP_KIND,
+];
+
 /// How often the daily sweeps run.
 ///
 /// Both settings behind them have a resolution of days, so anything finer is
@@ -434,8 +447,13 @@ mod tests {
             SweepJob::orders(database.clone(), vec![("default".to_string(), 30)]).kind(),
             SweepJob::http01_tokens(database).kind(),
         ];
-        let unique: std::collections::BTreeSet<_> = kinds.iter().collect();
+        let unique: std::collections::BTreeSet<_> = kinds.iter().copied().collect();
         assert_eq!(unique.len(), kinds.len(), "{kinds:?}");
+        let listed: std::collections::BTreeSet<_> = SWEEP_KINDS.iter().copied().collect();
+        assert_eq!(
+            unique, listed,
+            "SWEEP_KINDS must name every sweep, and only them"
+        );
     }
 
     /// The intervals the three former reapers were derived at, which moved here
