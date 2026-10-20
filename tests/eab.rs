@@ -413,3 +413,105 @@ async fn a_binding_that_was_not_verified_is_not_echoed() {
 
     assert!(body_json(res).await.get("externalAccountBinding").is_none());
 }
+
+/// §7.3.4 asks for "the same value as the field in the request", so a member
+/// the server does not read is echoed too rather than dropped by a round trip
+/// through the parsed JWS.
+#[tokio::test]
+async fn the_echoed_binding_is_the_value_the_request_sent() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+
+    let nonce = fetch_nonce(&app).await;
+    let mut binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    binding["header"] = json!({ "note": "unprotected" });
+    let body = signer.sign(
+        NEW_ACCOUNT_URL,
+        &nonce,
+        &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+    );
+
+    let res = post_new_account(&app, body).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    assert_eq!(body_json(res).await["externalAccountBinding"], binding);
+}
+
+/// A key that already has an account is found, not created: its binding is
+/// verified again but created nothing, so the `200` answer does not carry it.
+#[tokio::test]
+async fn a_found_account_does_not_echo_the_binding() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+    let payload = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding });
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(&app, signer.sign(NEW_ACCOUNT_URL, &nonce, &payload)).await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}
+
+/// `onlyReturnExisting` never reads the binding (§7.3.1), so it never echoes
+/// one either.
+#[tokio::test]
+async fn only_return_existing_does_not_echo_the_binding() {
+    let (app, db) = test_app_with_challenges(eab_enabled_config(), default_challenges()).await;
+    let signer = EcSigner::new();
+    let key = Eab::create(Some("customer-1".to_string()), None, &db)
+        .await
+        .unwrap();
+    let binding = build_eab(
+        &key.kid.to_string(),
+        &key.secret,
+        NEW_ACCOUNT_URL,
+        &signer.jwk(),
+    );
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(
+        &app,
+        signer.sign(
+            NEW_ACCOUNT_URL,
+            &nonce,
+            &json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let nonce = fetch_nonce(&app).await;
+    let res = post_new_account(
+        &app,
+        signer.sign(
+            NEW_ACCOUNT_URL,
+            &nonce,
+            &json!({ "onlyReturnExisting": true, "externalAccountBinding": binding }),
+        ),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK);
+
+    assert!(body_json(res).await.get("externalAccountBinding").is_none());
+}
