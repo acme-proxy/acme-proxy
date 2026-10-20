@@ -174,24 +174,26 @@ async fn account_creation_db_error_returns_500() {
     .await;
 }
 
-/// §7.3.1's `onlyReturnExisting` lookup, which is a *read* and happens after
-/// the nonce has already been spent.
+/// §7.3.1's lookup by key, which is a *read*, happens after the nonce has
+/// already been spent, and runs first for every `newAccount` — a lookup with
+/// `onlyReturnExisting` and a registration alike.
 #[tokio::test]
-async fn only_return_existing_lookup_db_error_returns_500() {
-    assert_500_after_sabotage(
-        "newAccount onlyReturnExisting lookup",
-        &["DROP TABLE accounts;"],
-        |app, signer, db| async move {
-            let nonce = fetch_nonce(&app).await;
-            let body = signer.sign(
-                NEW_ACCOUNT_URL,
-                &nonce,
-                &json!({ "onlyReturnExisting": true }),
-            );
-            (app, db, p("/newAccount"), body)
-        },
-    )
-    .await;
+async fn new_account_key_lookup_db_error_returns_500() {
+    for payload in [
+        json!({ "onlyReturnExisting": true }),
+        json!({ "termsOfServiceAgreed": true }),
+    ] {
+        assert_500_after_sabotage(
+            "newAccount lookup by key",
+            &["DROP TABLE accounts;"],
+            |app, signer, db| async move {
+                let nonce = fetch_nonce(&app).await;
+                let body = signer.sign(NEW_ACCOUNT_URL, &nonce, &payload);
+                (app, db, p("/newAccount"), body)
+            },
+        )
+        .await;
+    }
 }
 
 /// `newOrder`'s own transaction, which the pool-close driver cannot reach.

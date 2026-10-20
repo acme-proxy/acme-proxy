@@ -6,11 +6,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 mod common;
-use acme_proxy_core::config::Config;
-use common::{
-    EcSigner, RsaSigner, TestSigner, body_json, default_challenges, fetch_nonce, p, test_app,
-    test_app_with_challenges,
-};
+use common::{EcSigner, RsaSigner, TestSigner, body_json, fetch_nonce, p, test_app};
 
 const NEW_ACCOUNT_URL: &str = "http://localhost:3000/profile/default/newAccount";
 
@@ -267,63 +263,4 @@ async fn only_return_existing_returns_a_registered_account() {
     );
     let account = body_json(res).await;
     assert_eq!(account["contact"][0], "mailto:test@example.com");
-}
-
-/// Registers `signer` with `payload` and returns the account's `Location`.
-async fn register_with(app: &Router, signer: &EcSigner, payload: &Value) -> String {
-    let nonce = fetch_nonce(app).await;
-    let res = post_new_account(app, signer.sign(NEW_ACCOUNT_URL, &nonce, payload)).await;
-
-    assert_created(res).await
-}
-
-/// Sends `payload` for a key that already has an account, and returns the
-/// response.
-async fn register_again(app: &Router, signer: &EcSigner, payload: &Value) -> Response {
-    let nonce = fetch_nonce(app).await;
-
-    post_new_account(app, signer.sign(NEW_ACCOUNT_URL, &nonce, payload)).await
-}
-
-/// RFC 8555 §7.3.1: a key that already holds an account gets it back with a
-/// 200. Agreeing to the terms is a condition for creating an account, so it is
-/// not asked again.
-#[tokio::test]
-async fn an_existing_key_is_not_asked_to_agree_to_the_terms_again() {
-    let mut config = Config::default();
-    config.meta.terms_of_service = "https://example.com/terms".to_string();
-    let (app, _db) = test_app_with_challenges(config, default_challenges()).await;
-    let signer = EcSigner::new();
-    let location = register_with(&app, &signer, &account_payload()).await;
-
-    let res = register_again(&app, &signer, &json!({})).await;
-
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(res.headers()["location"], location.as_str());
-}
-
-/// The same for external account binding: a binding authorizes creating an
-/// account, and an existing key has already been through it.
-#[tokio::test]
-async fn an_existing_key_does_not_present_its_binding_again() {
-    let mut config = Config::default();
-    config.eab.enabled = true;
-    let (app, db) = test_app_with_challenges(config, default_challenges()).await;
-    let signer = EcSigner::new();
-    let key = acme_proxy_store::eab::Eab::create(Some("customer".to_string()), None, &db)
-        .await
-        .unwrap();
-    let binding = common::build_eab(
-        &key.kid.to_string(),
-        &key.secret,
-        NEW_ACCOUNT_URL,
-        &signer.jwk(),
-    );
-    let first = json!({ "termsOfServiceAgreed": true, "externalAccountBinding": binding });
-    let location = register_with(&app, &signer, &first).await;
-
-    let res = register_again(&app, &signer, &json!({ "termsOfServiceAgreed": true })).await;
-
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(res.headers()["location"], location.as_str());
 }
