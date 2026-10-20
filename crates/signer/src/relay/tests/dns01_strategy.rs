@@ -498,17 +498,7 @@ async fn dns01_refuses_an_upstream_offering_only_http01() {
         )
         .await
         .unwrap();
-    await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Invalid,
-    )
-    .await;
-
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
     assert!(
         mapping.error.unwrap().contains("no dns-01"),
         "the reason must name what was missing"
