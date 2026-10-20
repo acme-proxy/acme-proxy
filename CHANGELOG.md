@@ -175,6 +175,12 @@ migrated configuration before restarting.
 - **One wording per refusal on every surface**: an order with no certificate,
   one already revoked, one whose profile is not mounted, and a bad reason code
   read the same from the CLI, the API and the page.
+- **`newAccount` now returns the verified `externalAccountBinding`** in the
+  account object it creates, as RFC 8555 §7.3.4 requires, exactly as the
+  request sent it. It is reflected only in the `201` for an account this
+  request created at an endpoint that enforces EAB: a `200` for a key that
+  already has an account verifies the binding but does not echo it, and an
+  endpoint without EAB never checks one, so never vouches for it.
 
 ## [0.6.2] — 2026-10-16
 
