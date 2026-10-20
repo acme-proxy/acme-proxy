@@ -193,17 +193,7 @@ async fn http01_refuses_an_upstream_offering_only_dns01() {
         )
         .await
         .unwrap();
-    await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Invalid,
-    )
-    .await;
-
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
     assert!(
         mapping.error.unwrap().contains("no http-01"),
         "the reason must name what was missing"
@@ -246,17 +236,7 @@ async fn http01_refuses_a_wildcard_authorization() {
         )
         .await
         .unwrap();
-    await_status(
-        db.clone(),
-        order.id.to_string().as_str(),
-        OrderStatus::Invalid,
-    )
-    .await;
-
-    let mapping = UpstreamOrder::find_by_order_id(order.id.to_string().as_str(), &db)
-        .await
-        .unwrap()
-        .unwrap();
+    let (_, mapping) = await_abandoned(db.clone(), order.id.to_string().as_str()).await;
     let error = mapping.error.unwrap();
     assert!(
         error.contains("wildcard") && error.contains("dns01"),
